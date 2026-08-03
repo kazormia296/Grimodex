@@ -53,7 +53,12 @@ import {
 } from "@/features/revision/projectSnapshotScopes";
 import sampleProjectJa from "../../src-tauri/resources/sample_project/v1.json";
 import sampleProjectEn from "../../src-tauri/resources/sample_project/v1_en.json";
-import type { AiAuditJournalBatch } from "./browser-db/indexedDbStore";
+import {
+  AI_AUDIT_JOURNAL_FORMAT_VERSION,
+  type AiAuditJournalBatch,
+  type AiAuditJournalMaterializedBatch,
+  type AiAuditJournalMaterializedEvent,
+} from "./browser-db/indexedDbStore";
 
 type BrowserSchemaTable = {
   kind: string;
@@ -1274,27 +1279,12 @@ function canonicalAiAuditPayloadForAppend(
 }
 
 async function browserAiAuditJournalBatch(
-  expectedWorkspacePath: string,
-  projectId: string | null,
-  events: BrowserAiAuditEventInput[],
+  materializedBatch: AiAuditJournalMaterializedBatch,
 ): Promise<AiAuditJournalBatch> {
-  // Persist only the validated command contract. Unknown top-level event
-  // fields (including accidental transport metadata) are never journaled.
+  // Persist the exact rows accepted by SQLite. Replaying this object must not
+  // enrich payloads, assign recordedAt values, or recompute the hash chain.
   const appendArgsJson = JSON.stringify(
-    canonicalizeAiAuditJson({
-      expectedWorkspacePath,
-      projectId,
-      events: events.map((event) => ({
-        eventId: event.eventId,
-        executionId: event.executionId,
-        operationId: event.operationId,
-        parentExecutionId: event.parentExecutionId,
-        pathId: event.pathId,
-        eventType: event.eventType,
-        timestamp: event.timestamp,
-        payload: event.payload,
-      })),
-    }),
+    canonicalizeAiAuditJson(materializedBatch),
   );
   return {
     batchId: await sha256AuditHex(appendArgsJson),
@@ -6126,12 +6116,11 @@ export async function createBrowserMock(
       }
       const events = args.events as BrowserAiAuditEventInput[];
       events.forEach(validateBrowserAiAuditEvent);
-      const journalBatch = await browserAiAuditJournalBatch(
-        String(args.expectedWorkspacePath),
-        projectId,
-        events,
-      );
       let { sequence, hash: prevHash } = readBrowserAiAuditTail(scopeId);
+      const materializedEvents = new Map<
+        string,
+        AiAuditJournalMaterializedEvent
+      >();
       const preparedEvents: Array<{
         event: BrowserAiAuditEventInput;
         payload: string;
@@ -6140,12 +6129,14 @@ export async function createBrowserMock(
         recordedAt: number;
         prevHash: string;
         hash: string;
+        materialized: AiAuditJournalMaterializedEvent;
       }> = [];
       const preparedEventIds = new Map<
         string,
         {
           event: BrowserAiAuditEventInput;
           payloadSha256: string;
+          materialized: AiAuditJournalMaterializedEvent;
         }
       >();
       const executionStates = new Map<string, BrowserAiAuditExecutionState>();
@@ -6154,8 +6145,9 @@ export async function createBrowserMock(
         const payload = canonicalAiAuditPayloadForAppend(event.payload);
         const payloadSha256 = await sha256AuditHex(payload);
         const existing = queryOne(
-          `SELECT execution_id, operation_id, parent_execution_id, path_id,
-                  event_type, timestamp, payload_sha256
+          `SELECT sequence, event_id, scope_id, project_id, execution_id,
+                  operation_id, parent_execution_id, path_id, event_type,
+                  timestamp, recorded_at, payload, payload_sha256, prev_hash, hash
              FROM ai_audit_events
             WHERE scope_id = ? AND event_id = ?`,
           [scopeId, event.eventId],
@@ -6185,6 +6177,8 @@ export async function createBrowserMock(
               `eventId collision with different AI audit payload: ${event.eventId}`,
             );
           }
+          const materialized = browserAiAuditRow(existing);
+          materializedEvents.set(materialized.eventId, materialized);
           continue;
         }
         const preparedDuplicate = preparedEventIds.get(event.eventId);
@@ -6194,6 +6188,10 @@ export async function createBrowserMock(
               `eventId collision with different AI audit payload: ${event.eventId}`,
             );
           }
+          materializedEvents.set(
+            preparedDuplicate.materialized.eventId,
+            preparedDuplicate.materialized,
+          );
           continue;
         }
 
@@ -6278,6 +6276,23 @@ export async function createBrowserMock(
           payloadSha256,
           prevHash,
         });
+        const materialized: AiAuditJournalMaterializedEvent = {
+          sequence,
+          scopeId,
+          projectId,
+          eventId: event.eventId,
+          executionId: event.executionId,
+          operationId: event.operationId,
+          parentExecutionId: event.parentExecutionId,
+          pathId: event.pathId,
+          eventType: event.eventType,
+          timestamp: event.timestamp,
+          recordedAt,
+          payload: JSON.parse(payload) as Record<string, unknown>,
+          payloadSha256,
+          prevHash,
+          hash,
+        };
         preparedEvents.push({
           event,
           payload,
@@ -6286,11 +6301,34 @@ export async function createBrowserMock(
           recordedAt,
           prevHash,
           hash,
+          materialized,
         });
-        preparedEventIds.set(event.eventId, { event, payloadSha256 });
+        preparedEventIds.set(event.eventId, {
+          event,
+          payloadSha256,
+          materialized,
+        });
+        materializedEvents.set(event.eventId, materialized);
         observeBrowserAiAuditLifecycleEvent(identity, event.eventType);
         prevHash = hash;
       }
+      const orderedMaterializedEvents = [...materializedEvents.values()].sort(
+        (left, right) => left.sequence - right.sequence,
+      );
+      const firstMaterializedEvent = orderedMaterializedEvents[0];
+      const journalBatch = await browserAiAuditJournalBatch({
+        journalVersion: AI_AUDIT_JOURNAL_FORMAT_VERSION,
+        auditSchemaVersion: AI_AUDIT_SCHEMA_VERSION,
+        captureContractVersion: AI_AUDIT_CAPTURE_CONTRACT_VERSION,
+        expectedWorkspacePath: String(args.expectedWorkspacePath),
+        projectId,
+        scopeId,
+        baseSequence: firstMaterializedEvent
+          ? firstMaterializedEvent.sequence - 1
+          : sequence,
+        baseTailHash: firstMaterializedEvent?.prevHash ?? prevHash,
+        events: orderedMaterializedEvents,
+      });
       // All async hashing is complete. Nothing between BEGIN and COMMIT may
       // yield, otherwise unrelated browser DB commands can join this txn.
       db.run("BEGIN IMMEDIATE");
@@ -6335,6 +6373,299 @@ export async function createBrowserMock(
       if (insertedCount > 0) options.onDatabaseDirty?.();
       await options.onAiAuditDurabilityRequired?.(journalBatch);
       return { insertedCount, tailSequence: sequence, tailHash: prevHash };
+    });
+  }
+
+  function parseAiAuditMaterializedBatch(
+    args: Record<string, unknown>,
+    projectId: string | null,
+    scopeId: string,
+  ): AiAuditJournalMaterializedBatch {
+    if (args.journalVersion !== AI_AUDIT_JOURNAL_FORMAT_VERSION) {
+      throw new Error("unsupported AI audit journal version");
+    }
+    if (args.auditSchemaVersion !== AI_AUDIT_SCHEMA_VERSION) {
+      throw new Error("unsupported AI audit schema version");
+    }
+    if (args.captureContractVersion !== AI_AUDIT_CAPTURE_CONTRACT_VERSION) {
+      throw new Error("unsupported AI audit capture contract version");
+    }
+    if (args.scopeId !== scopeId) {
+      throw new Error("AI audit journal scope does not match project");
+    }
+    if (
+      !Number.isSafeInteger(args.baseSequence) ||
+      Number(args.baseSequence) < 0
+    ) {
+      throw new Error("AI audit journal baseSequence is invalid");
+    }
+    if (
+      typeof args.baseTailHash !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(args.baseTailHash)
+    ) {
+      throw new Error("AI audit journal baseTailHash is invalid");
+    }
+    if (
+      !Array.isArray(args.events) ||
+      args.events.length < 1 ||
+      args.events.length > 256
+    ) {
+      throw new Error("AI audit journal events must contain 1..256 rows");
+    }
+    const events = args.events.map((candidate, index) => {
+      if (
+        candidate === null ||
+        typeof candidate !== "object" ||
+        Array.isArray(candidate)
+      ) {
+        throw new Error(`AI audit journal events[${index}] is invalid`);
+      }
+      const row = candidate as Record<string, unknown>;
+      const event: AiAuditJournalMaterializedEvent = {
+        sequence: Number(row.sequence),
+        scopeId: String(row.scopeId),
+        projectId: row.projectId === null ? null : String(row.projectId),
+        eventId: String(row.eventId),
+        executionId: String(row.executionId),
+        operationId: String(row.operationId),
+        parentExecutionId:
+          row.parentExecutionId === null ? null : String(row.parentExecutionId),
+        pathId: String(row.pathId),
+        eventType: String(row.eventType),
+        timestamp: Number(row.timestamp),
+        recordedAt: Number(row.recordedAt),
+        payload: row.payload as Record<string, unknown>,
+        payloadSha256: String(row.payloadSha256),
+        prevHash: String(row.prevHash),
+        hash: String(row.hash),
+      };
+      if (
+        !Number.isSafeInteger(event.sequence) ||
+        event.sequence < 1 ||
+        !Number.isSafeInteger(event.recordedAt) ||
+        event.recordedAt < 0 ||
+        event.scopeId !== scopeId ||
+        event.projectId !== projectId ||
+        !/^[0-9a-f]{64}$/u.test(event.payloadSha256) ||
+        !/^[0-9a-f]{64}$/u.test(event.prevHash) ||
+        !/^[0-9a-f]{64}$/u.test(event.hash)
+      ) {
+        throw new Error(
+          `AI audit journal events[${index}] has invalid row data`,
+        );
+      }
+      validateBrowserAiAuditEvent(
+        {
+          eventId: event.eventId,
+          executionId: event.executionId,
+          operationId: event.operationId,
+          parentExecutionId: event.parentExecutionId,
+          pathId: event.pathId,
+          eventType: event.eventType,
+          timestamp: event.timestamp,
+          payload: event.payload,
+        },
+        index,
+      );
+      return event;
+    });
+    return {
+      journalVersion: AI_AUDIT_JOURNAL_FORMAT_VERSION,
+      auditSchemaVersion: AI_AUDIT_SCHEMA_VERSION,
+      captureContractVersion: AI_AUDIT_CAPTURE_CONTRACT_VERSION,
+      expectedWorkspacePath: String(args.expectedWorkspacePath),
+      projectId,
+      scopeId,
+      baseSequence: Number(args.baseSequence),
+      baseTailHash: args.baseTailHash,
+      events,
+    };
+  }
+
+  function materializedEventsEqual(
+    left: AiAuditJournalMaterializedEvent,
+    right: AiAuditJournalMaterializedEvent,
+  ): boolean {
+    const scalarKeys = [
+      "sequence",
+      "scopeId",
+      "projectId",
+      "eventId",
+      "executionId",
+      "operationId",
+      "parentExecutionId",
+      "pathId",
+      "eventType",
+      "timestamp",
+      "recordedAt",
+      "payloadSha256",
+      "prevHash",
+      "hash",
+    ] as const;
+    if (scalarKeys.some((key) => left[key] !== right[key])) return false;
+    return (
+      JSON.stringify(canonicalizeAiAuditJson(left.payload)) ===
+      JSON.stringify(canonicalizeAiAuditJson(right.payload))
+    );
+  }
+
+  async function verifyMaterializedAiAuditEvent(
+    event: AiAuditJournalMaterializedEvent,
+  ): Promise<void> {
+    const contractError = validateStoredAiAuditCaptureContract(event.payload);
+    if (contractError) {
+      throw new Error(
+        `AI audit journal payload contract mismatch: ${contractError}`,
+      );
+    }
+    const payload = canonicalStoredAiAuditPayload(event.payload);
+    const payloadSha256 = await sha256AuditHex(payload);
+    if (payloadSha256 !== event.payloadSha256) {
+      throw new Error(
+        `AI audit journal payloadSha256 mismatch: ${event.eventId}`,
+      );
+    }
+    const hash = await browserAiAuditHash({
+      scopeId: event.scopeId,
+      projectId: event.projectId,
+      sequence: event.sequence,
+      eventId: event.eventId,
+      executionId: event.executionId,
+      operationId: event.operationId,
+      parentExecutionId: event.parentExecutionId,
+      pathId: event.pathId,
+      eventType: event.eventType,
+      timestamp: event.timestamp,
+      recordedAt: event.recordedAt,
+      payloadSha256: event.payloadSha256,
+      prevHash: event.prevHash,
+    });
+    if (hash !== event.hash) {
+      throw new Error(`AI audit journal hash mismatch: ${event.eventId}`);
+    }
+  }
+
+  async function handleAiAuditRestoreBatch(args: Record<string, unknown>) {
+    return withAppendLedgerLock(async () => {
+      assertBrowserAiAuditWorkspace(args);
+      const projectId = browserAiAuditProjectId(args);
+      const scopeId = browserAiAuditScopeId(projectId);
+      const batch = parseAiAuditMaterializedBatch(args, projectId, scopeId);
+      let previousSequence = batch.baseSequence;
+      let previousHash = batch.baseTailHash;
+      const eventIds = new Set<string>();
+      for (const event of batch.events) {
+        if (
+          event.sequence !== previousSequence + 1 ||
+          event.prevHash !== previousHash ||
+          eventIds.has(event.eventId)
+        ) {
+          throw new Error("AI audit journal chain is not contiguous");
+        }
+        eventIds.add(event.eventId);
+        await verifyMaterializedAiAuditEvent(event);
+        previousSequence = event.sequence;
+        previousHash = event.hash;
+      }
+
+      const existingEvents = new Map<string, AiAuditJournalMaterializedEvent>();
+      let firstMissingIndex = -1;
+      batch.events.forEach((event, index) => {
+        const row = queryOne(
+          `SELECT sequence, event_id, scope_id, project_id, execution_id,
+                  operation_id, parent_execution_id, path_id, event_type,
+                  timestamp, recorded_at, payload, payload_sha256, prev_hash, hash
+             FROM ai_audit_events
+            WHERE scope_id = ? AND event_id = ?`,
+          [scopeId, event.eventId],
+        );
+        if (!row) {
+          firstMissingIndex = firstMissingIndex < 0 ? index : firstMissingIndex;
+          return;
+        }
+        const stored = browserAiAuditRow(row);
+        existingEvents.set(event.eventId, stored);
+        if (!materializedEventsEqual(stored, event)) {
+          throw new Error(
+            `AI audit journal row differs from SQLite: ${event.eventId}`,
+          );
+        }
+      });
+      if (firstMissingIndex < 0) {
+        const tail = readBrowserAiAuditTail(scopeId);
+        return {
+          insertedCount: 0,
+          tailSequence: tail.sequence,
+          tailHash: tail.hash,
+        };
+      }
+
+      const priorSequence =
+        firstMissingIndex === 0
+          ? batch.baseSequence
+          : batch.events[firstMissingIndex - 1].sequence;
+      const priorHash =
+        firstMissingIndex === 0
+          ? batch.baseTailHash
+          : batch.events[firstMissingIndex - 1].hash;
+      const tail = readBrowserAiAuditTail(scopeId);
+      if (tail.sequence !== priorSequence || tail.hash !== priorHash) {
+        throw new Error(
+          "AI audit journal restore would create a sequence gap or rewrite the tail",
+        );
+      }
+      if (
+        batch.events
+          .slice(firstMissingIndex)
+          .some((event) => existingEvents.has(event.eventId))
+      ) {
+        throw new Error("AI audit journal has an existing row after a gap");
+      }
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        for (const event of batch.events.slice(firstMissingIndex)) {
+          db.run(
+            `INSERT INTO ai_audit_events
+              (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+               parent_execution_id, path_id, event_type, timestamp, recorded_at,
+               payload, payload_sha256, prev_hash, hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              event.scopeId,
+              event.projectId,
+              event.sequence,
+              event.eventId,
+              event.executionId,
+              event.operationId,
+              event.parentExecutionId,
+              event.pathId,
+              event.eventType,
+              event.timestamp,
+              event.recordedAt,
+              canonicalStoredAiAuditPayload(event.payload),
+              event.payloadSha256,
+              event.prevHash,
+              event.hash,
+            ],
+          );
+        }
+        db.run("COMMIT");
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original restore failure.
+        }
+        throw error;
+      }
+      options.onDatabaseDirty?.();
+      const restoredTail = batch.events.at(-1)!;
+      return {
+        insertedCount: batch.events.length - firstMissingIndex,
+        tailSequence: restoredTail.sequence,
+        tailHash: restoredTail.hash,
+      };
     });
   }
 
@@ -6635,6 +6966,8 @@ export async function createBrowserMock(
         return handleDbExecuteBatch(args) as T;
       case "ai_audit_append_batch":
         return (await handleAiAuditAppendBatch(args)) as T;
+      case "ai_audit_restore_batch":
+        return (await handleAiAuditRestoreBatch(args)) as T;
       case "ai_audit_read_snapshot":
         return (await handleAiAuditReadSnapshot(args)) as T;
       case "ai_audit_verify":

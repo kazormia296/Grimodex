@@ -3,8 +3,12 @@ import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { invokeSingleShotChat } from "@/features/chat/singleShotTransport";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import {
+  captureAiOperationAuthority,
+  aiAuditContextForOperation,
+  type AiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {
@@ -396,10 +400,17 @@ export async function generateAiBranchCards(
   project: AiBranchProjectContext | null = null,
   spotlight: AiBranchSeed[] = [],
   vs: VsOptions | null = null,
+  auditAuthority?: AiOperationAuthority,
 ): Promise<AiBranchCard[]> {
   if (blockIfPolicyOff("chat")) {
     throw new Error("chat policy is off");
   }
+
+  // Keep direct callers safe while production orchestration passes the
+  // authority captured for the board before its first await.
+  const authority =
+    auditAuthority ??
+    captureAiOperationAuthority(getCurrentProjectId(), "map_branch");
 
   const lang = langKey(project);
   // VS 有効時はカードに確率を添えさせ (パース→珍しい順に並べ替え)。
@@ -434,7 +445,7 @@ export async function generateAiBranchCards(
       endpointId: ov.endpointId,
     },
     {
-      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      ...aiAuditContextForOperation(authority, "map_branch"),
       pathId: "map_branch",
     },
   );

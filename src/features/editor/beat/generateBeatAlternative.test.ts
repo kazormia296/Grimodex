@@ -122,6 +122,7 @@ describe("generateBeatAlternative", () => {
     createMock.mockResolvedValue({ id: "s1", title: "test" });
 
     useTreeStore.setState({
+      projectId: "p1",
       nodes: [
         {
           id: "scene-1",

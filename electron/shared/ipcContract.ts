@@ -87,6 +87,10 @@ export const IPC_UNIMPLEMENTED_MARKER = "IPC_UNIMPLEMENTED:";
 /** napi Backend (.node) のロードに失敗した状態で napi コマンドを呼んだ場合。 */
 export const IPC_BACKEND_UNAVAILABLE_MARKER = "IPC_BACKEND_UNAVAILABLE:";
 
+/** A CLI subprocess may not start without a durable audit dispatch proof. */
+export const AI_AUDIT_DISPATCH_PRECONDITION_FAILED_MARKER =
+  "AI_AUDIT_DISPATCH_PRECONDITION_FAILED:";
+
 export function unimplementedError(cmd: string): string {
   return `${IPC_UNIMPLEMENTED_MARKER} ${cmd}`;
 }
@@ -3022,6 +3026,180 @@ function requireNativeAiStreamCorrelation(
   return streamId;
 }
 
+const CLI_AI_AUDIT_TERMINAL_EVENTS = new Set([
+  "execution.succeeded",
+  "execution.failed",
+  "execution.cancelled",
+  "execution.skipped",
+  "execution.cache_hit",
+]);
+
+function nativeAuditEventField(
+  event: Record<string, unknown>,
+  camelCase: string,
+  snakeCase: string,
+): unknown {
+  return Object.prototype.hasOwnProperty.call(event, camelCase)
+    ? event[camelCase]
+    : event[snakeCase];
+}
+
+function cliAuditPreconditionError(reason: string): Error {
+  return new Error(`${AI_AUDIT_DISPATCH_PRECONDITION_FAILED_MARKER} ${reason}`);
+}
+
+/**
+ * Main-side guard for the CLI shell command. The generic preload invoke path
+ * must not be able to spawn a subprocess by supplying only a stream id and a
+ * prompt. Read the native ledger through the pinned workspace backend and
+ * require the exact ordered lifecycle for this execution first.
+ */
+async function assertCliAiAuditDispatchPrecondition(
+  args: CommandArgs,
+  backend: NapiBackendLike | null,
+): Promise<void> {
+  const command = "send_cli_chat_stream";
+  const context = requireNativeAiAuditContext(args, command);
+  requireNativeAiStreamCorrelation(args, command);
+  if (!backend) {
+    throw cliAuditPreconditionError("native audit backend is unavailable");
+  }
+
+  const expectedWorkspacePath = context.expectedWorkspacePath as string;
+  const projectId = context.projectId as string | null;
+  const operationId = context.operationId as string;
+  const executionId = context.executionId as string;
+  const parentExecutionId = context.parentExecutionId as string | null;
+  const pathId = context.pathId as string;
+  const events: Record<string, unknown>[] = [];
+  let afterSequence = 0;
+  let highWaterSequence: number | undefined;
+
+  for (;;) {
+    const raw = await backend.aiAuditReadSnapshot(
+      expectedWorkspacePath,
+      projectId,
+      afterSequence,
+      highWaterSequence,
+      1_000,
+    );
+    const snapshot = parseWire(raw);
+    if (
+      snapshot === null ||
+      typeof snapshot !== "object" ||
+      Array.isArray(snapshot)
+    ) {
+      throw cliAuditPreconditionError("native audit snapshot is invalid");
+    }
+    const record = snapshot as Record<string, unknown>;
+    if (record.projectId !== undefined && record.projectId !== projectId) {
+      throw cliAuditPreconditionError("audit project does not match context");
+    }
+    const highWater = record.highWaterSequence;
+    if (!Number.isSafeInteger(highWater) || (highWater as number) < 0) {
+      throw cliAuditPreconditionError(
+        "native audit high-water mark is invalid",
+      );
+    }
+    highWaterSequence ??= highWater as number;
+    if (!Array.isArray(record.events)) {
+      throw cliAuditPreconditionError("native audit events are invalid");
+    }
+    for (const candidate of record.events) {
+      if (
+        candidate === null ||
+        typeof candidate !== "object" ||
+        Array.isArray(candidate)
+      ) {
+        throw cliAuditPreconditionError("native audit event is invalid");
+      }
+      events.push(candidate as Record<string, unknown>);
+    }
+    const next = record.nextAfterSequence;
+    if (next === null || next === undefined) break;
+    if (
+      !Number.isSafeInteger(next) ||
+      (next as number) <= afterSequence ||
+      (next as number) >= (highWaterSequence as number)
+    ) {
+      throw cliAuditPreconditionError("native audit pagination is invalid");
+    }
+    afterSequence = next as number;
+  }
+
+  const executionEvents = events
+    .filter(
+      (event) =>
+        nativeAuditEventField(event, "executionId", "execution_id") ===
+        executionId,
+    )
+    .sort(
+      (left, right) =>
+        Number(nativeAuditEventField(left, "sequence", "sequence")) -
+        Number(nativeAuditEventField(right, "sequence", "sequence")),
+    );
+  if (executionEvents.length === 0) {
+    throw cliAuditPreconditionError(
+      "execution.started/request.prepared/request.dispatched are not durable",
+    );
+  }
+
+  for (const event of executionEvents) {
+    const eventProjectId = nativeAuditEventField(
+      event,
+      "projectId",
+      "project_id",
+    );
+    if (
+      eventProjectId !== projectId ||
+      nativeAuditEventField(event, "operationId", "operation_id") !==
+        operationId ||
+      nativeAuditEventField(
+        event,
+        "parentExecutionId",
+        "parent_execution_id",
+      ) !== parentExecutionId ||
+      nativeAuditEventField(event, "pathId", "path_id") !== pathId
+    ) {
+      throw cliAuditPreconditionError(
+        "execution identity does not match the audit context",
+      );
+    }
+  }
+
+  const eventType = (event: Record<string, unknown>): unknown =>
+    nativeAuditEventField(event, "eventType", "event_type");
+  const sequence = (event: Record<string, unknown>): number =>
+    Number(nativeAuditEventField(event, "sequence", "sequence"));
+  const started = executionEvents.find(
+    (event) => eventType(event) === "execution.started",
+  );
+  const prepared = executionEvents.find(
+    (event) => eventType(event) === "request.prepared",
+  );
+  const dispatched = executionEvents.find(
+    (event) => eventType(event) === "request.dispatched",
+  );
+  if (
+    !started ||
+    !prepared ||
+    !dispatched ||
+    !(sequence(started) < sequence(prepared)) ||
+    !(sequence(prepared) < sequence(dispatched))
+  ) {
+    throw cliAuditPreconditionError(
+      "audit lifecycle is missing or out of order before CLI spawn",
+    );
+  }
+  if (
+    executionEvents.some((event) =>
+      CLI_AI_AUDIT_TERMINAL_EVENTS.has(String(eventType(event))),
+    )
+  ) {
+    throw cliAuditPreconditionError("execution already has a terminal event");
+  }
+}
+
 function requireStreamId(args: CommandArgs, command: string): string {
   const streamId = requireNonEmptyString(args, "streamId", command);
   if (streamId !== streamId.trim()) {
@@ -5126,6 +5304,9 @@ export async function dispatchInvoke(
       };
     }
     if (Object.hasOwn(deps.shell, cmd)) {
+      if (cmd === "send_cli_chat_stream") {
+        await assertCliAiAuditDispatchPrecondition(args, deps.backend);
+      }
       return { ok: true, value: await deps.shell[cmd](args) };
     }
     return failureEnvelope(unimplementedError(cmd));

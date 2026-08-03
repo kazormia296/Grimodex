@@ -24,6 +24,7 @@ import { createOrderedStreamAuditBatchQueue } from "@/features/ai-audit/orderedS
 import {
   auditErrorSnapshot,
   beforeIpcDispatchDetails,
+  nativeAiAuditContext,
   type AiAuditTransportContext,
 } from "@/features/ai-audit/transportContext";
 import type {
@@ -332,42 +333,44 @@ export async function sendCliChatStream(
     void requestAbort();
   };
 
-  invoke<void>("send_cli_chat_stream", { payload, streamId }).catch(
-    (e: unknown) => {
-      if (transportTerminal) return;
-      transportTerminal = true;
-      const msg = e instanceof Error ? e.message : String(e);
-      auditQueue.close(
-        async () => {
-          const abortReceipt = cleanupRequested ? await requestAbort() : null;
-          await failAiAuditExecution(audit, {
-            error: auditErrorSnapshot(e),
-            partialResponse: { text, thinking },
-            metadata: {
-              externalRuntimeInternalPromptObserved: false,
-              ...(abortReceipt
-                ? {
-                    transportAbortRequested: true,
-                    abortCommandAcknowledged:
-                      abortReceipt.abortCommandAcknowledged,
-                    transportTerminationObserved:
-                      abortReceipt.transportTerminationObserved,
-                    providerAbortReceiptObserved: false,
-                    uiDeliveryEnded: true,
-                    auditObservationContinuedUntilTransportTerminal: true,
-                    cleanupReturnedBeforeTerminalAuditDurable: true,
-                  }
-                : {}),
-            },
-          });
-        },
-        () => {
-          releaseListeners();
-          if (uiActive) reportError(msg);
-        },
-      );
-    },
-  );
+  invoke<void>("send_cli_chat_stream", {
+    payload,
+    streamId,
+    auditContext: nativeAiAuditContext(audit),
+  }).catch((e: unknown) => {
+    if (transportTerminal) return;
+    transportTerminal = true;
+    const msg = e instanceof Error ? e.message : String(e);
+    auditQueue.close(
+      async () => {
+        const abortReceipt = cleanupRequested ? await requestAbort() : null;
+        await failAiAuditExecution(audit, {
+          error: auditErrorSnapshot(e),
+          partialResponse: { text, thinking },
+          metadata: {
+            externalRuntimeInternalPromptObserved: false,
+            ...(abortReceipt
+              ? {
+                  transportAbortRequested: true,
+                  abortCommandAcknowledged:
+                    abortReceipt.abortCommandAcknowledged,
+                  transportTerminationObserved:
+                    abortReceipt.transportTerminationObserved,
+                  providerAbortReceiptObserved: false,
+                  uiDeliveryEnded: true,
+                  auditObservationContinuedUntilTransportTerminal: true,
+                  cleanupReturnedBeforeTerminalAuditDurable: true,
+                }
+              : {}),
+          },
+        });
+      },
+      () => {
+        releaseListeners();
+        if (uiActive) reportError(msg);
+      },
+    );
+  });
 
   return cleanup;
 }

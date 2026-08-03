@@ -311,6 +311,69 @@ describe("BrowserMock AI audit ledger", () => {
     expect(appendAcknowledged).toBe(true);
   });
 
+  it("restores the materialized journal rows exactly after a snapshot crash", async () => {
+    let journalBatch: { batchId: string; appendArgsJson: string } | undefined;
+    const source = await createBrowserMock({
+      workspaceIdentity: "/dev/workspace",
+      onAiAuditDurabilityRequired: async (batch) => {
+        journalBatch = batch;
+      },
+    });
+    owned.push(source);
+    // This is the last snapshot that existed before the append ACK reached
+    // IndexedDB. The journal is the only durable record of the following rows.
+    const preAppendSnapshot = source.exportDatabase();
+    const events = [
+      auditEvent("crash-start", "execution.started", 1),
+      auditEvent("crash-prepared", "request.prepared", 2),
+      auditEvent("crash-dispatched", "request.dispatched", 3),
+    ];
+    await source.invoke("ai_audit_append_batch", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+      events,
+    });
+    const sourceSnapshot = await source.invoke<{
+      highWaterHash: string;
+      events: unknown[];
+    }>("ai_audit_read_snapshot", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+    });
+    expect(journalBatch).toBeDefined();
+    const materialized = JSON.parse(journalBatch!.appendArgsJson) as {
+      journalVersion: number;
+      events: Array<{
+        recordedAt: number;
+        payloadSha256: string;
+        prevHash: string;
+        hash: string;
+      }>;
+    };
+    expect(materialized.journalVersion).toBe(1);
+    expect(materialized.events.every((event) => event.recordedAt > 0)).toBe(
+      true,
+    );
+    const recovered = await createBrowserMock({
+      databaseBytes: preAppendSnapshot,
+      workspaceIdentity: "/dev/workspace",
+    });
+    owned.push(recovered);
+    await recovered.invoke(
+      "ai_audit_restore_batch",
+      JSON.parse(journalBatch!.appendArgsJson),
+    );
+    const recoveredSnapshot = await recovered.invoke<{
+      highWaterHash: string;
+      events: unknown[];
+    }>("ai_audit_read_snapshot", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+    });
+
+    expect(recoveredSnapshot).toEqual(sourceSnapshot);
+  });
+
   it("does not fetch when the durable journal ACK rejects before dispatch", async () => {
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);

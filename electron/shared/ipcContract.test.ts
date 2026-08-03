@@ -633,7 +633,7 @@ describe("dispatchInvoke", () => {
     ).toBe(true);
   });
 
-  it("CLI AI 5コマンドはbackend不在でもmain shell handlerへ委譲される", async () => {
+  it("CLI AI の検出は委譲されるが、送信は監査証跡なしで拒否される", async () => {
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const shell = Object.fromEntries(
       [
@@ -663,13 +663,12 @@ describe("dispatchInvoke", () => {
     );
 
     expect(detected).toEqual({ ok: true, value: "/bin/claude" });
-    expect(sent).toEqual({ ok: true, value: null });
+    expect(sent.ok).toBe(false);
+    if (!sent.ok) {
+      expect(sent.error).toContain("auditContext");
+    }
     expect(calls).toEqual([
       { command: "detect_cli_binary", args: { cli: "claude" } },
-      {
-        command: "send_cli_chat_stream",
-        args: { payload: { cli: "claude", prompt: "hi" } },
-      },
     ]);
     expect(SHELL_COMMAND_NAMES).toEqual(
       expect.arrayContaining([
@@ -691,6 +690,126 @@ describe("dispatchInvoke", () => {
         "mozkey_download_and_install",
       ]),
     );
+  });
+
+  it("CLI send の main 監査ゲートは欠落・改ざん・terminal を spawn 前に拒否する", async () => {
+    const context = {
+      expectedWorkspacePath: "/workspace/test.gdx",
+      projectId: "p1",
+      operationId: "operation-cli",
+      executionId: "execution-cli",
+      parentExecutionId: null,
+      pathId: "chat_cli",
+    } as const;
+    const lifecycleEvents = [
+      {
+        sequence: 1,
+        project_id: "p1",
+        execution_id: context.executionId,
+        operation_id: context.operationId,
+        parent_execution_id: null,
+        path_id: context.pathId,
+        event_type: "execution.started",
+      },
+      {
+        sequence: 2,
+        project_id: "p1",
+        execution_id: context.executionId,
+        operation_id: context.operationId,
+        parent_execution_id: null,
+        path_id: context.pathId,
+        event_type: "request.prepared",
+      },
+      {
+        sequence: 3,
+        project_id: "p1",
+        execution_id: context.executionId,
+        operation_id: context.operationId,
+        parent_execution_id: null,
+        path_id: context.pathId,
+        event_type: "request.dispatched",
+      },
+    ];
+    const backend = fakeBackend({
+      aiAuditReadSnapshot: () =>
+        Promise.resolve(
+          JSON.stringify({
+            projectId: context.projectId,
+            highWaterSequence: 3,
+            nextAfterSequence: null,
+            events: lifecycleEvents,
+          }),
+        ) as never,
+    }).backend;
+    const runner = vi.fn(async () => null);
+    const shell = {
+      send_cli_chat_stream: runner,
+    };
+    const payload = { payload: { cli: "claude", prompt: "hi" } };
+
+    await expect(
+      dispatchInvoke("send_cli_chat_stream", payload, {
+        backend: null,
+        shell,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("auditContext"),
+    });
+
+    const forgedContext = {
+      ...context,
+      operationId: "forged-operation",
+    };
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: forgedContext,
+        },
+        { backend, shell },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("AI_AUDIT_DISPATCH_PRECONDITION_FAILED"),
+    });
+
+    const terminalBackend = fakeBackend({
+      aiAuditReadSnapshot: () =>
+        Promise.resolve(
+          JSON.stringify({
+            projectId: context.projectId,
+            highWaterSequence: 4,
+            nextAfterSequence: null,
+            events: [
+              ...lifecycleEvents,
+              {
+                ...lifecycleEvents[0],
+                sequence: 4,
+                event_type: "execution.failed",
+              },
+            ],
+          }),
+        ) as never,
+    }).backend;
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: context,
+        },
+        { backend: terminalBackend, shell },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("AI_AUDIT_DISPATCH_PRECONDITION_FAILED"),
+    });
+
+    expect(runner).not.toHaveBeenCalled();
   });
 
   it("backend 不在の napi コマンドは IPC_BACKEND_UNAVAILABLE", async () => {

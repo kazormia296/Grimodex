@@ -26,6 +26,10 @@ import {
   getCurrentProjectId,
   useCurrentProjectId,
 } from "@/features/project/projectStore";
+import {
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureMapStickyDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
@@ -1594,6 +1598,10 @@ export function MapCanvas() {
     async (prompt: string, count: 3 | 5 | 8, vsThreshold: number | null) => {
       if (!boardId || !aiBranchDialog) return;
       if (blockIfPolicyOff("chat")) return;
+      const auditAuthority = captureAiOperationAuthority(
+        getCurrentProjectId(),
+        boardId,
+      );
       const dialogState = aiBranchDialog;
       setAiBranchDialog(null);
       setGeneratingAiBranch({
@@ -1604,7 +1612,7 @@ export function MapCanvas() {
         // project info と Spotlight pins を並列 fetch。失敗時はそれぞれ
         // null / [] にフォールバックして prompt のセクションが落ちるだけ。
         const [projectCtx, spotlight] = await Promise.all([
-          fetchAiBranchProjectContext(getCurrentProjectId()),
+          fetchAiBranchProjectContext(auditAuthority.projectId),
           fetchActiveSessionSpotlight(),
         ]);
         // Verbalized Sampling: 意外性ノブが標準 (null) のときは VS オフで従来挙動。
@@ -1621,6 +1629,7 @@ export function MapCanvas() {
           projectCtx,
           spotlight,
           vs,
+          auditAuthority,
         );
 
         const pos = dialogState.spawnPosition;
@@ -1631,6 +1640,10 @@ export function MapCanvas() {
           pos.y,
           cards.length,
           positionsRef.current.map((p) => ({ x: p.x, y: p.y })),
+        );
+        assertAiOperationAuthorityCurrent(
+          auditAuthority,
+          getCurrentProjectId(),
         );
         const result = await createAiBranch(
           boardId,
