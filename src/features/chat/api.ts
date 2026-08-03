@@ -1,16 +1,5 @@
 import { invoke } from "@/lib/tauri";
 import type { AiSettings, AiModel, AiProvider } from "./types";
-import {
-  beginAiAuditExecution,
-  completeAiAuditExecution,
-  failAiAuditExecution,
-  markAiAuditDispatched,
-} from "@/features/ai-audit/api";
-import {
-  auditErrorSnapshot,
-  beforeIpcDispatchDetails,
-  nativeAiAuditContext,
-} from "@/features/ai-audit/transportContext";
 import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
 
 export async function getAiSettings(): Promise<AiSettings> {
@@ -68,6 +57,18 @@ export async function testAiConnection(
   apiVariant?: string | null,
   endpointId?: string | null,
 ): Promise<string> {
+  const [auditApi, auditTransport] = await Promise.all([
+    import("@/features/ai-audit/api"),
+    import("@/features/ai-audit/transportContext"),
+  ]);
+  const {
+    beginAiAuditExecution,
+    completeAiAuditExecution,
+    failAiAuditExecution,
+    markAiAuditDispatched,
+  } = auditApi;
+  const { auditErrorSnapshot, beforeIpcDispatchDetails, nativeAiAuditContext } =
+    auditTransport;
   const args: Record<string, unknown> = {
     provider,
     model,

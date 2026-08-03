@@ -69,7 +69,195 @@ function auditEvent(
   };
 }
 
+async function legacyProjectOwnedAuditDatabase() {
+  const expectedWorkspacePath = "/dev/workspace";
+  const event = auditEvent("legacy-project-event", "execution.started", 1);
+  const source = await createBrowserMock({
+    workspaceIdentity: expectedWorkspacePath,
+  });
+  const now = new Date().toISOString();
+  await source.invoke("db_execute", {
+    sql: "INSERT INTO projects (id, title, language, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    params: ["doomed-project", "Doomed", "ja", now, now],
+    method: "run",
+  });
+  await source.invoke("ai_audit_append_batch", {
+    expectedWorkspacePath,
+    projectId: "default-project",
+    events: [event],
+  });
+  await source.invoke("ai_audit_append_batch", {
+    expectedWorkspacePath,
+    projectId: "doomed-project",
+    events: [
+      auditEvent(
+        "legacy-doomed-high-water",
+        "execution.started",
+        2,
+        "execution-doomed",
+      ),
+    ],
+  });
+  const snapshot = await source.invoke<{ highWaterHash: string }>(
+    "ai_audit_read_snapshot",
+    {
+      expectedWorkspacePath,
+      projectId: "default-project",
+    },
+  );
+  const currentBytes = source.exportDatabase();
+  source.close();
+
+  const SQL = await initSqlJs();
+  const database = new SQL.Database(currentBytes);
+  database.run(`PRAGMA foreign_keys = OFF;
+    BEGIN IMMEDIATE;
+    CREATE TABLE grimodex_ai_audit_events_with_project_fk (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope_id            TEXT NOT NULL,
+      project_id          TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      sequence            INTEGER NOT NULL,
+      event_id            TEXT NOT NULL,
+      execution_id        TEXT NOT NULL,
+      operation_id        TEXT NOT NULL,
+      parent_execution_id TEXT,
+      path_id             TEXT NOT NULL,
+      event_type          TEXT NOT NULL,
+      timestamp           INTEGER NOT NULL,
+      recorded_at         INTEGER NOT NULL,
+      payload             TEXT NOT NULL,
+      payload_sha256      TEXT NOT NULL,
+      prev_hash           TEXT NOT NULL,
+      hash                TEXT NOT NULL,
+      CHECK (
+        (scope_id = 'workspace' AND project_id IS NULL)
+        OR
+        (project_id IS NOT NULL AND scope_id = 'project:' || project_id)
+      )
+    );
+    INSERT INTO grimodex_ai_audit_events_with_project_fk
+      SELECT * FROM ai_audit_events;
+    DROP TABLE ai_audit_events;
+    ALTER TABLE grimodex_ai_audit_events_with_project_fk
+      RENAME TO ai_audit_events;
+    CREATE UNIQUE INDEX uq_ai_audit_scope_seq
+      ON ai_audit_events(scope_id, sequence);
+    CREATE UNIQUE INDEX uq_ai_audit_scope_event
+      ON ai_audit_events(scope_id, event_id);
+    CREATE INDEX idx_ai_audit_scope_execution
+      ON ai_audit_events(scope_id, execution_id, sequence);
+    CREATE INDEX idx_ai_audit_scope_execution_event_type
+      ON ai_audit_events(scope_id, execution_id, event_type);
+    CREATE INDEX idx_ai_audit_scope_operation
+      ON ai_audit_events(scope_id, operation_id, sequence);
+    CREATE INDEX idx_ai_audit_scope_timestamp
+      ON ai_audit_events(scope_id, timestamp, sequence);
+    COMMIT;
+    PRAGMA foreign_keys = ON;`);
+  database.run("DELETE FROM projects WHERE id = 'doomed-project'");
+  expect(
+    database.exec("PRAGMA foreign_key_list(ai_audit_events)")[0]?.values,
+  ).toHaveLength(1);
+  expect(
+    database.exec(
+      "SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'",
+    )[0]?.values,
+  ).toEqual([[2]]);
+  expect(
+    database.exec("SELECT MAX(id) FROM ai_audit_events")[0]?.values,
+  ).toEqual([[1]]);
+  const bytes = database.export();
+  database.close();
+  return { bytes, event, highWaterHash: snapshot.highWaterHash };
+}
+
 describe("BrowserMock AI audit ledger", () => {
+  it("migrates the legacy project FK without changing rows, chain, or replay idempotency", async () => {
+    const legacy = await legacyProjectOwnedAuditDatabase();
+    const dirty = vi.fn();
+    const migrated = await createBrowserMock({
+      databaseBytes: legacy.bytes,
+      workspaceIdentity: "/dev/workspace",
+      onDatabaseDirty: dirty,
+    });
+    owned.push(migrated);
+
+    await expect(
+      migrated.invoke("db_execute", {
+        sql: 'SELECT "table", "from" FROM pragma_foreign_key_list(?)',
+        params: ["ai_audit_events"],
+        method: "all",
+      }),
+    ).resolves.toMatchObject({ rows: [] });
+    const indexResult = await migrated.invoke<{
+      rows: Array<{ name: string }>;
+    }>("db_execute", {
+      sql: "SELECT name FROM pragma_index_list(?) WHERE origin = 'c' ORDER BY name",
+      params: ["ai_audit_events"],
+      method: "all",
+    });
+    expect(indexResult.rows.map(({ name }) => name)).toEqual([
+      "idx_ai_audit_scope_execution",
+      "idx_ai_audit_scope_execution_event_type",
+      "idx_ai_audit_scope_operation",
+      "idx_ai_audit_scope_timestamp",
+      "uq_ai_audit_scope_event",
+      "uq_ai_audit_scope_seq",
+    ]);
+    await expect(
+      migrated.invoke("ai_audit_verify", {
+        expectedWorkspacePath: "/dev/workspace",
+        projectId: "default-project",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      verifiedThroughSequence: 1,
+      tailHash: legacy.highWaterHash,
+    });
+    await expect(
+      migrated.invoke("ai_audit_append_batch", {
+        expectedWorkspacePath: "/dev/workspace",
+        projectId: "default-project",
+        events: [legacy.event],
+      }),
+    ).resolves.toMatchObject({
+      insertedCount: 0,
+      tailSequence: 1,
+      tailHash: legacy.highWaterHash,
+    });
+    expect(dirty).toHaveBeenCalledOnce();
+
+    await migrated.invoke("ai_audit_append_batch", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "missing-project",
+      events: [
+        auditEvent(
+          "post-migration-id",
+          "execution.started",
+          3,
+          "execution-post-migration",
+        ),
+      ],
+    });
+    await expect(
+      migrated.invoke("db_execute", {
+        sql: "SELECT id FROM ai_audit_events WHERE event_id = ?",
+        params: ["post-migration-id"],
+        method: "get",
+      }),
+    ).resolves.toMatchObject({ rows: [{ id: 3 }] });
+
+    const migratedBytes = migrated.exportDatabase();
+    const reopenDirty = vi.fn();
+    const reopened = await createBrowserMock({
+      databaseBytes: migratedBytes,
+      workspaceIdentity: "/dev/workspace",
+      onDatabaseDirty: reopenDirty,
+    });
+    owned.push(reopened);
+    expect(reopenDirty).not.toHaveBeenCalled();
+  });
+
   it("does not resolve an audit append before its persistent durability ACK", async () => {
     let releaseDurability!: () => void;
     let markDurabilityStarted!: () => void;
@@ -1479,7 +1667,19 @@ describe("BrowserMock AI audit ledger", () => {
         expectedWorkspacePath,
         projectId: "default-project",
       }),
-    ).resolves.toMatchObject({ highWaterSequence: 0, events: [] });
+    ).resolves.toMatchObject({
+      highWaterSequence: 5,
+      events: expect.arrayContaining([
+        expect.objectContaining({ eventId: "event-1" }),
+        expect.objectContaining({ eventId: "event-5" }),
+      ]),
+    });
+    await expect(
+      reopened.invoke("ai_audit_verify", {
+        expectedWorkspacePath,
+        projectId: "default-project",
+      }),
+    ).resolves.toMatchObject({ ok: true, verifiedThroughSequence: 5 });
     await expect(
       reopened.invoke("ai_audit_verify", {
         expectedWorkspacePath,

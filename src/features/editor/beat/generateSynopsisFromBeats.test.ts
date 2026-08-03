@@ -97,17 +97,19 @@ function emit(event: string, payload: unknown) {
 }
 
 async function waitForStreamListeners() {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (
-      listeners.has("inline-ai:stream-chunk") &&
-      listeners.has("inline-ai:stream-done") &&
-      listeners.has("inline-ai:stream-error")
-    ) {
-      return;
-    }
-    await Promise.resolve();
-  }
-  throw new Error("inline AI stream listeners were not registered");
+  // The lazy transport import may require a macrotask while the full suite is
+  // evaluating other modules. Wait for the backend dispatch boundary: in
+  // production the provider cannot emit its first event before this invoke.
+  await vi.waitFor(() =>
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "send_inline_ai_stream",
+      ),
+    ).toBe(true),
+  );
+  expect(listeners.has("inline-ai:stream-chunk")).toBe(true);
+  expect(listeners.has("inline-ai:stream-done")).toBe(true);
+  expect(listeners.has("inline-ai:stream-error")).toBe(true);
 }
 
 function createEditorWithBeats(beats: { id: string; instructions: string }[]) {

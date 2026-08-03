@@ -6,7 +6,7 @@ import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export interface RoleInferenceInput {
   beatInstructions: string;

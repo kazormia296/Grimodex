@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/core";
-import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreamLoader";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import {
@@ -25,7 +25,7 @@ import { extractBeatMentions } from "./extractBeatMentions";
 import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import type { RoleSuggestionEntry } from "./roleSuggestionsStore";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 

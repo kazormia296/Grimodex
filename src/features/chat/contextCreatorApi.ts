@@ -35,7 +35,7 @@ import { finalizeTurnPayload } from "@/features/ai-context/finalizeTurnPayload";
 import { countTokens, ensureTokenizer } from "./contextBuilder";
 import i18next from "@/lib/i18n";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export interface SuggestedEntry {
   id: string;

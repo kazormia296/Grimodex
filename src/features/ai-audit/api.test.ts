@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import packageJson from "../../../package.json";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
@@ -24,6 +24,15 @@ import {
   verifyAiAuditChain,
 } from "./api";
 import type { AiAuditRequestSnapshot } from "./types";
+import {
+  _pendingAiAuditExecutionCountForTests,
+  _resetPendingAiAuditExecutionsForTests,
+  awaitPendingAiAuditExecutions,
+} from "./executionRegistry";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 const request: AiAuditRequestSnapshot = {
   provider: "openai",
@@ -41,6 +50,12 @@ const invalidRequest: AiAuditRequestSnapshot = {
 void invalidRequest;
 
 describe("AI audit renderer API", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetPendingAiAuditExecutionsForTests();
+    _resetQuiescenceLeasesForTests();
+  });
+
   beforeEach(() => {
     invokeMock.mockReset();
     invokeMock.mockResolvedValue({
@@ -79,6 +94,11 @@ describe("AI audit renderer API", () => {
 
     await Promise.resolve();
     expect(resolved).toBe(false);
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(1);
+    let auditDrained = false;
+    const drain = awaitPendingAiAuditExecutions().then(() => {
+      auditDrained = true;
+    });
     expect(invokeMock).toHaveBeenCalledWith("ai_audit_append_batch", {
       projectId: "project-1",
       expectedWorkspacePath: "/workspaces/novel",
@@ -114,6 +134,98 @@ describe("AI audit renderer API", () => {
       parentExecutionId: null,
       pathId: "chat.direct",
     });
+    expect(auditDrained).toBe(false);
+
+    await completeAiAuditExecution(handle, {
+      response: { text: "durable terminal" },
+    });
+    await drain;
+    expect(auditDrained).toBe(true);
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
+  });
+
+  it("rejects a new execution synchronously while audit export owns admission", async () => {
+    const lease = acquireQuiescenceLease("audit-export");
+    try {
+      const blocked = beginAiAuditExecution({
+        projectId: "project-1",
+        pathId: "chat.direct",
+        executionId: "blocked-execution",
+        request,
+      });
+
+      await expect(blocked).rejects.toThrow("AI_AUDIT_ADMISSION_BLOCKED");
+      expect(invokeMock).not.toHaveBeenCalled();
+      expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("abandons a begin that never became durable without making an export waiter reject", async () => {
+    invokeMock.mockRejectedValue(new Error("begin audit storage failed"));
+    const beginTask = beginAiAuditExecution({
+      projectId: "project-1",
+      pathId: "chat.direct",
+      executionId: "failed-begin",
+      request,
+    });
+    const drainTask = awaitPendingAiAuditExecutions();
+
+    await expect(beginTask).rejects.toThrow("begin audit storage failed");
+    await expect(drainTask).resolves.toBeUndefined();
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
+  });
+
+  it("admits only a retry child of a pending parent after audit export closes admission", async () => {
+    const parent = await beginAiAuditExecution({
+      projectId: "project-1",
+      pathId: "chat.direct",
+      operationId: "operation-1",
+      executionId: "execution-parent",
+      request,
+    });
+    const lease = acquireQuiescenceLease("audit-export");
+    try {
+      let drained = false;
+      const drain = awaitPendingAiAuditExecutions().then(() => {
+        drained = true;
+      });
+      const retryTask = retryAiAuditExecution(parent, {
+        request,
+        reason: "HTTP 429",
+        executionId: "execution-child",
+      });
+
+      // The child reservation is synchronous and closes the parent-to-retry
+      // handoff before the export waiter can observe an empty registry.
+      expect(_pendingAiAuditExecutionCountForTests()).toBe(2);
+      await expect(
+        beginAiAuditExecution({
+          projectId: "project-1",
+          pathId: "chat.direct",
+          executionId: "unrelated-execution",
+          request,
+        }),
+      ).rejects.toThrow("AI_AUDIT_ADMISSION_BLOCKED");
+
+      const child = await retryTask;
+      expect(child).toMatchObject({
+        executionId: "execution-child",
+        parentExecutionId: "execution-parent",
+      });
+      expect(drained).toBe(false);
+      expect(_pendingAiAuditExecutionCountForTests()).toBe(1);
+
+      await completeAiAuditExecution(child, {
+        response: { text: "retry completed" },
+      });
+      await drain;
+      expect(drained).toBe(true);
+      expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
+    } finally {
+      lease.release();
+    }
   });
 
   it("keeps the original workspace snapshot for dispatch, partial, success, error and cancel", async () => {
@@ -169,6 +281,121 @@ describe("AI audit renderer API", () => {
     expect(invokeMock.mock.calls[3][1].events[0].payload.captureState).toBe(
       "partial",
     );
+  });
+
+  it("wakes export drain fail-closed when a nonterminal append cannot persist and recovers at terminal", async () => {
+    const handle = await beginAiAuditExecution({
+      projectId: "project-1",
+      pathId: "chat.direct",
+      executionId: "nonterminal-storage-failure",
+      request,
+    });
+    invokeMock.mockReset();
+    invokeMock.mockRejectedValue(new Error("audit dispatch storage failed"));
+
+    await expect(markAiAuditDispatched(handle)).rejects.toThrow(
+      "audit dispatch storage failed",
+    );
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    await expect(awaitPendingAiAuditExecutions()).rejects.toThrow(
+      "did not persist required audit evidence",
+    );
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(1);
+
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue({
+      insertedCount: 2,
+      tailSequence: 4,
+      tailHash: "d".repeat(64),
+    });
+    await failAiAuditExecution(handle, {
+      error: {
+        name: "AuditPersistenceError",
+        message: "provider was never dispatched",
+      },
+      metadata: { providerDispatched: false },
+    });
+    await expect(awaitPendingAiAuditExecutions()).resolves.toBeUndefined();
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
+  });
+
+  it.each([
+    [
+      "skip",
+      (handle: Awaited<ReturnType<typeof beginAiAuditExecution>>) =>
+        skipAiAuditExecution(handle, { reason: "api_key=secret-value" }),
+    ],
+    [
+      "failure",
+      (handle: Awaited<ReturnType<typeof beginAiAuditExecution>>) =>
+        failAiAuditExecution(handle, {
+          error: new Error("api_key=secret-value"),
+        }),
+    ],
+    [
+      "cancellation",
+      (handle: Awaited<ReturnType<typeof beginAiAuditExecution>>) =>
+        cancelAiAuditExecution(handle, { reason: "api_key=secret-value" }),
+    ],
+  ])(
+    "wakes export drain when %s terminal preprocessing fails",
+    async (_label, terminalize) => {
+      const handle = await beginAiAuditExecution({
+        projectId: "project-1",
+        pathId: "chat.direct",
+        request,
+      });
+      invokeMock.mockClear();
+      const digest = vi
+        .spyOn(globalThis.crypto.subtle, "digest")
+        .mockRejectedValueOnce(new Error("audit sanitizer hash failed"));
+
+      await expect(terminalize(handle)).rejects.toThrow(
+        "audit sanitizer hash failed",
+      );
+      expect(invokeMock).not.toHaveBeenCalled();
+      await expect(awaitPendingAiAuditExecutions()).rejects.toThrow(
+        "did not persist required audit evidence",
+      );
+
+      digest.mockRestore();
+      await completeAiAuditExecution(handle, {
+        response: { text: "terminal recovery" },
+      });
+      await expect(awaitPendingAiAuditExecutions()).resolves.toBeUndefined();
+    },
+  );
+
+  it("fails the parent and abandons the child when retry reason preprocessing fails", async () => {
+    const parent = await beginAiAuditExecution({
+      projectId: "project-1",
+      pathId: "chat.direct",
+      executionId: "retry-preprocess-parent",
+      request,
+    });
+    invokeMock.mockClear();
+    const digest = vi
+      .spyOn(globalThis.crypto.subtle, "digest")
+      .mockRejectedValueOnce(new Error("retry reason hash failed"));
+
+    await expect(
+      retryAiAuditExecution(parent, {
+        request,
+        reason: "api_key=secret-value",
+        executionId: "retry-preprocess-child",
+      }),
+    ).rejects.toThrow("retry reason hash failed");
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(1);
+    await expect(awaitPendingAiAuditExecutions()).rejects.toThrow(
+      "did not persist required audit evidence",
+    );
+
+    digest.mockRestore();
+    await failAiAuditExecution(parent, {
+      error: new Error("retry preprocessing failed"),
+    });
+    await expect(awaitPendingAiAuditExecutions()).resolves.toBeUndefined();
   });
 
   it("places diagnostic redaction evidence at the partial event payload boundary", async () => {
@@ -421,6 +648,41 @@ describe("AI audit renderer API", () => {
     expect(events[0].payload.response).toEqual({
       text: "exact provider response",
     });
+  });
+
+  it("fails audit drain closed after both terminal appends fail and recovers on an explicit terminal retry", async () => {
+    const handle = await beginAiAuditExecution({
+      projectId: "project-1",
+      pathId: "chat.direct",
+      executionId: "recoverable-terminal",
+      request,
+    });
+    invokeMock.mockReset();
+    invokeMock.mockRejectedValue(new Error("audit storage unavailable"));
+
+    await expect(
+      completeAiAuditExecution(handle, {
+        response: { text: "provider already completed" },
+      }),
+    ).rejects.toThrow("audit storage unavailable");
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    await expect(awaitPendingAiAuditExecutions()).rejects.toThrow(
+      "did not persist required audit evidence",
+    );
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(1);
+
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue({
+      insertedCount: 2,
+      tailSequence: 4,
+      tailHash: "c".repeat(64),
+    });
+    await completeAiAuditExecution(handle, {
+      response: { text: "provider already completed" },
+    });
+
+    await expect(awaitPendingAiAuditExecutions()).resolves.toBeUndefined();
+    expect(_pendingAiAuditExecutionCountForTests()).toBe(0);
   });
 
   it("retry/fallback terminalize the prior attempt and create a child execution in the same operation", async () => {

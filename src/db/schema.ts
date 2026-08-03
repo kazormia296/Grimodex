@@ -2157,18 +2157,17 @@ export const changeEvents = sqliteTable(
  * each project and for workspace-scoped executions that have no project yet.
  *
  * Rows are appended exclusively through the typed native/browser audit
- * command. There is deliberately no scene/message foreign key: deleting or
- * restoring mutable content cannot erase the execution history. Exact legacy
- * requests are not backfilled.
+ * command. Project/scene/message identifiers are deliberately not foreign
+ * keys: deleting or restoring mutable content cannot erase the execution
+ * history, and a durable Browser journal can be replayed before its project
+ * snapshot exists. Exact legacy requests are not backfilled.
  */
 export const aiAuditEvents = sqliteTable(
   "ai_audit_events",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     scopeId: text("scope_id").notNull(),
-    projectId: text("project_id").references(() => projects.id, {
-      onDelete: "cascade",
-    }),
+    projectId: text("project_id"),
     sequence: integer("sequence").notNull(),
     eventId: text("event_id").notNull(),
     executionId: text("execution_id").notNull(),

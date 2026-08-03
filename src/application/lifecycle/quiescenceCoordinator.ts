@@ -11,6 +11,7 @@ import {
 } from "./lifecycleTrace";
 
 export type QuiescenceStage =
+  | "ai-executions"
   | "autosave"
   | "participants"
   | "external-write-back"
@@ -41,6 +42,7 @@ export class StrictQuiescenceError extends Error {
 }
 
 export interface QuiescenceDependencies {
+  awaitAiExecutions: () => Promise<void>;
   flushAutoSaves: () => Promise<void>;
   flushParticipants: () => Promise<void>;
   flushExternalWriteBacks: () => Promise<void>;
@@ -53,6 +55,7 @@ export interface QuiescenceDependencies {
 }
 
 const defaultDependencies: QuiescenceDependencies = {
+  awaitAiExecutions: () => flushQuiescenceProviderStage("ai-executions"),
   flushAutoSaves: () => flushQuiescenceProviderStage("autosave"),
   flushParticipants: flushQuiescenceParticipants,
   flushExternalWriteBacks: () =>
@@ -103,6 +106,10 @@ export async function flushStrictQuiescence(
   };
 
   try {
+    // AI streams can keep recording observations after their UI cleanup has
+    // returned. Drain their durable terminal before persistence producers so
+    // any resulting editor/chat writes are included by the stages below.
+    await run("ai-executions", dependencies.awaitAiExecutions);
     await run("autosave", dependencies.flushAutoSaves);
     await run("participants", dependencies.flushParticipants);
     await run("external-write-back", dependencies.flushExternalWriteBacks);

@@ -369,6 +369,7 @@ function chatQuiescenceDependencies(options?: {
   onScopedMutations?: () => void;
 }): QuiescenceDependencies {
   return {
+    awaitAiExecutions: async () => {},
     flushAutoSaves: async () => {},
     flushParticipants: async () => {},
     flushExternalWriteBacks: async () => {},

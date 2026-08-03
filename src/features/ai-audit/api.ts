@@ -1,6 +1,18 @@
 import packageJson from "../../../package.json";
+import {
+  canScheduleQuiescenceMutation,
+  isQuiescenceLeaseActive,
+} from "@/application/lifecycle/quiescenceLease";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { invoke } from "@/lib/tauri";
+import {
+  abandonPendingAiAuditExecution,
+  completePendingAiAuditExecution,
+  failPendingAiAuditPersistence,
+  isPendingAiAuditExecution,
+  markAiAuditTerminalAppendStarted,
+  reservePendingAiAuditExecution,
+} from "./executionRegistry";
 import type {
   AiAuditAppendResult,
   AiAuditCaptureState,
@@ -254,21 +266,51 @@ function event(
   };
 }
 
+const TERMINAL_AI_AUDIT_EVENT_TYPES = new Set<AiAuditEventInput["eventType"]>([
+  "execution.succeeded",
+  "execution.failed",
+  "execution.cancelled",
+  "execution.skipped",
+  "execution.cache_hit",
+]);
+
 async function append(
   handle: AiAuditExecutionHandle,
   events: readonly AiAuditEventInput[],
+  options: {
+    readonly failureDisposition?: "signal" | "caller-will-abandon";
+  } = {},
 ): Promise<AiAuditAppendResult> {
+  const includesTerminal = events.some((item) =>
+    TERMINAL_AI_AUDIT_EVENT_TYPES.has(item.eventType),
+  );
+  if (includesTerminal) {
+    markAiAuditTerminalAppendStarted(handle.executionId);
+  }
   const args = {
     projectId: handle.projectId,
     expectedWorkspacePath: handle.expectedWorkspacePath,
     events,
   };
   try {
-    return await invoke<AiAuditAppendResult>("ai_audit_append_batch", args);
-  } catch {
-    // The first call may have committed durably and only lost its reply. Reuse
-    // the exact eventIds so the native idempotency key makes this retry safe.
-    return invoke<AiAuditAppendResult>("ai_audit_append_batch", args);
+    let result: AiAuditAppendResult;
+    try {
+      result = await invoke<AiAuditAppendResult>("ai_audit_append_batch", args);
+    } catch {
+      // The first call may have committed durably and only lost its reply.
+      // Reuse the exact eventIds so the native idempotency key makes this
+      // retry safe.
+      result = await invoke<AiAuditAppendResult>("ai_audit_append_batch", args);
+    }
+    if (includesTerminal) {
+      completePendingAiAuditExecution(handle.executionId);
+    }
+    return result;
+  } catch (error) {
+    if (options.failureDisposition !== "caller-will-abandon") {
+      failPendingAiAuditPersistence(handle.executionId, error);
+    }
+    throw error;
   }
 }
 
@@ -279,13 +321,22 @@ function withOptionalMetadata(
   return metadata === undefined ? payload : { ...payload, metadata };
 }
 
-async function beginInWorkspace(
+function reserveAiAuditHandle(
   input: BeginAiAuditExecutionInput,
   expectedWorkspacePath: string,
-): Promise<AiAuditExecutionHandle> {
+  preexistingParentExecutionId?: string,
+): AiAuditExecutionHandle {
+  const continuesPreexistingAttempt =
+    preexistingParentExecutionId !== undefined &&
+    input.parentExecutionId === preexistingParentExecutionId &&
+    isQuiescenceLeaseActive("audit-export") &&
+    isPendingAiAuditExecution(preexistingParentExecutionId);
+  if (!canScheduleQuiescenceMutation() && !continuesPreexistingAttempt) {
+    throw new Error(
+      "AI_AUDIT_ADMISSION_BLOCKED: document lifecycle is quiescing",
+    );
+  }
   const startedAt = input.timestamp ?? Date.now();
-  const captureState = input.captureState ?? "complete";
-  const limitations = input.limitations;
   const handle: AiAuditExecutionHandle = {
     projectId: input.projectId,
     expectedWorkspacePath,
@@ -295,35 +346,74 @@ async function beginInWorkspace(
     pathId: input.pathId,
     startedAt,
   };
-  await append(handle, [
-    event(
-      handle,
-      "execution.started",
-      withOptionalMetadata(
-        {
-          captureState,
-          ...(limitations === undefined ? {} : { limitations }),
-        },
-        input.metadata,
-      ) as AiAuditEventInput["payload"],
-      startedAt,
-    ),
-    event(
-      handle,
-      "request.prepared",
-      withOptionalMetadata(
-        {
-          captureState,
-          credentialsExcluded: true,
-          request: input.request as unknown as AiAuditJsonObject,
-          ...(limitations === undefined ? {} : { limitations }),
-        },
-        input.metadata,
-      ) as AiAuditEventInput["payload"],
-      startedAt,
-    ),
-  ]);
+  reservePendingAiAuditExecution(handle.executionId);
   return handle;
+}
+
+async function appendAiAuditBegin(
+  handle: AiAuditExecutionHandle,
+  input: BeginAiAuditExecutionInput,
+): Promise<void> {
+  const captureState = input.captureState ?? "complete";
+  const limitations = input.limitations;
+  await append(
+    handle,
+    [
+      event(
+        handle,
+        "execution.started",
+        withOptionalMetadata(
+          {
+            captureState,
+            ...(limitations === undefined ? {} : { limitations }),
+          },
+          input.metadata,
+        ) as AiAuditEventInput["payload"],
+        handle.startedAt,
+      ),
+      event(
+        handle,
+        "request.prepared",
+        withOptionalMetadata(
+          {
+            captureState,
+            credentialsExcluded: true,
+            request: input.request as unknown as AiAuditJsonObject,
+            ...(limitations === undefined ? {} : { limitations }),
+          },
+          input.metadata,
+        ) as AiAuditEventInput["payload"],
+        handle.startedAt,
+      ),
+    ],
+    { failureDisposition: "caller-will-abandon" },
+  );
+}
+
+async function prepareAiAuditTerminal<T>(
+  handle: AiAuditExecutionHandle,
+  prepare: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await prepare();
+  } catch (error) {
+    failPendingAiAuditPersistence(handle.executionId, error);
+    throw error;
+  }
+}
+
+async function beginInWorkspace(
+  input: BeginAiAuditExecutionInput,
+  expectedWorkspacePath: string,
+): Promise<AiAuditExecutionHandle> {
+  const handle = reserveAiAuditHandle(input, expectedWorkspacePath);
+  try {
+    await appendAiAuditBegin(handle, input);
+    return handle;
+  } catch (error) {
+    abandonPendingAiAuditExecution(handle.executionId);
+    throw error;
+  }
 }
 
 /** Resolve only after the exact request snapshot is durably committed. */
@@ -585,9 +675,8 @@ export async function skipAiAuditExecution(
   },
 ): Promise<void> {
   const skippedAt = Date.now();
-  const sanitizedReason = await sanitizeAiAuditDiagnostic(
-    input.reason,
-    "reason",
+  const sanitizedReason = await prepareAiAuditTerminal(handle, () =>
+    sanitizeAiAuditDiagnostic(input.reason, "reason"),
   );
   await append(handle, [
     event(
@@ -619,7 +708,9 @@ export async function failAiAuditExecution(
   },
 ): Promise<void> {
   const failedAt = Date.now();
-  const sanitized = await sanitizedErrorSnapshot(input.error);
+  const sanitized = await prepareAiAuditTerminal(handle, () =>
+    sanitizedErrorSnapshot(input.error),
+  );
   const events: AiAuditEventInput[] = [];
   if (input.partialResponse !== undefined) {
     events.push(
@@ -665,9 +756,8 @@ export async function cancelAiAuditExecution(
   },
 ): Promise<void> {
   const cancelledAt = Date.now();
-  const sanitizedReason = await sanitizeAiAuditDiagnostic(
-    input.reason,
-    "reason",
+  const sanitizedReason = await prepareAiAuditTerminal(handle, () =>
+    sanitizeAiAuditDiagnostic(input.reason, "reason"),
   );
   const events: AiAuditEventInput[] = [];
   if (input.partialResponse !== undefined) {
@@ -721,45 +811,59 @@ async function nextAttempt(
   relationType: "execution.retrying" | "execution.fallback",
 ): Promise<AiAuditExecutionHandle> {
   const timestamp = Date.now();
-  const sanitizedReason = await sanitizeAiAuditDiagnostic(
-    input.reason,
-    "reason",
-  );
-  const relationPayload = {
-    captureState:
-      sanitizedReason.redactions.length === 0 ? "complete" : "redacted",
-    reason: sanitizedReason.value,
-    ...(sanitizedReason.redactions.length === 0
-      ? {}
-      : { redactions: sanitizedReason.redactions }),
-  } as AiAuditEventInput["payload"];
-  await append(handle, [
-    event(handle, relationType, relationPayload, timestamp),
-    event(
-      handle,
-      "execution.failed",
-      {
-        ...relationPayload,
-        nextAttempt: relationType,
-      },
-      timestamp,
-    ),
-  ]);
-  return beginInWorkspace(
-    {
-      projectId: handle.projectId,
-      pathId: input.pathId ?? handle.pathId,
-      operationId: handle.operationId,
-      executionId: input.executionId,
-      parentExecutionId: handle.executionId,
-      request: input.request,
-      metadata: input.metadata,
-      captureState: input.captureState,
-      limitations: input.limitations,
-      timestamp,
-    },
-    handle.expectedWorkspacePath,
-  );
+  const nextInput: BeginAiAuditExecutionInput = {
+    projectId: handle.projectId,
+    pathId: input.pathId ?? handle.pathId,
+    operationId: handle.operationId,
+    executionId: input.executionId,
+    parentExecutionId: handle.executionId,
+    request: input.request,
+    metadata: input.metadata,
+    captureState: input.captureState,
+    limitations: input.limitations,
+    timestamp,
+  };
+  // Reserve the child before sanitization's first await. An audit-export click
+  // that follows this synchronous admission must wait through the full retry;
+  // a click that wins first rejects the new provider attempt fail-closed.
+  let nextHandle: AiAuditExecutionHandle | null = null;
+  try {
+    nextHandle = reserveAiAuditHandle(
+      nextInput,
+      handle.expectedWorkspacePath,
+      handle.executionId,
+    );
+    const sanitizedReason = await sanitizeAiAuditDiagnostic(
+      input.reason,
+      "reason",
+    );
+    const relationPayload = {
+      captureState:
+        sanitizedReason.redactions.length === 0 ? "complete" : "redacted",
+      reason: sanitizedReason.value,
+      ...(sanitizedReason.redactions.length === 0
+        ? {}
+        : { redactions: sanitizedReason.redactions }),
+    } as AiAuditEventInput["payload"];
+    await append(handle, [
+      event(handle, relationType, relationPayload, timestamp),
+      event(
+        handle,
+        "execution.failed",
+        {
+          ...relationPayload,
+          nextAttempt: relationType,
+        },
+        timestamp,
+      ),
+    ]);
+    await appendAiAuditBegin(nextHandle, nextInput);
+    return nextHandle;
+  } catch (error) {
+    failPendingAiAuditPersistence(handle.executionId, error);
+    if (nextHandle) abandonPendingAiAuditExecution(nextHandle.executionId);
+    throw error;
+  }
 }
 
 export async function retryAiAuditExecution(

@@ -72,13 +72,6 @@ function activeCount(eventName?: string): number {
   ).length;
 }
 
-// Drain enough microtasks for sendInlineAiStream's internal `await Promise.all`
-// to settle, invoke() to be called, and the streamInlineAiText `.then` that
-// captures the cleanup function to fire.
-async function flush() {
-  for (let i = 0; i < 5; i++) await Promise.resolve();
-}
-
 describe("streamInlineAiText", () => {
   beforeEach(() => {
     registrations.length = 0;
@@ -91,9 +84,7 @@ describe("streamInlineAiText", () => {
       auditPathId: "beat_alternative",
       auditExpectedWorkspacePath: "/workspace",
     });
-    await flush();
-
-    expect(activeCount()).toBe(3);
+    await vi.waitFor(() => expect(activeCount()).toBe(3));
 
     emit("inline-ai:stream-chunk", {
       streamId: "execution-test",
@@ -118,7 +109,7 @@ describe("streamInlineAiText", () => {
       auditPathId: "beat_alternative",
       auditExpectedWorkspacePath: "/workspace",
     });
-    await flush();
+    await vi.waitFor(() => expect(activeCount()).toBe(3));
 
     emit("inline-ai:stream-error", {
       streamId: "execution-test",
@@ -137,7 +128,7 @@ describe("streamInlineAiText", () => {
         auditPathId: "beat_alternative",
         auditExpectedWorkspacePath: "/workspace",
       });
-      await flush();
+      await vi.waitFor(() => expect(activeCount()).toBe(3));
 
       emit("inline-ai:stream-chunk", {
         streamId: "execution-test",
@@ -166,7 +157,7 @@ describe("streamInlineAiText", () => {
       auditPathId: "beat_alternative",
       auditExpectedWorkspacePath: "/workspace",
     });
-    await flush();
+    await vi.waitFor(() => expect(activeCount()).toBe(3));
 
     emit("inline-ai:stream-chunk", {
       streamId: "execution-test",
@@ -195,11 +186,11 @@ describe("streamInlineAiText", () => {
       auditPathId: "beat_alternative",
       auditExpectedWorkspacePath: "/workspace",
     });
-    await flush();
-
-    expect(invokeMock).toHaveBeenCalledWith(
-      "send_inline_ai_stream",
-      expect.objectContaining({ model: "claude-haiku-4-5-20251001" }),
+    await vi.waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "send_inline_ai_stream",
+        expect.objectContaining({ model: "claude-haiku-4-5-20251001" }),
+      ),
     );
 
     emit("inline-ai:stream-done", {

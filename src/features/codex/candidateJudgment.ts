@@ -19,7 +19,7 @@ import { parseAliases } from "./codexMatcher";
 import { candidateKey } from "./codexCandidates";
 import type { CodexCandidate } from "./candidateExtractor";
 import i18next from "@/lib/i18n";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export type SuggestedType = "character" | "location" | "item" | "lore";
 

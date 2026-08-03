@@ -985,10 +985,10 @@ fn existing_execution_identity(
         | "execution.failed"
         | "execution.cancelled"
         | "execution.skipped"
-        | "execution.cache_hit" => {
-            if terminal_event_type.is_none() {
-                terminal_event_type = Some(event_type);
-            }
+        | "execution.cache_hit"
+            if terminal_event_type.is_none() =>
+        {
+            terminal_event_type = Some(event_type);
         }
         _ => {}
     };

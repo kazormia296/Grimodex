@@ -4,7 +4,7 @@ import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { invokeSingleShotChat } from "@/features/chat/singleShotTransport";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {

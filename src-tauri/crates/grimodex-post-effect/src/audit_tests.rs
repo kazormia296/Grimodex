@@ -89,10 +89,12 @@ enum FakeResult {
     PrepareError,
 }
 
+type RecordedRequest = (String, Option<String>, String);
+
 #[derive(Clone)]
 struct RecordingAi {
     calls: Arc<AtomicUsize>,
-    requests: Arc<Mutex<Vec<(String, Option<String>, String)>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
     result: FakeResult,
 }
 

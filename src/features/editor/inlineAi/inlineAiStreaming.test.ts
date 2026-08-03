@@ -168,4 +168,30 @@ describe("inlineAiStreaming", () => {
       },
     });
   });
+
+  it("registers every stream listener before provider dispatch", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "send_inline_ai_stream") {
+        expect(listeners.has("inline-ai:stream-chunk")).toBe(true);
+        expect(listeners.has("inline-ai:stream-done")).toBe(true);
+        expect(listeners.has("inline-ai:stream-error")).toBe(true);
+      }
+      return undefined;
+    });
+
+    await sendInlineAiStream(
+      [{ role: "user", content: "first event must be observable" }],
+      auditContext,
+      {
+        onTextDelta: vi.fn(),
+        onDone: vi.fn(),
+        onError: vi.fn(),
+      },
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_inline_ai_stream",
+      expect.any(Object),
+    );
+  });
 });

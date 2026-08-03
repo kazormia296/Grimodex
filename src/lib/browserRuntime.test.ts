@@ -56,10 +56,11 @@ function createMockDatabase(bytes = new Uint8Array([9])) {
 async function auditJournalBatch(
   eventId: string,
   eventType = "execution.started",
+  projectId = "default-project",
 ) {
   const appendArgsJson = JSON.stringify({
     expectedWorkspacePath: "/dev/workspace",
-    projectId: "default-project",
+    projectId,
     events: [
       {
         eventId,
@@ -230,7 +231,7 @@ describe("Web Editor browser runtime", () => {
     expect(mock.close).toHaveBeenCalledOnce();
   });
 
-  it("replays snapshot-unreflected audit journal batches before installing BrowserMock", async () => {
+  it("replays a journal for a project absent from the persisted snapshot", async () => {
     const store = createMemoryWorkspaceStore();
     const baseline = await createBrowserMock({
       workspaceIdentity: "/dev/workspace",
@@ -248,7 +249,11 @@ describe("Web Editor browser runtime", () => {
       workspaceId: WEB_EDITOR_WORKSPACE_ID,
       expectedRevision: 1,
       createdAt: "2026-08-03T00:00:01.000Z",
-      ...(await auditJournalBatch("journal-only-event")),
+      ...(await auditJournalBatch(
+        "journal-only-event",
+        "execution.started",
+        "memory-only-project",
+      )),
     });
     let installed: PersistentBrowserMock | null = null;
     const dependencies: BrowserRuntimeDependencies = {
@@ -269,7 +274,7 @@ describe("Web Editor browser runtime", () => {
     await expect(
       installed!.invoke("ai_audit_read_snapshot", {
         expectedWorkspacePath: "/dev/workspace",
-        projectId: "default-project",
+        projectId: "memory-only-project",
       }),
     ).resolves.toMatchObject({
       highWaterSequence: 1,
@@ -282,6 +287,29 @@ describe("Web Editor browser runtime", () => {
       revision: 2,
     });
     await runtime.dispose();
+
+    let reinstalled: PersistentBrowserMock | null = null;
+    const restarted = await initializeBrowserRuntime({
+      store,
+      lifecycleTarget: null,
+      lockManager: createExclusiveLockManager().lockManager,
+      dependencies: {
+        createBrowserMock,
+        installBrowserMock: (database) => {
+          reinstalled = database as PersistentBrowserMock;
+        },
+      },
+    });
+    await expect(
+      reinstalled!.invoke("ai_audit_read_snapshot", {
+        expectedWorkspacePath: "/dev/workspace",
+        projectId: "memory-only-project",
+      }),
+    ).resolves.toMatchObject({
+      highWaterSequence: 1,
+      events: [expect.objectContaining({ eventId: "journal-only-event" })],
+    });
+    await restarted.dispose();
   });
 
   it("keeps BrowserMock unavailable until startup journal replay completes", async () => {

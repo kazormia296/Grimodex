@@ -1,5 +1,8 @@
 import {
+  acquireAuditExportSafeReadAllowance,
+  acquireAuditExportActualTaskFailureTracking,
   acquireIpcDerivedAdmissionBarrier,
+  acquireIpcMutationAdmissionBarrier,
   acquireIpcReadAdmissionBarrier,
   cancelDerivedIpcCallersForLifecycle,
   cancelIpcReadCallersForLifecycle,
@@ -16,7 +19,8 @@ export type QuiescenceLeaseReason =
   | "project-load"
   | "workspace-open"
   | "data-delete"
-  | "window-close";
+  | "window-close"
+  | "audit-export";
 
 export type QuiescenceLeaseReleaseDisposition = "resume" | "renderer-teardown";
 
@@ -31,9 +35,15 @@ export interface QuiescenceLease {
   /** Present only for an explicitly opted-in Project/Workspace transition. */
   readonly transition: LifecycleTransitionTrace | null;
   /**
-   * Opens a controlled target-scope hydration phase after old work drained.
-   * The caller must seal again immediately before publishing new authority.
+   * Opens a controlled read phase after every pre-existing mutation drained.
+   * Project/Workspace callers must seal again immediately before publishing
+   * new authority. Read-only audit export keeps mutation admission closed for
+   * the complete read phase and releases the lease when assembly settles.
    */
+  openControlledReadPhase: () => void;
+  /** Close low-level mutation IPC before the final actual-task drain. */
+  sealMutationAdmissionForControlledRead: () => void;
+  /** Compatibility alias for Project/Workspace target hydration. */
   openTargetReadPhase: () => void;
   /** Blocks new reads and detaches every read started during preparation. */
   sealReadsForAuthorityCommit: () => void;
@@ -59,6 +69,9 @@ export class QuiescenceLeaseConflictError extends Error {
 const activeLeases = new Map<symbol, QuiescenceLeaseReason>();
 const ipcReadBarrierReleases = new Map<symbol, () => void>();
 const ipcDerivedBarrierReleases = new Map<symbol, () => void>();
+const ipcMutationBarrierReleases = new Map<symbol, () => void>();
+const auditExportSafeReadReleases = new Map<symbol, () => void>();
+const auditExportActualTaskTrackingReleases = new Map<symbol, () => void>();
 const lifecycleTransitionDeactivations = new Map<symbol, () => void>();
 const listeners = new Set<(change: QuiescenceLeaseStateChange) => void>();
 const topologyListeners = new Set<() => void>();
@@ -78,6 +91,21 @@ function releaseIpcReadBarrier(token: symbol): void {
 function releaseIpcDerivedBarrier(token: symbol): void {
   ipcDerivedBarrierReleases.get(token)?.();
   ipcDerivedBarrierReleases.delete(token);
+}
+
+function releaseIpcMutationBarrier(token: symbol): void {
+  ipcMutationBarrierReleases.get(token)?.();
+  ipcMutationBarrierReleases.delete(token);
+}
+
+function releaseAuditExportSafeRead(token: symbol): void {
+  auditExportSafeReadReleases.get(token)?.();
+  auditExportSafeReadReleases.delete(token);
+}
+
+function releaseAuditExportActualTaskTracking(token: symbol): void {
+  auditExportActualTaskTrackingReleases.get(token)?.();
+  auditExportActualTaskTrackingReleases.delete(token);
 }
 
 function ownsReadAuthority(
@@ -102,7 +130,8 @@ function hasAuthorityBlockingLifecycle(): boolean {
     if (
       reason === "project-load" ||
       reason === "workspace-open" ||
-      reason === "data-delete"
+      reason === "data-delete" ||
+      reason === "audit-export"
     ) {
       return true;
     }
@@ -137,6 +166,15 @@ export function acquireQuiescenceLease(
   const dataDeleteActive = [...activeLeases.values()].some(
     (activeReason) => activeReason === "data-delete",
   );
+  const auditExportActive = [...activeLeases.values()].some(
+    (activeReason) => activeReason === "audit-export",
+  );
+  if (reason === "audit-export" && activeLeases.size > 0) {
+    throw new QuiescenceLeaseConflictError(
+      reason,
+      "Cannot start audit-export while another lifecycle is active",
+    );
+  }
   if (reason === "data-delete" && activeLeases.size > 0) {
     throw new QuiescenceLeaseConflictError(
       reason,
@@ -152,6 +190,15 @@ export function acquireQuiescenceLease(
       `Cannot start ${reason} while data deletion is active`,
     );
   }
+  if (
+    auditExportActive &&
+    (reason === "project-load" || reason === "workspace-open")
+  ) {
+    throw new QuiescenceLeaseConflictError(
+      reason,
+      `Cannot start ${reason} while an audit export is active`,
+    );
+  }
   // A close requested after data deletion began is allowed to acquire its
   // own lease. The close controller observes data-delete as authority-blocking
   // and waits for it; the reverse direction above prevents deletion from
@@ -163,8 +210,17 @@ export function acquireQuiescenceLease(
   const token = Symbol(reason);
   const wasActive = activeLeases.size > 0;
   activeLeases.set(token, reason);
+  if (reason === "audit-export") {
+    auditExportActualTaskTrackingReleases.set(
+      token,
+      acquireAuditExportActualTaskFailureTracking(),
+    );
+  }
   ipcDerivedBarrierReleases.set(token, acquireIpcDerivedAdmissionBarrier());
-  cancelDerivedIpcCallersForLifecycle();
+  // Destructive scope replacement detaches rebuildable old-scope work. Audit
+  // export instead waits its real task settlement because native semantic
+  // inference may append audit evidence before returning.
+  if (reason !== "audit-export") cancelDerivedIpcCallersForLifecycle();
   if (reason === "project-load") {
     // Project requests intentionally overlap so the last request wins. Once a
     // newer request exists, an older Project barrier must not keep the newer
@@ -202,13 +258,40 @@ export function acquireQuiescenceLease(
   notifyLeaseTopologyChanged();
 
   let released = false;
+  const openControlledReadPhase = (): void => {
+    if (released || !ownsReadAuthority(token, reason)) return;
+    if (reason === "audit-export") {
+      if (!ipcMutationBarrierReleases.has(token)) {
+        throw new Error(
+          "Audit export must seal mutation IPC before opening safe reads",
+        );
+      }
+      if (!auditExportSafeReadReleases.has(token)) {
+        auditExportSafeReadReleases.set(
+          token,
+          acquireAuditExportSafeReadAllowance(),
+        );
+      }
+      // Keep the global read barrier closed. Only the queue-level audit export
+      // allowlist may pass until this lease releases.
+      return;
+    }
+    releaseIpcReadBarrier(token);
+  };
   return {
     reason,
     transition,
-    openTargetReadPhase() {
-      if (released || !ownsReadAuthority(token, reason)) return;
-      releaseIpcReadBarrier(token);
+    openControlledReadPhase,
+    sealMutationAdmissionForControlledRead() {
+      if (released || reason !== "audit-export") return;
+      if (!ipcMutationBarrierReleases.has(token)) {
+        ipcMutationBarrierReleases.set(
+          token,
+          acquireIpcMutationAdmissionBarrier(),
+        );
+      }
     },
+    openTargetReadPhase: openControlledReadPhase,
     sealReadsForAuthorityCommit() {
       if (released || !ownsReadAuthority(token, reason)) return;
       if (!ipcReadBarrierReleases.has(token)) {
@@ -228,6 +311,9 @@ export function acquireQuiescenceLease(
       lifecycleTransitionDeactivations.delete(token);
       releaseIpcReadBarrier(token);
       releaseIpcDerivedBarrier(token);
+      releaseIpcMutationBarrier(token);
+      releaseAuditExportSafeRead(token);
+      releaseAuditExportActualTaskTracking(token);
       if (currentProjectReadAuthorityToken === token) {
         currentProjectReadAuthorityToken = null;
       }
@@ -243,8 +329,13 @@ export function acquireQuiescenceLease(
   };
 }
 
-export function isQuiescenceLeaseActive(): boolean {
-  return activeLeases.size > 0;
+export function isQuiescenceLeaseActive(
+  reason?: QuiescenceLeaseReason,
+): boolean {
+  if (reason === undefined) return activeLeases.size > 0;
+  return [...activeLeases.values()].some(
+    (activeReason) => activeReason === reason,
+  );
 }
 
 export function isRendererTeardownStarted(): boolean {
@@ -296,8 +387,8 @@ export function subscribeQuiescenceLease(
 }
 
 /**
- * Waits until every Project/Workspace lifecycle or destructive data operation
- * that can replace or mutate the active database binding has completed.
+ * Waits until every Project/Workspace lifecycle, destructive data operation,
+ * or frozen audit export that owns the active database binding has completed.
  *
  * Window-close leases are deliberately ignored. The caller owns one itself,
  * and separate renderer windows may also close concurrently; waiting on those
@@ -339,11 +430,19 @@ export function _resetQuiescenceLeasesForTests(): void {
     activeLeases.values().next().value ?? "window-close";
   for (const release of ipcReadBarrierReleases.values()) release();
   for (const release of ipcDerivedBarrierReleases.values()) release();
+  for (const release of ipcMutationBarrierReleases.values()) release();
+  for (const release of auditExportSafeReadReleases.values()) release();
+  for (const release of auditExportActualTaskTrackingReleases.values()) {
+    release();
+  }
   for (const deactivate of lifecycleTransitionDeactivations.values()) {
     deactivate();
   }
   ipcReadBarrierReleases.clear();
   ipcDerivedBarrierReleases.clear();
+  ipcMutationBarrierReleases.clear();
+  auditExportSafeReadReleases.clear();
+  auditExportActualTaskTrackingReleases.clear();
   lifecycleTransitionDeactivations.clear();
   activeLeases.clear();
   currentProjectReadAuthorityToken = null;

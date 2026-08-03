@@ -47,26 +47,15 @@ import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload
 import type { AiProvider } from "./types";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
-import {
-  chatAuditRouteCoverage,
-  invokeSingleShotChat,
-  resolveChatAuditRoute,
-} from "./singleShotTransport";
-import {
-  beginAiAuditExecution,
-  completeAiAuditExecution,
-  failAiAuditExecution,
-  markAiAuditDispatched,
-} from "@/features/ai-audit/api";
-import {
-  auditErrorSnapshot,
-  auditRequestFromChatArgs,
-  beforeIpcDispatchDetails,
-  nativeAiAuditContext,
-  requireAuditProjectId,
-  type AiAuditTransportContext,
-} from "@/features/ai-audit/transportContext";
+import type { AiAuditTransportContext } from "@/features/ai-audit/transportContext";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import {
+  abortChatStream,
+  loadAiAuditRuntime,
+  loadSingleShotTransport,
+  sendChatMessageStream,
+} from "./lazyTransportApi";
 
 // --- AI message sending (existing) ---
 
@@ -76,6 +65,7 @@ export async function sendChatMessage(
   auditContext: AiAuditTransportContext,
   model?: string | null,
 ): Promise<void> {
+  const { invokeSingleShotChat } = await loadSingleShotTransport();
   const payload = messages.map((m) => ({ role: m.role, content: m.content }));
   const response = await invokeSingleShotChat(
     {
@@ -121,6 +111,7 @@ export async function sendChatMessageOnceAb(
    */
   endpointId?: string | null,
 ): Promise<{ text: string; inputTokens?: number; outputTokens?: number }> {
+  const { invokeSingleShotChat } = await loadSingleShotTransport();
   const response = await invokeSingleShotChat(
     {
       messages,
@@ -154,6 +145,7 @@ export async function generateSynopsisFromContent(
   sceneTitle: string,
   sceneContent: string,
 ): Promise<string> {
+  const { invokeSingleShotChat } = await loadSingleShotTransport();
   const projectId = useTreeStore.getState().projectId;
   const project = await getProject(projectId).catch(() => null);
   const lang = project?.language ?? "ja";
@@ -238,6 +230,7 @@ export async function sendAgentMessage(
   /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
   expectedOllamaEndpoint?: string | null,
 ): Promise<AgentLLMResponse> {
+  const auditRuntime = await loadAiAuditRuntime();
   const args: Record<string, unknown> = {
     messages,
     tools,
@@ -256,25 +249,27 @@ export async function sendAgentMessage(
     ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
     ...(resolvedToolProtocol != null ? { resolvedToolProtocol } : {}),
   };
-  const route = resolveChatAuditRoute(args);
-  const audit = await beginAiAuditExecution({
+  const route = auditRuntime.resolveChatAuditRoute(args);
+  const audit = await auditRuntime.beginAiAuditExecution({
     ...auditContext,
-    request: auditRequestFromChatArgs(args, route),
-    ...chatAuditRouteCoverage(route),
+    request: auditRuntime.auditRequestFromChatArgs(args, route),
+    ...auditRuntime.chatAuditRouteCoverage(route),
   });
-  args.auditContext = nativeAiAuditContext(audit);
-  await markAiAuditDispatched(
+  args.auditContext = auditRuntime.nativeAiAuditContext(audit);
+  await auditRuntime.markAiAuditDispatched(
     audit,
-    beforeIpcDispatchDetails("send_agent_message"),
+    auditRuntime.beforeIpcDispatchDetails("send_agent_message"),
   );
   let response: AgentLLMResponse;
   try {
     response = await invoke<AgentLLMResponse>("send_agent_message", args);
   } catch (error) {
-    await failAiAuditExecution(audit, { error: auditErrorSnapshot(error) });
+    await auditRuntime.failAiAuditExecution(audit, {
+      error: auditRuntime.auditErrorSnapshot(error),
+    });
     throw error;
   }
-  await completeAiAuditExecution(audit, {
+  await auditRuntime.completeAiAuditExecution(audit, {
     response: response as unknown as AiAuditJsonObject,
     usage: {
       inputTokens: response.inputTokens ?? null,
@@ -328,6 +323,7 @@ export async function sendChatMessageWithThinking(
   /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
   expectedOllamaEndpoint?: string | null,
 ): Promise<ChatMessageResult> {
+  const { invokeSingleShotChat } = await loadSingleShotTransport();
   const response = await invokeSingleShotChat(
     {
       messages,
@@ -373,8 +369,8 @@ export async function sendChatMessageWithThinking(
   };
 }
 
-export { abortChatStream, sendChatMessageStream } from "./chatStreamTransport";
 export type { StreamCallbacks } from "./chatStreamTransport";
+export { abortChatStream, sendChatMessageStream };
 
 /**
  * セッションタイトルを軽量モデルで自動生成する (P1-2)
@@ -388,6 +384,7 @@ export async function generateSessionTitle(
   projectId?: string | null,
 ): Promise<string | null> {
   try {
+    const { invokeSingleShotChat } = await loadSingleShotTransport();
     // 機能別モデル: session_title ロールが設定されていればそれを使い、未設定なら
     // 呼び出し側が渡した既定モデル(model)へフォールバック（thinking/usage 表示用）。
     // 実生成は invoke の model 引数（roleModel ?? null）で決まり、null は Rust 側で

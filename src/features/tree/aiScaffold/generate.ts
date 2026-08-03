@@ -9,8 +9,7 @@
  */
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
-import { invokeSingleShotChat } from "@/features/chat/singleShotTransport";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { cmpKeys } from "../fractionalIndex";
 import { useTreeStore, type TreeNodeData, type NodeType } from "../treeStore";
 import type { AiTreePlan, AiTreeOp } from "./types";
@@ -383,6 +382,8 @@ export function stripSynopsisIfDisabled(
 export async function generateAiTreePlan(
   input: GenerateTreePlanInput,
 ): Promise<AiTreePlan> {
+  const { invokeSingleShotChat } =
+    await import("@/features/chat/singleShotTransport");
   const messages = [
     { role: "system", content: buildSystemPrompt(input) },
     { role: "user", content: buildUserPrompt(input) },

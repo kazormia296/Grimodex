@@ -11,7 +11,6 @@ import {
   type AbSurface,
 } from "./abHarness";
 import { createAbRun, setAbRunChosen, type AbRunSlotRecord } from "./api";
-import { snapshotAiAuditWorkspacePath } from "@/features/ai-audit/api";
 import { useAiSettingsStore } from "@/features/chat/store";
 
 export interface UseAbComparisonOptions {
@@ -107,6 +106,8 @@ export function useAbComparison({
       if (runningRef.current) return;
       runningRef.current = true;
       try {
+        const { snapshotAiAuditWorkspacePath } =
+          await import("@/features/ai-audit/api");
         const expectedWorkspacePath = snapshotAiAuditWorkspacePath();
         const auditProjectId = projectId?.trim() || null;
         const currentAiSettings = useAiSettingsStore.getState().settings;

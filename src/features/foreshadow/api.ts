@@ -12,7 +12,7 @@ import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import {
   foreshadows,
   foreshadowSetups,

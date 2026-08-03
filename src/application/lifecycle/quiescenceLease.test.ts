@@ -116,6 +116,49 @@ describe("quiescence lease", () => {
     lease.release();
   });
 
+  it("gives an audit export exclusive authority while permitting only its controlled reads", async () => {
+    const lease = acquireQuiescenceLease("audit-export");
+    const readRun = vi.fn(async () => "frozen export read");
+
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(false);
+    await expect(
+      enqueueIpc("audit-read-before-flush", readRun, 10_000, "read"),
+    ).rejects.toThrow("IPC_READ_CANCELLED");
+
+    expect(() => acquireQuiescenceLease("project-load")).toThrow(
+      "Cannot start project-load while an audit export is active",
+    );
+    expect(() => acquireQuiescenceLease("workspace-open")).toThrow(
+      "Cannot start workspace-open while an audit export is active",
+    );
+    expect(() => acquireQuiescenceLease("audit-export")).toThrow(
+      "Cannot start audit-export while another lifecycle is active",
+    );
+
+    lease.sealMutationAdmissionForControlledRead();
+    lease.openControlledReadPhase();
+    await expect(
+      enqueueIpc("db_execute", readRun, 10_000, "read"),
+    ).resolves.toBe("frozen export read");
+    await expect(
+      enqueueIpc("semantic_search", readRun, 10_000, "read"),
+    ).rejects.toThrow("IPC_READ_CANCELLED");
+    await expect(
+      enqueueIpc("semantic_index_scene", readRun, null, "derived"),
+    ).rejects.toThrow("IPC_DERIVED_CANCELLED");
+    await expect(
+      enqueueIpc("save_scene", readRun, null, "mutation"),
+    ).rejects.toThrow("IPC_MUTATION_CANCELLED");
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+
+    const closeLease = acquireQuiescenceLease("window-close");
+    lease.release();
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(true);
+    closeLease.release();
+    expect(canScheduleQuiescenceMutation()).toBe(true);
+  });
+
   it("blocks read IPC until the final nested lifecycle lease releases", async () => {
     const workspaceLease = acquireQuiescenceLease("workspace-open");
     const projectLease = acquireQuiescenceLease("project-load");

@@ -86,8 +86,6 @@ import {
   findUnbackedUrls,
 } from "@/features/chat/citationVerify";
 import { stripToolProtocol } from "@/features/chat/toolProtocol";
-import * as cliApi from "@/features/chat/cliApi";
-import * as codexAppApi from "@/features/chat/codexAppApi";
 import {
   buildCodexBootstrapHistory,
   computeChatHistoryRevision,
@@ -122,6 +120,7 @@ import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecy
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
 import { tryAcquireChatTurnAdmissionLease } from "@/lib/chatNavigationGuard";
+import { cliApi, codexAppApi } from "@/features/chat/lazyRuntimeApi";
 
 interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;

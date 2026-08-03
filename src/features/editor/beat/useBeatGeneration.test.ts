@@ -208,6 +208,11 @@ describe("useBeatGeneration", () => {
     });
     await waitFor(() => expect(result.current.state.status).toBe("generating"));
 
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.find((c) => c[0] === "send_inline_ai_stream"),
+      ).toBeDefined(),
+    );
     const call = invokeMock.mock.calls.find(
       (c) => c[0] === "send_inline_ai_stream",
     );
@@ -241,11 +246,17 @@ describe("useBeatGeneration", () => {
     let pending: Promise<void>;
     await act(async () => {
       pending = result.current.generate();
-      // Wait a tick for the listener registration before emitting events.
+      // Let the hook publish its generating state; transport readiness is
+      // observed explicitly below because the implementation is lazy-loaded.
       await Promise.resolve();
     });
 
     await waitFor(() => expect(result.current.state.status).toBe("generating"));
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.find((c) => c[0] === "send_inline_ai_stream"),
+      ).toBeDefined(),
+    );
 
     await act(async () => {
       emit("inline-ai:stream-chunk", { delta: "ドロシー", block_type: "text" });

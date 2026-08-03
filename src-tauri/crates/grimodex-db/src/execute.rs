@@ -89,55 +89,21 @@ fn renderer_function_denied(name: &str) -> bool {
     .any(|denied| name.eq_ignore_ascii_case(denied))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RendererMutationKind {
-    Delete,
-    Insert,
-    Update,
-}
-
-struct RendererMutationRoot {
-    kind: RendererMutationKind,
-    table_name: String,
-}
-
-fn renderer_sql_rejection(
-    ctx: AuthContext<'_>,
-    mutation_root: &Mutex<Option<RendererMutationRoot>>,
-) -> Option<String> {
+fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     if !matches!(ctx.database_name, None | Some("main") | Some("temp")) {
         return Some("access to an attached database".to_string());
     }
 
-    let mutation = match &ctx.action {
-        AuthAction::Delete { table_name } => Some((RendererMutationKind::Delete, *table_name)),
-        AuthAction::Insert { table_name } => Some((RendererMutationKind::Insert, *table_name)),
-        AuthAction::Update { table_name, .. } => Some((RendererMutationKind::Update, *table_name)),
-        _ => None,
+    let mutates_ai_audit = match &ctx.action {
+        AuthAction::Delete { table_name }
+        | AuthAction::Insert { table_name }
+        | AuthAction::Update { table_name, .. } => {
+            table_name.eq_ignore_ascii_case("ai_audit_events")
+        }
+        _ => false,
     };
-    if let Some((kind, table_name)) = mutation {
-        let Ok(mut root) = mutation_root.lock() else {
-            return Some("AI audit mutation guard unavailable".to_string());
-        };
-        // The first top-level mutation authorizer callback belongs to the SQL
-        // statement currently being prepared. FK cascades follow it. The
-        // statement root is reset explicitly before every single/batch item.
-        if root.is_none() && ctx.accessor.is_none() {
-            *root = Some(RendererMutationRoot {
-                kind,
-                table_name: table_name.to_string(),
-            });
-        }
-        if table_name.eq_ignore_ascii_case("ai_audit_events") {
-            let project_delete_cascade = kind == RendererMutationKind::Delete
-                && root.as_ref().is_some_and(|root| {
-                    root.kind == RendererMutationKind::Delete
-                        && root.table_name.eq_ignore_ascii_case("projects")
-                });
-            if !project_delete_cascade {
-                return Some("mutation of ai_audit_events".to_string());
-            }
-        }
+    if mutates_ai_audit {
+        return Some("mutation of ai_audit_events".to_string());
     }
 
     match ctx.action {
@@ -209,21 +175,6 @@ struct RendererSqlPolicyState {
     attach_write_enabled: bool,
 }
 
-struct RendererSqlPolicyHandle {
-    mutation_root: Arc<Mutex<Option<RendererMutationRoot>>>,
-}
-
-impl RendererSqlPolicyHandle {
-    fn begin_statement(&self) -> anyhow::Result<()> {
-        let mut root = self
-            .mutation_root
-            .lock()
-            .map_err(|error| anyhow::anyhow!("renderer mutation guard poisoned: {error}"))?;
-        *root = None;
-        Ok(())
-    }
-}
-
 fn keep_first_cleanup_error<T>(
     first_error: &mut Option<anyhow::Error>,
     result: rusqlite::Result<T>,
@@ -282,7 +233,7 @@ fn restore_renderer_sql_policy(
 
 fn with_renderer_sql_policy<T, F>(conn: &Connection, operation: F) -> anyhow::Result<T>
 where
-    F: FnOnce(&Connection, &RendererSqlPolicyHandle) -> anyhow::Result<T>,
+    F: FnOnce(&Connection) -> anyhow::Result<T>,
 {
     let state = RendererSqlPolicyState {
         sql_length_limit: conn.limit(Limit::SQLITE_LIMIT_SQL_LENGTH)?,
@@ -293,11 +244,9 @@ where
     };
     let denied_reason = Arc::new(Mutex::new(None::<String>));
     let budget_exhausted = Arc::new(AtomicBool::new(false));
-    let mutation_root = Arc::new(Mutex::new(None::<RendererMutationRoot>));
 
     let denied_for_hook = Arc::clone(&denied_reason);
     let budget_for_hook = Arc::clone(&budget_exhausted);
-    let mutation_root_for_hook = Arc::clone(&mutation_root);
     let setup_result = (|| -> rusqlite::Result<()> {
         conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, RENDERER_SQL_LENGTH_LIMIT)?;
         conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, RENDERER_VDBE_OP_LIMIT)?;
@@ -305,7 +254,7 @@ where
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false)?;
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-            if let Some(reason) = renderer_sql_rejection(ctx, &mutation_root_for_hook) {
+            if let Some(reason) = renderer_sql_rejection(ctx) {
                 if let Ok(mut denied) = denied_for_hook.lock() {
                     if denied.is_none() {
                         *denied = Some(reason);
@@ -336,8 +285,7 @@ where
         return Err(error.into());
     }
 
-    let handle = RendererSqlPolicyHandle { mutation_root };
-    let result = operation(conn, &handle);
+    let result = operation(conn);
     let cleanup_result = restore_renderer_sql_policy(conn, &state);
     if let Err(error) = cleanup_result {
         return Err(anyhow::anyhow!(
@@ -384,7 +332,6 @@ impl Database {
     fn execute_batch_tx_with_conn(
         conn: &Connection,
         statements: &[BatchStatement],
-        renderer_policy: Option<&RendererSqlPolicyHandle>,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         // BEGIN IMMEDIATE acquires the write lock up front. A plain (deferred)
         // BEGIN only takes it on the first write, so a writer on the same DB
@@ -394,9 +341,6 @@ impl Database {
         let mut last_rows = Vec::new();
         let result = (|| -> anyhow::Result<_> {
             for stmt in statements {
-                if let Some(policy) = renderer_policy {
-                    policy.begin_statement()?;
-                }
                 last_rows = Self::execute_with_conn(conn, &stmt.sql, &stmt.params, &stmt.method)?;
             }
             Ok(last_rows)
@@ -431,11 +375,11 @@ impl Database {
 
         let sql_started = Instant::now();
         let result = if renderer_origin {
-            with_renderer_sql_policy(&conn, |conn, policy| {
-                Self::execute_batch_tx_with_conn(conn, statements, Some(policy))
+            with_renderer_sql_policy(&conn, |conn| {
+                Self::execute_batch_tx_with_conn(conn, statements)
             })
         } else {
-            Self::execute_batch_tx_with_conn(&conn, statements, None)
+            Self::execute_batch_tx_with_conn(&conn, statements)
         };
         let sql_ms = sql_started.elapsed().as_millis();
         if lock_wait_ms + sql_ms >= SLOW_DB_CALL_MS {
@@ -584,8 +528,7 @@ impl Database {
 
         let sql_started = Instant::now();
         let result = if renderer_origin {
-            with_renderer_sql_policy(&conn, |conn, policy| {
-                policy.begin_statement()?;
+            with_renderer_sql_policy(&conn, |conn| {
                 Self::execute_with_conn(conn, sql, params, method)
             })
         } else {
@@ -774,6 +717,49 @@ mod tests {
     }
 
     #[test]
+    fn renderer_rejects_indirect_legacy_ai_audit_cascade() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "foreign_keys", true)?;
+            conn.execute_batch(
+                "CREATE TABLE projects (id TEXT PRIMARY KEY);
+                 CREATE TABLE ai_audit_events (
+                    id INTEGER PRIMARY KEY,
+                    project_id TEXT NOT NULL
+                      REFERENCES projects(id) ON DELETE CASCADE,
+                    payload TEXT NOT NULL
+                 );
+                 INSERT INTO projects (id) VALUES ('project-1');
+                 INSERT INTO ai_audit_events (id, project_id, payload)
+                 VALUES (1, 'project-1', '{}');",
+            )?;
+            Ok(())
+        })
+        .expect("create legacy audit cascade fixture");
+
+        let error = db
+            .execute_renderer(
+                "DELETE FROM projects WHERE id = ?1",
+                &[Value::from("project-1")],
+                "run",
+            )
+            .expect_err("renderer must reject an indirect audit cascade");
+        assert!(
+            error
+                .to_string()
+                .contains("RENDERER_SQL_SECURITY: denied mutation of ai_audit_events"),
+            "unexpected error: {error}"
+        );
+
+        for table in ["projects", "ai_audit_events"] {
+            let rows = db
+                .execute(&format!("SELECT count(*) AS n FROM {table}"), &[], "get")
+                .expect("read fixture after rejected cascade");
+            assert_eq!(rows[0]["n"], Value::from(1));
+        }
+    }
+
+    #[test]
     fn renderer_batch_audit_mutation_is_rejected_and_rolls_back_prior_writes() {
         let db = test_db();
         db.with_conn(|conn| {
@@ -815,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_project_delete_may_cascade_delete_ai_audit_events() {
+    fn renderer_project_delete_retains_ai_audit_events() {
         let db = test_db();
         db.migrate().expect("migrate database");
         db.execute(
@@ -843,7 +829,7 @@ mod tests {
             &[Value::from("project-1")],
             "run",
         )
-        .expect("project deletion may cascade to its audit ledger");
+        .expect("delete mutable project without erasing audit ledger");
 
         let rows = db
             .execute(
@@ -851,8 +837,8 @@ mod tests {
                 &[],
                 "get",
             )
-            .expect("query cascaded ledger");
-        assert_eq!(rows[0]["n"], Value::from(0));
+            .expect("query retained ledger");
+        assert_eq!(rows[0]["n"], Value::from(1));
     }
 
     #[test]

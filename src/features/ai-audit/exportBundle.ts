@@ -36,6 +36,10 @@ import type {
   AiAuditStoredEvent,
   AiAuditVerifyResult,
 } from "./types";
+import {
+  assertAiAuditFrozenReadProofActive,
+  type AiAuditFrozenReadProof,
+} from "./exportBoundary";
 
 export const AI_AUDIT_BUNDLE_SCHEMA = "grimodex/ai-use-audit-bundle/v1";
 export const AI_AUDIT_EXPORT_PAGE_SIZE = 1_000;
@@ -85,6 +89,14 @@ export interface AiAuditBundleManifest {
   readonly schema: typeof AI_AUDIT_BUNDLE_SCHEMA;
   readonly generatedAt: string;
   readonly appVersion: string;
+  readonly exportConsistency: {
+    readonly applicationMutationAdmissionFrozen: boolean;
+    readonly strictQuiescenceCompletedBeforeFirstRead: boolean;
+    readonly projectWorkspaceIdentityPinned: boolean;
+    readonly nativeMultiTableSnapshot: false;
+    readonly externalWriterExclusion: false;
+    readonly note: string;
+  };
   readonly project: {
     readonly id: string;
     readonly title: string;
@@ -338,6 +350,7 @@ async function loadChain(
   projectId: string | null,
   dependencies: AiAuditBundleDependencies,
   expectedWorkspacePath: string,
+  assertReadBoundary: () => void,
 ): Promise<ChainArtifact> {
   const coverage = new AiAuditCoverageAccumulator();
   const jsonlParts: string[] = [];
@@ -353,6 +366,7 @@ async function loadChain(
       limit: AI_AUDIT_EXPORT_PAGE_SIZE,
       expectedWorkspacePath,
     });
+    assertReadBoundary();
     if (highWaterSequence === undefined || highWaterHash === undefined) {
       assertFirstPageContract(page, projectId);
       highWaterSequence = page.highWaterSequence;
@@ -430,6 +444,7 @@ async function loadChain(
       tailHash: highWaterHash,
     };
   }
+  assertReadBoundary();
   const verification = verifyChainStatus(
     verify,
     highWaterSequence,
@@ -738,6 +753,10 @@ Generated: ${manifest.generatedAt}
 Project: ${manifest.project.title} (${manifest.project.id})
 ${verificationWarning}
 
+## Export consistency boundary
+
+${manifest.exportConsistency.note}
+
 ## 1. Current remaining AI-derived manuscript content
 
 - \`reports/authorship-report.json\`: body-text-only human/AI attribution snapshot.
@@ -758,7 +777,7 @@ Workspace chain: ${workspace.highWaterSequence} events, high-water ${workspace.h
 
 The \`legacy-evidence/\` directory contains a deliberately selected set of surviving project-scoped rows from pre-ledger and parallel persistence. Selection uses explicit AI fields, canonical ownership joins, structured authorship marks, assistant-message links, tracked-write surfaces, or semantic-index ownership. It is not a full database archive and does not claim complete coverage before the forward ledger existed. It does not fabricate or reconstruct missing prompts, responses, execution attempts, or terminal outcomes. Deleted rows and AI activity that was never persisted cannot be recovered. Some rows may duplicate evidence also present in the forward ledger.
 
-These artifacts were collected by guarded sequential queries, not one atomic multi-table database snapshot. The active workspace path was checked before and after every source-table query, but concurrent writes can still create cross-table time skew.
+These artifacts were collected by guarded sequential queries, not one atomic multi-table database snapshot. The active workspace path was checked before and after every source-table query. ${manifest.exportConsistency.applicationMutationAdmissionFrozen ? "The user-triggered award-audit path blocked Grimodex renderer mutation and new AI admission, waited pre-existing audited executions through their durable terminal events, retained and drained pre-existing native read/derived work, completed strict persistence quiescence, and pinned Project/Workspace identity through all reads. External processes such as standalone MCP clients are outside that renderer-local boundary, so their concurrent writes can still create cross-table time skew." : "This low-level assembly did not receive a renderer frozen-read proof, so concurrent application or external-process writes can create cross-table time skew."}
 
 Historical containers and generic cache/state tables are intentionally not collected as AI evidence: \`content_versions\`, named project snapshots (\`project_snapshots\` and \`project_snapshot_*\`), \`state_snapshots\`, \`impact_review_baselines\`, \`chat_session_pinned_codex\`, and generic project output/cache/state tables. Their omission means pre-ledger history is not complete; no origin is inferred from a generic container merely because it might contain AI-derived bytes.
 
@@ -827,6 +846,7 @@ function executionSummary(
     schema: "grimodex/ai-use-audit-execution-summary/v1",
     generatedAt: manifest.generatedAt,
     project: manifest.project,
+    exportConsistency: manifest.exportConsistency,
     overallIntegrityStatus: manifest.integrityLimitations.verificationFailed
       ? "verificationFailed"
       : "verified",
@@ -835,8 +855,10 @@ function executionSummary(
         "Authorship and provenance reports describe AI-derived manuscript body content still present at export time.",
       forwardExecutionLedger:
         "The project ledger records observed interactive, non-interactive, indirect, adopted, and unadopted AI work after forward auditing became available; it is not a backfill of prior activity.",
-      selectedSurvivingLegacyEvidence:
-        "Legacy artifacts contain a selected set of surviving current database rows without reconstructing missing prompts, responses, or execution lifecycle. They are not a full pre-ledger database history. Collection uses guarded sequential queries and is not one atomic multi-table snapshot.",
+      selectedSurvivingLegacyEvidence: manifest.exportConsistency
+        .applicationMutationAdmissionFrozen
+        ? "Legacy artifacts contain a selected set of surviving current database rows without reconstructing missing prompts, responses, or execution lifecycle. They are not a full pre-ledger database history. The user-triggered export freezes Grimodex renderer mutations after strict quiescence, but collection still uses guarded sequential queries rather than one atomic multi-table snapshot; external writers remain outside the boundary."
+        : "Legacy artifacts contain a selected set of surviving current database rows without reconstructing missing prompts, responses, or execution lifecycle. They are not a full pre-ledger database history. This low-level assembly did not receive a renderer frozen-read proof, and collection uses guarded sequential queries rather than one atomic multi-table snapshot.",
       workspaceScope:
         "Workspace events are disclosed separately and are not asserted to have contributed to the selected project.",
       dispatchAndTransport:
@@ -900,15 +922,26 @@ export async function buildAiAuditBundle(
   options: {
     readonly generatedAt?: string;
     readonly dependencies?: AiAuditBundleDependencies;
+    readonly frozenReadProof?: AiAuditFrozenReadProof;
   } = {},
 ): Promise<AiAuditBundleBuildResult> {
   if (!projectId.trim()) throw new Error("projectId is required");
   const dependencies = options.dependencies ?? DEFAULT_DEPENDENCIES;
   const generatedAt = options.generatedAt ?? new Date().toISOString();
+  const hasFrozenReadBoundary = options.frozenReadProof !== undefined;
+  const assertFrozenReadBoundary = (): void => {
+    if (options.frozenReadProof !== undefined) {
+      assertAiAuditFrozenReadProofActive(options.frozenReadProof, projectId);
+    }
+  };
+  assertFrozenReadBoundary();
   const expectedWorkspacePath =
     dependencies.snapshotWorkspacePath?.() ?? "dependency-pinned-workspace";
-  const assertWorkspaceUnchanged = () =>
+  const assertWorkspaceUnchanged = () => {
+    assertFrozenReadBoundary();
     dependencies.assertWorkspaceUnchanged?.(expectedWorkspacePath);
+    assertFrozenReadBoundary();
+  };
 
   assertWorkspaceUnchanged();
   const authorship = await dependencies.buildAuthorship(projectId);
@@ -925,12 +958,14 @@ export async function buildAiAuditBundle(
     projectId,
     dependencies,
     expectedWorkspacePath,
+    assertWorkspaceUnchanged,
   );
   assertWorkspaceUnchanged();
   const workspaceChain = await loadChain(
     null,
     dependencies,
     expectedWorkspacePath,
+    assertWorkspaceUnchanged,
   );
   assertWorkspaceUnchanged();
   const { eventsJsonl: projectEventsJsonl, ...projectChainManifest } =
@@ -951,6 +986,16 @@ export async function buildAiAuditBundle(
     schema: AI_AUDIT_BUNDLE_SCHEMA,
     generatedAt,
     appVersion: packageJson.version,
+    exportConsistency: {
+      applicationMutationAdmissionFrozen: hasFrozenReadBoundary,
+      strictQuiescenceCompletedBeforeFirstRead: hasFrozenReadBoundary,
+      projectWorkspaceIdentityPinned: hasFrozenReadBoundary,
+      nativeMultiTableSnapshot: false,
+      externalWriterExclusion: false,
+      note: hasFrozenReadBoundary
+        ? "Grimodex renderer mutation and new AI admission were closed, pre-existing audited executions reached durable terminal events, pre-existing native read/derived tasks settled, strict persistence quiescence completed, and Project/Workspace identity remained pinned through every report and ledger read. This is not a native multi-table database snapshot and does not exclude writes from external processes such as standalone MCP clients."
+        : "No renderer frozen-read proof was supplied to this low-level bundle assembly call. This is not a native multi-table database snapshot and does not exclude concurrent application or external-process writes.",
+    },
     project: { id: projectId, title: authorship.projectTitle },
     sections: {
       currentRemainingAiContent: {
@@ -970,7 +1015,9 @@ export async function buildAiAuditBundle(
         artifactCount: legacyEvidence.artifacts.length,
         totalRowCount: legacyEvidence.totalRowCount,
         snapshotAtomic: false,
-        note: "A selected set of surviving current database rows is exported without synthesizing ledger events or reconstructing missing evidence. This is not a full database archive or a complete pre-ledger history. Guarded sequential source-table reads are non-atomic and may have cross-table time skew.",
+        note: hasFrozenReadBoundary
+          ? "A selected set of surviving current database rows is exported without synthesizing ledger events or reconstructing missing evidence. This is not a full database archive or a complete pre-ledger history. Grimodex renderer mutations were frozen after strict quiescence, but guarded sequential source-table reads remain non-atomic and external writers may still create cross-table time skew."
+          : "A selected set of surviving current database rows is exported without synthesizing ledger events or reconstructing missing evidence. This is not a full database archive or a complete pre-ledger history. Guarded sequential source-table reads are non-atomic and may have cross-table time skew.",
       },
     },
     chains: {
@@ -1052,6 +1099,7 @@ export async function buildAiAuditBundle(
   for (const path of Object.keys(contentFiles).sort(compareUnicodeCodePoints)) {
     const bytes = contentFiles[path];
     files[path] = { sha256: await sha256Bytes(bytes), bytes: bytes.byteLength };
+    assertWorkspaceUnchanged();
   }
   assertWorkspaceUnchanged();
   const manifest: AiAuditBundleManifest = { ...baseManifest, files };
@@ -1062,6 +1110,7 @@ export async function buildAiAuditBundle(
   const datestamp = generatedAt.slice(0, 10);
   const bytes = deterministicZip(archiveFiles);
   assertWorkspaceUnchanged();
+  assertFrozenReadBoundary();
   return {
     bytes,
     filename: `ai-use-audit-${projectId.replace(/[^a-z0-9._-]+/giu, "-")}-${datestamp}.zip`,

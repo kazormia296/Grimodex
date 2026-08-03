@@ -6,7 +6,7 @@ import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { createEvent, deleteEvent, linkScenesToEvent, listEvents } from "./api";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export interface ExtractEventsRequest {
   scenes: Array<{

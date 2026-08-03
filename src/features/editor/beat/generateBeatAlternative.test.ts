@@ -69,6 +69,22 @@ function emit(event: string, payload: unknown) {
   });
 }
 
+async function waitForStreamDispatch() {
+  // A single timer turn is not enough to guarantee that a dynamic import has
+  // evaluated under full-suite load. The invoke is the real provider start
+  // boundary and must only occur after all stream listeners exist.
+  await vi.waitFor(() =>
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "send_inline_ai_stream",
+      ),
+    ).toBe(true),
+  );
+  expect(listeners.has("inline-ai:stream-chunk")).toBe(true);
+  expect(listeners.has("inline-ai:stream-done")).toBe(true);
+  expect(listeners.has("inline-ai:stream-error")).toBe(true);
+}
+
 function createEditorWithBeat(
   beatId: string,
   instructions = "主人公が決断する",
@@ -145,10 +161,7 @@ describe("generateBeatAlternative", () => {
       onDone,
     });
 
-    // Wait for listener registration. A macrotask hop flushes the whole
-    // microtask chain (buildBeatContextForGeneration → streamInlineAiText)
-    // regardless of how many awaits precede the listen() call.
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     emit("inline-ai:stream-chunk", {
       delta: "代替案テキスト",
@@ -179,7 +192,7 @@ describe("generateBeatAlternative", () => {
     const editor = createEditorWithBeat("b1", "決断シーン");
 
     const promise = generateBeatAlternative(editor, "b1", "scene-1");
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     const longText =
       "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめも";
@@ -207,7 +220,7 @@ describe("generateBeatAlternative", () => {
     const promise = generateBeatAlternative(editor, "b1", "scene-1", {
       onError,
     });
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     emit("inline-ai:stream-error", { message: "API error" });
 
@@ -251,7 +264,7 @@ describe("generateBeatAlternative", () => {
     });
 
     const promise = generateBeatAlternative(editor, "b1", "scene-1");
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     const call = invokeMock.mock.calls.find(
       (c) => c[0] === "send_inline_ai_stream",

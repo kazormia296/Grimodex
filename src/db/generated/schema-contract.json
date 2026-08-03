@@ -288,20 +288,9 @@
           "primaryKey": 0
         }
       },
-      "foreignKeys": [
-        {
-          "id": 0,
-          "sequence": 0,
-          "table": "projects",
-          "from": "project_id",
-          "to": "id",
-          "onUpdate": "NO ACTION",
-          "onDelete": "CASCADE",
-          "match": "NONE"
-        }
-      ],
+      "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE ai_audit_events ( id INTEGER PRIMARY KEY AUTOINCREMENT, scope_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, event_id TEXT NOT NULL, execution_id TEXT NOT NULL, operation_id TEXT NOT NULL, parent_execution_id TEXT, path_id TEXT NOT NULL, event_type TEXT NOT NULL, timestamp INTEGER NOT NULL, recorded_at INTEGER NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL, CHECK ( (scope_id = 'workspace' AND project_id IS NULL) OR (project_id IS NOT NULL AND scope_id = 'project:' || project_id) ) )"
+      "createSql": "CREATE TABLE ai_audit_events ( id INTEGER PRIMARY KEY AUTOINCREMENT, scope_id TEXT NOT NULL, project_id TEXT, sequence INTEGER NOT NULL, event_id TEXT NOT NULL, execution_id TEXT NOT NULL, operation_id TEXT NOT NULL, parent_execution_id TEXT, path_id TEXT NOT NULL, event_type TEXT NOT NULL, timestamp INTEGER NOT NULL, recorded_at INTEGER NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL, CHECK ( (scope_id = 'workspace' AND project_id IS NULL) OR (project_id IS NOT NULL AND scope_id = 'project:' || project_id) ) )"
     },
     "ai_usage": {
       "kind": "table",

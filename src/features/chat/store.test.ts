@@ -1845,6 +1845,9 @@ describe("useAiSettingsStore", () => {
         });
 
         const pending = useAiSettingsStore.getState().loadModels();
+        await vi.waitFor(() =>
+          expect(mockListCodexAppModels).toHaveBeenCalledOnce(),
+        );
         useAiSettingsStore.setState({
           settings: { ...defaultSettings, provider: "cli", cli },
         });

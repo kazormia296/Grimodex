@@ -809,17 +809,22 @@ fn l2_norm_of_f32_le(blob: &[u8]) -> f64 {
 }
 
 #[cfg(feature = "semantic-embedding")]
-fn audited_embedding(
-    request: &SemanticRequest,
-    project_id: &str,
-    path_id: &str,
-    inference_kind: &str,
+struct AuditedEmbeddingInput<'a> {
+    path_id: &'a str,
+    inference_kind: &'a str,
     spec: &'static EmbeddingModelSpec,
     model_artifact_identity: crate::audit::ModelArtifactIdentity,
     tokenizer_identity: crate::audit::TokenizerIdentity,
-    raw_text: &str,
-    model_prefix: &str,
+    raw_text: &'a str,
+    model_prefix: &'a str,
     metadata: serde_json::Value,
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn audited_embedding(
+    request: &SemanticRequest,
+    project_id: &str,
+    input: AuditedEmbeddingInput<'_>,
     inference: impl FnOnce() -> Result<Vec<f32>>,
 ) -> Result<Vec<f32>> {
     use crate::audit::{
@@ -827,6 +832,16 @@ fn audited_embedding(
         SemanticAuditSession,
     };
 
+    let AuditedEmbeddingInput {
+        path_id,
+        inference_kind,
+        spec,
+        model_artifact_identity,
+        tokenizer_identity,
+        raw_text,
+        model_prefix,
+        metadata,
+    } = input;
     let model_text = format!("{model_prefix}{raw_text}");
     let appender: Arc<dyn SemanticAuditAppender> = request.database();
     let mut audit = SemanticAuditSession::start(
@@ -1033,19 +1048,21 @@ impl SemanticRuntime {
             let embedding = audited_embedding(
                 request,
                 project_id,
-                "semantic_search",
-                "embedding.query",
-                spec,
-                model_artifact_identity,
-                tokenizer_identity,
-                query,
-                spec.query_prefix,
-                json!({
-                    "domain": "scene",
-                    "sceneScope": scene_scope,
-                    "descriptionMode": description_mode.unwrap_or(false),
-                    "requestedLimit": limit,
-                }),
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({
+                        "domain": "scene",
+                        "sceneScope": scene_scope,
+                        "descriptionMode": description_mode.unwrap_or(false),
+                        "requestedLimit": limit,
+                    }),
+                },
                 || embedder.embed_query(query),
             )?;
             Ok((embedding, embedder.embedding_dim()))
@@ -1110,14 +1127,16 @@ impl SemanticRuntime {
             let embedding = audited_embedding(
                 request,
                 project_id,
-                "semantic_search",
-                "embedding.query",
-                spec,
-                model_artifact_identity,
-                tokenizer_identity,
-                query,
-                spec.query_prefix,
-                json!({ "domain": "codex", "requestedLimit": limit }),
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({ "domain": "codex", "requestedLimit": limit }),
+                },
                 || embedder.embed_query(query),
             )?;
             Ok((embedding, embedder.embedding_dim()))
@@ -1180,14 +1199,16 @@ impl SemanticRuntime {
             let embedding = audited_embedding(
                 request,
                 project_id,
-                "semantic_search",
-                "embedding.query",
-                spec,
-                model_artifact_identity,
-                tokenizer_identity,
-                query,
-                spec.query_prefix,
-                json!({ "domain": "events", "requestedLimit": limit }),
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({ "domain": "events", "requestedLimit": limit }),
+                },
                 || embedder.embed_query(query),
             )?;
             Ok((embedding, embedder.embedding_dim()))
@@ -1255,14 +1276,16 @@ impl SemanticRuntime {
             let embedding = audited_embedding(
                 request,
                 project_id,
-                "semantic_search",
-                "embedding.query",
-                spec,
-                model_artifact_identity,
-                tokenizer_identity,
-                query,
-                spec.query_prefix,
-                json!({ "domain": "chat", "requestedLimit": limit }),
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({ "domain": "chat", "requestedLimit": limit }),
+                },
                 || embedder.embed_query(query),
             )?;
             Ok((embedding, embedder.embedding_dim()))
@@ -1735,14 +1758,16 @@ fn index_scene(
             audited_embedding(
                 request,
                 project_id,
-                "semantic_embedding_index",
-                "embedding.document",
-                spec,
-                model_artifact_identity,
-                tokenizer_identity,
-                text,
-                spec.document_prefix,
-                json!({ "domain": "scene", "sceneId": scene_id }),
+                AuditedEmbeddingInput {
+                    path_id: "semantic_embedding_index",
+                    inference_kind: "embedding.document",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: text,
+                    model_prefix: spec.document_prefix,
+                    metadata: json!({ "domain": "scene", "sceneId": scene_id }),
+                },
                 || embedder.embed_document(text),
             )
         },
@@ -1782,14 +1807,16 @@ fn index_codex(
     let vector = audited_embedding(
         request,
         project_id,
-        "semantic_embedding_index",
-        "embedding.document",
-        spec,
-        model_artifact_identity,
-        tokenizer_identity,
-        &text,
-        spec.document_prefix,
-        json!({ "domain": "codex", "entryId": entry_id }),
+        AuditedEmbeddingInput {
+            path_id: "semantic_embedding_index",
+            inference_kind: "embedding.document",
+            spec,
+            model_artifact_identity,
+            tokenizer_identity,
+            raw_text: &text,
+            model_prefix: spec.document_prefix,
+            metadata: json!({ "domain": "codex", "entryId": entry_id }),
+        },
         || embedder.embed_document(&text),
     )?;
     let embedding = embedding_to_le_bytes(&vector, embedder.embedding_dim())?;
@@ -1822,14 +1849,16 @@ fn index_event(
     let vector = audited_embedding(
         request,
         project_id,
-        "semantic_embedding_index",
-        "embedding.document",
-        spec,
-        model_artifact_identity,
-        tokenizer_identity,
-        &text,
-        spec.document_prefix,
-        json!({ "domain": "events", "eventId": event_id }),
+        AuditedEmbeddingInput {
+            path_id: "semantic_embedding_index",
+            inference_kind: "embedding.document",
+            spec,
+            model_artifact_identity,
+            tokenizer_identity,
+            raw_text: &text,
+            model_prefix: spec.document_prefix,
+            metadata: json!({ "domain": "events", "eventId": event_id }),
+        },
         || embedder.embed_document(&text),
     )?;
     let embedding = embedding_to_le_bytes(&vector, embedder.embedding_dim())?;
@@ -1862,14 +1891,16 @@ fn index_chat(
     let vector = audited_embedding(
         request,
         project_id,
-        "semantic_embedding_index",
-        "embedding.document",
-        spec,
-        model_artifact_identity,
-        tokenizer_identity,
-        &input.text,
-        spec.document_prefix,
-        json!({ "domain": "chat", "messageId": message_id }),
+        AuditedEmbeddingInput {
+            path_id: "semantic_embedding_index",
+            inference_kind: "embedding.document",
+            spec,
+            model_artifact_identity,
+            tokenizer_identity,
+            raw_text: &input.text,
+            model_prefix: spec.document_prefix,
+            metadata: json!({ "domain": "chat", "messageId": message_id }),
+        },
         || embedder.embed_document(&input.text),
     )?;
     let embedding = embedding_to_le_bytes(&vector, embedder.embedding_dim())?;

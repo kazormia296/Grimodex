@@ -57,7 +57,7 @@ import type { AiAuditJournalBatch } from "./browser-db/indexedDbStore";
 
 type BrowserSchemaTable = {
   kind: string;
-  columns: Record<string, unknown>;
+  columns: Record<string, { ordinal: number }>;
   createSql: string;
 };
 
@@ -177,15 +177,15 @@ function buildBrowserSchemaDdl(contract: BrowserSchemaContract): string {
   )};`;
 }
 
-function buildBrowserTableDdl(
+function buildBrowserTableDdlStatements(
   contract: BrowserSchemaContract,
   tableName: string,
-): string {
+): string[] {
   const table = contract.tables[tableName];
   if (!table || table.kind !== "table") {
     throw new Error(`canonical browser schema is missing ${tableName}`);
   }
-  const statements = [
+  return [
     executableCreateSql(table.createSql, Object.keys(table.columns)),
     ...Object.values(contract.indexes)
       .filter((index) => index.table === tableName)
@@ -194,6 +194,13 @@ function buildBrowserTableDdl(
       new RegExp(`\\b${tableName}\\b`, "u").test(createSql),
     ),
   ];
+}
+
+function buildBrowserTableDdl(
+  contract: BrowserSchemaContract,
+  tableName: string,
+): string {
+  const statements = buildBrowserTableDdlStatements(contract, tableName);
   return `${statements.join(";\n")};`;
 }
 
@@ -251,10 +258,23 @@ function assertRendererDoesNotMutateAiAudit(sql: string): void {
 const SCHEMA_DDL = buildBrowserSchemaDdl(
   schemaContract as unknown as BrowserSchemaContract,
 );
-const AI_AUDIT_LEDGER_DDL = buildBrowserTableDdl(
-  schemaContract as unknown as BrowserSchemaContract,
+const BROWSER_SCHEMA_CONTRACT =
+  schemaContract as unknown as BrowserSchemaContract;
+const AI_AUDIT_LEDGER_DDL_STATEMENTS = buildBrowserTableDdlStatements(
+  BROWSER_SCHEMA_CONTRACT,
   "ai_audit_events",
 );
+const AI_AUDIT_LEDGER_CREATE_SQL = AI_AUDIT_LEDGER_DDL_STATEMENTS[0];
+const AI_AUDIT_LEDGER_POST_CREATE_SQL = AI_AUDIT_LEDGER_DDL_STATEMENTS.slice(1);
+const AI_AUDIT_LEDGER_DDL = buildBrowserTableDdl(
+  BROWSER_SCHEMA_CONTRACT,
+  "ai_audit_events",
+);
+const AI_AUDIT_LEDGER_COLUMNS = Object.entries(
+  BROWSER_SCHEMA_CONTRACT.tables.ai_audit_events.columns,
+)
+  .sort(([, left], [, right]) => left.ordinal - right.ordinal)
+  .map(([name]) => name);
 const IDEMPOTENCY_LEDGER_MIGRATION_DDL = `
   CREATE TABLE IF NOT EXISTS idempotency_requests (
     domain TEXT NOT NULL,
@@ -1329,18 +1349,109 @@ function browserTableColumns(db: Database, table: string): string[] {
   return result.values.map((row) => String(row[nameIndex]));
 }
 
+function browserAiAuditHasProjectForeignKey(db: Database): boolean {
+  const result = db.exec("PRAGMA foreign_key_list(ai_audit_events)")[0];
+  if (!result) return false;
+  const tableIndex = result.columns.indexOf("table");
+  const fromIndex = result.columns.indexOf("from");
+  return result.values.some(
+    (row) =>
+      String(row[tableIndex]) === "projects" &&
+      String(row[fromIndex]) === "project_id",
+  );
+}
+
 function migrateBrowserAiAuditLedger(db: Database): boolean {
   const columns = browserTableColumns(db, "ai_audit_events");
   if (columns.length === 0) {
     db.run(AI_AUDIT_LEDGER_DDL);
     return true;
   }
-  if (columns.includes("scope_id")) {
+  if (
+    columns.length !== AI_AUDIT_LEDGER_COLUMNS.length ||
+    columns.some((column, index) => column !== AI_AUDIT_LEDGER_COLUMNS[index])
+  ) {
+    throw new Error(
+      "Unsupported prerelease ai_audit_events schema; export with the originating build before upgrading",
+    );
+  }
+  if (!browserAiAuditHasProjectForeignKey(db)) {
     return false;
   }
-  throw new Error(
-    "Unsupported prerelease ai_audit_events schema; export with the originating build before upgrading",
+
+  const migratedTable = "grimodex_ai_audit_events_without_project_fk";
+  const migratedCreateSql = AI_AUDIT_LEDGER_CREATE_SQL.replace(
+    /^(CREATE TABLE(?: IF NOT EXISTS)?\s+)ai_audit_events\b/u,
+    `$1${migratedTable}`,
   );
+  if (migratedCreateSql === AI_AUDIT_LEDGER_CREATE_SQL) {
+    throw new Error("canonical ai_audit_events CREATE statement is invalid");
+  }
+  const columnList = AI_AUDIT_LEDGER_COLUMNS.join(", ");
+  const foreignKeysEnabled =
+    Number(db.exec("PRAGMA foreign_keys")[0]?.values[0]?.[0] ?? 0) !== 0;
+  if (foreignKeysEnabled) db.run("PRAGMA foreign_keys = OFF;");
+  let migrationFailure: { cause: unknown } | null = null;
+  try {
+    db.run(`BEGIN IMMEDIATE;
+      CREATE TEMP TABLE grimodex_ai_audit_sequence_high_water (
+        sequence INTEGER NOT NULL
+      );
+      INSERT INTO grimodex_ai_audit_sequence_high_water (sequence)
+        SELECT MAX(
+          COALESCE((
+            SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'
+          ), 0),
+          COALESCE((SELECT MAX(id) FROM ai_audit_events), 0)
+        );
+      ${migratedCreateSql};
+      INSERT INTO ${migratedTable} (${columnList})
+        SELECT ${columnList} FROM ai_audit_events;
+      DROP TABLE ai_audit_events;
+      ALTER TABLE ${migratedTable} RENAME TO ai_audit_events;
+      ${AI_AUDIT_LEDGER_POST_CREATE_SQL.join(";\n")};
+      UPDATE sqlite_sequence
+         SET seq = (SELECT sequence FROM grimodex_ai_audit_sequence_high_water)
+       WHERE name = 'ai_audit_events';
+      INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'ai_audit_events', sequence
+          FROM grimodex_ai_audit_sequence_high_water
+         WHERE sequence > 0
+           AND NOT EXISTS (
+             SELECT 1 FROM sqlite_sequence WHERE name = 'ai_audit_events'
+           );
+      DELETE FROM sqlite_sequence
+       WHERE name = '${migratedTable}';
+      DROP TABLE grimodex_ai_audit_sequence_high_water;
+      COMMIT;`);
+  } catch (error) {
+    try {
+      db.run("ROLLBACK;");
+    } catch {
+      // Preserve the migration failure.
+    }
+    migrationFailure = { cause: error };
+  }
+  let restoreFailure: { cause: unknown } | null = null;
+  if (foreignKeysEnabled) {
+    try {
+      db.run("PRAGMA foreign_keys = ON;");
+    } catch (error) {
+      restoreFailure = { cause: error };
+    }
+  }
+  if (migrationFailure) throw migrationFailure.cause;
+  if (restoreFailure) throw restoreFailure.cause;
+  if (browserAiAuditHasProjectForeignKey(db)) {
+    throw new Error("ai_audit_events project foreign key migration failed");
+  }
+  const integrity = db.exec("PRAGMA integrity_check")[0]?.values[0]?.[0];
+  if (integrity !== "ok") {
+    throw new Error(
+      `ai_audit_events project identity migration failed integrity_check: ${String(integrity)}`,
+    );
+  }
+  return true;
 }
 
 async function browserPayloadFingerprint(

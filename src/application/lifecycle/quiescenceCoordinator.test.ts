@@ -31,6 +31,7 @@ function dependencies(
   overrides: Partial<QuiescenceDependencies> = {},
 ): QuiescenceDependencies {
   return {
+    awaitAiExecutions: vi.fn(async () => {}),
     flushAutoSaves: vi.fn(async () => {}),
     flushParticipants: vi.fn(async () => {}),
     flushExternalWriteBacks: vi.fn(async () => {}),
@@ -80,6 +81,25 @@ describe("flushStrictQuiescence", () => {
   it("resolves only after every persistence stage succeeds", async () => {
     const deps = dependencies();
     await expect(flushStrictQuiescence(deps)).resolves.toBeUndefined();
+  });
+
+  it("waits audited executions before flushing writes they may produce", async () => {
+    const order: string[] = [];
+    const deps = dependencies({
+      awaitAiExecutions: vi.fn(async () => {
+        order.push("ai-executions");
+      }),
+      flushAutoSaves: vi.fn(async () => {
+        order.push("autosave");
+      }),
+      flushParticipants: vi.fn(async () => {
+        order.push("participants");
+      }),
+    });
+
+    await flushStrictQuiescence(deps);
+
+    expect(order).toEqual(["ai-executions", "autosave", "participants"]);
   });
 
   it("converges persistence producers through IPC, Timelapse, then IPC", async () => {

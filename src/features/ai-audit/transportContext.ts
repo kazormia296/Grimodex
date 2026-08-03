@@ -7,6 +7,7 @@ import type {
   AiAuditRequestSnapshot,
 } from "./types";
 import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
+export { requireAuditProjectId } from "./projectScope";
 
 /**
  * Stable identity supplied by the orchestration layer for one observable AI
@@ -75,16 +76,6 @@ export function auditErrorSnapshot(error: unknown): AiAuditErrorSnapshot {
     };
   }
   return { name: "Error", message: String(error) };
-}
-
-export function requireAuditProjectId(
-  projectId: string | null | undefined,
-): string {
-  const normalized = projectId?.trim();
-  if (!normalized) {
-    throw new Error("AI audit requires a project before AI dispatch");
-  }
-  return normalized;
 }
 
 const OPTION_KEYS = [

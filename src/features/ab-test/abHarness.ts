@@ -13,11 +13,6 @@
  *  - 2 枠目以降は provider / model / promptVariant を各々自由に上書きできる
  */
 
-import {
-  beginAiAuditExecutionInWorkspace,
-  cacheHitAiAuditExecution,
-} from "@/features/ai-audit/api";
-
 export type AbSurface = "chat" | "inline";
 
 /**
@@ -217,6 +212,8 @@ export async function runAbComparison(
   dispatch: AbDispatcher,
   options: RunAbOptions,
 ): Promise<AbSlotResult[]> {
+  const { beginAiAuditExecutionInWorkspace, cacheHitAiAuditExecution } =
+    await import("@/features/ai-audit/api");
   const parallel = options.parallel ?? true;
   const reuse = options.reuse ?? [];
   const operationId = options.audit.operationId ?? crypto.randomUUID();

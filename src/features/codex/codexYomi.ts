@@ -20,7 +20,7 @@ import { getProject } from "@/features/project/api";
 import { normalizeReading, isHiraganaReading } from "./reading";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
 import i18next from "@/lib/i18n";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 /** 1 表記の推定結果。yomi はひらがな正規化済み。 */
 export interface YomiResult {

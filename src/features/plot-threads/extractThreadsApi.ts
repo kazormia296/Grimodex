@@ -8,7 +8,7 @@ import { getProject } from "@/features/project/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export interface ProposeThreadsRequest {
   scenes: Array<{

@@ -1,11 +1,11 @@
 import type { InlineAiCommand, InlineAiContext } from "./inlineAiTypes";
-import { sendInlineAiStream } from "./inlineAiStreaming";
+import { sendInlineAiStream } from "./inlineAiStreamLoader";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { serializePromptMessages } from "@/features/attribution/generationLogApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export function buildSystemPrompt(
   command: InlineAiCommand,

@@ -26,9 +26,9 @@ import {
 import { ProvenanceAnalyticsSection } from "./ProvenanceAnalyticsSection";
 import { Download } from "lucide-react";
 import {
-  buildAiAuditBundle,
-  downloadAiAuditBundle,
-} from "@/features/ai-audit/exportBundle";
+  captureAiAuditExportIdentity,
+  runAiAuditExportBoundary,
+} from "@/features/ai-audit/exportBoundary";
 
 type SortColumn = "scene" | "total" | "human" | "ai" | "unknown" | "aiPct";
 type SortDir = "asc" | "desc";
@@ -184,8 +184,20 @@ export function AttributionProjectView() {
     setIsExporting(true);
     setAuditExportNotice(null);
     try {
-      const result = await buildAiAuditBundle(projectId);
-      downloadAiAuditBundle(result.bytes, result.filename);
+      const identity = captureAiAuditExportIdentity(projectId);
+      const { result, download } = await runAiAuditExportBoundary(
+        identity,
+        async (frozenReadProof) => {
+          const exportBundle = await import("@/features/ai-audit/exportBundle");
+          return {
+            result: await exportBundle.buildAiAuditBundle(projectId, {
+              frozenReadProof,
+            }),
+            download: exportBundle.downloadAiAuditBundle,
+          };
+        },
+      );
+      download(result.bytes, result.filename);
       if (result.manifest.integrityLimitations.verificationFailed) {
         setAuditExportNotice("verificationFailed");
       }

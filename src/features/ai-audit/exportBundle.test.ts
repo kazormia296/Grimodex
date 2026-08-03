@@ -7,6 +7,7 @@ import {
   AI_AUDIT_EXPORT_PAGE_SIZE,
   buildAiAuditBundle,
   parseAiAuditJsonl,
+  type AiAuditBundleBuildResult,
   type AiAuditBundleDependencies,
   type AiAuditBundleManifest,
 } from "./exportBundle";
@@ -15,6 +16,10 @@ import {
   type LegacyEvidenceCollection,
 } from "./legacyEvidence";
 import type { AiAuditStoredEvent } from "./types";
+import {
+  runAiAuditExportBoundary,
+  type AiAuditFrozenReadProof,
+} from "./exportBoundary";
 
 const PROJECT_EVENT_COUNT = 10_000;
 
@@ -457,6 +462,130 @@ describe("AI audit bundle export", () => {
       ),
     };
   }
+
+  it("records the renderer frozen-read proof without claiming a native atomic snapshot", async () => {
+    const result = await runAiAuditExportBoundary(
+      {
+        projectId: "project-1",
+        workspace: { path: "/workspaces/novel", openRevision: 3 },
+      },
+      (frozenReadProof) =>
+        buildAiAuditBundle("project-1", {
+          dependencies: emptyDependencies(),
+          frozenReadProof,
+        }),
+      {
+        awaitPendingAiAuditExecutions: vi.fn(async () => undefined),
+        awaitPendingIpcActualTasks: vi.fn(async () => undefined),
+        flushStrictQuiescence: vi.fn(async () => undefined),
+        getLoadedProjectId: () => "project-1",
+        getCurrentWorkspaceIdentity: () => ({
+          path: "/workspaces/novel",
+          openRevision: 3,
+        }),
+      },
+    );
+    const readme = strFromU8(unzipSync(result.bytes)["README.md"]);
+
+    expect(result.manifest.exportConsistency).toMatchObject({
+      applicationMutationAdmissionFrozen: true,
+      strictQuiescenceCompletedBeforeFirstRead: true,
+      projectWorkspaceIdentityPinned: true,
+      nativeMultiTableSnapshot: false,
+      externalWriterExclusion: false,
+    });
+    expect(
+      result.manifest.sections.selectedSurvivingLegacyEvidence.snapshotAtomic,
+    ).toBe(false);
+    expect(readme).toContain(
+      "pre-existing audited executions through their durable terminal events",
+    );
+    expect(readme).toContain(
+      "standalone MCP clients are outside that renderer-local boundary",
+    );
+  });
+
+  it("rejects a frozen-read proof saved and reused after its boundary released", async () => {
+    let savedProof: AiAuditFrozenReadProof | undefined;
+    await runAiAuditExportBoundary(
+      {
+        projectId: "project-1",
+        workspace: { path: "/workspaces/novel", openRevision: 3 },
+      },
+      async (proof) => {
+        savedProof = proof;
+      },
+      {
+        awaitPendingAiAuditExecutions: vi.fn(async () => undefined),
+        awaitPendingIpcActualTasks: vi.fn(async () => undefined),
+        flushStrictQuiescence: vi.fn(async () => undefined),
+        getLoadedProjectId: () => "project-1",
+        getCurrentWorkspaceIdentity: () => ({
+          path: "/workspaces/novel",
+          openRevision: 3,
+        }),
+      },
+    );
+    const dependencies = emptyDependencies();
+
+    await expect(
+      buildAiAuditBundle("project-1", {
+        dependencies,
+        frozenReadProof: savedProof,
+      }),
+    ).rejects.toThrow("AI_AUDIT_FROZEN_READ_PROOF_INACTIVE");
+    expect(dependencies.buildAuthorship).not.toHaveBeenCalled();
+  });
+
+  it("aborts a detached bundle build when its callback returns before an awaited read", async () => {
+    let resolveAuthorship!: (value: ProjectAuthorshipReport) => void;
+    let buildOutcome:
+      | Promise<{ readonly result?: AiAuditBundleBuildResult; error?: unknown }>
+      | undefined;
+    const dependencies: AiAuditBundleDependencies = {
+      ...emptyDependencies(),
+      buildAuthorship: vi.fn(
+        () =>
+          new Promise<ProjectAuthorshipReport>((resolve) => {
+            resolveAuthorship = resolve;
+          }),
+      ),
+    };
+
+    await runAiAuditExportBoundary(
+      {
+        projectId: "project-1",
+        workspace: { path: "/workspaces/novel", openRevision: 3 },
+      },
+      async (proof) => {
+        buildOutcome = buildAiAuditBundle("project-1", {
+          dependencies,
+          frozenReadProof: proof,
+        }).then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error }),
+        );
+      },
+      {
+        awaitPendingAiAuditExecutions: vi.fn(async () => undefined),
+        awaitPendingIpcActualTasks: vi.fn(async () => undefined),
+        flushStrictQuiescence: vi.fn(async () => undefined),
+        getLoadedProjectId: () => "project-1",
+        getCurrentWorkspaceIdentity: () => ({
+          path: "/workspaces/novel",
+          openRevision: 3,
+        }),
+      },
+    );
+
+    resolveAuthorship(authorship);
+    const outcome = await buildOutcome;
+    expect(outcome?.result).toBeUndefined();
+    expect(outcome?.error).toMatchObject({
+      message: expect.stringContaining("AI_AUDIT_FROZEN_READ_PROOF_INACTIVE"),
+    });
+    expect(dependencies.buildProvenance).not.toHaveBeenCalled();
+  });
 
   it("keeps partial-observable paths audit-required without classifying observations as unregistered", async () => {
     const partialEvent = {

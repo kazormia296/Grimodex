@@ -1,4 +1,4 @@
-import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreamLoader";
 import {
   recordAiUsage,
   type AiUsageSurface,
