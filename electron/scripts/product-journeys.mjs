@@ -28,6 +28,10 @@ const PROJECT_CHAT_AUTHORITY_PROMPT = `PROJECT-CHAT-AUTHORITY-JOURNEY-${Date.now
 const WORKSPACE_CHAT_AUTHORITY_PROMPT = `WORKSPACE-CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
 const CHAT_AUTHORITY_EARLY = "AUTHORITY-OLD-EARLY";
 const CHAT_AUTHORITY_LATE = "AUTHORITY-OLD-LATE";
+const WORKSPACE_CHAT_AUTHORITY_TITLE = WORKSPACE_CHAT_AUTHORITY_PROMPT.slice(
+  0,
+  30,
+);
 const MCP_CLEAN_EXTERNAL_TEXT = `MCP-CLEAN-EXTERNAL-JOURNEY-${Date.now()}`;
 const MCP_DIRTY_LOCAL_TEXT = `MCP-DIRTY-LOCAL-JOURNEY-${Date.now()}`;
 const MCP_DIRTY_EXTERNAL_TEXT = `MCP-DIRTY-EXTERNAL-JOURNEY-${Date.now()}`;
@@ -444,6 +448,7 @@ async function listChatAuthorityRows(harness, page, projectId) {
     sql: `SELECT
       s.id AS sessionId,
       s.node_id AS nodeId,
+      s.title AS sessionTitle,
       m.id AS messageId,
       m.role AS role,
       m.content AS content,
@@ -1178,6 +1183,14 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
         "workspace B received workspace A prompt, stream chunk, or prompt snapshot",
       );
     }
+    if (
+      workspaceBRows.some(
+        (row) =>
+          String(row.sessionTitle ?? "") === WORKSPACE_CHAT_AUTHORITY_TITLE,
+      )
+    ) {
+      throw new Error("workspace B received workspace A generated chat title");
+    }
     await harness.waitUntil(
       async () =>
         (await chat.page
@@ -1206,6 +1219,16 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
           prompt: WORKSPACE_CHAT_AUTHORITY_PROMPT,
           label: "workspace A stream",
         });
+        if (
+          !rows.some(
+            (row) =>
+              String(row.sessionTitle ?? "") === WORKSPACE_CHAT_AUTHORITY_TITLE,
+          )
+        ) {
+          throw new Error(
+            "workspace A stream did not persist its generated chat title",
+          );
+        }
         return rows;
       } catch {
         return null;
