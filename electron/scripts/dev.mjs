@@ -77,7 +77,11 @@ function startElectron() {
   electronProc = spawn(electronBin, ["dist-electron/main.cjs"], {
     cwd: rootDir,
     stdio: "inherit",
-    env: { ...process.env, ELECTRON_RENDERER_URL: RENDERER_URL },
+    env: {
+      ...process.env,
+      ELECTRON_RENDERER_URL: RENDERER_URL,
+      GRIMODEX_WORKSPACE_OPEN_TRACE: "1",
+    },
   });
   electronProc.on("exit", (code) => {
     electronProc = null;

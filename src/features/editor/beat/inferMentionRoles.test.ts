@@ -5,6 +5,19 @@ vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: vi.fn(),
 }));
 
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: { getState: () => ({ projectId: "p1" }) },
+}));
+
+vi.mock("@/features/workspace/store", () => ({
+  useWorkspaceStore: {
+    getState: () => ({
+      activeWorkspacePath: "/workspace/test.gdx",
+      workspaceSwitchInProgress: false,
+    }),
+  },
+}));
+
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 const mockSend = vi.mocked(sendChatMessageWithThinking);
 

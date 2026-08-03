@@ -1,8 +1,10 @@
 import {
+  AI_AUDIT_JOURNAL_FORMAT_VERSION,
   assertAiAuditJournalBatchIntegrity,
   BrowserWorkspaceError,
   createIndexedDbWorkspaceStore,
   type AiAuditJournalEntry,
+  type AiAuditJournalMaterializedBatch,
   type BrowserWorkspaceStore,
 } from "./browser-db/indexedDbStore";
 import {
@@ -314,7 +316,7 @@ export function browserPersistenceFailureMessage(error: unknown): string {
 
 function parseAiAuditReplayArgs(
   entry: AiAuditJournalEntry,
-): Record<string, unknown> {
+): AiAuditJournalMaterializedBatch {
   try {
     const parsed = JSON.parse(entry.appendArgsJson) as unknown;
     if (
@@ -324,7 +326,13 @@ function parseAiAuditReplayArgs(
     ) {
       throw new Error("append arguments must be an object");
     }
-    return parsed as Record<string, unknown>;
+    const record = parsed as Record<string, unknown>;
+    if (record.journalVersion !== AI_AUDIT_JOURNAL_FORMAT_VERSION) {
+      throw new Error(
+        "legacy raw AI audit journal cannot be replayed safely; materialized batch required",
+      );
+    }
+    return record as unknown as AiAuditJournalMaterializedBatch;
   } catch {
     throw new BrowserWorkspaceError(
       "storage-failed",
@@ -400,8 +408,8 @@ export async function initializeBrowserRuntime(
       for (const entry of auditJournal) {
         await assertAiAuditJournalBatchIntegrity(entry);
         await database.invoke(
-          "ai_audit_append_batch",
-          parseAiAuditReplayArgs(entry),
+          "ai_audit_restore_batch",
+          parseAiAuditReplayArgs(entry) as unknown as Record<string, unknown>,
         );
       }
     } finally {

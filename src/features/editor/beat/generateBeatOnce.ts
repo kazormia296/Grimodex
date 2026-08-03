@@ -13,7 +13,11 @@ import { buildBeatMessages } from "./beatPromptBuilder";
 import { buildBeatContextForGeneration } from "./buildBeatContext";
 import { appendBeatChunk, ensureGeneratedBlock } from "./insertBeatStream";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import {
+  aiAuditContextForOperation,
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -33,7 +37,16 @@ export async function generateBeatOnce(
   if (blockIfPolicyOff("bodyWrite")) return;
   if (blockIfUnlicensed()) return;
 
-  const result = await buildBeatContextForGeneration(editor, beatId, sceneId);
+  const auditAuthority = captureAiOperationAuthority(
+    useTreeStore.getState().projectId,
+    sceneId,
+  );
+  const result = await buildBeatContextForGeneration(
+    editor,
+    beatId,
+    sceneId,
+    auditAuthority.projectId,
+  );
   if (!result.ok) return;
   const ctx = result.ctx;
   const { instructions, beatType, beatModel } = ctx;
@@ -52,9 +65,13 @@ export async function generateBeatOnce(
       .get("aiPrompt.custom.beat", ""),
   });
 
+  assertAiOperationAuthorityCurrent(
+    auditAuthority,
+    useTreeStore.getState().projectId,
+  );
   if (!ensureGeneratedBlock(editor, beatId)) return;
 
-  const traceId = crypto.randomUUID();
+  const traceId = auditAuthority.operationId;
   // One timestamp for the whole generation so streamed chunks share an identical
   // authorship mark and merge into a single span (not one per chunk).
   const generatedAt = new Date().toISOString();
@@ -74,9 +91,8 @@ export async function generateBeatOnce(
     const c = await sendInlineAiStream(
       messages,
       {
-        projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+        ...aiAuditContextForOperation(auditAuthority, "beat_generation"),
         pathId: "beat_generation",
-        operationId: traceId,
       },
       {
         onTextDelta: (delta) => {

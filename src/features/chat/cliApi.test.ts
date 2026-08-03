@@ -118,6 +118,14 @@ describe("chat/cliApi", () => {
     expect(invokeMock).toHaveBeenCalledWith("send_cli_chat_stream", {
       payload,
       streamId: "execution-test",
+      auditContext: {
+        expectedWorkspacePath: "/workspace",
+        projectId: "project-1",
+        operationId: "operation-test",
+        executionId: "execution-test",
+        parentExecutionId: null,
+        pathId: "cli_chat_stream",
+      },
     });
 
     emit("cli:stream-chunk", { delta: "text", block_type: "text" });

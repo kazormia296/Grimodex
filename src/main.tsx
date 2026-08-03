@@ -1,6 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "./application/composition/runtimeStoreComposition";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { debugLog, errorDetail } from "./lib/debugLog";

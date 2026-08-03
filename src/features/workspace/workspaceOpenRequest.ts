@@ -3,6 +3,10 @@ import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { toast } from "sonner";
 import type { WorkspaceState } from "./store";
+import {
+  beginWorkspaceOpenTrace,
+  type WorkspaceOpenTraceSource,
+} from "./workspaceOpenTrace";
 
 export type WorkspaceOpenOutcome =
   | "opened"
@@ -45,10 +49,10 @@ async function openValidatedWorkspace(
   isExisting: boolean,
   get: WorkspaceStoreGetter,
   set: WorkspaceStoreSetter,
-): Promise<void> {
+): Promise<WorkspaceOpenOutcome | "trust-required"> {
   if (!isExisting) {
     const outcome = await get().openWorkspace(path);
-    if (outcome !== "opened") return;
+    if (outcome !== "opened") return outcome;
 
     // Trust only a Workspace that actually became the hydrated authority.
     const currentTrusted = get().globalSettings?.trustedWorkspaces ?? [];
@@ -57,19 +61,24 @@ async function openValidatedWorkspace(
         trustedWorkspaces: [...currentTrusted, path],
       });
     }
-    return;
+    return outcome;
   }
 
   const trusted = get().globalSettings?.trustedWorkspaces ?? [];
   if (trusted.includes(path)) {
-    await get().openWorkspace(path);
+    return get().openWorkspace(path);
   } else {
     set({ pendingTrustPath: path });
+    return "trust-required";
   }
 }
 
 export async function runWorkspaceOpenRequest(
-  input: { path: string; recent: boolean },
+  input: {
+    path: string;
+    recent: boolean;
+    source: WorkspaceOpenTraceSource;
+  },
   get: WorkspaceStoreGetter,
   set: WorkspaceStoreSetter,
 ): Promise<void> {
@@ -77,11 +86,20 @@ export async function runWorkspaceOpenRequest(
     set({ workspaceOpenRequestInProgress: inProgress }),
   );
   if (!finish) return;
+  const trace = beginWorkspaceOpenTrace(input.source);
 
   try {
-    const isExisting = await invoke<boolean>("validate_workspace_path", {
-      path: input.path,
-    });
+    const validationSpan = trace.startSpan("path-validation");
+    let isExisting: boolean;
+    try {
+      isExisting = await invoke<boolean>("validate_workspace_path", {
+        path: input.path,
+      });
+      validationSpan.finish();
+    } catch (error) {
+      validationSpan.fail();
+      throw error;
+    }
     if (input.recent && !isExisting) {
       const current = get().globalSettings;
       if (current) {
@@ -94,11 +112,19 @@ export async function runWorkspaceOpenRequest(
       set({
         error: i18next.t("workspace.invalidPath", { path: input.path }),
       });
+      trace.fail();
       return;
     }
 
-    await openValidatedWorkspace(input.path, isExisting, get, set);
+    const outcome = await openValidatedWorkspace(
+      input.path,
+      isExisting,
+      get,
+      set,
+    );
+    if (outcome !== "opened") trace.fail();
   } catch (error) {
+    trace.fail();
     debugLog.error(
       "workspaceStore",
       "workspace open request failed",

@@ -82,6 +82,7 @@ export async function buildBeatContextForGeneration(
   editor: Editor,
   beatId: string,
   sceneId: string,
+  projectId: string,
 ): Promise<BuildBeatContextResult> {
   const beat = findBeatById(editor, beatId);
   if (!beat) return { ok: false, reason: "no-beat" };
@@ -110,7 +111,7 @@ export async function buildBeatContextForGeneration(
   const codexEntries = useCodexStore.getState().entries;
   let project;
   try {
-    project = await getProject(useTreeStore.getState().projectId);
+    project = await getProject(projectId);
   } catch {
     // ignore
   }

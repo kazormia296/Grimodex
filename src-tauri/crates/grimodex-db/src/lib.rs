@@ -7,7 +7,7 @@
 //! `commands/mod.rs` の互換シム経由で従来のパス (`crate::database::…` /
 //! `crate::workspace::…` / `crate::commands::AppError` 等) のまま利用する。
 
-use rusqlite::{config::DbConfig, Connection};
+use rusqlite::{config::DbConfig, types::Value as SqlValue, Connection};
 use serde_json::Value;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -185,7 +185,23 @@ fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
 
 impl Database {
     pub fn new(path: &Path) -> anyhow::Result<Self> {
+        Self::new_with_busy_timeout(path, Duration::from_millis(5_000))
+    }
+
+    /// Open the detached workspace-maintenance connection without ever
+    /// waiting behind a foreground SQLite writer. Maintenance is best-effort:
+    /// SQLITE_BUSY means "try again on a later workspace open", not that the
+    /// editor should inherit the normal five-second busy timeout.
+    pub(crate) fn new_for_workspace_maintenance(path: &Path) -> anyhow::Result<Self> {
+        Self::new_with_busy_timeout(path, Duration::ZERO)
+    }
+
+    fn new_with_busy_timeout(path: &Path, busy_timeout: Duration) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
+        // Set this before journal-mode negotiation. A detached maintenance
+        // connection must fail fast even when opening while another writer is
+        // active; setting it in the later PRAGMA batch would be too late.
+        conn.busy_timeout(busy_timeout)?;
         // Connection-wide defense in depth. Renderer SQL receives the
         // stricter, temporary authorizer/limit policy in execute.rs; these
         // settings are safe for trusted migration/backup code as well.
@@ -202,7 +218,6 @@ impl Database {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
-             PRAGMA busy_timeout=5000;
              PRAGMA foreign_keys=ON;
              -- Perf/maintenance (DB health audit 2026-07). All safe defaults:
              -- 16 MiB page cache, 256 MiB mmap reads, temp b-trees in RAM.
@@ -214,7 +229,7 @@ impl Database {
              -- so it can't grow without bound during a long session.
              PRAGMA wal_autocheckpoint=1000;
              PRAGMA journal_size_limit=67108864;
-             -- Cap the work `PRAGMA optimize` (run post-migrate / on close) does.
+             -- Cap the work `PRAGMA optimize` (restore / non-blocking open maintenance) does.
              PRAGMA analysis_limit=400;",
         )?;
         // TEMP metadata is deliberately connection-local: open/restore creates
@@ -237,6 +252,29 @@ impl Database {
             conn: Mutex::new(conn),
             foreground_connection_waiters: AtomicUsize::new(0),
         })
+    }
+
+    fn with_busy_timeout<T>(
+        &self,
+        timeout: Duration,
+        operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let conn = self.lock_conn()?;
+        let original_timeout_ms: i64 =
+            conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        anyhow::ensure!(
+            original_timeout_ms >= 0,
+            "SQLite returned a negative busy_timeout"
+        );
+        conn.busy_timeout(timeout)?;
+        let operation_result = operation(&conn);
+        let restore_result = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
+
+        match (operation_result, restore_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+            (Ok(value), Ok(())) => Ok(value),
+        }
     }
 
     fn background_connection_priority_active() -> bool {
@@ -300,13 +338,25 @@ impl Database {
     }
 
     /// Update the query planner's statistics (`sqlite_stat1`). Cheap because
-    /// `analysis_limit` is set at open; safe to call any time. Run after
-    /// migrate and periodically — without it SQLite never gathers stats and the
-    /// planner can pick poor plans as tables grow (DB health audit 2026-07).
+    /// `analysis_limit` is set at open; safe to call after a bulk replacement
+    /// such as restore. Normal workspace open uses the non-blocking variant
+    /// below because even a no-op `PRAGMA optimize` can request SQLite's writer
+    /// lock (DB health audit 2026-07).
     pub fn optimize(&self) -> anyhow::Result<()> {
         let conn = self.lock_conn()?;
         conn.execute_batch("PRAGMA optimize;")?;
         Ok(())
+    }
+
+    /// Refresh planner statistics without ever waiting behind another SQLite
+    /// writer. Workspace open uses this before publishing authority: success
+    /// preserves the previous maintenance behavior, while SQLITE_BUSY is a
+    /// fail-soft signal and cannot reintroduce the five-second open stall.
+    pub fn optimize_without_wait(&self) -> anyhow::Result<()> {
+        self.with_busy_timeout(Duration::ZERO, |conn| {
+            conn.execute_batch("PRAGMA optimize;")?;
+            Ok(())
+        })
     }
 
     /// Compact the active workspace in place. This trusted, argument-free API
@@ -376,14 +426,90 @@ impl Database {
     /// compaction pass. undo_journal / chat_message_prompts / generation_logs
     /// past the retention window are safe to drop. Returns rows deleted.
     pub fn prune_old_logs(&self, retain_days: i64) -> anyhow::Result<usize> {
-        let conn = self.lock_conn()?;
         let cutoff = format!("-{retain_days} days");
         let mut total = 0usize;
         // Table names are fixed literals (no injection); created_at is stored in
         // datetime('now') text form, so lexical comparison is chronological.
         for table in ["undo_journal", "chat_message_prompts", "generation_logs"] {
             let sql = format!("DELETE FROM {table} WHERE created_at < datetime('now', ?1)");
-            total += conn.execute(&sql, rusqlite::params![cutoff])?;
+            let conn = self.lock_conn()?;
+            total += conn.execute(&sql, rusqlite::params![&cutoff])?;
+        }
+        Ok(total)
+    }
+
+    /// Bounded open-time maintenance on the detached zero-wait connection.
+    /// Candidate scans never touch the active renderer mutex even when a table
+    /// lacks a `created_at` index. Each write deletes at most 256 stable primary
+    /// keys and fails immediately on SQLITE_BUSY. Remaining rows are left for a
+    /// later workspace open.
+    pub(crate) fn prune_old_logs_for_workspace_maintenance(
+        &self,
+        retain_days: i64,
+    ) -> anyhow::Result<usize> {
+        self.prune_old_logs_for_workspace_maintenance_inner(retain_days, |_| Ok(()))
+    }
+
+    #[cfg(test)]
+    fn prune_old_logs_for_workspace_maintenance_with_hook(
+        &self,
+        retain_days: i64,
+        after_select: impl FnMut(&str) -> anyhow::Result<()>,
+    ) -> anyhow::Result<usize> {
+        self.prune_old_logs_for_workspace_maintenance_inner(retain_days, after_select)
+    }
+
+    fn prune_old_logs_for_workspace_maintenance_inner(
+        &self,
+        retain_days: i64,
+        mut after_select: impl FnMut(&str) -> anyhow::Result<()>,
+    ) -> anyhow::Result<usize> {
+        const ROWS_PER_TABLE: usize = 256;
+
+        let cutoff = format!("-{retain_days} days");
+        let mut total = 0usize;
+        for (table, primary_key) in [
+            ("undo_journal", "id"),
+            ("chat_message_prompts", "message_id"),
+            ("generation_logs", "id"),
+        ] {
+            let select_sql = format!(
+                "SELECT {primary_key} FROM {table}
+                  WHERE created_at < datetime('now', ?1)
+                  ORDER BY {primary_key}
+                  LIMIT ?2"
+            );
+            let keys = self.with_conn(|conn| {
+                let mut statement = conn.prepare(&select_sql)?;
+                let rows = statement
+                    .query_map(rusqlite::params![&cutoff, ROWS_PER_TABLE as i64], |row| {
+                        row.get::<_, String>(0)
+                    })?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })?;
+            if keys.is_empty() {
+                continue;
+            }
+            after_select(table)?;
+
+            let placeholders = (1..=keys.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cutoff_parameter = keys.len() + 1;
+            let delete_sql = format!(
+                "DELETE FROM {table}
+                  WHERE {primary_key} IN ({placeholders})
+                    AND created_at < datetime('now', ?{cutoff_parameter})"
+            );
+            let mut delete_params: Vec<SqlValue> = keys.into_iter().map(SqlValue::Text).collect();
+            delete_params.push(SqlValue::Text(cutoff.clone()));
+            total += self.with_busy_timeout(Duration::ZERO, |conn| {
+                Ok(conn.execute(
+                    &delete_sql,
+                    rusqlite::params_from_iter(delete_params.iter()),
+                )?)
+            })?;
         }
         Ok(total)
     }

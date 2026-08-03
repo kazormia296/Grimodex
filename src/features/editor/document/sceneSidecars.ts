@@ -47,6 +47,12 @@ export function applySceneSidecars(
   sidecars: ResolvedAnchorLoads,
   isCancelled: () => boolean,
 ): void {
+  // A workspace switch can finish the old DB reads after the new document is
+  // already being loaded. Drop the entire stale projection, including its
+  // diagnostics and store hydration; logging the rejected old reads here made
+  // a normal switch look like a live workspace failure.
+  if (isCancelled()) return;
+
   for (const { label, reason } of sidecars.errors) {
     debugLog.error(
       "EditorPane",

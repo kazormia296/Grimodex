@@ -58,11 +58,71 @@ async function auditJournalBatch(
   eventType = "execution.started",
   projectId = "default-project",
 ) {
-  const appendArgsJson = JSON.stringify({
+  const sha256 = async (value: string): Promise<string> => {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(value),
+    );
+    return [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  };
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, child]) => [key, canonicalize(child)]),
+      );
+    }
+    return value;
+  };
+  const payload = canonicalize({
+    appVersion: "unknown",
+    auditSchemaVersion: 1,
+    captureContractVersion: 1,
+    captureState: "complete",
+    credentialsExcluded: true,
+    recorder: "grimodex-ai-audit",
+    request: {
+      messages: [{ role: "user", content: "restart prompt" }],
+    },
+  }) as Record<string, unknown>;
+  const payloadSha256 = await sha256(JSON.stringify(payload));
+  const scopeId = projectId === null ? "workspace" : `project:${projectId}`;
+  const prevHash = "0".repeat(64);
+  const hash = await sha256(
+    JSON.stringify({
+      scopeId,
+      projectId,
+      sequence: 1,
+      eventId,
+      executionId: "execution-restart",
+      operationId: "operation-restart",
+      parentExecutionId: null,
+      pathId: "browser_byok_web",
+      eventType,
+      timestamp: 1,
+      recordedAt: 1,
+      payloadSha256,
+      prevHash,
+    }),
+  );
+  const journal = canonicalize({
+    journalVersion: 1,
+    auditSchemaVersion: 1,
+    captureContractVersion: 1,
     expectedWorkspacePath: "/dev/workspace",
     projectId,
+    scopeId,
+    baseSequence: 0,
+    baseTailHash: prevHash,
     events: [
       {
+        sequence: 1,
+        scopeId,
+        projectId,
         eventId,
         executionId: "execution-restart",
         operationId: "operation-restart",
@@ -70,16 +130,15 @@ async function auditJournalBatch(
         pathId: "browser_byok_web",
         eventType,
         timestamp: 1,
-        payload: {
-          captureState: "complete",
-          credentialsExcluded: true,
-          request: {
-            messages: [{ role: "user", content: "restart prompt" }],
-          },
-        },
+        recordedAt: 1,
+        payload,
+        payloadSha256,
+        prevHash,
+        hash,
       },
     ],
   });
+  const appendArgsJson = JSON.stringify(journal);
   return {
     batchId: await computeAiAuditJournalBatchId(appendArgsJson),
     appendArgsJson,
@@ -354,11 +413,13 @@ describe("Web Editor browser runtime", () => {
 
   it("fails closed without installing BrowserMock when journal replay fails", async () => {
     const store = createMemoryWorkspaceStore();
-    const invalidReplayArgsJson = JSON.stringify({
-      expectedWorkspacePath: "/different/workspace",
-      projectId: "default-project",
-      events: [],
-    });
+    const validBatch = await auditJournalBatch("invalid-replay");
+    const invalidReplayArgs = JSON.parse(validBatch.appendArgsJson) as Record<
+      string,
+      unknown
+    >;
+    invalidReplayArgs.expectedWorkspacePath = "/different/workspace";
+    const invalidReplayArgsJson = JSON.stringify(invalidReplayArgs);
     await store.appendAiAuditJournal({
       workspaceId: WEB_EDITOR_WORKSPACE_ID,
       expectedRevision: 0,
@@ -382,11 +443,10 @@ describe("Web Editor browser runtime", () => {
         dependencies,
       }),
     ).rejects.toBe(replayError);
-    expect(database.invoke).toHaveBeenCalledWith("ai_audit_append_batch", {
-      expectedWorkspacePath: "/different/workspace",
-      projectId: "default-project",
-      events: [],
-    });
+    expect(database.invoke).toHaveBeenCalledWith(
+      "ai_audit_restore_batch",
+      invalidReplayArgs,
+    );
     expect(dependencies.installBrowserMock).not.toHaveBeenCalled();
     expect(database.close).toHaveBeenCalledOnce();
     expect(locks.held.size).toBe(0);

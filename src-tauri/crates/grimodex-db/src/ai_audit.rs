@@ -27,6 +27,7 @@ const EVENT_TYPES: &[&str] = &[
     "execution.started",
     "request.prepared",
     "request.dispatched",
+    "request.dispatch.claimed",
     "transport.attempt.started",
     "transport.attempt.finished",
     "response.partial",
@@ -1053,6 +1054,12 @@ fn validate_ai_audit_lifecycle_transition(
                 event.execution_id
             );
         }
+        "request.dispatch.claimed" => {
+            anyhow::ensure!(
+                existing.dispatched,
+                "request.dispatch.claimed requires a durable request.dispatched event"
+            );
+        }
         "transport.attempt.started"
         | "transport.attempt.finished"
         | "response.partial"
@@ -1091,108 +1098,351 @@ fn validate_ai_audit_lifecycle_transition(
     Ok(())
 }
 
-pub fn append_ai_audit_events_for_scope(
+fn append_ai_audit_events_in_transaction(
     conn: &Connection,
     project_id: Option<&str>,
     events: &[AppendAiAuditEvent],
 ) -> anyhow::Result<AiAuditAppendResult> {
     let scope_id = ai_audit_scope_id(project_id)?;
+    let (mut sequence, mut prev_hash) = current_tail(conn, &scope_id)?;
+    let mut inserted_count = 0usize;
+
+    for event in events {
+        validate_event(event)?;
+        let payload = canonical_payload_for_append(&event.payload)?;
+        let payload_sha256 = sha256_hex(payload.as_bytes());
+        if let Some(existing) = existing_event_fingerprint(conn, &scope_id, &event.event_id)? {
+            let expected = ExistingEventFingerprint {
+                execution_id: event.execution_id.clone(),
+                operation_id: event.operation_id.clone(),
+                parent_execution_id: event.parent_execution_id.clone(),
+                path_id: event.path_id.clone(),
+                event_type: event.event_type.clone(),
+                timestamp: event.timestamp,
+                payload_sha256: payload_sha256.clone(),
+            };
+            anyhow::ensure!(
+                existing == expected,
+                "eventId collision with different AI audit payload: {}",
+                event.event_id
+            );
+            continue;
+        }
+
+        let existing = existing_execution_identity(conn, &scope_id, &event.execution_id)?;
+        if let Some(existing) = existing.as_ref() {
+            anyhow::ensure!(
+                existing.operation_id == event.operation_id
+                    && existing.parent_execution_id == event.parent_execution_id
+                    && existing.path_id == event.path_id,
+                "execution identity mismatch for AI audit execution: {}",
+                event.execution_id
+            );
+            anyhow::ensure!(
+                existing.terminal_event_type.is_none(),
+                "AI audit execution already reached terminal event {}: {}",
+                existing.terminal_event_type.as_deref().unwrap_or("unknown"),
+                event.execution_id
+            );
+        }
+        validate_ai_audit_lifecycle_transition(existing.as_ref(), event)?;
+
+        sequence += 1;
+        let recorded_at = recorded_at_now_ms()?;
+        let hash = compute_hash(HashInput {
+            scope_id: &scope_id,
+            project_id,
+            sequence,
+            event_id: &event.event_id,
+            execution_id: &event.execution_id,
+            operation_id: &event.operation_id,
+            parent_execution_id: event.parent_execution_id.as_deref(),
+            path_id: &event.path_id,
+            event_type: &event.event_type,
+            timestamp: event.timestamp,
+            recorded_at,
+            payload_sha256: &payload_sha256,
+            prev_hash: &prev_hash,
+        })?;
+        conn.execute(
+            "INSERT INTO ai_audit_events
+             (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+             parent_execution_id, path_id, event_type, timestamp, recorded_at,
+              payload, payload_sha256, prev_hash, hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                scope_id,
+                project_id,
+                sequence,
+                event.event_id,
+                event.execution_id,
+                event.operation_id,
+                event.parent_execution_id,
+                event.path_id,
+                event.event_type,
+                event.timestamp,
+                recorded_at,
+                payload,
+                payload_sha256,
+                prev_hash,
+                hash,
+            ],
+        )?;
+        prev_hash = hash;
+        inserted_count += 1;
+    }
+
+    Ok(AiAuditAppendResult {
+        inserted_count,
+        tail_sequence: sequence,
+        tail_hash: prev_hash,
+    })
+}
+
+pub fn append_ai_audit_events_for_scope(
+    conn: &Connection,
+    project_id: Option<&str>,
+    events: &[AppendAiAuditEvent],
+) -> anyhow::Result<AiAuditAppendResult> {
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = append_ai_audit_events_in_transaction(conn, project_id, events);
+    match result {
+        Ok(result) => {
+            if let Err(error) = conn.execute_batch("COMMIT") {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error.into());
+            }
+            Ok(result)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+const CLI_DISPATCH_PATHS: &[&str] = &["cli_chat_stream", "codex_app_cli_fallback"];
+const CLI_KINDS: &[&str] = &["claude", "codex", "opencode"];
+
+fn cli_request_digest_value(request: &Value) -> anyhow::Result<Value> {
+    let request = request
+        .as_object()
+        .context("request.prepared payload.request must be an object")?;
+    anyhow::ensure!(
+        request.get("provider").and_then(Value::as_str) == Some("cli"),
+        "request.prepared CLI request.provider is invalid"
+    );
+    let options = request
+        .get("options")
+        .and_then(Value::as_object)
+        .context("request.prepared CLI request.options is required")?;
+    let cli = options
+        .get("cli")
+        .and_then(Value::as_str)
+        .filter(|value| CLI_KINDS.contains(value))
+        .context("request.prepared CLI request.options.cli is invalid")?;
+    let messages = request
+        .get("messages")
+        .and_then(Value::as_array)
+        .context("request.prepared CLI request.messages is required")?;
+    anyhow::ensure!(
+        messages.len() == 1,
+        "request.prepared CLI request.messages must contain exactly one message"
+    );
+    let message = messages[0]
+        .as_object()
+        .context("request.prepared CLI request message must be an object")?;
+    anyhow::ensure!(
+        message.get("role").and_then(Value::as_str) == Some("user"),
+        "request.prepared CLI request message role must be user"
+    );
+    let prompt = message
+        .get("content")
+        .and_then(Value::as_str)
+        .context("request.prepared CLI request message content is required")?;
+    let model = match request.get("model") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(value)) if !value.is_empty() => Value::String(value.clone()),
+        Some(_) => anyhow::bail!("request.prepared CLI request.model is invalid"),
+    };
+    Ok(canonical_json_value(&serde_json::json!({
+        "cli": cli,
+        "model": model,
+        "prompt": prompt,
+    })))
+}
+
+fn cli_request_digest_from_prepared_payload(payload: &Value) -> anyhow::Result<String> {
+    let request = payload
+        .get("request")
+        .context("request.prepared payload.request is required")?;
+    let canonical = cli_request_digest_value(request)?;
+    Ok(sha256_hex(serde_json::to_vec(&canonical)?))
+}
+
+fn validate_sha256_hex(value: &str, name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        value.len() == 64
+            && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && value == value.to_ascii_lowercase(),
+        "{name} must be lowercase SHA-256 hex"
+    );
+    Ok(())
+}
+
+/// Atomically prove and claim one Electron CLI dispatch.
+///
+/// This intentionally queries only the indexed `(scope_id, execution_id)`
+/// rows. It does not read a project-wide audit snapshot, and the claim is
+/// appended while the same IMMEDIATE transaction still owns the lifecycle
+/// validation lock. A second invoke for the same execution therefore cannot
+/// pass the guard between validation and `runner.start`.
+pub fn claim_cli_ai_audit_dispatch_for_scope(
+    conn: &Connection,
+    project_id: Option<&str>,
+    execution_id: &str,
+    operation_id: &str,
+    parent_execution_id: Option<&str>,
+    path_id: &str,
+    expected_request_sha256: &str,
+) -> anyhow::Result<AiAuditAppendResult> {
+    anyhow::ensure!(
+        project_id.is_some_and(|value| !value.trim().is_empty()),
+        "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: CLI dispatch requires a projectId"
+    );
+    anyhow::ensure!(
+        CLI_DISPATCH_PATHS.contains(&path_id),
+        "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: CLI dispatch path is not allowed"
+    );
+    for (name, value) in [
+        ("executionId", execution_id),
+        ("operationId", operation_id),
+        ("pathId", path_id),
+    ] {
+        anyhow::ensure!(
+            !value.trim().is_empty() && value == value.trim(),
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: {name} is invalid"
+        );
+    }
+    validate_sha256_hex(expected_request_sha256, "expectedRequestSha256")?;
+
+    let scope_id = ai_audit_scope_id(project_id)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| {
-        let (mut sequence, mut prev_hash) = current_tail(conn, &scope_id)?;
-        let mut inserted_count = 0usize;
-
-        for event in events {
-            validate_event(event)?;
-            let payload = canonical_payload_for_append(&event.payload)?;
-            let payload_sha256 = sha256_hex(payload.as_bytes());
-            if let Some(existing) = existing_event_fingerprint(conn, &scope_id, &event.event_id)? {
-                let expected = ExistingEventFingerprint {
-                    execution_id: event.execution_id.clone(),
-                    operation_id: event.operation_id.clone(),
-                    parent_execution_id: event.parent_execution_id.clone(),
-                    path_id: event.path_id.clone(),
-                    event_type: event.event_type.clone(),
-                    timestamp: event.timestamp,
-                    payload_sha256: payload_sha256.clone(),
-                };
-                anyhow::ensure!(
-                    existing == expected,
-                    "eventId collision with different AI audit payload: {}",
-                    event.event_id
-                );
-                continue;
-            }
-
-            let existing = existing_execution_identity(conn, &scope_id, &event.execution_id)?;
-            if let Some(existing) = existing.as_ref() {
-                anyhow::ensure!(
-                    existing.operation_id == event.operation_id
-                        && existing.parent_execution_id == event.parent_execution_id
-                        && existing.path_id == event.path_id,
-                    "execution identity mismatch for AI audit execution: {}",
-                    event.execution_id
-                );
-                anyhow::ensure!(
-                    existing.terminal_event_type.is_none(),
-                    "AI audit execution already reached terminal event {}: {}",
-                    existing.terminal_event_type.as_deref().unwrap_or("unknown"),
-                    event.execution_id
-                );
-            }
-            validate_ai_audit_lifecycle_transition(existing.as_ref(), event)?;
-
-            sequence += 1;
-            let recorded_at = recorded_at_now_ms()?;
-            let hash = compute_hash(HashInput {
-                scope_id: &scope_id,
-                project_id,
-                sequence,
-                event_id: &event.event_id,
-                execution_id: &event.execution_id,
-                operation_id: &event.operation_id,
-                parent_execution_id: event.parent_execution_id.as_deref(),
-                path_id: &event.path_id,
-                event_type: &event.event_type,
-                timestamp: event.timestamp,
-                recorded_at,
-                payload_sha256: &payload_sha256,
-                prev_hash: &prev_hash,
+        let mut statement = conn.prepare(
+            "SELECT sequence, project_id, operation_id, parent_execution_id,
+                    path_id, event_type, payload
+               FROM ai_audit_events
+              WHERE scope_id = ? AND execution_id = ?
+              ORDER BY sequence ASC",
+        )?;
+        let rows = statement.query_map(params![scope_id, execution_id], |row| {
+            let payload: String = row.get(6)?;
+            let payload: Value = serde_json::from_str(&payload).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
             })?;
-            conn.execute(
-                "INSERT INTO ai_audit_events
-                 (scope_id, project_id, sequence, event_id, execution_id, operation_id,
-                 parent_execution_id, path_id, event_type, timestamp, recorded_at,
-                  payload, payload_sha256, prev_hash, hash)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![
-                    scope_id,
-                    project_id,
-                    sequence,
-                    event.event_id,
-                    event.execution_id,
-                    event.operation_id,
-                    event.parent_execution_id,
-                    event.path_id,
-                    event.event_type,
-                    event.timestamp,
-                    recorded_at,
-                    payload,
-                    payload_sha256,
-                    prev_hash,
-                    hash,
-                ],
-            )?;
-            prev_hash = hash;
-            inserted_count += 1;
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                payload,
+            ))
+        })?;
+        let mut lifecycle = Vec::new();
+        for row in rows {
+            lifecycle.push(row?);
         }
+        anyhow::ensure!(
+            !lifecycle.is_empty(),
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: durable CLI lifecycle is missing"
+        );
 
-        Ok(AiAuditAppendResult {
-            inserted_count,
-            tail_sequence: sequence,
-            tail_hash: prev_hash,
-        })
+        let mut started = None;
+        let mut prepared = None;
+        let mut dispatched = None;
+        let mut claimed = false;
+        for (
+            sequence,
+            stored_project_id,
+            stored_operation_id,
+            stored_parent_execution_id,
+            stored_path_id,
+            event_type,
+            payload,
+        ) in &lifecycle
+        {
+            anyhow::ensure!(
+                stored_project_id.as_deref() == project_id
+                    && stored_operation_id == operation_id
+                    && stored_parent_execution_id.as_deref() == parent_execution_id
+                    && stored_path_id == path_id,
+                "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: durable execution identity mismatch"
+            );
+            match event_type.as_str() {
+                "execution.started" if started.is_none() => started = Some(*sequence),
+                "request.prepared" if prepared.is_none() => {
+                    prepared = Some((*sequence, payload.clone()))
+                }
+                "request.dispatched" if dispatched.is_none() => dispatched = Some(*sequence),
+                "request.dispatch.claimed" => claimed = true,
+                "execution.succeeded"
+                | "execution.failed"
+                | "execution.cancelled"
+                | "execution.skipped"
+                | "execution.cache_hit" => anyhow::bail!(
+                    "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: execution already has a terminal event"
+                ),
+                _ => {}
+            }
+        }
+        anyhow::ensure!(
+            !claimed,
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: execution already has a CLI dispatch claim"
+        );
+        let started = started
+            .context("AI_AUDIT_DISPATCH_PRECONDITION_FAILED: execution.started is not durable")?;
+        let (prepared_sequence, prepared_payload) = prepared
+            .context("AI_AUDIT_DISPATCH_PRECONDITION_FAILED: request.prepared is not durable")?;
+        let dispatched = dispatched
+            .context("AI_AUDIT_DISPATCH_PRECONDITION_FAILED: request.dispatched is not durable")?;
+        anyhow::ensure!(
+            started < prepared_sequence && prepared_sequence < dispatched,
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: CLI audit lifecycle is out of order"
+        );
+        anyhow::ensure!(
+            cli_request_digest_from_prepared_payload(&prepared_payload)? == expected_request_sha256,
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: CLI request digest does not match request.prepared"
+        );
+
+        let claim = AppendAiAuditEvent {
+            event_id: format!("cli-dispatch-claim:{execution_id}"),
+            execution_id: execution_id.to_string(),
+            operation_id: operation_id.to_string(),
+            parent_execution_id: parent_execution_id.map(str::to_string),
+            path_id: path_id.to_string(),
+            event_type: "request.dispatch.claimed".to_string(),
+            timestamp: recorded_at_now_ms()?,
+            payload: serde_json::json!({
+                "auditSchemaVersion": AI_AUDIT_SCHEMA_VERSION,
+                "captureContractVersion": AI_AUDIT_CAPTURE_CONTRACT_VERSION,
+                "captureState": "complete",
+                "credentialsExcluded": true,
+                "claimOwner": "electron-main",
+                "dispatchBoundary": "before_cli_runner_start",
+                "providerReceiptObserved": false,
+                "requestSha256": expected_request_sha256,
+            }),
+        };
+        append_ai_audit_events_in_transaction(conn, project_id, &[claim])
     })();
 
     match result {
@@ -1481,6 +1731,28 @@ impl Database {
         events: &[AppendAiAuditEvent],
     ) -> anyhow::Result<AiAuditAppendResult> {
         self.with_conn(|conn| append_ai_audit_events_for_scope(conn, project_id, events))
+    }
+
+    pub fn claim_cli_ai_audit_dispatch(
+        &self,
+        project_id: Option<&str>,
+        execution_id: &str,
+        operation_id: &str,
+        parent_execution_id: Option<&str>,
+        path_id: &str,
+        expected_request_sha256: &str,
+    ) -> anyhow::Result<AiAuditAppendResult> {
+        self.with_conn(|conn| {
+            claim_cli_ai_audit_dispatch_for_scope(
+                conn,
+                project_id,
+                execution_id,
+                operation_id,
+                parent_execution_id,
+                path_id,
+                expected_request_sha256,
+            )
+        })
     }
 
     pub fn validate_ai_audit_dispatch_precondition(

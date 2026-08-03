@@ -3,6 +3,7 @@ use grimodex_db::ai_audit::{
 };
 use grimodex_db::Database;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 fn event(event_id: &str, event_type: &str, timestamp: i64) -> AppendAiAuditEvent {
     AppendAiAuditEvent {
@@ -34,6 +35,12 @@ fn migrated_db() -> Database {
     })
     .expect("seed project");
     db
+}
+
+fn cli_request_sha256() -> String {
+    hex::encode(Sha256::digest(
+        br#"{"cli":"codex","model":"gpt-test","prompt":"hello"}"#,
+    ))
 }
 
 #[test]
@@ -754,6 +761,130 @@ fn native_dispatch_precondition_rejects_missing_or_out_of_order_events() {
     assert!(error
         .to_string()
         .contains("required durable lifecycle is missing or out of order"));
+}
+
+#[test]
+fn cli_dispatch_claim_is_digest_bound_atomic_and_single_use() {
+    let db = migrated_db();
+    let mut started = event("cli-start", "execution.started", 1);
+    started.path_id = "cli_chat_stream".to_string();
+    let mut prepared = event("cli-prepared", "request.prepared", 2);
+    prepared.path_id = "cli_chat_stream".to_string();
+    prepared.payload = json!({
+        "captureState": "partial",
+        "credentialsExcluded": true,
+        "request": {
+            "provider": "cli",
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "options": {"cli": "codex"}
+        }
+    });
+    let mut dispatched = event("cli-dispatched", "request.dispatched", 3);
+    dispatched.path_id = "cli_chat_stream".to_string();
+    db.append_ai_audit_events("project-1", &[started, prepared, dispatched])
+        .expect("append CLI lifecycle");
+
+    let result = db
+        .claim_cli_ai_audit_dispatch(
+            Some("project-1"),
+            "execution-1",
+            "operation-1",
+            None,
+            "cli_chat_stream",
+            &cli_request_sha256(),
+        )
+        .expect("matching CLI request should claim");
+    assert_eq!(result.inserted_count, 1);
+
+    let snapshot = db
+        .read_ai_audit_snapshot("project-1", Some(0), None, Some(10))
+        .expect("read claimed audit");
+    assert_eq!(
+        snapshot
+            .events
+            .last()
+            .map(|event| event.event_type.as_str()),
+        Some("request.dispatch.claimed")
+    );
+
+    let reused = db
+        .claim_cli_ai_audit_dispatch(
+            Some("project-1"),
+            "execution-1",
+            "operation-1",
+            None,
+            "cli_chat_stream",
+            &cli_request_sha256(),
+        )
+        .expect_err("one execution may not be claimed twice");
+    assert!(reused
+        .to_string()
+        .contains("execution already has a CLI dispatch claim"));
+}
+
+#[test]
+fn cli_dispatch_claim_rejects_request_digest_path_and_project_mismatches() {
+    let db = migrated_db();
+    let mut started = event("cli-start-mismatch", "execution.started", 1);
+    started.path_id = "cli_chat_stream".to_string();
+    let mut prepared = event("cli-prepared-mismatch", "request.prepared", 2);
+    prepared.path_id = "cli_chat_stream".to_string();
+    prepared.payload = json!({
+        "captureState": "partial",
+        "credentialsExcluded": true,
+        "request": {
+            "provider": "cli",
+            "messages": [{"role": "user", "content": "hello"}],
+            "options": {"cli": "codex"}
+        }
+    });
+    let mut dispatched = event("cli-dispatched-mismatch", "request.dispatched", 3);
+    dispatched.path_id = "cli_chat_stream".to_string();
+    db.append_ai_audit_events("project-1", &[started, prepared, dispatched])
+        .expect("append CLI lifecycle");
+
+    let digest_mismatch = db
+        .claim_cli_ai_audit_dispatch(
+            Some("project-1"),
+            "execution-1",
+            "operation-1",
+            None,
+            "cli_chat_stream",
+            &"0".repeat(64),
+        )
+        .expect_err("forged prompt/model/CLI digest must reject");
+    assert!(digest_mismatch
+        .to_string()
+        .contains("CLI request digest does not match"));
+
+    let path_mismatch = db
+        .claim_cli_ai_audit_dispatch(
+            Some("project-1"),
+            "execution-1",
+            "operation-1",
+            None,
+            "unknown-cli-path",
+            &cli_request_sha256(),
+        )
+        .expect_err("unknown CLI path must reject");
+    assert!(path_mismatch
+        .to_string()
+        .contains("CLI dispatch path is not allowed"));
+
+    let project_mismatch = db
+        .claim_cli_ai_audit_dispatch(
+            None,
+            "execution-1",
+            "operation-1",
+            None,
+            "cli_chat_stream",
+            &cli_request_sha256(),
+        )
+        .expect_err("workspace-scoped CLI dispatch must reject");
+    assert!(project_mismatch
+        .to_string()
+        .contains("CLI dispatch requires a projectId"));
 }
 
 #[test]

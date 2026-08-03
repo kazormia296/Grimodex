@@ -103,7 +103,12 @@ describe("buildBeatContextForGeneration — codexSummaries", () => {
     const editor = createEditorWithBeat();
     useCodexHighlightStore.setState({ matchedEntryIds: ["char-akane"] });
 
-    const result = await buildBeatContextForGeneration(editor, "b1", "scene-1");
+    const result = await buildBeatContextForGeneration(
+      editor,
+      "b1",
+      "scene-1",
+      "p1",
+    );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.ctx.codexSummaries).toContain("- 朱音: 主人公。雨を嫌う。");
@@ -121,7 +126,12 @@ describe("buildBeatContextForGeneration — codexSummaries", () => {
       { type: "text", text: " が裏切る" },
     ]);
 
-    const result = await buildBeatContextForGeneration(editor, "b1", "scene-1");
+    const result = await buildBeatContextForGeneration(
+      editor,
+      "b1",
+      "scene-1",
+      "p1",
+    );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.ctx.codexSummaries).toContain("- 凛: 朱音の幼馴染。");
@@ -132,7 +142,12 @@ describe("buildBeatContextForGeneration — codexSummaries", () => {
 
   it("検出 codex が無ければ codexSummaries は空文字", async () => {
     const editor = createEditorWithBeat();
-    const result = await buildBeatContextForGeneration(editor, "b1", "scene-1");
+    const result = await buildBeatContextForGeneration(
+      editor,
+      "b1",
+      "scene-1",
+      "p1",
+    );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.ctx.codexSummaries).toBe("");
@@ -147,7 +162,12 @@ describe("buildBeatContextForGeneration — codexSummaries", () => {
         attrs: { id: "char-akane", label: "朱音", role: "actor" },
       },
     ]);
-    const result = await buildBeatContextForGeneration(editor, "b1", "scene-1");
+    const result = await buildBeatContextForGeneration(
+      editor,
+      "b1",
+      "scene-1",
+      "p1",
+    );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.ctx.instructions).toBe("@朱音");

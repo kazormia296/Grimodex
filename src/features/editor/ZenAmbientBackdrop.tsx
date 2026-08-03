@@ -47,10 +47,22 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
   const reduced = useReducedMotion();
   const windowActive = useWindowActive();
   const config = useZenShaderConfig();
-  const [webGlSupported] = useState(hasUsableZenWebGl2);
-  const [rendererStatus, setRendererStatus] = useState<ZenShaderRendererStatus>(
-    webGlSupported ? "initializing" : "fallback-unsupported",
+  const [webGlProbe, setWebGlProbe] = useState(() =>
+    config.enabled
+      ? { complete: true, supported: hasUsableZenWebGl2() }
+      : { complete: false, supported: false },
   );
+  const [rendererStatus, setRendererStatus] = useState<ZenShaderRendererStatus>(
+    webGlProbe.supported ? "initializing" : "fallback-unsupported",
+  );
+  useEffect(() => {
+    if (!config.enabled || webGlProbe.complete) return;
+    const supported = hasUsableZenWebGl2();
+    setWebGlProbe({ complete: true, supported });
+    setRendererStatus(supported ? "initializing" : "fallback-unsupported");
+  }, [config.enabled, webGlProbe.complete]);
+
+  const webGlSupported = webGlProbe.supported;
   const playing =
     config.enabled &&
     webGlSupported &&
@@ -93,7 +105,7 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
         ease: EASINGS.easeOut,
       }}
     >
-      {config.enabled && (
+      {config.enabled && webGlProbe.complete && (
         <ZenShaderSurface
           config={config}
           playing={playing}

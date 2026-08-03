@@ -110,7 +110,8 @@ export declare class Backend {
    */
   vacuumDatabase(): Promise<void>
   /**
-   * workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
+   * workspace を開く: migrate → swap → RAII SwitchingGuard →
+   * authority commit 後の低優先度 maintenance worker →
    * recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
    * Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
    * Codex matcher破棄 + semantic 4cache epoch rotateを行う。
@@ -198,6 +199,11 @@ export declare class Backend {
    * writing its terminal event into the newly active project database.
    */
   aiAuditAppendBatch(expectedWorkspacePath: string, projectId: string | undefined | null, events: any): Promise<string>
+  /**
+   * Validate the durable CLI lifecycle and atomically append the
+   * main-owned one-shot dispatch claim before the shell manager can spawn.
+   */
+  aiAuditClaimCliDispatch(expectedWorkspacePath: string, projectId: string | undefined | null, executionId: string, operationId: string, parentExecutionId: string | undefined | null, pathId: string, expectedRequestSha256: string): Promise<string>
   /**
    * Read one immutable high-water snapshot. Rows appended after the
    * selected high-water sequence are deliberately excluded from export.

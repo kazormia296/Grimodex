@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
@@ -9,6 +9,7 @@ import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { recordActiveWorkspaceLauncherPaint } from "./workspaceOpenTrace";
 
 export function LauncherScreen() {
   const { t } = useTranslation();
@@ -30,12 +31,25 @@ export function LauncherScreen() {
   const workspaceBusy =
     workspaceOpenRequestInProgress || workspaceSwitchInProgress;
 
+  useEffect(() => {
+    let paintedFrame: number | null = null;
+    const committedFrame = requestAnimationFrame(() => {
+      paintedFrame = requestAnimationFrame(() => {
+        recordActiveWorkspaceLauncherPaint();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(committedFrame);
+      if (paintedFrame !== null) cancelAnimationFrame(paintedFrame);
+    };
+  }, []);
+
   async function handleOpenRecent(path: string) {
     if (workspaceBusy) return;
     clearError();
     setOpening(path);
     try {
-      await openRecentWorkspace(path);
+      await openRecentWorkspace(path, "launcher-card");
     } catch (error) {
       debugLog.error(
         "workspaceLauncher",
@@ -54,7 +68,7 @@ export function LauncherScreen() {
       const path = await openFolderDialog();
       if (!path) return;
       setOpening(path);
-      await requestOpenWorkspace(path);
+      await requestOpenWorkspace(path, "folder-picker");
     } catch (error) {
       debugLog.error(
         "workspaceLauncher",

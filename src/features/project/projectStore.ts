@@ -62,15 +62,12 @@ interface CreateProjectInput {
 }
 
 interface ProjectLoadLifecycleOptions {
-  /**
-   * Workspace replacement already flushed the old database before swapping.
-   * Re-flushing mounted old-scope editors after the native swap could write
-   * their content into the replacement database, so only a Workspace-owned
-   * gate context may use this path.
-   */
+  /** Workspace-owned reload skips a post-swap flush of old-scope editors. */
+  // The old UI was already drained before the native binding changed.
   skipStrictQuiescence?: boolean;
   /** Generation that the prepared critical snapshots will belong to. */
   workspaceOpenRevision?: number;
+  lifecycleTiming?: import("@/application/project/ProjectLifecycleRegistry").ProjectLifecycleTimingObserver;
 }
 
 interface ProjectState {
@@ -575,6 +572,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               commitPreparedProject,
               options?.workspaceOpenRevision,
               () => quiescenceLease.openTargetReadPhase(),
+              ...(options?.lifecycleTiming
+                ? ([options.lifecycleTiming] as const)
+                : []),
             );
             if (result?.cancelled) return;
             if (!isCurrentProjectLoad(generation)) return;

@@ -25,7 +25,12 @@ import { extractBeatMentions } from "./extractBeatMentions";
 import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import type { RoleSuggestionEntry } from "./roleSuggestionsStore";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import {
+  aiAuditContextForOperation,
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+  type AiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -33,6 +38,7 @@ async function runRoleInference(
   editor: Editor,
   beatId: string,
   instructions: string,
+  auditAuthority: AiOperationAuthority,
 ): Promise<void> {
   const settings = useSettingsStore.getState();
   if (!settings.getBoolean("beat.inferRoles", true)) return;
@@ -68,6 +74,7 @@ async function runRoleInference(
     beatInstructions: instructions,
     generatedProse,
     mentions,
+    auditAuthority,
   });
 
   // Apply confidence threshold and exclude same-role / hallucinated suggestions.
@@ -174,7 +181,16 @@ export function useBeatGeneration(
     if (blockIfPolicyOff("bodyWrite")) return;
     if (blockIfUnlicensed()) return;
 
-    const result = await buildBeatContextForGeneration(editor, beatId, sceneId);
+    const auditAuthority = captureAiOperationAuthority(
+      useTreeStore.getState().projectId,
+      sceneId,
+    );
+    const result = await buildBeatContextForGeneration(
+      editor,
+      beatId,
+      sceneId,
+      auditAuthority.projectId,
+    );
     if (!result.ok) {
       // Only the missing-instructions case surfaces as an error; a vanished
       // beat (deleted mid-flight) stays silent like before.
@@ -223,6 +239,10 @@ export function useBeatGeneration(
     };
     const messages = buildBeatMessages(promptInput);
 
+    assertAiOperationAuthorityCurrent(
+      auditAuthority,
+      useTreeStore.getState().projectId,
+    );
     if (!ensureGeneratedBlock(editor, beatId)) return;
 
     // Belt-and-suspenders: if a previous stream somehow left a cleanup behind
@@ -244,7 +264,7 @@ export function useBeatGeneration(
         }
       : undefined;
 
-    const traceId = crypto.randomUUID();
+    const traceId = auditAuthority.operationId;
     // One timestamp for the whole generation so streamed chunks share an
     // identical authorship mark and merge into a single span (not one per chunk).
     const generatedAt = new Date().toISOString();
@@ -256,9 +276,8 @@ export function useBeatGeneration(
       const cleanup = await sendInlineAiStream(
         messages,
         {
-          projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+          ...aiAuditContextForOperation(auditAuthority, "beat_generation"),
           pathId: "beat_generation",
-          operationId: traceId,
         },
         {
           onTextDelta: (delta) => {
@@ -309,7 +328,12 @@ export function useBeatGeneration(
             ).catch((err: unknown) => {
               console.warn("beat generation log failed", err);
             });
-            runRoleInference(editor, beatId, instructions).catch((err) => {
+            runRoleInference(
+              editor,
+              beatId,
+              instructions,
+              auditAuthority,
+            ).catch((err) => {
               console.warn("role inference failed", err);
             });
           },

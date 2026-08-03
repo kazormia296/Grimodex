@@ -49,7 +49,7 @@ export function WorkspaceMenu() {
     setIsOpen(false);
     try {
       const path = await openFolderDialog();
-      if (path) await requestOpenWorkspace(path);
+      if (path) await requestOpenWorkspace(path, "folder-picker");
     } catch (error) {
       debugLog.error(
         "workspaceMenu",
@@ -109,7 +109,7 @@ export function WorkspaceMenu() {
               disabled={workspaceBusy}
               onClick={() => {
                 setIsOpen(false);
-                void openRecentWorkspace(ws.path);
+                void openRecentWorkspace(ws.path, "workspace-menu-recent");
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             >

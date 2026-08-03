@@ -44,8 +44,41 @@ export interface WorkspaceSnapshot extends WorkspaceSnapshotMetadata {
 export interface AiAuditJournalBatch {
   /** SHA-256 of appendArgsJson, generated after BrowserMock validation. */
   batchId: string;
-  /** Canonical JSON arguments for an exact ai_audit_append_batch replay. */
+  /** Canonical JSON for a versioned, materialized audit-batch restore. */
   appendArgsJson: string;
+}
+
+/** Journal payload format used after SQLite accepts an AI audit batch. */
+export const AI_AUDIT_JOURNAL_FORMAT_VERSION = 1 as const;
+
+export interface AiAuditJournalMaterializedEvent {
+  sequence: number;
+  scopeId: string;
+  projectId: string | null;
+  eventId: string;
+  executionId: string;
+  operationId: string;
+  parentExecutionId: string | null;
+  pathId: string;
+  eventType: string;
+  timestamp: number;
+  recordedAt: number;
+  payload: Record<string, unknown>;
+  payloadSha256: string;
+  prevHash: string;
+  hash: string;
+}
+
+export interface AiAuditJournalMaterializedBatch {
+  journalVersion: typeof AI_AUDIT_JOURNAL_FORMAT_VERSION;
+  auditSchemaVersion: number;
+  captureContractVersion: number;
+  expectedWorkspacePath: string;
+  projectId: string | null;
+  scopeId: string;
+  baseSequence: number;
+  baseTailHash: string;
+  events: AiAuditJournalMaterializedEvent[];
 }
 
 export interface AiAuditJournalAppendInput extends AiAuditJournalBatch {

@@ -1,10 +1,70 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, ErrorCode};
+use std::time::Duration;
 
 use super::Database;
 
+enum ConvergedV2Finalize {
+    Finalized,
+    Busy,
+    NeedsFullMigration,
+}
+
 impl Database {
     pub fn migrate(&self) -> anyhow::Result<()> {
+        self.migrate_impl(false)
+    }
+
+    /// Restore preflight operates on a disposable copy and must retain the
+    /// historical full idempotent migration as its schema-compatibility probe.
+    /// Normal workspace open uses `migrate()` so current schemas stay on the
+    /// read-only fast path.
+    pub(crate) fn migrate_for_restore_preflight(&self) -> anyhow::Result<()> {
+        self.migrate_impl(true)
+    }
+
+    fn migrate_impl(&self, force_full: bool) -> anyhow::Result<()> {
         let conn = self.lock_conn()?;
+        const SCHEMA_VERSION: i32 = grimodex_core::SCHEMA_VERSION;
+        let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        anyhow::ensure!(
+            current <= SCHEMA_VERSION,
+            "workspace schema version {current} is newer than supported version {SCHEMA_VERSION}"
+        );
+        if !force_full {
+            if current == SCHEMA_VERSION {
+                // Crash recovery is an open-time operational invariant, not a
+                // schema revision. The helper first performs a read-only EXISTS
+                // check, so the healthy current-version path never takes a write
+                // lock (and cannot sit behind an unrelated SQLite writer).
+                Self::recover_interrupted_post_effect_runs(&conn)?;
+                return Ok(());
+            }
+
+            if current == grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
+                && grimodex_core::workspace_schema::is_converged_v2_workspace_schema(&conn)?
+            {
+                // Version 3 introduced the read-only open fast path, not new
+                // DDL. A v2 database that already satisfies every post-v2
+                // invariant must not replay the full idempotent migration just
+                // to write the marker. Finalization rechecks the invariant
+                // under a zero-wait write reservation so an older v2 process
+                // cannot add unrepaired data between the probe and the stamp.
+                // If another writer is active, retain v2 and let a later open
+                // retry instead of blocking input-ready.
+                let recovery_required = Self::has_interrupted_post_effect_runs(&conn)?;
+                match Self::try_finalize_converged_v2_without_wait(&conn, SCHEMA_VERSION)? {
+                    ConvergedV2Finalize::Finalized => return Ok(()),
+                    ConvergedV2Finalize::Busy if !recovery_required => return Ok(()),
+                    ConvergedV2Finalize::Busy => {
+                        anyhow::bail!(
+                            "workspace crash recovery is blocked by another SQLite writer; retry after it finishes"
+                        )
+                    }
+                    ConvergedV2Finalize::NeedsFullMigration => {}
+                }
+            }
+        }
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS projects (
                 id                     TEXT PRIMARY KEY,
@@ -1332,14 +1392,7 @@ impl Database {
         // PostEffect クラッシュリカバリ: プロセス強制終了等で running のまま残った run を
         // 起動時に failed へ落とす。idx_runs_running_scope の UNIQUE が次回起動を
         // ブロックするのを防ぐ目的も兼ねる。設計書 §run のステータス遷移 を参照。
-        conn.execute(
-            "UPDATE post_effect_runs
-                SET status = 'failed',
-                    error_message = COALESCE(error_message, 'Process terminated unexpectedly'),
-                    completed_at = datetime('now')
-              WHERE status = 'running'",
-            [],
-        )?;
+        Self::recover_interrupted_post_effect_runs(&conn)?;
 
         // Trash bin (削除物の物理ゴミ箱) — Phase 1 では文字屑のみ書き込む。
         // payload / preview_meta は素の TEXT で JSON.stringify を保持。
@@ -2069,13 +2122,99 @@ impl Database {
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
         // crash or later migration failure.
-        const SCHEMA_VERSION: i32 = grimodex_core::SCHEMA_VERSION;
-        let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        }
+        anyhow::ensure!(
+            grimodex_core::workspace_schema::has_v3_checkpoint_invariants(&conn)?,
+            "workspace schema did not satisfy version 3 invariants after migration"
+        );
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
         Ok(())
+    }
+
+    /// Recover runs left active by a terminated process without turning every
+    /// healthy workspace open into a SQLite write. The read probe is also what
+    /// lets a current-schema open proceed while another connection owns a
+    /// `BEGIN IMMEDIATE` reservation.
+    fn recover_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<()> {
+        if !Self::has_interrupted_post_effect_runs(conn)? {
+            return Ok(());
+        }
+        conn.execute(
+            "UPDATE post_effect_runs
+                SET status = 'failed',
+                    error_message = COALESCE(error_message, 'Process terminated unexpectedly'),
+                    completed_at = datetime('now')
+              WHERE status = 'running'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn has_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM post_effect_runs WHERE status = 'running' LIMIT 1)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    }
+
+    /// Atomically recover open-time state and advance a marker-only schema
+    /// revision without ever waiting for another SQLite writer.
+    ///
+    /// The compatibility probe is repeated after `BEGIN IMMEDIATE`; otherwise
+    /// an older v2 process could commit unrepaired data between the initial
+    /// read probe and the v3 stamp. SQLITE_BUSY/LOCKED leaves both data and the
+    /// previous marker untouched. All other failures remain fatal.
+    fn try_finalize_converged_v2_without_wait(
+        conn: &Connection,
+        schema_version: i32,
+    ) -> anyhow::Result<ConvergedV2Finalize> {
+        let original_timeout_ms: i64 =
+            conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        anyhow::ensure!(
+            original_timeout_ms >= 0,
+            "SQLite returned a negative busy_timeout"
+        );
+
+        conn.busy_timeout(Duration::ZERO)?;
+        let finalize_result = match conn.execute_batch("BEGIN IMMEDIATE") {
+            Ok(()) => {
+                let transaction_result = (|| {
+                    if !grimodex_core::workspace_schema::is_converged_v2_workspace_schema(conn)? {
+                        conn.execute_batch("ROLLBACK")?;
+                        return Ok(ConvergedV2Finalize::NeedsFullMigration);
+                    }
+                    Self::recover_interrupted_post_effect_runs(conn)?;
+                    conn.pragma_update(None, "user_version", schema_version)?;
+                    grimodex_core::commit_or_rollback(conn)?;
+                    Ok(ConvergedV2Finalize::Finalized)
+                })();
+                if transaction_result.is_err() && !conn.is_autocommit() {
+                    let _ = conn.execute_batch("ROLLBACK");
+                }
+                transaction_result
+            }
+            Err(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                ) =>
+            {
+                Ok(ConvergedV2Finalize::Busy)
+            }
+            Err(error) => Err(error.into()),
+        };
+        let restore_result = conn.busy_timeout(Duration::from_millis(
+            u64::try_from(original_timeout_ms)
+                .map_err(|error| anyhow::anyhow!("invalid SQLite busy_timeout: {error}"))?,
+        ));
+
+        match (finalize_result, restore_result) {
+            (Ok(outcome), Ok(())) => Ok(outcome),
+            (Ok(_), Err(error)) => Err(error.into()),
+            (Err(error), _) => Err(error),
+        }
     }
 
     /// AI write infrastructure: undo-journal, entity version counters, and
@@ -2343,6 +2482,39 @@ impl Database {
     /// `writable_schema` で sqlite_master.sql を直接書き換える方式を採る
     /// (テーブル再構築より影響範囲が小さく、FTS5/triggers/indexes/外部 FK の
     /// 取り回しが要らない)。冪等性は CHECK 文字列の中に新値が含まれるかで判定。
+    fn verify_post_effect_category_migration(
+        conn: &Connection,
+        checks: &[(&str, &str)],
+        migration_name: &str,
+    ) -> anyhow::Result<()> {
+        for (table, marker) in checks {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [*table],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("{migration_name}: cannot read schema for {table}: {error}")
+                })?;
+            if !sql.contains(marker) {
+                anyhow::bail!("{migration_name}: {table} CHECK does not contain {marker}");
+            }
+
+            // The migration edits only CHECK text, but verify the affected
+            // tables' FK rows without scanning every b-tree in the workspace.
+            let pragma = format!("PRAGMA foreign_key_check('{table}')");
+            let mut statement = conn.prepare(&pragma)?;
+            let mut rows = statement.query([])?;
+            if rows.next()?.is_some() {
+                anyhow::bail!(
+                    "{migration_name}: foreign_key_check reported a violation in {table}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn migrate_post_effect_typo_categories(conn: &Connection) -> anyhow::Result<()> {
         let runs_sql: Option<String> = conn
             .query_row(
@@ -2418,11 +2590,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        // 反映を確認: integrity_check が ok を返さなければ巻き戻して bail
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after typo CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "typo_detection"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "typo_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "typo CHECK widening")?;
 
         Ok(())
     }
@@ -2496,10 +2671,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after intent CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "intent_drift"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "intent_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "intent CHECK widening")?;
 
         Ok(())
     }
@@ -2577,10 +2756,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after timeline CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "timeline_consistency"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "timeline_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "timeline CHECK widening")?;
 
         Ok(())
     }
@@ -2666,10 +2849,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after impact_review CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "impact_review"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "impact_review_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "impact_review CHECK widening")?;
 
         Ok(())
     }
@@ -2679,14 +2866,15 @@ impl Database {
     /// ライブ実行は通常の `pseudo_comment` と同じテーブルを使うため、annotation
     /// 単体には種別が残らない。`run_id` の prompt_version を正本として `live` を
     /// metadata に付与し、本文レイヤーを OFF にしても表示できる状態へ戻す。
-    /// SQLite の JSON 関数は壊れた metadata で失敗し得るため、invalid JSON は
-    /// 空オブジェクトから補修する。
+    /// SQLite の JSON 関数は壊れた metadata で失敗し得るため、invalid JSON と
+    /// object 以外の JSON は空オブジェクトから補修する。
     pub(super) fn migrate_live_pseudo_comment_metadata(conn: &Connection) -> anyhow::Result<()> {
         conn.execute(
             "UPDATE post_effect_annotations
                 SET metadata = json_set(
                         CASE
-                          WHEN json_valid(metadata) THEN metadata
+                          WHEN json_valid(metadata) AND json_type(metadata) = 'object'
+                          THEN metadata
                           ELSE '{}'
                         END,
                         '$.live', 1
@@ -3064,6 +3252,70 @@ impl Database {
     /// a newer in-memory snapshot has been persisted. SQLite cannot drop a
     /// foreign key in place, so preserve every stored field and rebuild only
     /// when the legacy FK is present.
+    fn verify_ai_audit_events_project_identity_migration(
+        conn: &Connection,
+        expected_row_count: i64,
+        expected_max_id: Option<i64>,
+        expected_sequence_high_water: i64,
+    ) -> anyhow::Result<()> {
+        let row_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM ai_audit_events", [], |row| row.get(0))?;
+        if row_count != expected_row_count {
+            anyhow::bail!(
+                "ai_audit_events row count changed during project identity migration: expected {expected_row_count}, got {row_count}"
+            );
+        }
+
+        let max_id: Option<i64> =
+            conn.query_row("SELECT MAX(id) FROM ai_audit_events", [], |row| row.get(0))?;
+        if max_id != expected_max_id {
+            anyhow::bail!(
+                "ai_audit_events max id changed during project identity migration: expected {expected_max_id:?}, got {max_id:?}"
+            );
+        }
+
+        let sequence_high_water: i64 = conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'), 0)",
+            [],
+            |row| row.get(0),
+        )?;
+        if sequence_high_water != expected_sequence_high_water {
+            anyhow::bail!(
+                "ai_audit_events sqlite_sequence changed during project identity migration: expected {expected_sequence_high_water}, got {sequence_high_water}"
+            );
+        }
+
+        const REQUIRED_INDEXES: &[&str] = &[
+            "uq_ai_audit_scope_seq",
+            "uq_ai_audit_scope_event",
+            "idx_ai_audit_scope_execution",
+            "idx_ai_audit_scope_execution_event_type",
+            "idx_ai_audit_scope_operation",
+            "idx_ai_audit_scope_timestamp",
+        ];
+        for index in REQUIRED_INDEXES {
+            let present: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [*index],
+                |row| row.get(0),
+            )?;
+            if present != 1 {
+                anyhow::bail!(
+                    "ai_audit_events project identity migration is missing index {index}"
+                );
+            }
+        }
+
+        let mut statement = conn.prepare("PRAGMA foreign_key_check('ai_audit_events')")?;
+        let mut rows = statement.query([])?;
+        if rows.next()?.is_some() {
+            anyhow::bail!(
+                "ai_audit_events project identity migration left a foreign-key violation"
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn migrate_ai_audit_events_project_identity(
         conn: &Connection,
     ) -> anyhow::Result<()> {
@@ -3081,6 +3333,19 @@ impl Database {
         if !has_project_fk {
             return Ok(());
         }
+
+        let row_count_before: i64 =
+            conn.query_row("SELECT COUNT(*) FROM ai_audit_events", [], |row| row.get(0))?;
+        let max_id_before: Option<i64> =
+            conn.query_row("SELECT MAX(id) FROM ai_audit_events", [], |row| row.get(0))?;
+        let sequence_high_water_before: i64 = conn.query_row(
+            "SELECT MAX(
+                COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'), 0),
+                COALESCE((SELECT MAX(id) FROM ai_audit_events), 0)
+            )",
+            [],
+            |row| row.get(0),
+        )?;
 
         let foreign_keys_enabled: bool =
             conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
@@ -3187,12 +3452,12 @@ impl Database {
         if remaining_project_fks != 0 {
             anyhow::bail!("ai_audit_events project foreign key migration did not take effect");
         }
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!(
-                "integrity_check failed after ai_audit_events project identity migration: {integrity}"
-            );
-        }
+        Self::verify_ai_audit_events_project_identity_migration(
+            conn,
+            row_count_before,
+            max_id_before,
+            sequence_high_water_before,
+        )?;
         Ok(())
     }
 
@@ -3355,6 +3620,347 @@ impl Database {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::time::{Duration, Instant};
+
+    fn temp_database_path(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("grimodex-migrate-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create migration test directory");
+        dir.join("grimodex.db")
+    }
+
+    #[test]
+    fn current_schema_migrate_is_read_only_while_another_connection_writes() {
+        let path = temp_database_path("current-version-lock");
+        let initializer = Database::new(&path).expect("open database");
+        initializer.migrate().expect("create current schema");
+        drop(initializer);
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .busy_timeout(Duration::from_millis(50))
+            .expect("set competing busy timeout");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        // `Database::new` is part of the native workspace-open path. Its
+        // connection PRAGMAs must also remain compatible with an unrelated WAL
+        // writer before migrate reaches the current-version read fast path.
+        let db = Database::new(&path).expect("open current database while writer is active");
+        db.migrate()
+            .expect("current-version open migration must remain read-only");
+        let optimize_started = Instant::now();
+        let optimize_result = db.optimize_without_wait();
+        assert!(
+            optimize_started.elapsed() < Duration::from_secs(1),
+            "non-blocking optimize waited behind the writer"
+        );
+        if let Err(error) = optimize_result {
+            assert!(
+                error.to_string().contains("database is locked"),
+                "unexpected optimize error: {error:#}"
+            );
+        }
+        let restored_timeout_ms: i64 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read restored busy timeout");
+        assert_eq!(restored_timeout_ms, 5_000);
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn migrate_rejects_a_newer_schema_version() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        let future_version = grimodex_core::SCHEMA_VERSION + 1;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, model, prompt_version, status)
+                 VALUES ('future-running', 'default-project', 'review', 'project',
+                         'model', 'v1', 'running')",
+                [],
+            )?;
+            conn.pragma_update(None, "user_version", future_version)?;
+            Ok(())
+        })
+        .expect("stamp future schema version");
+
+        let error = db
+            .migrate()
+            .expect_err("newer workspace schema must not be opened by an older binary");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "workspace schema version {future_version} is newer than supported version {}",
+                grimodex_core::SCHEMA_VERSION
+            )
+        );
+        db.with_conn(|conn| {
+            let retained_version: i32 =
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let retained_status: String = conn.query_row(
+                "SELECT status FROM post_effect_runs WHERE id = 'future-running'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(retained_version, future_version);
+            assert_eq!(retained_status, "running");
+            Ok(())
+        })
+        .expect("future schema rejection must not mutate recovery state");
+    }
+
+    #[test]
+    fn converged_previous_schema_migrate_does_not_wait_for_writer() {
+        let path = temp_database_path("converged-previous-version-lock");
+        let db = Database::new(&path).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "user_version", 2)?;
+            Ok(())
+        })
+        .expect("mark database as schema version 2");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .busy_timeout(Duration::from_millis(50))
+            .expect("set competing busy timeout");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let started = Instant::now();
+        db.migrate()
+            .expect("converged version 2 must use the non-blocking fast path");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "converged version 2 waited behind an unrelated writer"
+        );
+        let version_while_locked: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read version after failed migration");
+        assert_eq!(version_while_locked, 2);
+        let restored_timeout_ms: i64 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read restored busy timeout");
+        assert_eq!(restored_timeout_ms, 5_000);
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        db.migrate()
+            .expect("retry marker update after lock release");
+        let migrated_version: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read migrated version");
+        assert_eq!(migrated_version, grimodex_core::SCHEMA_VERSION);
+
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn converged_previous_schema_preserves_post_effect_crash_recovery() {
+        let db =
+            Database::new(std::path::Path::new(":memory:")).expect("open crash recovery fixture");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "user_version", 2)?;
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, model, prompt_version, status)
+                 VALUES ('interrupted-run', 'default-project', 'review', 'project',
+                         'model', 'v1', 'running')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("create interrupted v2 run");
+
+        db.migrate()
+            .expect("recover interrupted run before marker finalization");
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let status: String = conn.query_row(
+                "SELECT status FROM post_effect_runs WHERE id = 'interrupted-run'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            assert_eq!(status, "failed");
+            Ok(())
+        })
+        .expect("verify crash recovery and marker");
+    }
+
+    #[test]
+    fn converged_previous_schema_reports_blocked_recovery_without_waiting() {
+        let path = temp_database_path("blocked-v2-crash-recovery");
+        let db = Database::new(&path).expect("open crash recovery fixture");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "user_version", 2)?;
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, model, prompt_version, status)
+                 VALUES ('interrupted-run', 'default-project', 'review', 'project',
+                         'model', 'v1', 'running')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("create interrupted v2 run");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let started = Instant::now();
+        let error = db
+            .migrate()
+            .expect_err("blocked recovery must remain retryable");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "blocked recovery waited for SQLite's normal busy timeout"
+        );
+        assert!(
+            error.to_string().contains("crash recovery is blocked"),
+            "unexpected blocked recovery error: {error:#}"
+        );
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let status: String = conn.query_row(
+                "SELECT status FROM post_effect_runs WHERE id = 'interrupted-run'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, 2);
+            assert_eq!(status, "running");
+            Ok(())
+        })
+        .expect("blocked recovery must not partially mutate state");
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn incomplete_previous_schema_still_runs_full_migration() {
+        let path = temp_database_path("incomplete-previous-version-lock");
+        let db = Database::new(&path).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")?;
+            conn.pragma_update(None, "user_version", 2)?;
+            conn.busy_timeout(Duration::from_millis(50))?;
+            Ok(())
+        })
+        .expect("create incomplete schema version 2");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .busy_timeout(Duration::from_millis(50))
+            .expect("set competing busy timeout");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let error = db
+            .migrate()
+            .expect_err("incomplete version 2 must retain the full migration");
+        assert!(
+            error.to_string().contains("database is locked"),
+            "expected SQLITE_BUSY from the migration write, got {error:#}"
+        );
+        let version_while_locked: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read version after blocked full migration");
+        assert_eq!(version_while_locked, 2);
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        db.migrate().expect("repair incomplete schema after retry");
+        db.with_conn(|conn| {
+            let restored_index: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                     WHERE type = 'index' AND name = 'idx_ai_audit_scope_timestamp'
+                )",
+                [],
+                |row| row.get(0),
+            )?;
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert!(restored_index);
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("verify repaired schema");
+
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn full_migration_does_not_stamp_an_unrepairable_previous_schema() {
+        let db =
+            Database::new(std::path::Path::new(":memory:")).expect("open malformed schema fixture");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "ALTER TABLE ai_audit_events RENAME TO ai_audit_events_valid;
+                 CREATE TABLE ai_audit_events AS
+                    SELECT * FROM ai_audit_events_valid;
+                 DROP TABLE ai_audit_events_valid;",
+            )?;
+            conn.pragma_update(None, "user_version", 2)?;
+            Ok(())
+        })
+        .expect("replace audit ledger with malformed same-name table");
+
+        let error = db
+            .migrate()
+            .expect_err("full migration must not stamp an unrepairable schema");
+        assert!(
+            error
+                .to_string()
+                .contains("did not satisfy version 3 invariants"),
+            "unexpected migration error: {error:#}"
+        );
+        let retained_version: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read retained schema version");
+        assert_eq!(retained_version, 2);
+    }
 
     #[test]
     fn migrate_decouples_legacy_ai_audit_project_fk_without_changing_rows() {
@@ -3441,6 +4047,7 @@ mod tests {
             )?;
             conn.pragma_update(None, "foreign_keys", true)?;
             conn.execute("DELETE FROM projects WHERE id = 'doomed-project'", [])?;
+            conn.pragma_update(None, "user_version", 2)?;
             let legacy_fk_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM pragma_foreign_key_list('ai_audit_events')
                   WHERE \"table\" = 'projects' AND \"from\" = 'project_id'",
@@ -4524,12 +5131,22 @@ mod tests {
                  VALUES ('live-ann', 'p1', 'live-run', 'pseudo_comment', 'ライブ', '{}')",
                 [],
             )?;
+            conn.execute_batch(
+                r#"INSERT INTO post_effect_annotations
+                    (id, project_id, run_id, category, content, metadata)
+                 VALUES
+                    ('live-invalid', 'p1', 'live-run', 'pseudo_comment', 'invalid', 'not-json'),
+                    ('live-array', 'p1', 'live-run', 'pseudo_comment', 'array', '[]'),
+                    ('live-scalar', 'p1', 'live-run', 'pseudo_comment', 'scalar', '1'),
+                    ('live-object', 'p1', 'live-run', 'pseudo_comment', 'object', '{"kept":true}');"#,
+            )?;
             conn.execute(
                 "INSERT INTO post_effect_annotations
                     (id, project_id, run_id, category, content, metadata)
                  VALUES ('manual-ann', 'p1', 'manual-run', 'pseudo_comment', '通常', '{}')",
                 [],
             )?;
+            conn.pragma_update(None, "user_version", 2)?;
             Ok(())
         })
         .expect("insert fixtures");
@@ -4550,6 +5167,22 @@ mod tests {
             )?;
             assert_eq!(live, 1);
             assert_eq!(manual, None);
+            for id in ["live-invalid", "live-array", "live-scalar", "live-object"] {
+                let repaired: i64 = conn.query_row(
+                    "SELECT json_extract(metadata, '$.live')
+                       FROM post_effect_annotations WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(repaired, 1, "{id} must be repaired as a live object");
+            }
+            let preserved_object_field: bool = conn.query_row(
+                "SELECT json_extract(metadata, '$.kept')
+                   FROM post_effect_annotations WHERE id = 'live-object'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(preserved_object_field);
             Ok(())
         })
         .expect("verify metadata repair");
