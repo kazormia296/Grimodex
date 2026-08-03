@@ -2530,6 +2530,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   data-testid="separated-labels"
                 >
                   <rect
+                    data-testid="timeline-thread-label-backdrop"
                     x={0}
                     y={threadsTop - LANE_HEIGHT / 2}
                     width={SUBWAY_LABEL_GUTTER - 12}
@@ -2538,6 +2539,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                       svgHeight - (threadsTop - LANE_HEIGHT / 2),
                     )}
                     fill="var(--background)"
+                    fillOpacity={0.7}
                     pointerEvents="none"
                   />
                   {(() => {
@@ -2597,6 +2599,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                             height={26}
                             rx={13}
                             fill="var(--card, var(--background))"
+                            fillOpacity={0.84}
                             // 選択中はスレッド色の枠＋発光で強調（foreground 黒は重いため）。
                             stroke={selected ? color : "currentColor"}
                             strokeOpacity={selected ? 0.9 : 0.15}
