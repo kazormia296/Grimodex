@@ -548,7 +548,7 @@ pub fn refresh_project_export(
     let mut snapshot = build_snapshot(project, options);
     fit_project_snapshot_to_limit(&mut snapshot)?;
     let path = project_snapshot_path(root, project_id);
-    atomic_write_json(&path, &snapshot)?;
+    atomic_write_json(root, &path, &snapshot)?;
     get_status(root, options.mode)
 }
 
@@ -1478,6 +1478,7 @@ fn read_state(root: &Path) -> anyhow::Result<Option<ExportState>> {
 
 fn write_state(root: &Path, active_project_id: Option<String>) -> anyhow::Result<()> {
     atomic_write_json(
+        root,
         &root.join("state.json"),
         &ExportState {
             format_version: FORMAT_VERSION,
@@ -1499,11 +1500,59 @@ fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+fn ensure_private_export_directory(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder
+            .create(path)
+            .with_context(|| format!("create private IME export directory: {}", path.display()))?;
+
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("inspect IME export directory: {}", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            bail!(
+                "IME export directory is not a real directory: {}",
+                path.display()
+            );
+        }
+        if metadata.permissions().mode() & 0o777 != 0o700 {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).with_context(|| {
+                format!("make IME export directory private: {}", path.display())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path)
+            .with_context(|| format!("create IME export directory: {}", path.display()))
+    }
+}
+
+fn atomic_write_json<T: Serialize>(root: &Path, path: &Path, value: &T) -> anyhow::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("IME export path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent).context("create IME export directory")?;
+    if !parent.starts_with(root) {
+        bail!(
+            "IME export path escapes its root: {} is not under {}",
+            path.display(),
+            root.display()
+        );
+    }
+    // Mozkey's secure reader intentionally rejects group/world-accessible
+    // directories. Repair both the protocol root and the leaf directory on
+    // every write so a normal 0022 umask or a previously-created 0755 tree
+    // cannot silently disable dictionary injection.
+    ensure_private_export_directory(root)?;
+    if parent != root {
+        ensure_private_export_directory(parent)?;
+    }
 
     let file_name = path
         .file_name()
@@ -1714,11 +1763,16 @@ mod atomic_replace_tests {
 
     fn exercise_atomic_write_twice(destination: &Path) -> anyhow::Result<()> {
         fs::write(destination, br#"{"generation":0}"#)?;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| anyhow!("test destination has no parent: {}", destination.display()))?;
         atomic_write_json(
+            parent,
             destination,
             &serde_json::json!({"generation": 1, "entries": ["first"]}),
         )?;
         atomic_write_json(
+            parent,
             destination,
             &serde_json::json!({"generation": 2, "entries": ["final"]}),
         )?;
@@ -1728,9 +1782,6 @@ mod atomic_replace_tests {
             value,
             serde_json::json!({"generation": 2, "entries": ["final"]})
         );
-        let parent = destination
-            .parent()
-            .ok_or_else(|| anyhow!("test destination has no parent: {}", destination.display()))?;
         for entry in fs::read_dir(parent)? {
             let name = entry?.file_name();
             assert!(

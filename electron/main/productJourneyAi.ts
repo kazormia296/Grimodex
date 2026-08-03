@@ -12,7 +12,31 @@ const STREAM_BOUNDARY_DELAY_MS = 4_000;
 type BackendEventSink = (...args: unknown[]) => unknown;
 
 interface ProductJourneyStream {
+  streamId: string;
   aborted: boolean;
+  quiesced: Promise<void>;
+  resolveQuiesced: () => void;
+}
+
+function streamIdFromArgs(args: unknown): string {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+    throw new Error("product journey AI stream args must be an object");
+  }
+  const request = args as {
+    streamId?: unknown;
+    auditContext?: { executionId?: unknown };
+  };
+  if (
+    typeof request.streamId !== "string" ||
+    !request.streamId.trim() ||
+    request.streamId !== request.streamId.trim() ||
+    request.auditContext?.executionId !== request.streamId
+  ) {
+    throw new Error(
+      "product journey AI streamId must equal auditContext.executionId",
+    );
+  }
+  return request.streamId;
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -66,6 +90,7 @@ export function wrapBackendForProductJourneyAi(
 
   let eventSink: BackendEventSink | null = null;
   let activeStream: ProductJourneyStream | null = null;
+  const pendingAborts = new Set<string>();
 
   const overrides: Partial<NapiBackendLike> = {
     onEvent(callback) {
@@ -91,7 +116,17 @@ export function wrapBackendForProductJourneyAi(
       if (activeStream) {
         throw new Error("product journey AI supports one active stream");
       }
-      const stream: ProductJourneyStream = { aborted: false };
+      const streamId = streamIdFromArgs(args);
+      let resolveQuiesced = () => {};
+      const quiesced = new Promise<void>((resolve) => {
+        resolveQuiesced = resolve;
+      });
+      const stream: ProductJourneyStream = {
+        streamId,
+        aborted: pendingAborts.delete(streamId),
+        quiesced,
+        resolveQuiesced,
+      };
       activeStream = stream;
       const input = messageText(args);
       const authoring = input.includes(PRODUCT_JOURNEY_CODEX_MARKER);
@@ -100,32 +135,54 @@ export function wrapBackendForProductJourneyAi(
         : PRODUCT_JOURNEY_AUTHORITY_EARLY;
 
       try {
+        if (stream.aborted) {
+          emit(eventSink, "chat:stream-done", {
+            streamId,
+            stop_reason: "stopped",
+            input_tokens: null,
+            output_tokens: null,
+          });
+          return;
+        }
         emit(eventSink, "chat:stream-chunk", {
+          streamId,
           delta: early,
           block_type: "text",
         });
         await wait(STREAM_BOUNDARY_DELAY_MS);
 
-        // Deliberately publish one already-in-flight chunk after abort. This
-        // models the boundary race the renderer authority guard must reject.
+        // Deliberately publish one already-in-flight chunk after abort. The
+        // renderer keeps it in the correlated audit while suppressing UI.
         if (!authoring) {
           emit(eventSink, "chat:stream-chunk", {
+            streamId,
             delta: PRODUCT_JOURNEY_AUTHORITY_LATE,
             block_type: "text",
           });
         }
         emit(eventSink, "chat:stream-done", {
+          streamId,
           stop_reason: stream.aborted ? "stopped" : "end_turn",
           input_tokens: 1,
           output_tokens: authoring ? 3 : 4,
         });
       } finally {
         if (activeStream === stream) activeStream = null;
+        stream.resolveQuiesced();
       }
     },
 
-    abortChatStream() {
-      if (activeStream) activeStream.aborted = true;
+    async abortChatStream(streamId) {
+      if (activeStream?.streamId === streamId) {
+        activeStream.aborted = true;
+        await activeStream.quiesced;
+        return true;
+      }
+      pendingAborts.add(streamId);
+      if (pendingAborts.size > 256) {
+        pendingAborts.delete(pendingAborts.values().next().value ?? "");
+      }
+      return false;
     },
 
     async listAiModels() {

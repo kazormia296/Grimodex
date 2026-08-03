@@ -34,6 +34,8 @@ export interface ParsedAnnotationMeta {
   foundContext?: string;
   /** pseudo_comment only — ペルソナ名 */
   persona?: string;
+  /** pseudo_comment only — live reader generated */
+  live?: boolean;
   /** intent_drift / timeline only */
   relation?:
     | IntentDriftAnnotationMeta["relation"]
@@ -141,6 +143,7 @@ export function parseAnnotationMeta(
       foundText: p.found_text,
       foundContext: p.found_context,
       persona: p.persona,
+      live: p.live === true,
     };
   }
 

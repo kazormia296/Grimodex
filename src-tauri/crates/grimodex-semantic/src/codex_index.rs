@@ -290,7 +290,7 @@ pub fn project_language_for_codex_entry(db: &Database, entry_id: &str) -> Result
 
 /// content を embed して LE f32 バイト列 (1 ベクトル) を返す。チャンカーは通さない。
 /// DB に触れない純 CPU 処理。呼び出し側は workspace lock の外で呼ぶこと。
-#[cfg(feature = "semantic-embedding")]
+#[cfg(all(feature = "semantic-embedding", test))]
 pub fn embed_codex_text(embedder: &mut crate::embedding::Embedder, text: &str) -> Result<Vec<u8>> {
     let embedding_dim = embedder.embedding_dim();
     let vec = embedder.embed_document(text)?;

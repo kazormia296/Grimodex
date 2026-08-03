@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock deps so executors can be dispatched without a real Tauri / DB runtime.
 const {
@@ -112,11 +112,22 @@ import {
   getDeterministicAgentTools,
   READ_ONLY_TOOL_NAMES,
 } from "./toolDefinitions";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+const TOOL_TEST_WORKSPACE_PATH = "/workspace/tool-executors-test";
 
 beforeEach(() => {
   mockProjectId.mockReturnValue("project-1");
   mockDbRows.mockReset();
   mockDbRows.mockReturnValue([]);
+  setCurrentWorkspaceIdentity({
+    path: TOOL_TEST_WORKSPACE_PATH,
+    openRevision: 1,
+  });
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
 });
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
@@ -805,9 +816,12 @@ describe("search_codex hybrid fusion (段階3)", () => {
     const ids = (res.content as { id: string }[]).map((r) => r.id);
     expect(ids).toContain("e-dense");
     expect(ids).toContain("e-sparse");
-    expect(
-      mockInvoke.mock.calls.some((c) => c[0] === "codex_semantic_search"),
-    ).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith("codex_semantic_search", {
+      expectedWorkspacePath: TOOL_TEST_WORKSPACE_PATH,
+      projectId: "proj-A",
+      query: "ドラクタール",
+      limit: 30,
+    });
   });
 
   it("falls back to sparse-only when dense search rejects", async () => {

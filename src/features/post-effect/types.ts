@@ -163,6 +163,7 @@ export interface TimelineAnnotationMeta {
  * persona はペルソナ名。スレッド返信は annotation.parent_id で表現する。
  */
 export interface PseudoCommentAnnotationMeta {
+  live?: boolean;
   persona?: string;
   found_text?: string;
   found_context?: string;
@@ -224,7 +225,7 @@ export interface StartPostEffectRunRequest {
   scope_target_id?: string | null;
   model: string;
   /**
-   * 機能別モデル: review ロールの override（省略/空 = 既定モデル）。実 API 呼び出しの
+   * 機能別モデル: 対応ロールの override（省略/空 = 既定モデル）。実 API 呼び出しの
    * モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
    * 解決は modelRouting.resolveModelForPath が正本。
    */
@@ -246,6 +247,8 @@ export interface StartPostEffectRunRequest {
   system_prompt: string;
   /** pseudo_comment の読者ペルソナ名 (他 effect_type では省略)。 */
   persona?: string | null;
+  /** true のとき、疑似コメント annotation として保存しつつ partial でも通知する。 */
+  live?: boolean;
 }
 
 export interface StartPostEffectRunResult {
@@ -273,7 +276,7 @@ interface StartPostEffectRunMultiBase {
   scope_target_id?: string | null;
   model: string;
   /**
-   * 機能別モデル: review ロールの override（省略/空 = 既定モデル）。実 API 呼び出しの
+   * 機能別モデル: 対応ロールの override（省略/空 = 既定モデル）。実 API 呼び出しの
    * モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
    */
   model_override?: string | null;
@@ -322,6 +325,13 @@ export interface PostEffectProgressEvent {
 export interface PostEffectPartialEvent {
   run_id: string;
   annotation_id: string;
+  /** live=true の擬似コメントだけが持つ。通常の永続 annotation では省略。 */
+  live_comment?: {
+    content: string;
+    persona?: string | null;
+    found_text?: string;
+    found_context?: string;
+  };
 }
 
 export interface PostEffectDoneEvent {

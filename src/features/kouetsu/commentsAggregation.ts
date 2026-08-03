@@ -1,6 +1,8 @@
 import type { PseudoThread } from "@/features/post-effect/PseudoCommentThread";
+import { compareInstantValues } from "@/lib/time";
 
 export type Filter = "all" | "human" | "ai";
+export type CommentSortOrder = "scene" | "newest" | "oldest";
 
 export interface HumanComment {
   sceneId: string;
@@ -17,11 +19,17 @@ export interface HumanComment {
   ordinal: number;
 }
 
+export type CommentListItem =
+  | { kind: "human"; comment: HumanComment }
+  | { kind: "pseudo"; thread: PseudoThread };
+
 export interface SceneGroup {
   sceneId: string;
   sceneTitle: string;
   human: HumanComment[];
   threads: PseudoThread[];
+  /** Human comments and pseudo-comment roots in the current display order. */
+  items: CommentListItem[];
 }
 
 interface PmTextMark {
@@ -161,6 +169,7 @@ export function buildCommentGroups(
       sceneTitle: resolveTitle(sceneId),
       human: [],
       threads: [],
+      items: [],
     };
     acc.set(sceneId, g);
     return g;
@@ -176,7 +185,71 @@ export function buildCommentGroups(
       if (inScope(t.root.sceneId)) ensure(t.root.sceneId).threads.push(t);
     }
   }
-  return [...acc.values()].filter(
-    (g) => g.human.length > 0 || g.threads.length > 0,
+  return [...acc.values()]
+    .filter((g) => g.human.length > 0 || g.threads.length > 0)
+    .map((g) => ({
+      ...g,
+      items: [
+        ...g.human.map((comment) => ({ kind: "human" as const, comment })),
+        ...g.threads.map((thread) => ({ kind: "pseudo" as const, thread })),
+      ],
+    }));
+}
+
+function createdAtForItem(item: CommentListItem): string | null {
+  return item.kind === "human"
+    ? item.comment.createdAt
+    : item.thread.root.createdAt;
+}
+
+export function commentListItemKey(item: CommentListItem): string {
+  return item.kind === "human"
+    ? `human:${item.comment.sceneId}:${item.comment.createdAt ?? ""}:${item.comment.text}:${item.comment.ordinal}`
+    : `pseudo:${item.thread.root.id}`;
+}
+
+function stableKeyForItem(item: CommentListItem): string {
+  return commentListItemKey(item);
+}
+
+function compareItems(
+  left: CommentListItem,
+  right: CommentListItem,
+  order: "newest" | "oldest",
+): number {
+  const timestamp = compareInstantValues(
+    createdAtForItem(left),
+    createdAtForItem(right),
+    order === "newest" ? "descending" : "ascending",
   );
+  return (
+    timestamp || stableKeyForItem(left).localeCompare(stableKeyForItem(right))
+  );
+}
+
+/**
+ * コメント一覧の表示順を適用する。
+ *
+ * `scene` は従来どおりシーン順を保ち、`newest` / `oldest` は人間コメントと
+ * 疑似コメントを同じ時系列へ並べる。グループも代表コメントの時刻で並べるため、
+ * 新しいコメントが別シーンに追加されても一覧の上端へ移動する。
+ */
+export function sortCommentGroups(
+  groups: SceneGroup[],
+  order: CommentSortOrder,
+): SceneGroup[] {
+  if (order === "scene") {
+    return groups.map((group) => ({ ...group, items: [...group.items] }));
+  }
+
+  const sortedGroups = groups.map((group) => ({
+    ...group,
+    items: [...group.items].sort((left, right) =>
+      compareItems(left, right, order),
+    ),
+  }));
+  return sortedGroups.sort((left, right) => {
+    const itemOrder = compareItems(left.items[0], right.items[0], order);
+    return itemOrder || left.sceneId.localeCompare(right.sceneId);
+  });
 }

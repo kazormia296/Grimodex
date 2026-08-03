@@ -61,7 +61,7 @@ import {
   dismissRecallPromote,
   resetRecallPromote,
 } from "./chatRecallPromote";
-import * as codexAppApi from "./codexAppApi";
+import { archiveCodexSessionThread } from "./lazyRuntimeApi";
 
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { readRuntimeSetting } from "@/features/settings/runtimeSettings";
@@ -282,8 +282,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       listSummaries: (sessionId) => chatApi.listSummaries(sessionId),
       addSystemMessage: (sessionId, content) =>
         chatApi.addMessage(sessionId, "system", content),
-      archiveSessionThread: (input) =>
-        codexAppApi.archiveCodexSessionThread(input),
+      archiveSessionThread: (input) => archiveCodexSessionThread(input),
       clearProjectChatHistory: (projectId) =>
         chatApi.clearProjectChatHistory(projectId),
     },

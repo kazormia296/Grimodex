@@ -163,7 +163,6 @@ export function MapHeader() {
         gap: 6,
         padding: "4px 12px",
         borderBottom: "1px solid var(--border)",
-        background: "var(--sidebar-background)",
         color: "var(--foreground)",
         flexShrink: 0,
         flexWrap: "wrap",

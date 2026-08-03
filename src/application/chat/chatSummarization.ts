@@ -19,6 +19,8 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 
 export async function maybeRunSummarization(
   sessionId: string,
+  projectId: string,
+  operationId: string,
   messages: ChatMessage[],
   l5Budget: number,
   lang: string,
@@ -107,6 +109,11 @@ export async function maybeRunSummarization(
         }
         return chatApi.sendChatMessageWithThinking(
           messages,
+          {
+            projectId,
+            pathId: "summarization",
+            operationId,
+          },
           route?.thinking ?? thinkingParams,
           undefined,
           route?.apiVariant ?? null,

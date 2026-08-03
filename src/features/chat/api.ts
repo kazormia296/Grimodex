@@ -1,5 +1,6 @@
 import { invoke } from "@/lib/tauri";
 import type { AiSettings, AiModel, AiProvider } from "./types";
+import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
 
 export async function getAiSettings(): Promise<AiSettings> {
   return invoke<AiSettings>("get_ai_settings");
@@ -56,12 +57,87 @@ export async function testAiConnection(
   apiVariant?: string | null,
   endpointId?: string | null,
 ): Promise<string> {
-  return invoke<string>("test_ai_connection", {
+  const [auditApi, auditTransport] = await Promise.all([
+    import("@/features/ai-audit/api"),
+    import("@/features/ai-audit/transportContext"),
+  ]);
+  const {
+    beginAiAuditExecution,
+    completeAiAuditExecution,
+    failAiAuditExecution,
+    markAiAuditDispatched,
+  } = auditApi;
+  const { auditErrorSnapshot, beforeIpcDispatchDetails, nativeAiAuditContext } =
+    auditTransport;
+  const args: Record<string, unknown> = {
     provider,
     model,
     apiVariant: apiVariant ?? null,
     endpointId: endpointId ?? null,
+  };
+  const runtimeTarget = readDocumentRuntimeTarget() ?? "electron";
+  const webRuntime = runtimeTarget === "web";
+  const electronRuntime = runtimeTarget === "electron";
+  const effectiveRequestReceiptExpected = webRuntime || electronRuntime;
+  const maxOutputTokens =
+    webRuntime || (provider !== "openai" && provider !== "sakana") ? 32 : 1024;
+  const audit = await beginAiAuditExecution({
+    projectId: null,
+    pathId: "ai_connection_test",
+    request: {
+      provider,
+      model,
+      messages: [
+        { role: "user", content: "Reply with exactly: Connection OK" },
+      ],
+      options: {
+        apiVariant: apiVariant ?? null,
+        endpointId: endpointId ?? null,
+        maxOutputTokens,
+      },
+      auditMetadata: {
+        purpose: "connection-test",
+        scope: "workspace",
+        runtimeTarget,
+        providerWireBodyAssemblyBoundary: webRuntime
+          ? "browser-ai"
+          : runtimeTarget === "mobile-native"
+            ? "mobile-native-provider-transport"
+            : "electron-native-provider-transport",
+        effectiveRequestReceiptObservedAtRendererStart: false,
+        effectiveRequestReceiptExpected,
+        effectiveRequestReceiptDurabilityBoundary: webRuntime
+          ? "browser-ai-before-fetch"
+          : electronRuntime
+            ? "native-http-observer-before-send"
+            : "unavailable",
+      },
+    },
+    ...(effectiveRequestReceiptExpected
+      ? { captureState: "complete" as const }
+      : {
+          captureState: "partial" as const,
+          limitations: [
+            "mobile-native-effective-request-receipt-uninstrumented",
+          ],
+        }),
   });
+  args.auditContext = nativeAiAuditContext(audit);
+  await markAiAuditDispatched(
+    audit,
+    beforeIpcDispatchDetails("test_ai_connection"),
+  );
+  try {
+    const response = await invoke<string>("test_ai_connection", args);
+    await completeAiAuditExecution(audit, {
+      response: { text: response },
+      metadata: { scope: "workspace", purpose: "connection-test" },
+    });
+    return response;
+  } catch (error) {
+    await failAiAuditExecution(audit, { error: auditErrorSnapshot(error) });
+    throw error;
+  }
 }
 
 export async function listAiModels(

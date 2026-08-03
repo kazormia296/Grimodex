@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -21,6 +21,50 @@ test("the AI routing light suite executes browser transport contracts", () => {
   assert.match(commandText, /src\/lib\/browser-ai\.test\.ts/);
   assert.match(commandText, /src\/lib\/browser-mock\.ai-runtime\.test\.ts/);
   assert.match(commandText, /test:cloudflare-editor-deploy/);
+});
+
+test("the extracted chat stream transport preserves audit and Web Editor impact coverage", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const selection = selectImpact(map, [
+    "src/features/chat/chatStreamTransport.ts",
+  ]);
+
+  assert.ok(selection.matchedRuleIds.includes("ai-audit-runtime"));
+  assert.ok(selection.matchedRuleIds.includes("web-editor-ai"));
+  assert.ok(selection.requirementIds.includes("GDX-AI-AUDIT-001"));
+  assert.ok(selection.requirementIds.includes("GDX-AI-CONSENT-001"));
+  assert.ok(selection.suiteIds.includes("quality-workflow"));
+  assert.ok(selection.suiteIds.includes("ai-routing"));
+  assert.ok(selection.suiteIds.includes("tool-policy"));
+  assert.equal(selection.fallback, false);
+});
+
+test("semantic recall and reranker runtimes preserve audit impact coverage", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const runtimePaths = [
+    "src/features/chat/semanticRecall.ts",
+    "src/features/chat/semanticRerankerApply.ts",
+    "src/features/chat/semanticRerankerShadow.ts",
+  ];
+
+  for (const runtimePath of runtimePaths) {
+    const selection = selectImpact(map, [runtimePath]);
+
+    assert.ok(selection.matchedRuleIds.includes("ai-audit-runtime"), runtimePath);
+    assert.ok(selection.matchedRuleIds.includes("retrieval-grounding"), runtimePath);
+    assert.ok(selection.requirementIds.includes("GDX-AI-AUDIT-001"), runtimePath);
+    assert.ok(selection.suiteIds.includes("ai-routing"), runtimePath);
+    assert.ok(selection.suiteIds.includes("retrieval-grounding"), runtimePath);
+    assert.equal(selection.fallback, false, runtimePath);
+  }
 });
 
 const execFileAsync = promisify(execFile);

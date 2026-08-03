@@ -16,9 +16,13 @@ Grimodexは、AIチャットとナレッジ抽出を組み込んだデスクト�
 
 ---
 
+## User guide / 利用ガイド
+
+利用者向けの現行手順は、リポジトリ管理の[Grimodex User Guide](docs/user-guide/ja/Home.md)にまとめています。インストール、10分クイックスタート、AI接続、保存・復旧、トラブルシューティングを目的別に確認できます。
+
 ## Installation / インストール
 
-Download the installer for your platform from the [latest release](../../releases/latest).
+Download the installer for your platform from the [latest release](https://github.com/kazormia296/Grimodex/releases/latest).
 
 | Platform | File                           |
 | -------- | ------------------------------ |
@@ -51,23 +55,23 @@ _Chat — AIチャットと会話履歴を並べたビュー_
 - **Japanese novel typesetting** — Ruby (furigana), emphasis dots (傍点), and a vertical-writing preview.
 - **Prose linter** — Deterministic Japanese text checks backed by UniDic morphological analysis.
 - **AI chat per scene** — Separate conversation history for each scene.
-- **Flexible AI backends** — Bring your own cloud API key (OpenRouter / OpenAI / Anthropic), run a local model via Ollama, or drive an agentic CLI you already use (Claude Code / Codex CLI / OpenCode).
+- **Flexible AI backends** — Bring your own cloud API key (OpenRouter / OpenAI / Anthropic), use an OpenAI-compatible endpoint or supported provider, run a local model via Ollama, or drive an agentic CLI you already use (Claude Code / Codex CLI / OpenCode).
 - **MCP server** — Grimodex ships an MCP server, so external agents can read and edit your project.
 - **Codex** — Characters, worldbuilding, items, whatever. Extract from chat and reference in-editor.
 - **Snippets** — Reusable fragments pulled from chat.
 - **Source attribution** — Every inserted range is tagged human / ai / unknown.
-- **Local storage** — SQLite (WAL mode) + FTS5 on disk. No account required; only AI calls hit the network.
+- **Local storage** — SQLite (WAL mode) + FTS5 on disk. No account required. Manuscripts leave the device only when you explicitly send context to a configured AI; Electron may also contact services for license validation, update checks, and semantic-model downloads.
 
 - **チャプター / シーンエディタ** — シーンごとに独立したTipTapインスタンス、帰属追跡つきリッチテキスト。
 - **日本語小説向け組版** — ルビ（ふりがな）、傍点、縦書きプレビュー。
 - **文章リンター** — UniDic形態素解析ベースの決定論的な日本語文章チェック。
 - **シーン単位のAIチャット** — シーンごとに独立した会話履歴。
-- **柔軟なAIバックエンド** — クラウドのAPIキー持ち込み（OpenRouter / OpenAI / Anthropic）、Ollamaによるローカルモデル、または手持ちのエージェント型CLI（Claude Code / Codex CLI / OpenCode）。
+- **柔軟なAIバックエンド** — クラウドのAPIキー持ち込み（OpenRouter / OpenAI / Anthropic）、OpenAI互換エンドポイントや対応プロバイダー、Ollamaによるローカルモデル、または手持ちのエージェント型CLI（Claude Code / Codex CLI / OpenCode）。
 - **MCPサーバー** — GrimodexはMCPサーバーを同梱。外部エージェントからプロジェクトを読み書きできます。
 - **Codex** — 登場人物・世界観・アイテムなど。チャットから抽出してエディタ内で参照。
 - **スニペット** — チャットから拾った再利用可能な断片。
 - **出所追跡** — 挿入されたテキストは human / ai / unknown でタグづけ。
-- **ローカル保存** — SQLite（WALモード）+ FTS5。アカウント不要、ネットに出るのはAI呼び出しだけ。
+- **ローカル保存** — SQLite（WALモード）+ FTS5。アカウントは必須ではありません。原稿本文が端末外へ出るのは、設定したAIへユーザーが明示的にコンテキストを送る場合です。Electron版では、これとは別にライセンス検証、更新確認、意味検索モデル取得の通信が発生する場合があります。
 
 ---
 

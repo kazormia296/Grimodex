@@ -4,6 +4,7 @@ import {
   buildCommentGroups,
   humanCommentsFromDoc,
   isActiveSceneOutOfScope,
+  sortCommentGroups,
   type HumanComment,
 } from "./commentsAggregation";
 
@@ -26,9 +27,13 @@ function text(
     : { type: "text", text: value };
 }
 
-function fakeThread(id: string, sceneId: string | null): PseudoThread {
+function fakeThread(
+  id: string,
+  sceneId: string | null,
+  createdAt = "2024-01-01T00:00:00Z",
+): PseudoThread {
   return {
-    root: { id, sceneId },
+    root: { id, sceneId, createdAt },
     replies: [],
   } as unknown as PseudoThread;
 }
@@ -230,6 +235,47 @@ describe("buildCommentGroups", () => {
     );
     expect(groups.map((g) => g.sceneId)).toEqual(["z"]);
     expect(groups[0].threads.length).toBe(1);
+  });
+
+  it("newest/oldest sorts human and pseudo comments into one timeline", () => {
+    const human: HumanComment[] = [
+      {
+        sceneId: "a",
+        sceneTitle: "A",
+        text: "本文コメント",
+        quote: "",
+        createdAt: "2024-01-02T00:00:00Z",
+        ordinal: 0,
+      },
+      {
+        sceneId: "b",
+        sceneTitle: "B",
+        text: "別シーン",
+        quote: "",
+        createdAt: "2024-01-03T00:00:00Z",
+        ordinal: 0,
+      },
+    ];
+    const groups = buildCommentGroups(
+      human,
+      [fakeThread("pseudo-a", "a", "2024-01-01T00:00:00Z")],
+      "all",
+      title,
+    );
+
+    const newest = sortCommentGroups(groups, "newest");
+    expect(newest.map((group) => group.sceneId)).toEqual(["b", "a"]);
+    expect(newest[1].items.map((item) => item.kind)).toEqual([
+      "human",
+      "pseudo",
+    ]);
+
+    const oldest = sortCommentGroups(groups, "oldest");
+    expect(oldest.map((group) => group.sceneId)).toEqual(["a", "b"]);
+    expect(oldest[0].items.map((item) => item.kind)).toEqual([
+      "pseudo",
+      "human",
+    ]);
   });
 });
 

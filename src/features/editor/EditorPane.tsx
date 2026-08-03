@@ -108,6 +108,7 @@ import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { isLiveReaderAnnotation } from "@/features/post-effect/liveReaderAnnotation";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import { gutterReserveInlineSize } from "@/features/editor/GutterMarksPlugin";
 import {
@@ -350,6 +351,16 @@ export function EditorPane({
   );
   const secondaryGroupOpen = useTabStore((state) => state.secondaryGroupOpen);
   const treeActiveSceneId = useTreeStore((state) => state.activeSceneId);
+  const activeTreeProjectId = useTreeStore((state) => state.projectId);
+  const activeWorkspacePath = useWorkspaceStore(
+    (state) => state.activeWorkspacePath,
+  );
+  const workspaceOpenRevision = useWorkspaceStore(
+    (state) => state.workspaceOpenRevision,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (state) => state.workspaceSwitchInProgress,
+  );
   const phoneEditorOwnerGroup = resolvePhoneEditorGroup(
     {
       activeTabId: primaryActiveTabId,
@@ -1685,12 +1696,15 @@ export function EditorPane({
   const showReaderCommentsLayer = useAnnotationStore(
     (s) => s.showReaderComments,
   );
+  const hasLiveReaderComments = useAnnotationStore((s) =>
+    (s.annotationsByScene.get(nodeId) ?? []).some(isLiveReaderAnnotation),
+  );
   const gutterReserve = phoneWorkspace
     ? null
     : gutterReserveInlineSize(
         [
           showCommentsLayer,
-          showReaderCommentsLayer,
+          showReaderCommentsLayer || hasLiveReaderComments,
           showForeshadowMarks,
           // review チャネルは 校閲アノテーション ∨ Lint のどちらでも出るので、
           // showLint のみ ON でもガター記号分の幅を予約する (GutterMarksPlugin と同義)。
@@ -2098,6 +2112,29 @@ export function EditorPane({
 
     let cancelled = false;
     setIsSceneContentLoading(true);
+    const loadWorkspacePath = activeWorkspacePath;
+    const loadWorkspaceRevision = workspaceOpenRevision;
+    const loadProjectId = activeTreeProjectId;
+    const isLoadStale = (): boolean => {
+      const workspace = useWorkspaceStore.getState();
+      const tree = useTreeStore.getState();
+      return (
+        cancelled ||
+        workspace.workspaceSwitchInProgress ||
+        workspace.activeWorkspacePath !== loadWorkspacePath ||
+        workspace.workspaceOpenRevision !== loadWorkspaceRevision ||
+        tree.projectId !== loadProjectId
+      );
+    };
+
+    // Let the post-switch render start the load against the new database. The
+    // dependency on workspaceSwitchInProgress guarantees this effect is
+    // retried once hydration has settled.
+    if (workspaceSwitchInProgress) {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     async function switchScene() {
       markStart("editor.switchScene");
@@ -2145,7 +2182,7 @@ export function EditorPane({
           // Same node, phase override changed: flush unsaved changes before reloading
           await flush();
         }
-        if (cancelled) return;
+        if (isLoadStale()) return;
         cancel();
         saveSceneIdRef.current = nodeId;
         // Invalidate the save binding before loading the next document. The
@@ -2192,7 +2229,7 @@ export function EditorPane({
               resolutionMode: phaseResolutionMode,
             },
           });
-          if (cancelled) return;
+          if (isLoadStale()) return;
           let loadedBinding = loaded.binding;
           if (loaded.title !== undefined) {
             setChronicleEventTitle(loaded.title);
@@ -2236,6 +2273,7 @@ export function EditorPane({
                   loaded.projectId ?? "",
                   preview,
                 );
+                if (isLoadStale()) return;
                 announcePersistedBinding(
                   documentKeyFromBinding(loadedBinding),
                   editorInstanceIdRef.current,
@@ -2248,13 +2286,15 @@ export function EditorPane({
             }
           }
           if (!isEntryMode) {
+            if (isLoadStale()) return;
             const sidecars = await loadSceneSidecars(
               nodeId,
-              useTreeStore.getState().projectId,
+              loaded.projectId ?? loadProjectId,
             );
+            if (isLoadStale()) return;
             mutationGate.runProgrammatic(() => {
               runProgrammaticProjectionUpdate(() => {
-                applySceneSidecars(editor!, nodeId, sidecars, () => cancelled);
+                applySceneSidecars(editor!, nodeId, sidecars, isLoadStale);
               });
             });
           }
@@ -2263,7 +2303,7 @@ export function EditorPane({
           // has finished. Publishing it before sidecar loading lets the shared
           // editable hook re-enable input while isApplyingExternalUpdate still
           // suppresses dirty/autosave, making those keystrokes losable.
-          if (cancelled) return;
+          if (isLoadStale()) return;
           setLoadedPhaseId(
             loadedBinding.kind === "codex" ? loadedBinding.phaseId : null,
           );
@@ -2289,7 +2329,7 @@ export function EditorPane({
 
         // シーン/Codex ロード完了後: 使い回しエディタの undo スタックを空にする。
         // 残すと Ctrl+Z が前シーンの doc スナップショットを復元して本文が消える。
-        if (!cancelled && mutationGate.captureSave() && editor) {
+        if (!isLoadStale() && mutationGate.captureSave() && editor) {
           resetEditorHistory(editor.view);
         }
 
@@ -2411,7 +2451,7 @@ export function EditorPane({
           useExternalWriteStore.getState().shiftConflict(reloadedDocumentKey);
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!isLoadStale()) {
           if (!loadStarted) {
             // The old binding remains authoritative until the pre-switch
             // flush succeeds. Restore the tab target and keep the live draft;
@@ -2528,6 +2568,8 @@ export function EditorPane({
   }, [
     nodeId,
     editor,
+    activeTreeProjectId,
+    activeWorkspacePath,
     flush,
     cancel,
     isCodexMode,
@@ -2543,6 +2585,8 @@ export function EditorPane({
     effectiveInputScopeKey,
     externalReloadNonce,
     inputTargetProjectionKey,
+    workspaceOpenRevision,
+    workspaceSwitchInProgress,
     codexPhaseStructureKey,
     phaseResolutionSceneId,
     phaseSceneTimeIndex,

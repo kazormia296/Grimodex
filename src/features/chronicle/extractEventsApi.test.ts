@@ -24,6 +24,9 @@ vi.mock("@/features/ai-policy/policyGuard", () => ({
 vi.mock("@/features/settings/settingsStore", () => ({
   useSettingsStore: { getState: () => ({ get: () => "" }) },
 }));
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: { getState: () => ({ projectId: "p1" }) },
+}));
 vi.mock("./api", () => ({
   createEvent: mockCreateEvent,
   linkScenesToEvent: mockLinkScenes,
@@ -156,11 +159,15 @@ describe("proposeEvents", () => {
 
     // 送信は 1 回・override 引数が正しい位置で渡る
     expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockOverride).toHaveBeenCalledWith("chronicle_extract");
     const args = mockSend.mock.calls[0];
-    expect(args[3]).toBe("chat_completions"); // apiVariant
-    expect(args[5]).toBe("gpt-x"); // model
-    expect(args[6]).toBe("openrouter"); // provider
-    expect(args[7]).toBeNull(); // endpointId
+    expect(args[1]).toEqual(
+      expect.objectContaining({ projectId: "p1", pathId: "chronicle_extract" }),
+    );
+    expect(args[4]).toBe("chat_completions"); // apiVariant
+    expect(args[6]).toBe("gpt-x"); // model
+    expect(args[7]).toBe("openrouter"); // provider
+    expect(args[8]).toBeNull(); // endpointId
 
     // usage は override のモデル/プロバイダで 1 回だけ記録
     expect(mockRecord).toHaveBeenCalledTimes(1);

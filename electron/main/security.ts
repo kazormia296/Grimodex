@@ -4,12 +4,18 @@
  * - will-navigate 全拒否（dev URL の同一 origin リロードのみ許可 —
  *   dragDropEnabled:false 相当のファイルドロップ航行防止を兼ねる）
  * - setWindowOpenHandler は deny（http/https のみ scheme 検証後 shell.openExternal）
- * - permission request は notification のみ許可
+ * - permission は trusted renderer の notification / clipboard write のみ許可
  */
 import { session, shell } from "electron";
 import type { App } from "electron";
 
+import { APP_BUNDLE_HOST, APP_PROTOCOL_SCHEME } from "./protocol.js";
+
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
+const ALLOWED_RENDERER_PERMISSIONS = new Set([
+  "notifications",
+  "clipboard-sanitized-write",
+]);
 
 /** dev サーバー URL と同一 origin か（リロード / HMR フルリロード用の例外）。 */
 export function isAllowedNavigation(url: string): boolean {
@@ -20,6 +26,45 @@ export function isAllowedNavigation(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Clipboard / notification を要求できる first-party renderer URL か。 */
+export function isTrustedRendererUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.protocol === `${APP_PROTOCOL_SCHEME}:` &&
+      parsed.host === APP_BUNDLE_HOST
+    ) {
+      return true;
+    }
+
+    const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+    if (!rendererUrl) return false;
+    const renderer = new URL(rendererUrl);
+    return parsed.origin !== "null" && parsed.origin === renderer.origin;
+  } catch {
+    return false;
+  }
+}
+
+/** request/check handler 共通の deny-by-default permission 判定。 */
+export function isAllowedRendererPermission(options: {
+  permission: string;
+  requestingUrl: string;
+  isMainFrame: boolean;
+  topLevelUrl?: string | null;
+}): boolean {
+  if (!options.isMainFrame) return false;
+  if (!ALLOWED_RENDERER_PERMISSIONS.has(options.permission)) return false;
+  if (!isTrustedRendererUrl(options.requestingUrl)) return false;
+  if (
+    options.topLevelUrl != null &&
+    !isTrustedRendererUrl(options.topLevelUrl)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function openExternalIfAllowed(url: string): void {
@@ -49,8 +94,31 @@ export function registerSecurityHandlers(app: App): void {
 /** app ready 後に呼ぶ（session アクセスは ready 後のみ）。 */
 export function applySessionPermissionPolicy(): void {
   session.defaultSession.setPermissionRequestHandler(
-    (_webContents, permission, callback) => {
-      callback(permission === "notifications");
+    (webContents, permission, callback, details) => {
+      const request = details as {
+        requestingUrl?: unknown;
+        isMainFrame?: unknown;
+      };
+      callback(
+        isAllowedRendererPermission({
+          permission,
+          requestingUrl:
+            typeof request.requestingUrl === "string"
+              ? request.requestingUrl
+              : "",
+          isMainFrame: request.isMainFrame === true,
+          topLevelUrl: webContents.getURL(),
+        }),
+      );
     },
+  );
+  session.defaultSession.setPermissionCheckHandler(
+    (webContents, permission, requestingOrigin, details) =>
+      isAllowedRendererPermission({
+        permission,
+        requestingUrl: details.requestingUrl ?? requestingOrigin,
+        isMainFrame: details.isMainFrame,
+        topLevelUrl: webContents?.getURL(),
+      }),
   );
 }

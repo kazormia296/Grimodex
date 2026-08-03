@@ -310,10 +310,42 @@ describe("createBrowserMock", () => {
     it("fails explicitly instead of returning a fake assistant response", async () => {
       // Ensure no key is stored
       await mock.invoke("delete_api_key", { provider: "ollama" });
+      const auditContext = {
+        expectedWorkspacePath: "/dev/workspace",
+        projectId: "default-project",
+        operationId: "operation-missing-model",
+        executionId: "execution-missing-model",
+        parentExecutionId: null,
+        pathId: "browser_byok_web",
+      } as const;
+      const event = (eventType: string, sequence: number) => ({
+        eventId: `missing-model-${sequence}`,
+        executionId: auditContext.executionId,
+        operationId: auditContext.operationId,
+        parentExecutionId: auditContext.parentExecutionId,
+        pathId: auditContext.pathId,
+        eventType,
+        timestamp: sequence,
+        payload: {
+          captureState: "complete",
+          credentialsExcluded: true,
+          request: { messages: [] },
+        },
+      });
+      await mock.invoke("ai_audit_append_batch", {
+        expectedWorkspacePath: auditContext.expectedWorkspacePath,
+        projectId: auditContext.projectId,
+        events: [
+          event("execution.started", 1),
+          event("request.prepared", 2),
+          event("request.dispatched", 3),
+        ],
+      });
 
       await expect(
         mock.invoke("send_chat_message", {
           messages: [{ role: "user", content: "Hello" }],
+          auditContext,
         }),
       ).rejects.toThrow(/model.*設定|モデル.*設定/i);
     });
@@ -330,8 +362,26 @@ describe("createBrowserMock", () => {
 
     it("keeps dense semantic commands as explicit no-ops in Hosted Editor", async () => {
       await expect(
-        mock.invoke("semantic_index_scene", { sceneId: "scene-1" }),
+        mock.invoke("semantic_index_scene", {
+          expectedWorkspacePath: "/dev/workspace",
+          projectId: "default-project",
+          sceneId: "scene-1",
+        }),
       ).resolves.toBe(0);
+      await expect(
+        mock.invoke("semantic_index_scene", {
+          expectedWorkspacePath: "/different/workspace",
+          projectId: "default-project",
+          sceneId: "scene-1",
+        }),
+      ).rejects.toThrow(/AI_AUDIT_WORKSPACE_CHANGED/u);
+      await expect(
+        mock.invoke("semantic_index_scene", {
+          expectedWorkspacePath: "/dev/workspace",
+          projectId: "different-project",
+          sceneId: "scene-1",
+        }),
+      ).rejects.toThrow(/SEMANTIC_INDEX_AUTHORITY_MISMATCH/u);
       await expect(
         mock.invoke("semantic_search", {
           projectId: "default-project",

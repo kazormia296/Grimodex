@@ -198,6 +198,10 @@ function impactMultiArgs(sceneId, inputHash, sourceGuard) {
   };
 }
 
+function scopedArgs(args, workspace) {
+  return { ...args, expectedWorkspacePath: workspace };
+}
+
 async function insertScene(backend, sceneId) {
   await backend.dbExecute(
     "INSERT INTO tree_nodes (id, project_id, node_type, title, content) VALUES (?, 'default-project', 'scene', ?, ?)",
@@ -262,10 +266,13 @@ test("Impact source guard は cache より先に同一connection revisionを原�
 
   const cached = JSON.parse(
     await backend.startPostEffectRunMulti(
-      impactMultiArgs(
-        "impact-guard-scene",
-        "impact-guard-cache-hash",
-        matchingGuard,
+      scopedArgs(
+        impactMultiArgs(
+          "impact-guard-scene",
+          "impact-guard-cache-hash",
+          matchingGuard,
+        ),
+        workspace,
       ),
       aiSettings("http://127.0.0.1:1"),
       null,
@@ -285,10 +292,13 @@ test("Impact source guard は cache より先に同一connection revisionを原�
   );
   await assert.rejects(
     backend.startPostEffectRunMulti(
-      impactMultiArgs(
-        "impact-guard-scene",
-        "impact-guard-stale-hash",
-        staleGuard,
+      scopedArgs(
+        impactMultiArgs(
+          "impact-guard-scene",
+          "impact-guard-stale-hash",
+          staleGuard,
+        ),
+        workspace,
       ),
       aiSettings("http://127.0.0.1:1"),
       null,
@@ -311,11 +321,14 @@ test("Impact source guard は別Backendのcommitと不正wireをnative境界で�
 
   await assert.rejects(
     first.backend.startPostEffectRun(
-      {
-        ...singleArgs("impact-external-scene", "impact-single-unguarded"),
-        effect_type: "impact_review",
-        prompt_version: "impact_review_v1.1",
-      },
+      scopedArgs(
+        {
+          ...singleArgs("impact-external-scene", "impact-single-unguarded"),
+          effect_type: "impact_review",
+          prompt_version: "impact_review_v1.1",
+        },
+        first.workspace,
+      ),
       aiSettings("http://127.0.0.1:1"),
       null,
       null,
@@ -333,10 +346,13 @@ test("Impact source guard は別Backendのcommitと不正wireをnative境界で�
 
   await assert.rejects(
     first.backend.startPostEffectRunMulti(
-      impactMultiArgs(
-        "impact-external-scene",
-        "impact-guard-missing-hash",
-        undefined,
+      scopedArgs(
+        impactMultiArgs(
+          "impact-external-scene",
+          "impact-guard-missing-hash",
+          undefined,
+        ),
+        first.workspace,
       ),
       aiSettings("http://127.0.0.1:1"),
       null,
@@ -347,10 +363,13 @@ test("Impact source guard は別Backendのcommitと不正wireをnative境界で�
 
   await assert.rejects(
     first.backend.startPostEffectRunMulti(
-      impactMultiArgs(
-        "impact-external-scene",
-        "impact-guard-external-hash",
-        staleGuard,
+      scopedArgs(
+        impactMultiArgs(
+          "impact-external-scene",
+          "impact-guard-external-hash",
+          staleGuard,
+        ),
+        first.workspace,
       ),
       aiSettings("http://127.0.0.1:1"),
       null,
@@ -361,10 +380,13 @@ test("Impact source guard は別Backendのcommitと不正wireをnative境界で�
 
   await assert.rejects(
     first.backend.startPostEffectRunMulti(
-      impactMultiArgs("impact-external-scene", "impact-guard-wire-hash", {
-        ...staleGuard,
-        unexpected: true,
-      }),
+      scopedArgs(
+        impactMultiArgs("impact-external-scene", "impact-guard-wire-hash", {
+          ...staleGuard,
+          unexpected: true,
+        }),
+        first.workspace,
+      ),
       aiSettings("http://127.0.0.1:1"),
       null,
       null,
@@ -373,14 +395,58 @@ test("Impact source guard は別Backendのcommitと不正wireをnative境界で�
   );
 });
 
+test("workspace切替後のsingle/multi startは旧pathをruntime開始前に拒否する", async () => {
+  const { backend, workspace: workspaceA } = makeBackend();
+  const workspaceB = `${workspaceA}-next`;
+  await backend.openWorkspace(workspaceA);
+  await insertScene(backend, "workspace-collision");
+  await backend.openWorkspace(workspaceB);
+  await insertScene(backend, "workspace-collision");
+
+  const [before] = await rows(
+    backend,
+    "SELECT COUNT(*) AS n FROM post_effect_runs",
+  );
+  await assert.rejects(
+    backend.startPostEffectRun(
+      scopedArgs(
+        singleArgs("workspace-collision", "stale-workspace-single"),
+        workspaceA,
+      ),
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      null,
+    ),
+    /POST_EFFECT_WORKSPACE_CHANGED/,
+  );
+  await assert.rejects(
+    backend.startPostEffectRunMulti(
+      scopedArgs(
+        multiArgs(["workspace-collision"], "stale-workspace-multi"),
+        workspaceA,
+      ),
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      null,
+    ),
+    /POST_EFFECT_WORKSPACE_CHANGED/,
+  );
+  const [after] = await rows(
+    backend,
+    "SELECT COUNT(*) AS n FROM post_effect_runs",
+  );
+  assert.deepEqual(after, before, "rejected starts never create a run row");
+});
+
 test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eventを再実行しない", async () => {
   const requestSeen = deferred();
   const releaseResponse = deferred();
   let requestCount = 0;
+  const requestBodies = [];
   const { server, baseUrl } = await startMockServer(async (req, res) => {
     requestCount += 1;
     assert.equal(req.url, "/chat/completions");
-    await readBody(req);
+    requestBodies.push(JSON.parse(await readBody(req)));
     requestSeen.resolve();
     await releaseResponse.promise;
     writeReviewResponse(res);
@@ -391,7 +457,7 @@ test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eve
     await backend.openWorkspace(workspace);
     await insertScene(backend, "pe-scene-1");
     const settings = aiSettings(baseUrl);
-    const args = singleArgs("pe-scene-1");
+    const args = scopedArgs(singleArgs("pe-scene-1"), workspace);
 
     const startJson = await withTimeout(
       backend.startPostEffectRun(args, settings, null, null),
@@ -437,6 +503,31 @@ test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eve
       [started.run_id],
     );
     assert.equal(annotationCount.n, 1);
+    const [preparedAuditRow] = await rows(
+      backend,
+      `SELECT payload
+         FROM ai_audit_events
+        WHERE operation_id = ? AND event_type = 'request.prepared'
+        ORDER BY sequence DESC
+        LIMIT 1`,
+      [started.run_id],
+    );
+    const preparedAudit = JSON.parse(preparedAuditRow.payload);
+    assert.deepEqual(
+      preparedAudit.request.body,
+      requestBodies[0],
+      "durable prepared body must equal the exact provider JSON body",
+    );
+    assert.deepEqual(preparedAudit.request.effectiveOutputTokenLimit, {
+      field: null,
+      value: null,
+      source: "provider_default",
+      omitted: true,
+    });
+    assert.equal(preparedAudit.captureState, "partial");
+    assert.deepEqual(preparedAudit.limitations, [
+      "provider-default-output-token-limit-not-observable",
+    ]);
 
     const runEventCountBeforeCache = events.filter(
       (event) => event.payload.run_id === started.run_id,
@@ -460,7 +551,10 @@ test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eve
     await insertScene(backend, "pe-cache-barrier");
     const barrier = JSON.parse(
       await backend.startPostEffectRun(
-        singleArgs("pe-cache-barrier", "review-hash-barrier"),
+        scopedArgs(
+          singleArgs("pe-cache-barrier", "review-hash-barrier"),
+          workspace,
+        ),
         settings,
         null,
         null,
@@ -507,7 +601,7 @@ test("cache missのrequired providerでsecret lookupが失敗するとHTTP送信
     const started = JSON.parse(
       await withTimeout(
         backend.startPostEffectRun(
-          args,
+          scopedArgs(args, workspace),
           aiSettings(baseUrl),
           null,
           lookupError,
@@ -571,12 +665,15 @@ test("role effectだけがoverride endpoint+keyを使い、default effectはrequ
 
     const review = JSON.parse(
       await backend.startPostEffectRun(
-        {
-          ...singleArgs("pe-route-review", "review-route-role"),
-          model_override: "role-review-model",
-          provider_override: "openai-compatible",
-          endpoint_id_override: "role",
-        },
+        scopedArgs(
+          {
+            ...singleArgs("pe-route-review", "review-route-role"),
+            model_override: "role-review-model",
+            provider_override: "openai-compatible",
+            endpoint_id_override: "role",
+          },
+          workspace,
+        ),
         settings,
         "sk-role-only",
         null,
@@ -586,15 +683,18 @@ test("role effectだけがoverride endpoint+keyを使い、default effectはrequ
 
     const typo = JSON.parse(
       await backend.startPostEffectRun(
-        {
-          ...singleArgs("pe-route-typo", "typo-route-default"),
-          effect_type: "typo_detection",
-          prompt_version: "typo_detection_v1.2",
-          // typo は role effect ではない。DTOに混入しても既定設定を使う。
-          model_override: "must-not-be-used",
-          provider_override: "openai-compatible",
-          endpoint_id_override: "role",
-        },
+        scopedArgs(
+          {
+            ...singleArgs("pe-route-typo", "typo-route-default"),
+            effect_type: "typo_detection",
+            prompt_version: "typo_detection_v1.2",
+            // typo は role effect ではない。DTOに混入しても既定設定を使う。
+            model_override: "must-not-be-used",
+            provider_override: "openai-compatible",
+            endpoint_id_override: "role",
+          },
+          workspace,
+        ),
         settings,
         "sk-default-only",
         null,
@@ -642,7 +742,10 @@ test("wrong-project abortはregistryを汚染せずmulti runが2scene完走す�
     const started = JSON.parse(
       await withTimeout(
         backend.startPostEffectRunMulti(
-          multiArgs(["pe-xproj-1", "pe-xproj-2"], "review-multi-xproj"),
+          scopedArgs(
+            multiArgs(["pe-xproj-1", "pe-xproj-2"], "review-multi-xproj"),
+            workspace,
+          ),
           aiSettings(baseUrl),
           null,
           null,
@@ -705,7 +808,7 @@ test("abortPostEffectRun はmultiとregistryを共有し、abort勝利時はcanc
     const started = JSON.parse(
       await withTimeout(
         backend.startPostEffectRunMulti(
-          multiArgs(["pe-abort-1", "pe-abort-2"]),
+          scopedArgs(multiArgs(["pe-abort-1", "pe-abort-2"]), workspace),
           aiSettings(baseUrl),
           null,
           null,

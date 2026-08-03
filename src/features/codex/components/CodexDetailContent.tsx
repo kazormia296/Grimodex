@@ -131,6 +131,9 @@ interface CodexDetailContentProps {
   onDelete: (id: string) => void;
   onBack?: () => void;
   initialTab?: string;
+  /** Controlled tab selection used when the detail panel is shared by entries. */
+  activeTab?: string;
+  onTabChange?: (id: string) => void;
   /** 別窓が同一 entry を編集中 → 本文を read-only にしバナーを出す（advisory lock）。 */
   readOnly?: boolean;
 }
@@ -140,6 +143,8 @@ export function CodexDetailContent({
   onDelete,
   onBack,
   initialTab = "details",
+  activeTab: controlledActiveTab,
+  onTabChange,
   readOnly = false,
 }: CodexDetailContentProps) {
   const update = useCodexStore((s) => s.update);
@@ -148,7 +153,17 @@ export function CodexDetailContent({
   const projectLanguage = useSettingsStore((s) => s.projectLanguage);
   const showReadings = isJapaneseProjectLanguage(projectLanguage);
 
-  const [activeTab, setActiveTab] = useState(initialTab);
+  const [internalActiveTab, setInternalActiveTab] = useState(initialTab);
+  const activeTab = controlledActiveTab ?? internalActiveTab;
+  const handleTabChange = useCallback(
+    (tab: string) => {
+      if (controlledActiveTab === undefined) {
+        setInternalActiveTab(tab);
+      }
+      onTabChange?.(tab);
+    },
+    [controlledActiveTab, onTabChange],
+  );
   const [type, setType] = useState<CodexEntryType>(
     entry.type as CodexEntryType,
   );
@@ -443,11 +458,13 @@ export function CodexDetailContent({
   useEffect(() => {
     if (previousEntryIdRef.current === entry.id) return;
     previousEntryIdRef.current = entry.id;
-    setActiveTab(initialTab);
+    if (controlledActiveTab === undefined) {
+      setInternalActiveTab(initialTab);
+    }
     pendingStructuralPatchRef.current = {};
     editGenerationRef.current = 0;
     replaceDraftFromEntry(entry);
-  }, [entry.id, entry, initialTab, replaceDraftFromEntry]);
+  }, [controlledActiveTab, entry.id, entry, initialTab, replaceDraftFromEntry]);
 
   useEffect(() => {
     setTagsLoading(true);
@@ -910,7 +927,7 @@ export function CodexDetailContent({
           void persistStructuralPatch({ icon: newIcon as never });
         }}
         onAliasesChange={(a) => void handleAliasesChange(a)}
-        onOpenReadings={() => setActiveTab("tracking")}
+        onOpenReadings={() => handleTabChange("tracking")}
         onTagsChange={(tags) => {
           // アルファベット順に揃えてリストとの表示順を一致させる
           const sorted = [...tags].sort((a, b) => a.name.localeCompare(b.name));
@@ -931,7 +948,7 @@ export function CodexDetailContent({
         <DetailTabs
           tabs={getTabs()}
           activeTab={activeTab}
-          onTabChange={setActiveTab}
+          onTabChange={handleTabChange}
         />
       </div>
 

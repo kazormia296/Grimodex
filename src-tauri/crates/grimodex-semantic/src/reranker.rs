@@ -22,6 +22,8 @@ use tokenizers::{
     TruncationStrategy,
 };
 
+use crate::audit::{parse_tokenizer_with_identity, TokenizerIdentity};
+
 pub const RERANKER_SHADOW_SCHEMA_VERSION: u32 = 1;
 pub const RERANKER_MAX_CANDIDATES: usize = 30;
 
@@ -145,7 +147,7 @@ impl RerankerRequest {
         Ok(spec)
     }
 
-    fn normalized_query(&self) -> (String, usize, Option<usize>) {
+    pub fn normalized_query(&self) -> (String, usize, Option<usize>) {
         let user_message = self.user_message.trim();
         let scene_tail = self.scene_tail.trim();
         if user_message.is_empty() {
@@ -192,12 +194,38 @@ pub struct RerankerScoreResult {
     pub model_id: String,
     pub model_revision: String,
     pub manifest_sha256: String,
+    pub tokenizer_identity: TokenizerIdentity,
     pub query_hash: String,
     pub candidate_set_hash: String,
     pub latency_ms: f64,
     pub model_load_ms: f64,
     pub model_was_cold: bool,
     pub scores: Vec<RerankerCandidateScore>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankerLoadedModelIdentity {
+    pub model_id: String,
+    pub model_revision: String,
+    pub artifact_sha256: String,
+    pub manifest_sha256: String,
+    pub tokenizer_identity: TokenizerIdentity,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedRerankerScore {
+    model_key: &'static str,
+    model_identity: RerankerLoadedModelIdentity,
+    model_was_cold: bool,
+    model_load_ms: f64,
+    total_started: Instant,
+}
+
+impl PreparedRerankerScore {
+    pub fn model_identity(&self) -> &RerankerLoadedModelIdentity {
+        &self.model_identity
+    }
 }
 
 #[derive(Deserialize)]
@@ -222,6 +250,7 @@ struct TokenizerConfig {
 struct LoadedReranker {
     tokenizer: Tokenizer,
     count_tokenizer: Tokenizer,
+    tokenizer_identity: TokenizerIdentity,
     session: Session,
     output_name: String,
     spec: &'static RerankerModelSpec,
@@ -249,9 +278,18 @@ impl LoadedReranker {
             bail!("reranker manifest identity mismatch for {}", spec.model_id);
         }
 
+        let mut tokenizer_source_bytes = None;
         for (relative_path, expected_hash) in &manifest.files {
             let path = snapshot.join(relative_path);
-            let actual_hash = sha256_file(&path)?;
+            let actual_hash = if relative_path == "tokenizer.json" {
+                let bytes = std::fs::read(&path)
+                    .with_context(|| format!("failed to read reranker file {path:?}"))?;
+                let hash = hex::encode(Sha256::digest(&bytes));
+                tokenizer_source_bytes = Some(bytes);
+                hash
+            } else {
+                sha256_file(&path)?
+            };
             if actual_hash != *expected_hash {
                 bail!(
                     "reranker snapshot hash mismatch for {}: expected {}, got {}",
@@ -287,8 +325,11 @@ impl LoadedReranker {
         }
 
         let tokenizer_path = snapshot.join("tokenizer.json");
-        let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|error| anyhow!("failed to load reranker tokenizer: {error}"))?;
+        let tokenizer_source_bytes = tokenizer_source_bytes
+            .ok_or_else(|| anyhow!("reranker manifest does not pin tokenizer.json"))?;
+        let (mut tokenizer, tokenizer_identity) =
+            parse_tokenizer_with_identity("tokenizer.json", &tokenizer_source_bytes)
+                .with_context(|| format!("failed to load reranker tokenizer {tokenizer_path:?}"))?;
         tokenizer
             .with_truncation(Some(TruncationParams {
                 max_length: spec.max_pair_tokens,
@@ -336,10 +377,21 @@ impl LoadedReranker {
         Ok(Self {
             tokenizer,
             count_tokenizer,
+            tokenizer_identity,
             session,
             output_name,
             spec,
         })
+    }
+
+    fn model_identity(&self) -> RerankerLoadedModelIdentity {
+        RerankerLoadedModelIdentity {
+            model_id: self.spec.model_id.to_string(),
+            model_revision: self.spec.revision.to_string(),
+            artifact_sha256: self.spec.artifact_sha256.to_string(),
+            manifest_sha256: self.spec.manifest_sha256.to_string(),
+            tokenizer_identity: self.tokenizer_identity.clone(),
+        }
     }
 
     fn score(
@@ -522,7 +574,11 @@ impl RerankerRuntime {
         }
     }
 
-    pub fn score(&mut self, request: RerankerRequest) -> Result<RerankerScoreResult> {
+    /// Load and validate the exact model/tokenizer artifacts without entering
+    /// tokenization or ONNX inference. The caller can durably audit the returned
+    /// actual tokenizer identity before passing the preparation back to
+    /// `score_prepared`.
+    pub fn prepare_score(&mut self, request: &RerankerRequest) -> Result<PreparedRerankerScore> {
         let spec = request.validate()?;
         let root = self
             .resource_root
@@ -540,12 +596,43 @@ impl RerankerRuntime {
         } else {
             0.0
         };
+        let model_identity = self
+            .models
+            .get(spec.key)
+            .ok_or_else(|| anyhow!("semantic reranker cache lost {}", spec.key))?
+            .model_identity();
+        Ok(PreparedRerankerScore {
+            model_key: spec.key,
+            model_identity,
+            model_was_cold,
+            model_load_ms,
+            total_started,
+        })
+    }
+
+    pub fn score_prepared(
+        &mut self,
+        request: RerankerRequest,
+        prepared: PreparedRerankerScore,
+    ) -> Result<RerankerScoreResult> {
+        let spec = request.validate()?;
+        if spec.key != prepared.model_key {
+            bail!(
+                "prepared reranker model {} does not match request model {}",
+                prepared.model_key,
+                spec.key
+            );
+        }
         let (query, user_end, scene_tail_start) = request.normalized_query();
         let query_hash = sha256_domain_value(spec.language, &query);
         let model = self
             .models
             .get_mut(spec.key)
             .ok_or_else(|| anyhow!("semantic reranker cache lost {}", spec.key))?;
+        let model_identity = model.model_identity();
+        if model_identity != prepared.model_identity {
+            bail!("prepared reranker model identity changed before inference");
+        }
         let scores = model.score(&request, &query, user_end, scene_tail_start)?;
         let candidate_set_hash = sha256_domain_value(
             "candidate-set",
@@ -558,15 +645,21 @@ impl RerankerRuntime {
         Ok(RerankerScoreResult {
             schema_version: RERANKER_SHADOW_SCHEMA_VERSION,
             language: spec.language.to_string(),
-            model_id: spec.model_id.to_string(),
-            model_revision: spec.revision.to_string(),
-            manifest_sha256: spec.manifest_sha256.to_string(),
+            model_id: model_identity.model_id,
+            model_revision: model_identity.model_revision,
+            manifest_sha256: model_identity.manifest_sha256,
+            tokenizer_identity: model_identity.tokenizer_identity,
             query_hash,
             candidate_set_hash,
-            latency_ms: total_started.elapsed().as_secs_f64() * 1000.0,
-            model_load_ms,
-            model_was_cold,
+            latency_ms: prepared.total_started.elapsed().as_secs_f64() * 1000.0,
+            model_load_ms: prepared.model_load_ms,
+            model_was_cold: prepared.model_was_cold,
             scores,
         })
+    }
+
+    pub fn score(&mut self, request: RerankerRequest) -> Result<RerankerScoreResult> {
+        let prepared = self.prepare_score(&request)?;
+        self.score_prepared(request, prepared)
     }
 }

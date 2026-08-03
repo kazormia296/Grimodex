@@ -75,6 +75,7 @@ import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
 import { useAiSettingsStore } from "./store";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 
 const TOTAL = 120;
 
@@ -105,8 +106,58 @@ function renderPanel() {
 
 async function settleFrames(n = 2) {
   for (let i = 0; i < n; i++) {
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
   }
+}
+
+function firstFullyVisibleRow(scroller: HTMLElement) {
+  const viewport = scroller.getBoundingClientRect();
+  return Array.from(
+    screen
+      .getByTestId("chat-virtual-list")
+      .querySelectorAll<HTMLElement>("[data-index]"),
+  )
+    .map((row) => ({
+      index: row.dataset.index,
+      rect: row.getBoundingClientRect(),
+    }))
+    .filter(
+      ({ rect }) => rect.top >= viewport.top && rect.bottom <= viewport.bottom,
+    )
+    .sort((a, b) => a.rect.top - b.rect.top)[0];
+}
+
+async function anchorTranscriptAtBottom(scroller: HTMLElement) {
+  await waitFor(() => {
+    expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
+  });
+  scroller.scrollTop = scroller.scrollHeight;
+  fireEvent.scroll(scroller);
+  await settleFrames(4);
+  await waitFor(() => {
+    expect(distanceFromBottom(scroller)).toBeLessThan(120);
+    const last = screen.getByTestId(`chat-message-m${TOTAL - 1}`);
+    const viewport = scroller.getBoundingClientRect();
+    const row = last.getBoundingClientRect();
+    expect(row.top).toBeLessThan(viewport.bottom);
+    expect(row.bottom).toBeGreaterThan(viewport.top);
+  });
+}
+
+function setZoomGeometry(
+  host: HTMLElement,
+  options: { maximizedPanelId: "codex" | null; restored: boolean },
+) {
+  act(() => {
+    host.style.width = options.restored ? "480px" : "1200px";
+    host.style.height = options.restored ? "600px" : "0px";
+    host.style.visibility = options.restored ? "visible" : "hidden";
+    useLayoutStore.setState({
+      maximizedPanelId: options.maximizedPanelId,
+    });
+  });
 }
 
 describe("ChatPanel virtualization (real Chromium)", () => {
@@ -127,6 +178,7 @@ describe("ChatPanel virtualization (real Chromium)", () => {
       refreshContextLayers: async () => null,
     });
     useAiSettingsStore.setState({ loadSettings: async () => {} });
+    useLayoutStore.setState({ maximizedPanelId: null });
   });
 
   it("実 virtualizer が windowing する（全 120 件を DOM に出さない）", async () => {
@@ -230,5 +282,155 @@ describe("ChatPanel virtualization (real Chromium)", () => {
 
     expect(scroller.scrollTop).toBeLessThan(50);
     expect(screen.getByTestId("chat-message-m0")).toBeInTheDocument();
+  });
+
+  it("非Chatパネル最大化の休眠後も末尾アンカーを復元する", async () => {
+    const { container } = renderPanel();
+    const host = container.firstElementChild as HTMLElement;
+    const scroller = await screen.findByTestId("chat-scroll-container");
+    const baseline = {
+      width: scroller.clientWidth,
+      height: scroller.clientHeight,
+    };
+    await anchorTranscriptAtBottom(scroller);
+
+    // ResizeObserver と virtualizer の通知順でのみ出る回帰なので、複数回の
+    // 最大化/解除を連続させて stale 行高 cache の蓄積を決定的にする。
+    for (let cycle = 0; cycle < 3; cycle++) {
+      setZoomGeometry(host, {
+        maximizedPanelId: "codex",
+        restored: false,
+      });
+      await settleFrames(8);
+      expect(host.getBoundingClientRect().width).toBe(1200);
+      expect(host.getBoundingClientRect().height).toBe(0);
+      expect(scroller.clientWidth).toBeGreaterThan(baseline.width);
+      expect(scroller.clientHeight).toBeLessThan(baseline.height);
+      expect(useLayoutStore.getState().maximizedPanelId).toBe("codex");
+
+      setZoomGeometry(host, { maximizedPanelId: null, restored: true });
+      await settleFrames(12);
+      await waitFor(() => {
+        expect(scroller.clientWidth).toBe(baseline.width);
+        expect(scroller.clientHeight).toBe(baseline.height);
+        expect(distanceFromBottom(scroller)).toBeLessThan(120);
+        expect(
+          screen.getByTestId(`chat-message-m${TOTAL - 1}`),
+        ).toBeInTheDocument();
+      });
+    }
+
+    await waitFor(() => {
+      expect(scroller.clientWidth).toBe(baseline.width);
+      expect(scroller.clientHeight).toBe(baseline.height);
+      expect(distanceFromBottom(scroller)).toBeLessThan(120);
+      const last = screen.getByTestId(`chat-message-m${TOTAL - 1}`);
+      const viewport = scroller.getBoundingClientRect();
+      const row = last.getBoundingClientRect();
+      expect(row.top).toBeLessThan(viewport.bottom);
+      expect(row.bottom).toBeGreaterThan(viewport.top);
+      const rendered = document.querySelectorAll("[data-role]").length;
+      expect(rendered).toBeGreaterThan(0);
+      expect(rendered).toBeLessThan(TOTAL);
+      expect(useLayoutStore.getState().maximizedPanelId).toBeNull();
+    });
+  });
+
+  it("非Chatパネル最大化の休眠後も履歴の閲覧位置を保持する", async () => {
+    const { container } = renderPanel();
+    const host = container.firstElementChild as HTMLElement;
+    const scroller = await screen.findByTestId("chat-scroll-container");
+    await anchorTranscriptAtBottom(scroller);
+
+    scroller.scrollTop = Math.round(scroller.scrollHeight * 0.45);
+    fireEvent.scroll(scroller);
+    await settleFrames(4);
+    await waitFor(() => {
+      expect(firstFullyVisibleRow(scroller)).toBeDefined();
+      expect(
+        screen.queryByTestId(`chat-message-m${TOTAL - 1}`),
+      ).not.toBeInTheDocument();
+    });
+    const baseline = firstFullyVisibleRow(scroller)!;
+    const baselineOffset =
+      baseline.rect.top - scroller.getBoundingClientRect().top;
+
+    setZoomGeometry(host, {
+      maximizedPanelId: "codex",
+      restored: false,
+    });
+    await settleFrames(8);
+    act(() => {
+      useChatStore.setState((state) => ({
+        messages: [
+          ...state.messages,
+          {
+            ...makeMessages(1)[0],
+            id: "hidden-history-append",
+            role: "assistant",
+            content: "履歴を読んでいる間に完了した回答です。".repeat(80),
+          },
+        ],
+      }));
+    });
+    await settleFrames(4);
+
+    setZoomGeometry(host, { maximizedPanelId: null, restored: true });
+    await settleFrames(12);
+
+    await waitFor(() => {
+      expect(distanceFromBottom(scroller)).toBeGreaterThan(120);
+      const anchor = screen
+        .getByTestId("chat-virtual-list")
+        .querySelector<HTMLElement>(`[data-index="${baseline.index}"]`);
+      expect(anchor).not.toBeNull();
+      const viewport = scroller.getBoundingClientRect();
+      const row = anchor!.getBoundingClientRect();
+      expect(row.top).toBeLessThan(viewport.bottom);
+      expect(row.bottom).toBeGreaterThan(viewport.top);
+      expect(Math.abs(row.top - viewport.top - baselineOffset)).toBeLessThan(2);
+      expect(
+        screen.queryByTestId("chat-message-hidden-history-append"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("休眠中に追加されたメッセージも復元後の幅で測定して末尾追従する", async () => {
+    const { container } = renderPanel();
+    const host = container.firstElementChild as HTMLElement;
+    const scroller = await screen.findByTestId("chat-scroll-container");
+    await anchorTranscriptAtBottom(scroller);
+
+    setZoomGeometry(host, {
+      maximizedPanelId: "codex",
+      restored: false,
+    });
+    await settleFrames(4);
+    act(() => {
+      useChatStore.setState((state) => ({
+        messages: [
+          ...state.messages,
+          {
+            ...makeMessages(1)[0],
+            id: "hidden-append",
+            role: "assistant",
+            content: "休眠中に追加された回答です。".repeat(80),
+          },
+        ],
+      }));
+    });
+    await settleFrames(4);
+
+    setZoomGeometry(host, { maximizedPanelId: null, restored: true });
+    await settleFrames(12);
+
+    await waitFor(() => {
+      expect(distanceFromBottom(scroller)).toBeLessThan(120);
+      const last = screen.getByTestId("chat-message-hidden-append");
+      const viewport = scroller.getBoundingClientRect();
+      const row = last.getBoundingClientRect();
+      expect(row.top).toBeLessThan(viewport.bottom);
+      expect(row.bottom).toBeGreaterThan(viewport.top);
+    });
   });
 });

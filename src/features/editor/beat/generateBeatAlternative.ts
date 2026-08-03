@@ -7,6 +7,11 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { streamInlineAiText } from "./streamInlineAiText";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import { buildBeatContextForGeneration } from "./buildBeatContext";
+import { useTreeStore } from "@/features/tree/treeStore";
+import {
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 
 interface GenerateBeatAlternativeCallbacks {
   onStart?: () => void;
@@ -30,10 +35,15 @@ export async function generateBeatAlternative(
   if (blockIfPolicyOff("bodyWrite")) return;
   if (blockIfUnlicensed()) return;
 
+  const auditAuthority = captureAiOperationAuthority(
+    useTreeStore.getState().projectId,
+    sceneId,
+  );
   const ctxResult = await buildBeatContextForGeneration(
     editor,
     beatId,
     sceneId,
+    auditAuthority.projectId,
   );
   if (!ctxResult.ok) return;
   const ctx = ctxResult.ctx;
@@ -70,6 +80,11 @@ export async function generateBeatAlternative(
     provider: beatModel ? beatModelProvider : undefined,
     endpointId: beatModel ? beatModelEndpointId : undefined,
     usageSurface: "beat",
+    projectId: auditAuthority.projectId,
+    auditExpectedWorkspacePath: auditAuthority.expectedWorkspacePath,
+    auditOperationId: auditAuthority.operationId,
+    auditMetadata: { operationScopeId: auditAuthority.resourceId },
+    auditPathId: "beat_alternative",
   });
   if (!result.ok) {
     callbacks?.onError?.(result.error);
@@ -84,6 +99,10 @@ export async function generateBeatAlternative(
       : preview || instructions.slice(0, 40);
 
   try {
+    assertAiOperationAuthorityCurrent(
+      auditAuthority,
+      useTreeStore.getState().projectId,
+    );
     await useSnippetStore
       .getState()
       .create({ title, content, sceneId, contentSource: "ai" });

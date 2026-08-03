@@ -41,12 +41,40 @@ vi.mock("./LinearSceneBlock", () => ({
 }));
 
 vi.mock("@/features/editor/Toolbar", () => ({
-  Toolbar: ({ editor }: { editor: unknown }) => (
-    <div data-testid="toolbar" data-has-editor={editor ? "true" : "false"} />
+  Toolbar: ({
+    editor,
+    onFindReplace,
+  }: {
+    editor: unknown;
+    onFindReplace: () => void;
+  }) => (
+    <div data-testid="toolbar" data-has-editor={editor ? "true" : "false"}>
+      <button type="button" onClick={onFindReplace}>
+        find
+      </button>
+    </div>
   ),
 }));
 vi.mock("@/features/editor/FindReplaceBar", () => ({
   FindReplaceBar: () => null,
+}));
+vi.mock("@/features/editor/FindScrollbarMarkers", () => ({
+  FindScrollbarMarkers: ({
+    editor,
+    enabled,
+    verticalMode,
+  }: {
+    editor: unknown;
+    enabled: boolean;
+    verticalMode: boolean;
+  }) => (
+    <div
+      data-testid="find-scrollbar-markers-mock"
+      data-has-editor={editor ? "true" : "false"}
+      data-enabled={enabled ? "true" : "false"}
+      data-vertical={verticalMode ? "true" : "false"}
+    />
+  ),
 }));
 vi.mock("@/features/editor/CodexPopover", () => ({
   CodexPopover: () => null,
@@ -327,6 +355,48 @@ describe("LinearEditorView — scene ordering", () => {
     expect(order).toContain("cyc-scene");
     expect(order[0]).toBe("A1");
     expect(order).toHaveLength(3);
+  });
+});
+
+describe("LinearEditorView — initial navigation", () => {
+  it("autosave 相当の updatedAt 更新で入場時シーンへ再スクロールしない", async () => {
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+    const { container } = render(<LinearEditorView />);
+    const scrollContainer =
+      container.querySelector<HTMLElement>(".glass-editor-body");
+    expect(scrollContainer).not.toBeNull();
+    const row = container.querySelector<HTMLElement>(
+      '[data-linear-scene-id="S1"]',
+    );
+    expect(row).not.toBeNull();
+
+    // Let the legitimate mount-time navigation settle before simulating a
+    // user who has scrolled within the same scene.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 50)));
+    vi.spyOn(scrollContainer!, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 500, 500),
+    );
+    vi.spyOn(row!, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, -500, 500, 300),
+    );
+    scrollContainer!.scrollTop = 500;
+
+    await act(async () => {
+      useTreeStore.setState({
+        nodes: [
+          makeNode({
+            id: "S1",
+            updatedAt: "2024-01-01T00:00:01Z",
+          }),
+        ],
+      });
+      await Promise.resolve();
+    });
+
+    expect(scrollContainer!.scrollTop).toBe(500);
   });
 });
 
@@ -700,6 +770,27 @@ describe("LinearEditorView — toolbar editor 供給", () => {
         .querySelector("[data-testid='toolbar']")
         ?.getAttribute("data-has-editor"),
     ).toBe("false");
+  });
+});
+
+describe("LinearEditorView — find scrollbar markers", () => {
+  it("uses the active editor and follows find-open and vertical-mode state", () => {
+    settingsOverride.current = { verticalMode: true };
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+    useLinearEditorStore.getState().registerEditor("S1", {} as Editor);
+
+    render(<LinearEditorView />);
+    const markers = screen.getByTestId("find-scrollbar-markers-mock");
+    expect(markers).toHaveAttribute("data-has-editor", "true");
+    expect(markers).toHaveAttribute("data-enabled", "false");
+    expect(markers).toHaveAttribute("data-vertical", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "find" }));
+
+    expect(markers).toHaveAttribute("data-enabled", "true");
   });
 });
 

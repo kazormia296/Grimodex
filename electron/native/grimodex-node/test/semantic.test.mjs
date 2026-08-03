@@ -23,8 +23,25 @@ const { Backend } = require(join(here, "..", "grimodex-node.node"));
 
 function makeFixture(label) {
   const root = mkdtempSync(join(tmpdir(), `grimodex-semantic-${label}-`));
+  const appData = join(root, "app-data");
+  mkdirSync(appData, { recursive: true });
+  // These tests exercise semantic behavior, not automatic backups. Disable
+  // backup creation up front so the intentionally detached workspace
+  // maintenance worker cannot recreate fixture directories during t.after.
+  writeFileSync(
+    join(appData, "global-settings.json"),
+    JSON.stringify({
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+      userPreferences: { "data.autoBackup": "false" },
+    }),
+  );
   const backend = new Backend(
-    join(root, "app-data"),
+    appData,
     join(root, "missing-semantic-resources"),
   );
   const events = [];
@@ -33,7 +50,13 @@ function makeFixture(label) {
     root,
     backend,
     events,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () =>
+      rmSync(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 50,
+      }),
   };
 }
 
@@ -56,21 +79,39 @@ async function exec(backend, sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
 
+async function waitForNewBackup(
+  backend,
+  workspace,
+  before,
+  timeoutMs = 30000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const created = JSON.parse(await backend.listBackups()).find(
+      ({ fileName }) => !before.has(fileName),
+    );
+    if (created) return created;
+    // The fixture's first open may still own the path-scoped maintenance
+    // claim. Reopen until the old worker releases it; the first successful
+    // claim after that point observes autoBackup=true and creates the backup.
+    await backend.openWorkspace(workspace);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`automatic backup was not created within ${timeoutMs}ms`);
+}
+
 async function writeTrustedPlainBackup(backend, workspace, path) {
   const before = new Set(
     JSON.parse(await backend.listBackups()).map(({ fileName }) => fileName),
   );
-  await exec(
-    backend,
-    "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('data.backupInterval', '0')",
-    [],
-    "run",
-  );
-  await backend.openWorkspace(workspace);
-  const created = JSON.parse(await backend.listBackups()).find(
-    ({ fileName }) => !before.has(fileName),
-  );
-  assert.ok(created, "openWorkspace must create a trusted automatic backup");
+  const settings = JSON.parse(await backend.getGlobalSettings());
+  settings.userPreferences = {
+    ...(settings.userPreferences ?? {}),
+    "data.autoBackup": "true",
+    "data.backupInterval": "0",
+  };
+  await backend.saveGlobalSettings(settings);
+  const created = await waitForNewBackup(backend, workspace, before);
   const compressed = readFileSync(join(workspace, "backups", created.fileName));
   writeFileSync(path, gunzipSync(compressed));
 }
@@ -106,7 +147,12 @@ test("workspace未openではsemantic DB commandsがDB pin時点でfail-closedす
     () => fixture.backend.chatIndexStatus("default-project"),
     () => fixture.backend.semanticChunkContext("scene-1", 0, 1, 10),
     () => fixture.backend.semanticDebugDump("default-project"),
-    () => fixture.backend.semanticIndexScene("scene-1"),
+    () =>
+      fixture.backend.semanticIndexScene(
+        join(fixture.root, "workspace"),
+        "default-project",
+        "scene-1",
+      ),
   ];
   for (const call of calls) {
     await assert.rejects(call(), /No workspace is open/);
@@ -169,7 +215,11 @@ test("resource root欠落でもBackend/pure-DBは生き、embedding commandだ�
   await seedScene(fixture.backend, "scene-missing", "S", "model required");
 
   await assert.rejects(
-    fixture.backend.semanticIndexScene("scene-missing"),
+    fixture.backend.semanticIndexScene(
+      join(fixture.root, "workspace"),
+      "default-project",
+      "scene-missing",
+    ),
     /embedding model .* is not installed/,
   );
   const status = JSON.parse(
@@ -184,11 +234,13 @@ test("resource root欠落でもBackend/pure-DBは生き、embedding commandだ�
 test("空project再indexはresource欠落でもdone progressをEventQueueへ全wire付きで流す", async (t) => {
   const fixture = makeFixture("reindex-event");
   t.after(fixture.cleanup);
-  await fixture.backend.openWorkspace(join(fixture.root, "workspace"));
+  const workspace = join(fixture.root, "workspace");
+  await fixture.backend.openWorkspace(workspace);
 
   assert.equal(
     JSON.parse(
       await fixture.backend.semanticReindexAll(
+        workspace,
         "default-project",
         "run-empty-project",
       ),
@@ -249,6 +301,93 @@ test("openWorkspace後は同一IDでも新DBだけを読み、旧epochの状態�
     "workspace swapはDB由来matcherも破棄する",
   );
   await seedScene(fixture.backend, "collision", "Workspace B", "bravo only");
+  const auditCountBefore = await exec(
+    fixture.backend,
+    "SELECT COUNT(*) AS count FROM ai_audit_events",
+    [],
+    "get",
+  );
+  const staleInferenceCalls = [
+    () =>
+      fixture.backend.semanticSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+        null,
+        false,
+      ),
+    () =>
+      fixture.backend.semanticReindexAll(
+        workspaceA,
+        "default-project",
+        "stale-semantic-reindex",
+      ),
+    () =>
+      fixture.backend.codexSemanticSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+      ),
+    () => fixture.backend.codexReindexAll(workspaceA, "default-project"),
+    () =>
+      fixture.backend.eventsSemanticSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+      ),
+    () => fixture.backend.eventsReindexAll(workspaceA, "default-project"),
+    () =>
+      fixture.backend.chatMessageSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+      ),
+    () => fixture.backend.chatReindexAll(workspaceA, "default-project"),
+    () =>
+      fixture.backend.semanticRerankerShadowScore({
+        requestId: "stale-reranker",
+        expectedWorkspacePath: workspaceA,
+        projectId: "default-project",
+        auditPathId: "semantic_reranker_shadow",
+        language: "ja",
+        userMessage: "collision",
+        sceneTail: "",
+        candidates: [{ candidateId: "collision:0:5", text: "bravo" }],
+      }),
+  ];
+  for (const call of staleInferenceCalls) {
+    await assert.rejects(call(), /SEMANTIC_INDEX_WORKSPACE_CHANGED/);
+  }
+  await assert.rejects(
+    fixture.backend.semanticIndexScene(
+      workspaceA,
+      "default-project",
+      "collision",
+    ),
+    /SEMANTIC_INDEX_WORKSPACE_CHANGED/,
+  );
+  await assert.rejects(
+    fixture.backend.semanticIndexScene(
+      workspaceB,
+      "another-project",
+      "collision",
+    ),
+    /SEMANTIC_INDEX_AUTHORITY_MISMATCH/,
+  );
+  assert.deepEqual(
+    await exec(
+      fixture.backend,
+      "SELECT COUNT(*) AS count FROM ai_audit_events",
+      [],
+      "get",
+    ),
+    auditCountBefore,
+    "workspace/project authority mismatch must stop before inference/audit",
+  );
   const fromB = JSON.parse(
     await fixture.backend.semanticChunkContext("collision", 0, 5, 8),
   );

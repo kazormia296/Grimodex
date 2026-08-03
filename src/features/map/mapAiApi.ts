@@ -1,9 +1,14 @@
-import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
-import { assertSingleShotTransportSupported } from "@/features/chat/singleShotTransport";
+import { invokeSingleShotChat } from "@/features/chat/singleShotTransport";
+import {
+  captureAiOperationAuthority,
+  aiAuditContextForOperation,
+  type AiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {
@@ -395,10 +400,17 @@ export async function generateAiBranchCards(
   project: AiBranchProjectContext | null = null,
   spotlight: AiBranchSeed[] = [],
   vs: VsOptions | null = null,
+  auditAuthority?: AiOperationAuthority,
 ): Promise<AiBranchCard[]> {
   if (blockIfPolicyOff("chat")) {
     throw new Error("chat policy is off");
   }
+
+  // Keep direct callers safe while production orchestration passes the
+  // authority captured for the board before its first await.
+  const authority =
+    auditAuthority ??
+    captureAiOperationAuthority(getCurrentProjectId(), "map_branch");
 
   const lang = langKey(project);
   // VS 有効時はカードに確率を添えさせ (パース→珍しい順に並べ替え)。
@@ -420,18 +432,23 @@ export async function generateAiBranchCards(
   ];
 
   const ov = resolveRoleSendOverride("map_branch");
-  assertSingleShotTransportSupported(ov.provider);
-  const response = await invoke<LLMResponsePayload>("send_chat_message", {
-    messages,
-    thinking: null,
-    effort: null,
-    reasoningEnabled: null,
-    reasoningEffort: null,
-    apiVariant: ov.apiVariant,
-    model: ov.model,
-    provider: ov.provider,
-    endpointId: ov.endpointId,
-  });
+  const response: LLMResponsePayload = await invokeSingleShotChat(
+    {
+      messages,
+      thinking: null,
+      effort: null,
+      reasoningEnabled: null,
+      reasoningEffort: null,
+      apiVariant: ov.apiVariant,
+      model: ov.model,
+      provider: ov.provider,
+      endpointId: ov.endpointId,
+    },
+    {
+      ...aiAuditContextForOperation(authority, "map_branch"),
+      pathId: "map_branch",
+    },
+  );
 
   // N4: 従来 response の usage は捨てられていた。台帳に記録する。
   void recordAiUsage({

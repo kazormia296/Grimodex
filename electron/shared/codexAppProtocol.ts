@@ -95,6 +95,17 @@ export interface StartCodexAppTurnPayload {
   bootstrapHistory?: string;
   historyRevision: string;
   userMessage: string;
+  /** Injected by the audited renderer transport before the main IPC call. */
+  auditContext?: CodexAppAuditContext;
+}
+
+export interface CodexAppAuditContext {
+  expectedWorkspacePath: string;
+  projectId: string;
+  operationId: string;
+  executionId: string;
+  parentExecutionId: string | null;
+  pathId: string;
 }
 
 /**
@@ -117,6 +128,36 @@ export type StartCodexAppTurnResult =
       code: string;
       message: string;
     };
+
+/**
+ * Main-owned evidence durably captured immediately before each model-affecting
+ * remote RPC. It contains only the exact Grimodex-authored text sent by that
+ * RPC plus explicitly separated transport observations. App Server prompts,
+ * built-in tool schemas, negotiated MCP schemas, and provider-private
+ * reasoning remain outside Grimodex's observation boundary.
+ */
+export interface CodexAppEffectiveRequestReceipt {
+  rpcMethod: "thread/start" | "thread/resume" | "turn/start";
+  provider: "cli";
+  model: string | null;
+  effort: string | null;
+  modelVisibleMessages: Array<{ role: string; content: string }>;
+  approvalPolicy: "never" | "on-request";
+  sandboxMode: "read-only";
+  networkAccess: false | null;
+  retryWithoutMcp: boolean;
+  mcpObservation: {
+    inheritedThreadConfigurationUnobserved: boolean;
+    configurationIncluded: boolean;
+    serverName: "grimodex" | null;
+    command: string | null;
+    args: string[];
+    mcpServerEnvExcluded: true;
+    toolSchemasObserved: false;
+  };
+  captureState: "partial";
+  limitations: string[];
+}
 
 export interface InterruptCodexAppTurnPayload {
   projectId: string;

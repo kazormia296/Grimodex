@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { GripVertical } from "lucide-react";
@@ -13,10 +21,8 @@ import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { buildSceneThreadTracks } from "@/features/plot-threads/sceneThreadTracks";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useLensStore } from "@/features/post-effect/lensStore";
-import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
 import type { OpenAiTreeArgs } from "./ScenesPanelContext";
-import { AiTreeDialog } from "./aiScaffold/AiTreeDialog";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
@@ -43,6 +49,16 @@ import {
   useAiSettingsStore,
 } from "@/features/chat/store";
 import { useScenesPanelNodes } from "./useScenesPanelNodes";
+
+const AiTreeDialog = lazy(async () => {
+  const module = await import("./aiScaffold/AiTreeDialog");
+  return { default: module.AiTreeDialog };
+});
+
+const ManageLabelsDialog = lazy(async () => {
+  const module = await import("@/features/labels/ManageLabelsDialog");
+  return { default: module.ManageLabelsDialog };
+});
 
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
@@ -478,19 +494,25 @@ export function ScenesPanel() {
           document.body,
         )}
 
-        <ManageLabelsDialog
-          open={manageLabelsOpen}
-          onClose={() => setManageLabelsOpen(false)}
-        />
+        {manageLabelsOpen && (
+          <Suspense fallback={null}>
+            <ManageLabelsDialog
+              open
+              onClose={() => setManageLabelsOpen(false)}
+            />
+          </Suspense>
+        )}
 
         {aiTree && (
-          <AiTreeDialog
-            open
-            onClose={() => setAiTree(null)}
-            mode={aiTree.mode}
-            rootRef={aiTree.rootRef}
-            rootTitle={aiTree.rootTitle}
-          />
+          <Suspense fallback={null}>
+            <AiTreeDialog
+              open
+              onClose={() => setAiTree(null)}
+              mode={aiTree.mode}
+              rootRef={aiTree.rootRef}
+              rootTitle={aiTree.rootTitle}
+            />
+          </Suspense>
         )}
       </DndContext>
     </ScenesPanelContext.Provider>

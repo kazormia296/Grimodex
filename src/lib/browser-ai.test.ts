@@ -297,6 +297,8 @@ describe("structured browser AI transport", () => {
           'data: {"choices":[{"delta":{"content":"本"}}]}',
           'data: {"choices":[{"delta":{"content":"物"},"finish_reason":"stop"}]}',
           'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}',
+          'data: {"choices":[{"delta":{"content":"漏"},"finish_reason":"length"}]}',
+          "data: {malformed-json",
           "data: [DONE]",
           "",
         ].join("\n\n"),
@@ -310,6 +312,7 @@ describe("structured browser AI transport", () => {
     await transport.stream?.(
       {
         operation: "chat",
+        streamId: "stream-chat-1",
         provider: "openai",
         model: "gpt-4o-mini",
         apiKey: "sk-test",
@@ -325,6 +328,244 @@ describe("structured browser AI transport", () => {
     expect(done).toEqual([
       { stopReason: "end_turn", inputTokens: 5, outputTokens: 2 },
     ]);
+  });
+
+  it("keeps the first provider terminal when the stream errors afterward", async () => {
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const encoder = new TextEncoder();
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(streamController) {
+            controller = streamController;
+            streamController.enqueue(
+              encoder.encode(
+                [
+                  'data: {"choices":[{"delta":{"content":"final"},"finish_reason":"stop"}]}',
+                  'data: {"choices":[{"delta":{"content":"must-not-escape"},"finish_reason":"length"}]}',
+                  "data: {malformed-json",
+                  "",
+                ].join("\n\n"),
+              ),
+            );
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    const transport = createBrowserAiTransport();
+    const text: string[] = [];
+    const done: string[] = [];
+    const running = transport.stream?.(
+      {
+        operation: "chat",
+        streamId: "stream-terminal-then-error",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "continue" }],
+      },
+      {
+        text: (delta) => text.push(delta),
+        done: (payload) => done.push(payload.stopReason),
+      },
+    );
+    await vi.waitFor(() => expect(text).toEqual(["final"]));
+
+    controller?.error(new Error("Authorization: Bearer must-not-surface"));
+    await expect(running).resolves.toBeUndefined();
+    expect(text).toEqual(["final"]);
+    expect(done).toEqual(["end_turn"]);
+  });
+
+  it("keeps same-operation streams isolated by streamId and aborts only the target", async () => {
+    let firstSignal: AbortSignal | undefined;
+    mockFetch
+      .mockImplementationOnce(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            firstSignal = init.signal ?? undefined;
+            firstSignal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("aborted", "AbortError")),
+              { once: true },
+            );
+          }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"B"},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n"),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+      );
+    const transport = createBrowserAiTransport();
+    const aDone: string[] = [];
+    const bText: string[] = [];
+
+    const streamA = transport.stream?.(
+      {
+        operation: "chat",
+        streamId: "stream-a",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "A" }],
+      },
+      {
+        text: () => undefined,
+        done: (payload) => aDone.push(payload.stopReason),
+      },
+    );
+    await vi.waitFor(() => expect(firstSignal).toBeDefined());
+    const streamB = transport.stream?.(
+      {
+        operation: "chat",
+        streamId: "stream-b",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "B" }],
+      },
+      {
+        text: (delta) => bText.push(delta),
+        done: () => undefined,
+      },
+    );
+
+    await expect(streamB).resolves.toBeUndefined();
+    expect(bText).toEqual(["B"]);
+    expect(firstSignal?.aborted).toBe(false);
+    await expect(transport.abort?.("wrong-stream")).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    expect(firstSignal?.aborted).toBe(false);
+
+    await expect(transport.abort?.("stream-a")).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+    await expect(streamA).resolves.toBeUndefined();
+    expect(aDone).toEqual(["stopped"]);
+  });
+
+  it("turns an abort-before-register tombstone into a stopped stream without provider dispatch", async () => {
+    const transport = createBrowserAiTransport();
+    await expect(transport.abort?.("stream-before-register")).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    const done: string[] = [];
+
+    await transport.stream?.(
+      {
+        operation: "inline",
+        streamId: "stream-before-register",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "continue" }],
+      },
+      {
+        text: () => undefined,
+        done: (payload) => done.push(payload.stopReason),
+      },
+    );
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(done).toEqual(["stopped"]);
+  });
+
+  it.each([
+    {
+      provider: "openai" as const,
+      sse: 'data: {"choices":[{"delta":{"content":"final"},"finish_reason":"stop"}]}\n\n',
+    },
+    {
+      provider: "anthropic" as const,
+      sse: [
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"final"}}',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n\n"),
+    },
+  ])(
+    "preserves $provider provider success when its terminal marker precedes abort",
+    async ({ provider, sse }) => {
+      let signal: AbortSignal | undefined;
+      const encoder = new TextEncoder();
+      mockFetch.mockImplementationOnce((_url: string, init: RequestInit) =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                signal = init.signal ?? undefined;
+                controller.enqueue(encoder.encode(sse));
+                signal?.addEventListener(
+                  "abort",
+                  () =>
+                    controller.error(new DOMException("aborted", "AbortError")),
+                  { once: true },
+                );
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            },
+          ),
+        ),
+      );
+      const transport = createBrowserAiTransport();
+      const text: string[] = [];
+      const done: string[] = [];
+      const running = transport.stream?.(
+        {
+          operation: "chat",
+          streamId: `stream-${provider}-terminal`,
+          provider,
+          model: "test-model",
+          apiKey: "sk-test",
+          messages: [{ role: "user", content: "continue" }],
+        },
+        {
+          text: (delta) => text.push(delta),
+          done: (payload) => done.push(payload.stopReason),
+        },
+      );
+      await vi.waitFor(() => expect(text).toEqual(["final"]));
+
+      await expect(
+        transport.abort?.(`stream-${provider}-terminal`),
+      ).resolves.toEqual({
+        abortCommandAcknowledged: true,
+        transportTerminationObserved: true,
+      });
+      await running;
+      expect(signal?.aborted).toBe(true);
+      expect(done).toEqual(["end_turn"]);
+    },
+  );
+
+  it("rejects a non-trimmed streamId before provider dispatch", async () => {
+    const transport = createBrowserAiTransport();
+    await expect(
+      transport.stream?.(
+        {
+          operation: "chat",
+          streamId: " stream-with-space ",
+          provider: "openai",
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: "continue" }],
+        },
+        { text: () => undefined, done: () => undefined },
+      ),
+    ).rejects.toThrow(/trimmed non-empty/iu);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("uses the AI Novelist legacy chat contract", async () => {
@@ -510,7 +751,7 @@ describe("fetchModels", () => {
     ]);
   });
 
-  it("probes only the selected Ollama model and preserves no-tools capability", async () => {
+  it("uses only a prompt-free control-plane preload for the selected cold Ollama model", async () => {
     mockFetch
       .mockResolvedValueOnce(
         jsonResponse({
@@ -781,6 +1022,64 @@ describe("fetchModels", () => {
 });
 
 describe("testConnection", () => {
+  it("awaits an observer carrying the exact credential-free bodyJson before fetch", async () => {
+    let releaseReceipt!: () => void;
+    let receiptStarted!: () => void;
+    const receiptGate = new Promise<void>((resolve) => {
+      releaseReceipt = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      receiptStarted = resolve;
+    });
+    const receipts: Array<{
+      kind: string;
+      bodyJson: string;
+      provider: string;
+      model: string;
+    }> = [];
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ content: [{ text: "Connection OK" }] }),
+    );
+
+    const running = testConnection(
+      "anthropic",
+      "claude-sonnet-4-6",
+      "secret-that-must-stay-in-headers",
+      {},
+      {
+        auditContext: {
+          expectedWorkspacePath: "/workspace",
+          projectId: null,
+          operationId: "operation-connection",
+          executionId: "execution-connection",
+          parentExecutionId: null,
+          pathId: "ai_connection_test",
+        },
+        onEffectiveRequest: async (receipt) => {
+          receipts.push(receipt);
+          receiptStarted();
+          await receiptGate;
+        },
+      },
+    );
+
+    await started;
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      kind: "connection",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+    });
+    expect(receipts[0].bodyJson).not.toContain(
+      "secret-that-must-stay-in-headers",
+    );
+
+    releaseReceipt();
+    await expect(running).resolves.toBe("Connection OK");
+    expect(receipts[0].bodyJson).toBe(mockFetch.mock.calls[0][1].body);
+  });
+
   it("sends minimal request with max_tokens 32", async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
@@ -868,5 +1167,205 @@ describe("testConnection", () => {
       model: "spiko",
       length: 32,
     });
+  });
+});
+
+describe("effective Browser provider request receipts", () => {
+  const auditContext = {
+    expectedWorkspacePath: "/workspace",
+    projectId: "project-1",
+    operationId: "operation-1",
+    executionId: "execution-1",
+    parentExecutionId: null,
+    pathId: "chat_agent_main",
+  } as const;
+
+  it("uses one serialized Anthropic completion body for the receipt and fetch", async () => {
+    const receipts: Array<{ bodyJson: string; kind: string }> = [];
+    const transport = createBrowserAiTransport({
+      onEffectiveRequest: async (receipt) => {
+        receipts.push(receipt);
+      },
+    });
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ content: [{ type: "text", text: "ok" }] }),
+    );
+
+    await transport.complete({
+      operation: "chat",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      apiKey: "header-only-secret",
+      messages: [
+        { role: "system", content: "system one" },
+        { role: "system", content: "system two" },
+        { role: "user", content: "hello" },
+      ],
+      maxOutputTokens: 73,
+      auditContext,
+    });
+
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].kind).toBe("single");
+    expect(receipts[0].bodyJson).toBe(mockFetch.mock.calls[0][1].body);
+    expect(JSON.parse(receipts[0].bodyJson)).toEqual({
+      model: "claude-sonnet-4-6",
+      max_tokens: 73,
+      messages: [{ role: "user", content: "hello" }],
+      system: "system one\nsystem two",
+    });
+    expect(receipts[0].bodyJson).not.toContain("header-only-secret");
+  });
+
+  it("observes the exact OpenAI-compatible stream body including usage options", async () => {
+    const receipts: Array<{ bodyJson: string; kind: string }> = [];
+    const transport = createBrowserAiTransport({
+      onEffectiveRequest: async (receipt) => {
+        receipts.push(receipt);
+      },
+    });
+    mockFetch.mockResolvedValueOnce(
+      new Response("data: [DONE]\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+
+    await transport.stream?.(
+      {
+        operation: "chat",
+        streamId: "execution-1",
+        provider: "openai-compatible",
+        model: "local-model",
+        messages: [{ role: "user", content: "stream me" }],
+        maxOutputTokens: 91,
+        baseUrl: "http://127.0.0.1:1234/v1",
+        auditContext,
+      },
+      { text: vi.fn(), done: vi.fn() },
+    );
+
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].kind).toBe("stream");
+    expect(receipts[0].bodyJson).toBe(mockFetch.mock.calls[0][1].body);
+    expect(JSON.parse(receipts[0].bodyJson)).toEqual({
+      model: "local-model",
+      max_tokens: 91,
+      messages: [{ role: "user", content: "stream me" }],
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+  });
+
+  it.each([
+    {
+      name: "Anthropic native tool history",
+      provider: "anthropic" as const,
+      model: "claude-sonnet-4-6",
+      toolProtocolMode: "native" as const,
+      response: { content: [], stop_reason: "end_turn" },
+      assertBody(body: Record<string, unknown>) {
+        expect(body.system).toBe("agent system");
+        expect(body.max_tokens).toBe(123);
+        expect(body.tools).toEqual([
+          expect.objectContaining({ name: "read_scene" }),
+        ]);
+        expect(body.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ role: "assistant" }),
+            expect.objectContaining({ role: "user" }),
+          ]),
+        );
+      },
+    },
+    {
+      name: "Hermes transformed tool history",
+      provider: "ollama" as const,
+      model: "qwen-hermes",
+      toolProtocolMode: "hermes" as const,
+      response: { choices: [{ message: { content: "done" } }] },
+      assertBody(body: Record<string, unknown>) {
+        expect(body.max_tokens).toBe(123);
+        expect(body).not.toHaveProperty("tools");
+        expect(JSON.stringify(body.messages)).toContain("<tools>");
+        expect(JSON.stringify(body.messages)).toContain("<tool_call>");
+        expect(JSON.stringify(body.messages)).toContain("<tool_response>");
+      },
+    },
+  ])("uses the exact final Agent body for $name", async (fixture) => {
+    const receipts: Array<{ bodyJson: string; kind: string }> = [];
+    const transport = createBrowserAiTransport({
+      onEffectiveRequest: async (receipt) => {
+        receipts.push(receipt);
+      },
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse(fixture.response));
+    const tools = [
+      {
+        name: "read_scene",
+        description: "Read one scene",
+        inputSchema: {
+          type: "object" as const,
+          properties: { id: { type: "string" } },
+          required: ["id"],
+        },
+      },
+    ];
+    const messages = [
+      { role: "system" as const, content: "agent system" },
+      { role: "user" as const, content: "inspect" },
+      {
+        role: "assistant" as const,
+        content: "",
+        toolUses: [
+          { id: "call-1", name: "read_scene", input: { id: "scene-1" } },
+        ],
+      },
+      {
+        role: "tool_result" as const,
+        toolUseId: "call-1",
+        content: "scene body",
+      },
+    ];
+
+    await transport.completeAgent?.(
+      {
+        operation: "chat",
+        provider: fixture.provider,
+        model: fixture.model,
+        apiKey: fixture.provider === "anthropic" ? "header-secret" : "",
+        messages: [],
+        maxOutputTokens: 123,
+        toolProtocolMode: fixture.toolProtocolMode,
+        auditContext,
+      },
+      messages,
+      tools,
+    );
+
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].kind).toBe("agent");
+    expect(receipts[0].bodyJson).toBe(mockFetch.mock.calls[0][1].body);
+    fixture.assertBody(JSON.parse(receipts[0].bodyJson));
+  });
+
+  it("fails closed before fetch when the effective-request receipt rejects", async () => {
+    const receiptError = new Error("durable receipt rejected");
+    const transport = createBrowserAiTransport({
+      onEffectiveRequest: async () => {
+        throw receiptError;
+      },
+    });
+
+    await expect(
+      transport.complete({
+        operation: "chat",
+        provider: "ollama",
+        model: "local-model",
+        messages: [{ role: "user", content: "do not send" }],
+        auditContext,
+      }),
+    ).rejects.toBe(receiptError);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

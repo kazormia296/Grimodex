@@ -82,6 +82,15 @@ beforeEach(() => {
 });
 
 describe("MapHeader board 編集 popover", () => {
+  it("共通パネル規約どおりヘッダー背景を透過する", () => {
+    const { container } = render(<MapHeader />);
+    const header = container.querySelector(
+      "[data-panel-header]",
+    ) as HTMLElement;
+
+    expect(header.style.background).toBe("");
+  });
+
   it("「+ 新規ボード」で popover が開き、focus settle 後も残存し、作成できる", async () => {
     const user = setupUser();
     render(<MapHeader />);

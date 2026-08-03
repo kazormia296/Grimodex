@@ -4,6 +4,23 @@ vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspaces/novel",
+    operationId: input.operationId ?? "operation-test",
+    executionId: input.executionId ?? "execution-test",
+    parentExecutionId: input.parentExecutionId ?? null,
+    startedAt: 1,
+  })),
+  markAiAuditDispatched: vi.fn(async () => undefined),
+  completeAiAuditExecution: vi.fn(async () => undefined),
+  failAiAuditExecution: vi.fn(async () => undefined),
+  cancelAiAuditExecution: vi.fn(async () => undefined),
+  recordAiAuditPartial: vi.fn(async () => undefined),
+  skipAiAuditExecution: vi.fn(async () => undefined),
+}));
+
 vi.mock("@/db/client", () => ({
   db: {
     select: vi.fn(),
@@ -61,6 +78,10 @@ vi.mock("@/features/timelapse/captureChat", () => ({
   recordChatMessagesDeleteFrom: vi.fn(),
 }));
 
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: vi.fn(() => Promise.resolve()),
+}));
+
 import { db } from "@/db/client";
 import { invoke } from "@/lib/tauri";
 const mockDb = vi.mocked(db);
@@ -68,6 +89,8 @@ import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
 import { recordChatMessageAdd } from "@/features/timelapse/captureChat";
 const mockRecordChatMessageAdd = vi.mocked(recordChatMessageAdd);
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+const mockRecordAiUsage = vi.mocked(recordAiUsage);
 
 import {
   listSessions,
@@ -86,6 +109,7 @@ import {
   saveMessagePrompt,
   getMessagePrompt,
   pinCodexEntry,
+  generateSessionTitle,
   sendAgentMessage,
   sendChatMessageWithThinking,
 } from "./chatApi";
@@ -869,6 +893,7 @@ describe("chatApi - Ollama endpoint snapshots", () => {
   it("passes the finalized endpoint on a plain request", async () => {
     await sendChatMessageWithThinking(
       [{ role: "user", content: "hello" }],
+      { projectId: "project-1", pathId: "summarization" },
       undefined,
       undefined,
       null,
@@ -896,6 +921,7 @@ describe("chatApi - Ollama endpoint snapshots", () => {
     await sendAgentMessage(
       [{ role: "user", content: "hello" }],
       [],
+      { projectId: "project-1", pathId: "chat_agent_main" },
       undefined,
       undefined,
       null,
@@ -923,6 +949,50 @@ describe("chatApi - Ollama endpoint snapshots", () => {
   });
 });
 
+describe("chatApi - session title usage scope", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openrouter",
+        model: "openrouter/anthropic/claude-sonnet-4.6",
+      },
+    });
+  });
+
+  afterEach(() => {
+    useAiSettingsStore.setState({ settings: { ...DEFAULT_AI_SETTINGS } });
+  });
+
+  it("records usage against the project captured by the chat turn", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "Captured title" }],
+      stopReason: "end_turn",
+      inputTokens: 3,
+      outputTokens: 4,
+    });
+
+    await expect(
+      generateSessionTitle(
+        "Question",
+        "Answer",
+        "openrouter/anthropic/claude-sonnet-4.6",
+        "ja",
+        "captured-project",
+      ),
+    ).resolves.toBe("Captured title");
+
+    expect(mockRecordAiUsage).toHaveBeenCalledWith({
+      surface: "session_title",
+      model: "openrouter/anthropic/claude-sonnet-4.6",
+      projectId: "captured-project",
+      tokensIn: 3,
+      tokensOut: 4,
+    });
+  });
+});
+
 describe("chatApi - unsupported CLI single-shot transport", () => {
   afterEach(() => {
     useAiSettingsStore.setState({ settings: { ...DEFAULT_AI_SETTINGS } });
@@ -939,7 +1009,10 @@ describe("chatApi - unsupported CLI single-shot transport", () => {
     vi.mocked(invoke).mockClear();
 
     await expect(
-      sendChatMessageWithThinking([{ role: "user", content: "hello" }]),
+      sendChatMessageWithThinking([{ role: "user", content: "hello" }], {
+        projectId: "project-1",
+        pathId: "summarization",
+      }),
     ).rejects.toMatchObject({ code: "AI_SINGLE_SHOT_CLI_UNSUPPORTED" });
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -960,6 +1033,7 @@ describe("chatApi - unsupported CLI single-shot transport", () => {
     await expect(
       sendChatMessageWithThinking(
         [{ role: "user", content: "hello" }],
+        { projectId: "project-1", pathId: "summarization" },
         undefined,
         undefined,
         null,

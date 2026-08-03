@@ -355,12 +355,19 @@ describe("runContextCreator — Ollama route preflight", () => {
       requireOllamaCapabilities: true,
     });
     expect(mockSendAgentMessage).toHaveBeenCalledOnce();
-    expect(mockSendAgentMessage.mock.calls[0]?.[7]).toBe(modelId);
-    expect(mockSendAgentMessage.mock.calls[0]?.[10]).toBe(4_096);
-    expect(mockSendAgentMessage.mock.calls[0]?.[11]).toBe("ollama");
-    expect(mockSendAgentMessage.mock.calls[0]?.[12]).toBeNull();
-    expect(mockSendAgentMessage.mock.calls[0]?.[13]).toBe("native");
-    expect(mockSendAgentMessage.mock.calls[0]?.[14]).toBe(ollamaEndpoint);
+    expect(mockSendAgentMessage.mock.calls[0]?.[2]).toMatchObject({
+      projectId: expect.any(String),
+      pathId: "context_creator",
+      operationId: expect.any(String),
+      executionId: expect.any(String),
+      parentExecutionId: null,
+    });
+    expect(mockSendAgentMessage.mock.calls[0]?.[8]).toBe(modelId);
+    expect(mockSendAgentMessage.mock.calls[0]?.[11]).toBe(4_096);
+    expect(mockSendAgentMessage.mock.calls[0]?.[12]).toBe("ollama");
+    expect(mockSendAgentMessage.mock.calls[0]?.[13]).toBeNull();
+    expect(mockSendAgentMessage.mock.calls[0]?.[14]).toBe("native");
+    expect(mockSendAgentMessage.mock.calls[0]?.[15]).toBe(ollamaEndpoint);
   });
 
   it.each([null, []])(
@@ -498,6 +505,9 @@ describe("runContextCreator — Ollama route preflight", () => {
       "ollama",
       expect.objectContaining({ selectedModelId: modelId }),
     );
-    expect(mockSendAgentMessage.mock.calls[0]?.[7]).toBe(modelId);
+    expect(mockSendAgentMessage.mock.calls[0]?.[2]).toMatchObject({
+      pathId: "context_creator",
+    });
+    expect(mockSendAgentMessage.mock.calls[0]?.[8]).toBe(modelId);
   });
 });
