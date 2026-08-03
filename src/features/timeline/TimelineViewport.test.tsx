@@ -276,6 +276,43 @@ describe("TimelineViewport – threads モード", () => {
     expect(onSelectMarker).toHaveBeenCalledWith("l1");
   });
 
+  it("固定スレッドタイトル列とカプセルの背景を半透明で描画する", () => {
+    useTimelineStore.setState({ showThreads: true });
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "proj-1",
+          name: "復讐の糸",
+          color: "#c33",
+          description: null,
+          sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [],
+      loading: false,
+    });
+
+    const { getByTestId } = render(
+      <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
+    );
+
+    expect(
+      getByTestId("timeline-thread-label-backdrop").getAttribute(
+        "fill-opacity",
+      ),
+    ).toBe("0.7");
+    expect(
+      getByTestId("plot-lane-label-t1")
+        .querySelector("rect")
+        ?.getAttribute("fill-opacity"),
+    ).toBe("0.84");
+  });
+
   it("オーバーレイ: スレッド表示中でもシーンのドットは描画する", () => {
     useTimelineStore.setState({ showThreads: true });
     const { container } = render(
