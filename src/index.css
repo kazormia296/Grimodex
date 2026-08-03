@@ -67,6 +67,9 @@
   --content-foreground-muted: oklch(0.556 0 0);
   --content-accent: oklch(0.205 0 0);
   --content-border: oklch(0.922 0 0);
+  --find-match-background: oklch(0.9 0.12 85);
+  --find-current-background: oklch(0.75 0.18 60);
+  --find-current-outline: oklch(0.55 0.18 60);
   /* Attribution highlight blend amount (overridden by JS from display.attributionHighlightOpacity) */
   --attribution-pct: 20%;
   /* Attribution semantic hues — single source of truth shared by the inline
@@ -180,6 +183,9 @@
   --content-foreground-muted: oklch(0.708 0 0);
   --content-accent: oklch(0.985 0 0);
   --content-border: oklch(0.269 0 0);
+  --find-match-background: oklch(0.4 0.12 85);
+  --find-current-background: oklch(0.55 0.18 60);
+  --find-current-outline: oklch(0.72 0.16 60);
   --switch-track-on: var(--sidebar-primary);
   --switch-thumb: oklch(0.985 0 0);
   /* Dark-mode attribution hues: same hue as :root (blue/teal/amber) but brighter
@@ -370,7 +376,10 @@ button[role="switch"][aria-checked="true"] {
 
 /* Chromium does not reliably sample the sibling WebGL canvas when the same
    element owns both the editor stacking context and backdrop-filter. Keep the
-   filter on this paint-only child so the editable DOM remains untouched. */
+   filter on this paint-only child so the editable DOM remains untouched.
+   Declare only the standard property: the production CSS pipeline emits the
+   Safari prefix, while a handwritten standard-then-prefixed pair is collapsed
+   to the unsupported prefixed form in Chromium. */
 [data-editor-fluid-glass-filter] {
   position: absolute;
   z-index: 0;
@@ -378,7 +387,6 @@ button[role="switch"][aria-checked="true"] {
   border-radius: inherit;
   pointer-events: none;
   backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 [data-editor-fluid-glass="true"] > :not([data-editor-fluid-glass-filter]) {
@@ -411,8 +419,6 @@ button[role="switch"][aria-checked="true"] {
   [data-editor-fluid-glass="true"]
   > [data-editor-fluid-glass-filter] {
   backdrop-filter: blur(var(--editor-fluid-glass-blur))
-    saturate(var(--editor-fluid-glass-saturate)) contrast(1.03);
-  -webkit-backdrop-filter: blur(var(--editor-fluid-glass-blur))
     saturate(var(--editor-fluid-glass-saturate)) contrast(1.03);
 }
 
@@ -451,7 +457,6 @@ button[role="switch"][aria-checked="true"] {
   background-color: transparent;
   background-image: none;
   backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 /* Background-aware editor chrome. It is solid when the ambient background is
@@ -460,21 +465,18 @@ button[role="switch"][aria-checked="true"] {
 .editor-background-glass {
   background-color: var(--background);
   backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
   .editor-background-glass {
   background-color: color-mix(in oklch, var(--background) 10%, transparent);
   backdrop-filter: blur(6px) saturate(0.9);
-  -webkit-backdrop-filter: blur(6px) saturate(0.9);
 }
 
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
   [data-editor-fluid-glass="true"]
   .editor-background-glass {
   backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 .zen-shader-surface > [data-paper-shader],
@@ -559,8 +561,25 @@ button[role="switch"][aria-checked="true"] {
   box-shadow: 0 16px 42px rgb(0 0 0 / 0.1);
   backdrop-filter: blur(var(--workspace-fluid-glass-blur, 14px))
     saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
-  -webkit-backdrop-filter: blur(var(--workspace-fluid-glass-blur, 14px))
-    saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
+}
+
+/* When Editor plus one or more tool surfaces are visible, one masked
+   compositor layer owns the expensive backdrop sampling for all of them.
+   Keep the full enabled-Glass context in these selectors so they outrank the
+   per-surface declarations above instead of accidentally double-filtering. */
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"]
+      [data-zen-glass-compositor]
+  )
+  [data-editor-fluid-glass="true"]
+  > [data-editor-fluid-glass-filter],
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"]
+      [data-zen-glass-compositor]
+  )
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface] {
+  backdrop-filter: none;
 }
 
 /* `--flat` variant: a card with a uniform fill instead of the dome
@@ -573,6 +592,53 @@ button[role="switch"][aria-checked="true"] {
   background: var(--background);
 }
 
+/* WebGL can be blocklisted on remote desktops, VMs, and software-only X11
+   sessions. Keep the configured background as a static gradient there, but do
+   not leave full-surface backdrop filters active after Paper Shaders declines
+   the context. A translucent solid veil preserves the Glass hierarchy without
+   making every native scroll repaint resample a blurred backdrop. */
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"] {
+  background-color: color-mix(in oklch, var(--background) 84%, transparent);
+  background-image: none;
+}
+
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"]
+  > [data-editor-fluid-glass-filter],
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"]
+  .glass-editor-body,
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"]
+  .glass-editor-chrome,
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  .editor-background-glass {
+  background-color: color-mix(in oklch, var(--background) 86%, transparent);
+  background-image: none;
+  backdrop-filter: none;
+}
+
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface] {
+  background-color: color-mix(in oklch, var(--card) 84%, transparent);
+  background-image: none;
+  backdrop-filter: none;
+}
+
 /* Animation wrappers must not clip card shadows into inter-panel gaps. */
 .app-shell [data-animated-region] {
   overflow: visible;
@@ -582,12 +648,27 @@ button[role="switch"][aria-checked="true"] {
   overflow: visible;
 }
 
-/* Stripe (side/bottom) は .gx-panel の 1px border をオフにする。border が
-   あると stripe 内側の flex 配分域が両端 1px ずつ縮み、content 側の Slot
-   Splitter 位置と divider 位置がズレる（content には border が無い）。
-   center stripe は data-stripe-region を持たないため対象外。 */
-.app-shell [data-stripe-region].gx-panel {
+/* Stripe は四辺とも同じ 1px rim を持つ。ただし通常の border は内側の flex /
+   grid 配分域を両端 1px ずつ縮め、content 側の Slot Splitter と divider を
+   ずらす。全 Stripe を borderless にした上で inset shadow で rim を描き、
+   36px の幾何と分割位置を保つ。 */
+.app-shell [data-ambient-glass-surface="stripe"].gx-panel {
   border: none;
+}
+
+.app-shell [data-center-stripe].gx-panel,
+.app-shell [data-stripe-region="bottom"].gx-panel {
+  border-radius: 17.5px;
+}
+
+.app-shell [data-ambient-glass-surface="stripe"].gx-panel::after {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
 }
 
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
@@ -611,6 +692,18 @@ button[role="switch"][aria-checked="true"] {
   > [data-animated-slot-panel]
   > .bg-card {
   background-color: transparent;
+}
+
+/* Matrix keeps its column and row labels sticky while the body scrolls. A
+   completely clear sticky layer would let cells and glyphs pass visibly
+   underneath, so Glass mode keeps a readable translucent veil instead of a
+   backdrop-filter per virtual row. Controls and popovers are intentionally
+   outside this opt-in selector and retain their solid fills. */
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface="panel"]
+  [data-matrix-sticky-surface] {
+  background-color: color-mix(in oklch, var(--background) 70%, transparent);
 }
 
 /* Dragging a panel lifts the card — a touch more shadow + scale.
@@ -1966,19 +2059,30 @@ button[role="switch"][aria-checked="true"] {
 
 /* Find & Replace decorations (C-7) */
 .find-match {
-  background-color: oklch(0.9 0.12 85);
+  background-color: var(--find-match-background);
   border-radius: 2px;
-}
-.dark .find-match {
-  background-color: oklch(0.4 0.12 85);
 }
 .find-current {
-  background-color: oklch(0.75 0.18 60);
+  background-color: var(--find-current-background);
   border-radius: 2px;
-  outline: 1px solid oklch(0.55 0.18 60);
+  outline: 1px solid var(--find-current-outline);
 }
-.dark .find-current {
-  background-color: oklch(0.55 0.18 60);
+.find-scrollbar-marker {
+  background-color: var(--find-match-background);
+  box-shadow: 0 0 0 1px
+    color-mix(in oklch, var(--find-current-outline) 45%, transparent);
+  opacity: 0.95;
+}
+.find-scrollbar-marker-current {
+  background-color: var(--find-current-background);
+  box-shadow: 0 0 0 1px var(--find-current-outline);
+  opacity: 1;
+}
+[data-orientation="vertical"] .find-scrollbar-marker-current {
+  width: 0.5rem;
+}
+[data-orientation="horizontal"] .find-scrollbar-marker-current {
+  height: 0.5rem;
 }
 
 /* Chat input TipTap editor */

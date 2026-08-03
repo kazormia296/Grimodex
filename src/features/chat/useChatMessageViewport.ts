@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 
@@ -6,6 +13,7 @@ export interface ChatMessageViewportOptions {
   messages: readonly ChatMessageType[];
   isLoadingMessages: boolean;
   activeSessionId: string | null;
+  isViewportActive: boolean;
 }
 
 /** Owns virtualized message measurement, stick-to-bottom behavior, and entrance animation state. */
@@ -13,6 +21,7 @@ export function useChatMessageViewport({
   messages,
   isLoadingMessages,
   activeSessionId,
+  isViewportActive,
 }: ChatMessageViewportOptions) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -27,7 +36,12 @@ export function useChatMessageViewport({
   );
   const virtualizer = useVirtualizer({
     count: visibleMessages.length,
-    getScrollElement: () => scrollContainerRef.current,
+    // 非対象パネルの maximize 中も Chat DOM は keepalive されるが、親 cell は
+    // 0px + visibility:hidden になる。その休眠 geometry を測ると行高 cache と
+    // scroll anchor が壊れるため、表示中だけ scroll/ResizeObserver を接続する。
+    // enabled=false は測定 cache 自体を消すので使わず、scroll element のみ外す。
+    getScrollElement: () =>
+      isViewportActive ? scrollContainerRef.current : null,
     estimateSize: () => 120,
     overscan: 6,
     getItemKey: (index) => visibleMessages[index]?.id ?? index,
@@ -87,7 +101,32 @@ export function useChatMessageViewport({
       node.scrollIntoView({ behavior: "auto" });
     }
   }, []);
+  const measureMessageElement = useCallback(
+    (node: HTMLDivElement | null) => {
+      // measureElement は scroll element が外れていても同期測定するため、
+      // 休眠中に新しく mount した行だけは collapsed geometry を記録させない。
+      // null は stale node の登録解除に必要なので常に転送する。
+      if (node === null || isViewportActive) {
+        virtualizer.measureElement(node);
+      }
+    },
+    [isViewportActive, virtualizer],
+  );
+  const wasViewportActiveRef = useRef(isViewportActive);
+  useLayoutEffect(() => {
+    const wasActive = wasViewportActiveRef.current;
+    wasViewportActiveRef.current = isViewportActive;
+    if (!isViewportActive || wasActive) return;
+
+    // useVirtualizer の layout effect が先に observer と offset を復元する。
+    // その値へ方向判定を同期し、末尾追従中だけ即座に末尾へ戻す。
+    const element = scrollContainerRef.current;
+    if (!element) return;
+    lastScrollTopRef.current = element.scrollTop;
+    if (stickToBottomRef.current) scrollToBottom();
+  }, [isViewportActive, scrollToBottom]);
   const handleListScroll = useCallback(() => {
+    if (!isViewportActive) return;
     const element = scrollContainerRef.current;
     if (!element) return;
     const distance =
@@ -96,9 +135,10 @@ export function useChatMessageViewport({
     else if (element.scrollTop < lastScrollTopRef.current)
       stickToBottomRef.current = false;
     lastScrollTopRef.current = element.scrollTop;
-  }, []);
+  }, [isViewportActive]);
   const totalSize = virtualizer.getTotalSize();
   useEffect(() => {
+    if (!isViewportActive) return;
     if (!stickToBottomRef.current) {
       const element = scrollContainerRef.current;
       if (
@@ -109,7 +149,7 @@ export function useChatMessageViewport({
       }
     }
     if (stickToBottomRef.current) scrollToBottom();
-  }, [totalSize, scrollToBottom]);
+  }, [isViewportActive, totalSize, scrollToBottom]);
 
   const lastJumpedSessionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -119,9 +159,9 @@ export function useChatMessageViewport({
     ) {
       lastJumpedSessionRef.current = activeSessionId;
       stickToBottomRef.current = true;
-      scrollToBottom();
+      if (isViewportActive) scrollToBottom();
     }
-  }, [activeSessionId, isLoadingMessages, scrollToBottom]);
+  }, [activeSessionId, isLoadingMessages, isViewportActive, scrollToBottom]);
 
   return {
     bottomRef,
@@ -130,6 +170,7 @@ export function useChatMessageViewport({
     virtualizer,
     entranceAnim,
     scrollToBottom,
+    measureMessageElement,
     handleListScroll,
   };
 }

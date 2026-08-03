@@ -19,11 +19,13 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    debugLog.error(
-      "ErrorBoundary",
-      error.message,
-      errorDetail(error) + "\n" + (info.componentStack ?? ""),
-    );
+    debugLog.error("ErrorBoundary", "React render failed", {
+      sensitivity: "content-derived",
+      fields: {
+        error: errorDetail(error),
+        componentStack: info.componentStack ?? "",
+      },
+    });
   }
 
   handleReload = () => {

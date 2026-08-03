@@ -29,11 +29,20 @@ vi.mock("@/lib/resolveCodexColors", () => ({
 
 // Minimal store mocks
 let mockEntries: unknown[] = [];
+let mockCompletionTargets: unknown[] = [];
 let mockEnabled = true;
 
 vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: (selector: (s: { entries: unknown[] }) => unknown) =>
-    selector({ entries: mockEntries }),
+  useCodexStore: (
+    selector: (s: {
+      entries: unknown[];
+      completionTargets: unknown[];
+    }) => unknown,
+  ) =>
+    selector({
+      entries: mockEntries,
+      completionTargets: mockCompletionTargets,
+    }),
 }));
 
 vi.mock("@/features/settings/settingsStore", () => ({
@@ -123,10 +132,14 @@ function makeEditor(): Editor {
 // ---------------------------------------------------------------------------
 
 import { useCodexHighlight } from "./useCodexHighlight";
+import { listCodexTypes } from "@/features/codex/typeApi";
+
+const mockListCodexTypes = vi.mocked(listCodexTypes);
 
 describe("useCodexHighlight — skipMatchedIds dependency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockListCodexTypes.mockResolvedValue([]);
     mockEntries = [
       {
         id: "c1",
@@ -136,6 +149,7 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
         excludedAliases: [],
       },
     ];
+    mockCompletionTargets = [...mockEntries];
     mockEnabled = true;
   });
 
@@ -217,6 +231,41 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
     expect(mockRebuildAndSchedule).toHaveBeenCalledTimes(1);
   });
 
+  it("matches the whole project even when panel entries contain only one filtered type", () => {
+    const editor = makeEditor();
+    mockEntries = [
+      {
+        id: "character-a",
+        name: "太郎",
+        type: "character",
+        aliases: [],
+        excludedAliases: [],
+      },
+    ];
+    mockCompletionTargets = [
+      ...mockEntries,
+      {
+        id: "location-b",
+        name: "東京",
+        type: "location",
+        aliases: [],
+        excludedAliases: [],
+      },
+    ];
+
+    renderHook(() => useCodexHighlight(editor));
+
+    expect(mockRebuildAndSchedule).toHaveBeenCalledWith(
+      editor,
+      [
+        expect.objectContaining({ id: "character-a" }),
+        expect.objectContaining({ id: "location-b" }),
+      ],
+      [],
+      false,
+    );
+  });
+
   it("does not access a TipTap view detached before passive effects", () => {
     const editor = makeEditor();
     Object.defineProperty(editor, "view", {
@@ -229,5 +278,28 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
       renderHook(() => useCodexHighlight(editor, { skipMatchedIds: true })),
     ).not.toThrow();
     expect(mockRebuildAndSchedule).not.toHaveBeenCalled();
+  });
+
+  it("terminates an optional type-color query failure inside the effect", async () => {
+    const editor = makeEditor();
+    const consoleWarning = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    mockListCodexTypes.mockRejectedValueOnce(
+      new Error("type color query unavailable"),
+    );
+
+    try {
+      renderHook(() => useCodexHighlight(editor));
+
+      await vi.waitFor(() => {
+        expect(consoleWarning).toHaveBeenCalledWith(
+          "[codex-highlight] type color projection unavailable",
+          expect.any(String),
+        );
+      });
+    } finally {
+      consoleWarning.mockRestore();
+    }
   });
 });

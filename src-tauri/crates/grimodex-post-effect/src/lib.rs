@@ -6,6 +6,7 @@
 //!     → tokio::spawn で run_consistency_task / run_intra_task を実行
 //!     → post_effect:progress / :partial / :done / :error イベントを emit
 
+use anyhow::Context;
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +19,12 @@ use uuid::Uuid;
 
 use grimodex_ai::{AiProvider, AiSettings};
 use grimodex_db::{read_sqlite_source_revision, AppError, Database};
+
+mod audit;
+use audit::*;
+
+#[cfg(test)]
+mod audit_tests;
 
 /// PostEffect runner がシェルへ要求する最小機能。
 ///
@@ -81,9 +88,62 @@ pub struct PostEffectAiRequest<'a> {
 }
 
 /// API 生応答と、annotation metadata に記録する実効モデル。
+#[derive(Debug)]
 pub struct PostEffectAiOutput {
     pub raw_response: String,
     pub detected_model: String,
+}
+
+/// Secret-free route snapshot resolved by the shell immediately before the
+/// request is dispatched. Only endpoint identity and normalized host are
+/// exposed; API keys, headers, cookies, and query strings never cross this
+/// boundary.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PostEffectAiResolvedRoute {
+    pub provider: String,
+    pub model: String,
+    pub api_variant: Option<String>,
+    pub endpoint_id: Option<String>,
+    pub endpoint_host: Option<String>,
+    /// Exact credential-free body prepared from the same settings snapshot as
+    /// the subsequent provider dispatch. `None` means the client cannot prove
+    /// body identity and the audit execution must remain partial.
+    pub effective_request: Option<grimodex_ai::PreparedPostEffectRequest>,
+    pub limitations: Vec<String>,
+}
+
+pub type PostEffectAiCallFuture<'a> =
+    Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>>;
+pub type PostEffectAiDispatch<'a> = Box<dyn FnOnce() -> PostEffectAiCallFuture<'a> + Send + 'a>;
+
+impl PostEffectAiResolvedRoute {
+    pub fn from_settings(settings: &AiSettings) -> Self {
+        let api_variant = grimodex_ai::resolve_api_variant(None, settings, &settings.model);
+        let base_url = settings
+            .provider
+            .openai_compat_base_url(settings.endpoints(), api_variant.as_deref());
+        Self {
+            provider: settings.provider.to_string(),
+            model: settings.model.clone(),
+            api_variant,
+            endpoint_id: matches!(settings.provider, AiProvider::OpenaiCompatible)
+                .then(|| settings.active_openai_compatible_endpoint_id.clone())
+                .flatten(),
+            endpoint_host: normalized_endpoint_host(&base_url),
+            effective_request: None,
+            limitations: vec!["exact-effective-request-body-unavailable".to_string()],
+        }
+    }
+
+    pub fn from_settings_and_prepared(
+        settings: &AiSettings,
+        effective_request: grimodex_ai::PreparedPostEffectRequest,
+    ) -> Self {
+        let mut route = Self::from_settings(settings);
+        route.effective_request = Some(effective_request);
+        route.limitations.clear();
+        route
+    }
 }
 
 /// 設定・secret 解決と HTTP 呼び出しを shell から注入する seam。
@@ -92,10 +152,70 @@ pub struct PostEffectAiOutput {
 /// safeStorage から作った snapshot を使う。Fake 実装で error / panic / partial
 /// failure をネットワーク無しに駆動できる。
 pub trait PostEffectAiClient: Clone + Send + Sync + 'static {
+    /// Resolve the exact secret-free provider route used by `call`. The
+    /// returned snapshot is durably audited before `call` is invoked.
+    fn resolve_audit_route(&self, request: &PostEffectAiRequest<'_>) -> PostEffectAiResolvedRoute;
+
+    /// Prepare the exact call future together with its route snapshot. Shells
+    /// whose settings can change at runtime override this method so the
+    /// prepared audit record and subsequent dispatch share one settings
+    /// snapshot. The default is sufficient for immutable clients and tests.
+    fn prepare_call<'a>(
+        &'a self,
+        request: PostEffectAiRequest<'a>,
+    ) -> anyhow::Result<(PostEffectAiResolvedRoute, PostEffectAiDispatch<'a>)> {
+        let route = self.resolve_audit_route(&request);
+        let dispatch: PostEffectAiDispatch<'a> = Box::new(move || self.call(request));
+        Ok((route, dispatch))
+    }
+
     fn call<'a>(
         &'a self,
         request: PostEffectAiRequest<'a>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>>;
+}
+
+async fn call_post_effect_ai_audited<R, A>(
+    runtime: &R,
+    ai: &A,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    request: PostEffectAiRequest<'_>,
+) -> anyhow::Result<PostEffectAiOutput>
+where
+    R: PostEffectRuntime,
+    A: PostEffectAiClient,
+{
+    let database = runtime
+        .pinned_database()
+        .context("post-effect AI audit requires the start database to remain pinned")?;
+    let context = post_effect_audit_context(&database, project_id, run_id, scene_id, None)
+        .context("load post-effect AI audit operation metadata from pinned database")?;
+    call_post_effect_ai_with_appender(database, ai, context, request).await
+}
+
+fn append_post_effect_scene_non_execution<R: PostEffectRuntime>(
+    runtime: &R,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    event_type: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let database = runtime
+        .pinned_database()
+        .context("post-effect non-execution audit requires pinned start database")?;
+    let context = post_effect_audit_context(database.as_ref(), project_id, run_id, scene_id, None)?;
+    append_post_effect_non_execution(
+        database,
+        context,
+        event_type,
+        reason,
+        None,
+        serde_json::json!({}),
+    )?;
+    Ok(())
 }
 
 /// run_id 単位の中止要求と開始元DB binding。clone は同じ state を共有する。
@@ -175,6 +295,7 @@ const INTENT_DRIFT_PROMPT_VERSION: &str = "intent_drift_v1.1";
 // v2.0: ペルソナを bare label から genre/想定読者プロフィールを織り込んだ
 // brief 注入へ刷新 (TS pseudoCommentPayloadBuilder と同期)。
 const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v2.1";
+const LIVE_PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_live_v1.0";
 const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.2";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
@@ -193,7 +314,7 @@ pub struct StartPostEffectRunArgs {
     scope_type: String,
     scope_target_id: Option<String>,
     model: String,
-    /// 機能別モデル: review ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
+    /// 機能別モデル: 対応ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
     /// モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
     #[serde(default)]
     model_override: Option<String>,
@@ -216,6 +337,10 @@ pub struct StartPostEffectRunArgs {
     /// pseudo_comment の読者ペルソナ名 (他 effect_type では None)。
     #[serde(default)]
     persona: Option<String>,
+    /// リアルタイム読者コメント。通常の pseudo_comment annotation として保存し、
+    /// partial イベントでも生成順に通知する。
+    #[serde(default)]
+    live: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -258,7 +383,7 @@ pub struct StartPostEffectRunMultiArgs {
     scope_type: String,
     scope_target_id: Option<String>,
     model: String,
-    /// 機能別モデル: review ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
+    /// 機能別モデル: 対応ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
     /// モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
     #[serde(default)]
     model_override: Option<String>,
@@ -298,6 +423,24 @@ struct PartialEvent<'a> {
 }
 
 #[derive(Clone, Serialize)]
+struct LiveCommentEvent {
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persona: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found_context: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct LivePartialEvent<'a> {
+    run_id: &'a str,
+    annotation_id: String,
+    live_comment: LiveCommentEvent,
+}
+
+#[derive(Clone, Serialize)]
 struct DoneEvent<'a> {
     run_id: &'a str,
     annotation_count: usize,
@@ -322,7 +465,7 @@ fn emit_event<R: PostEffectRuntime, T: Serialize>(runtime: &R, channel: &str, pa
     }
 }
 
-/// 機能別モデル（review ロール）のプロバイダ横断 override。model_override と並走する
+/// 機能別モデルのプロバイダ横断 override。model_override と並走する
 /// provider / API 経路 / エンドポイントの割り当て。全 None/空なら従来挙動（model だけ
 /// 差し替え or 既定）= wire 差分ゼロ。
 #[derive(Clone, Default)]
@@ -335,7 +478,7 @@ pub struct RoleProviderOverride {
     pub endpoint_id: Option<String>,
 }
 
-/// 機能別モデル（review ロール）の override を AiSettings に適用する。
+/// 機能別モデルの override を AiSettings に適用する。
 /// `model_override` が Some かつ非空のときだけ実呼び出しの `model` を差し替える。
 /// `prov` が provider/endpoint/variant の横断割り当てを表す（送信先プロバイダ・キー・
 /// 経路を差し替える。send_chat_message と同契約: provider override 時はグローバル
@@ -2324,25 +2467,31 @@ where
         "[post_effect] consistency: calling AI"
     );
     let ai_start = std::time::Instant::now();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override,
             role_override: prov,
             system_prompt,
             codex_content: Some(codex_payload_json),
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                run_id = run_id,
-                scene_id = scene_id,
-                elapsed_ms = ai_start.elapsed().as_millis(),
-                error = %e,
-                "[post_effect] consistency: AI call failed"
-            );
-            anyhow::anyhow!("AI 呼び出し失敗: {e}")
-        })?;
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] consistency: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
     tracing::info!(
@@ -2775,25 +2924,31 @@ where
     );
     let ai_start = std::time::Instant::now();
     let no_override = RoleProviderOverride::default();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override: None,
             role_override: &no_override,
             system_prompt,
             codex_content: None,
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                run_id = run_id,
-                scene_id = scene_id,
-                elapsed_ms = ai_start.elapsed().as_millis(),
-                error = %e,
-                "[post_effect] intra: AI call failed"
-            );
-            anyhow::anyhow!("AI 呼び出し失敗: {e}")
-        })?;
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] intra: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
     tracing::info!(
@@ -3069,25 +3224,31 @@ where
     );
     let ai_start = std::time::Instant::now();
     let no_override = RoleProviderOverride::default();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override: None,
             role_override: &no_override,
             system_prompt,
             codex_content: None,
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                run_id = run_id,
-                scene_id = scene_id,
-                elapsed_ms = ai_start.elapsed().as_millis(),
-                error = %e,
-                "[post_effect] typo: AI call failed"
-            );
-            anyhow::anyhow!("AI 呼び出し失敗: {e}")
-        })?;
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] typo: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
     tracing::info!(
@@ -3327,25 +3488,31 @@ where
         "[post_effect] review: calling AI"
     );
     let ai_start = std::time::Instant::now();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override,
             role_override: prov,
             system_prompt,
             codex_content: None,
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                run_id = run_id,
-                scene_id = scene_id,
-                elapsed_ms = ai_start.elapsed().as_millis(),
-                error = %e,
-                "[post_effect] review: AI call failed"
-            );
-            anyhow::anyhow!("AI 呼び出し失敗: {e}")
-        })?;
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] review: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
 
@@ -3513,25 +3680,31 @@ where
         "[post_effect] intent_drift: calling AI"
     );
     let ai_start = std::time::Instant::now();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override,
             role_override: prov,
             system_prompt,
             codex_content: None,
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                run_id = run_id,
-                scene_id = scene_id,
-                elapsed_ms = ai_start.elapsed().as_millis(),
-                error = %e,
-                "[post_effect] intent_drift: AI call failed"
-            );
-            anyhow::anyhow!("AI 呼び出し失敗: {e}")
-        })?;
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] intent_drift: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
 
@@ -3749,25 +3922,31 @@ where
         "[post_effect] timeline_consistency: calling AI"
     );
     let ai_start = std::time::Instant::now();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override,
             role_override: prov,
             system_prompt,
             codex_content: None,
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                run_id = run_id,
-                scene_id = scene_id,
-                elapsed_ms = ai_start.elapsed().as_millis(),
-                error = %e,
-                "[post_effect] timeline_consistency: AI call failed"
-            );
-            anyhow::anyhow!("AI 呼び出し失敗: {e}")
-        })?;
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] timeline_consistency: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
 
@@ -3980,25 +4159,31 @@ where
         "[post_effect] impact_review: calling AI"
     );
     let ai_start = std::time::Instant::now();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override,
             role_override: prov,
             system_prompt,
             codex_content: Some(codex_payload_json),
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                run_id = run_id,
-                scene_id = scene_id,
-                elapsed_ms = ai_start.elapsed().as_millis(),
-                error = %e,
-                "[post_effect] impact_review: AI call failed"
-            );
-            anyhow::anyhow!("AI 呼び出し失敗: {e}")
-        })?;
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] impact_review: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
     tracing::info!(
@@ -4279,16 +4464,22 @@ where
         persona = persona.unwrap_or(""),
         "[post_effect] pseudo_comment: calling AI"
     );
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override,
             role_override: prov,
             system_prompt,
             codex_content: None,
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
     let detected_model = ai_output.detected_model;
     let raw_response = ai_output.raw_response;
 
@@ -4451,6 +4642,189 @@ async fn run_pseudo_comment_task<R, A>(
     .await;
 }
 
+/// リアルタイム読者コメントを生成された順に partial イベントへ流しつつ、
+/// 通常の pseudo_comment と同じ annotation 行へ保存する。
+/// `scene_text` は full scene ではなく、FE が作った近傍コンテキストを受け取るため、
+/// range は renderer の本文 mark/autosave で後から確定する。
+#[allow(clippy::too_many_arguments)]
+async fn process_live_pseudo_comment_scene<R, A>(
+    runtime: &R,
+    ai: &A,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    system_prompt: &str,
+    persona: Option<&str>,
+    model_override: Option<&str>,
+    prov: &RoleProviderOverride,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error>
+where
+    R: PostEffectRuntime,
+    A: PostEffectAiClient,
+{
+    tracing::info!(
+        run_id = run_id,
+        persona = persona.unwrap_or(""),
+        context_len = scene_text.chars().count(),
+        "[post_effect] live pseudo_comment: calling AI"
+    );
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
+            model_override,
+            role_override: prov,
+            system_prompt,
+            codex_content: None,
+            scene_content: scene_text,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+
+    let detected_model = ai_output.detected_model.clone();
+    on_stage(0.5, "parsing");
+    let raw_response = ai_output.raw_response;
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            extracted_preview = %json_str.chars().take(2000).collect::<String>(),
+            error = %e,
+            "[post_effect] live pseudo_comment: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+    let comments = extract_array_field(&parsed, "comments")
+        .map_err(|e| anyhow::anyhow!("LLM 出力の構造が不正: {e}"))?;
+
+    // 永続 run と同じ dedupe 契約を保つ。
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = comments
+        .iter()
+        .filter(|comment| {
+            let found_text = strong_normalize(comment["found_text"].as_str().unwrap_or(""));
+            let content = strong_normalize(comment["content"].as_str().unwrap_or(""));
+            !content.is_empty() && seen.insert(format!("{found_text}|{content}"))
+        })
+        .collect();
+
+    on_stage(0.7, "streaming");
+    let mut count = 0usize;
+    for comment in deduped {
+        let content = comment["content"].as_str().unwrap_or("").trim();
+        if content.is_empty() {
+            continue;
+        }
+        let found_text = comment["found_text"].as_str().unwrap_or("").trim();
+        let found_context = comment["found_context"].as_str().unwrap_or("").trim();
+        let annotation_id = Uuid::new_v4().to_string();
+        let metadata = serde_json::json!({
+            "live": true,
+            "persona": persona,
+            "found_text": found_text,
+            "found_context": found_context,
+            "detected_by_model": detected_model,
+            "orphaned": found_text.is_empty(),
+        });
+
+        runtime.with_db(|db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO post_effect_annotations
+                        (id, project_id, run_id, anchor_type, scene_id,
+                         range_start, range_end, text_snapshot,
+                         category, persona, severity, content, author_role,
+                         status, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, 'scene_range', ?,
+                             0, 0, ?,
+                             'pseudo_comment', ?, NULL, ?, 'ai',
+                             'open', ?, datetime('now'), datetime('now'))",
+                    params![
+                        annotation_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        (!found_text.is_empty()).then_some(found_text),
+                        persona,
+                        content,
+                        metadata.to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+        })?;
+        emit_event(
+            runtime,
+            "post_effect:partial",
+            LivePartialEvent {
+                run_id,
+                annotation_id,
+                live_comment: LiveCommentEvent {
+                    content: content.to_string(),
+                    persona: persona.map(ToOwned::to_owned),
+                    found_text: (!found_text.is_empty()).then(|| found_text.to_string()),
+                    found_context: (!found_context.is_empty()).then(|| found_context.to_string()),
+                },
+            },
+        );
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_live_pseudo_comment_task<R, A>(
+    runtime: R,
+    ai: A,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    scene_text: String,
+    system_prompt: String,
+    persona: Option<String>,
+    model_override: Option<String>,
+    prov: RoleProviderOverride,
+) where
+    R: PostEffectRuntime,
+    A: PostEffectAiClient,
+{
+    run_effect_task(runtime, run_id, |runtime, run_id| async move {
+        process_live_pseudo_comment_scene(
+            &runtime,
+            &ai,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            persona.as_deref(),
+            model_override.as_deref(),
+            &prov,
+            |progress, stage| {
+                emit_event(
+                    &runtime,
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage,
+                        progress,
+                        message: None,
+                    },
+                );
+            },
+        )
+        .await
+    })
+    .await;
+}
+
 // ---------------------------------------------------------------------------
 // meta_structure run (プロット構造・ペーシングの俯瞰診断)
 // ---------------------------------------------------------------------------
@@ -4478,16 +4852,22 @@ where
         "[post_effect] meta_structure: calling AI"
     );
     let no_override = RoleProviderOverride::default();
-    let ai_output = ai
-        .call(PostEffectAiRequest {
+    let ai_output = call_post_effect_ai_audited(
+        runtime,
+        ai,
+        run_id,
+        project_id,
+        scene_id,
+        PostEffectAiRequest {
             model_override: None,
             role_override: &no_override,
             system_prompt,
             codex_content: None,
             scene_content: scene_text,
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
     let raw_response = ai_output.raw_response;
 
     on_stage(0.5, "parsing");
@@ -4792,9 +5172,28 @@ async fn run_multi_task<R, A>(
         "[post_effect] run_multi_task START"
     );
 
-    for (idx, scene) in scenes.into_iter().enumerate() {
+    let mut scene_iter = scenes.into_iter().enumerate();
+    while let Some((idx, scene)) = scene_iter.next() {
         if runtime.is_aborted(&run_id) {
             tracing::warn!(run_id = %run_id, "[post_effect] aborted by user");
+            let pending_scenes = std::iter::once(scene).chain(scene_iter.map(|(_, scene)| scene));
+            for pending_scene in pending_scenes {
+                if let Err(error) = append_post_effect_scene_non_execution(
+                    &runtime,
+                    &run_id,
+                    &project_id,
+                    &pending_scene.scene_id,
+                    "execution.cancelled",
+                    "run_cancelled_before_dispatch",
+                ) {
+                    tracing::error!(
+                        run_id = %run_id,
+                        scene_id = %pending_scene.scene_id,
+                        error = %error,
+                        "failed to append cancelled post-effect scene audit"
+                    );
+                }
+            }
             finish_failure(&runtime, &run_id, "中断されました");
             return;
         }
@@ -4823,6 +5222,22 @@ async fn run_multi_task<R, A>(
                 scene_id = %scene.scene_id,
                 "[post_effect] skipping empty scene"
             );
+            let audit_result = append_post_effect_scene_non_execution(
+                &runtime,
+                &run_id,
+                &project_id,
+                &scene.scene_id,
+                "execution.skipped",
+                "empty_scene",
+            );
+            if let Err(error) = audit_result {
+                finish_failure(
+                    &runtime,
+                    &run_id,
+                    &format!("AI監査ログの保存に失敗しました: {error}"),
+                );
+                return;
+            }
             continue;
         }
         attempted += 1;
@@ -5214,6 +5629,48 @@ enum EnsureRunOutcome {
     Created(String),
 }
 
+/// ライブ run は同じ本文を再入力したときでも新しい partial を流すため、
+/// 通常 run の completed-cache 照合を行わず、running 行だけを作る。
+#[allow(clippy::too_many_arguments)]
+fn create_post_effect_run(
+    runtime: &impl PostEffectRuntime,
+    project_id: &str,
+    effect_type: &str,
+    scope_type: &str,
+    scope_target_id: Option<&str>,
+    model: &str,
+    prompt_version: &str,
+    input_hash: &str,
+) -> Result<String, AppError> {
+    if let Some(target_id) = scope_target_id {
+        ensure_tree_node_belongs_to_project(runtime, project_id, target_id, "scope_target_id")?;
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    runtime.with_db(|db| {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, scope_target_id,
+                     model, prompt_version, input_hash, status, started_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', datetime('now'))",
+                params![
+                    run_id,
+                    project_id,
+                    effect_type,
+                    scope_type,
+                    scope_target_id,
+                    model,
+                    prompt_version,
+                    input_hash,
+                ],
+            )?;
+            Ok(())
+        })
+    })?;
+    Ok(run_id)
+}
+
 const IMPACT_SOURCE_CHANGED_MARKER: &str = "IMPACT_SOURCE_CHANGED";
 
 fn parse_canonical_u64(field: &str, value: &str) -> anyhow::Result<u64> {
@@ -5507,14 +5964,18 @@ where
         );
     }
 
-    let prompt_version = match effect_type {
-        "consistency" => CONSISTENCY_PROMPT_VERSION,
-        "typo_detection" => TYPO_PROMPT_VERSION,
-        "review" => REVIEW_PROMPT_VERSION,
-        "intent_drift" => INTENT_DRIFT_PROMPT_VERSION,
-        "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
-        "meta_structure" => META_STRUCTURE_PROMPT_VERSION,
-        _ => INTRA_PROMPT_VERSION,
+    let prompt_version = if args.live && effect_type == "pseudo_comment" {
+        LIVE_PSEUDO_COMMENT_PROMPT_VERSION
+    } else {
+        match effect_type {
+            "consistency" => CONSISTENCY_PROMPT_VERSION,
+            "typo_detection" => TYPO_PROMPT_VERSION,
+            "review" => REVIEW_PROMPT_VERSION,
+            "intent_drift" => INTENT_DRIFT_PROMPT_VERSION,
+            "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
+            "meta_structure" => META_STRUCTURE_PROMPT_VERSION,
+            _ => INTRA_PROMPT_VERSION,
+        }
     };
     if args.prompt_version != prompt_version {
         tracing::warn!(
@@ -5522,6 +5983,86 @@ where
             args.prompt_version,
             prompt_version
         );
+    }
+
+    // ライブ読者コメントは短い近傍コンテキストを使う。通常の pseudo_comment と
+    // 同じ run/annotation 型・AI/API 経路・partial/done/error チャンネルを共有する。
+    if args.live {
+        if effect_type != "pseudo_comment" {
+            return Err(anyhow::anyhow!("live mode is only supported for pseudo_comment").into());
+        }
+        if args.scope_type != "scene"
+            || args
+                .scope_target_id
+                .as_deref()
+                .map(str::is_empty)
+                .unwrap_or(true)
+        {
+            return Err(
+                anyhow::anyhow!("live pseudo_comment requires a scene scope_target_id").into(),
+            );
+        }
+
+        // 同一 input_hash の completed cache は使わず、毎回 partial を生成する。
+        // 生成物自体は通常の post_effect_runs / post_effect_annotations に保存する。
+        let runtime = runtime.pin_database()?;
+        let scene_id = args.scope_target_id.clone().unwrap_or_default();
+        let run_id = create_post_effect_run(
+            &runtime,
+            &args.project_id,
+            &args.effect_type,
+            &args.scope_type,
+            Some(&scene_id),
+            &args.model,
+            prompt_version,
+            &args.input_hash,
+        )?;
+        runtime.bind_abort_database(&run_id);
+        let project_id = args.project_id.clone();
+        let scene_text = args.scene_text.clone();
+        let system_prompt = args.system_prompt.clone();
+        let persona = args.persona.clone();
+        let model_override = args.model_override.clone();
+        let prov = RoleProviderOverride {
+            provider: args.provider_override.clone(),
+            api_variant: args.api_variant_override.clone(),
+            endpoint_id: args.endpoint_id_override.clone(),
+        };
+        let rid = run_id.clone();
+        let runtime_clone = runtime.clone();
+        let rid_clone = rid.clone();
+        tokio::task::spawn(async move {
+            let join = tokio::task::spawn(async move {
+                run_live_pseudo_comment_task(
+                    runtime,
+                    ai,
+                    rid,
+                    project_id,
+                    scene_id,
+                    scene_text,
+                    system_prompt,
+                    persona,
+                    model_override,
+                    prov,
+                )
+                .await;
+            })
+            .await;
+            if let Err(join_err) = join {
+                let msg = if join_err.is_panic() {
+                    format!("post-effect ライブタスクが panic しました: {join_err}")
+                } else {
+                    format!("post-effect ライブタスクが異常終了しました: {join_err}")
+                };
+                finish_failure(&runtime_clone, &rid_clone, &msg);
+            }
+            runtime_clone.clear_abort(&rid_clone);
+        });
+
+        return Ok(StartPostEffectRunResult {
+            run_id,
+            from_cache: false,
+        });
     }
 
     // cache照合・running INSERT・detached worker を同じ workspace DBへ固定する。
@@ -5541,6 +6082,35 @@ where
         None,
     )? {
         EnsureRunOutcome::Cached(existing_id) => {
+            let database = runtime
+                .pinned_database()
+                .context("post-effect cache audit requires pinned start database")?;
+            let operation_id = format!("post-effect-cache-{}", Uuid::new_v4());
+            let scene_id = args.scope_target_id.as_deref().unwrap_or_default();
+            let context = post_effect_audit_context(
+                &database,
+                &args.project_id,
+                &existing_id,
+                scene_id,
+                Some(operation_id),
+            )?;
+            append_post_effect_non_execution(
+                database,
+                context,
+                "execution.cache_hit",
+                "completed_run_reused",
+                None,
+                serde_json::json!({
+                    "requestedModel": args.model,
+                    "modelOverride": args.model_override,
+                    "providerOverride": args.provider_override,
+                    "apiVariantOverride": args.api_variant_override,
+                    "endpointIdOverride": args.endpoint_id_override,
+                    "inputHash": args.input_hash,
+                    "promptVersion": args.prompt_version,
+                    "effectType": args.effect_type,
+                }),
+            )?;
             return Ok(StartPostEffectRunResult {
                 run_id: existing_id,
                 from_cache: true,
@@ -5772,6 +6342,36 @@ where
         args.source_guard.as_ref(),
     )? {
         EnsureRunOutcome::Cached(existing_id) => {
+            let database = runtime
+                .pinned_database()
+                .context("post-effect cache audit requires pinned start database")?;
+            let operation_id = format!("post-effect-cache-{}", Uuid::new_v4());
+            let scene_id = args.scope_target_id.as_deref().unwrap_or_default();
+            let context = post_effect_audit_context(
+                &database,
+                &args.project_id,
+                &existing_id,
+                scene_id,
+                Some(operation_id),
+            )?;
+            append_post_effect_non_execution(
+                database,
+                context,
+                "execution.cache_hit",
+                "completed_run_reused",
+                None,
+                serde_json::json!({
+                    "requestedModel": args.model,
+                    "modelOverride": args.model_override,
+                    "providerOverride": args.provider_override,
+                    "apiVariantOverride": args.api_variant_override,
+                    "endpointIdOverride": args.endpoint_id_override,
+                    "inputHash": args.input_hash,
+                    "promptVersion": args.prompt_version,
+                    "effectType": args.effect_type,
+                    "sceneCount": args.scenes.len(),
+                }),
+            )?;
             return Ok(StartPostEffectRunResult {
                 run_id: existing_id,
                 from_cache: true,
@@ -6005,7 +6605,25 @@ mod runtime_contract_tests {
         calls: Arc<AtomicUsize>,
     }
 
+    fn fake_audit_route(model: &str) -> PostEffectAiResolvedRoute {
+        PostEffectAiResolvedRoute {
+            provider: "test".to_string(),
+            model: model.to_string(),
+            api_variant: None,
+            endpoint_id: None,
+            endpoint_host: Some("test.invalid".to_string()),
+            ..Default::default()
+        }
+    }
+
     impl PostEffectAiClient for FakeAi {
+        fn resolve_audit_route(
+            &self,
+            _request: &PostEffectAiRequest<'_>,
+        ) -> PostEffectAiResolvedRoute {
+            fake_audit_route("fake")
+        }
+
         fn call<'a>(
             &'a self,
             _request: PostEffectAiRequest<'a>,
@@ -6021,12 +6639,43 @@ mod runtime_contract_tests {
     }
 
     #[derive(Clone, Default)]
+    struct LiveFakeAi;
+
+    impl PostEffectAiClient for LiveFakeAi {
+        fn resolve_audit_route(
+            &self,
+            _request: &PostEffectAiRequest<'_>,
+        ) -> PostEffectAiResolvedRoute {
+            fake_audit_route("live-model")
+        }
+
+        fn call<'a>(
+            &'a self,
+            _request: PostEffectAiRequest<'a>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(PostEffectAiOutput {
+                    raw_response: r#"{"comments":[{"content":"気になる！","found_text":"本文","found_context":"本文"}]}"#.to_string(),
+                    detected_model: "live-model".to_string(),
+                })
+            })
+        }
+    }
+
+    #[derive(Clone, Default)]
     struct GatedAi {
         entered: Arc<Notify>,
         release: Arc<Notify>,
     }
 
     impl PostEffectAiClient for GatedAi {
+        fn resolve_audit_route(
+            &self,
+            _request: &PostEffectAiRequest<'_>,
+        ) -> PostEffectAiResolvedRoute {
+            fake_audit_route("fake")
+        }
+
         fn call<'a>(
             &'a self,
             _request: PostEffectAiRequest<'a>,
@@ -6100,6 +6749,7 @@ mod runtime_contract_tests {
             scene_text: "本文".to_string(),
             system_prompt: "review".to_string(),
             persona: None,
+            live: false,
         }
     }
 
@@ -6298,6 +6948,73 @@ mod runtime_contract_tests {
     }
 
     #[tokio::test]
+    async fn live_pseudo_comment_is_persisted_with_live_metadata_before_partial() {
+        let runtime = runtime();
+        let prov = RoleProviderOverride::default();
+        runtime
+            .with_db(|db| {
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO post_effect_runs
+                            (id, project_id, effect_type, scope_type, scope_target_id,
+                             model, prompt_version, input_hash, status, started_at)
+                         VALUES ('live-run', ?, 'pseudo_comment', 'scene', 'scene-own',
+                                 'live-model', ?, 'live-input', 'running', datetime('now'))",
+                        params![PROJECT, LIVE_PSEUDO_COMMENT_PROMPT_VERSION],
+                    )?;
+                    Ok(())
+                })
+            })
+            .expect("insert live run");
+
+        let count = process_live_pseudo_comment_scene(
+            &runtime,
+            &LiveFakeAi,
+            "live-run",
+            PROJECT,
+            "scene-own",
+            "本文",
+            "live reader",
+            Some("一般読者"),
+            None,
+            &prov,
+            |_, _| {},
+        )
+        .await
+        .expect("live comments should be saved");
+
+        assert_eq!(count, 1);
+        let row = runtime
+            .with_db(|db| {
+                db.with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT category, run_id, text_snapshot, content, metadata
+                           FROM post_effect_annotations
+                          WHERE run_id = 'live-run'",
+                        [],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                            ))
+                        },
+                    )?)
+                })
+            })
+            .expect("load live annotation");
+        assert_eq!(row.0, "pseudo_comment");
+        assert_eq!(row.1, "live-run");
+        assert_eq!(row.2.as_deref(), Some("本文"));
+        assert_eq!(row.3, "気になる！");
+        assert!(row.4.contains("\"live\":true"));
+        assert!(row.4.contains("\"detected_by_model\":\"live-model\""));
+        assert_eq!(event_channels(&runtime), vec!["post_effect:partial"]);
+    }
+
+    #[tokio::test]
     async fn single_impact_run_is_rejected_without_the_guarded_multi_contract() {
         let runtime = runtime();
         let ai = FakeAi::default();
@@ -6384,6 +7101,103 @@ mod runtime_contract_tests {
         assert_eq!(run_count(&runtime), 1);
         assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
         assert!(event_channels(&runtime).is_empty());
+        let audit = runtime
+            .db
+            .read_ai_audit_snapshot(PROJECT, None, None, None)
+            .expect("read cache-hit audit");
+        assert_eq!(
+            audit
+                .events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["execution.started", "execution.cache_hit"]
+        );
+        assert_eq!(audit.events[1].payload["modelDispatched"], false);
+        assert_eq!(audit.events[1].payload["relatedRunId"], "cached");
+        assert_eq!(audit.events[1].payload["captureState"], "partial");
+        assert_eq!(
+            audit.events[1].payload["limitations"][0],
+            "cache-source-execution-unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_multi_scene_is_audited_as_skipped_without_dispatch() {
+        let runtime = runtime();
+        let ai = FakeAi::default();
+        let mut args = multi_args("scene-own");
+        args.scenes[0].scene_text = "  \n".to_string();
+
+        let result = start_post_effect_run_multi(runtime.clone(), ai.clone(), args)
+            .await
+            .expect("start empty-scene run");
+        wait_for_terminal(&runtime.db, &result.run_id).await;
+
+        assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
+        let audit = runtime
+            .db
+            .read_ai_audit_snapshot(PROJECT, None, None, None)
+            .expect("read skipped audit");
+        let skipped = audit
+            .events
+            .iter()
+            .find(|event| event.event_type == "execution.skipped")
+            .expect("skipped event");
+        assert_eq!(skipped.payload["sceneId"], "scene-own");
+        assert_eq!(skipped.payload["modelDispatched"], false);
+        assert_eq!(skipped.payload["reason"], "empty_scene");
+    }
+
+    #[tokio::test]
+    async fn cancelled_multi_run_audits_every_pending_scene_without_dispatch() {
+        let runtime = runtime();
+        let ai = FakeAi::default();
+        insert_run(&runtime, "cancel-audit", "running", "cancel-audit-hash");
+        runtime.abort_registry().request("cancel-audit");
+        let scenes = vec![
+            ScenePayload {
+                scene_id: "scene-own".to_string(),
+                codex_payload_json: "[]".to_string(),
+                scene_text: "本文1".to_string(),
+            },
+            ScenePayload {
+                scene_id: "scene-own".to_string(),
+                codex_payload_json: "[]".to_string(),
+                scene_text: "本文2".to_string(),
+            },
+        ];
+
+        run_multi_task(
+            runtime.clone(),
+            ai.clone(),
+            "cancel-audit".to_string(),
+            PROJECT.to_string(),
+            "review".to_string(),
+            scenes,
+            "review".to_string(),
+            None,
+            RoleProviderOverride::default(),
+        )
+        .await;
+
+        assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
+        let audit = runtime
+            .db
+            .read_ai_audit_snapshot(PROJECT, None, None, None)
+            .expect("read cancelled audit");
+        let cancelled = audit
+            .events
+            .iter()
+            .filter(|event| event.event_type == "execution.cancelled")
+            .collect::<Vec<_>>();
+        assert_eq!(cancelled.len(), 2);
+        assert!(cancelled
+            .iter()
+            .all(|event| event.payload["modelDispatched"] == false));
+        assert!(cancelled
+            .iter()
+            .all(|event| { event.payload["reason"] == "run_cancelled_before_dispatch" }));
     }
 
     #[test]
@@ -6542,6 +7356,20 @@ mod runtime_contract_tests {
             None,
             "切替先 B へ run/annotation を混入させない"
         );
+        let audit_a = db_a
+            .read_ai_audit_snapshot(PROJECT, None, None, None)
+            .expect("read start database audit");
+        let audit_b = db_b
+            .read_ai_audit_snapshot(PROJECT, None, None, None)
+            .expect("read switched database audit");
+        assert!(audit_a
+            .events
+            .iter()
+            .any(|event| event.payload["runId"] == result.run_id));
+        assert!(
+            audit_b.events.is_empty(),
+            "監査イベントも開始元DBだけに書く"
+        );
         assert_eq!(
             runtime
                 .events
@@ -6582,6 +7410,20 @@ mod runtime_contract_tests {
             Some("completed")
         );
         assert_eq!(db_run_status(&db_b, &result.run_id), None);
+        let audit_a = db_a
+            .read_ai_audit_snapshot(PROJECT, None, None, None)
+            .expect("read start database audit");
+        let audit_b = db_b
+            .read_ai_audit_snapshot(PROJECT, None, None, None)
+            .expect("read switched database audit");
+        assert!(audit_a
+            .events
+            .iter()
+            .any(|event| event.payload["runId"] == result.run_id));
+        assert!(
+            audit_b.events.is_empty(),
+            "監査イベントも開始元DBだけに書く"
+        );
         assert_eq!(
             runtime
                 .events

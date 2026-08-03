@@ -17,6 +17,12 @@ import { useTranslation } from "react-i18next";
 import { getFloatingEdgeParams } from "./floatingEdge";
 import { getBezierControlPoints, getLabelPos, type Pt } from "./labelGeometry";
 import { pendingEdgeLabelEdits } from "../mapApi";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import {
+  useLatestValueDraftController,
+  type LatestValueDraftPersistContext,
+} from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 export interface UserEdgeData {
   forwardLabel?: string | null;
@@ -27,7 +33,8 @@ export interface UserEdgeData {
   onLabelSave?: (
     field: "forwardLabel" | "backwardLabel",
     label: string | null,
-  ) => void;
+    context?: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
   /**
    * Set by useMapEdges from pendingEdgeLabelEdits. When InlineLabel sees its
    * own field name here, it auto-enters edit mode (used by EdgeContextMenu
@@ -50,6 +57,7 @@ function InlineLabel({
   outwardHint,
   selected,
   field,
+  participantId,
   startEditField,
   onSave,
   onAutoEditConsumed,
@@ -62,8 +70,12 @@ function InlineLabel({
   outwardHint: Pt;
   selected: boolean;
   field: "forwardLabel" | "backwardLabel";
+  participantId: string;
   startEditField?: "forwardLabel" | "backwardLabel" | null;
-  onSave: (label: string | null) => void;
+  onSave: (
+    label: string | null,
+    context?: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
   onAutoEditConsumed: () => void;
 }) {
   const { t } = useTranslation();
@@ -73,6 +85,23 @@ function InlineLabel({
   const inputRef = useRef<HTMLInputElement>(null);
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  const editingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const draftController = useLatestValueDraftController(
+    participantId,
+    value ?? "",
+    async (raw, context) => {
+      const next = raw.trim() || null;
+      const previous = value?.trim() || null;
+      if (next !== previous) {
+        if (context.preexistingDraft) {
+          await onSaveRef.current(next, context);
+        } else {
+          await onSaveRef.current(next);
+        }
+      }
+    },
+  );
 
   // Measured size of the visible label box. Drives the AABB support-function
   // offset so the label clears the curve regardless of its own dimensions.
@@ -80,14 +109,16 @@ function InlineLabel({
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
 
   const startEdit = useCallback(() => {
+    if (editingRef.current) return;
+    editingRef.current = true;
+    draftController.reset(value ?? "");
     setDraft(value ?? "");
     setEditing(true);
-  }, [value]);
+  }, [draftController, value]);
 
   useEffect(() => {
     if (startEditField === field) {
-      setDraft(value ?? "");
-      setEditing(true);
+      if (!editingRef.current) startEdit();
       onAutoEditConsumed();
     }
     // value/onAutoEditConsumed intentionally omitted: this should fire only
@@ -95,11 +126,48 @@ function InlineLabel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startEditField, field]);
 
-  const commitEdit = useCallback(() => {
-    setEditing(false);
-    const trimmed = draft.trim();
-    onSaveRef.current(trimmed === "" ? null : trimmed);
-  }, [draft]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const commitEdit = useCallback(
+    async (options?: QuiescenceParticipantFlushOptions): Promise<void> => {
+      if (!editingRef.current) return;
+      await draftController.save(options);
+      editingRef.current = false;
+      if (mountedRef.current) setEditing(false);
+    },
+    [draftController],
+  );
+
+  const cancelEdit = useCallback(() => {
+    editingRef.current = false;
+    draftController.reset(value ?? "");
+    if (mountedRef.current) {
+      setDraft(value ?? "");
+      setEditing(false);
+    }
+  }, [draftController, value]);
+
+  useQuiescentDraftParticipant({
+    id: participantId,
+    enabled: editing,
+    isDirty: () => editingRef.current && draftController.dirty,
+    flush: commitEdit,
+    discard: cancelEdit,
+    recovery: () =>
+      editingRef.current
+        ? {
+            kind: "map-edge-label",
+            participantId,
+            field,
+            label: draftController.latestValue,
+          }
+        : null,
+  });
 
   useEffect(() => {
     if (editing) {
@@ -173,11 +241,15 @@ function InlineLabel({
         <input
           ref={inputRef}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitEdit}
+          onChange={(e) => {
+            draftController.markDirty(e.target.value);
+            setDraft(e.target.value);
+          }}
+          onBlur={() => void commitEdit().catch(() => {})}
           onKeyDown={(e) => {
-            if (e.key === "Enter") commitEdit();
-            if (e.key === "Escape") setEditing(false);
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === "Enter") void commitEdit().catch(() => {});
+            if (e.key === "Escape") cancelEdit();
             if (e.key !== "Tab") e.stopPropagation();
           }}
           style={{
@@ -474,8 +546,14 @@ export const UserEdge = memo(function UserEdge({
           outwardHint={forwardHint}
           selected={!!selected}
           field="forwardLabel"
+          participantId={`map-edge-label:${id}:forwardLabel`}
           startEditField={d.startEditField}
-          onSave={(label) => d.onLabelSave?.("forwardLabel", label)}
+          onSave={(label, context) => {
+            if (context) {
+              return d.onLabelSave?.("forwardLabel", label, context);
+            }
+            return d.onLabelSave?.("forwardLabel", label);
+          }}
           onAutoEditConsumed={onAutoEditConsumed}
         />
         {showBackwardSlot && (
@@ -488,8 +566,14 @@ export const UserEdge = memo(function UserEdge({
             outwardHint={backwardHint}
             selected={!!selected}
             field="backwardLabel"
+            participantId={`map-edge-label:${id}:backwardLabel`}
             startEditField={d.startEditField}
-            onSave={(label) => d.onLabelSave?.("backwardLabel", label)}
+            onSave={(label, context) => {
+              if (context) {
+                return d.onLabelSave?.("backwardLabel", label, context);
+              }
+              return d.onLabelSave?.("backwardLabel", label);
+            }}
             onAutoEditConsumed={onAutoEditConsumed}
           />
         )}

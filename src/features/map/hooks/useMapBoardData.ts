@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useReducer, useState, useCallback } from "react";
 import {
   getOrCreateBoard,
   getMapBoard,
@@ -24,6 +24,43 @@ import type {
   MapAiBranch,
 } from "@/db/schema";
 
+type PositionUpdate = React.SetStateAction<MapNodePositionRecord[]>;
+
+interface PositionState {
+  rows: MapNodePositionRecord[];
+  structureRevision: number;
+  layoutRevision: number;
+}
+
+type PositionAction =
+  | { kind: "structural"; update: PositionUpdate }
+  | { kind: "coordinates"; update: PositionUpdate };
+
+function resolvePositionUpdate(
+  rows: MapNodePositionRecord[],
+  update: PositionUpdate,
+): MapNodePositionRecord[] {
+  return typeof update === "function" ? update(rows) : update;
+}
+
+export function mapPositionStateReducer(
+  state: PositionState,
+  action: PositionAction,
+): PositionState {
+  const rows = resolvePositionUpdate(state.rows, action.update);
+  if (rows === state.rows) return state;
+
+  // Coordinate-only writes are the high-frequency drag persistence path.
+  // An unexpected add/remove is still promoted to a structural invalidation.
+  const structural =
+    action.kind === "structural" || rows.length !== state.rows.length;
+  return {
+    rows,
+    structureRevision: state.structureRevision + (structural ? 1 : 0),
+    layoutRevision: state.layoutRevision + (structural ? 1 : 0),
+  };
+}
+
 /**
  * Pick which board to show for a project. Keep the stored board id only when
  * it belongs to the given board set (i.e. the current project); otherwise fall
@@ -47,7 +84,21 @@ export function useMapBoardData(projectId: string) {
   const boardDataVersion = useMapStore((s) => s.boardDataVersion);
 
   const [boards, setBoards] = useState<MapBoard[]>([]);
-  const [positions, setPositions] = useState<MapNodePositionRecord[]>([]);
+  const [positionState, dispatchPositions] = useReducer(
+    mapPositionStateReducer,
+    {
+      rows: [],
+      structureRevision: 0,
+      layoutRevision: 0,
+    },
+  );
+  const positions = positionState.rows;
+  const setPositions = useCallback((update: PositionUpdate) => {
+    dispatchPositions({ kind: "structural", update });
+  }, []);
+  const setPositionCoordinates = useCallback((update: PositionUpdate) => {
+    dispatchPositions({ kind: "coordinates", update });
+  }, []);
   const [userEdges, setUserEdges] = useState<MapEdge[]>([]);
   const [frames, setFrames] = useState<MapFrame[]>([]);
   const [stickies, setStickies] = useState<MapSticky[]>([]);
@@ -141,7 +192,7 @@ export function useMapBoardData(projectId: string) {
     return () => {
       cancelled = true;
     };
-  }, [activeBoardId, boardDataVersion, projectId]);
+  }, [activeBoardId, boardDataVersion, projectId, setPositions]);
 
   return {
     boards,
@@ -150,6 +201,9 @@ export function useMapBoardData(projectId: string) {
     reloadBoards,
     positions,
     setPositions,
+    setPositionCoordinates,
+    positionsStructureRevision: positionState.structureRevision,
+    positionsLayoutRevision: positionState.layoutRevision,
     userEdges,
     setUserEdges,
     frames,

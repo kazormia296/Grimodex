@@ -4,8 +4,8 @@ import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "./AuthorshipMark";
 
-// DELETE+INSERT を別々の IPC ではなく 1 つの db_execute_batch(BEGIN..COMMIT)で
-// 実行することを検証する。間でクラッシュすると帰属メタが全損する atomicity バグの回帰防止。
+// Renderer が SQL ではなく owner lane + span DTO を 1 typed command へ渡すことを
+// 検証する。DELETE+INSERT の transaction は Rust 側が所有する。
 const { mockInvoke } = vi.hoisted(() => ({
   mockInvoke: vi.fn().mockResolvedValue({ rows: [] }),
 }));
@@ -13,24 +13,7 @@ const { mockInvoke } = vi.hoisted(() => ({
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
 vi.mock("@/db/client", () => ({
-  db: {
-    delete: () => ({
-      where: () => ({
-        toSQL: () => ({
-          sql: "DELETE FROM authorship_spans WHERE node_id = ?",
-          params: ["n1"],
-        }),
-      }),
-    }),
-    insert: () => ({
-      values: () => ({
-        toSQL: () => ({
-          sql: "INSERT INTO authorship_spans (id, node_id) VALUES (?, ?)",
-          params: ["span-1", "n1"],
-        }),
-      }),
-    }),
-  },
+  db: {},
 }));
 
 import { saveAuthorshipSpans } from "./api";
@@ -61,7 +44,7 @@ describe("saveAuthorshipSpans atomicity", () => {
     mockInvoke.mockResolvedValue({ rows: [] });
   });
 
-  it("DELETE+INSERT を 1 回の db_execute_batch で原子的に実行する", async () => {
+  it("owner lane と span を typed aggregate command へ渡す", async () => {
     const editor = createEditor("<p>AIの文章</p>");
     addAuthorshipMark(editor);
 
@@ -69,25 +52,36 @@ describe("saveAuthorshipSpans atomicity", () => {
 
     expect(mockInvoke).toHaveBeenCalledOnce();
     const [cmd, payload] = mockInvoke.mock.calls[0];
-    expect(cmd).toBe("db_execute_batch");
-    const stmts = (payload as { statements: { sql: string }[] }).statements;
-    expect(stmts).toHaveLength(2);
-    expect(stmts[0].sql).toContain("DELETE");
-    expect(stmts[1].sql).toContain("INSERT");
+    expect(cmd).toBe("authorship_replace_lane");
+    expect(payload).toMatchObject({
+      payload: {
+        lane: { kind: "node", nodeId: "n1" },
+        spans: [
+          {
+            source: "ai",
+            model: null,
+            chatMsgId: null,
+            traceId: null,
+          },
+        ],
+      },
+    });
     editor.destroy();
   });
 
-  it("マーク無しでも DELETE だけは batch で実行する(scene-clear 掃除を維持)", async () => {
+  it("マーク無しでも空 spans を送る(scene-clear 掃除を維持)", async () => {
     const editor = createEditor("<p>マーク無し本文</p>");
 
     await saveAuthorshipSpans("n1", editor.state.doc);
 
     expect(mockInvoke).toHaveBeenCalledOnce();
-    const payload = mockInvoke.mock.calls[0][1] as {
-      statements: { sql: string }[];
-    };
-    expect(payload.statements).toHaveLength(1);
-    expect(payload.statements[0].sql).toContain("DELETE");
+    expect(mockInvoke.mock.calls[0][0]).toBe("authorship_replace_lane");
+    expect(mockInvoke.mock.calls[0][1]).toEqual({
+      payload: {
+        lane: { kind: "node", nodeId: "n1" },
+        spans: [],
+      },
+    });
     editor.destroy();
   });
 });

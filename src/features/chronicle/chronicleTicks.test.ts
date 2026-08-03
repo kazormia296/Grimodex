@@ -92,6 +92,25 @@ describe("adaptiveTicks — calendar mode", () => {
     }
   });
 
+  it("pan preview 用 overscan は両端へ1画面分だけ目盛りを生成する", () => {
+    const trackW = 900;
+    const r = adaptiveTicks({
+      pxPerDay: 14,
+      viewStartDay: 100,
+      trackW,
+      overscanPx: trackW,
+      calendar: monthsCal,
+      hasCalendarAxis: true,
+    });
+
+    expect(r.minor.some((tick) => tick.x < 0)).toBe(true);
+    expect(r.minor.some((tick) => tick.x > trackW)).toBe(true);
+    for (const tick of [...r.minor, ...r.major]) {
+      expect(tick.x).toBeGreaterThanOrEqual(-trackW - 2);
+      expect(tick.x).toBeLessThanOrEqual(trackW * 2 + 2);
+    }
+  });
+
   it("(5) unitLabel is non-empty in calendar mode", () => {
     for (const pxPerDay of [0.5, 2, 50, 600, 4000]) {
       const r = adaptiveTicks({

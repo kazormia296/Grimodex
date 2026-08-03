@@ -6,8 +6,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$legacyAsset = "Grimodex_1.0.0_x64-setup.exe"
-$legacySha256 = "348A45B9C1FF056C19734CF9A85175A96C0FEB5B0B4BA25AF2A29EB65A24EB9E"
+$legacyTag = "v0.10.4"
+$legacyAsset = "Grimodex_0.10.4_x64-setup.exe"
+$legacySha256 = "A44E40BB7C393CC6C656630C15F8729D85E15EE7FE2ACF3B218A7685367A3302"
 $legacyUninstallSubKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\Grimodex"
 $legacyUninstallKey = "HKCU:\$legacyUninstallSubKey"
 $legacyProductSubKey = "Software\miyakey\Grimodex"
@@ -119,21 +120,22 @@ $migrationDirectory = Join-Path $env:RUNNER_TEMP "grimodex-tauri-v1-migration"
 Remove-Item -LiteralPath $migrationDirectory -Force -Recurse -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $migrationDirectory | Out-Null
 
-gh release download v1.0.0 `
-  --repo $env:GITHUB_REPOSITORY `
-  --pattern $legacyAsset `
-  --dir $migrationDirectory
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to download the pinned Tauri v1.0.0 installer."
-}
+Assert-Condition (
+  -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)
+) "GITHUB_REPOSITORY is required to resolve the pinned public Tauri release."
+
+# Exercise the exact final Tauri package that users could actually install.
+# Both the release tag and SHA-256 are pinned so a replaced asset fails closed.
 $legacyInstaller = Join-Path $migrationDirectory $legacyAsset
-Assert-Condition (Test-Path -LiteralPath $legacyInstaller) "Pinned Tauri v1.0.0 installer is missing."
+$legacyUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$legacyTag/$legacyAsset"
+Invoke-WebRequest -Uri $legacyUrl -OutFile $legacyInstaller
+Assert-Condition (Test-Path -LiteralPath $legacyInstaller) "Pinned public Tauri v0.10.4 installer is missing."
 Assert-Condition (
   (Get-FileHash -LiteralPath $legacyInstaller -Algorithm SHA256).Hash -eq $legacySha256
-) "Pinned Tauri v1.0.0 installer SHA-256 does not match."
+) "Pinned public Tauri v0.10.4 installer SHA-256 does not match."
 
-# Install the exact public v1 package, then place content-bearing sentinels in
-# both Tauri data roots. Neither directory is part of the install payload.
+# Install the exact final public Tauri package, then place content-bearing
+# sentinels in both Tauri data roots. Neither directory is part of the payload.
 Invoke-Installer $legacyInstaller @("/P")
 Stop-GrimodexProcesses
 Assert-Condition (Test-Path -LiteralPath $legacyUninstallKey) "Tauri v1 uninstall registration is missing."
@@ -163,7 +165,7 @@ Stop-GrimodexProcesses
 
 Assert-Condition (Test-Path -LiteralPath $electronExecutable) "Electron executable was not installed."
 $signature = Get-AuthenticodeSignature -LiteralPath $electronExecutable
-Assert-Condition ($signature.Status.ToString() -eq "Valid") "Electron executable lost its Authenticode signature."
+Assert-Condition ($signature.Status.ToString() -eq "NotSigned") "Electron executable is expected to remain unsigned."
 Assert-Condition (-not (Test-Path -LiteralPath $legacyUninstallKey)) "Tauri v1 uninstall registration remains."
 Assert-Condition (-not (Test-Path -LiteralPath $legacyProductKey)) "Tauri v1 product registration remains."
 Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $registeredLegacyDirectory "grimodex.exe"))) "Tauri v1 executable remains."
@@ -188,12 +190,12 @@ Assert-OneElectronRegistration
 Assert-Condition (-not (Test-Path -LiteralPath $legacyUninstallKey)) "Idempotent update recreated the Tauri uninstall key."
 Assert-SentinelHashes $roamingSentinel $roamingHash $localSentinel $localHash
 
-# Remove Electron, reinstall v1, then corrupt only the legacy uninstaller. The
-# new installer must fail closed before creating a side-by-side registration.
+# Remove Electron, reinstall the public Tauri fixture, then corrupt only the
+# legacy uninstaller. The new installer must fail closed before side-by-side.
 Assert-Condition (Test-Path -LiteralPath $electronUninstaller) "Electron uninstaller is missing."
 Invoke-Installer $electronUninstaller @("/S", "/currentuser")
 Assert-Condition (-not (Test-Path -LiteralPath $electronExecutable)) "Electron uninstall did not remove its executable."
-Assert-Condition ((Get-GrimodexUninstallEntries).Count -eq 0) "Electron uninstall registration remains."
+Assert-Condition (@(Get-GrimodexUninstallEntries).Count -eq 0) "Electron uninstall registration remains."
 
 Invoke-Installer $legacyInstaller @("/P")
 Stop-GrimodexProcesses

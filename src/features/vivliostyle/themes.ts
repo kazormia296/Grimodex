@@ -87,6 +87,9 @@ function pageCss(size: string, margin: string): string {
   @top-center {
     content: env(doc-title);
     font-size: 0.75em;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    white-space: nowrap;
   }
   @bottom-center {
     content: counter(page);

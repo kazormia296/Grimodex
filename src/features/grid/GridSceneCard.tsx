@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { GripVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -6,7 +6,10 @@ import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useNodeBeatPreview, useTreeStore } from "@/features/tree/treeStore";
 import { StatusBadge } from "@/features/tree/StatusBadge";
-import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";
+import {
+  prepareUnplacedBeatsForGrid,
+  saveUnplacedBeatDraftFromGrid,
+} from "@/features/editor/beat/addUnplacedBeatFromGrid";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { cn } from "@/lib/utils";
@@ -23,6 +26,11 @@ import { GridSceneCardContextMenu } from "./GridSceneCardContextMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 import { useGridStore } from "./gridStore";
+import { useGridVirtualRowEditing } from "./gridVirtualEditingStore";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { useLatestValueDraftController } from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 interface Props {
   scene: TreeNodeData;
@@ -57,10 +65,36 @@ function GridSceneCardImpl({
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
-  const [isEditing, setIsEditing] = useState(false);
+  const [bodyEditing, setBodyEditing] = useState(false);
+  const [titleEditing, setTitleEditing] = useState(false);
   const [addingBeat, setAddingBeat] = useState(false);
   const [beatDraft, setBeatDraft] = useState("");
   const beatInputRef = useRef<HTMLTextAreaElement>(null);
+  const addingBeatRef = useRef(false);
+  const mountedRef = useRef(true);
+  const beatPrepareInFlightRef = useRef<ReturnType<
+    typeof prepareUnplacedBeatsForGrid
+  > | null>(null);
+  const beatController = useLatestValueDraftController(
+    `grid-add-beat:${scene.id}`,
+    { beatId: "", text: "" },
+    async (draft) => {
+      if (!draft.beatId) {
+        throw new Error(`Grid add Beat target is unavailable: ${scene.id}`);
+      }
+      await saveUnplacedBeatDraftFromGrid(scene.id, draft.beatId, draft.text);
+    },
+    (left, right) => left.beatId === right.beatId && left.text === right.text,
+  );
+  const isEditing = bodyEditing || titleEditing;
+  useGridVirtualRowEditing(scene.id, isEditing || addingBeat);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const liveCharCount = useTreeStore(
     (s) => s.charCounts[scene.id] ?? scene.charCount ?? 0,
@@ -123,23 +157,91 @@ function GridSceneCardImpl({
     );
   }
 
-  async function commitBeat() {
-    const text = beatDraft.trim();
-    setAddingBeat(false);
-    setBeatDraft("");
-    if (text) {
-      await addUnplacedBeatFromGrid(scene.id, text);
+  function startAddingBeat() {
+    if (
+      addingBeatRef.current ||
+      beatPrepareInFlightRef.current ||
+      bodyEditing ||
+      titleEditing ||
+      beatController.dirty
+    ) {
+      return;
+    }
+    const preparation = prepareUnplacedBeatsForGrid(scene.id);
+    beatPrepareInFlightRef.current = preparation;
+    void preparation
+      .then(() => {
+        if (
+          !mountedRef.current ||
+          beatPrepareInFlightRef.current !== preparation ||
+          !canScheduleQuiescenceMutation()
+        ) {
+          return;
+        }
+        addingBeatRef.current = true;
+        beatController.reset({ beatId: crypto.randomUUID(), text: "" });
+        setAddingBeat(true);
+        setBeatDraft("");
+      })
+      .catch(() => {
+        // Do not open an editor whose aggregate could not be hydrated. Treating
+        // an unavailable/malformed row as empty could overwrite existing Beats.
+      })
+      .finally(() => {
+        if (beatPrepareInFlightRef.current === preparation) {
+          beatPrepareInFlightRef.current = null;
+        }
+      });
+  }
+
+  async function commitBeat(
+    options?: QuiescenceParticipantFlushOptions,
+  ): Promise<void> {
+    if (!addingBeatRef.current) return;
+    await beatController.save(options);
+    addingBeatRef.current = false;
+    if (mountedRef.current) {
+      setAddingBeat(false);
+      setBeatDraft("");
     }
   }
 
-  function handleBeatKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void commitBeat();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
+  function cancelBeat() {
+    if (!addingBeatRef.current) return;
+    const current = beatController.latestValue;
+    beatController.reset({ ...current, text: "" });
+    addingBeatRef.current = false;
+    if (mountedRef.current) {
       setAddingBeat(false);
       setBeatDraft("");
+    }
+  }
+
+  useQuiescentDraftParticipant({
+    id: `grid-add-beat:${scene.id}`,
+    enabled: addingBeat,
+    isDirty: () => addingBeatRef.current && beatController.dirty,
+    flush: commitBeat,
+    discard: cancelBeat,
+    recovery: () =>
+      addingBeatRef.current
+        ? {
+            kind: "grid-add-beat",
+            sceneId: scene.id,
+            beatId: beatController.latestValue.beatId,
+            text: beatController.latestValue.text,
+          }
+        : null,
+  });
+
+  function handleBeatKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void commitBeat().catch(() => {});
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelBeat();
     }
   }
 
@@ -270,12 +372,7 @@ function GridSceneCardImpl({
       <GridSceneCardContextMenu
         sceneId={scene.id}
         onOpenInEditor={openInEditor}
-        onAddBeat={() => {
-          if (!addingBeat) {
-            setAddingBeat(true);
-            setBeatDraft("");
-          }
-        }}
+        onAddBeat={startAddingBeat}
         onDelete={requestDelete}
       >
         <div
@@ -305,6 +402,7 @@ function GridSceneCardImpl({
             nodeId={scene.id}
             title={scene.title}
             onOpenInEditor={openInEditor}
+            onEditingChange={setTitleEditing}
             dragHandleSlot={dragHandle}
             menuSlot={
               <GridCardMenu nodeId={scene.id} onDelete={requestDelete} />
@@ -325,13 +423,9 @@ function GridSceneCardImpl({
             showSynopsis={display.showSynopsis}
             showBeats={display.showBeats}
             compact={display.compactCards}
-            onEditingChange={setIsEditing}
-            onRequestAddBeat={() => {
-              if (!addingBeat) {
-                setAddingBeat(true);
-                setBeatDraft("");
-              }
-            }}
+            onEditingChange={setBodyEditing}
+            onRequestAddBeat={startAddingBeat}
+            beatEditingDisabled={addingBeat}
           />
 
           {addingBeat && (
@@ -347,9 +441,15 @@ function GridSceneCardImpl({
                   "Beat を入力… (Enter で確定 / Shift+Enter で改行)",
                 )}
                 value={beatDraft}
-                onChange={(e) => setBeatDraft(e.target.value)}
+                onChange={(e) => {
+                  beatController.markDirty({
+                    ...beatController.latestValue,
+                    text: e.target.value,
+                  });
+                  setBeatDraft(e.target.value);
+                }}
                 onKeyDown={handleBeatKeyDown}
-                onBlur={() => void commitBeat()}
+                onBlur={() => void commitBeat().catch(() => {})}
                 title={t(
                   "grid.card.beatEditHint",
                   "Enter で確定、Shift+Enter で改行、Esc で取消",

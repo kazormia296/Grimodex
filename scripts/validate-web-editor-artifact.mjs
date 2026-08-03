@@ -35,6 +35,27 @@ const FORBIDDEN_WEB_IMPORT_TRANSPORT_PATTERNS = [
   /\bnew\s+WebSocket\s*\(/,
 ];
 
+const REQUIRED_GLASS_BLUR_RULES = [
+  {
+    label: "Editor fluid Glass",
+    selectorPatterns: [
+      /\[\s*data-editor-fluid-glass\s*=\s*(?:"true"|'true'|true)\s*\]/i,
+      /\[\s*data-editor-fluid-glass-filter(?:\s*=[^\]]+)?\s*\]/i,
+    ],
+  },
+  {
+    label: "Workspace ambient Glass",
+    selectorPatterns: [
+      /\[\s*data-workspace-glass-root(?:\s*=[^\]]+)?\s*\]/i,
+      /\[\s*data-workspace-fluid-glass\s*=\s*(?:"true"|'true'|true)\s*\]/i,
+      /\[\s*data-ambient-glass-surface(?:\s*=[^\]]+)?\s*\]/i,
+    ],
+  },
+];
+
+const STANDARD_BACKDROP_BLUR_DECLARATION =
+  /(?:^|;)\s*backdrop-filter\s*:\s*[^;{}]*\bblur\s*\(/i;
+
 async function walkFiles(root) {
   const files = [];
   for (const entry of await readdir(root)) {
@@ -44,6 +65,51 @@ async function walkFiles(root) {
     else files.push(target);
   }
   return files;
+}
+
+function extractStyleRules(contents) {
+  const withoutComments = contents.replace(/\/\*[\s\S]*?\*\//g, "");
+  return Array.from(
+    withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g),
+    ([, selector, declarations]) => ({ selector, declarations }),
+  );
+}
+
+async function validateGlassBlurRules(files) {
+  const cssFiles = files.filter((file) => /\.css$/i.test(file));
+  if (cssFiles.length === 0) {
+    throw new Error(
+      "Web Editor artifact is missing CSS required for Glass blur validation",
+    );
+  }
+
+  const styleRules = (
+    await Promise.all(
+      cssFiles.map(async (file) =>
+        extractStyleRules(await readFile(file, "utf8")),
+      ),
+    )
+  ).flat();
+
+  for (const requirement of REQUIRED_GLASS_BLUR_RULES) {
+    const matchingRules = styleRules.filter(({ selector }) =>
+      requirement.selectorPatterns.every((pattern) => pattern.test(selector)),
+    );
+    if (matchingRules.length === 0) {
+      throw new Error(
+        `Web Editor artifact is missing the ${requirement.label} CSS rule`,
+      );
+    }
+    if (
+      !matchingRules.some(({ declarations }) =>
+        STANDARD_BACKDROP_BLUR_DECLARATION.test(declarations),
+      )
+    ) {
+      throw new Error(
+        `${requirement.label} CSS must retain an unprefixed backdrop-filter: blur(...) declaration in the Web Editor artifact`,
+      );
+    }
+  }
 }
 
 export async function validateWebEditorArtifact(root) {
@@ -103,6 +169,8 @@ export async function validateWebEditorArtifact(root) {
   if (!hasWebImport) {
     throw new Error("Web Editor browser-local import dialog was not emitted");
   }
+
+  await validateGlassBlurRules(files);
 }
 
 const repositoryRoot = path.resolve(

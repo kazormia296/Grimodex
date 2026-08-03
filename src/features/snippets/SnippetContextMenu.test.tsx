@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
+import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { SnippetContextMenu } from "./SnippetContextMenu";
 import type { Snippet } from "./api";
 
@@ -27,7 +29,11 @@ vi.mock("@/features/editor/editorStore", () => {
 });
 
 vi.mock("@/lib/clipboardAttribution", () => ({
-  copyWithAttribution: vi.fn(),
+  copyWithAttribution: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 const fakeSnippet = (overrides: Partial<Snippet> = {}): Snippet => ({
@@ -57,6 +63,28 @@ describe("SnippetContextMenu", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(copyWithAttribution).mockResolvedValue(undefined);
+  });
+
+  it("コピー拒否時は失敗 toast を出し、成功表示を出さず閉じる", async () => {
+    vi.mocked(copyWithAttribution).mockRejectedValueOnce(new Error("denied"));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <SnippetContextMenu
+        snippet={fakeSnippet()}
+        {...baseProps}
+        onClose={onClose}
+      />,
+    );
+
+    await user.click(screen.getByTestId("snippet-context-copy"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("コピーに失敗しました"),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("renders menu items", () => {

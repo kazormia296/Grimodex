@@ -26,6 +26,11 @@ import type {
 const PREVIEW_TEXT_MAX = 500;
 const BODY_PREVIEW_MAX = 60;
 
+/** Cancel a deferred trash capture when the owning feature undo wins. */
+export function cancelPendingTrash(tempId: string): void {
+  useTrashBinStore.getState().cancelPending({ tempId });
+}
+
 /**
  * Scene キャプチャ用の input shape。`TreeNode` (api.ts の row 型) と
  * `TreeNodeData` (treeStore の in-memory 表現) の両方から作れるように、
@@ -350,7 +355,9 @@ export function captureForeshadowDeletion(opts: CaptureForeshadowOpts): void {
     payoffToPos: foreshadow.payoffToPos ?? null,
     payoffConfirmed: foreshadow.payoffConfirmed,
     abandoned: foreshadow.abandoned,
+    secret: foreshadow.secret,
     loadBearing: foreshadow.loadBearing ?? null,
+    codexLinkDirtyAt: foreshadow.codexLinkDirtyAt?.getTime() ?? null,
   };
 
   useTrashBinStore.getState().enqueuePending(

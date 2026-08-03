@@ -7,6 +7,10 @@ import {
   roleSettingKey,
   ROLE_PROVIDERS_KEY,
 } from "@/features/chat/modelRouting";
+import {
+  __resetDynamicModelCapsForTests,
+  registerDynamicModelCaps,
+} from "@/features/chat/agent/dynamicModelCaps";
 import { useSettingsStore } from "../settingsStore";
 
 // i18n は key をそのまま返すモック（文言ではなく購読挙動を検証する）。
@@ -37,6 +41,7 @@ function renderRow(onCommit: () => void) {
       <RoleModelRow
         // eslint-disable-next-line jsx-a11y/aria-role -- RoleModelRow の role は ARIA でなく AI モデルロール
         role="review"
+        activeProvider="anthropic"
         activeModels={[]}
         sections={[]}
         isLoadingModels={false}
@@ -49,6 +54,9 @@ function renderRow(onCommit: () => void) {
 describe("RoleModelRow — settings 購読の絞り込み", () => {
   beforeEach(() => {
     useSettingsStore.setState({ cache: {} });
+    globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+    globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
+    __resetDynamicModelCapsForTests();
   });
 
   it("無関係な設定キーの set では再レンダーしない", () => {
@@ -126,6 +134,7 @@ describe("RoleModelRow — stale モデル値の可視化（プロバイダ切�
       <RoleModelRow
         // eslint-disable-next-line jsx-a11y/aria-role -- RoleModelRow の role は ARIA でなく AI モデルロール
         role="review"
+        activeProvider="ollama"
         activeModels={[gemma]}
         sections={[]}
         isLoadingModels={false}
@@ -171,6 +180,7 @@ describe("RoleModelRow — stale モデル値の可視化（プロバイダ切�
       <RoleModelRow
         // eslint-disable-next-line jsx-a11y/aria-role -- RoleModelRow の role は ARIA でなく AI モデルロール
         role="review"
+        activeProvider="ollama"
         activeModels={[]}
         sections={[]}
         isLoadingModels={false}
@@ -178,5 +188,63 @@ describe("RoleModelRow — stale モデル値の可視化（プロバイダ切�
       />,
     );
     expect(screen.queryByText("settings.ai.roleModel.staleModel")).toBeNull();
+  });
+});
+
+describe("RoleModelRow — provider-scoped capability", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ cache: {} });
+    globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+    globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
+    __resetDynamicModelCapsForTests();
+  });
+
+  it("同名モデルでも選択セクションのproviderでAgent能力を判定する", () => {
+    registerDynamicModelCaps("openrouter", [
+      {
+        id: "shared:latest",
+        name: "OpenRouter shared",
+        supportedParameters: ["tools"],
+      },
+    ]);
+    registerDynamicModelCaps("ollama", [
+      {
+        id: "shared:latest",
+        name: "Ollama shared",
+        supportedParameters: [],
+      },
+    ]);
+    useSettingsStore
+      .getState()
+      .set(
+        ROLE_PROVIDERS_KEY,
+        JSON.stringify({ agent: { provider: "ollama" } }),
+      );
+
+    render(
+      <RoleModelRow
+        // eslint-disable-next-line jsx-a11y/aria-role -- RoleModelRow の role は ARIA でなく AI モデルロール
+        role="agent"
+        activeProvider="openrouter"
+        activeModels={[{ id: "shared:latest", name: "OpenRouter shared" }]}
+        sections={[
+          {
+            provider: "ollama",
+            models: [
+              {
+                id: "shared:latest",
+                name: "Ollama shared",
+                provider: "ollama",
+                variant: null,
+              },
+            ],
+          },
+        ]}
+        isLoadingModels={false}
+        catalogLoading={false}
+      />,
+    );
+
+    expect(screen.queryByRole("option", { name: "Ollama shared" })).toBeNull();
   });
 });

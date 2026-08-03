@@ -8,7 +8,9 @@
 //! surfaces its `unclosed_ranges()` as diagnostics.
 
 use crate::dialogue::analyze_dialogue;
-use crate::rule::{Diagnostic, Language, LintContext, LintInput, LintRule, Severity};
+use crate::rule::{
+    Diagnostic, IncrementalScope, Language, LintContext, LintInput, LintRule, Severity,
+};
 
 pub struct UnclosedQuoteRule;
 
@@ -21,6 +23,12 @@ impl LintRule for UnclosedQuoteRule {
     }
     fn supported_languages(&self) -> &'static [Language] {
         &[Language::English]
+    }
+    fn incremental_scope(&self) -> IncrementalScope {
+        // English multi-paragraph dialogue is valid when the next paragraph
+        // re-opens with a quote, so this paragraph cannot be cached without
+        // its immediate successor as context.
+        IncrementalScope::NextBlock
     }
 
     fn check(&self, input: &LintInput, ctx: &LintContext) -> Vec<Diagnostic> {

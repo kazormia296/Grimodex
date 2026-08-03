@@ -11,17 +11,46 @@
 
 use serde_json::Value;
 
-use super::{BatchStatement, Database};
+use super::{
+    idempotency::{load_row, payload_fingerprint, run_atomic_create, IdempotencyRequest},
+    BatchStatement, Database,
+};
 
 // ─────────────────────────── DTO ───────────────────────────
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForeshadowCreatePayload {
+    /// Entity id. Legacy callers also use this as the request key.
+    #[serde(default)]
+    id: Option<String>,
+    /// Domain-owned idempotency key supplied by the renderer. A deliberate
+    /// history restore keeps the entity id but uses a fresh request id, while
+    /// a retry of an uncertain create reuses both.
+    #[serde(default)]
+    request_id: Option<String>,
     project_id: String,
     title: String,
+    #[serde(default)]
     intent: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    payoff_scene_id: Option<String>,
+    #[serde(default)]
+    payoff_from_pos: Option<i64>,
+    #[serde(default)]
+    payoff_to_pos: Option<i64>,
+    #[serde(default)]
+    payoff_confirmed: bool,
+    #[serde(default)]
+    abandoned: bool,
+    #[serde(default = "default_secret")]
+    secret: bool,
+    #[serde(default)]
     load_bearing: Option<String>,
+    #[serde(default)]
+    codex_link_dirty_at: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -155,6 +184,27 @@ fn validate_load_bearing(value: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
+fn default_secret() -> bool {
+    true
+}
+
+fn validate_payoff_anchor(
+    scene_id: Option<&str>,
+    from_pos: Option<i64>,
+    to_pos: Option<i64>,
+) -> anyhow::Result<()> {
+    match (scene_id, from_pos, to_pos) {
+        (None, None, None) | (Some(_), None, None) => Ok(()),
+        (Some(_), Some(from), Some(to)) if 0 <= from && from <= to => Ok(()),
+        (None, _, _) => Err(anyhow::anyhow!(
+            "foreshadow payoff positions require a payoff scene"
+        )),
+        (Some(_), _, _) => Err(anyhow::anyhow!(
+            "foreshadow payoff positions must both be null or satisfy 0 <= from <= to"
+        )),
+    }
+}
+
 fn in_placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
@@ -181,40 +231,200 @@ fn fetch_setup_label_rows(db: &Database, foreshadow_ids: &[String]) -> anyhow::R
 // ─────────────────────────── foreshadow CRUD ───────────────────────────
 
 pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result<Value> {
-    validate_load_bearing(payload.load_bearing.as_deref())?;
+    let request_id = payload.request_id.clone().or_else(|| payload.id.clone());
+    // The request id selects the ledger entry and is therefore not semantic
+    // payload. Excluding it lets undo/redo deliberately restore the same entity
+    // under a fresh request without weakening same-request conflict detection.
+    let fingerprint_payload = serde_json::json!({
+        "id": payload.id,
+        "projectId": payload.project_id,
+        "title": payload.title,
+        "intent": payload.intent,
+        "notes": payload.notes,
+        "payoffSceneId": payload.payoff_scene_id,
+        "payoffFromPos": payload.payoff_from_pos,
+        "payoffToPos": payload.payoff_to_pos,
+        "payoffConfirmed": payload.payoff_confirmed,
+        "abandoned": payload.abandoned,
+        "secret": payload.secret,
+        "loadBearing": payload.load_bearing,
+        "codexLinkDirtyAt": payload.codex_link_dirty_at,
+    });
+    let payload_hash = payload_fingerprint("foreshadow_create", &fingerprint_payload)?;
     let now = chrono::Utc::now().timestamp_millis();
-    let id = uuid::Uuid::new_v4().to_string();
-    db.execute(
-        "INSERT INTO foreshadows
-         (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, 1, ?, ?, ?)",
-        &[
-            Value::String(id.clone()),
-            Value::String(payload.project_id),
-            Value::String(payload.title),
-            payload.intent.map(Value::String).unwrap_or(Value::Null),
-            payload.load_bearing.map(Value::String).unwrap_or(Value::Null),
-            Value::Number(now.into()),
-            Value::Number(now.into()),
-        ],
-        "run",
-    )?;
-    let rows = db.execute(
-        "SELECT * FROM foreshadows WHERE id = ?",
-        &[Value::String(id)],
-        "get",
-    )?;
-    Ok(rows
-        .first()
-        .cloned()
-        .map(Value::Object)
-        .unwrap_or(Value::Null))
+    let id = payload
+        .id
+        .or_else(|| request_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let project_id = payload.project_id;
+    let title = payload.title;
+    let intent = payload.intent;
+    let notes = payload.notes;
+    let payoff_scene_id = payload.payoff_scene_id;
+    let payoff_from_pos = payload.payoff_from_pos;
+    let payoff_to_pos = payload.payoff_to_pos;
+    let payoff_confirmed = payload.payoff_confirmed;
+    let abandoned = payload.abandoned;
+    let secret = payload.secret;
+    let load_bearing = payload.load_bearing;
+    let codex_link_dirty_at = payload.codex_link_dirty_at;
+    run_atomic_create(
+        db,
+        IdempotencyRequest {
+            domain: "foreshadow_create",
+            request_id: request_id.as_deref(),
+            payload_hash: &payload_hash,
+            conflict_marker: "FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT",
+        },
+        |conn| {
+            validate_load_bearing(load_bearing.as_deref())?;
+            validate_payoff_anchor(
+                payoff_scene_id.as_deref(),
+                payoff_from_pos,
+                payoff_to_pos,
+            )?;
+            if let Some(scene_id) = payoff_scene_id.as_deref() {
+                let scene = Database::execute_with_conn(
+                    conn,
+                    "SELECT project_id FROM tree_nodes WHERE id = ?",
+                    &[Value::String(scene_id.to_string())],
+                    "get",
+                )?;
+                if scene.first().and_then(|row| row.get("project_id")).and_then(Value::as_str)
+                    != Some(project_id.as_str())
+                {
+                    return Err(anyhow::anyhow!(
+                        "foreshadow payoff scene must belong to the same project"
+                    ));
+                }
+            }
+            Database::execute_with_conn(
+                conn,
+                "INSERT INTO foreshadows
+                 (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing, codex_link_dirty_at, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &[
+                    Value::String(id.clone()),
+                    Value::String(project_id.clone()),
+                    Value::String(title.clone()),
+                    intent.clone().map(Value::String).unwrap_or(Value::Null),
+                    notes.clone().map(Value::String).unwrap_or(Value::Null),
+                    payoff_scene_id
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                    payoff_from_pos
+                        .map(|value| Value::Number(value.into()))
+                        .unwrap_or(Value::Null),
+                    payoff_to_pos
+                        .map(|value| Value::Number(value.into()))
+                        .unwrap_or(Value::Null),
+                    Value::Bool(payoff_confirmed),
+                    Value::Bool(abandoned),
+                    Value::Bool(secret),
+                    load_bearing
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                    codex_link_dirty_at
+                        .map(|value| Value::Number(value.into()))
+                        .unwrap_or(Value::Null),
+                    Value::Number(now.into()),
+                    Value::Number(now.into()),
+                ],
+                "run",
+            )
+            .or_else(|error| {
+                let existing = Database::execute_with_conn(
+                    conn,
+                    "SELECT * FROM foreshadows WHERE id = ?",
+                    &[Value::String(id.clone())],
+                    "get",
+                )?;
+                let Some(row) = existing.first() else {
+                    return Err(error);
+                };
+                let matches = row.get("project_id").and_then(Value::as_str)
+                    == Some(project_id.as_str())
+                    && row.get("title").and_then(Value::as_str) == Some(title.as_str())
+                    && row.get("intent")
+                        == Some(&intent.clone().map(Value::String).unwrap_or(Value::Null))
+                    && row.get("notes")
+                        == Some(&notes.clone().map(Value::String).unwrap_or(Value::Null))
+                    && row.get("payoff_scene_id")
+                        == Some(
+                            &payoff_scene_id
+                                .clone()
+                                .map(Value::String)
+                                .unwrap_or(Value::Null),
+                        )
+                    && row.get("payoff_from_pos")
+                        == Some(
+                            &payoff_from_pos
+                                .map(|value| Value::Number(value.into()))
+                                .unwrap_or(Value::Null),
+                        )
+                    && row.get("payoff_to_pos")
+                        == Some(
+                            &payoff_to_pos
+                                .map(|value| Value::Number(value.into()))
+                                .unwrap_or(Value::Null),
+                        )
+                    && row.get("payoff_confirmed").and_then(Value::as_i64)
+                        == Some(i64::from(payoff_confirmed))
+                    && row.get("abandoned").and_then(Value::as_i64)
+                        == Some(i64::from(abandoned))
+                    && row.get("secret").and_then(Value::as_i64)
+                        == Some(i64::from(secret))
+                    && row.get("load_bearing")
+                        == Some(
+                            &load_bearing
+                                .clone()
+                                .map(Value::String)
+                                .unwrap_or(Value::Null),
+                        )
+                    && row.get("codex_link_dirty_at")
+                        == Some(
+                            &codex_link_dirty_at
+                                .map(|value| Value::Number(value.into()))
+                                .unwrap_or(Value::Null),
+                        );
+                if matches {
+                    Ok(Vec::new())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: request id reused with different payload"
+                    ))
+                }
+            })?;
+            let rows = Database::execute_with_conn(
+                conn,
+                "SELECT * FROM foreshadows WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?;
+            let row = rows
+                .first()
+                .cloned()
+                .map(Value::Object)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("foreshadow create completed without a persisted row")
+                })?;
+            Ok((project_id.clone(), row))
+        },
+        |conn| load_row(conn, "foreshadows", &id),
+    )
+    .map(|outcome| outcome.into_wire_value())
 }
 
 pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Result<Value> {
     if let Some(ref lb) = patch.load_bearing {
         validate_load_bearing(lb.as_deref())?;
     }
+    let payoff_scene_for_validation = patch
+        .payoff_scene_id
+        .as_ref()
+        .and_then(|scene_id| scene_id.clone());
     let now = chrono::Utc::now().timestamp_millis();
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
@@ -286,17 +496,63 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
     params.push(Value::String(id.clone()));
 
     let sql = format!("UPDATE foreshadows SET {} WHERE id = ?", sets.join(", "));
-    db.execute(&sql, &params, "run")?;
-    let rows = db.execute(
-        "SELECT * FROM foreshadows WHERE id = ?",
-        &[Value::String(id)],
-        "get",
-    )?;
-    Ok(rows
-        .first()
-        .cloned()
-        .map(Value::Object)
-        .unwrap_or(Value::Null))
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            if let Some(scene_id) = payoff_scene_for_validation.as_deref() {
+                let owner = Database::execute_with_conn(
+                    conn,
+                    "SELECT project_id FROM foreshadows WHERE id = ?",
+                    &[Value::String(id.clone())],
+                    "get",
+                )?;
+                if let Some(owner_project_id) = owner
+                    .first()
+                    .and_then(|row| row.get("project_id"))
+                    .and_then(Value::as_str)
+                {
+                    let payoff_scene = Database::execute_with_conn(
+                        conn,
+                        "SELECT project_id FROM tree_nodes WHERE id = ?",
+                        &[Value::String(scene_id.to_string())],
+                        "get",
+                    )?;
+                    if payoff_scene
+                        .first()
+                        .and_then(|row| row.get("project_id"))
+                        .and_then(Value::as_str)
+                        != Some(owner_project_id)
+                    {
+                        return Err(anyhow::anyhow!(
+                            "foreshadow payoff scene must belong to the same project"
+                        ));
+                    }
+                }
+            }
+            Database::execute_with_conn(conn, &sql, &params, "run")?;
+            let rows = Database::execute_with_conn(
+                conn,
+                "SELECT * FROM foreshadows WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?;
+            Ok(rows
+                .first()
+                .cloned()
+                .map(Value::Object)
+                .unwrap_or(Value::Null))
+        })();
+        match result {
+            Ok(value) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    })
 }
 
 pub fn delete(db: &Database, id: String) -> anyhow::Result<()> {
@@ -755,7 +1011,10 @@ pub fn setup_create_ai(db: &Database, input: SetupCreateAiInput) -> anyhow::Resu
     Ok(())
 }
 
-pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::Result<Option<String>> {
+pub fn resolve_orphan(
+    db: &Database,
+    payload: OrphanResolvePayload,
+) -> anyhow::Result<Option<String>> {
     let now = chrono::Utc::now().timestamp_millis();
     match payload.action.as_str() {
         "reanchor" => {
@@ -911,8 +1170,9 @@ pub fn save_anchors_for_scene(
         // prevent accidental data loss. Users can reload or manually clean orphans.
         if doc_content_size <= 2 {
             statements.push(BatchStatement {
-                sql: "UPDATE foreshadow_setups SET is_orphan = 1, updated_at = ? WHERE scene_id = ?"
-                    .to_string(),
+                sql:
+                    "UPDATE foreshadow_setups SET is_orphan = 1, updated_at = ? WHERE scene_id = ?"
+                        .to_string(),
                 params: vec![Value::Number(now.into()), Value::String(scene_id.clone())],
                 method: "run".to_string(),
             });
@@ -1203,13 +1463,238 @@ mod tests {
         let db = test_db();
         let proj = insert_project(&db);
         let payload = ForeshadowCreatePayload {
-            project_id: proj,
+            id: None,
+            request_id: None,
+            project_id: proj.clone(),
             title: "T".to_string(),
             intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: false,
+            abandoned: false,
+            secret: true,
             load_bearing: Some("critical".to_string()),
+            codex_link_dirty_at: None,
         };
         let row = create(&db, payload).unwrap();
         assert_eq!(row["load_bearing"], Value::String("critical".to_string()));
+    }
+
+    #[test]
+    fn create_is_idempotent_by_client_id_and_conflicts_on_payload_change() {
+        let db = test_db();
+        let proj = insert_project(&db);
+        let payoff_scene_id = insert_scene(&db, &proj);
+        let payload = ForeshadowCreatePayload {
+            id: Some("foreshadow-entity-1".to_string()),
+            request_id: Some("foreshadow-ui-request-1".to_string()),
+            project_id: proj.clone(),
+            title: "SECRET_FORESHADOW_SENTINEL".to_string(),
+            intent: Some("private manuscript intent".to_string()),
+            notes: Some("restore every field".to_string()),
+            payoff_scene_id: Some(payoff_scene_id.clone()),
+            payoff_from_pos: Some(4),
+            payoff_to_pos: Some(12),
+            payoff_confirmed: true,
+            abandoned: true,
+            secret: false,
+            load_bearing: Some("critical".to_string()),
+            codex_link_dirty_at: Some(1_784_000_000_000),
+        };
+        let first = create(&db, payload.clone()).expect("first create");
+        assert_eq!(
+            first["notes"],
+            Value::String("restore every field".to_string())
+        );
+        assert_eq!(first["payoff_scene_id"], Value::String(payoff_scene_id));
+        assert_eq!(first["payoff_from_pos"], Value::Number(4.into()));
+        assert_eq!(first["payoff_to_pos"], Value::Number(12.into()));
+        assert_eq!(first["payoff_confirmed"], Value::Number(1.into()));
+        assert_eq!(first["abandoned"], Value::Number(1.into()));
+        assert_eq!(first["secret"], Value::Number(0.into()));
+        assert_eq!(
+            first["codex_link_dirty_at"],
+            Value::Number(1_784_000_000_000_i64.into())
+        );
+        let ledger = db
+            .execute(
+                "SELECT tombstone_json FROM idempotency_requests
+                  WHERE domain = 'foreshadow_create'
+                    AND request_id = 'foreshadow-ui-request-1'",
+                &[],
+                "get",
+            )
+            .expect("read ledger");
+        let tombstone = ledger[0]["tombstone_json"].as_str().expect("tombstone");
+        assert!(!tombstone.contains("SECRET_FORESHADOW_SENTINEL"));
+        assert!(!tombstone.contains("private manuscript"));
+        let retry = create(&db, payload.clone()).expect("exact retry");
+        assert_eq!(retry["id"], first["id"]);
+        assert_eq!(first["__idempotency"]["replayed"], Value::Bool(false));
+        assert_eq!(retry["__idempotency"]["replayed"], Value::Bool(true));
+        assert_eq!(retry["__idempotency"]["entityPresent"], Value::Bool(true));
+
+        delete(&db, "foreshadow-entity-1".to_string()).expect("delete entity");
+        let deleted_retry = create(&db, payload.clone()).expect("retry after delete");
+        assert_eq!(deleted_retry["id"], first["id"]);
+        assert_eq!(
+            deleted_retry["__idempotency"]["entityPresent"],
+            Value::Bool(false)
+        );
+
+        let mut conflicting = payload.clone();
+        conflicting.title = "Changed".to_string();
+        let error = create(&db, conflicting).expect_err("payload conflict");
+        assert!(error
+            .to_string()
+            .contains("FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT"));
+        let rows = db
+            .execute(
+                "SELECT COUNT(*) AS n FROM foreshadows WHERE id = ?",
+                &[Value::String("foreshadow-entity-1".to_string())],
+                "get",
+            )
+            .expect("count row");
+        assert_eq!(rows[0]["n"].as_i64(), Some(0));
+
+        let deliberate_restore = ForeshadowCreatePayload {
+            id: Some("foreshadow-entity-1".to_string()),
+            request_id: Some("foreshadow-history-restore-1".to_string()),
+            project_id: proj,
+            title: "SECRET_FORESHADOW_SENTINEL".to_string(),
+            intent: Some("private manuscript intent".to_string()),
+            notes: Some("restore every field".to_string()),
+            payoff_scene_id: payload.payoff_scene_id,
+            payoff_from_pos: Some(4),
+            payoff_to_pos: Some(12),
+            payoff_confirmed: true,
+            abandoned: true,
+            secret: false,
+            load_bearing: Some("critical".to_string()),
+            codex_link_dirty_at: Some(1_784_000_000_000),
+        };
+        // Tombstones intentionally contain only `id`; use the original
+        // semantic payload while changing only the request identity.
+        let restored = create(&db, deliberate_restore).expect("deliberate history restore");
+        assert_eq!(restored["id"], first["id"]);
+        assert_eq!(
+            restored["__idempotency"]["entityPresent"],
+            Value::Bool(true)
+        );
+        assert_eq!(restored["__idempotency"]["replayed"], Value::Bool(false));
+    }
+
+    #[test]
+    fn create_request_id_without_entity_id_replays_the_same_generated_entity() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let payload = ForeshadowCreatePayload {
+            id: None,
+            request_id: Some("foreshadow-request-only".to_string()),
+            project_id,
+            title: "Request-only identity".to_string(),
+            intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: false,
+            abandoned: false,
+            secret: true,
+            load_bearing: None,
+            codex_link_dirty_at: None,
+        };
+
+        let first = create(&db, payload.clone()).expect("first create");
+        let replay = create(&db, payload).expect("exact replay");
+        assert_eq!(
+            first["id"],
+            Value::String("foreshadow-request-only".to_string())
+        );
+        assert_eq!(replay["id"], first["id"]);
+        assert_eq!(replay["__idempotency"]["replayed"], Value::Bool(true));
+        assert_eq!(replay["__idempotency"]["entityPresent"], Value::Bool(true));
+    }
+
+    #[test]
+    fn create_rejects_invalid_or_cross_project_payoff_anchors_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let foreign_scene_id = insert_scene(&db, &foreign_project_id);
+        let base = ForeshadowCreatePayload {
+            id: Some("foreshadow-payoff-validation".to_string()),
+            request_id: Some("foreshadow-payoff-validation".to_string()),
+            project_id: project_id.clone(),
+            title: "Invalid payoff".to_string(),
+            intent: None,
+            notes: None,
+            payoff_scene_id: Some(foreign_scene_id),
+            payoff_from_pos: Some(1),
+            payoff_to_pos: Some(2),
+            payoff_confirmed: false,
+            abandoned: false,
+            secret: true,
+            load_bearing: None,
+            codex_link_dirty_at: None,
+        };
+
+        let error = create(&db, base.clone()).expect_err("cross-project payoff");
+        assert!(error.to_string().contains("same project"));
+        let ledger = db
+            .execute(
+                "SELECT request_id FROM idempotency_requests WHERE request_id = ?",
+                &[Value::String("foreshadow-payoff-validation".to_string())],
+                "all",
+            )
+            .expect("read ledger");
+        assert!(ledger.is_empty());
+
+        let local_scene_id = insert_scene(&db, &project_id);
+        let invalid_range = ForeshadowCreatePayload {
+            id: Some("foreshadow-payoff-range".to_string()),
+            request_id: Some("foreshadow-payoff-range".to_string()),
+            payoff_scene_id: Some(local_scene_id),
+            payoff_from_pos: Some(9),
+            payoff_to_pos: Some(3),
+            ..base
+        };
+        let error = create(&db, invalid_range).expect_err("invalid payoff range");
+        assert!(error.to_string().contains("0 <= from <= to"));
+    }
+
+    #[test]
+    fn update_rejects_a_cross_project_payoff_scene() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let foreign_scene_id = insert_scene(&db, &foreign_project_id);
+        let patch = ForeshadowPatch {
+            title: None,
+            intent: None,
+            notes: None,
+            payoff_scene_id: Some(Some(foreign_scene_id)),
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            secret: None,
+            load_bearing: None,
+        };
+
+        let error = update(&db, foreshadow_id.clone(), patch).expect_err("cross-project payoff");
+        assert!(error.to_string().contains("same project"));
+        let persisted = db
+            .execute(
+                "SELECT payoff_scene_id FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("read foreshadow");
+        assert_eq!(persisted[0]["payoff_scene_id"], Value::Null);
     }
 
     #[test]
@@ -1217,10 +1702,20 @@ mod tests {
         let db = test_db();
         let proj = insert_project(&db);
         let payload = ForeshadowCreatePayload {
+            id: None,
+            request_id: None,
             project_id: proj.clone(),
             title: "T".to_string(),
             intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: false,
+            abandoned: false,
+            secret: true,
             load_bearing: Some("required".to_string()),
+            codex_link_dirty_at: None,
         };
         let result = create(&db, payload);
         assert!(result.is_err(), "invalid load_bearing should reject");

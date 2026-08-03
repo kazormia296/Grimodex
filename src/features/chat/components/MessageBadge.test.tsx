@@ -9,9 +9,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 // 集合の変化) では従来どおり再フェッチし、削除でバッジが残らない契約
 // (0c27e08e) を維持する。
 
-const { mockListCodex, mockListSnippets } = vi.hoisted(() => ({
+const {
+  mockListCodex,
+  mockListSnippets,
+  mockDebugError,
+  mockIsIpcLifecycleCancellation,
+} = vi.hoisted(() => ({
   mockListCodex: vi.fn(),
   mockListSnippets: vi.fn(),
+  mockDebugError: vi.fn(),
+  mockIsIpcLifecycleCancellation: vi.fn(),
 }));
 
 vi.mock("@/features/codex/api", () => ({
@@ -19,6 +26,14 @@ vi.mock("@/features/codex/api", () => ({
 }));
 vi.mock("@/features/snippets/api", () => ({
   listSnippetsByMessageId: mockListSnippets,
+}));
+vi.mock("@/lib/debugLog", () => ({
+  debugLog: { error: mockDebugError },
+  errorDetail: (error: unknown) =>
+    error instanceof Error ? error.message : String(error),
+}));
+vi.mock("@/lib/tauri", () => ({
+  isIpcLifecycleCancellation: mockIsIpcLifecycleCancellation,
 }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -83,6 +98,8 @@ beforeEach(() => {
   _clearMessageBadgeCache();
   mockListCodex.mockReset().mockResolvedValue([CODEX_ENTRY]);
   mockListSnippets.mockReset().mockResolvedValue([]);
+  mockDebugError.mockReset();
+  mockIsIpcLifecycleCancellation.mockReset().mockReturnValue(false);
   useCodexStore.setState({ entries: [STORE_ENTRY] as never });
 });
 
@@ -168,5 +185,21 @@ describe("MessageBadge: remount キャッシュ (perf 契約)", () => {
       expect(mockListCodex).toHaveBeenCalledWith("m3");
     });
     expect(mockListCodex).toHaveBeenCalledTimes(2);
+  });
+
+  it("lifecycle read cancellation is handled without an application console error", async () => {
+    const cancellation = new Error("read cancelled");
+    mockListCodex.mockRejectedValueOnce(cancellation);
+    mockIsIpcLifecycleCancellation.mockImplementation(
+      (error) => error === cancellation,
+    );
+
+    renderBadge("cancelled");
+    await waitFor(() => {
+      expect(mockListCodex).toHaveBeenCalledWith("cancelled");
+    });
+    await Promise.resolve();
+
+    expect(mockDebugError).not.toHaveBeenCalled();
   });
 });

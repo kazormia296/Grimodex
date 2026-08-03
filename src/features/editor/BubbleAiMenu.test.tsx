@@ -38,7 +38,7 @@ describe("BubbleAiMenu", () => {
 
   it("shows the AI trigger when bodyWrite is allowed", () => {
     render(<BubbleAiMenu onCommand={vi.fn()} />);
-    expect(screen.getByTestId("bubble-ai")).toBeInTheDocument();
+    expect(screen.getByTestId("bubble-ai")).toHaveClass("h-6", "min-w-[24px]");
   });
 
   it("renders null (no trigger) when bodyWrite policy is off", () => {

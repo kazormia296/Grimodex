@@ -206,7 +206,7 @@ Grimodex のスタック（Tauri WebView + TipTap/PM）に当てはめた確定�
 
 ### 実機 QA 手順（Windows: MS-IME / Google日本語入力 / 任意で ATOK）
 
-QA は `pnpm electron:dev` または署名済み Electron package で行う。
+QA は `pnpm electron:dev` または packaged Electron build で行う。
 
 1. 縦書き ON + IME診断 ON →「きしゃのきしゃはきしゃできしゃした」を入力。
 2. Space 変換 → Shift+←/→ で文節移動しつつ、各文節での候補窓位置を

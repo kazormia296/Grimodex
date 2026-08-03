@@ -90,7 +90,9 @@ pub(crate) fn foreshadow_get_chapter_stats(
     ws_state: tauri::State<'_, WorkspaceState>,
     chapter_id: String,
 ) -> Result<ForeshadowChapterStatsBundle, AppError> {
-    with_db(&ws_state, |db| foreshadow::get_chapter_stats(db, chapter_id))
+    with_db(&ws_state, |db| {
+        foreshadow::get_chapter_stats(db, chapter_id)
+    })
 }
 
 #[tauri::command(async)]

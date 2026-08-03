@@ -52,23 +52,26 @@ test("workspace 未オープンの agentCodexCreate は 'No workspace is open' �
 test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span+change_event を書く", async () => {
   await backend.openWorkspace(join(root, "ws"));
 
-  const res = JSON.parse(
-    await backend.agentCodexCreate({
-      projectId: PROJECT,
-      sessionId: "sess-1",
-      typeSlug: "character",
-      name: "主人公",
-      summary: "説明文",
-      content: "{}",
-      // authorship_spans の from/to_pos は i64（JSON 往復で REAL に化けないこと）。
-      authorshipSpans: [{ fromPos: 0, toPos: 4, source: "ai", model: "gpt" }],
-    }),
-  );
+  const payload = {
+    requestId: "agent-tool:codex-napi-request-1",
+    entryId: "codex-napi-entity-attempt-1",
+    projectId: PROJECT,
+    sessionId: "sess-1",
+    typeSlug: "character",
+    name: "主人公",
+    summary: "説明文",
+    content: "{}",
+    // authorship_spans の from/to_pos は i64（JSON 往復で REAL に化けないこと）。
+    authorshipSpans: [{ fromPos: 0, toPos: 4, source: "ai", model: "gpt" }],
+  };
+  const res = JSON.parse(await backend.agentCodexCreate(payload));
   // AgentWriteResult は camelCase。
   assert.equal(typeof res.entityId, "string");
   assert.equal(res.version, 1);
   assert.equal(typeof res.changeEventUid, "string");
   assert.equal(typeof res.undoJournalId, "string");
+  assert.equal(res.undoJournalId, payload.requestId);
+  assert.notEqual(res.entityId, payload.requestId);
 
   // entity が version=1 で永続。
   const entry = await rows(
@@ -99,6 +102,159 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
   );
   assert.equal(uj[0].op_kind, "create");
   assert.equal(uj[0].entity_id, res.entityId);
+
+  const retry = JSON.parse(
+    await backend.agentCodexCreate({
+      ...payload,
+      entryId: "codex-napi-entity-attempt-2",
+    }),
+  );
+  assert.deepEqual(
+    retry,
+    res,
+    "same requestId returns the original result despite a fresh entity UUID",
+  );
+  await assert.rejects(
+    backend.agentCodexCreate({ ...payload, name: "別人" }),
+    /AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT/,
+  );
+});
+
+test("snippet / agent foreshadow / event request IDs are idempotent through napi", async () => {
+  const snippet = {
+    requestId: "agent-tool:snippet-napi-request-1",
+    snippetId: "snippet-napi-entity-attempt-1",
+    projectId: PROJECT,
+    sessionId: "sess-1",
+    title: "抜粋",
+    content: "{}",
+    authorshipSpans: [],
+  };
+  const snippetFirst = JSON.parse(await backend.agentSnippetCreate(snippet));
+  assert.equal(snippetFirst.undoJournalId, snippet.requestId);
+  assert.notEqual(snippetFirst.entityId, snippet.requestId);
+  assert.deepEqual(
+    JSON.parse(
+      await backend.agentSnippetCreate({
+        ...snippet,
+        snippetId: "snippet-napi-entity-attempt-2",
+      }),
+    ),
+    snippetFirst,
+  );
+  await assert.rejects(
+    backend.agentSnippetCreate({ ...snippet, title: "別の抜粋" }),
+    /AGENT_SNIPPET_CREATE_IDEMPOTENCY_CONFLICT/,
+  );
+
+  const foreshadow = {
+    requestId: "agent-tool:foreshadow-napi-request-1",
+    foreshadowId: "foreshadow-napi-entity-attempt-1",
+    projectId: PROJECT,
+    sessionId: "sess-1",
+    title: "刻印",
+    intent: null,
+    notes: null,
+    loadBearing: "critical",
+    secret: true,
+  };
+  const foreshadowFirst = JSON.parse(
+    await backend.agentForeshadowCreate(foreshadow),
+  );
+  assert.equal(foreshadowFirst.undoJournalId, foreshadow.requestId);
+  assert.notEqual(foreshadowFirst.entityId, foreshadow.requestId);
+  assert.deepEqual(
+    JSON.parse(
+      await backend.agentForeshadowCreate({
+        ...foreshadow,
+        foreshadowId: "foreshadow-napi-entity-attempt-2",
+      }),
+    ),
+    foreshadowFirst,
+  );
+  await assert.rejects(
+    backend.agentForeshadowCreate({ ...foreshadow, title: "別の刻印" }),
+    /AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT/,
+  );
+
+  const event = {
+    requestId: "agent-tool:event-napi-request-1",
+    eventId: "event-napi-entity-attempt-1",
+    projectId: PROJECT,
+    sessionId: "sess-1",
+    title: "到着",
+  };
+  const eventFirst = JSON.parse(await backend.agentEventCreate(event));
+  assert.equal(eventFirst.undoJournalId, event.requestId);
+  assert.notEqual(eventFirst.entityId, event.requestId);
+  assert.deepEqual(
+    JSON.parse(
+      await backend.agentEventCreate({
+        ...event,
+        eventId: "event-napi-entity-attempt-2",
+      }),
+    ),
+    eventFirst,
+  );
+  await assert.rejects(
+    backend.agentEventCreate({ ...event, title: "出発" }),
+    /AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT/,
+  );
+});
+
+test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越しに保持する", async () => {
+  const created = JSON.parse(
+    await backend.agentEventCreate({
+      requestId: "agent-tool:event-napi-chronicle-boundaries-1",
+      projectId: PROJECT,
+      sessionId: "sess-chronicle-boundaries",
+      title: "境界日時",
+      startTime: 10,
+      startMinute: 0,
+      startGranularity: "time",
+      endTime: 10,
+      endMinute: 1439,
+      endGranularity: "time",
+    }),
+  );
+  assert.equal(created.version, 1);
+
+  const boundaryRow = await rows(
+    `SELECT start_time, start_minute, end_time, end_minute
+       FROM events WHERE id = ?`,
+    [created.entityId],
+  );
+  assert.deepEqual(boundaryRow[0], {
+    start_time: 10,
+    start_minute: 0,
+    end_time: 10,
+    end_minute: 1439,
+  });
+
+  const updated = JSON.parse(
+    await backend.agentEventUpdate({
+      projectId: PROJECT,
+      sessionId: "sess-chronicle-boundaries",
+      eventId: created.entityId,
+      baseVersion: created.version,
+      endTime: 10,
+      endMinute: 0,
+      endGranularity: "time",
+    }),
+  );
+  assert.equal(updated.version, 2);
+
+  const equalEndpoints = await rows(
+    `SELECT start_time, start_minute, end_time, end_minute
+       FROM events WHERE id = ?`,
+    [created.entityId],
+  );
+  assert.deepEqual(equalEndpoints[0], {
+    start_time: 10,
+    start_minute: 0,
+    end_time: 10,
+    end_minute: 0,
+  });
 });
 
 test("agentCodexUpdate: 存在しない entry は reject し、副作用を残さない（ROLLBACK）", async () => {
@@ -115,4 +271,196 @@ test("agentCodexUpdate: 存在しない entry は reject し、副作用を残�
   );
   const after = await rows("SELECT COUNT(*) AS n FROM change_events");
   assert.equal(after[0].n, before[0].n, "失敗時に change_events を書かない");
+});
+
+test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往復する", async () => {
+  const eventId = "chronicle-bulk-napi-event-1";
+  const datedEventId = "chronicle-bulk-napi-event-2";
+  const sceneId = "chronicle-bulk-napi-scene-1";
+  const datedSceneId = "chronicle-bulk-napi-scene-2";
+  const sceneUpdatedAt = "2026-07-29T00:00:00.000Z";
+  const datedSceneUpdatedAt = "2026-07-29T00:00:01.000Z";
+  await backend.dbExecute(
+    `INSERT INTO events
+       (id, project_id, title, ordinal, start_time, start_minute,
+        start_granularity, end_granularity, precision, kind,
+        created_at, updated_at, version)
+     VALUES (?, ?, 'Bulk event', 'z-bulk', 42, 90, 'time', 'none',
+             'exact', 'generic', datetime('now'), datetime('now'), 1)`,
+    [eventId, PROJECT],
+    "run",
+  );
+  await backend.dbExecute(
+    `INSERT INTO events
+       (id, project_id, title, ordinal, start_time, start_minute,
+        start_granularity, end_granularity, precision, kind,
+        created_at, updated_at, version)
+     VALUES (?, ?, 'Dated bulk event', 'z-bulk-2', 142, NULL, 'day', 'none',
+             'exact', 'generic', datetime('now'), datetime('now'), 1)`,
+    [datedEventId, PROJECT],
+    "run",
+  );
+  await backend.dbExecute(
+    `INSERT INTO tree_nodes
+       (id, project_id, node_type, title, sort_order,
+        chronicle_start_time, chronicle_start_granularity, updated_at)
+     VALUES (?, ?, 'scene', 'Bulk scene', 'z-bulk', 84, 'day', ?)`,
+    [sceneId, PROJECT, sceneUpdatedAt],
+    "run",
+  );
+  await backend.dbExecute(
+    `INSERT INTO tree_nodes
+       (id, project_id, node_type, title, sort_order,
+        chronicle_start_time, chronicle_start_granularity, updated_at)
+     VALUES (?, ?, 'scene', 'Dated bulk scene', 'z-bulk-2', 184, 'day', ?)`,
+    [datedSceneId, PROJECT, datedSceneUpdatedAt],
+    "run",
+  );
+
+  const result = JSON.parse(
+    await backend.agentChronicleBulkMutate({
+      requestId: "chronicle-bulk-napi-forward-1",
+      projectId: PROJECT,
+      sessionId: "sess-bulk",
+      surface: "manual",
+      operations: [
+        { kind: "eventDelete", eventId, baseVersion: 1 },
+        { kind: "sceneClearDate", sceneId, baseUpdatedAt: sceneUpdatedAt },
+        {
+          kind: "eventSetDate",
+          eventId: datedEventId,
+          baseVersion: 1,
+          startTime: 143,
+          startMinute: 120,
+          startGranularity: "time",
+          endTime: 144,
+          endMinute: null,
+          endGranularity: "day",
+        },
+        {
+          kind: "sceneSetDate",
+          sceneId: datedSceneId,
+          baseUpdatedAt: datedSceneUpdatedAt,
+          startTime: 185,
+          startMinute: null,
+          startGranularity: "day",
+          endTime: 185,
+          endMinute: 720,
+          endGranularity: "time",
+        },
+      ],
+    }),
+  );
+  assert.equal(result.eventResults[0].eventId, eventId);
+  assert.equal(result.eventResults[0].version, null);
+  assert.equal(result.sceneResults[0].sceneId, sceneId);
+  assert.deepEqual(result.eventResults[1], {
+    kind: "eventSetDate",
+    eventId: datedEventId,
+    version: 2,
+  });
+  assert.equal(result.sceneResults[1].sceneId, datedSceneId);
+
+  const eventAfter = await rows(
+    "SELECT COUNT(*) AS n FROM events WHERE id = ?",
+    [eventId],
+  );
+  const sceneAfter = await rows(
+    "SELECT chronicle_start_time, chronicle_start_granularity FROM tree_nodes WHERE id = ?",
+    [sceneId],
+  );
+  const datedEventAfter = await rows(
+    `SELECT start_time, start_minute, start_granularity,
+            end_time, end_minute, end_granularity, version
+       FROM events WHERE id = ?`,
+    [datedEventId],
+  );
+  const datedSceneAfter = await rows(
+    `SELECT chronicle_start_time, chronicle_start_minute,
+            chronicle_start_granularity, chronicle_end_time,
+            chronicle_end_minute, chronicle_end_granularity
+       FROM tree_nodes WHERE id = ?`,
+    [datedSceneId],
+  );
+  const journal = await rows(
+    "SELECT entity_kind, op_kind FROM undo_journal WHERE id = ?",
+    [result.undoJournalId],
+  );
+  const changeEvent = await rows(
+    "SELECT op_type FROM change_events WHERE event_uid = ?",
+    [result.changeEventUid],
+  );
+  assert.equal(eventAfter[0].n, 0);
+  assert.equal(sceneAfter[0].chronicle_start_time, null);
+  assert.equal(sceneAfter[0].chronicle_start_granularity, "none");
+  assert.deepEqual(datedEventAfter[0], {
+    start_time: 143,
+    start_minute: 120,
+    start_granularity: "time",
+    end_time: 144,
+    end_minute: null,
+    end_granularity: "day",
+    version: 2,
+  });
+  assert.deepEqual(datedSceneAfter[0], {
+    chronicle_start_time: 185,
+    chronicle_start_minute: null,
+    chronicle_start_granularity: "day",
+    chronicle_end_time: 185,
+    chronicle_end_minute: 720,
+    chronicle_end_granularity: "time",
+  });
+  assert.deepEqual(journal[0], {
+    entity_kind: "chronicle_bulk",
+    op_kind: "update",
+  });
+  assert.equal(changeEvent[0].op_type, "chronicle.bulk");
+
+  await backend.agentApplyUndoJournal({
+    requestId: "chronicle-bulk-napi-undo-1",
+    projectId: PROJECT,
+    sessionId: "sess-bulk",
+    journalId: result.undoJournalId,
+    direction: "undo",
+  });
+  const eventUndo = await rows("SELECT version FROM events WHERE id = ?", [
+    eventId,
+  ]);
+  const sceneUndo = await rows(
+    "SELECT chronicle_start_time, chronicle_start_granularity FROM tree_nodes WHERE id = ?",
+    [sceneId],
+  );
+  const datedEventUndo = await rows(
+    `SELECT start_time, start_minute, start_granularity,
+            end_time, end_minute, end_granularity, version
+       FROM events WHERE id = ?`,
+    [datedEventId],
+  );
+  const datedSceneUndo = await rows(
+    `SELECT chronicle_start_time, chronicle_start_minute,
+            chronicle_start_granularity, chronicle_end_time,
+            chronicle_end_minute, chronicle_end_granularity
+       FROM tree_nodes WHERE id = ?`,
+    [datedSceneId],
+  );
+  assert.equal(eventUndo[0].version, 2);
+  assert.equal(sceneUndo[0].chronicle_start_time, 84);
+  assert.equal(sceneUndo[0].chronicle_start_granularity, "day");
+  assert.deepEqual(datedEventUndo[0], {
+    start_time: 142,
+    start_minute: null,
+    start_granularity: "day",
+    end_time: null,
+    end_minute: null,
+    end_granularity: "none",
+    version: 3,
+  });
+  assert.deepEqual(datedSceneUndo[0], {
+    chronicle_start_time: 184,
+    chronicle_start_minute: null,
+    chronicle_start_granularity: "day",
+    chronicle_end_time: null,
+    chronicle_end_minute: null,
+    chronicle_end_granularity: "none",
+  });
 });

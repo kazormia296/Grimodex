@@ -4,6 +4,8 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 
 /**
  * Ensure the global typeColorMap is populated.
@@ -28,19 +30,28 @@ export function useEnsureCodexTypeColors() {
         : theme === "light"
           ? false
           : window.matchMedia("(prefers-color-scheme: dark)").matches;
-    listCodexTypes(getCurrentProjectId()).then((types) => {
-      if (cancelled) return;
-      const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
-      for (const t of types) {
-        map[t.slug] = resolveCodexColor(
-          t.paletteIndex ?? null,
-          t.color,
-          colorTheme,
-          isDark,
+    void listCodexTypes(getCurrentProjectId())
+      .then((types) => {
+        if (cancelled) return;
+        const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
+        for (const t of types) {
+          map[t.slug] = resolveCodexColor(
+            t.paletteIndex ?? null,
+            t.color,
+            colorTheme,
+            isDark,
+          );
+        }
+        setTypeColorMap(map);
+      })
+      .catch((error: unknown) => {
+        if (cancelled || isIpcLifecycleCancellation(error)) return;
+        debugLog.warn(
+          "codex-type-colors",
+          "type color projection unavailable",
+          errorDetail(error),
         );
-      }
-      setTypeColorMap(map);
-    });
+      });
     return () => {
       cancelled = true;
     };

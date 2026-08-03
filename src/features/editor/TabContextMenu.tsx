@@ -6,7 +6,7 @@ import { useTabStore } from "./tabStore";
 import { useEditorSessionStore } from "./editorSessionStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { saveScene } from "./editorSaveRegistry";
+import { discardDocumentInGroup, saveScene } from "./editorSaveRegistry";
 import { UnsavedDialog } from "./UnsavedDialog";
 import type { GroupIndex } from "./tabStore";
 
@@ -288,6 +288,9 @@ export function TabContextMenu({
             setPendingClose(null);
           }}
           onCloseWithoutSave={() => {
+            for (const id of pendingClose.nodeIds) {
+              discardDocumentInGroup(id, groupIndex);
+            }
             executeClose(pendingClose.nodeIds);
             setPendingClose(null);
           }}

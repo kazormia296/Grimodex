@@ -51,6 +51,7 @@ function PinCodexList({
   entries,
   allEntries,
   pinnedIds,
+  lockedIds,
   withChildrenIds,
   onPin,
   onUnpin,
@@ -62,6 +63,7 @@ function PinCodexList({
   entries: CodexEntry[];
   allEntries: CodexEntry[];
   pinnedIds: Set<string>;
+  lockedIds: ReadonlySet<string>;
   withChildrenIds?: Set<string>;
   onPin: (id: string) => void;
   onUnpin: (id: string) => void;
@@ -107,37 +109,54 @@ function PinCodexList({
   return (
     <div className="max-h-52 overflow-y-auto">
       {entries.map((entry) => {
-        const isPinned = pinnedIds.has(entry.id);
+        const isLocked = lockedIds.has(entry.id);
+        const isPinned = pinnedIds.has(entry.id) || isLocked;
         const hasChildren =
           getChildrenFromArray(entry.id, allEntries).length > 0;
         const isWithChildren = withChildrenIds?.has(entry.id) ?? false;
 
         return (
           <div key={entry.id} className="border-b border-border last:border-0">
-            <label className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 hover:bg-accent">
+            <label
+              className={`flex items-start gap-2 rounded px-2 py-1.5 ${
+                isLocked
+                  ? "cursor-not-allowed opacity-60"
+                  : "cursor-pointer hover:bg-accent"
+              }`}
+            >
               <input
                 type="checkbox"
+                data-testid={`pin-entry-toggle-${entry.id}`}
                 checked={isPinned}
-                onChange={() =>
-                  isPinned ? onUnpin(entry.id) : onPin(entry.id)
-                }
+                disabled={isLocked}
+                onChange={() => {
+                  if (isLocked) return;
+                  if (isPinned) onUnpin(entry.id);
+                  else onPin(entry.id);
+                }}
                 className="mt-1 shrink-0 rounded"
               />
               <div className="min-w-0 flex-1">
                 <EntryCardBody entry={entry} />
               </div>
             </label>
-            {isPinned && hasChildren && withChildrenIds && onToggleChildren && (
-              <label className="ml-8 flex cursor-pointer items-center gap-1.5 px-2 pb-1.5 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={isWithChildren}
-                  onChange={(e) => onToggleChildren(entry.id, e.target.checked)}
-                  className="rounded"
-                />
-                {t("chat.context.includeChildren")}
-              </label>
-            )}
+            {isPinned &&
+              !isLocked &&
+              hasChildren &&
+              withChildrenIds &&
+              onToggleChildren && (
+                <label className="ml-8 flex cursor-pointer items-center gap-1.5 px-2 pb-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={isWithChildren}
+                    onChange={(e) =>
+                      onToggleChildren(entry.id, e.target.checked)
+                    }
+                    className="rounded"
+                  />
+                  {t("chat.context.includeChildren")}
+                </label>
+              )}
           </div>
         );
       })}
@@ -148,11 +167,13 @@ function PinCodexList({
 function PinSnippetList({
   snippets,
   pinnedSnippetIds,
+  lockedIds,
   onPin,
   onUnpin,
 }: {
   snippets: Snippet[];
   pinnedSnippetIds: Set<string>;
+  lockedIds: ReadonlySet<string>;
   onPin: (id: string) => void;
   onUnpin: (id: string) => void;
 }) {
@@ -169,19 +190,27 @@ function PinSnippetList({
   return (
     <div className="max-h-52 overflow-y-auto">
       {snippets.map((snippet) => {
-        const isPinned = pinnedSnippetIds.has(snippet.id);
+        const isLocked = lockedIds.has(snippet.id);
+        const isPinned = pinnedSnippetIds.has(snippet.id) || isLocked;
 
         return (
           <label
             key={snippet.id}
-            className="flex cursor-pointer items-start gap-2 rounded border-b border-border px-2 py-1.5 last:border-0 hover:bg-accent"
+            className={`flex items-start gap-2 rounded border-b border-border px-2 py-1.5 last:border-0 ${
+              isLocked
+                ? "cursor-not-allowed opacity-60"
+                : "cursor-pointer hover:bg-accent"
+            }`}
           >
             <input
               type="checkbox"
               checked={isPinned}
-              onChange={() =>
-                isPinned ? onUnpin(snippet.id) : onPin(snippet.id)
-              }
+              disabled={isLocked}
+              onChange={() => {
+                if (isLocked) return;
+                if (isPinned) onUnpin(snippet.id);
+                else onPin(snippet.id);
+              }}
               className="mt-0.5 shrink-0 rounded"
             />
             <div className="min-w-0 flex-1">
@@ -203,6 +232,8 @@ export interface PinEntryDialogProps {
   open: boolean;
   /** multi モードのチェック状態。single モードでは不要 */
   pinnedIds?: Set<string>;
+  /** focus subject など、checked のまま変更不可にする Codex/Snippet ID。 */
+  lockedIds?: ReadonlySet<string>;
   onPin?: (entryId: string, type?: "codex" | "snippet") => void;
   onUnpin?: (entryId: string) => void;
   onClose: () => void;
@@ -230,6 +261,7 @@ export interface PinEntryDialogProps {
 export function PinEntryDialog({
   open,
   pinnedIds = EMPTY_PIN_SET,
+  lockedIds = EMPTY_PIN_SET,
   onPin,
   onUnpin,
   onClose,
@@ -556,6 +588,7 @@ export function PinEntryDialog({
                 entries={filteredCodexEntries}
                 allEntries={entries}
                 pinnedIds={pinnedIds}
+                lockedIds={lockedIds}
                 withChildrenIds={withChildrenIds}
                 onPin={(id) => onPin?.(id, "codex")}
                 onUnpin={(id) => onUnpin?.(id)}
@@ -621,6 +654,7 @@ export function PinEntryDialog({
               <PinSnippetList
                 snippets={filteredSnippetEntries}
                 pinnedSnippetIds={pinnedSnippetIds ?? new Set()}
+                lockedIds={lockedIds}
                 onPin={(id) => onPin?.(id, "snippet")}
                 onUnpin={(id) => onUnpin?.(id)}
               />

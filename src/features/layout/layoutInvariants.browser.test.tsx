@@ -15,6 +15,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { LayoutShell } from "./LayoutShell";
 import { BOTTOM_CORNER_TOGGLE_CLEARANCE_PX } from "./BottomCornerToggle";
+import {
+  HORIZONTAL_STRIPE_ICON_INSET_PX,
+  HORIZONTAL_STRIPE_ICON_SIZE,
+  HORIZONTAL_STRIPE_SIZE,
+  STRIPE_ICON_SIZE,
+  STRIPE_SIZE,
+} from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { PanelId } from "./panelIds";
@@ -147,6 +154,91 @@ describe("layout geometry invariants (real Chromium)", () => {
       hiddenStripePanels: new Set(),
       initialized: true,
     });
+  });
+
+  it("centers the fixed editor icon and paints the same rim on every stripe", async () => {
+    const { container } = renderShell();
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+    const centerStripe = container.querySelector<HTMLElement>(
+      "[data-center-stripe]",
+    );
+    const editorIcon = container.querySelector<HTMLElement>(
+      '[data-stripe-icon="editor"]',
+    );
+    expect(centerStripe).not.toBeNull();
+    expect(editorIcon).not.toBeNull();
+
+    const stripeRect = centerStripe!.getBoundingClientRect();
+    const iconRect = editorIcon!.getBoundingClientRect();
+    expect(stripeRect.height).toBe(HORIZONTAL_STRIPE_SIZE);
+    expect(iconRect.height).toBe(HORIZONTAL_STRIPE_ICON_SIZE);
+    expect(iconRect.top - stripeRect.top).toBe(HORIZONTAL_STRIPE_ICON_INSET_PX);
+    expect(stripeRect.bottom - iconRect.bottom).toBe(
+      HORIZONTAL_STRIPE_ICON_INSET_PX,
+    );
+    expect(getComputedStyle(centerStripe!).gridTemplateRows).toBe(
+      `${HORIZONTAL_STRIPE_SIZE}px`,
+    );
+
+    const stripes = [
+      ...container.querySelectorAll<HTMLElement>(
+        '[data-ambient-glass-surface="stripe"].gx-panel',
+      ),
+    ];
+    expect(stripes).toHaveLength(4);
+    for (const stripe of stripes) {
+      const rect = stripe.getBoundingClientRect();
+      const horizontal = rect.width > rect.height;
+      const expectedSize = horizontal ? HORIZONTAL_STRIPE_SIZE : STRIPE_SIZE;
+      expect(getComputedStyle(stripe).borderTopWidth).toBe("0px");
+      expect(getComputedStyle(stripe, "::after").borderTopWidth).toBe("1px");
+      expect(horizontal ? rect.height : rect.width).toBe(expectedSize);
+      expect(getComputedStyle(stripe, "::after").borderRadius).toBe(
+        `${expectedSize / 2}px`,
+      );
+    }
+  });
+
+  it("centers both bottom corner toggles on the stripe arc intersections", async () => {
+    const { container } = renderShell();
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+    const leftStripe = container.querySelector<HTMLElement>(
+      '[data-stripe-region="left"]',
+    );
+    const rightStripe = container.querySelector<HTMLElement>(
+      '[data-stripe-region="right"]',
+    );
+    const leftToggle = container.querySelector<HTMLElement>(
+      '[data-bottom-corner-toggle="left"]',
+    );
+    const rightToggle = container.querySelector<HTMLElement>(
+      '[data-bottom-corner-toggle="right"]',
+    );
+    expect(leftStripe).not.toBeNull();
+    expect(rightStripe).not.toBeNull();
+    expect(leftToggle).not.toBeNull();
+    expect(rightToggle).not.toBeNull();
+
+    const leftStripeRect = leftStripe!.getBoundingClientRect();
+    const rightStripeRect = rightStripe!.getBoundingClientRect();
+    const expectedCenterY = leftStripeRect.bottom - STRIPE_SIZE / 2;
+    for (const [toggle, stripe] of [
+      [leftToggle!, leftStripeRect],
+      [rightToggle!, rightStripeRect],
+    ] as const) {
+      const toggleRect = toggle.getBoundingClientRect();
+      const svgRect = toggle.querySelector("svg")!.getBoundingClientRect();
+      expect(toggleRect.width).toBe(STRIPE_ICON_SIZE);
+      expect(toggleRect.height).toBe(STRIPE_ICON_SIZE);
+      expect(svgRect.width).toBe(16);
+      expect(svgRect.height).toBe(16);
+      expect(toggleRect.left + toggleRect.width / 2).toBe(
+        stripe.left + stripe.width / 2,
+      );
+      expect(toggleRect.top + toggleRect.height / 2).toBe(expectedCenterY);
+    }
   });
 
   it("slot splitter has a hoverable hit area (regression: SplitterHandle %寸法 collapse)", async () => {

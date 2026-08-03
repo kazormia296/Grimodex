@@ -14,6 +14,11 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
+import {
+  MIN_PER_DAY,
+  resizeEventEndpointPatch,
+  type ShiftableEvent,
+} from "./chronicleShift";
 
 /** 出来事/シーンの作中日時 patch（start/end の粒度・日番号・分）。 */
 export interface EventDatePatch {
@@ -66,6 +71,12 @@ export function EventDateFields({
   const [pickerOpen, setPickerOpen] = useState<"start" | "end" | null>(null);
   const startYear = calendar.startYear ?? 0;
   const isInterval = endTime != null;
+  const intervalValue = (): ShiftableEvent => ({
+    startTime: startTime ?? dateToDayNumber({ year: startYear }, calendar),
+    startMinute,
+    endTime,
+    endMinute,
+  });
 
   // 日時ピッカー本体（Radix PopoverContent 内に描画。配置/衝突回避/アニメは Radix 側）。
   const pickerContentFor = (which: "start" | "end") => {
@@ -91,12 +102,31 @@ export function EventDateFields({
         minute={minute}
         lang={lang}
         onCommitDay={(d) => {
-          if (which === "start") onPatch({ startTime: d });
-          else onPatch({ endTime: Math.max(d, startTime ?? d) });
+          const keepMinute =
+            which === "start" ? (startMinute ?? 0) : (endMinute ?? 0);
+          const subDay = gran === "time";
+          onPatch(
+            resizeEventEndpointPatch(
+              intervalValue(),
+              which,
+              d + (subDay ? keepMinute / MIN_PER_DAY : 0),
+              subDay,
+            ),
+          );
         }}
         onCommitMinute={(m) => {
-          if (which === "start") onPatch({ startMinute: m });
-          else onPatch({ endMinute: m });
+          const endpointDay =
+            which === "start"
+              ? (startTime ?? day)
+              : (endTime ?? startTime ?? day);
+          onPatch(
+            resizeEventEndpointPatch(
+              intervalValue(),
+              which,
+              endpointDay + m / MIN_PER_DAY,
+              true,
+            ),
+          );
         }}
         onClose={() => setPickerOpen(null)}
       />
@@ -105,10 +135,21 @@ export function EventDateFields({
 
   const setGranStart = (g: EventGranularity) => {
     if (g === "none") {
-      onPatch({ startGranularity: "none", startTime: null, startMinute: null });
+      onPatch({
+        startGranularity: "none",
+        startTime: null,
+        startMinute: null,
+        endGranularity: "none",
+        endTime: null,
+        endMinute: null,
+      });
     } else {
       const base = startTime ?? dateToDayNumber({ year: startYear }, calendar);
-      onPatch({ startGranularity: g, startTime: base });
+      onPatch({
+        startGranularity: g,
+        startTime: base,
+        startMinute: g === "time" ? (startMinute ?? 0) : null,
+      });
     }
   };
 
@@ -227,7 +268,7 @@ export function EventDateFields({
                   onPatch({
                     endTime: (startTime ?? 0) + 60,
                     endGranularity: "day",
-                    endMinute: 0,
+                    endMinute: null,
                   })
                 }
                 className={toggleBtnCls}

@@ -36,12 +36,17 @@ vi.mock("@/features/editor/editorSessionStore", () => ({
   },
 }));
 
-import { flushPendingSceneSaves, runPostEffect } from "./api";
+import {
+  flushPendingSceneSaves,
+  runPostEffect,
+  startPostEffectRun,
+} from "./api";
 import { usePostEffectRunStore } from "./runStore";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 // `@/lib/tauri` の listen はハンドラへ payload を**直接**渡す契約
 // (tauriListen の (e) => handler(e.payload) ラップ)。mock も同じ契約にする。
@@ -66,6 +71,10 @@ beforeEach(() => {
   mockInvoke.mockReset();
   mockNotify.mockReset();
   mockEnsurePerm.mockReset();
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/project-1",
+    openRevision: 1,
+  });
   // listen(channel, handler) は unlisten 関数を返す Promise
   mockListen.mockImplementation(
     async (channel: EventChannel, handler: Handler) => {
@@ -74,6 +83,10 @@ beforeEach(() => {
       return unlisten;
     },
   );
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
 });
 
 function fireEvent(channel: EventChannel, payload: unknown) {
@@ -121,6 +134,52 @@ describe("flushPendingSceneSaves", () => {
     mockDirtyTabIds.add("scene-a");
 
     await expect(flushPendingSceneSaves()).resolves.toBeUndefined();
+  });
+});
+
+describe("post-effect workspace authority", () => {
+  const request = {
+    project_id: "p1",
+    effect_type: "review",
+    scope_type: "scene",
+    scope_target_id: "s1",
+    model: "test",
+    prompt_version: "v1",
+    input_hash: "hash",
+    codex_payload_json: "[]",
+    scene_text: "",
+    system_prompt: "test system prompt",
+  } as const;
+
+  it("fails closed before dispatch when no renderer workspace is active", async () => {
+    setCurrentWorkspaceIdentity(null);
+
+    await expect(startPostEffectRun(request)).rejects.toThrow(
+      "POST_EFFECT_WORKSPACE_UNAVAILABLE",
+    );
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("pins the dispatch path and rejects a result after a workspace switch", async () => {
+    let resolveStart!: (value: { run_id: string; from_cache: boolean }) => void;
+    mockInvoke.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+
+    const start = startPostEffectRun(request);
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/project-2",
+      openRevision: 2,
+    });
+    resolveStart({ run_id: "run-1", from_cache: false });
+
+    await expect(start).rejects.toThrow("POST_EFFECT_WORKSPACE_CHANGED");
+    expect(mockInvoke).toHaveBeenCalledWith("start_post_effect_run", {
+      expectedWorkspacePath: "/workspace/project-1",
+      args: request,
+    });
   });
 });
 
@@ -423,6 +482,13 @@ describe("runPostEffect run_id フィルタリング", () => {
     const done = usePostEffectRunStore.getState().runs["r1"];
     // 終端後も AUTO_CLEAR_MS の間はエントリが残る（トースト完了表示用）
     expect(done.outcome).toEqual({ kind: "done", annotationCount: 4 });
+  });
+
+  it("live run は runStore に live フラグを引き継ぐ", async () => {
+    mockInvoke.mockResolvedValue({ run_id: "live-1", from_cache: false });
+    await runPostEffect({ ...baseReq, live: true }, {});
+
+    expect(usePostEffectRunStore.getState().runs["live-1"].live).toBe(true);
   });
 
   it("error で outcome=error になる", async () => {

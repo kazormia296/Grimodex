@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock deps so executors can be dispatched without a real Tauri / DB runtime.
 const {
@@ -7,17 +7,49 @@ const {
   mockTreeProjectId,
   mockAgentCreateForeshadow,
   mockAgentUpdateForeshadow,
+  mockAgentCreateCodexEntry,
+  mockAgentUpdateCodexEntry,
+  mockAgentCreateSnippet,
+  mockAgentCreateEvent,
+  mockProjectId,
+  mockDbRows,
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockListOpenForeshadows: vi.fn(),
   mockTreeProjectId: vi.fn<() => string | null>(),
   mockAgentCreateForeshadow: vi.fn(),
   mockAgentUpdateForeshadow: vi.fn(),
+  mockAgentCreateCodexEntry: vi.fn(),
+  mockAgentUpdateCodexEntry: vi.fn(),
+  mockAgentCreateSnippet: vi.fn(),
+  mockAgentCreateEvent: vi.fn(),
+  mockProjectId: vi.fn<() => string>(),
+  mockDbRows: vi.fn<() => unknown[]>(),
+}));
+
+vi.mock("@/features/agent-writes/codex", () => ({
+  agentCreateCodexEntry: mockAgentCreateCodexEntry,
+  agentUpdateCodexEntry: mockAgentUpdateCodexEntry,
+}));
+
+vi.mock("@/features/agent-writes/snippet", () => ({
+  agentCreateSnippet: mockAgentCreateSnippet,
 }));
 
 vi.mock("@/features/agent-writes/foreshadow", () => ({
   agentCreateForeshadow: mockAgentCreateForeshadow,
   agentUpdateForeshadow: mockAgentUpdateForeshadow,
+}));
+
+vi.mock("@/features/agent-writes/event", () => ({
+  agentCreateEvent: mockAgentCreateEvent,
+  agentUpdateEvent: vi.fn(),
+  agentDeleteEvent: vi.fn(),
+  agentSetEventParticipants: vi.fn(),
+  agentLinkSceneEvent: vi.fn(),
+  agentUnlinkSceneEvent: vi.fn(),
+  agentAddEventRelation: vi.fn(),
+  agentRemoveEventRelation: vi.fn(),
 }));
 
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
@@ -30,14 +62,27 @@ vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => ({ projectId: mockTreeProjectId() }) },
 }));
 
+vi.mock("@/features/project/projectStore", () => ({
+  getCurrentProjectId: mockProjectId,
+}));
+
 // db client returns empty arrays for any query — enough to exercise the
 // executor branch without a real sqlite instance.
 vi.mock("@/db/client", () => {
   const chain = {
     select: vi.fn().mockReturnThis(),
+    selectDistinct: vi.fn().mockReturnThis(),
     from: vi.fn().mockReturnThis(),
     innerJoin: vi.fn().mockReturnThis(),
-    where: vi.fn().mockResolvedValue([]),
+    leftJoin: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    groupBy: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+    then: (
+      resolve: (value: unknown[]) => unknown,
+      reject: (reason: unknown) => unknown,
+    ) => Promise.resolve(mockDbRows()).then(resolve, reject),
   };
   return { db: chain };
 });
@@ -67,6 +112,23 @@ import {
   getDeterministicAgentTools,
   READ_ONLY_TOOL_NAMES,
 } from "./toolDefinitions";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+const TOOL_TEST_WORKSPACE_PATH = "/workspace/tool-executors-test";
+
+beforeEach(() => {
+  mockProjectId.mockReturnValue("project-1");
+  mockDbRows.mockReset();
+  mockDbRows.mockReturnValue([]);
+  setCurrentWorkspaceIdentity({
+    path: TOOL_TEST_WORKSPACE_PATH,
+    openRevision: 1,
+  });
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+});
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
 // EXECUTORS は read-only ツールのみで構成される契約。mutating executor を追加
@@ -342,6 +404,207 @@ describe("foreshadow write executors", () => {
   });
 });
 
+describe("Codex and Snippet rich-text write executors", () => {
+  beforeEach(() => {
+    mockAgentCreateCodexEntry.mockReset();
+    mockAgentUpdateCodexEntry.mockReset();
+    mockAgentCreateSnippet.mockReset();
+  });
+
+  it("converts Markdown and serializes structured aliases before creating Codex", async () => {
+    mockAgentCreateCodexEntry.mockResolvedValue({
+      id: "entry-1",
+      name: "Akane",
+      type: "character",
+    });
+
+    const result = await executeTool("create_codex_entry", "call-c1", {
+      type: "character",
+      name: "Akane",
+      content: "# Profile\n\nMain character.",
+      aliases: ["Hero", "  Protagonist  "],
+    });
+
+    expect(result.error).toBeUndefined();
+    const input = mockAgentCreateCodexEntry.mock.calls[0]![0] as {
+      content: string;
+      aliases: string;
+    };
+    expect(input.aliases).toBe(JSON.stringify(["Hero", "Protagonist"]));
+    expect(JSON.parse(input.content)).toMatchObject({
+      type: "doc",
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: "heading" }),
+        expect.objectContaining({ type: "paragraph" }),
+      ]),
+    });
+  });
+
+  it("rejects malformed aliases without calling a Codex writer", async () => {
+    const result = await executeTool("update_codex_entry", "call-c2", {
+      id: "entry-1",
+      aliases: ["valid", 42],
+    });
+
+    expect(result.error).toContain("array of strings");
+    expect(mockAgentUpdateCodexEntry).not.toHaveBeenCalled();
+  });
+
+  it("rejects excessive aliases without calling a Codex writer", async () => {
+    const result = await executeTool("create_codex_entry", "call-c3", {
+      type: "character",
+      name: "Akane",
+      aliases: Array.from({ length: 101 }, (_, index) => `alias-${index}`),
+    });
+
+    expect(result.error).toContain("at most 100");
+    expect(mockAgentCreateCodexEntry).not.toHaveBeenCalled();
+  });
+
+  it("converts Snippet Markdown into schema-valid ProseMirror JSON", async () => {
+    mockAgentCreateSnippet.mockResolvedValue({
+      id: "snippet-1",
+      title: "Opening",
+    });
+
+    const result = await executeTool("create_snippet", "call-s1", {
+      title: "Opening",
+      content: "**Storm** at midnight.",
+    });
+
+    expect(result.error).toBeUndefined();
+    const input = mockAgentCreateSnippet.mock.calls[0]![0] as {
+      content: string;
+    };
+    expect(JSON.parse(input.content)).toMatchObject({
+      type: "doc",
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: "paragraph" }),
+      ]),
+    });
+  });
+});
+
+describe("create-tool request identity", () => {
+  beforeEach(() => {
+    mockAgentCreateCodexEntry.mockReset();
+    mockAgentCreateSnippet.mockReset();
+    mockAgentCreateForeshadow.mockReset();
+    mockAgentCreateEvent.mockReset();
+    mockProjectId.mockReset();
+    mockProjectId.mockReturnValue("project-1");
+  });
+
+  it("derives one stable, tool-scoped requestId from the same toolCallId", async () => {
+    mockAgentCreateCodexEntry.mockResolvedValue({
+      id: "codex-1",
+      name: "Akane",
+      type: "character",
+    });
+    mockAgentCreateSnippet.mockResolvedValue({
+      id: "snippet-1",
+      title: "Opening",
+    });
+    mockAgentCreateForeshadow.mockResolvedValue({
+      id: "foreshadow-1",
+      title: "The seal",
+      secret: true,
+    });
+    mockAgentCreateEvent.mockResolvedValue({
+      id: "event-1",
+      title: "Arrival",
+    });
+
+    const cases = [
+      {
+        name: "create_codex_entry",
+        params: { type: "character", name: "Akane" },
+        writer: mockAgentCreateCodexEntry,
+      },
+      {
+        name: "create_snippet",
+        params: { title: "Opening" },
+        writer: mockAgentCreateSnippet,
+      },
+      {
+        name: "create_foreshadow",
+        params: { title: "The seal" },
+        writer: mockAgentCreateForeshadow,
+      },
+      {
+        name: "create_event",
+        params: { title: "Arrival" },
+        writer: mockAgentCreateEvent,
+      },
+    ] as const;
+
+    const requestIds = new Set<string>();
+    for (const { name, params, writer } of cases) {
+      await executeTool(name, "stable-tool-call", params);
+      await executeTool(name, "stable-tool-call", params);
+
+      const firstRequestId = writer.mock.calls[0]![0].requestId as string;
+      const retryRequestId = writer.mock.calls[1]![0].requestId as string;
+      expect(firstRequestId).toMatch(/^agent-tool:[0-9a-f]{64}$/);
+      expect(retryRequestId).toBe(firstRequestId);
+      requestIds.add(firstRequestId);
+    }
+
+    expect(requestIds.size).toBe(cases.length);
+
+    mockProjectId.mockReturnValue("project-2");
+    await executeTool("create_codex_entry", "stable-tool-call", {
+      type: "character",
+      name: "Akane",
+    });
+    expect(mockAgentCreateCodexEntry.mock.calls[2]![0].requestId).not.toBe(
+      mockAgentCreateCodexEntry.mock.calls[0]![0].requestId,
+    );
+
+    await executeTool("create_codex_entry", "different-tool-call", {
+      type: "character",
+      name: "Akane",
+    });
+    expect(mockAgentCreateCodexEntry.mock.calls[3]![0].requestId).not.toBe(
+      mockAgentCreateCodexEntry.mock.calls[0]![0].requestId,
+    );
+  });
+
+  it("rejects a create when Project authority changes during request hashing", async () => {
+    let releaseDigest!: () => void;
+    const digestGate = new Promise<void>((resolve) => {
+      releaseDigest = resolve;
+    });
+    const digest = vi
+      .spyOn(crypto.subtle, "digest")
+      .mockImplementation(async () => {
+        await digestGate;
+        return new Uint8Array(32).buffer;
+      });
+    mockAgentCreateCodexEntry.mockResolvedValue({
+      id: "codex-stale",
+      name: "Stale",
+      type: "character",
+    });
+
+    try {
+      const pending = executeTool("create_codex_entry", "stale-call", {
+        type: "character",
+        name: "Stale",
+      });
+      await vi.waitFor(() => expect(digest).toHaveBeenCalledOnce());
+      mockProjectId.mockReturnValue("project-2");
+      releaseDigest();
+
+      const result = await pending;
+      expect(result.error).toContain("authority changed");
+      expect(mockAgentCreateCodexEntry).not.toHaveBeenCalled();
+    } finally {
+      digest.mockRestore();
+    }
+  });
+});
+
 // ── search 結果の整形契約 ─────────────────────────────────────────────────────
 // tree_nodes.content / snippets.content は ProseMirror JSON。excerpt/preview は
 // plain text に変換してから LLM に渡し、tags は {name,color}[] でなく name の
@@ -360,11 +623,10 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
     });
 
   it("search_scenes (FTS path) returns a plain-text excerpt, not raw ProseMirror JSON", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [
-        { id: "s1", title: "T", content: pmDoc("ドラゴンが火を吹いた。") },
-      ],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "scene", id: "s1" }]);
+    mockDbRows.mockReturnValue([
+      { id: "s1", title: "T", content: pmDoc("ドラゴンが火を吹いた。") },
+    ]);
     const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toBe("ドラゴンが火を吹いた。");
@@ -372,9 +634,9 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
   });
 
   it("search_scenes (LIKE fallback) also plain-texts the excerpt", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [{ id: "s1", title: "T", content: pmDoc("火を吹いた。") }],
-    });
+    mockDbRows.mockReturnValue([
+      { id: "s1", title: "T", content: pmDoc("火を吹いた。") },
+    ]);
     const res = await executeTool("search_scenes", "c", { query: "火" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toBe("火を吹いた。");
@@ -382,9 +644,10 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
 
   it("search_scenes centers the excerpt around the first matched token", async () => {
     const long = "あ".repeat(300) + "ドラゴン" + "い".repeat(300);
-    mockInvoke.mockResolvedValue({
-      rows: [{ id: "s1", title: "T", content: pmDoc(long) }],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "scene", id: "s1" }]);
+    mockDbRows.mockReturnValue([
+      { id: "s1", title: "T", content: pmDoc(long) },
+    ]);
     const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toContain("ドラゴン");
@@ -394,28 +657,26 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
   });
 
   it("search_scenes tolerates NULL content", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [{ id: "s1", title: "T", content: null }],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "scene", id: "s1" }]);
+    mockDbRows.mockReturnValue([{ id: "s1", title: "T", content: null }]);
     const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toBe("");
   });
 
   it("search_snippets returns tag names (string[]) and a plain-text preview", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [
-        {
-          id: "n1",
-          title: "雨",
-          tags_cache: JSON.stringify([
-            { name: "伏線", color: "#fff" },
-            { name: "終盤", color: null },
-          ]),
-          content: pmDoc("雨の描写。"),
-        },
-      ],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "snippet", id: "n1" }]);
+    mockDbRows.mockReturnValue([
+      {
+        id: "n1",
+        title: "雨",
+        tagsCache: JSON.stringify([
+          { name: "伏線", color: "#fff" },
+          { name: "終盤", color: null },
+        ]),
+        content: pmDoc("雨の描写。"),
+      },
+    ]);
     const res = await executeTool("search_snippets", "c", {
       query: "雨の描写",
     });
@@ -427,20 +688,16 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
 });
 
 // ── project スコープ不変条件 (security audit XPROJ-1) ─────────────────────────
-// agent の read ツールはアクティブプロジェクトに限定されなければならない
-// (単一 grimodex.db に複数プロジェクトが同居するため、述語が欠けると別プロジェクト
-// の本文/設定資料/スニペットが漏れる)。raw-SQL 経路は SQL に project_id 述語と
-// 束縛パラメータが入ることを assert し、全 read ツールは projectId 未設定時に
-// fail-closed (DB を引かず "No active project") であることを assert する。
-// いずれかのツールから述語を外すと当該テストが落ちる差分検証。
+// agent の read ツールはアクティブプロジェクトに限定されなければならない。
+// FTS は typed command の projectId を assert し、全 read ツールは projectId
+// 未設定時に fail-closed (DBを引かず "No active project") を守る。
 describe("project scoping — agent read tools (XPROJ-1)", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     mockTreeProjectId.mockReset();
   });
 
-  // db_execute (raw SQL) に直接到達し、先行する Drizzle ゲートを持たないツール。
-  const RAW_SQL_TOOLS = [
+  const PROJECT_SCOPED_TOOLS = [
     { tool: "search_codex", params: { query: "ドラゴン" } },
     { tool: "search_scenes", params: { query: "ドラゴン" } },
     { tool: "search_snippets", params: { query: "ドラゴン" } },
@@ -448,31 +705,28 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
     { tool: "list_codex_tags", params: {} },
   ];
 
-  it.each(RAW_SQL_TOOLS)(
-    "$tool binds the active project_id into its SQL",
+  it.each(PROJECT_SCOPED_TOOLS)(
+    "$tool uses typed FTS/Drizzle without the generic DB bridge",
     async ({ tool, params }) => {
       mockTreeProjectId.mockReturnValue("proj-A");
-      mockInvoke.mockResolvedValue({ rows: [] });
+      mockInvoke.mockResolvedValue([]);
 
       const res = await executeTool(tool, "c", params);
       expect(res.error).toBeUndefined();
 
-      const dbExecCalls = mockInvoke.mock.calls.filter(
-        (c) => c[0] === "db_execute",
-      );
-      expect(dbExecCalls.length).toBeGreaterThan(0);
-      const call = dbExecCalls[dbExecCalls.length - 1][1] as {
-        sql: string;
-        params: unknown[];
-      };
-      expect(call.sql).toContain("project_id");
-      expect(call.params).toContain("proj-A");
+      expect(
+        mockInvoke.mock.calls.some((call) => call[0] === "db_execute"),
+      ).toBe(false);
+      for (const [, args] of mockInvoke.mock.calls.filter(
+        (call) => call[0] === "fts_search",
+      )) {
+        expect(args).toMatchObject({ projectId: "proj-A" });
+      }
     },
   );
 
-  // raw-SQL + Drizzle 両系統の全 read ツール。projectId 未設定で必ず fail-closed。
   const ALL_READ_TOOLS = [
-    ...RAW_SQL_TOOLS,
+    ...PROJECT_SCOPED_TOOLS,
     { tool: "find_related_entries", params: { id: "e1" } },
     { tool: "list_codex_by_type", params: { type: "character" } },
     { tool: "list_chapters", params: {} },
@@ -489,15 +743,13 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
     "$tool fails closed (no DB query) when no project is active",
     async ({ tool, params }) => {
       mockTreeProjectId.mockReturnValue(null);
-      mockInvoke.mockResolvedValue({ rows: [] });
+      mockInvoke.mockResolvedValue([]);
 
       const res = await executeTool(tool, "c", params);
       expect(res.error).toBeUndefined();
       expect(res.summary).toContain("No active project");
-      const dbExecCalls = mockInvoke.mock.calls.filter(
-        (c) => c[0] === "db_execute",
-      );
-      expect(dbExecCalls.length).toBe(0);
+      expect(mockInvoke).not.toHaveBeenCalled();
+      expect(mockDbRows).not.toHaveBeenCalled();
     },
   );
 
@@ -531,6 +783,14 @@ describe("search_codex hybrid fusion (段階3)", () => {
   });
 
   it("fuses dense and sparse results", async () => {
+    mockDbRows.mockReturnValue([
+      {
+        id: "e-sparse",
+        name: "SparseHit",
+        type: "location",
+        summary: "s",
+      },
+    ]);
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "codex_semantic_search") {
         return Promise.resolve([
@@ -543,19 +803,10 @@ describe("search_codex hybrid fusion (段階3)", () => {
           },
         ]);
       }
-      if (cmd === "db_execute") {
-        return Promise.resolve({
-          rows: [
-            {
-              id: "e-sparse",
-              name: "SparseHit",
-              type: "location",
-              summary: "s",
-            },
-          ],
-        });
+      if (cmd === "fts_search") {
+        return Promise.resolve([{ sourceType: "codex", id: "e-sparse" }]);
       }
-      return Promise.resolve({ rows: [] });
+      return Promise.resolve([]);
     });
 
     const res = await executeTool("search_codex", "c", {
@@ -565,29 +816,31 @@ describe("search_codex hybrid fusion (段階3)", () => {
     const ids = (res.content as { id: string }[]).map((r) => r.id);
     expect(ids).toContain("e-dense");
     expect(ids).toContain("e-sparse");
-    expect(
-      mockInvoke.mock.calls.some((c) => c[0] === "codex_semantic_search"),
-    ).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith("codex_semantic_search", {
+      expectedWorkspacePath: TOOL_TEST_WORKSPACE_PATH,
+      projectId: "proj-A",
+      query: "ドラクタール",
+      limit: 30,
+    });
   });
 
   it("falls back to sparse-only when dense search rejects", async () => {
+    mockDbRows.mockReturnValue([
+      {
+        id: "e-sparse",
+        name: "SparseHit",
+        type: "location",
+        summary: "s",
+      },
+    ]);
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "codex_semantic_search") {
         return Promise.reject(new Error("semantic-embedding disabled"));
       }
-      if (cmd === "db_execute") {
-        return Promise.resolve({
-          rows: [
-            {
-              id: "e-sparse",
-              name: "SparseHit",
-              type: "location",
-              summary: "s",
-            },
-          ],
-        });
+      if (cmd === "fts_search") {
+        return Promise.resolve([{ sourceType: "codex", id: "e-sparse" }]);
       }
-      return Promise.resolve({ rows: [] });
+      return Promise.resolve([]);
     });
 
     const res = await executeTool("search_codex", "c", {

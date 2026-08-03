@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { _resetQuiescenceParticipantsForTests } from "@/application/lifecycle/quiescenceParticipants";
 import { UserEdge } from "./UserEdge";
 import type { EdgeProps } from "@xyflow/react";
 
@@ -53,8 +54,23 @@ function makeProps(
   } as EdgeProps;
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("UserEdge — ラベル編集", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    _resetQuiescenceParticipantsForTests();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    _resetQuiescenceParticipantsForTests();
+  });
 
   it("ラベルなしのとき hit-area div が表示される", () => {
     const { container } = render(<UserEdge {...makeProps()} />);
@@ -126,6 +142,79 @@ describe("UserEdge — ラベル編集", () => {
     await userEvent.keyboard("{Escape}");
     expect(onLabelSave).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("IME composition Enter/Escape ではラベルを確定・取消ししない", async () => {
+    const onLabelSave = vi.fn();
+    render(
+      <UserEdge
+        {...makeProps({ data: { forwardLabel: "既存", onLabelSave } })}
+      />,
+    );
+    await userEvent.dblClick(screen.getByText("既存"));
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "変換中" } });
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+
+    expect(onLabelSave).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveValue("変換中");
+    fireEvent.keyDown(input, { key: "Escape" });
+  });
+
+  it("編集中の再ダブルクリックで入力値を元ラベルへ戻さない", async () => {
+    const onLabelSave = vi.fn();
+    render(
+      <UserEdge
+        {...makeProps({ data: { forwardLabel: "既存", onLabelSave } })}
+      />,
+    );
+    await userEvent.dblClick(screen.getByText("既存"));
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "編集中" } });
+
+    fireEvent.doubleClick(input);
+
+    expect(screen.getByRole("textbox")).toHaveValue("編集中");
+    expect(onLabelSave).not.toHaveBeenCalled();
+  });
+
+  it("保存中の追加入力を再保存し、最新値の成功まで編集を閉じない", async () => {
+    const first = deferred();
+    const latest = deferred();
+    const onLabelSave = vi
+      .fn<(field: string, label: string | null) => Promise<void>>()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => latest.promise);
+    render(
+      <UserEdge
+        {...makeProps({ data: { forwardLabel: "既存", onLabelSave } })}
+      />,
+    );
+    await userEvent.dblClick(screen.getByText("既存"));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "最初" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    await waitFor(() => {
+      expect(onLabelSave).toHaveBeenNthCalledWith(1, "forwardLabel", "最初");
+    });
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "最新" },
+    });
+
+    first.resolve();
+    await waitFor(() => {
+      expect(onLabelSave).toHaveBeenNthCalledWith(2, "forwardLabel", "最新");
+    });
+    expect(screen.getByRole("textbox")).toHaveValue("最新");
+
+    latest.resolve();
+    await waitFor(() => {
+      expect(screen.queryByRole("textbox")).toBeNull();
+    });
   });
 });
 

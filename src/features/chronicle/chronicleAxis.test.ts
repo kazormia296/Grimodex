@@ -30,7 +30,7 @@ describe("effectiveDays", () => {
     expect(r.dataEnd).toBe(0);
   });
 
-  it("calendar mode when every startTime present", () => {
+  it("calendar mode when dated events are present", () => {
     const r = effectiveDays([
       ev("a", "a0", 10, null),
       ev("b", "a1", 5, 8),
@@ -78,11 +78,50 @@ describe("effectiveDays", () => {
     expect(r.byId.get("a")).toEqual({ startDay: 0, endDay: 100 });
   });
 
-  it("sequence mode when any startTime missing; ranks in cmpKeys order", () => {
+  it("mixed input keeps dated coordinates and puts undated proxies after the dated range", () => {
+    const r = effectiveDays([
+      ev("z", "a2", null, null),
+      ev("y", "a0", 5, 8),
+      ev("x", "a1", null, null),
+      {
+        id: "dated-late",
+        ordinal: "a3",
+        startTime: 10,
+        endTime: null,
+        startMinute: 720,
+      },
+    ]);
+    expect(r.hasCalendarAxis).toBe(true);
+    expect(r.byId.get("y")).toEqual({ startDay: 5, endDay: 8 });
+    expect(r.byId.get("dated-late")).toEqual({
+      startDay: 10.5,
+      endDay: null,
+    });
+    // 日付未設定だけを ordinal 順に並べ、実日付範囲の直後へ proxy 配置する。
+    expect(r.byId.get("x")).toEqual({ startDay: 11.5, endDay: null });
+    expect(r.byId.get("z")).toEqual({ startDay: 12.5, endDay: null });
+    expect(r.dataStart).toBe(5);
+    expect(r.dataEnd).toBe(12.5);
+  });
+
+  it("mixed input proxy order tie-breaks equal ordinals by id string", () => {
+    const r = effectiveDays([
+      ev("dated", "a0", 20, 25),
+      ev("b", "a1", null, null),
+      ev("a", "a1", null, null),
+    ]);
+    expect(r.hasCalendarAxis).toBe(true);
+    expect(r.byId.get("a")).toEqual({ startDay: 26, endDay: null });
+    expect(r.byId.get("b")).toEqual({ startDay: 27, endDay: null });
+    expect(r.dataStart).toBe(20);
+    expect(r.dataEnd).toBe(27);
+  });
+
+  it("sequence mode only when every startTime is missing; ranks in cmpKeys order", () => {
     // ordinals deliberately out of array order; effective rank should follow cmpKeys
     const r = effectiveDays([
       ev("z", "a2", null, null),
-      ev("y", "a0", 5, null),
+      ev("y", "a0", null, null),
       ev("x", "a1", null, null),
     ]);
     expect(r.hasCalendarAxis).toBe(false);
@@ -97,7 +136,7 @@ describe("effectiveDays", () => {
   it("sequence mode tie-breaks equal ordinals by id string", () => {
     const r = effectiveDays([
       ev("b", "a0", null, null),
-      ev("a", "a0", 1, null),
+      ev("a", "a0", null, null),
     ]);
     expect(r.byId.get("a")).toEqual({ startDay: 0, endDay: null });
     expect(r.byId.get("b")).toEqual({ startDay: 1, endDay: null });

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Grimodex Copy"
+  short_description: "Draft public-facing Grimodex communications"
+  default_prompt: "Use $write-grimodex-copy to draft bilingual release notes from verified changes."

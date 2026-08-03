@@ -36,6 +36,7 @@ describe("browser runtime editor-only contract", () => {
       removeItem: vi.fn((key: string) => values.delete(key)),
     };
     const database = {
+      invoke: vi.fn(async () => undefined),
       exportDatabase: vi.fn(() => new Uint8Array([1, 2, 3])),
       close: vi.fn(),
     };
@@ -68,6 +69,7 @@ describe("browser runtime editor-only contract", () => {
     expect(dependencies.createBrowserMock).toHaveBeenCalledWith({
       databaseBytes: undefined,
       onDatabaseDirty: expect.any(Function),
+      onAiAuditDurabilityRequired: expect.any(Function),
     });
     expect(runtime).not.toHaveProperty("entryMode");
     expect(runtime).not.toHaveProperty("importedProjectId");

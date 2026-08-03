@@ -4,8 +4,9 @@ import { Fragment, Slice } from "@tiptap/pm/model";
 import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
 import type { AttributedSegment } from "@/lib/clipboardAttribution";
 import { incrementSnippetUsageCount } from "@/features/snippets/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import * as chatApi from "@/features/chat/chatApi";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 export interface InsertRange {
   from: number;
@@ -62,6 +63,12 @@ export const useEditorStore = create<EditorState>()((set, get) => {
     },
 
     insertFromChat: (text: string, chatMessageId: string, model?: string) => {
+      try {
+        if (!canScheduleQuiescenceMutation()) return false;
+        chatApi.assertMessageMutationAllowed(chatMessageId);
+      } catch {
+        return false;
+      }
       const { editor } = get();
       if (!editor) return false;
 
@@ -294,7 +301,9 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         .chain()
         .focus()
         .command(({ tr }) => {
-          tr.setMeta("programmaticInsert", true);
+          tr.setMeta("programmaticInsert", true)
+            .setMeta("paste", true)
+            .setMeta("uiEvent", "paste");
           return true;
         })
         .command(({ tr, editor: ed }) => {

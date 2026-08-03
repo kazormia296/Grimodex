@@ -15,13 +15,19 @@ vi.mock("./insertBeatStream", () => ({
   ensureGeneratedBlock: vi.fn(),
 }));
 vi.mock("@/features/tree/treeStore", () => ({
-  useTreeStore: { getState: () => ({ nodes: [] }) },
+  useTreeStore: { getState: () => ({ nodes: [], projectId: "p1" }) },
 }));
 vi.mock("@/features/settings/settingsStore", () => ({
   useSettingsStore: { getState: () => ({}) },
 }));
 vi.mock("@/features/workspace/store", () => ({
-  useWorkspaceStore: { getState: () => ({ activeWorkspaceName: "" }) },
+  useWorkspaceStore: {
+    getState: () => ({
+      activeWorkspaceName: "",
+      activeWorkspacePath: "/workspace/test.gdx",
+      workspaceSwitchInProgress: false,
+    }),
+  },
 }));
 vi.mock("@/features/project/api", () => ({ getProject: vi.fn() }));
 vi.mock("@/features/codex/codexStore", () => ({

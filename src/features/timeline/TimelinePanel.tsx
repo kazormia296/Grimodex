@@ -25,11 +25,12 @@ import { PlotStructureAnalysis } from "@/features/plot-threads/PlotStructureAnal
 import type { PhasePinData } from "./TimelineViewport";
 import { recordMark } from "@/lib/perfLog";
 import { useTimelineKeyboardController } from "./useTimelineKeyboardController";
+import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 
 /** ビューポート↔インスペクタ間の縦 Splitter 帯の固定幅(px)。 */
 const INSPECTOR_SPLITTER_PX = 8;
 
-export function TimelinePanel() {
+export function TimelinePanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
@@ -166,7 +167,7 @@ export function TimelinePanel() {
 
   const handleUpdateStoryTimeLabel = useCallback(
     (id: string, label: string) => {
-      void updateStoryTime(
+      return updateStoryTime(
         id,
         nodes.find((n) => n.id === id)?.storyTimeOrder ?? null,
         label,
@@ -252,6 +253,7 @@ export function TimelinePanel() {
       ref={containerRef}
       tabIndex={-1}
       data-testid="timeline-panel"
+      data-is-active={isActive}
       className="flex h-full flex-col overflow-hidden"
     >
       <TimelineHeader
@@ -263,6 +265,7 @@ export function TimelinePanel() {
       <div className="flex flex-1 overflow-hidden">
         <TimelineViewport
           ref={viewportRef}
+          isActive={isActive}
           scenes={scenes}
           weights={weights}
           phasePins={phasePins}
@@ -322,6 +325,7 @@ export function TimelinePanel() {
           ) : (
             // 選択が無くてもパネルを出す（中はプレースホルダー）。
             <TimelineInspector
+              key={selectedNode?.id ?? "none"}
               width={inspectorWidth}
               node={selectedNode}
               onClose={toggleInspector}

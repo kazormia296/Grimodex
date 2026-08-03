@@ -154,7 +154,7 @@ describe("getModelPricing: 動的レジストリ優先", () => {
   });
 
   it("動的レジストリの pricing が手動テーブルより優先される", () => {
-    registerDynamicModelCaps([
+    registerDynamicModelCaps("openrouter", [
       {
         id: "anthropic/claude-sonnet-4-6",
         name: "Claude Sonnet 4.6",
@@ -167,6 +167,43 @@ describe("getModelPricing: 動的レジストリ優先", () => {
     const p = getModelPricing("anthropic/claude-sonnet-4-6");
     expect(p?.inputPerMillion).toBeCloseTo(4.0);
     expect(p?.outputPerMillion).toBeCloseTo(20.0);
+  });
+
+  it("同名の Ollama bare ID は OpenRouter 動的 pricing を拾わない", () => {
+    registerDynamicModelCaps("openrouter", [
+      {
+        id: "shared-local-model:latest",
+        name: "Shared Local Model",
+        pricingPrompt: "0.000004",
+        pricingCompletion: "0.000020",
+      },
+    ]);
+
+    expect(getModelPricing("shared-local-model:latest", "ollama")).toBeNull();
+    expect(
+      estimateInputCost("shared-local-model:latest", 10_000, "ollama"),
+    ).toBeNull();
+    expect(
+      estimateTotalCost("shared-local-model:latest", 10_000, 5_000, "ollama"),
+    ).toBeNull();
+
+    // provider 未指定の既存 API と明示 OpenRouter は従来どおり動的価格を使う。
+    expect(getModelPricing("shared-local-model:latest")).toEqual({
+      inputPerMillion: 4,
+      outputPerMillion: 20,
+    });
+    expect(getModelPricing("shared-local-model:latest", "openrouter")).toEqual({
+      inputPerMillion: 4,
+      outputPerMillion: 20,
+    });
+  });
+
+  it("Ollamaのcloud風bare IDへ手動cloud価格も漏らさない", () => {
+    expect(getModelPricing("claude-sonnet-4-6", "ollama")).toBeNull();
+    expect(getModelPricing("claude-sonnet-4-6", "anthropic")).toMatchObject({
+      inputPerMillion: 3,
+      outputPerMillion: 15,
+    });
   });
 
   it("動的データがない場合は手動テーブルにフォールバックする", () => {

@@ -1,5 +1,5 @@
 import type { Node as PMNode } from "@tiptap/pm/model";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import { isBeatType, type BeatType } from "./beatTypes";
 
 export interface PlacedBeatInfo {
   beatId: string;
@@ -79,11 +79,6 @@ export function extractBeatTextFromNode(node: PMNode): string {
     return true;
   });
   return text;
-}
-
-function isBeatType(value: unknown): value is BeatType {
-  const valid = ["free", "summary", "guided", "dialogue", "setting", "micro"];
-  return typeof value === "string" && valid.includes(value);
 }
 
 /**

@@ -1,6 +1,11 @@
 //! Database connection and typed query functions.
 
 use anyhow::{Context, Result};
+use grimodex_core::chronicle_time::{
+    normalize_chronicle_timestamp, resolve_chronicle_granularity,
+    validate_canonical_chronicle_date_range, validate_chronicle_date_range, ChronicleDateRange,
+    ChronicleTimestamp,
+};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -1858,6 +1863,7 @@ pub struct ChronicleEventRow {
     pub end_granularity: String,
     pub precision: String,
     pub kind: String,
+    pub version: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1903,6 +1909,7 @@ pub struct ChronicleCalendarRaw {
 #[serde(rename_all = "camelCase")]
 pub struct EventWriteResult {
     pub entity_id: String,
+    pub version: i64,
     pub change_event_uid: String,
     pub undo_journal_id: String,
 }
@@ -1923,6 +1930,7 @@ fn map_chronicle_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChronicleEve
         end_granularity: row.get(11)?,
         precision: row.get(12)?,
         kind: row.get(13)?,
+        version: row.get(14)?,
     })
 }
 
@@ -1939,7 +1947,7 @@ pub fn chronicle_list_events(
     let mut stmt = conn.prepare(
         "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
                 start_time, end_time, start_minute, end_minute,
-                start_granularity, end_granularity, precision, kind
+                start_granularity, end_granularity, precision, kind, version
          FROM events WHERE project_id = ?1 AND secret = 0
          ORDER BY ordinal ASC, id ASC",
     )?;
@@ -2139,12 +2147,15 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
     let event_json: String = conn.query_row(
         "SELECT json_object(
             'id', id, 'projectId', project_id, 'title', title, 'note', note,
+            'detail', detail,
             'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
+            'laneGroup', lane_group,
             'locationCodexId', location_codex_id, 'startTime', start_time,
             'endTime', end_time, 'startMinute', start_minute,
             'endMinute', end_minute, 'startGranularity', start_granularity,
             'endGranularity', end_granularity, 'precision', precision, 'kind', kind,
             'secret', secret, 'revealSceneId', reveal_scene_id,
+            'version', version,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM events WHERE id = ?1",
         params![event_id],
@@ -2209,11 +2220,33 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
     }))
 }
 
+fn event_snapshot_related_ids(snapshot: &serde_json::Value) -> Vec<String> {
+    let mut related = std::collections::BTreeSet::new();
+    for key in ["asCause", "asEffect"] {
+        if let Some(relations) = snapshot["relations"][key].as_array() {
+            for relation in relations {
+                if let Some(id) = relation["effectEventId"]
+                    .as_str()
+                    .or_else(|| relation["causeEventId"].as_str())
+                {
+                    related.insert(id.to_string());
+                }
+            }
+        }
+    }
+    related.into_iter().collect()
+}
+
 fn collect_participants_json(
     conn: &Connection,
     event_id: &str,
 ) -> anyhow::Result<serde_json::Value> {
     use serde_json::json;
+    let version: i64 = conn.query_row(
+        "SELECT version FROM events WHERE id = ?1",
+        params![event_id],
+        |row| row.get(0),
+    )?;
     let mut stmt = conn.prepare(
         "SELECT codex_entry_id, role FROM event_participants
          WHERE event_id = ?1 ORDER BY codex_entry_id",
@@ -2224,19 +2257,105 @@ fn collect_participants_json(
         Ok(json!({ "codexEntryId": codex_entry_id, "role": role }))
     })?;
     let participants = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({ "eventId": event_id, "participants": participants }))
+    Ok(json!({
+        "eventId": event_id,
+        "version": version,
+        "participants": participants,
+    }))
 }
 
 /// 書込み対象 event の存在ゲート。AI 秘匿(fail-closed): MCP は現在シーンを持てない
 /// ため secret=1 を「存在しない」扱いにし、update/delete/stamp/participants/relation
 /// すべての write-by-id を一律遮断する(存在 oracle 化を防ぐ・spec §2.4.4)。
-fn event_exists(conn: &Connection, project_id: &str, event_id: &str) -> anyhow::Result<bool> {
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+fn visible_event_version(
+    conn: &Connection,
+    project_id: &str,
+    event_id: &str,
+) -> anyhow::Result<Option<i64>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT version FROM events WHERE id = ?1 AND project_id = ?2 AND secret = 0",
         params![event_id, project_id],
         |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+struct VisibleEventDateState {
+    version: i64,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    start_minute: Option<i64>,
+    end_minute: Option<i64>,
+    start_granularity: String,
+    end_granularity: String,
+}
+
+fn visible_event_date_state(
+    conn: &Connection,
+    project_id: &str,
+    event_id: &str,
+) -> anyhow::Result<Option<VisibleEventDateState>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT version, start_time, end_time, start_minute, end_minute,
+                start_granularity, end_granularity
+         FROM events
+         WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+        params![event_id, project_id],
+        |row| {
+            Ok(VisibleEventDateState {
+                version: row.get(0)?,
+                start_time: row.get(1)?,
+                end_time: row.get(2)?,
+                start_minute: row.get(3)?,
+                end_minute: row.get(4)?,
+                start_granularity: row.get(5)?,
+                end_granularity: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn ensure_chronicle_codex_in_project(
+    conn: &Connection,
+    project_id: &str,
+    codex_id: &str,
+) -> anyhow::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        params![codex_id, project_id],
+        |row| row.get(0),
     )?;
-    Ok(n > 0)
+    anyhow::ensure!(
+        exists == 1,
+        "codex entry '{}' not found in project '{}'",
+        codex_id,
+        project_id
+    );
+    Ok(())
+}
+
+fn ensure_chronicle_scene_in_project(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        params![scene_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        exists == 1,
+        "scene '{}' not found in project '{}'",
+        scene_id,
+        project_id
+    );
+    Ok(())
 }
 
 /// Parameters for `chronicle_create_event` (defaults match
@@ -2286,20 +2405,59 @@ pub fn chronicle_create_event(
     let ordinal = input.ordinal.unwrap_or("a0");
     let precision = input.precision.unwrap_or("exact");
     let kind = input.kind.unwrap_or("generic");
-    let start_granularity = input.start_granularity.unwrap_or("none");
-    let end_granularity = input.end_granularity.unwrap_or("none");
+    let start_granularity = resolve_chronicle_granularity(
+        input.start_granularity,
+        "none",
+        input.start_time.is_some(),
+        input.start_minute.is_some(),
+    );
+    let end_granularity = resolve_chronicle_granularity(
+        input.end_granularity,
+        "none",
+        input.end_time.is_some(),
+        input.end_minute.is_some(),
+    );
     let secret = input.secret.unwrap_or(false);
     // 空文字の reveal は NULL（自動導出/恒久秘匿）に正規化。
     let reveal_scene_id = input.reveal_scene_id.filter(|s| !s.is_empty());
 
     in_immediate_tx(conn, |conn| {
+        let canonical_start = normalize_chronicle_timestamp(ChronicleTimestamp {
+            day: input.start_time,
+            minute: input.start_minute,
+            granularity: start_granularity,
+        });
+        let canonical_end = normalize_chronicle_timestamp(ChronicleTimestamp {
+            day: input.end_time,
+            minute: input.end_minute,
+            granularity: end_granularity,
+        });
+        validate_canonical_chronicle_date_range(ChronicleDateRange {
+            start: canonical_start,
+            end: canonical_end,
+        })?;
+        if let Some(codex_id) = input.primary_codex_id {
+            ensure_chronicle_codex_in_project(conn, input.project_id, codex_id)?;
+        }
+        if let Some(codex_id) = input.location_codex_id {
+            ensure_chronicle_codex_in_project(conn, input.project_id, codex_id)?;
+        }
+        if let Some(scene_id) = reveal_scene_id {
+            ensure_chronicle_scene_in_project(conn, input.project_id, scene_id)?;
+        }
+        for codex_id in input.participant_codex_ids {
+            ensure_chronicle_codex_in_project(conn, input.project_id, codex_id)?;
+        }
+        for scene_id in input.scene_ids {
+            ensure_chronicle_scene_in_project(conn, input.project_id, scene_id)?;
+        }
         conn.execute(
             "INSERT INTO events
              (id, project_id, title, note, ordinal, primary_codex_id,
               location_codex_id, start_time, end_time, start_minute, end_minute,
               start_granularity, end_granularity, precision, kind,
-              secret, reveal_scene_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18)",
+              secret, reveal_scene_id, created_at, updated_at, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18, 1)",
             params![
                 event_id,
                 input.project_id,
@@ -2308,10 +2466,10 @@ pub fn chronicle_create_event(
                 ordinal,
                 input.primary_codex_id,
                 input.location_codex_id,
-                input.start_time,
-                input.end_time,
-                input.start_minute,
-                input.end_minute,
+                canonical_start.day,
+                canonical_end.day,
+                canonical_start.minute,
+                canonical_end.minute,
                 start_granularity,
                 end_granularity,
                 precision,
@@ -2369,6 +2527,7 @@ pub fn chronicle_create_event(
         )?;
         Ok(EventWriteResult {
             entity_id: event_id.clone(),
+            version: 1,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         })
@@ -2402,6 +2561,7 @@ pub fn chronicle_update_event(
     project_id: &str,
     session_id: &str,
     event_id: &str,
+    base_version: i64,
     patch: ChroniclePatch<'_>,
 ) -> Result<Option<EventWriteResult>> {
     use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
@@ -2415,13 +2575,72 @@ pub fn chronicle_update_event(
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     in_immediate_tx(conn, |conn| {
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(current) = visible_event_date_state(conn, project_id, event_id)? else {
             return Ok(None);
+        };
+        anyhow::ensure!(
+            base_version == current.version,
+            "event '{}' version conflict: expected {}, found {}",
+            event_id,
+            base_version,
+            current.version
+        );
+        let touches_chronicle_date = patch.start_time.is_some()
+            || patch.end_time.is_some()
+            || patch.start_minute.is_some()
+            || patch.end_minute.is_some()
+            || patch.start_granularity.is_some()
+            || patch.end_granularity.is_some();
+        let start_granularity = resolve_chronicle_granularity(
+            patch.start_granularity,
+            &current.start_granularity,
+            patch.start_time.is_some(),
+            patch.start_minute.is_some(),
+        );
+        let end_granularity = resolve_chronicle_granularity(
+            patch.end_granularity,
+            &current.end_granularity,
+            patch.end_time.is_some(),
+            patch.end_minute.is_some(),
+        );
+        let merged_start = ChronicleTimestamp {
+            day: patch.start_time.or(current.start_time),
+            minute: patch.start_minute.or(current.start_minute),
+            granularity: start_granularity,
+        };
+        let merged_end = ChronicleTimestamp {
+            day: patch.end_time.or(current.end_time),
+            minute: patch.end_minute.or(current.end_minute),
+            granularity: end_granularity,
+        };
+        let (canonical_start, canonical_end) = if touches_chronicle_date {
+            let start = normalize_chronicle_timestamp(merged_start);
+            let end = normalize_chronicle_timestamp(merged_end);
+            validate_canonical_chronicle_date_range(ChronicleDateRange { start, end })?;
+            (start, end)
+        } else {
+            // Preserve legacy coarse+minute rows during unrelated writes while
+            // retaining the established range/minute compatibility checks.
+            validate_chronicle_date_range(ChronicleDateRange {
+                start: merged_start,
+                end: merged_end,
+            })?;
+            (merged_start, merged_end)
+        };
+        if let Some(codex_id) = patch.primary_codex_id {
+            ensure_chronicle_codex_in_project(conn, project_id, codex_id)?;
         }
+        if let Some(codex_id) = patch.location_codex_id {
+            ensure_chronicle_codex_in_project(conn, project_id, codex_id)?;
+        }
+        if let Some(scene_id) = patch.reveal_scene_id.filter(|id| !id.is_empty()) {
+            ensure_chronicle_scene_in_project(conn, project_id, scene_id)?;
+        }
+        let result_version = base_version + 1;
         let before = collect_event_snapshot(conn, event_id)?.to_string();
 
-        let mut sets: Vec<String> = vec!["updated_at = ?".to_string()];
-        let mut vals: Vec<V> = vec![V::Text(now.clone())];
+        let mut sets: Vec<String> = vec!["updated_at = ?".to_string(), "version = ?".to_string()];
+        let mut vals: Vec<V> = vec![V::Text(now.clone()), V::Integer(result_version)];
         let mut fields: Vec<&str> = Vec::new();
         if let Some(v) = patch.title {
             sets.push("title = ?".into());
@@ -2448,34 +2667,52 @@ pub fn chronicle_update_event(
             vals.push(V::Text(v.to_string()));
             fields.push("locationCodexId");
         }
-        if let Some(v) = patch.start_time {
-            sets.push("start_time = ?".into());
-            vals.push(V::Integer(v));
-            fields.push("startTime");
+        if touches_chronicle_date {
+            if canonical_start.day != current.start_time {
+                sets.push(if let Some(v) = canonical_start.day {
+                    vals.push(V::Integer(v));
+                    "start_time = ?".into()
+                } else {
+                    "start_time = NULL".into()
+                });
+                fields.push("startTime");
+            }
+            if canonical_end.day != current.end_time {
+                sets.push(if let Some(v) = canonical_end.day {
+                    vals.push(V::Integer(v));
+                    "end_time = ?".into()
+                } else {
+                    "end_time = NULL".into()
+                });
+                fields.push("endTime");
+            }
+            if canonical_start.minute != current.start_minute {
+                sets.push(if let Some(v) = canonical_start.minute {
+                    vals.push(V::Integer(v));
+                    "start_minute = ?".into()
+                } else {
+                    "start_minute = NULL".into()
+                });
+                fields.push("startMinute");
+            }
+            if canonical_end.minute != current.end_minute {
+                sets.push(if let Some(v) = canonical_end.minute {
+                    vals.push(V::Integer(v));
+                    "end_minute = ?".into()
+                } else {
+                    "end_minute = NULL".into()
+                });
+                fields.push("endMinute");
+            }
         }
-        if let Some(v) = patch.end_time {
-            sets.push("end_time = ?".into());
-            vals.push(V::Integer(v));
-            fields.push("endTime");
-        }
-        if let Some(v) = patch.start_minute {
-            sets.push("start_minute = ?".into());
-            vals.push(V::Integer(v));
-            fields.push("startMinute");
-        }
-        if let Some(v) = patch.end_minute {
-            sets.push("end_minute = ?".into());
-            vals.push(V::Integer(v));
-            fields.push("endMinute");
-        }
-        if let Some(v) = patch.start_granularity {
+        if patch.start_granularity.is_some() || start_granularity != current.start_granularity {
             sets.push("start_granularity = ?".into());
-            vals.push(V::Text(v.to_string()));
+            vals.push(V::Text(start_granularity.to_string()));
             fields.push("startGranularity");
         }
-        if let Some(v) = patch.end_granularity {
+        if patch.end_granularity.is_some() || end_granularity != current.end_granularity {
             sets.push("end_granularity = ?".into());
-            vals.push(V::Text(v.to_string()));
+            vals.push(V::Text(end_granularity.to_string()));
             fields.push("endGranularity");
         }
         if let Some(v) = patch.precision {
@@ -2505,12 +2742,18 @@ pub fn chronicle_update_event(
         }
         vals.push(V::Text(event_id.to_string()));
         vals.push(V::Text(project_id.to_string()));
+        vals.push(V::Integer(base_version));
         let sql = format!(
-            "UPDATE events SET {} WHERE id = ? AND project_id = ?",
+            "UPDATE events SET {} WHERE id = ? AND project_id = ? AND version = ?",
             sets.join(", ")
         );
         let updated = conn.execute(&sql, rusqlite::params_from_iter(vals.iter()))?;
-        anyhow::ensure!(updated == 1, "event row vanished mid-transaction");
+        anyhow::ensure!(
+            updated == 1,
+            "event '{}' version conflict: expected {}",
+            event_id,
+            base_version
+        );
 
         let after = collect_event_snapshot(conn, event_id)?.to_string();
         insert_undo_journal_in_tx(
@@ -2524,8 +2767,8 @@ pub fn chronicle_update_event(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version,
+                result_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2546,6 +2789,7 @@ pub fn chronicle_update_event(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: result_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2559,6 +2803,7 @@ pub fn chronicle_delete_event(
     project_id: &str,
     session_id: &str,
     event_id: &str,
+    base_version: i64,
 ) -> Result<Option<EventWriteResult>> {
     use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
     use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
@@ -2569,21 +2814,34 @@ pub fn chronicle_delete_event(
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     in_immediate_tx(conn, |conn| {
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(current_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
-        }
+        };
+        anyhow::ensure!(
+            base_version == current_version,
+            "event '{}' version conflict: expected {}, found {}",
+            event_id,
+            base_version,
+            current_version
+        );
         let before_value = collect_event_snapshot(conn, event_id)?;
         let title = before_value["eventData"]["title"]
             .as_str()
             .unwrap_or("")
             .to_string();
+        let related_event_ids = event_snapshot_related_ids(&before_value);
         let before = before_value.to_string();
 
         let deleted = conn.execute(
-            "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
-            params![event_id, project_id],
+            "DELETE FROM events WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+            params![event_id, project_id, base_version],
         )?;
-        anyhow::ensure!(deleted == 1, "event vanished mid-delete");
+        anyhow::ensure!(
+            deleted == 1,
+            "event '{}' version conflict: expected {}",
+            event_id,
+            base_version
+        );
 
         insert_undo_journal_in_tx(
             conn,
@@ -2596,7 +2854,7 @@ pub fn chronicle_delete_event(
                 op_kind: "delete",
                 before_json: Some(&before),
                 after_json: None,
-                base_version: 1,
+                base_version,
                 result_version: 0,
                 change_event_uid: Some(&event_uid),
             },
@@ -2612,12 +2870,17 @@ pub fn chronicle_delete_event(
                 op_type: "event.delete".to_string(),
                 entity_type: Some("event".to_string()),
                 entity_id: Some(event_id.to_string()),
-                payload: json!({ "title": title }).to_string(),
+                payload: json!({
+                    "title": title,
+                    "relatedEventIds": related_event_ids,
+                })
+                .to_string(),
                 timestamp,
             }],
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: 0,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2630,6 +2893,7 @@ pub fn chronicle_set_participants(
     project_id: &str,
     session_id: &str,
     event_id: &str,
+    base_version: i64,
     codex_entry_ids: &[String],
 ) -> Result<Option<EventWriteResult>> {
     use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
@@ -2638,13 +2902,36 @@ pub fn chronicle_set_participants(
 
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     in_immediate_tx(conn, |conn| {
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(current_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
+        };
+        anyhow::ensure!(
+            base_version == current_version,
+            "event '{}' version conflict: expected {}, found {}",
+            event_id,
+            base_version,
+            current_version
+        );
+        for codex_id in codex_entry_ids {
+            ensure_chronicle_codex_in_project(conn, project_id, codex_id)?;
         }
+        let result_version = base_version + 1;
         let before = collect_participants_json(conn, event_id)?.to_string();
+        let bumped = conn.execute(
+            "UPDATE events SET version = ?1, updated_at = ?2
+             WHERE id = ?3 AND project_id = ?4 AND version = ?5",
+            params![result_version, now, event_id, project_id, base_version],
+        )?;
+        anyhow::ensure!(
+            bumped == 1,
+            "event '{}' version conflict: expected {}",
+            event_id,
+            base_version
+        );
         conn.execute(
             "DELETE FROM event_participants WHERE event_id = ?1",
             params![event_id],
@@ -2668,8 +2955,8 @@ pub fn chronicle_set_participants(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version,
+                result_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2691,6 +2978,7 @@ pub fn chronicle_set_participants(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: result_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2724,9 +3012,9 @@ pub fn chronicle_scene_event(
         if scene_ok == 0 {
             return Ok(None);
         }
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(event_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
-        }
+        };
         let existed: i64 = conn.query_row(
             "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
             params![scene_id, event_id],
@@ -2765,8 +3053,8 @@ pub fn chronicle_scene_event(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version: event_version,
+                result_version: event_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2787,6 +3075,7 @@ pub fn chronicle_scene_event(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: event_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2816,9 +3105,10 @@ pub fn chronicle_event_relation(
             cause_event_id != effect_event_id,
             "self-loop event relation forbidden"
         );
-        if !event_exists(conn, project_id, cause_event_id)?
-            || !event_exists(conn, project_id, effect_event_id)?
-        {
+        let Some(cause_version) = visible_event_version(conn, project_id, cause_event_id)? else {
+            return Ok(None);
+        };
+        if visible_event_version(conn, project_id, effect_event_id)?.is_none() {
             return Ok(None);
         }
         let existed: i64 = conn.query_row(
@@ -2872,8 +3162,8 @@ pub fn chronicle_event_relation(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version: cause_version,
+                result_version: cause_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2898,6 +3188,7 @@ pub fn chronicle_event_relation(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: cause_event_id.to_string(),
+            version: cause_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -3151,8 +3442,10 @@ pub(crate) mod tests {
                 project_id TEXT NOT NULL,
                 title TEXT NOT NULL DEFAULT '',
                 note TEXT,
+                detail TEXT,
                 ordinal TEXT NOT NULL DEFAULT 'a0',
                 primary_codex_id TEXT,
+                lane_group TEXT,
                 location_codex_id TEXT,
                 start_time INTEGER,
                 end_time INTEGER,
@@ -3164,6 +3457,7 @@ pub(crate) mod tests {
                 kind TEXT NOT NULL DEFAULT 'generic',
                 secret INTEGER NOT NULL DEFAULT 0,
                 reveal_scene_id TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3232,6 +3526,77 @@ pub(crate) mod tests {
             params![id, project_id, name, type_slug],
         )
         .unwrap();
+    }
+
+    fn chronicle_create_input<'a>(
+        title: &'a str,
+        start_time: Option<i64>,
+        start_minute: Option<i64>,
+        start_granularity: &'a str,
+        end_time: Option<i64>,
+        end_minute: Option<i64>,
+        end_granularity: &'a str,
+    ) -> ChronicleCreateInput<'a> {
+        ChronicleCreateInput {
+            project_id: "p1",
+            session_id: "sess",
+            title: Some(title),
+            note: None,
+            ordinal: None,
+            primary_codex_id: None,
+            location_codex_id: None,
+            start_time,
+            end_time,
+            start_minute,
+            end_minute,
+            start_granularity: Some(start_granularity),
+            end_granularity: Some(end_granularity),
+            precision: None,
+            kind: None,
+            secret: None,
+            reveal_scene_id: None,
+            participant_codex_ids: &[],
+            scene_ids: &[],
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ChronicleDateState {
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        start_minute: Option<i64>,
+        end_minute: Option<i64>,
+        start_granularity: String,
+        end_granularity: String,
+        version: i64,
+    }
+
+    fn chronicle_date_state(conn: &Connection, event_id: &str) -> ChronicleDateState {
+        conn.query_row(
+            "SELECT start_time, end_time, start_minute, end_minute,
+                    start_granularity, end_granularity, version
+             FROM events WHERE id = ?1",
+            params![event_id],
+            |row| {
+                Ok(ChronicleDateState {
+                    start_time: row.get(0)?,
+                    end_time: row.get(1)?,
+                    start_minute: row.get(2)?,
+                    end_minute: row.get(3)?,
+                    start_granularity: row.get(4)?,
+                    end_granularity: row.get(5)?,
+                    version: row.get(6)?,
+                })
+            },
+        )
+        .expect("chronicle date state")
+    }
+
+    fn table_count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("table count")
     }
 
     #[test]
@@ -4037,6 +4402,8 @@ pub(crate) mod tests {
                 notes: None,
                 load_bearing: Some("critical"),
                 secret: false,
+                request_id: None,
+                request_hash: None,
             },
         )
         .unwrap();
@@ -4068,6 +4435,8 @@ pub(crate) mod tests {
                 notes: None,
                 load_bearing: None,
                 secret: true,
+                request_id: None,
+                request_hash: None,
             },
         )
         .unwrap();
@@ -4075,6 +4444,452 @@ pub(crate) mod tests {
                                                        // Secret items are excluded from the open list, but still readable by id.
         assert!(list_open_foreshadows(&conn, "p1").unwrap().is_empty());
         assert!(get_foreshadow_detail(&conn, "p1", "f1").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_chronicle_create_rejects_invalid_dates_without_side_effects() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+
+        let invalid = [
+            (
+                chronicle_create_input(
+                    "negative minute",
+                    Some(10),
+                    Some(-1),
+                    "time",
+                    None,
+                    None,
+                    "none",
+                ),
+                "minute must be between 0 and 1439",
+            ),
+            (
+                chronicle_create_input(
+                    "overflow minute",
+                    Some(10),
+                    Some(0),
+                    "time",
+                    Some(11),
+                    Some(1440),
+                    "time",
+                ),
+                "minute must be between 0 and 1439",
+            ),
+            (
+                chronicle_create_input(
+                    "reversed",
+                    Some(10),
+                    Some(18 * 60),
+                    "time",
+                    Some(10),
+                    Some(12 * 60),
+                    "time",
+                ),
+                "must not precede start timestamp",
+            ),
+            (
+                chronicle_create_input("coarse without day", None, None, "day", None, None, "none"),
+                "granularity 'day' requires a day",
+            ),
+            (
+                chronicle_create_input(
+                    "time without minute",
+                    Some(10),
+                    None,
+                    "time",
+                    None,
+                    None,
+                    "none",
+                ),
+                "time granularity requires both a day and a minute",
+            ),
+            (
+                chronicle_create_input(
+                    "end without start",
+                    None,
+                    None,
+                    "none",
+                    Some(10),
+                    None,
+                    "day",
+                ),
+                "end endpoint requires a start endpoint",
+            ),
+        ];
+
+        for (input, expected) in invalid {
+            let error = chronicle_create_event(&conn, input).expect_err("invalid date must fail");
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert_eq!(table_count(&conn, "events"), 0);
+            assert_eq!(table_count(&conn, "undo_journal"), 0);
+            assert_eq!(table_count(&conn, "change_events"), 0);
+        }
+    }
+
+    #[test]
+    fn test_chronicle_create_normalizes_non_time_endpoint_components() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        let created = chronicle_create_event(
+            &conn,
+            chronicle_create_input(
+                "canonical",
+                Some(10),
+                Some(18 * 60),
+                "day",
+                Some(11),
+                Some(20 * 60),
+                "none",
+            ),
+        )
+        .expect("canonical create");
+
+        assert_eq!(
+            chronicle_date_state(&conn, &created.entity_id),
+            ChronicleDateState {
+                start_time: Some(10),
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: "day".to_string(),
+                end_granularity: "none".to_string(),
+                version: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn test_chronicle_update_time_to_day_clears_minute() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        let created = chronicle_create_event(
+            &conn,
+            chronicle_create_input("timed", Some(10), Some(18 * 60), "time", None, None, "none"),
+        )
+        .expect("timed create");
+
+        let updated = chronicle_update_event(
+            &conn,
+            "p1",
+            "sess",
+            &created.entity_id,
+            1,
+            ChroniclePatch {
+                start_granularity: Some("day"),
+                ..ChroniclePatch::default()
+            },
+        )
+        .expect("time to day")
+        .expect("event exists");
+        assert_eq!(updated.version, 2);
+        assert_eq!(
+            chronicle_date_state(&conn, &created.entity_id),
+            ChronicleDateState {
+                start_time: Some(10),
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: "day".to_string(),
+                end_granularity: "none".to_string(),
+                version: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn test_chronicle_update_omitted_granularity_promotes_minute_to_time() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        let created = chronicle_create_event(
+            &conn,
+            chronicle_create_input("coarse", Some(10), None, "day", None, None, "none"),
+        )
+        .expect("coarse create");
+
+        let updated = chronicle_update_event(
+            &conn,
+            "p1",
+            "sess",
+            &created.entity_id,
+            1,
+            ChroniclePatch {
+                start_minute: Some(18 * 60),
+                ..ChroniclePatch::default()
+            },
+        )
+        .expect("minute promotion")
+        .expect("event exists");
+        assert_eq!(updated.version, 2);
+        assert_eq!(
+            chronicle_date_state(&conn, &created.entity_id),
+            ChronicleDateState {
+                start_time: Some(10),
+                end_time: None,
+                start_minute: Some(18 * 60),
+                end_minute: None,
+                start_granularity: "time".to_string(),
+                end_granularity: "none".to_string(),
+                version: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn test_chronicle_unrelated_update_preserves_legacy_coarse_minute() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        let created = chronicle_create_event(
+            &conn,
+            chronicle_create_input("legacy", Some(10), None, "day", Some(10), None, "day"),
+        )
+        .expect("coarse create");
+        conn.execute(
+            "UPDATE events
+             SET start_minute = ?1, end_minute = ?2
+             WHERE id = ?3",
+            params![18 * 60, 12 * 60, created.entity_id],
+        )
+        .expect("seed legacy minute");
+
+        let updated = chronicle_update_event(
+            &conn,
+            "p1",
+            "sess",
+            &created.entity_id,
+            1,
+            ChroniclePatch {
+                title: Some("renamed"),
+                ..ChroniclePatch::default()
+            },
+        )
+        .expect("unrelated title update")
+        .expect("event exists");
+        assert_eq!(updated.version, 2);
+        assert_eq!(
+            chronicle_date_state(&conn, &created.entity_id),
+            ChronicleDateState {
+                start_time: Some(10),
+                end_time: Some(10),
+                start_minute: Some(18 * 60),
+                end_minute: Some(12 * 60),
+                start_granularity: "day".to_string(),
+                end_granularity: "day".to_string(),
+                version: 2,
+            }
+        );
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM events WHERE id = ?1",
+                params![created.entity_id],
+                |row| row.get(0),
+            )
+            .expect("event title");
+        assert_eq!(title, "renamed");
+    }
+
+    #[test]
+    fn test_chronicle_update_validates_merged_dates_without_mutation() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        let created = chronicle_create_event(
+            &conn,
+            chronicle_create_input(
+                "interval",
+                Some(10),
+                Some(18 * 60),
+                "time",
+                Some(10),
+                Some(20 * 60),
+                "time",
+            ),
+        )
+        .expect("valid interval");
+        let before = chronicle_date_state(&conn, &created.entity_id);
+        let journals_before = table_count(&conn, "undo_journal");
+        let changes_before = table_count(&conn, "change_events");
+
+        let invalid = [
+            (
+                ChroniclePatch {
+                    title: Some("must not persist"),
+                    start_minute: Some(-1),
+                    end_granularity: Some("none"),
+                    ..ChroniclePatch::default()
+                },
+                "minute must be between 0 and 1439",
+            ),
+            (
+                ChroniclePatch {
+                    title: Some("must not persist"),
+                    end_minute: Some(1440),
+                    ..ChroniclePatch::default()
+                },
+                "minute must be between 0 and 1439",
+            ),
+            (
+                ChroniclePatch {
+                    title: Some("must not persist"),
+                    end_minute: Some(12 * 60),
+                    ..ChroniclePatch::default()
+                },
+                "must not precede start timestamp",
+            ),
+        ];
+
+        for (patch, expected) in invalid {
+            let error = chronicle_update_event(&conn, "p1", "sess", &created.entity_id, 1, patch)
+                .expect_err("invalid date must fail");
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert_eq!(chronicle_date_state(&conn, &created.entity_id), before);
+            let title: String = conn
+                .query_row(
+                    "SELECT title FROM events WHERE id = ?1",
+                    params![created.entity_id],
+                    |row| row.get(0),
+                )
+                .expect("event title");
+            assert_eq!(title, "interval");
+            assert_eq!(table_count(&conn, "undo_journal"), journals_before);
+            assert_eq!(table_count(&conn, "change_events"), changes_before);
+        }
+    }
+
+    #[test]
+    fn test_chronicle_update_none_granularity_clears_endpoints_atomically() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        let created = chronicle_create_event(
+            &conn,
+            chronicle_create_input(
+                "interval",
+                Some(10),
+                Some(18 * 60),
+                "time",
+                Some(10),
+                Some(20 * 60),
+                "time",
+            ),
+        )
+        .expect("valid interval");
+
+        let point = chronicle_update_event(
+            &conn,
+            "p1",
+            "sess",
+            &created.entity_id,
+            1,
+            ChroniclePatch {
+                // Even contradictory values must not survive the canonical
+                // `none` clear signal.
+                end_time: Some(99),
+                end_minute: Some(99),
+                end_granularity: Some("none"),
+                ..ChroniclePatch::default()
+            },
+        )
+        .expect("interval to point update")
+        .expect("event exists");
+        assert_eq!(point.version, 2);
+        assert_eq!(
+            chronicle_date_state(&conn, &created.entity_id),
+            ChronicleDateState {
+                start_time: Some(10),
+                end_time: None,
+                start_minute: Some(18 * 60),
+                end_minute: None,
+                start_granularity: "time".to_string(),
+                end_granularity: "none".to_string(),
+                version: 2,
+            }
+        );
+
+        let undated = chronicle_update_event(
+            &conn,
+            "p1",
+            "sess",
+            &created.entity_id,
+            point.version,
+            ChroniclePatch {
+                start_time: Some(99),
+                start_minute: Some(99),
+                start_granularity: Some("none"),
+                ..ChroniclePatch::default()
+            },
+        )
+        .expect("point to undated update")
+        .expect("event exists");
+        assert_eq!(undated.version, 3);
+        assert_eq!(
+            chronicle_date_state(&conn, &created.entity_id),
+            ChronicleDateState {
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: "none".to_string(),
+                end_granularity: "none".to_string(),
+                version: 3,
+            }
+        );
+        assert_eq!(table_count(&conn, "undo_journal"), 3);
+        assert_eq!(table_count(&conn, "change_events"), 3);
+    }
+
+    #[test]
+    fn test_chronicle_delete_event_reports_cascade_relation_counterparts() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO events (id, project_id, title, version)
+             VALUES ('deleted', 'p1', 'Deleted', 1),
+                    ('cause', 'p1', 'Cause', 1),
+                    ('effect', 'p1', 'Effect', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO event_relations (project_id, cause_event_id, effect_event_id)
+             VALUES ('p1', 'cause', 'deleted'),
+                    ('p1', 'deleted', 'effect')",
+            [],
+        )
+        .unwrap();
+
+        let result = chronicle_delete_event(&conn, "p1", "sess", "deleted", 1)
+            .unwrap()
+            .expect("event exists");
+        let payload: String = conn
+            .query_row(
+                "SELECT payload FROM change_events WHERE event_uid = ?1",
+                params![result.change_event_uid],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(
+            payload["relatedEventIds"],
+            serde_json::json!(["cause", "effect"])
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM event_relations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0,
+            "both relation directions must be cascaded"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id IN ('cause', 'effect')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2,
+            "counterpart events survive the delete"
+        );
     }
 
     #[test]

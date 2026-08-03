@@ -1,7 +1,18 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+const { mockRecordChangeEvent } = vi.hoisted(() => ({
+  mockRecordChangeEvent: vi.fn(),
+}));
+
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: mockRecordChangeEvent,
+}));
+
 import {
+  deleteProjectSetting,
   getSetting,
+  getProjectSetting,
   setSetting,
+  setProjectSetting,
   getSettingsByPrefix,
   deleteSetting,
 } from "./api";
@@ -11,8 +22,10 @@ import {
 beforeEach(async () => {
   // Clean up settings between tests
   const { db } = await import("@/db/client");
-  const { appSettings } = await import("@/db/schema");
+  const { appSettings, projectSettings } = await import("@/db/schema");
   await db.delete(appSettings);
+  await db.delete(projectSettings);
+  mockRecordChangeEvent.mockClear();
 });
 
 describe("settings api", () => {
@@ -45,5 +58,22 @@ describe("settings api", () => {
     expect(result["editor.fontSize"]).toBe("16");
     expect(result["editor.lineHeight"]).toBe("1.8");
     expect(result["display.theme"]).toBeUndefined();
+  });
+
+  it("stores editor tab UI state per project without timelapse noise", async () => {
+    await setProjectSetting(
+      "default-project",
+      "editor.tabState",
+      '{"tabs":[]}',
+    );
+
+    expect(await getProjectSetting("default-project", "editor.tabState")).toBe(
+      '{"tabs":[]}',
+    );
+    expect(await getProjectSetting("project-b", "editor.tabState")).toBeNull();
+    expect(mockRecordChangeEvent).not.toHaveBeenCalled();
+
+    await deleteProjectSetting("default-project", "editor.tabState");
+    expect(mockRecordChangeEvent).not.toHaveBeenCalled();
   });
 });

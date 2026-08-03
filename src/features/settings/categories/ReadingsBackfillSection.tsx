@@ -5,7 +5,7 @@ import { Sparkles, Loader2 } from "lucide-react";
 import { SettingSection } from "../components/SettingSection";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   listCodexEntries,
   updateCodexEntry,
@@ -126,11 +126,7 @@ export function ReadingsBackfillSection() {
             });
             if (saved) written += added;
           } catch (err) {
-            debugLog.error(
-              "ReadingsBackfill",
-              `save ${id}: ${rootCause(err)}`,
-              errorDetail(err),
-            );
+            debugLog.error("ReadingsBackfill", "save failed", errorDetail(err));
           }
         }
         setProgress((p) => ({ ...p, done: p.done + batch.length }));
@@ -153,11 +149,7 @@ export function ReadingsBackfillSection() {
       }
       toast.success(t("codex.readings.backfillDone", { count: written }));
     } catch (err) {
-      debugLog.error(
-        "ReadingsBackfill",
-        `run: ${rootCause(err)}`,
-        errorDetail(err),
-      );
+      debugLog.error("ReadingsBackfill", "run failed", errorDetail(err));
       toast.error(t("codex.readings.backfillFailed"));
     } finally {
       setRunning(false);

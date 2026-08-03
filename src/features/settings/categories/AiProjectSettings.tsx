@@ -7,6 +7,8 @@ import { SettingTextarea } from "../components/SettingTextarea";
 import { parseAiPolicy, serializeAiPolicy } from "@/features/ai-policy/parse";
 import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
 import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
+import { resolveSemanticRerankerCapability } from "@/features/chat/semanticRerankerMode";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 /**
  * AI タブの「プロジェクト」スコープに表示する、プロジェクト固有の AI 設定。
@@ -21,14 +23,26 @@ import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
 export function AiProjectSettings() {
   const { t } = useTranslation();
   const { project, isLoading, updateField } = useProjectSettings();
+  const runtimeCapabilities = useRuntimeCapabilities();
   const autoAcceptBody = useSettingBoolean("ai.autoAcceptBodyProposals", false);
   const semanticRecall = useSettingBoolean("ai.semanticRecall", true);
   const hybridRecall = useSettingBoolean("ai.hybridRecall", true);
+  const semanticReranker = useSettingBoolean("ai.semanticReranker", false);
   const chatRecall = useSettingBoolean("ai.chatRecall", true);
 
   if (isLoading || !project) return null;
 
   const currentPolicy = parseAiPolicy(project.aiPolicy);
+  const rerankerCapability = resolveSemanticRerankerCapability({
+    language: project.language,
+    electronRuntime:
+      runtimeCapabilities.localAi && !runtimeCapabilities.browserDirectAi,
+    resourcesAvailable: runtimeCapabilities.localSemanticReranker,
+  });
+  const rerankerDisabled =
+    !semanticRecall.value ||
+    !hybridRecall.value ||
+    !rerankerCapability.available;
 
   const handlePresetChange = (preset: AiPolicyPreset) => {
     if (preset === "custom") return;
@@ -209,6 +223,32 @@ export function AiProjectSettings() {
             checked={hybridRecall.value}
             disabled={!semanticRecall.value}
             onChange={(e) => hybridRecall.setValue(e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.project.aiSemanticReranker",
+            "Semantic reranking（実験的）",
+          )}
+          description={
+            rerankerCapability.available
+              ? t(
+                  "settings.project.aiSemanticRerankerDesc",
+                  "関連シーン候補をローカルモデルで再順位付けします。処理に時間がかかる場合は従来の検索結果を使用します。",
+                )
+              : t(
+                  "settings.project.aiSemanticRerankerUnavailableDesc",
+                  "現在は日本語・英語のデスクトップ版でのみ利用できます。",
+                )
+          }
+          disabled={rerankerDisabled}
+        >
+          <input
+            type="checkbox"
+            checked={semanticReranker.value}
+            disabled={rerankerDisabled}
+            onChange={(e) => semanticReranker.setValue(e.target.checked)}
             className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
           />
         </SettingRow>

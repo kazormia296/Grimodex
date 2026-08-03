@@ -53,6 +53,7 @@ const DEFAULT_FILTER = {
 
 function resetStore() {
   useGridStore.setState({
+    activeProjectId: null,
     containerId: null,
     display: { ...DEFAULT_DISPLAY },
     filter: { ...DEFAULT_FILTER },
@@ -156,6 +157,45 @@ describe("loadForProject", () => {
 
     expect(useGridStore.getState().containerId).toBeNull();
     expect(mockClearContainerId).toHaveBeenCalledWith("proj-1");
+  });
+
+  it("keeps the reset state when optional hydration fails", async () => {
+    useGridStore.setState({
+      activeProjectId: "proj-1",
+      containerId: "old-project-folder",
+    });
+    useGridStore.getState().resetForProject("proj-2");
+    mockLoadContainerId.mockRejectedValueOnce(new Error("read failed"));
+
+    await expect(
+      useGridStore.getState().loadForProject("proj-2"),
+    ).rejects.toThrow("read failed");
+
+    expect(useGridStore.getState()).toMatchObject({
+      activeProjectId: "proj-2",
+      containerId: null,
+    });
+  });
+
+  it("ignores a stale load completion after the active Project changes", async () => {
+    let resolveOldLoad: ((value: string | null) => void) | undefined;
+    mockLoadContainerId.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldLoad = resolve;
+        }),
+    );
+    useGridStore.getState().resetForProject("proj-1");
+    const oldLoad = useGridStore.getState().loadForProject("proj-1");
+
+    useGridStore.getState().resetForProject("proj-2");
+    resolveOldLoad?.("old-project-folder");
+    await oldLoad;
+
+    expect(useGridStore.getState()).toMatchObject({
+      activeProjectId: "proj-2",
+      containerId: null,
+    });
   });
 });
 
@@ -274,5 +314,47 @@ describe("setContainerId", () => {
     await useGridStore.getState().setContainerId("proj-1", null);
     expect(useGridStore.getState().containerId).toBeNull();
     expect(mockClearContainerId).toHaveBeenCalledWith("proj-1");
+  });
+
+  it("refuses a stale Project owner before publishing or persisting", async () => {
+    useGridStore.getState().resetForProject("proj-2");
+
+    await useGridStore
+      .getState()
+      .setContainerId("proj-1", "old-project-folder");
+
+    expect(useGridStore.getState().containerId).toBeNull();
+    expect(mockSaveContainerId).not.toHaveBeenCalled();
+  });
+});
+
+describe("resetForProject", () => {
+  it("clears every Project-owned transient while preserving display settings", () => {
+    useGridStore.setState({
+      activeProjectId: "proj-1",
+      containerId: "folder-1",
+      display: { ...DEFAULT_DISPLAY, compactCards: true },
+      searchQuery: "old query",
+      collapsedFolderIds: new Set(["folder-1"]),
+      expandedSynopsisIds: new Set(["scene-1"]),
+      selectedSceneIds: new Set(["scene-1"]),
+      selectionAnchorId: "scene-1",
+      pendingRevealSceneId: "scene-1",
+      revealedSceneId: "scene-1",
+    });
+
+    useGridStore.getState().resetForProject("proj-2");
+
+    const state = useGridStore.getState();
+    expect(state.activeProjectId).toBe("proj-2");
+    expect(state.containerId).toBeNull();
+    expect(state.searchQuery).toBe("");
+    expect(state.collapsedFolderIds.size).toBe(0);
+    expect(state.expandedSynopsisIds.size).toBe(0);
+    expect(state.selectedSceneIds.size).toBe(0);
+    expect(state.selectionAnchorId).toBeNull();
+    expect(state.pendingRevealSceneId).toBeNull();
+    expect(state.revealedSceneId).toBeNull();
+    expect(state.display.compactCards).toBe(true);
   });
 });

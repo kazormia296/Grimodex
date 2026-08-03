@@ -7,13 +7,16 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { SceneDateEditor } from "@/features/chronicle/SceneDateEditor";
 import { formatInstant } from "@/lib/time";
 import { useTimelineStore } from "./timelineStore";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import { useLatestValueDraftController } from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 interface Props {
   node: TreeNodeData | null;
   /** Splitter で可変・永続化された幅(px)。 */
   width: number;
   onClose: () => void;
-  onUpdateStoryTimeLabel: (id: string, label: string) => void;
+  onUpdateStoryTimeLabel: (id: string, label: string) => void | Promise<void>;
 }
 
 export function TimelineInspector({
@@ -30,10 +33,30 @@ export function TimelineInspector({
   const entries = useCodexStore((s) => s.entries);
   const [labelDraft, setLabelDraft] = useState(node?.storyTimeLabel ?? "");
   const labelInputRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(true);
+  const labelController = useLatestValueDraftController(
+    `timeline-story-label:${node?.id ?? "none"}`,
+    node?.storyTimeLabel ?? "",
+    async (next) => {
+      if (node && next !== (node.storyTimeLabel ?? "")) {
+        await onUpdateStoryTimeLabel(node.id, next);
+      }
+    },
+  );
 
   useEffect(() => {
-    setLabelDraft(node?.storyTimeLabel ?? "");
-  }, [node?.id, node?.storyTimeLabel]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (labelController.dirty) return;
+    const next = node?.storyTimeLabel ?? "";
+    labelController.reset(next);
+    setLabelDraft(next);
+  }, [labelController, node?.id, node?.storyTimeLabel]);
 
   useEffect(() => {
     if (node && pendingEditNodeId === node.id && labelInputRef.current) {
@@ -52,11 +75,37 @@ export function TimelineInspector({
       })
     : [];
 
-  function commitLabel() {
-    if (node && labelDraft !== (node.storyTimeLabel ?? "")) {
-      onUpdateStoryTimeLabel(node.id, labelDraft);
-    }
+  function commitLabel(
+    options?: QuiescenceParticipantFlushOptions,
+  ): Promise<void> {
+    if (!node) return Promise.resolve();
+    return labelController.save(options);
   }
+
+  function discardLabel(): void {
+    const original = node?.storyTimeLabel ?? "";
+    labelController.reset(original);
+    if (mountedRef.current) setLabelDraft(original);
+  }
+
+  useQuiescentDraftParticipant({
+    id: `timeline-story-label:${node?.id ?? "none"}`,
+    enabled:
+      !!node &&
+      labelController.dirty &&
+      labelDraft !== (node.storyTimeLabel ?? ""),
+    isDirty: () => !!node && labelController.dirty,
+    flush: commitLabel,
+    discard: discardLabel,
+    recovery: () =>
+      node && labelController.dirty
+        ? {
+            kind: "timeline-story-label",
+            nodeId: node.id,
+            label: labelController.latestValue,
+          }
+        : null,
+  });
 
   return (
     <div
@@ -107,11 +156,18 @@ export function TimelineInspector({
                 ref={labelInputRef}
                 type="text"
                 value={labelDraft}
-                onChange={(e) => setLabelDraft(e.target.value)}
-                onBlur={commitLabel}
+                onChange={(e) => {
+                  labelController.markDirty(e.target.value);
+                  setLabelDraft(e.target.value);
+                }}
+                onBlur={() => void commitLabel().catch(() => {})}
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
                   if (e.key === "Enter") {
-                    commitLabel();
+                    void commitLabel().catch(() => {});
+                    (e.target as HTMLInputElement).blur();
+                  } else if (e.key === "Escape") {
+                    discardLabel();
                     (e.target as HTMLInputElement).blur();
                   }
                 }}

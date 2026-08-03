@@ -816,7 +816,19 @@ function resolveStatefulPaperShader(
   }
   return {
     ...mountShell(props),
-    fragmentShader: liquidMetalFragmentShader,
+    fragmentShader: liquidMetalFragmentShader
+      .replace(
+        "uniform float u_angle;",
+        "uniform float u_angle;\nuniform vec2 u_zenAngleDirection;",
+      )
+      .replace(
+        "float angle = (-u_angle + 70.) * PI / 180.;\n  float cosA = cos(angle);\n  float sinA = sin(angle);",
+        "float cosA = u_zenAngleDirection.x;\n  float sinA = u_zenAngleDirection.y;",
+      )
+      .replace(
+        "edge = blurEdge3x3(u_image, uv, dudx, dudy, 6., edgeRaw);",
+        "edge = edgeRaw;",
+      ),
     uniforms: {
       u_colorBack: getShaderColorFromString(props.colorBack as string),
       u_colorTint: getShaderColorFromString(props.colorTint as string),
@@ -828,6 +840,10 @@ function resolveStatefulPaperShader(
       u_shiftRed: props.shiftRed as number,
       u_shiftBlue: props.shiftBlue as number,
       u_angle: props.angle as number,
+      u_zenAngleDirection: [
+        Math.cos(((-(props.angle as number) + 70) * Math.PI) / 180),
+        Math.sin(((-(props.angle as number) + 70) * Math.PI) / 180),
+      ],
       u_isImage: Boolean(props.image),
       u_shape: LiquidMetalShapes[props.shape as keyof typeof LiquidMetalShapes],
       ...sizingUniforms(props),

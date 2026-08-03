@@ -12,6 +12,9 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { restoreSceneMentionChips } from "./components/ChatInput";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import type { AiSettings } from "./types";
+import { toast } from "sonner";
+import i18next from "@/lib/i18n";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 export interface ChatExtractionDialogState {
   open: boolean;
@@ -69,9 +72,20 @@ export function useChatMessageActions({
     useState<ChatExtractionDialogState>(emptyCodexDialog);
   const [snippetDialog, setSnippetDialog] =
     useState<ChatSnippetDialogState>(emptySnippetDialog);
+  const canMutateMessage = useCallback((messageId: string): boolean => {
+    try {
+      if (!canScheduleQuiescenceMutation()) return false;
+      chatApi.assertMessageMutationAllowed(messageId);
+      return true;
+    } catch {
+      toast.error(i18next.t("chat.pendingCompletedTurnPersistence"));
+      return false;
+    }
+  }, []);
 
   const handleExtractCodexDetailed = useCallback(
     (messageId: string, selectedText: string | null) => {
+      if (!canMutateMessage(messageId)) return;
       const msg = useChatStore
         .getState()
         .messages.find((message) => message.id === messageId);
@@ -82,11 +96,12 @@ export function useChatMessageActions({
         messageRole: msg?.role === "user" ? "user" : "assistant",
       });
     },
-    [],
+    [canMutateMessage],
   );
 
   const handleExtractCodexQuick = useCallback(
     async (messageId: string) => {
+      if (!canMutateMessage(messageId)) return;
       const msg = useChatStore
         .getState()
         .messages.find((message) => message.id === messageId);
@@ -106,11 +121,12 @@ export function useChatMessageActions({
       });
       void requestOpenInCodex(entry.id);
     },
-    [createCodexEntry],
+    [canMutateMessage, createCodexEntry],
   );
 
   const handleSaveSnippetDetailed = useCallback(
     (messageId: string, selectedText: string | null) => {
+      if (!canMutateMessage(messageId)) return;
       const msg = useChatStore
         .getState()
         .messages.find((message) => message.id === messageId);
@@ -121,11 +137,12 @@ export function useChatMessageActions({
         messageRole: msg?.role === "user" ? "user" : "assistant",
       });
     },
-    [],
+    [canMutateMessage],
   );
 
   const handleSaveSnippetQuick = useCallback(
     async (messageId: string) => {
+      if (!canMutateMessage(messageId)) return;
       const msg = useChatStore
         .getState()
         .messages.find((message) => message.id === messageId);
@@ -149,11 +166,17 @@ export function useChatMessageActions({
       useLayoutStore.getState().showPanel("snippets");
       useSnippetStore.getState().requestSelectEntry(snippet.id);
     },
-    [createSnippet],
+    [canMutateMessage, createSnippet],
   );
 
   const saveCodexExtraction = useCallback(
     async (data: Parameters<typeof createCodexEntry>[0]) => {
+      if (
+        extractionDialog.messageId &&
+        !canMutateMessage(extractionDialog.messageId)
+      ) {
+        return;
+      }
       const entry = await createCodexEntry(data);
       if (entry && extractionDialog.messageId) {
         await chatApi.updateMessageMetadata(extractionDialog.messageId, {
@@ -163,11 +186,17 @@ export function useChatMessageActions({
       setExtractionDialog(emptyCodexDialog());
       if (entry) void requestOpenInCodex(entry.id);
     },
-    [createCodexEntry, extractionDialog.messageId],
+    [canMutateMessage, createCodexEntry, extractionDialog.messageId],
   );
 
   const saveSnippetExtraction = useCallback(
     async (data: Parameters<typeof createSnippet>[0]) => {
+      if (
+        snippetDialog.messageId &&
+        !canMutateMessage(snippetDialog.messageId)
+      ) {
+        return;
+      }
       const snippet = await createSnippet(data, { silent: true });
       if (snippet && snippetDialog.messageId) {
         await chatApi.updateMessageMetadata(snippetDialog.messageId, {
@@ -180,11 +209,12 @@ export function useChatMessageActions({
       }
       setSnippetDialog(emptySnippetDialog());
     },
-    [createSnippet, snippetDialog.messageId],
+    [canMutateMessage, createSnippet, snippetDialog.messageId],
   );
 
   const insertFromChat = useCallback(
     (content: string, messageId: string) => {
+      if (!canMutateMessage(messageId)) return;
       const model = aiSettings?.model
         ? normalizeModelId(aiSettings.provider, aiSettings.model)
         : null;
@@ -192,7 +222,12 @@ export function useChatMessageActions({
         syncInsertedToEditorMetadata(messageId);
       }
     },
-    [aiSettings, rawInsertFromChat, syncInsertedToEditorMetadata],
+    [
+      aiSettings,
+      canMutateMessage,
+      rawInsertFromChat,
+      syncInsertedToEditorMetadata,
+    ],
   );
 
   const handleEditMessage = useCallback(

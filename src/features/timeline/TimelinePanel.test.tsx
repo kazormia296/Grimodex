@@ -99,6 +99,14 @@ function resetStore() {
 describe("TimelinePanel – isContentEditable keydown ガード (#5)", () => {
   beforeEach(resetStore);
 
+  it("keepalive activity を panel 境界へ反映する", () => {
+    const { getByTestId } = render(<TimelinePanel isActive={false} />);
+    expect(getByTestId("timeline-panel")).toHaveAttribute(
+      "data-is-active",
+      "false",
+    );
+  });
+
   it("INPUT にフォーカスがある間は Ctrl+= で zoom が変わらない", () => {
     render(<TimelinePanel />);
     const input = document.createElement("input");

@@ -453,7 +453,8 @@ describe.skipIf(!KEY)(
     it(
       "streaming surfaces: 下層の OpenRouter リクエストが応答を返す",
       async () => {
-        // chat:stream-* / inline-ai:stream-* の配信は Rust/Tauri IPC の責務で
+        // chat:stream-* / inline-ai:stream-* の配信は Electron main → N-API
+        // EventQueue → typed preload IPC の責務で
         // OpenRouter ハーネスでは非再現。ここでは「同じ送信内容で実モデルが応答
         // する」というリクエスト挙動のみ検証する（配信境界は docs 参照）。
         const { text } = await runLiveSingleShot(

@@ -17,24 +17,55 @@
 
 type MarkRecord = { label: string; start: number; duration: number };
 
-type SessionState = {
-  startedAt: number;
-  longtasks: { startTime: number; duration: number }[];
-  slowEvents: { duration: number }[];
-  marks: MarkRecord[];
-  eventObserver: PerformanceObserver | null;
-};
+export interface LongTaskEvidence {
+  startTime: number;
+  duration: number;
+  overlappingMarks: MarkRecord[];
+  unattributedMs: number;
+}
 
-export type PerfSessionResult = {
+export interface PerfSessionMetrics {
   durationMs: number;
   longtask: { count: number; totalMs: number; maxMs: number };
+  longTaskEntries: LongTaskEvidence[];
   // Slow events are events whose `duration` exceeds 16ms (one frame) per the
   // Event Timing API. This is NOT "p95 of every keystroke" — it is "p95 of
   // events that already exceeded one frame". Below the threshold the API
   // does not emit entries, by design.
   slowEvent: { count: number; p95Ms: number; maxMs: number };
   topMarks: { label: string; totalMs: number; count: number }[];
+  markStats: {
+    label: string;
+    count: number;
+    totalMs: number;
+    p50Ms: number;
+    p95Ms: number;
+    p99Ms: number;
+    maxMs: number;
+  }[];
+  counters: Record<string, number>;
+}
+
+type SessionState = {
+  startedAt: number;
+  longtasks: { startTime: number; duration: number }[];
+  slowEvents: { duration: number }[];
+  marks: MarkRecord[];
+  counters: Map<string, number>;
+  eventObserver: PerformanceObserver | null;
+  segments: Record<string, PerfSessionMetrics>;
+  segmentCursor: {
+    startedAt: number;
+    longtaskIndex: number;
+    slowEventIndex: number;
+    markIndex: number;
+    counters: Map<string, number>;
+  };
 };
+
+export interface PerfSessionResult extends PerfSessionMetrics {
+  segments: Record<string, PerfSessionMetrics>;
+}
 
 const STORAGE_KEY = "grimodex.perfLog";
 const MAX_MARKS = 300;
@@ -44,7 +75,83 @@ let enabled = false;
 let longtaskObserver: PerformanceObserver | null = null;
 let session: SessionState | null = null;
 const startTimes = new Map<string, number>();
+const animationFrameTimestamps = new Map<string, number>();
 const recentMarks: MarkRecord[] = [];
+let utf8Encoder: TextEncoder | null = null;
+
+export type RuntimePerformanceControlName =
+  | "chat.streamingDraft"
+  | "map.dragIdentity";
+type RuntimePerformanceControl = (payload: unknown) => unknown;
+interface RuntimePerformanceControlRegistration {
+  control: RuntimePerformanceControl;
+}
+const runtimePerformanceControlAllowlist =
+  new Set<RuntimePerformanceControlName>([
+    "chat.streamingDraft",
+    "map.dragIdentity",
+  ]);
+const runtimePerformanceControls = new Map<
+  RuntimePerformanceControlName,
+  RuntimePerformanceControlRegistration
+>();
+const runtimePerformanceOwnerToken =
+  typeof window !== "undefined" &&
+  typeof window.grimodex?.runtimePerformance?.ownerToken === "string"
+    ? window.grimodex.runtimePerformance.ownerToken
+    : null;
+
+export function hasRuntimePerformanceCapability(): boolean {
+  return runtimePerformanceOwnerToken !== null;
+}
+
+/**
+ * Register an in-renderer control for deterministic runtime benchmarks.
+ * Controls are fixed-name, in-memory callbacks. They are callable only while
+ * an explicit perf session is active and have no persistence or IPC transport.
+ */
+export function registerRuntimePerformanceControl(
+  name: RuntimePerformanceControlName,
+  control: RuntimePerformanceControl,
+): () => void {
+  if (!runtimePerformanceControlAllowlist.has(name)) {
+    throw new Error(`runtime performance control is not allowed: ${name}`);
+  }
+  if (!runtimePerformanceOwnerToken) {
+    return () => {};
+  }
+  const registration = { control };
+  runtimePerformanceControls.set(name, registration);
+  return () => {
+    if (runtimePerformanceControls.get(name) === registration) {
+      runtimePerformanceControls.delete(name);
+    }
+  };
+}
+
+export function invokeRuntimePerformanceControl(
+  ownerToken: string,
+  name: RuntimePerformanceControlName,
+  payload: unknown,
+): unknown {
+  if (!runtimePerformanceOwnerToken) {
+    throw new Error("runtime performance control is unavailable");
+  }
+  if (ownerToken !== runtimePerformanceOwnerToken) {
+    throw new Error("runtime performance control owner token is invalid");
+  }
+  if (!session) {
+    throw new Error("runtime performance control requires an active session");
+  }
+  if (!runtimePerformanceControlAllowlist.has(name)) {
+    throw new Error(`runtime performance control is not allowed: ${name}`);
+  }
+  const registration = runtimePerformanceControls.get(name);
+  if (!registration) {
+    throw new Error(`runtime performance control is not registered: ${name}`);
+  }
+  return registration.control(payload);
+}
 
 export function markStart(label: string): void {
   if (!enabled && !session) return;
@@ -78,12 +185,183 @@ export function recordMark(
   if (session) session.marks.push(record);
 }
 
+/** Count discrete operations while a performance session is active. */
+export function recordCounter(label: string, increment = 1): void {
+  if (!session || !Number.isFinite(increment)) return;
+  session.counters.set(label, (session.counters.get(label) ?? 0) + increment);
+}
+
+/** Retain the largest observed cardinality during the active session. */
+export function recordMaxCounter(label: string, value: number): void {
+  if (!session || !Number.isFinite(value)) return;
+  session.counters.set(
+    label,
+    Math.max(session.counters.get(label) ?? 0, value),
+  );
+}
+
+/**
+ * Count UTF-8 bytes only while automation is actively collecting evidence.
+ * The TextEncoder allocation and O(n) encode must never enter the normal save
+ * path merely because instrumentation exists.
+ */
+export function recordSerializedByteCounter(
+  label: string,
+  serialized: string,
+): void {
+  if (!session) return;
+  utf8Encoder ??= new TextEncoder();
+  recordCounter(label, utf8Encoder.encode(serialized).byteLength);
+}
+
+/**
+ * Measure synchronous rAF/interaction work without paying for performance.now
+ * in normal sessions. The paired counter is deterministic evidence that a
+ * runtime gesture actually exercised the measured frame path.
+ */
+export function measurePerfSync<T>(label: string, work: () => T): T {
+  if (!enabled && !session) return work();
+  const start = performance.now();
+  try {
+    return work();
+  } finally {
+    recordMark(label, performance.now() - start, start);
+    recordCounter(`${label}.count`);
+  }
+}
+
+/**
+ * Record the wall-clock interval between consecutive rAF callbacks.
+ *
+ * This is deliberately separate from `measurePerfSync`: callback CPU time
+ * ends before style/layout/paint/composite, while the next rAF timestamp
+ * reflects a frame that missed its presentation deadline. The first sample is
+ * only an anchor and therefore does not manufacture a zero-duration frame.
+ */
+export function recordAnimationFrameInterval(
+  label: string,
+  frameTimestamp: number,
+): void {
+  // Intervals need an explicit session boundary; otherwise two unrelated
+  // gestures minutes apart would look like one catastrophically missed frame.
+  if (!session) return;
+  if (!Number.isFinite(frameTimestamp)) return;
+  const previous = animationFrameTimestamps.get(label);
+  animationFrameTimestamps.set(label, frameTimestamp);
+  if (previous === undefined || frameTimestamp <= previous) {
+    return;
+  }
+  recordMark(label, frameTimestamp - previous, previous);
+  recordCounter(`${label}.count`);
+}
+
+function collectLongtaskEntries(
+  entries: PerformanceEntry[],
+  target: SessionState | null,
+): void {
+  for (const entry of entries) {
+    if (entry.entryType !== "longtask") continue;
+    // PerformanceObserver delivery is asynchronous. A task that completed
+    // before startPerfSession() can therefore be delivered after the new
+    // session has started; never attribute that stale setup work to the
+    // interaction window.
+    if (target && entry.startTime >= target.startedAt) {
+      target.longtasks.push({
+        startTime: entry.startTime,
+        duration: entry.duration,
+      });
+    }
+    if (enabled) attributeLongtaskToConsole(entry);
+  }
+}
+
+function collectEventEntries(
+  entries: PerformanceEntry[],
+  target: SessionState | null,
+): void {
+  if (!target) return;
+  for (const entry of entries) {
+    if (entry.entryType !== "event") continue;
+    // Event Timing entries can likewise finish and arrive after a new
+    // observer/session boundary. Keep only events that began in this session.
+    if (entry.startTime < target.startedAt) continue;
+    target.slowEvents.push({ duration: entry.duration });
+  }
+}
+
+function findOverlappingMarks(
+  longtask: { startTime: number; duration: number },
+  marks: readonly MarkRecord[],
+): Array<MarkRecord & { overlapMs: number }> {
+  const longtaskEnd = longtask.startTime + longtask.duration;
+  return marks.flatMap((mark) => {
+    const overlapMs =
+      Math.min(mark.start + mark.duration, longtaskEnd) -
+      Math.max(mark.start, longtask.startTime);
+    return overlapMs > 0 ? [{ ...mark, overlapMs }] : [];
+  });
+}
+
+function coveredLongTaskMs(
+  longtask: { startTime: number; duration: number },
+  overlaps: readonly (MarkRecord & { overlapMs: number })[],
+): number {
+  const longtaskEnd = longtask.startTime + longtask.duration;
+  const intervals = overlaps
+    .map((mark) => ({
+      start: Math.max(mark.start, longtask.startTime),
+      end: Math.min(mark.start + mark.duration, longtaskEnd),
+    }))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  let coveredMs = 0;
+  let coveredUntil = longtask.startTime;
+  for (const interval of intervals) {
+    if (interval.end <= coveredUntil) continue;
+    coveredMs += interval.end - Math.max(interval.start, coveredUntil);
+    coveredUntil = interval.end;
+  }
+  return Math.min(longtask.duration, coveredMs);
+}
+
+/**
+ * Build durable attribution for one Long Task API entry.
+ *
+ * `unattributedMs` uses the union of every overlapping mark, so nested marks
+ * cannot double-count coverage. Only the ten strongest overlaps are persisted
+ * to keep runtime artifacts bounded.
+ */
+export function buildLongTaskEvidence(
+  longtask: { startTime: number; duration: number },
+  marks: readonly MarkRecord[],
+): LongTaskEvidence {
+  const overlaps = findOverlappingMarks(longtask, marks);
+  const overlappingMarks = overlaps
+    .sort(
+      (left, right) =>
+        right.overlapMs - left.overlapMs ||
+        right.duration - left.duration ||
+        left.start - right.start,
+    )
+    .slice(0, 10)
+    .map(({ label, start, duration }) => ({ label, start, duration }));
+  return {
+    startTime: longtask.startTime,
+    duration: longtask.duration,
+    overlappingMarks,
+    unattributedMs: Math.max(
+      0,
+      longtask.duration - coveredLongTaskMs(longtask, overlaps),
+    ),
+  };
+}
+
 function attributeLongtaskToConsole(entry: PerformanceEntry): void {
   const ltStart = entry.startTime;
   const ltEnd = ltStart + entry.duration;
   const now = performance.now();
-  const overlap = recentMarks.filter(
-    (m) => m.start + m.duration >= ltStart && m.start <= ltEnd,
+  const overlap = findOverlappingMarks(
+    { startTime: entry.startTime, duration: entry.duration },
+    recentMarks,
   );
 
   // Aggregate by label so 16 GridSceneCard renders show as one line
@@ -130,16 +408,7 @@ function ensureLongtaskObserver(): void {
   if (typeof PerformanceObserver === "undefined") return;
   try {
     longtaskObserver = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        if (entry.entryType !== "longtask") continue;
-        if (session) {
-          session.longtasks.push({
-            startTime: entry.startTime,
-            duration: entry.duration,
-          });
-        }
-        if (enabled) attributeLongtaskToConsole(entry);
-      }
+      collectLongtaskEntries(list.getEntries(), session);
     });
     longtaskObserver.observe({ entryTypes: ["longtask"] });
   } catch (e) {
@@ -183,6 +452,7 @@ export function disablePerfLog(): void {
   // Keep mark/buffer state if a session is still running; otherwise clear.
   if (!session) {
     startTimes.clear();
+    animationFrameTimestamps.clear();
     recentMarks.length = 0;
   }
   maybeStopLongtaskObserver();
@@ -200,17 +470,24 @@ export function startPerfSession(): void {
     longtasks: [],
     slowEvents: [],
     marks: [],
+    counters: new Map(),
     eventObserver: null,
+    segments: {},
+    segmentCursor: {
+      startedAt: 0,
+      longtaskIndex: 0,
+      slowEventIndex: 0,
+      markIndex: 0,
+      counters: new Map(),
+    },
   };
+  next.segmentCursor.startedAt = next.startedAt;
+  animationFrameTimestamps.clear();
   ensureLongtaskObserver();
   if (typeof PerformanceObserver !== "undefined") {
     try {
       const obs = new PerformanceObserver((list) => {
-        if (!session) return;
-        for (const entry of list.getEntries()) {
-          if (entry.entryType !== "event") continue;
-          session.slowEvents.push({ duration: entry.duration });
-        }
+        collectEventEntries(list.getEntries(), session);
       });
       obs.observe({
         type: "event",
@@ -225,48 +502,157 @@ export function startPerfSession(): void {
   session = next;
 }
 
-export function endPerfSession(): PerfSessionResult | null {
-  const s = session;
-  if (!s) return null;
-  session = null;
-  s.eventObserver?.disconnect();
-  maybeStopLongtaskObserver();
+function flushPerfSessionObservers(s: SessionState): void {
+  if (longtaskObserver) {
+    collectLongtaskEntries(longtaskObserver.takeRecords(), s);
+  }
+  if (s.eventObserver) {
+    collectEventEntries(s.eventObserver.takeRecords(), s);
+  }
+}
 
-  const durationMs = performance.now() - s.startedAt;
-
-  const ltCount = s.longtasks.length;
+function summarizePerfWindow(
+  startedAt: number,
+  longtasks: readonly { startTime: number; duration: number }[],
+  slowEvents: readonly { duration: number }[],
+  marks: readonly MarkRecord[],
+  counters: ReadonlyMap<string, number>,
+  sampledAt: number,
+): PerfSessionMetrics {
+  const ltCount = longtasks.length;
   let ltTotal = 0;
   let ltMax = 0;
-  for (const lt of s.longtasks) {
+  for (const lt of longtasks) {
     ltTotal += lt.duration;
     if (lt.duration > ltMax) ltMax = lt.duration;
   }
 
-  const evDurations = s.slowEvents.map((e) => e.duration).sort((a, b) => a - b);
+  const evDurations = slowEvents.map((e) => e.duration).sort((a, b) => a - b);
   const evCount = evDurations.length;
   const evMax = evCount ? evDurations[evCount - 1] : 0;
   const evP95 = evCount
     ? evDurations[Math.min(evCount - 1, Math.floor(evCount * 0.95))]
     : 0;
 
-  const byLabel = new Map<string, { totalMs: number; count: number }>();
-  for (const m of s.marks) {
-    const cur = byLabel.get(m.label) ?? { totalMs: 0, count: 0 };
-    cur.totalMs += m.duration;
-    cur.count += 1;
-    byLabel.set(m.label, cur);
+  const byLabel = new Map<string, number[]>();
+  for (const m of marks) {
+    const durations = byLabel.get(m.label) ?? [];
+    durations.push(m.duration);
+    byLabel.set(m.label, durations);
   }
-  const topMarks = Array.from(byLabel.entries())
-    .map(([label, v]) => ({ label, totalMs: v.totalMs, count: v.count }))
-    .sort((a, b) => b.totalMs - a.totalMs)
-    .slice(0, 10);
+  const percentile = (values: number[], ratio: number): number =>
+    values[
+      Math.min(
+        values.length - 1,
+        Math.max(0, Math.ceil(values.length * ratio) - 1),
+      )
+    ] ?? 0;
+  const markStats = Array.from(byLabel.entries())
+    .map(([label, unsorted]) => {
+      const durations = [...unsorted].sort((a, b) => a - b);
+      const totalMs = durations.reduce((sum, duration) => sum + duration, 0);
+      return {
+        label,
+        count: durations.length,
+        totalMs,
+        p50Ms: percentile(durations, 0.5),
+        p95Ms: percentile(durations, 0.95),
+        p99Ms: percentile(durations, 0.99),
+        maxMs: durations[durations.length - 1] ?? 0,
+      };
+    })
+    .sort((a, b) => b.totalMs - a.totalMs);
+  const topMarks = markStats
+    .slice(0, 10)
+    .map(({ label, totalMs, count }) => ({ label, totalMs, count }));
 
   return {
-    durationMs,
+    durationMs: sampledAt - startedAt,
     longtask: { count: ltCount, totalMs: ltTotal, maxMs: ltMax },
+    longTaskEntries: longtasks.map((longtask) =>
+      buildLongTaskEvidence(longtask, marks),
+    ),
     slowEvent: { count: evCount, p95Ms: evP95, maxMs: evMax },
     topMarks,
+    markStats,
+    counters: Object.fromEntries(counters),
   };
+}
+
+function summarizePerfSession(
+  s: SessionState,
+  sampledAt: number,
+): PerfSessionResult {
+  return {
+    ...summarizePerfWindow(
+      s.startedAt,
+      s.longtasks,
+      s.slowEvents,
+      s.marks,
+      s.counters,
+      sampledAt,
+    ),
+    segments: { ...s.segments },
+  };
+}
+
+/**
+ * Close the current named segment while leaving the overall session active.
+ * Segment counters are deltas. Max-style counters remain overall diagnostics
+ * and should not be interpreted as per-segment maxima.
+ */
+export function checkpointPerfSession(
+  label: string,
+): PerfSessionMetrics | null {
+  const s = session;
+  if (!s || !label) return null;
+  flushPerfSessionObservers(s);
+  const sampledAt = performance.now();
+  const counters = new Map<string, number>();
+  for (const [name, value] of s.counters) {
+    const delta = value - (s.segmentCursor.counters.get(name) ?? 0);
+    if (delta !== 0) counters.set(name, delta);
+  }
+  const segment = summarizePerfWindow(
+    s.segmentCursor.startedAt,
+    s.longtasks.slice(s.segmentCursor.longtaskIndex),
+    s.slowEvents.slice(s.segmentCursor.slowEventIndex),
+    s.marks.slice(s.segmentCursor.markIndex),
+    counters,
+    sampledAt,
+  );
+  s.segments[label] = segment;
+  s.segmentCursor = {
+    startedAt: sampledAt,
+    longtaskIndex: s.longtasks.length,
+    slowEventIndex: s.slowEvents.length,
+    markIndex: s.marks.length,
+    counters: new Map(s.counters),
+  };
+  return segment;
+}
+
+/**
+ * Read the current session without ending it. The runtime harness snapshots
+ * the exact typing window here, while the same session remains active to
+ * capture autosave counters and long tasks that settle afterwards.
+ */
+export function snapshotPerfSession(): PerfSessionResult | null {
+  const s = session;
+  if (!s) return null;
+  flushPerfSessionObservers(s);
+  return summarizePerfSession(s, performance.now());
+}
+
+export function endPerfSession(): PerfSessionResult | null {
+  const s = session;
+  if (!s) return null;
+  flushPerfSessionObservers(s);
+  session = null;
+  animationFrameTimestamps.clear();
+  s.eventObserver?.disconnect();
+  maybeStopLongtaskObserver();
+  return summarizePerfSession(s, performance.now());
 }
 
 declare global {
@@ -274,7 +660,14 @@ declare global {
     enablePerfLog?: () => void;
     disablePerfLog?: () => void;
     startPerfSession?: () => void;
+    checkpointPerfSession?: (label: string) => PerfSessionMetrics | null;
+    snapshotPerfSession?: () => PerfSessionResult | null;
     endPerfSession?: () => PerfSessionResult | null;
+    invokeRuntimePerformanceControl?: (
+      ownerToken: string,
+      name: RuntimePerformanceControlName,
+      payload: unknown,
+    ) => unknown;
   }
 }
 
@@ -282,7 +675,14 @@ if (typeof window !== "undefined") {
   window.enablePerfLog = enablePerfLog;
   window.disablePerfLog = disablePerfLog;
   window.startPerfSession = startPerfSession;
+  window.checkpointPerfSession = checkpointPerfSession;
+  window.snapshotPerfSession = snapshotPerfSession;
   window.endPerfSession = endPerfSession;
+  if (runtimePerformanceOwnerToken) {
+    window.invokeRuntimePerformanceControl = invokeRuntimePerformanceControl;
+  } else {
+    delete window.invokeRuntimePerformanceControl;
+  }
   try {
     if (localStorage.getItem(STORAGE_KEY) === "1") {
       enablePerfLog();

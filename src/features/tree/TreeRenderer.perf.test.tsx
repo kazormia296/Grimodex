@@ -185,6 +185,24 @@ describe("TreeNodeItem: memo による再レンダー範囲の限定", () => {
     // isSelected が flip した s2 のみ。memo が無いと 3 行全部が再レンダー。
     expect(rowRenderCount()).toBe(1);
   });
+
+  it("updatedAtだけの更新では行全体を再レンダーしない", () => {
+    useTreeStore.setState({ nodes: flat });
+    render(<Harness selectedIds={EMPTY_IDS} />);
+
+    perfCapture.marks.length = 0;
+    act(() => {
+      useTreeStore.setState({
+        nodes: flat.map((node) =>
+          node.id === "s2"
+            ? { ...node, updatedAt: "2026-06-10T00:00:01Z" }
+            : node,
+        ),
+      });
+    });
+
+    expect(rowRenderCount()).toBe(0);
+  });
 });
 
 describe("dropIndicator: DOM 直書き (drag over で React 再レンダー無し)", () => {

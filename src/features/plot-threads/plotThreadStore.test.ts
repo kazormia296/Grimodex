@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const currentProject = { value: "p1" };
-vi.mock("@/features/project/projectStore", () => ({
+vi.mock("@/application/project/currentProjectAuthority", () => ({
   getCurrentProjectId: () => currentProject.value,
+}));
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: vi.fn(),
 }));
 vi.mock("./api", () => ({
   listPlotThreads: vi.fn(async () => []),
@@ -11,30 +14,41 @@ vi.mock("./api", () => ({
   createPlotThread: vi.fn(),
   updatePlotThread: vi.fn(async () => {}),
   deletePlotThread: vi.fn(async () => {}),
-  restorePlotThread: vi.fn(async () => {}),
   createPlotThreadLink: vi.fn(),
   updatePlotThreadLink: vi.fn(async () => {}),
   deletePlotThreadLink: vi.fn(async () => {}),
-  restorePlotThreadLink: vi.fn(async () => {}),
   createPlotThreadBranch: vi.fn(),
-  updatePlotThreadBranch: vi.fn(async () => {}),
+  updatePlotThreadBranch: vi.fn(),
   deletePlotThreadBranch: vi.fn(async () => {}),
-  restorePlotThreadBranch: vi.fn(async () => {}),
+  restorePlotThreadSnapshot: vi.fn(async (payload) => ({
+    id: payload.requestId ?? "restore",
+    thread: payload.thread ?? null,
+    links: payload.links ?? [],
+    branches: payload.branches ?? [],
+  })),
+  deletePlotThreadSnapshot: vi.fn(async (payload) => ({
+    id: payload.requestId ?? "delete",
+    deleted: true,
+  })),
+  movePlotMarkerBundle: vi.fn(),
 }));
 
 import {
   listPlotThreads,
+  listPlotThreadLinks,
+  listPlotThreadBranches,
   createPlotThread,
   updatePlotThread,
   deletePlotThread,
-  restorePlotThread,
   createPlotThreadLink,
   updatePlotThreadLink,
   deletePlotThreadLink,
-  restorePlotThreadLink,
   createPlotThreadBranch,
+  updatePlotThreadBranch,
   deletePlotThreadBranch,
-  restorePlotThreadBranch,
+  restorePlotThreadSnapshot,
+  deletePlotThreadSnapshot,
+  movePlotMarkerBundle,
   type PlotThreadRow,
   type PlotThreadLinkRow,
   type PlotThreadBranchRow,
@@ -42,20 +56,50 @@ import {
 import { usePlotThreadStore } from "./plotThreadStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import type { PlotPhaseType } from "@/db/schema";
+import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
+import { IpcInvokeError } from "@/lib/tauri";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 const mock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
-const row = (id: string, sortOrder: string): PlotThreadRow => ({
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function unknownCreateError(command: string): IpcInvokeError {
+  return new IpcInvokeError(command, {
+    code: "IPC_TIMEOUT",
+    message: `IPC timeout: ${command}`,
+    retryable: true,
+    outcome: "unknown",
+  });
+}
+
+const row = (
+  id: string,
+  sortOrder: string,
+  projectId = "p1",
+): PlotThreadRow => ({
   id,
-  projectId: "p1",
+  projectId,
   name: id,
   color: null,
   description: null,
   sortOrder,
   startNodeId: null,
   endNodeId: null,
-  createdAt: "",
-  updatedAt: "",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-02T00:00:00.000Z",
 });
 
 const linkRow = (id: string): PlotThreadLinkRow => ({
@@ -65,8 +109,8 @@ const linkRow = (id: string): PlotThreadLinkRow => ({
   phaseType: "develop",
   note: null,
   sortOrder: null,
-  createdAt: "",
-  updatedAt: "",
+  createdAt: "2026-01-01T01:00:00.000Z",
+  updatedAt: "2026-01-02T01:00:00.000Z",
 });
 
 const branchRow = (
@@ -80,21 +124,109 @@ const branchRow = (
   toThreadId,
   atNodeId: "s1",
   kind: "branch",
-  createdAt: "",
-  updatedAt: "",
+  createdAt: "2026-01-01T02:00:00.000Z",
+  updatedAt: "2026-01-02T02:00:00.000Z",
 });
 
 describe("plotThreadStore", () => {
   beforeEach(() => {
-    usePlotThreadStore.setState({
-      threads: [],
-      links: [],
-      branches: [],
-      loading: false,
-    });
     currentProject.value = "p1";
     vi.clearAllMocks();
+    mock(createPlotThread).mockReset();
+    mock(createPlotThreadLink).mockReset();
+    mock(createPlotThreadBranch).mockReset();
+    mock(updatePlotThread).mockReset();
+    mock(updatePlotThreadLink).mockReset();
+    mock(updatePlotThreadBranch).mockReset();
+    mock(restorePlotThreadSnapshot).mockReset();
+    mock(deletePlotThreadSnapshot).mockReset();
+    mock(movePlotMarkerBundle).mockReset();
+    mock(createPlotThread).mockImplementation(async (data) => ({
+      ...row(data.id ?? "thread-created", data.sortOrder, data.projectId),
+      name: data.name,
+      color: data.color ?? null,
+      description: data.description ?? null,
+    }));
+    mock(createPlotThreadLink).mockImplementation(async (data) => ({
+      ...linkRow(data.id ?? "link-created"),
+      threadId: data.threadId,
+      nodeId: data.nodeId,
+      phaseType: data.phaseType,
+      note: data.note ?? null,
+      sortOrder: data.sortOrder ?? null,
+    }));
+    mock(createPlotThreadBranch).mockImplementation(async (data) => ({
+      ...branchRow(
+        data.id ?? "branch-created",
+        data.fromThreadId,
+        data.toThreadId,
+      ),
+      projectId: data.projectId,
+      atNodeId: data.atNodeId,
+      kind: data.kind,
+    }));
+    mock(updatePlotThread).mockImplementation(async (id, patch) => {
+      const current =
+        usePlotThreadStore
+          .getState()
+          .threads.find((thread) => thread.id === id) ?? row(id, "a0");
+      return {
+        ...current,
+        ...patch,
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      };
+    });
+    mock(updatePlotThreadLink).mockImplementation(async (id, patch) => {
+      const current =
+        usePlotThreadStore.getState().links.find((link) => link.id === id) ??
+        linkRow(id);
+      return {
+        ...current,
+        ...patch,
+        updatedAt: "2026-01-03T01:00:00.000Z",
+      };
+    });
+    mock(updatePlotThreadBranch).mockImplementation(async (id, patch) => {
+      const current =
+        usePlotThreadStore
+          .getState()
+          .branches.find((branch) => branch.id === id) ?? branchRow(id);
+      return {
+        ...current,
+        ...patch,
+        updatedAt: "2026-01-03T02:00:00.000Z",
+      };
+    });
+    mock(movePlotMarkerBundle).mockImplementation(async (payload) => ({
+      id: payload.requestId ?? "move",
+      marker: payload.markerAfter,
+      branches: payload.branchTransitions.flatMap(
+        (transition: { after: PlotThreadBranchRow | null }) =>
+          transition.after ? [transition.after] : [],
+      ),
+      deletedBranchIds: payload.branchTransitions.flatMap(
+        (transition: {
+          before: PlotThreadBranchRow | null;
+          after: PlotThreadBranchRow | null;
+        }) =>
+          transition.before && !transition.after ? [transition.before.id] : [],
+      ),
+    }));
+    mock(restorePlotThreadSnapshot).mockImplementation(async (payload) => ({
+      id: payload.requestId ?? "restore",
+      thread: payload.thread ?? null,
+      links: payload.links ?? [],
+      branches: payload.branches ?? [],
+    }));
+    mock(deletePlotThreadSnapshot).mockImplementation(async (payload) => ({
+      id: payload.requestId ?? "delete",
+      deleted: true,
+    }));
+    usePlotThreadStore.getState().resetForProject("p1");
     (listPlotThreads as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (listPlotThreadLinks as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (listPlotThreadBranches as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    _resetQuiescenceLeasesForTests();
     useGlobalHistoryStore.getState().clear();
   });
 
@@ -117,6 +249,63 @@ describe("plotThreadStore", () => {
     await usePlotThreadStore.getState().load("p1");
     // p1 のロード結果は破棄される（現在 p2 のため）
     expect(usePlotThreadStore.getState().threads).toHaveLength(0);
+  });
+
+  it("Project commit clears old rows before optional hydration settles", async () => {
+    const targetThreads = deferred<PlotThreadRow[]>();
+    usePlotThreadStore.setState({
+      activeProjectId: "p1",
+      threads: [row("old", "a0")],
+      links: [linkRow("old-link")],
+      branches: [branchRow("old-branch")],
+    });
+    currentProject.value = "p2";
+    usePlotThreadStore.getState().resetForProject("p2");
+    mock(listPlotThreads).mockReturnValueOnce(targetThreads.promise);
+
+    const load = usePlotThreadStore.getState().load("p2");
+    expect(usePlotThreadStore.getState()).toMatchObject({
+      activeProjectId: "p2",
+      threads: [],
+      links: [],
+      branches: [],
+      loading: true,
+    });
+
+    targetThreads.resolve([row("new", "a0", "p2")]);
+    await load;
+    expect(usePlotThreadStore.getState().threads.map(({ id }) => id)).toEqual([
+      "new",
+    ]);
+  });
+
+  it("reports a current optional-hydration failure without restoring old rows", async () => {
+    currentProject.value = "p2";
+    usePlotThreadStore.getState().resetForProject("p2");
+    mock(listPlotThreads).mockRejectedValueOnce(new Error("load failed"));
+
+    await expect(usePlotThreadStore.getState().load("p2")).rejects.toThrow(
+      "load failed",
+    );
+    expect(usePlotThreadStore.getState()).toMatchObject({
+      activeProjectId: "p2",
+      threads: [],
+      links: [],
+      branches: [],
+      loading: false,
+    });
+  });
+
+  it("rejects an old Project callback after the synchronous commit reset", async () => {
+    usePlotThreadStore.setState({ threads: [row("old", "a0")] });
+    const renameFromOldRender = usePlotThreadStore.getState().renameThread;
+
+    currentProject.value = "p2";
+    usePlotThreadStore.getState().resetForProject("p2");
+    await renameFromOldRender("old", "must-not-write");
+
+    expect(updatePlotThread).not.toHaveBeenCalled();
+    expect(usePlotThreadStore.getState().threads).toEqual([]);
   });
 
   it("appends a new thread with a sortOrder after the last", async () => {
@@ -155,11 +344,13 @@ describe("plotThreadStore", () => {
   });
 
   it("addMarker が作成結果を links に追加する", async () => {
+    usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
     (createPlotThreadLink as ReturnType<typeof vi.fn>).mockResolvedValue(
       linkRow("l1"),
     );
     await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
     expect(createPlotThreadLink).toHaveBeenCalledWith({
+      id: expect.any(String),
       threadId: "t1",
       nodeId: "s1",
       phaseType: "develop",
@@ -177,13 +368,45 @@ describe("plotThreadStore", () => {
     expect(usePlotThreadStore.getState().links[0].phaseType).toBe("climax");
   });
 
+  it("marker/branch 更新後の persisted timestamp を delete precondition に渡す", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1"), row("t3", "a2")],
+      links: [linkRow("m1")],
+      branches: [branchRow("br1", "t2", "t1")],
+    });
+    await usePlotThreadStore
+      .getState()
+      .updateMarker("m1", { note: "updated marker" });
+    await usePlotThreadStore
+      .getState()
+      .updateBranch("br1", { fromThreadId: "t3" });
+    await usePlotThreadStore.getState().deleteMarker("m1");
+
+    expect(deletePlotThreadSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        link: expect.objectContaining({
+          id: "m1",
+          note: "updated marker",
+          updatedAt: "2026-01-03T01:00:00.000Z",
+        }),
+        branches: [
+          expect.objectContaining({
+            id: "br1",
+            fromThreadId: "t3",
+            updatedAt: "2026-01-03T02:00:00.000Z",
+          }),
+        ],
+      }),
+    );
+  });
+
   it("reorderThread は IPC 完了前に threads の sortOrder を楽観更新する", async () => {
     usePlotThreadStore.setState({
       threads: [row("t1", "a0"), row("t2", "a1")],
     });
-    let resolveIpc: () => void = () => {};
+    let resolveIpc: (value: PlotThreadRow) => void = () => {};
     mock(updatePlotThread).mockImplementationOnce(
-      () => new Promise<void>((r) => (resolveIpc = r)),
+      () => new Promise<PlotThreadRow>((r) => (resolveIpc = r)),
     );
     // await せずに発火（ドロップ時の void 呼び出しと同じ）。
     const p = usePlotThreadStore.getState().reorderThread("t1", "a2");
@@ -192,7 +415,10 @@ describe("plotThreadStore", () => {
       usePlotThreadStore.getState().threads.find((t) => t.id === "t1")
         ?.sortOrder,
     ).toBe("a2");
-    resolveIpc();
+    resolveIpc({
+      ...row("t1", "a2"),
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    });
     await p;
     expect(mock(updatePlotThread)).toHaveBeenCalledWith("t1", {
       sortOrder: "a2",
@@ -207,6 +433,22 @@ describe("plotThreadStore", () => {
     ).rejects.toThrow();
     expect(
       usePlotThreadStore.getState().threads.find((t) => t.id === "t1")
+        ?.sortOrder,
+    ).toBe("a0");
+  });
+
+  it("reorderThread は lifecycle barrier に拒否された楽観更新を戻す", async () => {
+    usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
+    const lease = acquireQuiescenceLease("project-load");
+    try {
+      await usePlotThreadStore.getState().reorderThread("t1", "a9");
+    } finally {
+      lease.release();
+    }
+
+    expect(updatePlotThread).not.toHaveBeenCalled();
+    expect(
+      usePlotThreadStore.getState().threads.find((thread) => thread.id === "t1")
         ?.sortOrder,
     ).toBe("a0");
   });
@@ -236,6 +478,222 @@ describe("plotThreadStore", () => {
     expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
       "br1",
     ]);
+  });
+
+  it("削除済み create replay を thread/link/branch と history に再公開しない", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1")],
+      links: [],
+      branches: [],
+    });
+    mock(createPlotThread).mockResolvedValue(
+      attachCreateResultMetadata(row("deleted-thread", "a2"), {
+        __idempotency: { replayed: true, entityPresent: false },
+      }),
+    );
+    mock(createPlotThreadLink).mockResolvedValue(
+      attachCreateResultMetadata(linkRow("deleted-link"), {
+        __idempotency: { replayed: true, entityPresent: false },
+      }),
+    );
+    mock(createPlotThreadBranch).mockResolvedValue(
+      attachCreateResultMetadata(branchRow("deleted-branch"), {
+        __idempotency: { replayed: true, entityPresent: false },
+      }),
+    );
+
+    await usePlotThreadStore.getState().addThread("p1", "deleted");
+    await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
+    await usePlotThreadStore.getState().addBranch({
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s1",
+      kind: "branch",
+    });
+
+    expect(usePlotThreadStore.getState().threads.map(({ id }) => id)).toEqual([
+      "t1",
+      "t2",
+    ]);
+    expect(usePlotThreadStore.getState().links).toHaveLength(0);
+    expect(usePlotThreadStore.getState().branches).toHaveLength(0);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+  });
+
+  it("存在中の create replay を store/history/timelapse に二重反映しない", async () => {
+    const existingThread = row("replayed-thread", "a2");
+    const existingLink = linkRow("replayed-link");
+    const existingBranch = branchRow("replayed-branch");
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1"), existingThread],
+      links: [existingLink],
+      branches: [existingBranch],
+    });
+    mock(createPlotThread).mockResolvedValue(
+      attachCreateResultMetadata(row("replayed-thread", "a2"), {
+        __idempotency: { replayed: true, entityPresent: true },
+      }),
+    );
+    mock(createPlotThreadLink).mockResolvedValue(
+      attachCreateResultMetadata(linkRow("replayed-link"), {
+        __idempotency: { replayed: true, entityPresent: true },
+      }),
+    );
+    mock(createPlotThreadBranch).mockResolvedValue(
+      attachCreateResultMetadata(branchRow("replayed-branch"), {
+        __idempotency: { replayed: true, entityPresent: true },
+      }),
+    );
+
+    await usePlotThreadStore.getState().addThread("p1", "replayed");
+    await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
+    await usePlotThreadStore.getState().addBranch({
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s1",
+      kind: "branch",
+    });
+
+    expect(
+      usePlotThreadStore
+        .getState()
+        .threads.filter(({ id }) => id === "replayed-thread"),
+    ).toHaveLength(1);
+    expect(
+      usePlotThreadStore
+        .getState()
+        .links.filter(({ id }) => id === "replayed-link"),
+    ).toHaveLength(1);
+    expect(
+      usePlotThreadStore
+        .getState()
+        .branches.filter(({ id }) => id === "replayed-branch"),
+    ).toHaveLength(1);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+    expect(recordChangeEvent).not.toHaveBeenCalled();
+  });
+
+  it("unknown 後の thread 明示リトライは同じ ID と元の payload を再利用し、成功後は解放する", async () => {
+    mock(createPlotThread)
+      .mockRejectedValueOnce(unknownCreateError("plot_thread_create"))
+      .mockImplementationOnce(async (data) =>
+        attachCreateResultMetadata(row(data.id!, data.sortOrder), {
+          __idempotency: { replayed: true, entityPresent: true },
+        }),
+      )
+      .mockImplementationOnce(async (data) => row(data.id!, data.sortOrder));
+
+    await expect(
+      usePlotThreadStore.getState().addThread("p1", "retry", "#123456"),
+    ).rejects.toBeInstanceOf(IpcInvokeError);
+    await usePlotThreadStore.getState().addThread("p1", "retry", "#123456");
+
+    const [firstPayload] = mock(createPlotThread).mock.calls[0];
+    const [retryPayload] = mock(createPlotThread).mock.calls[1];
+    expect(retryPayload).toEqual(firstPayload);
+    expect(firstPayload.id).toBeTruthy();
+    expect(
+      usePlotThreadStore
+        .getState()
+        .threads.filter(({ id }) => id === firstPayload.id),
+    ).toHaveLength(1);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+    expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+
+    await usePlotThreadStore.getState().addThread("p1", "retry", "#123456");
+    const [afterSuccessPayload] = mock(createPlotThread).mock.calls[2];
+    expect(afterSuccessPayload.id).not.toBe(firstPayload.id);
+  });
+
+  it("unknown 後に thread payload を変更すると保留 ID を解放する", async () => {
+    mock(createPlotThread)
+      .mockRejectedValueOnce(unknownCreateError("plot_thread_create"))
+      .mockImplementationOnce(async (data) => row(data.id!, data.sortOrder));
+
+    await expect(
+      usePlotThreadStore.getState().addThread("p1", "before"),
+    ).rejects.toBeInstanceOf(IpcInvokeError);
+    await usePlotThreadStore.getState().addThread("p1", "after");
+
+    const [firstPayload] = mock(createPlotThread).mock.calls[0];
+    const [changedPayload] = mock(createPlotThread).mock.calls[1];
+    expect(changedPayload.name).toBe("after");
+    expect(changedPayload.id).not.toBe(firstPayload.id);
+  });
+
+  it("unknown 後の marker/branch 明示リトライは各 create ID を再利用する", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1")],
+    });
+    mock(createPlotThreadLink)
+      .mockRejectedValueOnce(unknownCreateError("plot_thread_link_create"))
+      .mockImplementationOnce(async (data) =>
+        attachCreateResultMetadata(linkRow(data.id!), {
+          __idempotency: { replayed: true, entityPresent: true },
+        }),
+      );
+    mock(createPlotThreadBranch)
+      .mockRejectedValueOnce(unknownCreateError("plot_thread_branch_create"))
+      .mockImplementationOnce(async (data) =>
+        attachCreateResultMetadata(branchRow(data.id!), {
+          __idempotency: { replayed: true, entityPresent: true },
+        }),
+      );
+
+    await expect(
+      usePlotThreadStore.getState().addMarker("t1", "s1", "develop"),
+    ).rejects.toBeInstanceOf(IpcInvokeError);
+    await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
+    const [firstLinkPayload] = mock(createPlotThreadLink).mock.calls[0];
+    const [retryLinkPayload] = mock(createPlotThreadLink).mock.calls[1];
+    expect(retryLinkPayload).toEqual(firstLinkPayload);
+    expect(firstLinkPayload.id).toBeTruthy();
+
+    const branchPayload = {
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s1",
+      kind: "branch" as const,
+    };
+    await expect(
+      usePlotThreadStore.getState().addBranch(branchPayload),
+    ).rejects.toBeInstanceOf(IpcInvokeError);
+    await usePlotThreadStore.getState().addBranch(branchPayload);
+    const [firstBranchPayload] = mock(createPlotThreadBranch).mock.calls[0];
+    const [retryBranchPayload] = mock(createPlotThreadBranch).mock.calls[1];
+    expect(retryBranchPayload).toEqual(firstBranchPayload);
+    expect(firstBranchPayload.id).toBeTruthy();
+
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(2);
+    expect(recordChangeEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("異なる unknown create を並べても各 thread の retry ID を保持する", async () => {
+    mock(createPlotThread)
+      .mockRejectedValueOnce(unknownCreateError("plot_thread_create"))
+      .mockRejectedValueOnce(unknownCreateError("plot_thread_create"))
+      .mockImplementationOnce(async (data) =>
+        attachCreateResultMetadata(row(data.id!, data.sortOrder), {
+          __idempotency: { replayed: true, entityPresent: true },
+        }),
+      );
+
+    await expect(
+      usePlotThreadStore.getState().addThread("p1", "thread-a"),
+    ).rejects.toBeInstanceOf(IpcInvokeError);
+    await expect(
+      usePlotThreadStore.getState().addThread("p1", "thread-b"),
+    ).rejects.toBeInstanceOf(IpcInvokeError);
+    await usePlotThreadStore.getState().addThread("p1", "thread-a");
+
+    const [threadA] = mock(createPlotThread).mock.calls[0];
+    const [threadB] = mock(createPlotThread).mock.calls[1];
+    const [threadARetry] = mock(createPlotThread).mock.calls[2];
+    expect(threadARetry).toEqual(threadA);
+    expect(threadB.id).not.toBe(threadA.id);
   });
 
   it("addBranch は自己参照(from===to)を弾く", async () => {
@@ -280,7 +738,10 @@ describe("plotThreadStore", () => {
   });
 
   it("updateBranch が branches を楽観更新する（at_node・付け替え）", async () => {
-    usePlotThreadStore.setState({ branches: [branchRow("br1", "t1", "t2")] });
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1"), row("t3", "a2")],
+      branches: [branchRow("br1", "t1", "t2")],
+    });
     await usePlotThreadStore
       .getState()
       .updateBranch("br1", { toThreadId: "t3", atNodeId: "s9" });
@@ -321,7 +782,14 @@ describe("plotThreadStore", () => {
       branches: [branchRow("br1", "t2", "t1"), branchRow("br2", "t2", "t3")],
     });
     await usePlotThreadStore.getState().deleteMarker("m1");
-    expect(deletePlotThreadBranch).toHaveBeenCalledWith("br1");
+    expect(deletePlotThreadSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "p1",
+        link: expect.objectContaining({ id: "m1" }),
+        branches: [expect.objectContaining({ id: "br1" })],
+        requestId: expect.any(String),
+      }),
+    );
     expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
       "br2",
     ]);
@@ -335,7 +803,12 @@ describe("plotThreadStore", () => {
       branches: [branchRow("br1", "t1", "t2")],
     });
     await usePlotThreadStore.getState().deleteMarker("m1");
-    expect(deletePlotThreadBranch).not.toHaveBeenCalled();
+    expect(deletePlotThreadSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        link: expect.objectContaining({ id: "m1" }),
+        branches: [],
+      }),
+    );
     expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
       "br1",
     ]);
@@ -348,7 +821,12 @@ describe("plotThreadStore", () => {
       branches: [branchRow("br1", "t2", "t1")],
     });
     await usePlotThreadStore.getState().deleteMarker("m1");
-    expect(deletePlotThreadBranch).not.toHaveBeenCalled();
+    expect(deletePlotThreadSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        link: expect.objectContaining({ id: "m1" }),
+        branches: [],
+      }),
+    );
     expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
       "br1",
     ]);
@@ -361,7 +839,12 @@ describe("plotThreadStore", () => {
       branches: [{ ...branchRow("br1", "t2", "t1"), kind: "merge" }],
     });
     await usePlotThreadStore.getState().deleteMarker("m1");
-    expect(deletePlotThreadBranch).toHaveBeenCalledWith("br1");
+    expect(deletePlotThreadSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        link: expect.objectContaining({ id: "m1" }),
+        branches: [expect.objectContaining({ id: "br1" })],
+      }),
+    );
     expect(usePlotThreadStore.getState().branches).toHaveLength(0);
   });
 
@@ -372,7 +855,12 @@ describe("plotThreadStore", () => {
       branches: [{ ...branchRow("br1", "t1", "t2"), kind: "merge" }],
     });
     await usePlotThreadStore.getState().deleteMarker("m1");
-    expect(deletePlotThreadBranch).not.toHaveBeenCalled();
+    expect(deletePlotThreadSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        link: expect.objectContaining({ id: "m1" }),
+        branches: [],
+      }),
+    );
     expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
       "br1",
     ]);
@@ -383,6 +871,7 @@ describe("plotThreadStore", () => {
     const history = () => useGlobalHistoryStore.getState();
 
     it("addMarker pushes an undoable entry; undo deletes, redo restores", async () => {
+      usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
       mock(createPlotThreadLink).mockResolvedValue(linkRow("l1"));
       await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
       expect(history().canUndo).toBe(true);
@@ -394,8 +883,14 @@ describe("plotThreadStore", () => {
       expect(history().canRedo).toBe(true);
 
       await history().redo();
-      expect(restorePlotThreadLink).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "l1" }),
+      expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          thread: null,
+          links: [expect.objectContaining({ id: "l1" })],
+          branches: [],
+          requestId: expect.any(String),
+        }),
       );
       expect(usePlotThreadStore.getState().links.map((l) => l.id)).toEqual([
         "l1",
@@ -432,11 +927,14 @@ describe("plotThreadStore", () => {
       expect(history().canUndo).toBe(true);
 
       await history().undo();
-      expect(restorePlotThreadLink).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "m1" }),
-      );
-      expect(restorePlotThreadBranch).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "br1" }),
+      expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          thread: null,
+          links: [expect.objectContaining({ id: "m1" })],
+          branches: [expect.objectContaining({ id: "br1" })],
+          requestId: expect.any(String),
+        }),
       );
       expect(usePlotThreadStore.getState().links.map((l) => l.id)).toEqual([
         "m1",
@@ -469,8 +967,14 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().branches).toHaveLength(0);
 
       await history().redo();
-      expect(restorePlotThreadBranch).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "br1" }),
+      expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          thread: null,
+          links: [],
+          branches: [expect.objectContaining({ id: "br1" })],
+          requestId: expect.any(String),
+        }),
       );
       expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
         "br1",
@@ -490,7 +994,10 @@ describe("plotThreadStore", () => {
     });
 
     it("updateBranch undo restores previous endpoints; redo re-applies", async () => {
-      usePlotThreadStore.setState({ branches: [branchRow("br1", "t1", "t2")] });
+      usePlotThreadStore.setState({
+        threads: [row("t1", "a0"), row("t2", "a1"), row("t3", "a2")],
+        branches: [branchRow("br1", "t1", "t2")],
+      });
       await usePlotThreadStore
         .getState()
         .updateBranch("br1", { toThreadId: "t3", atNodeId: "s9" });
@@ -511,8 +1018,14 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().branches).toHaveLength(0);
 
       await history().undo();
-      expect(restorePlotThreadBranch).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "br1" }),
+      expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          thread: null,
+          links: [],
+          branches: [expect.objectContaining({ id: "br1" })],
+          requestId: expect.any(String),
+        }),
       );
       expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
         "br1",
@@ -534,12 +1047,93 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().threads).toHaveLength(0);
 
       await history().redo();
-      expect(restorePlotThread).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "t1" }),
+      expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          thread: expect.objectContaining({ id: "t1" }),
+          links: [],
+          branches: [],
+          requestId: expect.any(String),
+        }),
       );
       expect(usePlotThreadStore.getState().threads.map((t) => t.id)).toEqual([
         "t1",
       ]);
+    });
+
+    it("restore unknown keeps the history command and requestId; later deliberate cycles use fresh IDs", async () => {
+      await usePlotThreadStore.getState().addThread("p1", "retry restore");
+      await history().undo();
+      mock(restorePlotThreadSnapshot)
+        .mockRejectedValueOnce(
+          unknownCreateError("plot_thread_restore_snapshot"),
+        )
+        .mockImplementation(async (payload) => ({
+          id: payload.requestId,
+          thread: payload.thread ?? null,
+          links: payload.links ?? [],
+          branches: payload.branches ?? [],
+        }));
+
+      await expect(history().redo()).rejects.toBeInstanceOf(IpcInvokeError);
+      expect(history().future).toHaveLength(1);
+      expect(history().past).toHaveLength(0);
+      expect(history().isReplaying).toBe(false);
+      const firstRequestId = mock(restorePlotThreadSnapshot).mock.calls[0][0]
+        .requestId;
+
+      await history().redo();
+      const retryRequestId = mock(restorePlotThreadSnapshot).mock.calls[1][0]
+        .requestId;
+      expect(retryRequestId).toBe(firstRequestId);
+      expect(history().past).toHaveLength(1);
+
+      await history().undo();
+      await history().redo();
+      const nextCycleRequestId = mock(restorePlotThreadSnapshot).mock
+        .calls[2][0].requestId;
+      expect(nextCycleRequestId).not.toBe(firstRequestId);
+    });
+
+    it("marker delete unknown reuses one request and redo cycles use fresh delete request IDs", async () => {
+      usePlotThreadStore.setState({
+        links: [linkRow("m1")],
+        branches: [branchRow("br1", "t2", "t1")],
+      });
+      mock(deletePlotThreadSnapshot)
+        .mockRejectedValueOnce(
+          unknownCreateError("plot_thread_delete_snapshot"),
+        )
+        .mockImplementation(async (payload) => ({
+          id: payload.requestId,
+          deleted: true,
+        }));
+
+      await expect(
+        usePlotThreadStore.getState().deleteMarker("m1"),
+      ).rejects.toBeInstanceOf(IpcInvokeError);
+      expect(usePlotThreadStore.getState().links).toHaveLength(1);
+      expect(history().past).toHaveLength(0);
+
+      await usePlotThreadStore.getState().deleteMarker("m1");
+      const initialRequestId = mock(deletePlotThreadSnapshot).mock.calls[0][0]
+        .requestId;
+      expect(mock(deletePlotThreadSnapshot).mock.calls[1][0].requestId).toBe(
+        initialRequestId,
+      );
+      expect(history().past).toHaveLength(1);
+
+      await history().undo();
+      await history().redo();
+      const firstRedoRequestId = mock(deletePlotThreadSnapshot).mock.calls[2][0]
+        .requestId;
+      expect(firstRedoRequestId).not.toBe(initialRequestId);
+
+      await history().undo();
+      await history().redo();
+      const nextRedoRequestId = mock(deletePlotThreadSnapshot).mock.calls[3][0]
+        .requestId;
+      expect(nextRedoRequestId).not.toBe(firstRedoRequestId);
     });
 
     it("renameThread undo restores the previous name; redo re-applies", async () => {
@@ -581,8 +1175,17 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().branches).toHaveLength(0);
 
       await history().undo();
-      expect(restorePlotThread).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "t1" }),
+      expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          thread: expect.objectContaining({ id: "t1" }),
+          links: [expect.objectContaining({ id: "l1" })],
+          branches: expect.arrayContaining([
+            expect.objectContaining({ id: "br1" }),
+            expect.objectContaining({ id: "br2" }),
+          ]),
+          requestId: expect.any(String),
+        }),
       );
       expect(
         usePlotThreadStore
@@ -601,53 +1204,141 @@ describe("plotThreadStore", () => {
       ).toEqual(["br1", "br2"]);
     });
 
-    it("compound drag (updateMarker + addBranch) in runAsTransaction is a SINGLE undo", async () => {
-      // commitMarkerDrop の主経路: 別スレッドへドロップ → マーカー付け替え + 新規 branch。
+    it("compound marker drag uses one atomic API call for apply, undo, and redo", async () => {
       usePlotThreadStore.setState({
         threads: [row("t1", "a0"), row("t2", "a1")],
-        links: [linkRow("l1")], // t1 / s1
+        links: [linkRow("l1")],
         branches: [],
       });
-      mock(createPlotThreadBranch).mockResolvedValue(
-        branchRow("br1", "t1", "t2"),
-      );
-      const store = usePlotThreadStore.getState();
-
-      await history().runAsTransaction(
-        {
-          kind: "plot",
-          label: "マーカー移動",
-        },
-        async () => {
-          await store.updateMarker("l1", { threadId: "t2", nodeId: "s2" });
-          await store.addBranch({
-            projectId: "p1",
+      await usePlotThreadStore.getState().moveMarkerBundle({
+        markerId: "l1",
+        markerPatch: { threadId: "t2", nodeId: "s2" },
+        branchCreates: [
+          {
             fromThreadId: "t1",
             toThreadId: "t2",
             atNodeId: "s2",
             kind: "branch",
-          });
-        },
-      );
-      // 2 mutation でも履歴エントリは1つだけ。
+          },
+        ],
+      });
+
+      expect(movePlotMarkerBundle).toHaveBeenCalledTimes(1);
+      const applied = mock(movePlotMarkerBundle).mock.calls[0][0];
+      expect(applied).toMatchObject({
+        requestId: expect.any(String),
+        projectId: "p1",
+        markerBefore: { id: "l1", threadId: "t1", nodeId: "s1" },
+        markerAfter: { id: "l1", threadId: "t2", nodeId: "s2" },
+        branchTransitions: [
+          {
+            before: null,
+            after: {
+              id: expect.any(String),
+              fromThreadId: "t1",
+              toThreadId: "t2",
+              atNodeId: "s2",
+            },
+          },
+        ],
+      });
       expect(history().past).toHaveLength(1);
       expect(usePlotThreadStore.getState().links[0].threadId).toBe("t2");
-      expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
-        "br1",
-      ]);
+      expect(usePlotThreadStore.getState().branches).toHaveLength(1);
 
-      // 1 回の undo で両方戻る。
       await history().undo();
+      expect(movePlotMarkerBundle).toHaveBeenCalledTimes(2);
+      expect(mock(movePlotMarkerBundle).mock.calls[1][0]).toMatchObject({
+        markerBefore: { threadId: "t2", nodeId: "s2" },
+        markerAfter: { threadId: "t1", nodeId: "s1" },
+        branchTransitions: [
+          {
+            before: { id: applied.branchTransitions[0].after.id },
+            after: null,
+          },
+        ],
+      });
       expect(usePlotThreadStore.getState().links[0].threadId).toBe("t1");
       expect(usePlotThreadStore.getState().links[0].nodeId).toBe("s1");
       expect(usePlotThreadStore.getState().branches).toHaveLength(0);
 
-      // 1 回の redo で両方戻る。
       await history().redo();
+      expect(movePlotMarkerBundle).toHaveBeenCalledTimes(3);
       expect(usePlotThreadStore.getState().links[0].threadId).toBe("t2");
-      expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
-        "br1",
-      ]);
+      expect(usePlotThreadStore.getState().branches).toHaveLength(1);
+    });
+
+    it("does not publish partial marker state or history when the atomic API fails", async () => {
+      usePlotThreadStore.setState({
+        threads: [row("t1", "a0"), row("t2", "a1")],
+        links: [linkRow("l1")],
+        branches: [],
+      });
+      mock(movePlotMarkerBundle).mockRejectedValueOnce(
+        new Error("branch insert failed"),
+      );
+
+      await expect(
+        usePlotThreadStore.getState().moveMarkerBundle({
+          markerId: "l1",
+          markerPatch: { threadId: "t2", nodeId: "s2" },
+          branchCreates: [
+            {
+              fromThreadId: "t1",
+              toThreadId: "t2",
+              atNodeId: "s2",
+              kind: "branch",
+            },
+          ],
+        }),
+      ).rejects.toThrow("branch insert failed");
+      expect(usePlotThreadStore.getState().links[0]).toMatchObject({
+        threadId: "t1",
+        nodeId: "s1",
+      });
+      expect(usePlotThreadStore.getState().branches).toEqual([]);
+      expect(history().past).toEqual([]);
+    });
+
+    it("reuses the exact atomic bundle after an unknown IPC outcome", async () => {
+      usePlotThreadStore.setState({
+        threads: [row("t1", "a0"), row("t2", "a1")],
+        links: [linkRow("l1")],
+        branches: [],
+      });
+      mock(movePlotMarkerBundle)
+        .mockRejectedValueOnce(
+          unknownCreateError("plot_thread_move_marker_bundle"),
+        )
+        .mockImplementationOnce(async (payload) => ({
+          id: payload.requestId,
+          marker: payload.markerAfter,
+          branches: payload.branchTransitions.flatMap(
+            (transition: { after: PlotThreadBranchRow | null }) =>
+              transition.after ? [transition.after] : [],
+          ),
+          deletedBranchIds: [],
+        }));
+      const plan = {
+        markerId: "l1",
+        markerPatch: { threadId: "t2", nodeId: "s2" },
+        branchCreates: [
+          {
+            fromThreadId: "t1",
+            toThreadId: "t2",
+            atNodeId: "s2",
+            kind: "branch" as const,
+          },
+        ],
+      };
+
+      await expect(
+        usePlotThreadStore.getState().moveMarkerBundle(plan),
+      ).rejects.toBeInstanceOf(IpcInvokeError);
+      const first = mock(movePlotMarkerBundle).mock.calls[0][0];
+      await usePlotThreadStore.getState().moveMarkerBundle(plan);
+      const retried = mock(movePlotMarkerBundle).mock.calls[1][0];
+      expect(retried).toEqual(first);
     });
 
     it("importPlotThreads bulk-imports as a SINGLE undo (dedup + phase validation)", async () => {
@@ -683,19 +1374,21 @@ describe("plotThreadStore", () => {
         }),
       );
 
-      await usePlotThreadStore.getState().importPlotThreads("p1", [
-        {
-          name: "Aの真実",
-          markers: [
-            { nodeId: "s1", phaseType: "introduce" },
-            { nodeId: "s1", phaseType: "introduce" }, // 重複 → skip
-            { nodeId: "s2", phaseType: "bogus" as PlotPhaseType }, // 不正 phase → skip
-            { nodeId: "s3", phaseType: "climax" },
-          ],
-        },
-        // name 空 → skip
-        { name: "  ", markers: [{ nodeId: "s9", phaseType: "develop" }] },
-      ]);
+      const result = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", [
+          {
+            name: "Aの真実",
+            markers: [
+              { nodeId: "s1", phaseType: "introduce" },
+              { nodeId: "s1", phaseType: "introduce" }, // 重複 → skip
+              { nodeId: "s2", phaseType: "bogus" as PlotPhaseType }, // 不正 phase → skip
+              { nodeId: "s3", phaseType: "climax" },
+            ],
+          },
+          // name 空 → skip
+          { name: "  ", markers: [{ nodeId: "s9", phaseType: "develop" }] },
+        ]);
 
       const st = usePlotThreadStore.getState();
       expect(st.threads).toHaveLength(1);
@@ -704,6 +1397,18 @@ describe("plotThreadStore", () => {
         "s1:introduce",
         "s3:climax",
       ]);
+      expect(result.createdThreads.map((thread) => thread.id)).toEqual(["th1"]);
+      expect(result.createdMarkers.map((marker) => marker.id)).toEqual([
+        "lk1",
+        "lk2",
+      ]);
+      expect(result.skipped.map((issue) => issue.code)).toEqual([
+        "DUPLICATE",
+        "INVALID_PHASE",
+        "INVALID_PROPOSAL",
+      ]);
+      expect(result.failed).toEqual([]);
+      expect(result.aborted).toBe(false);
       // 取込全体で履歴エントリは 1 つ。
       expect(history().past).toHaveLength(1);
 
@@ -750,6 +1455,160 @@ describe("plotThreadStore", () => {
       expect(seenColors).toEqual(["#2045AA", "#AA2020", null]);
     });
 
+    it("importPlotThreads は unknown thread retry で同じ ID と payload を再利用する", async () => {
+      mock(createPlotThread)
+        .mockRejectedValueOnce(unknownCreateError("plot_thread_create"))
+        .mockImplementationOnce(async (data) =>
+          attachCreateResultMetadata(
+            {
+              ...row(data.id!, data.sortOrder),
+              name: data.name,
+            },
+            {
+              __idempotency: { replayed: true, entityPresent: true },
+            },
+          ),
+        );
+      const proposals = [
+        {
+          name: "Retry thread",
+          markers: [{ nodeId: "s1", phaseType: "introduce" as const }],
+        },
+      ];
+
+      const failed = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", proposals);
+      const retried = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", proposals);
+
+      expect(failed.failed.map(({ kind }) => kind)).toEqual(["thread"]);
+      expect(retried.failed).toEqual([]);
+      const [firstPayload] = mock(createPlotThread).mock.calls[0];
+      const [retryPayload] = mock(createPlotThread).mock.calls[1];
+      expect(retryPayload).toEqual(firstPayload);
+      expect(usePlotThreadStore.getState().threads).toHaveLength(1);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+
+      await useGlobalHistoryStore.getState().undo();
+      expect(usePlotThreadStore.getState().threads).toHaveLength(0);
+      expect(usePlotThreadStore.getState().links).toHaveLength(0);
+    });
+
+    it("partial import の unknown marker retry は作成済み thread と同じ link ID を再利用する", async () => {
+      mock(createPlotThreadLink)
+        .mockRejectedValueOnce(unknownCreateError("plot_thread_link_create"))
+        .mockImplementationOnce(async (data) =>
+          attachCreateResultMetadata(
+            {
+              ...linkRow(data.id!),
+              threadId: data.threadId,
+              nodeId: data.nodeId,
+              phaseType: data.phaseType,
+            },
+            {
+              __idempotency: { replayed: true, entityPresent: true },
+            },
+          ),
+        );
+      const proposals = [
+        {
+          name: "Partial thread",
+          markers: [{ nodeId: "s1", phaseType: "develop" as const }],
+        },
+      ];
+
+      const partial = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", proposals);
+      const retried = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", proposals);
+
+      expect(partial.failed.map(({ kind }) => kind)).toEqual(["marker"]);
+      expect(retried.failed).toEqual([]);
+      expect(mock(createPlotThread)).toHaveBeenCalledTimes(1);
+      const [firstPayload] = mock(createPlotThreadLink).mock.calls[0];
+      const [retryPayload] = mock(createPlotThreadLink).mock.calls[1];
+      expect(retryPayload).toEqual(firstPayload);
+      expect(usePlotThreadStore.getState().threads).toHaveLength(1);
+      expect(usePlotThreadStore.getState().links).toHaveLength(1);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(2);
+
+      await useGlobalHistoryStore.getState().undo();
+      expect(usePlotThreadStore.getState().threads).toHaveLength(1);
+      expect(usePlotThreadStore.getState().links).toHaveLength(0);
+      await useGlobalHistoryStore.getState().undo();
+      expect(usePlotThreadStore.getState().threads).toHaveLength(0);
+    });
+
+    it("multi-proposal partial retry は成功済み proposal を重複作成しない", async () => {
+      mock(createPlotThread)
+        .mockImplementationOnce(async (data) => ({
+          ...row(data.id!, data.sortOrder),
+          name: data.name,
+          color: data.color ?? null,
+        }))
+        .mockRejectedValueOnce(unknownCreateError("plot_thread_create"))
+        .mockImplementationOnce(async (data) =>
+          attachCreateResultMetadata(
+            {
+              ...row(data.id!, data.sortOrder),
+              name: data.name,
+              color: data.color ?? null,
+            },
+            {
+              __idempotency: { replayed: true, entityPresent: true },
+            },
+          ),
+        );
+      const proposals = [
+        {
+          retryKey: "candidate-a",
+          name: "Already completed",
+          color: "#111111",
+          markers: [{ nodeId: "s1", phaseType: "introduce" as const }],
+        },
+        {
+          retryKey: "candidate-b",
+          name: "Unknown response",
+          color: "#222222",
+          markers: [{ nodeId: "s2", phaseType: "develop" as const }],
+        },
+      ];
+
+      const partial = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", proposals);
+      const retried = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", proposals);
+
+      expect(partial.failed).toEqual([
+        expect.objectContaining({ kind: "thread", proposalIndex: 1 }),
+      ]);
+      expect(retried.failed).toEqual([]);
+      expect(retried.skipped).toEqual([]);
+      expect(mock(createPlotThread)).toHaveBeenCalledTimes(3);
+      const [failedPayload] = mock(createPlotThread).mock.calls[1];
+      const [retryPayload] = mock(createPlotThread).mock.calls[2];
+      expect(retryPayload).toEqual(failedPayload);
+      expect(
+        usePlotThreadStore
+          .getState()
+          .threads.map(({ name }) => name)
+          .sort(),
+      ).toEqual(["Already completed", "Unknown response"]);
+      expect(usePlotThreadStore.getState().links).toHaveLength(2);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(2);
+
+      await useGlobalHistoryStore.getState().undo();
+      await useGlobalHistoryStore.getState().undo();
+      expect(usePlotThreadStore.getState().threads).toHaveLength(0);
+      expect(usePlotThreadStore.getState().links).toHaveLength(0);
+    });
+
     it("importPlotThreads drops the composite undo when the project switches mid-import (XPROJ)", async () => {
       mock(createPlotThread).mockImplementation(
         async (data: { sortOrder: string; name: string }) => ({
@@ -778,7 +1637,7 @@ describe("plotThreadStore", () => {
         },
       );
 
-      await usePlotThreadStore
+      const result = await usePlotThreadStore
         .getState()
         .importPlotThreads("p1", [
           { name: "A", markers: [{ nodeId: "s1", phaseType: "introduce" }] },
@@ -786,9 +1645,76 @@ describe("plotThreadStore", () => {
 
       // 旧プロジェクトの行を参照する合成エントリは新プロジェクト履歴へ commit されない。
       expect(history().past).toHaveLength(0);
+      expect(result.aborted).toBe(true);
+    });
+
+    it("importPlotThreads reports partial persistence without claiming failed items", async () => {
+      let threadSeq = 0;
+      mock(createPlotThread).mockImplementation(
+        async (data: { sortOrder: string; name: string }) => {
+          if (data.name === "broken thread") throw new Error("sensitive db");
+          return {
+            ...row(`th${++threadSeq}`, data.sortOrder),
+            name: data.name,
+          };
+        },
+      );
+      mock(createPlotThreadLink).mockImplementation(
+        async (data: {
+          threadId: string;
+          nodeId: string;
+          phaseType: PlotPhaseType;
+        }) => {
+          if (data.nodeId === "broken-scene") throw new Error("raw sql");
+          return {
+            ...linkRow(`lk-${data.nodeId}`),
+            threadId: data.threadId,
+            nodeId: data.nodeId,
+            phaseType: data.phaseType,
+          };
+        },
+      );
+
+      const result = await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", [
+          {
+            name: "partial",
+            markers: [
+              { nodeId: "ok-scene", phaseType: "introduce" },
+              { nodeId: "broken-scene", phaseType: "develop" },
+            ],
+          },
+          {
+            name: "broken thread",
+            markers: [{ nodeId: "unused", phaseType: "turn" }],
+          },
+        ]);
+
+      expect(result.createdThreads).toHaveLength(1);
+      expect(result.createdMarkers).toHaveLength(1);
+      expect(result.failed).toEqual([
+        {
+          kind: "marker",
+          proposalIndex: 0,
+          markerIndex: 1,
+          label: "broken-scene",
+          code: "CREATE_FAILED",
+        },
+        {
+          kind: "thread",
+          proposalIndex: 1,
+          label: "broken thread",
+          code: "CREATE_FAILED",
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toContain("raw sql");
+      expect(JSON.stringify(result)).not.toContain("sensitive db");
+      expect(history().past).toHaveLength(1);
     });
 
     it("does not push a second entry while replaying (undo closures use the API directly)", async () => {
+      usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
       mock(createPlotThreadLink).mockResolvedValue(linkRow("l1"));
       await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
       await history().undo();

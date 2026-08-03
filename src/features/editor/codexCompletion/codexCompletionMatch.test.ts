@@ -3,7 +3,10 @@ import {
   buildCodexCompletionIndex,
   type CodexCompletionSourceEntry,
 } from "./codexCompletionIndex";
-import { findCodexCompletionMatch } from "./codexCompletionMatch";
+import {
+  findCodexCompletionMatch,
+  hasCompleteCodexCompletionPrefixWindow,
+} from "./codexCompletionMatch";
 
 function indexFor(...names: string[]) {
   const entries: CodexCompletionSourceEntry[] = names.map((name, i) => ({
@@ -66,5 +69,10 @@ describe("Codex completion prefix matching", () => {
     const index = indexFor("Setsuna");
 
     expect(findCodexCompletionMatch("Setsuna", 7, index)).toBeNull();
+  });
+
+  it("requires a spare grapheme when proving a bounded prefix horizon", () => {
+    expect(hasCompleteCodexCompletionPrefixWindow("a".repeat(65))).toBe(false);
+    expect(hasCompleteCodexCompletionPrefixWindow("a".repeat(66))).toBe(true);
   });
 });

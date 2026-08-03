@@ -26,7 +26,7 @@ pub use dialogue::{analyze_dialogue, DialogueAnalysis, DialogueScope};
 pub use engine::{lint, LintResponse, MAX_INPUT_BYTES};
 pub use error::LintError;
 pub use rule::{
-    BlockKind, CodexEntry, Diagnostic, DisableDirective, Fix, Language, LintBlock, LintConfig,
-    LintContext, LintInput, LintRule, LintScope, RuleConfig, RuleSelector, RuleWarning,
-    SelectorKind, Severity, TermEntry, Utf16Range, WarningKind,
+    BlockKind, CodexEntry, Diagnostic, DisableDirective, Fix, IncrementalScope, Language,
+    LintBlock, LintConfig, LintContext, LintInput, LintRule, LintScope, RuleConfig, RuleSelector,
+    RuleWarning, SelectorKind, Severity, TermEntry, Utf16Range, WarningKind,
 };

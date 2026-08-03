@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useReducer } from "react";
 import { useChatStore } from "./chatStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
 import { markEnd, markStart } from "@/lib/perfLog";
+import { subscribeQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
 
 export interface ChatSessionLifecycleOptions {
   isActive: boolean;
@@ -13,6 +14,8 @@ export interface ChatSessionLifecycleOptions {
   includeMapBoard: boolean;
   mapBoardId: string | null;
   agentMode: boolean;
+  ragEnabled: boolean;
+  routeAuthorityKey: string;
   provider: string | null | undefined;
   currentModel: string;
   allCodexEntries: readonly unknown[];
@@ -38,6 +41,8 @@ export function useChatSessionLifecycle({
   includeMapBoard,
   mapBoardId,
   agentMode,
+  ragEnabled,
+  routeAuthorityKey,
   provider,
   currentModel,
   allCodexEntries,
@@ -47,9 +52,27 @@ export function useChatSessionLifecycle({
   selectSession,
   refreshContextLayers,
 }: ChatSessionLifecycleOptions): void {
+  const [authorityResumeRevision, notifyAuthorityResumed] = useReducer(
+    (revision: number) => revision + 1,
+    0,
+  );
+
   useEffect(() => {
     loadAiSettings();
   }, [loadAiSettings]);
+
+  useEffect(
+    () =>
+      subscribeQuiescenceLease((change) => {
+        if (
+          !change.active &&
+          change.releaseDisposition !== "renderer-teardown"
+        ) {
+          notifyAuthorityResumed();
+        }
+      }),
+    [],
+  );
 
   useEffect(() => {
     markStart("chatPanel.mirrorEffect");
@@ -82,10 +105,22 @@ export function useChatSessionLifecycle({
         markEnd("chatPanel.loadSessions");
       }
       if (stale || !loaded) return;
-      const { sessions } = useChatStore.getState();
+      const { sessions, activeSessionId: currentActiveSessionId } =
+        useChatStore.getState();
+      const targetSessionId =
+        currentActiveSessionId &&
+        sessions.some((session) => session.id === currentActiveSessionId)
+          ? currentActiveSessionId
+          : (sessions[0]?.id ?? null);
+      if (
+        targetSessionId === null ||
+        targetSessionId === currentActiveSessionId
+      ) {
+        return;
+      }
       markStart("chatPanel.selectSessionAfterLoad");
       try {
-        await selectSession(sessions.length > 0 ? sessions[0].id : null);
+        await selectSession(targetSessionId);
       } finally {
         markEnd("chatPanel.selectSessionAfterLoad");
       }
@@ -98,6 +133,7 @@ export function useChatSessionLifecycle({
     treeActiveSceneId,
     chatScope,
     scopeAnchorId,
+    authorityResumeRevision,
     loadSessions,
     selectSession,
   ]);
@@ -113,6 +149,8 @@ export function useChatSessionLifecycle({
     scopeAnchorId,
     includeBodies,
     agentMode,
+    ragEnabled,
+    routeAuthorityKey,
     provider,
     currentModel,
     includeMapBoard,

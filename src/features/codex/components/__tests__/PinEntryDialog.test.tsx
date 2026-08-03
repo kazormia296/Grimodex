@@ -70,12 +70,19 @@ vi.mock("@/features/codex/typeApi", () => ({
 }));
 
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { PinEntryDialog } from "../PinEntryDialog";
 
 const mockCodexStore = useCodexStore as unknown as {
   mockImplementation: (
     fn: (selector: (s: unknown) => unknown) => unknown,
   ) => void;
+};
+const mockSnippetStore = useSnippetStore as unknown as {
+  mockImplementation: (
+    fn: (selector: (s: unknown) => unknown) => unknown,
+  ) => void;
+  getState: { mockReturnValue: (value: unknown) => void };
 };
 
 const noop = vi.fn();
@@ -95,6 +102,13 @@ beforeEach(() => {
       getState: { mockReturnValue: (v: unknown) => void };
     }
   ).getState.mockReturnValue({ entries: [], loadEntries: vi.fn() });
+  mockSnippetStore.mockImplementation((sel) =>
+    sel({ entries: [], loadEntries: vi.fn() }),
+  );
+  mockSnippetStore.getState.mockReturnValue({
+    entries: [],
+    loadEntries: vi.fn(),
+  });
 });
 
 describe("PinEntryDialog", () => {
@@ -199,6 +213,73 @@ describe("PinEntryDialog", () => {
       />,
     );
     expect(screen.getByText("アリス")).toBeDefined();
+  });
+
+  it("lockedIds の Codex/Snippet は checked + disabled で変更できない", () => {
+    const codexEntry = {
+      id: "e1",
+      name: "アリス",
+      type: "character",
+      tagsCache: null,
+    };
+    const snippet = {
+      id: "s1",
+      title: "冒頭メモ",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      sourceChatMessageId: null,
+      sceneId: null,
+    };
+    mockCodexStore.mockImplementation((sel) =>
+      sel({
+        entries: [codexEntry],
+        loadEntries: vi.fn(),
+        sortOrder: "recent",
+        setSort: vi.fn(),
+      }),
+    );
+    (
+      useCodexStore as unknown as {
+        getState: { mockReturnValue: (value: unknown) => void };
+      }
+    ).getState.mockReturnValue({
+      entries: [codexEntry],
+      loadEntries: vi.fn(),
+    });
+    mockSnippetStore.mockImplementation((sel) =>
+      sel({ entries: [snippet], loadEntries: vi.fn() }),
+    );
+    mockSnippetStore.getState.mockReturnValue({
+      entries: [snippet],
+      loadEntries: vi.fn(),
+    });
+    const onPin = vi.fn();
+    const onUnpin = vi.fn();
+
+    render(
+      <PinEntryDialog
+        open
+        pinnedIds={new Set()}
+        pinnedSnippetIds={new Set()}
+        lockedIds={new Set(["e1", "s1"])}
+        onPin={onPin}
+        onUnpin={onUnpin}
+        onClose={noop}
+      />,
+    );
+
+    const codexCheckbox = screen.getByRole("checkbox", { name: /アリス/ });
+    expect(codexCheckbox).toBeChecked();
+    expect(codexCheckbox).toBeDisabled();
+    fireEvent.click(codexCheckbox);
+
+    fireEvent.click(screen.getByRole("button", { name: "Snippet" }));
+    const snippetCheckbox = screen.getByRole("checkbox", { name: /冒頭メモ/ });
+    expect(snippetCheckbox).toBeChecked();
+    expect(snippetCheckbox).toBeDisabled();
+    fireEvent.click(snippetCheckbox);
+
+    expect(onPin).not.toHaveBeenCalled();
+    expect(onUnpin).not.toHaveBeenCalled();
   });
 
   describe("selectionMode='single'", () => {

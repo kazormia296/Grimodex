@@ -5,9 +5,11 @@
 //! app_data_dir は Electron main (`app.getPath("userData")`) から
 //! コンストラクタで明示注入される (dirs:: を napi 内で解決しない。§4.2)。
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
@@ -94,6 +96,154 @@ impl grimodex_ai::emit::StreamEmitter for EventQueue {
     }
 }
 
+const MAX_STREAM_ABORT_TOMBSTONES: usize = 256;
+
+#[derive(Debug)]
+pub struct StreamCancellation {
+    abort: Arc<AtomicBool>,
+    quiesced: AtomicBool,
+    quiesced_notify: Notify,
+}
+
+impl StreamCancellation {
+    fn new(aborted: bool) -> Self {
+        Self {
+            abort: Arc::new(AtomicBool::new(aborted)),
+            quiesced: AtomicBool::new(false),
+            quiesced_notify: Notify::new(),
+        }
+    }
+
+    pub fn abort_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.abort)
+    }
+
+    fn request_abort(&self) {
+        self.abort.store(true, Ordering::Release);
+    }
+
+    fn mark_quiesced(&self) {
+        self.quiesced.store(true, Ordering::Release);
+        self.quiesced_notify.notify_waiters();
+    }
+
+    async fn wait_quiesced(&self) {
+        loop {
+            let notified = self.quiesced_notify.notified();
+            if self.quiesced.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[derive(Debug)]
+struct StreamAbortRegistryState {
+    active: HashMap<String, Arc<StreamCancellation>>,
+    pending: HashSet<String>,
+    pending_order: VecDeque<String>,
+    completed: HashSet<String>,
+    completed_order: VecDeque<String>,
+}
+
+/// streamId単位のabort registry。未知IDのabortは将来到着する同一streamだけへ
+/// tombstoneとして適用し、現在の別streamへは波及しない。
+#[derive(Debug)]
+pub struct StreamAbortRegistry {
+    state: Mutex<StreamAbortRegistryState>,
+}
+
+impl StreamAbortRegistry {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(StreamAbortRegistryState {
+                active: HashMap::new(),
+                pending: HashSet::new(),
+                pending_order: VecDeque::new(),
+                completed: HashSet::new(),
+                completed_order: VecDeque::new(),
+            }),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, StreamAbortRegistryState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn register(&self, stream_id: &str) -> anyhow::Result<Arc<StreamCancellation>> {
+        anyhow::ensure!(!stream_id.trim().is_empty(), "streamId is required");
+        anyhow::ensure!(stream_id == stream_id.trim(), "streamId must be trimmed");
+        let mut state = self.lock();
+        anyhow::ensure!(
+            !state.active.contains_key(stream_id) && !state.completed.contains(stream_id),
+            "streamId has already been registered: {stream_id}"
+        );
+        let pending = state.pending.remove(stream_id);
+        if pending {
+            state.pending_order.retain(|id| id != stream_id);
+        }
+        let cancellation = Arc::new(StreamCancellation::new(pending));
+        state
+            .active
+            .insert(stream_id.to_string(), Arc::clone(&cancellation));
+        Ok(cancellation)
+    }
+
+    pub fn complete(&self, stream_id: &str, cancellation: &Arc<StreamCancellation>) {
+        let mut state = self.lock();
+        if state
+            .active
+            .get(stream_id)
+            .is_some_and(|active| Arc::ptr_eq(active, cancellation))
+        {
+            state.active.remove(stream_id);
+            state.completed.insert(stream_id.to_string());
+            state.completed_order.push_back(stream_id.to_string());
+            while state.completed_order.len() > MAX_STREAM_ABORT_TOMBSTONES {
+                if let Some(expired) = state.completed_order.pop_front() {
+                    state.completed.remove(&expired);
+                }
+            }
+        }
+        drop(state);
+        cancellation.mark_quiesced();
+    }
+
+    /// trueはmatching streamがlocal quiescence済み、falseは未知IDを将来用に記録。
+    pub async fn abort(&self, stream_id: &str) -> anyhow::Result<bool> {
+        anyhow::ensure!(!stream_id.trim().is_empty(), "streamId is required");
+        anyhow::ensure!(stream_id == stream_id.trim(), "streamId must be trimmed");
+        let active = {
+            let mut state = self.lock();
+            if state.completed.contains(stream_id) {
+                return Ok(true);
+            }
+            if let Some(active) = state.active.get(stream_id) {
+                Some(Arc::clone(active))
+            } else {
+                if state.pending.insert(stream_id.to_string()) {
+                    state.pending_order.push_back(stream_id.to_string());
+                    while state.pending_order.len() > MAX_STREAM_ABORT_TOMBSTONES {
+                        if let Some(expired) = state.pending_order.pop_front() {
+                            state.pending.remove(&expired);
+                        }
+                    }
+                }
+                None
+            }
+        };
+        let Some(active) = active else {
+            return Ok(false);
+        };
+        active.request_abort();
+        active.wait_quiesced().await;
+        Ok(true)
+    }
+}
+
 /// `#[napi]` class `Backend` が Arc で保持する全状態 (設計書 §4.2)。
 /// Tauri の `app.manage(WorkspaceState)` / `app.manage(GlobalSettingsPath)` /
 /// `app.manage(CodexMatcherState)` の napi 版。Phase 3 で abort フラグ /
@@ -116,14 +266,8 @@ pub struct AppState {
     /// AI 設定ファイル `<app_data>/ai-settings.json`（Tauri の `AiSettingsPath` 相当）。
     /// キーは含まず、renderer に返して安全（keyring/safeStorage と分離）。
     pub ai_settings_path: PathBuf,
-    /// チャットストリームの中止フラグ (Tauri の `StreamAbortFlag` 相当 — Phase 3 バッチ3a)。
-    /// send_chat_message_stream 開始側と abort_chat_stream 中止側が**同一インスタンス**を
-    /// 見ることが「abort が効く」条件。単一フラグ設計（stream_id なし）は Tauri と同一。
-    pub chat_abort: Arc<AtomicBool>,
-    /// インライン AI ストリームの中止フラグ (Tauri の `InlineAiAbortFlag` 相当 —
-    /// Phase 3 バッチ3b)。チャットとインライン AI が同時に走っても一方の中止が
-    /// 他方へ波及しないよう、`chat_abort` とは別の Arc を保持する。
-    pub inline_ai_abort: Arc<AtomicBool>,
+    pub chat_streams: StreamAbortRegistry,
+    pub inline_ai_streams: StreamAbortRegistry,
     /// post-effect run_id 単位の中止レジストリ。start/multi/abort が同じ Backend
     /// インスタンス上で共有し、並走runの一方だけを中止する。
     pub post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry,
@@ -134,10 +278,24 @@ pub struct AppState {
     /// runtime。EventQueue cloneは同じTSFn sinkを指すため、progress 2chも
     /// backend.onEvent → main → 全窓broadcastへ載る。
     pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
+    /// Gate 2 cross-encoder cache shared by diagnostic shadow and opt-in apply.
+    /// The outer mutex is both the non-queuing native concurrency=1 guard and
+    /// Session::run's mutable owner. Callers must use `try_lock` and return the
+    /// stable `RERANKER_BUSY` marker instead of waiting behind an inference.
+    pub semantic_reranker: Mutex<grimodex_semantic::reranker::RerankerRuntime>,
 }
 
 impl AppState {
+    #[cfg(test)]
     pub fn new(app_data_dir: &str, semantic_resource_root: &str) -> anyhow::Result<Self> {
+        Self::new_with_reranker_root(app_data_dir, semantic_resource_root, None)
+    }
+
+    pub fn new_with_reranker_root(
+        app_data_dir: &str,
+        semantic_resource_root: &str,
+        reranker_resource_root: Option<&str>,
+    ) -> anyhow::Result<Self> {
         let dir = PathBuf::from(app_data_dir);
         anyhow::ensure!(
             dir.is_absolute(),
@@ -149,6 +307,17 @@ impl AppState {
             "semanticResourceRoot must be an absolute path: {}",
             semantic_resource_root.display()
         );
+        let reranker_resource_root = reranker_resource_root
+            .map(PathBuf::from)
+            .map(|path| {
+                anyhow::ensure!(
+                    path.is_absolute(),
+                    "rerankerResourceRoot must be an absolute path: {}",
+                    path.display()
+                );
+                Ok(path)
+            })
+            .transpose()?;
         // Tauri 側 (lib.rs setup の `create_dir_all(&app_dir).ok()`) と同じ
         // best-effort。失敗しても global-settings の read は default へ
         // フォールバックし、write 時に改めてエラーになる。
@@ -180,13 +349,16 @@ impl AppState {
             events,
             codex_matcher: Mutex::new(None),
             ai_settings_path: dir.join("ai-settings.json"),
-            chat_abort: Arc::new(AtomicBool::new(false)),
-            inline_ai_abort: Arc::new(AtomicBool::new(false)),
+            chat_streams: StreamAbortRegistry::new(),
+            inline_ai_streams: StreamAbortRegistry::new(),
             post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry::new(),
             license: Arc::new(grimodex_license::LicenseRuntime::new(
                 dir.join("license.json"),
             )),
             semantic,
+            semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(
+                reranker_resource_root,
+            )),
         })
     }
 }
@@ -194,6 +366,41 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn scoped_stream_abort_waits_for_matching_quiescence_only() {
+        let registry = Arc::new(StreamAbortRegistry::new());
+        let stream_a = registry.register("stream-a").expect("register A");
+        let stream_b = registry.register("stream-b").expect("register B");
+        let abort_registry = Arc::clone(&registry);
+        let abort =
+            tokio::spawn(async move { abort_registry.abort("stream-a").await.expect("abort A") });
+        tokio::task::yield_now().await;
+
+        assert!(stream_a.abort.load(Ordering::Acquire));
+        assert!(!stream_b.abort.load(Ordering::Acquire));
+        assert!(
+            !abort.is_finished(),
+            "abort receipt must wait for quiescence"
+        );
+
+        registry.complete("stream-a", &stream_a);
+        assert!(abort.await.expect("join abort"));
+        assert!(!stream_b.abort.load(Ordering::Acquire));
+        registry.complete("stream-b", &stream_b);
+    }
+
+    #[tokio::test]
+    async fn abort_before_register_becomes_a_scoped_tombstone() {
+        let registry = StreamAbortRegistry::new();
+        assert!(!registry.abort("future").await.expect("queue abort"));
+        let other = registry.register("other").expect("register other");
+        let future = registry.register("future").expect("register future");
+        assert!(!other.abort.load(Ordering::Acquire));
+        assert!(future.abort.load(Ordering::Acquire));
+        registry.complete("other", &other);
+        registry.complete("future", &future);
+    }
 
     #[test]
     fn app_state_rejects_relative_app_data_dir() {

@@ -7,12 +7,46 @@
  */
 import { db } from "@/db/client";
 import { sceneCodexPins, sceneCodexMentions, treeNodes } from "@/db/schema";
-import { eq, and, asc, sql } from "drizzle-orm";
+import { eq, and, asc, inArray, sql } from "drizzle-orm";
 
 export interface SceneCodexPin {
   sceneId: string;
   entryId: string;
   createdAt: string;
+}
+
+export interface SceneCodexMentionRow {
+  sceneId: string;
+  codexEntryId: string;
+  source: string;
+  role: string;
+}
+
+const sceneCodexMentionProjection = {
+  sceneId: sceneCodexMentions.sceneId,
+  codexEntryId: sceneCodexMentions.codexEntryId,
+  source: sceneCodexMentions.source,
+  role: sceneCodexMentions.role,
+};
+
+export async function listAllSceneCodexMentionsForProject(
+  projectId: string,
+): Promise<SceneCodexMentionRow[]> {
+  return db
+    .select(sceneCodexMentionProjection)
+    .from(sceneCodexMentions)
+    .innerJoin(treeNodes, eq(sceneCodexMentions.sceneId, treeNodes.id))
+    .where(eq(treeNodes.projectId, projectId));
+}
+
+export async function listSceneCodexMentions(
+  sceneIds: readonly string[],
+): Promise<SceneCodexMentionRow[]> {
+  if (sceneIds.length === 0) return [];
+  return db
+    .select(sceneCodexMentionProjection)
+    .from(sceneCodexMentions)
+    .where(inArray(sceneCodexMentions.sceneId, [...sceneIds]));
 }
 
 export async function listPinsForScene(

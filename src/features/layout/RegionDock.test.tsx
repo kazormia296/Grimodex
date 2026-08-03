@@ -71,7 +71,7 @@ describe("SideRegionStripeColumn", () => {
     );
     const overlay = cluster?.querySelector<HTMLElement>(".absolute");
     expect(overlay).not.toBeNull();
-    expect(overlay!.style.bottom).toBe("28px");
+    expect(overlay!.style.bottom).toBe("32px");
   });
 
   it("omits trailing padding when no reserve is requested", () => {

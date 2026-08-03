@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useTranslation } from "react-i18next";
 import {
@@ -50,10 +50,35 @@ import type { CodexTag } from "@/features/codex/tagApi";
 import { useFitsInline } from "@/hooks/useFitsInline";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { formatInstant } from "@/lib/time";
+import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
+import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
+import {
+  createEditorInstanceId,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
+import type { LoadedEditorBinding } from "@/features/editor/document/types";
+import {
+  announcePersistedBinding,
+  registerPersistedBindingHandler,
+  unregisterPersistedBindingHandler,
+} from "@/features/editor/editorSaveRegistry";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
+import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
+import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
+import { getSnippet } from "./api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
-  onSave: (id: string, data: { title: string; content: string }) => void;
+  onSave: (
+    id: string,
+    data: Partial<{ title: string; content: string }>,
+    options: { baseVersion: number },
+  ) => Promise<VersionedSaveOutcome>;
   onDelete: (id: string) => void;
 }
 
@@ -85,7 +110,106 @@ export function SnippetDetailContent({
   const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
 
   const titleRef = useRef(title);
+  const titleDirtyRef = useRef(false);
+  const contentDirtyRef = useRef(false);
+  const loadedVersionRef = useRef(snippet.version);
+  const editGenerationRef = useRef(0);
+  const editorInstanceIdRef = useRef(createEditorInstanceId("snippet-mini"));
+  const scheduleAutoSaveRef = useRef<() => void>(() => {});
+  const documentKey = useMemo<DocumentKey>(
+    () => ({ kind: "snippet", id: snippet.id }),
+    [snippet.id],
+  );
+  const documentStateKey = externalDocumentStateKey(documentKey);
+  const externalReloadNonce = useExternalWriteStore(
+    (state) => state.reloadNonce[documentStateKey] ?? 0,
+  );
+  const hasExternalConflict = useExternalWriteStore((state) =>
+    state.conflicts.some(
+      (conflict) =>
+        externalDocumentStateKey(conflict.documentKey ?? conflict.sceneId) ===
+        documentStateKey,
+    ),
+  );
+  const seenExternalReloadRef = useRef(externalReloadNonce);
   titleRef.current = title;
+
+  const markDirty = useCallback(
+    (lane: "title" | "content") => {
+      if (lane === "title") titleDirtyRef.current = true;
+      else contentDirtyRef.current = true;
+      editGenerationRef.current += 1;
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, true, editorInstanceIdRef.current);
+    },
+    [documentKey],
+  );
+
+  useEffect(() => {
+    const instanceId = editorInstanceIdRef.current;
+    let active = true;
+    const handlePeerSave = (binding: LoadedEditorBinding) => {
+      if (binding.kind === "snippet" && binding.id === snippet.id) {
+        // A peer title save is not part of the rich-text live-content channel.
+        // Adopt it only when this instance has no local title draft. If both
+        // editors changed the title, retain our OCC base so the next save
+        // conflicts instead of silently overwriting either value.
+        if (titleDirtyRef.current) return;
+        const latest = useSnippetStore
+          .getState()
+          .entries.find((candidate) => candidate.id === snippet.id);
+        if (latest && latest.version >= binding.loadedVersion) {
+          titleRef.current = latest.title;
+          setTitle(latest.title);
+          loadedVersionRef.current = Math.max(
+            loadedVersionRef.current,
+            binding.loadedVersion,
+          );
+          return;
+        }
+        // Search/filter state may omit the selected snippet from `entries`.
+        // Fetch the project-scoped row directly; never advance only the OCC
+        // version while leaving a stale title behind.
+        void getSnippet(getCurrentProjectId(), snippet.id)
+          .then((persisted) => {
+            if (
+              !active ||
+              !persisted ||
+              persisted.version < binding.loadedVersion ||
+              titleDirtyRef.current
+            ) {
+              return;
+            }
+            titleRef.current = persisted.title;
+            setTitle(persisted.title);
+            loadedVersionRef.current = Math.max(
+              loadedVersionRef.current,
+              persisted.version,
+            );
+          })
+          .catch((error) => {
+            debugLog.warn(
+              "SnippetDetail",
+              "peer title refresh failed",
+              errorDetail(error),
+            );
+          });
+      }
+    };
+    registerPersistedBindingHandler(documentKey, instanceId, handlePeerSave);
+    return () => {
+      active = false;
+      unregisterPersistedBindingHandler(
+        documentKey,
+        instanceId,
+        handlePeerSave,
+      );
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, false, instanceId);
+    };
+  }, [documentKey, snippet.id]);
 
   // Suppress the "update" handler (autosave + broadcast) when content is being
   // written into the editor programmatically — either from a `snippet` prop
@@ -97,6 +221,54 @@ export function SnippetDetailContent({
     extensions: [StarterKit.configure(), AuthorshipMark],
     content: tiptapContentFromDb(snippet.content),
   });
+
+  useEffect(() => {
+    if (seenExternalReloadRef.current === externalReloadNonce) return;
+    seenExternalReloadRef.current = externalReloadNonce;
+    if (!editor) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const latest = await getSnippet(getCurrentProjectId(), snippet.id);
+        if (!latest) {
+          throw new Error(`Snippet '${snippet.id}' no longer exists`);
+        }
+        if (cancelled) return;
+        loadedVersionRef.current = latest.version;
+        titleRef.current = latest.title;
+        titleDirtyRef.current = false;
+        contentDirtyRef.current = false;
+        setTitle(latest.title);
+        isApplyingExternalUpdate.current = true;
+        try {
+          editor.commands.setContent(tiptapContentFromDb(latest.content), {
+            emitUpdate: false,
+          });
+          resetEditorHistory(editor.view);
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+        useExternalWriteStore.getState().shiftConflict(documentKey);
+      } catch (error) {
+        debugLog.warn(
+          "SnippetDetail",
+          "persisted reload failed",
+          errorDetail(error),
+        );
+        toast.error(
+          t("autoSave.failed", {
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [documentKey, editor, externalReloadNonce, snippet.id, t]);
 
   useAttribution(editor);
   useLicenseEditableSync(editor);
@@ -113,6 +285,7 @@ export function SnippetDetailContent({
   // by snippet.id so id-changes trigger a remount instead — this effect only
   // fires for in-place title/content prop refreshes.
   useEffect(() => {
+    loadedVersionRef.current = snippet.version;
     setTitle(snippet.title);
     isApplyingExternalUpdate.current = true;
     try {
@@ -122,7 +295,11 @@ export function SnippetDetailContent({
     } finally {
       isApplyingExternalUpdate.current = false;
     }
-  }, [snippet.id, snippet.title, snippet.content, editor]);
+    // The version belongs to this mounted document session. Store refreshes
+    // for the same id must not silently advance the OCC base under a stale
+    // editor buffer; only remount/id change or our own successful save does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snippet.id, editor]);
 
   // Auto-save on editor content change + live-broadcast to sceneContentStore
   // so an open EditorPane snippet tab reflects edits within a frame instead
@@ -131,11 +308,16 @@ export function SnippetDetailContent({
     if (!editor) return;
     const handleUpdate = () => {
       if (isApplyingExternalUpdate.current) return;
-      scheduleAutoSave();
+      markDirty("content");
+      scheduleAutoSaveRef.current();
       try {
         useSceneContentStore
           .getState()
-          .setLiveContent(snippet.id, editor.getJSON(), SNIPPET_MINI_GROUP);
+          .setLiveContent(
+            { kind: "snippet", id: snippet.id },
+            editor.getJSON(),
+            SNIPPET_MINI_GROUP,
+          );
       } catch {
         // ignore serialization errors
       }
@@ -144,7 +326,7 @@ export function SnippetDetailContent({
     return () => {
       editor.off("update", handleUpdate);
     };
-  });
+  }, [documentKey, editor, markDirty, snippet.id]);
 
   // Receive live updates from the EditorPane snippet tab so typing there
   // shows up here in real time. Mirrors CodexContentEditor's pattern.
@@ -152,7 +334,7 @@ export function SnippetDetailContent({
   useEffect(() => {
     if (!editor) return;
     return subscribeLiveContentRafCoalesced(
-      snippet.id,
+      { kind: "snippet", id: snippet.id },
       SNIPPET_MINI_GROUP,
       (next) => {
         isApplyingExternalUpdate.current = true;
@@ -172,57 +354,119 @@ export function SnippetDetailContent({
   // edits are persisted when SnippetPanel swaps to a different entry within
   // the 2-second debounce window (the panel keys this component by
   // snippet.id, so id-change → unmount → flush).
-  const { schedule: scheduleAutoSave } = useAutoSave(
+  const {
+    schedule: scheduleAutoSave,
+    cancel: cancelAutoSave,
+    pause: pauseAutoSave,
+    resume: resumeAutoSave,
+    flush: flushAutoSave,
+  } = useAutoSave(
     useCallback(async () => {
       const snippetId = snippet.id;
       // Falls back to snippet.content if the editor was already destroyed
       // (defensive — flush should run before TipTap's cleanup, but keep the
       // pre-existing fallback semantic).
       const content = editor?.getHTML() ?? snippet.content;
-      onSave(snippetId, {
-        title: titleRef.current.trim() || snippet.title,
-        content,
+      const saveGeneration = editGenerationRef.current;
+      const saveTitle = titleDirtyRef.current;
+      const saveContent = contentDirtyRef.current;
+      const titleSnapshot = titleRef.current.trim() || snippet.title;
+      const data: Partial<{ title: string; content: string }> = {};
+      if (saveTitle) data.title = titleSnapshot;
+      if (saveContent) data.content = content;
+      if (!saveTitle && !saveContent) return;
+      const outcome = await onSave(snippetId, data, {
+        baseVersion: loadedVersionRef.current,
       });
-      try {
-        const intervalMs =
-          useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
-          60 *
-          1000;
-        if (shouldAutoRevision(snippetId, intervalMs)) {
-          const rev = await createRevision({
-            entityType: "snippet",
-            entityId: snippetId,
-            content,
-            snapshotType: "auto",
-          });
-          if (rev) {
-            recordAutoRevision(snippetId);
-            const keepCount = useSettingsStore
-              .getState()
-              .getNumber("revision.keepCount", 50);
-            pruneRevisions("snippet", snippetId, keepCount).catch(
-              console.error,
-            );
-          }
-        }
-      } catch (e) {
-        debugLog.warn(
-          "AutoSave",
-          "revision failed (content saved)",
-          errorDetail(e),
+      if (!outcome.persisted) {
+        throw new AlreadyNotifiedSaveError(
+          `snippet detail save not persisted: ${snippetId}`,
         );
       }
+      loadedVersionRef.current = outcome.version;
+      announcePersistedBinding(documentKey, editorInstanceIdRef.current, {
+        kind: "snippet",
+        id: snippetId,
+        loadedVersion: outcome.version,
+      });
+      if (saveTitle && titleRef.current.trim() === titleSnapshot) {
+        titleDirtyRef.current = false;
+      }
+      if (saveContent && (editor?.getHTML() ?? snippet.content) === content) {
+        contentDirtyRef.current = false;
+      }
+      if (
+        editGenerationRef.current === saveGeneration &&
+        !titleDirtyRef.current &&
+        !contentDirtyRef.current
+      ) {
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+      }
+      if (saveContent)
+        try {
+          const intervalMs =
+            useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+            60 *
+            1000;
+          if (shouldAutoRevision(snippetId, intervalMs)) {
+            const rev = await createRevision({
+              entityType: "snippet",
+              entityId: snippetId,
+              content,
+              snapshotType: "auto",
+            });
+            if (rev) {
+              recordAutoRevision(snippetId);
+              const keepCount = useSettingsStore
+                .getState()
+                .getNumber("revision.keepCount", 50);
+              pruneRevisions("snippet", snippetId, keepCount).catch(
+                console.error,
+              );
+            }
+          }
+        } catch (e) {
+          debugLog.warn(
+            "AutoSave",
+            "revision failed (content saved)",
+            errorDetail(e),
+          );
+        }
     }, [
       snippet.id,
       snippet.title,
       snippet.content,
       editor,
+      documentKey,
       onSave,
       shouldAutoRevision,
       recordAutoRevision,
     ]),
     2000,
   );
+  scheduleAutoSaveRef.current = scheduleAutoSave;
+
+  useEffect(() => {
+    if (hasExternalConflict) pauseAutoSave();
+    else resumeAutoSave();
+  }, [hasExternalConflict, pauseAutoSave, resumeAutoSave]);
+
+  const handleKeepMine = useCallback(async () => {
+    const latest = await getSnippet(getCurrentProjectId(), snippet.id);
+    if (!latest) {
+      throw new Error(`Snippet '${snippet.id}' no longer exists`);
+    }
+    loadedVersionRef.current = latest.version;
+    resumeAutoSave();
+    scheduleAutoSave();
+    await flushAutoSave();
+  }, [flushAutoSave, resumeAutoSave, scheduleAutoSave, snippet.id]);
+
+  const handleReload = useCallback(() => {
+    cancelAutoSave();
+  }, [cancelAutoSave]);
 
   function handleInsertAtCursor() {
     const content = editor?.getHTML() ?? snippet.content;
@@ -238,6 +482,18 @@ export function SnippetDetailContent({
     if (success) {
       void incrementUsageCount(snippet.id);
       toast.success(t("snippets.inserted"));
+    }
+  }
+
+  async function handleCopy() {
+    try {
+      await copyWithAttribution(
+        editor?.getText() ?? snippet.content,
+        (snippet.contentSource as AuthorshipSource) ?? "human",
+      );
+      toast.success(t("snippets.copied"));
+    } catch {
+      toast.error(t("snippets.copyFailed"));
     }
   }
 
@@ -259,6 +515,13 @@ export function SnippetDetailContent({
 
   return (
     <div data-testid="snippet-detail-content" className="flex h-full flex-col">
+      <ExternalEditConflictBanner
+        nodeId={snippet.id}
+        documentKey={documentKey}
+        editorInstanceId={editorInstanceIdRef.current}
+        onKeepMine={handleKeepMine}
+        onReload={handleReload}
+      />
       {/* ===== Header (Codex-aligned) ===== */}
       <div className="shrink-0 px-7 pt-3">
         {/* Kicker row: [source-icon + label] ... [insert][copy][scene?][history][delete] */}
@@ -283,12 +546,7 @@ export function SnippetDetailContent({
             <button
               type="button"
               data-testid="snippet-copy-button"
-              onClick={() =>
-                copyWithAttribution(
-                  editor?.getText() ?? snippet.content,
-                  (snippet.contentSource as AuthorshipSource) ?? "human",
-                )
-              }
+              onClick={handleCopy}
               className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
               title={t("snippets.contextMenu.copy")}
             >
@@ -341,6 +599,7 @@ export function SnippetDetailContent({
               placeholder={t("snippets.detail.titlePlaceholder")}
               onChange={(e) => {
                 setTitle(e.target.value);
+                markDirty("title");
                 scheduleAutoSave();
               }}
               className="-ml-1.5 block w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[26px] font-bold leading-[1.1] tracking-[-0.01em] text-foreground transition-colors hover:bg-accent/40 focus:border-transparent focus:bg-transparent focus:outline-none focus:ring-2 focus:ring-primary"

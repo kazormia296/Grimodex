@@ -3,6 +3,8 @@ import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { useProjectStore } from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 
 const openEditorDocument = vi.hoisted(() => vi.fn());
 
@@ -25,10 +27,24 @@ vi.mock("@/features/editor/EditorPane", () => ({
   EditorPane: ({
     groupIndex,
     nodeId,
+    inputProjectionAuthority,
+    inputProjectionScopeKey,
+    isForegroundInputProjection,
   }: {
     groupIndex: number;
     nodeId: string;
-  }) => <div data-editor-pane={groupIndex} data-node-id={nodeId} />,
+    inputProjectionAuthority?: string;
+    inputProjectionScopeKey?: string;
+    isForegroundInputProjection?: boolean;
+  }) => (
+    <div
+      data-editor-pane={groupIndex}
+      data-node-id={nodeId}
+      data-input-authority={inputProjectionAuthority}
+      data-input-scope={inputProjectionScopeKey}
+      data-input-foreground={isForegroundInputProjection ? "true" : "false"}
+    />
+  ),
 }));
 vi.mock("@/features/editor/LinearEditorView", () => ({
   LinearEditorView: () => <div data-linear-editor />,
@@ -59,6 +75,11 @@ describe("SceneEditor phone projection", () => {
   beforeEach(() => {
     openEditorDocument.mockReset();
     useInlineAiStore.getState().reset();
+    useProjectStore.setState({ currentProjectId: "project-a" } as never);
+    useWorkspaceStore.setState({
+      activeWorkspacePath: "/workspace/a",
+      workspaceOpenRevision: 7,
+    } as never);
     useCursorSettingsStore.setState({ zenMode: false });
     useSceneStore.setState({ activeSceneId: "scene-2" } as never);
     useTreeStore.setState({
@@ -80,7 +101,69 @@ describe("SceneEditor phone projection", () => {
       splitDirection: "right",
       isLinearMode: false,
       isDraggingTab: false,
+      tabStateHydrated: true,
     } as never);
+  });
+
+  it("does not create a preview tab before persisted tabs are hydrated", () => {
+    useTabStore.setState({
+      tabs: [],
+      activeTabId: null,
+      secondaryTabs: [],
+      secondaryActiveTabId: null,
+      secondaryGroupOpen: false,
+      activeGroupIndex: 0,
+      tabStateHydrated: false,
+    } as never);
+
+    render(
+      <WorkspaceViewportProvider profile="wide">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+    expect(openEditorDocument).not.toHaveBeenCalled();
+
+    act(() => useTabStore.setState({ tabStateHydrated: true }));
+
+    expect(openEditorDocument).toHaveBeenCalledOnce();
+    expect(openEditorDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { kind: "scene", documentId: "scene-2" },
+        mode: "preview",
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("does not let a provisional tree scene steal a restored non-scene tab", () => {
+    useTabStore.setState({
+      tabs: [
+        {
+          nodeId: "codex-1",
+          contentType: "codex",
+          isPreview: false,
+          overridePhaseId: "phase-1",
+        },
+      ],
+      activeTabId: "codex-1",
+      secondaryTabs: [],
+      secondaryActiveTabId: null,
+      secondaryGroupOpen: false,
+      activeGroupIndex: 0,
+      tabStateHydrated: true,
+    } as never);
+
+    const { container } = render(
+      <WorkspaceViewportProvider profile="wide">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(openEditorDocument).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-editor-pane="0"]')).toHaveAttribute(
+      "data-node-id",
+      "codex-1",
+    );
   });
 
   it("projects one active scene without tabs while preserving both desktop editors", () => {
@@ -102,6 +185,13 @@ describe("SceneEditor phone projection", () => {
     expect(primaryGroup).toHaveAttribute("aria-hidden", "true");
     expect(primaryGroup).toHaveAttribute("inert");
     expect(secondaryGroup).not.toHaveAttribute("aria-hidden");
+    expect(primaryPane).toHaveAttribute("data-input-authority", "workspace");
+    expect(primaryPane).toHaveAttribute(
+      "data-input-scope",
+      JSON.stringify(["editor-input-v1", "/workspace/a", 7, "project-a"]),
+    );
+    expect(primaryPane).toHaveAttribute("data-input-foreground", "false");
+    expect(secondaryPane).toHaveAttribute("data-input-foreground", "true");
     expect(container.querySelector("[data-tab-bar]")).toBeNull();
 
     act(() =>

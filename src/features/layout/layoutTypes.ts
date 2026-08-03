@@ -24,6 +24,12 @@ export interface RegionState {
   /** content 領域サイズ (left/right=幅, bottom=高さ)。折りたたみ時も保持。 */
   size: number;
   slots: SlotState[];
+  /**
+   * region 一括非表示直前の slot ごとの active panel。
+   * null も保存して、元から閉じていた slot を再表示時も閉じたままにする。
+   * 再表示または region 内の明示的な panel 操作で消費・破棄する。
+   */
+  collapsedActivePanels?: Record<string, ToolWindowPanelId | null>;
 }
 
 /** center band 内の左→右 segment。editor は 1 つのみ。 */

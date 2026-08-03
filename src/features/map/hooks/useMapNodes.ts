@@ -25,6 +25,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
 import type { MapAiBranch, MapFrame, MapSticky } from "@/db/schema";
 import type { Snippet } from "@/features/snippets/api";
+import { projectMapPositions } from "./mapPositionProjection";
 
 // Deterministic rotation from node id for corkboard feel (±0.5deg)
 export function corkRotation(id: string): number {
@@ -44,9 +45,72 @@ export function stickyRotation(id: string): number {
   return ((Math.abs(hash) % 1000) / 1000) * 5 - 2.5;
 }
 
+export function countStickiesByBranch(
+  stickies: readonly MapSticky[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const sticky of stickies) {
+    if (!sticky.aiBranchId) continue;
+    counts.set(sticky.aiBranchId, (counts.get(sticky.aiBranchId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function shallowRecordEqual(
+  a: Record<string, unknown> | undefined,
+  b: Record<string, unknown> | undefined,
+  ignoreFunctions = false,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const av = a[key];
+    const bv = b[key];
+    if (
+      ignoreFunctions &&
+      typeof av === "function" &&
+      typeof bv === "function"
+    ) {
+      continue;
+    }
+    if (!Object.is(av, bv)) return false;
+  }
+  return true;
+}
+
+/**
+ * React Flow は node object identity が変わると node component を再評価する。
+ * builder が作る callback は再構築ごとに新参照になるため、表示データと座標が同じ
+ * node は callback の参照差だけを理由に差し替えない。
+ */
+export function mapNodePresentationEqual(previous: Node, next: Node): boolean {
+  return (
+    previous.type === next.type &&
+    previous.className === next.className &&
+    previous.zIndex === next.zIndex &&
+    previous.selected === next.selected &&
+    previous.dragging === next.dragging &&
+    previous.measured === next.measured &&
+    previous.position.x === next.position.x &&
+    previous.position.y === next.position.y &&
+    shallowRecordEqual(
+      previous.style as Record<string, unknown> | undefined,
+      next.style as Record<string, unknown> | undefined,
+    ) &&
+    shallowRecordEqual(
+      previous.data as Record<string, unknown>,
+      next.data as Record<string, unknown>,
+      true,
+    )
+  );
+}
+
 interface UseMapNodesInput {
   boardId: string | null;
   positions: MapNodePositionRecord[];
+  positionsStructureRevision: number;
+  positionsLayoutRevision: number;
   userEdges: LayoutUserEdge[];
   treeNodes: TreeNodeData[];
   codexEntries: CodexEntry[];
@@ -84,6 +148,8 @@ interface UseMapNodesInput {
 export function useMapNodes({
   boardId,
   positions,
+  positionsStructureRevision,
+  positionsLayoutRevision,
   userEdges,
   treeNodes,
   codexEntries,
@@ -123,25 +189,44 @@ export function useMapNodes({
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
 
-  // buildNodes は座標 drag のたび re-run したくないので positions そのものを
-  // deps に入れていない。が、picker 経由で新規 entity を Map に追加する経路は
-  // positions に行が増えるだけで他の deps が動かず、新規ノードが画面に出ない。
-  // entity ID 集合の fingerprint だけを deps にして、座標変動は無視・構造変化
-  // だけ pickup する。
-  const positionsStructureFingerprint = useMemo(() => {
-    return positions
-      .map(
-        (p) =>
-          p.treeNodeId ??
-          p.codexEntryId ??
-          p.snippetId ??
-          p.stickyId ??
-          p.aiBranchId ??
-          p.id,
-      )
-      .sort()
-      .join("|");
-  }, [positions]);
+  // 表示が同一の node は object identity を再利用するため、node.data 内の
+  // callback closure 自体も再利用される。外部 callback/setter は ref 経由で
+  // 最新値へ委譲し、再描画を増やさず stale callback を防ぐ。
+  const nodeCallbacksRef = useRef({
+    setFrames,
+    setStickies,
+    setAiBranches,
+    setPositions,
+    updateNodeTitle,
+    updateSynopsis,
+    onStickyExitComplete,
+    onBranchFrom,
+    onAdopt,
+    onReject,
+  });
+  nodeCallbacksRef.current = {
+    setFrames,
+    setStickies,
+    setAiBranches,
+    setPositions,
+    updateNodeTitle,
+    updateSynopsis,
+    onStickyExitComplete,
+    onBranchFrom,
+    onAdopt,
+    onReject,
+  };
+
+  // The board-data owner advances these revisions only for structural/layout
+  // mutations. Coordinate-only drag persistence changes `positions` without
+  // touching them, so render-time map/sort/join fingerprints disappear.
+  const positionProjection = useMemo(
+    () => projectMapPositions(positions),
+    // `positions` is deliberately represented by the owner-controlled
+    // revisions so coordinate-only row replacement does not execute the scan.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [boardId, positionsStructureRevision, positionsLayoutRevision],
+  );
 
   const layoutCacheRef = useRef<{
     boardId: string | null;
@@ -151,26 +236,23 @@ export function useMapNodes({
 
   const themeLayoutFingerprint = useMemo(() => {
     if (!boardId) return "";
-    const positionedTreeNodeIds = new Set(
-      positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
-    );
-    const positionedCodexIds = new Set(
-      positions.filter((p) => p.codexEntryId).map((p) => p.codexEntryId!),
-    );
     const scenes = treeNodes.filter(
-      (n) => n.nodeType === "scene" && positionedTreeNodeIds.has(n.id),
+      (n) =>
+        n.nodeType === "scene" &&
+        positionProjection.positionedTreeNodeIds.has(n.id),
     );
     const visibleCodex = codexEntries.filter((e) =>
-      positionedCodexIds.has(e.id),
+      positionProjection.positionedCodexIds.has(e.id),
     );
     return layoutFingerprint({
       boardId,
       scenes,
       codexEntries: visibleCodex,
-      positions,
+      positions: positionProjection.source,
       userEdges,
+      positionProjection,
     });
-  }, [boardId, treeNodes, codexEntries, positions, userEdges]);
+  }, [boardId, treeNodes, codexEntries, userEdges, positionProjection]);
 
   useEffect(() => {
     if (!boardId) return;
@@ -178,30 +260,29 @@ export function useMapNodes({
 
     async function buildNodes() {
       const currentPositions = positionsRef.current;
+      // A coordinate-only update normally cannot trigger this effect. If a
+      // separate presentation dependency changes later, refresh the projection
+      // once from the latest rows so the rebuild uses the persisted x/y.
+      const currentPositionProjection =
+        positionProjection.source === currentPositions
+          ? positionProjection
+          : projectMapPositions(currentPositions);
       // ── Manual curation: only entities that have a position row ───────────
-      const positionedTreeNodeIds = new Set(
-        currentPositions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
-      );
-      const positionedCodexIds = new Set(
-        currentPositions
-          .filter((p) => p.codexEntryId)
-          .map((p) => p.codexEntryId!),
-      );
-      const positionedSnippetIds = new Set(
-        currentPositions.filter((p) => p.snippetId).map((p) => p.snippetId!),
-      );
-
       const scenes = treeNodes.filter(
-        (n) => n.nodeType === "scene" && positionedTreeNodeIds.has(n.id),
+        (n) =>
+          n.nodeType === "scene" &&
+          currentPositionProjection.positionedTreeNodeIds.has(n.id),
       );
       const notes = treeNodes.filter(
-        (n) => n.nodeType === "note" && positionedTreeNodeIds.has(n.id),
+        (n) =>
+          n.nodeType === "note" &&
+          currentPositionProjection.positionedTreeNodeIds.has(n.id),
       );
       const visibleCodex = codexEntries.filter((e) =>
-        positionedCodexIds.has(e.id),
+        currentPositionProjection.positionedCodexIds.has(e.id),
       );
       const visibleSnippets = snippets.filter((s) =>
-        positionedSnippetIds.has(s.id),
+        currentPositionProjection.positionedSnippetIds.has(s.id),
       );
 
       let computedPositions;
@@ -274,14 +355,16 @@ export function useMapNodes({
                 borderColor: f.borderColor,
                 onTitleChange: async (title: string) => {
                   await updateFrame(f.id, { title });
-                  setFrames((prev) =>
+                  nodeCallbacksRef.current.setFrames((prev) =>
                     prev.map((fr) => (fr.id === f.id ? { ...fr, title } : fr)),
                   );
                 },
                 onDelete: async () => {
                   const cap = { ...f };
                   await deleteFrame(f.id);
-                  setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
+                  nodeCallbacksRef.current.setFrames((prev) =>
+                    prev.filter((fr) => fr.id !== f.id),
+                  );
 
                   if (!useGlobalHistoryStore.getState().isReplaying) {
                     useGlobalHistoryStore.getState().push({
@@ -299,11 +382,14 @@ export function useMapNodes({
                           background: cap.background ?? undefined,
                           borderColor: cap.borderColor ?? undefined,
                         });
-                        setFrames((prev) => [...prev, recreated]);
+                        nodeCallbacksRef.current.setFrames((prev) => [
+                          ...prev,
+                          recreated,
+                        ]);
                       },
                       async redo() {
                         await deleteFrame(cap.id);
-                        setFrames((prev) =>
+                        nodeCallbacksRef.current.setFrames((prev) =>
                           prev.filter((fr) => fr.id !== cap.id),
                         );
                       },
@@ -320,21 +406,7 @@ export function useMapNodes({
 
       const corkboardFeel = visualTheme === "corkboard";
 
-      const zIndexMap = new Map<string, number>();
-      for (const p of currentPositions) {
-        if (p.treeNodeId && p.nodeRefType === "scene")
-          zIndexMap.set(`scene:${p.treeNodeId}`, p.zIndex ?? 0);
-        else if (p.treeNodeId && p.nodeRefType === "note")
-          zIndexMap.set(`note:${p.treeNodeId}`, p.zIndex ?? 0);
-        else if (p.codexEntryId)
-          zIndexMap.set(`codex:${p.codexEntryId}`, p.zIndex ?? 0);
-        else if (p.snippetId)
-          zIndexMap.set(`snippet:${p.snippetId}`, p.zIndex ?? 0);
-        else if (p.stickyId)
-          zIndexMap.set(`sticky:${p.stickyId}`, p.zIndex ?? 0);
-        else if (p.aiBranchId)
-          zIndexMap.set(`ai_branch:${p.aiBranchId}`, p.zIndex ?? 0);
-      }
+      const zIndexMap = currentPositionProjection.zIndexByNodeKey;
 
       const sceneNodes: Node[] = show.scenes
         ? scenes.map((n) => {
@@ -348,6 +420,7 @@ export function useMapNodes({
               className: transitionClass,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
+                treeNodeId: n.id,
                 title: n.title,
                 synopsis: n.synopsis ?? null,
                 status: n.status ?? "outline",
@@ -357,10 +430,10 @@ export function useMapNodes({
                 corkboardFeel,
                 rotation,
                 onTitleChange: async (title: string) => {
-                  await updateNodeTitle(n.id, title);
+                  await nodeCallbacksRef.current.updateNodeTitle(n.id, title);
                 },
                 onSynopsisChange: async (synopsis: string) => {
-                  await updateSynopsis(n.id, synopsis);
+                  await nodeCallbacksRef.current.updateSynopsis(n.id, synopsis);
                 },
                 onOpen: () => {
                   openEditorDocument(
@@ -375,7 +448,7 @@ export function useMapNodes({
                   );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
@@ -403,19 +476,14 @@ export function useMapNodes({
                   void requestOpenInCodex(e.id);
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
         : [];
 
       // Snippet positions from positions array
-      const snippetPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.snippetId) {
-          snippetPosMap.set(`snippet:${p.snippetId}`, { x: p.x, y: p.y });
-        }
-      }
+      const snippetPosMap = currentPositionProjection.snippetPositions;
       const snippetNodes: Node[] = show.snippets
         ? visibleSnippets.map((s, idx) => {
             const key = `snippet:${s.id}`;
@@ -432,18 +500,13 @@ export function useMapNodes({
                 title: s.title || null,
                 content: s.content,
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
         : [];
 
-      const notePosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.treeNodeId && p.nodeRefType === "note") {
-          notePosMap.set(`note:${p.treeNodeId}`, { x: p.x, y: p.y });
-        }
-      }
+      const notePosMap = currentPositionProjection.notePositions;
       const noteNodes: Node[] = show.notes
         ? notes.map((n, idx) => {
             const key = `note:${n.id}`;
@@ -472,19 +535,14 @@ export function useMapNodes({
                   );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
         : [];
 
       // Sticky nodes: positions from positions array
-      const stickyPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.stickyId) {
-          stickyPosMap.set(`sticky:${p.stickyId}`, { x: p.x, y: p.y });
-        }
-      }
+      const stickyPosMap = currentPositionProjection.stickyPositions;
       const stickyNodes: Node[] = show.stickies
         ? stickies.map((st, idx) => {
             const key = `sticky:${st.id}`;
@@ -511,9 +569,10 @@ export function useMapNodes({
                 // branchAttached: まだ branch に属するか (採用で外れる) = 採用/不採用 UI の表示条件。
                 aiDerived: st.aiDerived === 1,
                 branchAttached: st.aiBranchId !== null,
-                onAdopt: () => onAdopt?.(st.id),
-                onReject: () => onReject?.(st.id),
-                onExitComplete: onStickyExitComplete,
+                onAdopt: () => nodeCallbacksRef.current.onAdopt?.(st.id),
+                onReject: () => nodeCallbacksRef.current.onReject?.(st.id),
+                onExitComplete: (id: string) =>
+                  nodeCallbacksRef.current.onStickyExitComplete?.(id),
                 onUpdate: async (updates: {
                   title?: string;
                   body?: string;
@@ -529,7 +588,7 @@ export function useMapNodes({
                     ...updates,
                     previewText: preview ?? updates.previewText,
                   });
-                  setStickies((prev) =>
+                  nodeCallbacksRef.current.setStickies((prev) =>
                     prev.map((s) =>
                       s.id === st.id
                         ? {
@@ -543,28 +602,18 @@ export function useMapNodes({
                   );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
         : [];
 
       // AI Branch nodes
-      const aiBranchPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.aiBranchId) {
-          aiBranchPosMap.set(`ai_branch:${p.aiBranchId}`, {
-            x: p.x,
-            y: p.y,
-          });
-        }
-      }
+      const stickyCountByBranchId = countStickiesByBranch(stickies);
+      const aiBranchPosMap = currentPositionProjection.aiBranchPositions;
       const aiBranchNodes: Node[] = show.aiBranch
         ? aiBranches.map((ab, idx) => {
             const key = `ai_branch:${ab.id}`;
-            const derivedStickyCount = stickies.filter(
-              (s) => s.aiBranchId === ab.id,
-            ).length;
             return {
               id: key,
               type: "ai_branch",
@@ -577,7 +626,7 @@ export function useMapNodes({
               data: {
                 prompt: ab.prompt,
                 sessionId: ab.sessionId,
-                derivedStickyCount,
+                derivedStickyCount: stickyCountByBranchId.get(ab.id) ?? 0,
                 onOpenChat: () => {
                   if (ab.sessionId) {
                     useChatStore.getState().selectSession(ab.sessionId);
@@ -588,9 +637,11 @@ export function useMapNodes({
                     ? await getAiBranchSnapshot(ab.id)
                     : null;
                   await deleteAiBranch(ab.id);
-                  setAiBranches((prev) => prev.filter((b) => b.id !== ab.id));
+                  nodeCallbacksRef.current.setAiBranches((prev) =>
+                    prev.filter((b) => b.id !== ab.id),
+                  );
                   if (snapshot) {
-                    setPositions((prev) =>
+                    nodeCallbacksRef.current.setPositions((prev) =>
                       prev.filter((p) => p.id !== snapshot.branchPosition.id),
                     );
                   }
@@ -603,18 +654,21 @@ export function useMapNodes({
                       label: i18next.t("map.history.aiBranchDelete"),
                       async undo() {
                         await restoreAiBranchSnapshot(cap);
-                        setAiBranches((prev) => [...prev, cap.branch]);
-                        setPositions((prev) => [
+                        nodeCallbacksRef.current.setAiBranches((prev) => [
+                          ...prev,
+                          cap.branch,
+                        ]);
+                        nodeCallbacksRef.current.setPositions((prev) => [
                           ...prev,
                           cap.branchPosition as MapNodePositionRecord,
                         ]);
                       },
                       async redo() {
                         await deleteAiBranch(cap.branch.id);
-                        setAiBranches((prev) =>
+                        nodeCallbacksRef.current.setAiBranches((prev) =>
                           prev.filter((b) => b.id !== cap.branch.id),
                         );
-                        setPositions((prev) =>
+                        nodeCallbacksRef.current.setPositions((prev) =>
                           prev.filter((p) => p.id !== cap.branchPosition.id),
                         );
                       },
@@ -622,7 +676,7 @@ export function useMapNodes({
                   }
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
@@ -651,12 +705,14 @@ export function useMapNodes({
             dragging: p.dragging,
           };
           if (p.dragging || groupDragging.has(n.id)) {
-            return { ...base, position: p.position };
+            const candidate = { ...base, position: p.position };
+            return mapNodePresentationEqual(p, candidate) ? p : candidate;
           }
           if (persisting.has(n.id)) {
-            return { ...base, position: p.position };
+            const candidate = { ...base, position: p.position };
+            return mapNodePresentationEqual(p, candidate) ? p : candidate;
           }
-          return base;
+          return mapNodePresentationEqual(p, base) ? p : base;
         });
         if (groupDragging.size > 0) {
           const nextIds = new Set(nextNodes.map((n) => n.id));
@@ -690,7 +746,7 @@ export function useMapNodes({
     snippets,
     stickies,
     aiBranches,
-    positionsStructureFingerprint,
+    positionProjection,
     show,
     mode,
     themeLayoutFingerprint,
@@ -698,22 +754,12 @@ export function useMapNodes({
     colorBy,
     visualTheme,
     frames,
-    setFrames,
-    setStickies,
     setNodes,
     setForceLayoutRunning,
     setForceAlpha,
-    updateNodeTitle,
-    updateSynopsis,
     groupDraggingRef,
     persistingRef,
     deletingStickyIds,
-    onStickyExitComplete,
-    onBranchFrom,
-    onAdopt,
-    onReject,
-    setAiBranches,
-    setPositions,
   ]);
 
   // Apply the mode-transition CSS class directly to already-built nodes when

@@ -1,11 +1,10 @@
 import { create } from "zustand";
 import type { Editor } from "@tiptap/core";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
 import {
-  isWindowFullscreen,
-  toggleFullscreenWindow,
-} from "@/lib/windowControls";
+  readRuntimeSettingBoolean,
+  writeRuntimeSetting,
+} from "@/features/settings/runtimeSettings";
+import type { LayerSetOptions } from "@/features/post-effect/types";
 
 interface CursorSettingsState {
   cursorAnimation: boolean;
@@ -19,10 +18,6 @@ interface CursorSettingsState {
   zenMode: boolean;
   setZenMode: (active: boolean) => void;
   toggleZenMode: () => void;
-  fullscreenMode: boolean;
-  setFullscreenMode: (active: boolean) => void;
-  syncFullscreenMode: () => Promise<void>;
-  toggleFullscreenMode: () => void;
   showComments: boolean;
   setShowComments: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowComments: () => void;
@@ -70,7 +65,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     toggleCursorAnimation: () =>
       set((s) => {
         const next = !s.cursorAnimation;
-        useSettingsStore.getState().set("editor.smoothCaret", String(next));
+        writeRuntimeSetting("editor.smoothCaret", String(next));
         return { cursorAnimation: next };
       }),
 
@@ -78,7 +73,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     toggleCursorBlink: () =>
       set((s) => {
         const next = !s.cursorBlink;
-        useSettingsStore.getState().set("editor.cursorBlink", String(next));
+        writeRuntimeSetting("editor.cursorBlink", String(next));
         return { cursorBlink: next };
       }),
 
@@ -86,7 +81,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     toggleFocusMode: () =>
       set((s) => {
         const next = !s.focusMode;
-        useSettingsStore.getState().set("editor.focusMode", String(next));
+        writeRuntimeSetting("editor.focusMode", String(next));
         return { focusMode: next };
       }),
 
@@ -94,7 +89,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     toggleTypewriterMode: () =>
       set((s) => {
         const next = !s.typewriterMode;
-        useSettingsStore.getState().set("editor.typewriterMode", String(next));
+        writeRuntimeSetting("editor.typewriterMode", String(next));
         return { typewriterMode: next };
       }),
 
@@ -102,30 +97,10 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     setZenMode: (active) => set({ zenMode: active }),
     toggleZenMode: () => set((s) => ({ zenMode: !s.zenMode })),
 
-    fullscreenMode: false,
-    setFullscreenMode: (active) => set({ fullscreenMode: active }),
-    syncFullscreenMode: async () => {
-      try {
-        set({ fullscreenMode: await isWindowFullscreen() });
-      } catch {
-        // Keep the last state confirmed by the runtime. A transient native
-        // query failure must not flip the toolbar indicator optimistically.
-      }
-    },
-    toggleFullscreenMode: () => {
-      void toggleFullscreenWindow()
-        .then((active) => set({ fullscreenMode: active }))
-        .catch(() => {
-          // Preserve the last confirmed state when the OS rejects a transition.
-        });
-    },
-
     showComments: false,
     setShowComments: (visible, opts) => {
       if (opts?.persist !== false) {
-        useSettingsStore
-          .getState()
-          .set("display.layerComments", String(visible));
+        writeRuntimeSetting("display.layerComments", String(visible));
       }
       set({ showComments: visible });
     },
@@ -134,9 +109,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     showForeshadowMarks: false,
     setShowForeshadowMarks: (visible, opts) => {
       if (opts?.persist !== false) {
-        useSettingsStore
-          .getState()
-          .set("display.layerForeshadow", String(visible));
+        writeRuntimeSetting("display.layerForeshadow", String(visible));
       }
       set({ showForeshadowMarks: visible });
     },
@@ -146,7 +119,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     showLint: true,
     setShowLint: (visible, opts) => {
       if (opts?.persist !== false) {
-        useSettingsStore.getState().set("display.layerLint", String(visible));
+        writeRuntimeSetting("display.layerLint", String(visible));
       }
       set({ showLint: visible });
     },
@@ -156,9 +129,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     toggleLayerAutoFollow: () =>
       set((s) => {
         const next = !s.layerAutoFollow;
-        useSettingsStore
-          .getState()
-          .set("display.layerAutoFollow", String(next));
+        writeRuntimeSetting("display.layerAutoFollow", String(next));
         return { layerAutoFollow: next };
       }),
 
@@ -188,20 +159,27 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
       set({ foreshadowPickerOpen: true, foreshadowPickerInitialMode: mode }),
 
     initFromSettings: () => {
-      const s = useSettingsStore.getState();
       set({
-        cursorAnimation: s.getBoolean("editor.smoothCaret", true),
-        cursorBlink: s.getBoolean("editor.cursorBlink", true),
-        focusMode: s.getBoolean("editor.focusMode", false),
-        typewriterMode: s.getBoolean("editor.typewriterMode", false),
+        cursorAnimation: readRuntimeSettingBoolean("editor.smoothCaret", true),
+        cursorBlink: readRuntimeSettingBoolean("editor.cursorBlink", true),
+        focusMode: readRuntimeSettingBoolean("editor.focusMode", false),
+        typewriterMode: readRuntimeSettingBoolean(
+          "editor.typewriterMode",
+          false,
+        ),
         // Zen is a transient view projection. Never reopen an application
         // session with all navigation chrome hidden.
         zenMode: false,
-        fullscreenMode: false,
-        showComments: s.getBoolean("display.layerComments", false),
-        showForeshadowMarks: s.getBoolean("display.layerForeshadow", false),
-        showLint: s.getBoolean("display.layerLint", true),
-        layerAutoFollow: s.getBoolean("display.layerAutoFollow", false),
+        showComments: readRuntimeSettingBoolean("display.layerComments", false),
+        showForeshadowMarks: readRuntimeSettingBoolean(
+          "display.layerForeshadow",
+          false,
+        ),
+        showLint: readRuntimeSettingBoolean("display.layerLint", true),
+        layerAutoFollow: readRuntimeSettingBoolean(
+          "display.layerAutoFollow",
+          false,
+        ),
       });
     },
   }),

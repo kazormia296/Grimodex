@@ -256,36 +256,41 @@ describe("resolveMcpSidecarPath", () => {
     await expect(resolveMcpSidecarPath()).resolves.toBe(executable);
   });
 
-  it("rejects a real Unix regular file without execute permission", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "grimodex-mcp-sidecar-"));
-    tempRoots.push(root);
-    const nonExecutable = path.join(root, "grimodex-mcp");
-    writeFileSync(nonExecutable, "fixture");
-    chmodSync(nonExecutable, 0o644);
-    process.env.GRIMODEX_MCP_PATH = nonExecutable;
+  it.skipIf(process.platform === "win32")(
+    "rejects a real Unix regular file without execute permission",
+    async () => {
+      const root = mkdtempSync(path.join(tmpdir(), "grimodex-mcp-sidecar-"));
+      tempRoots.push(root);
+      const nonExecutable = path.join(root, "grimodex-mcp");
+      writeFileSync(nonExecutable, "fixture");
+      chmodSync(nonExecutable, 0o644);
+      process.env.GRIMODEX_MCP_PATH = nonExecutable;
 
-    await expect(resolveMcpSidecarPath()).rejects.toThrow(
-      /GRIMODEX_MCP_PATH.*executable regular file/i,
-    );
-  });
+      await expect(resolveMcpSidecarPath()).rejects.toThrow(
+        /GRIMODEX_MCP_PATH.*executable regular file/i,
+      );
+    },
+  );
 
   it("chooses a newer release fixture instead of a stale debug binary", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "grimodex-mcp-sidecar-"));
     tempRoots.push(root);
     const mainDir = path.join(root, "dist-electron");
+    const executableName =
+      process.platform === "win32" ? "grimodex-mcp.exe" : "grimodex-mcp";
     const debug = path.join(
       root,
       "src-tauri",
       "target",
       "debug",
-      "grimodex-mcp",
+      executableName,
     );
     const release = path.join(
       root,
       "src-tauri",
       "target",
       "release",
-      "grimodex-mcp",
+      executableName,
     );
     mkdirSync(mainDir, { recursive: true });
     mkdirSync(path.dirname(debug), { recursive: true });
@@ -303,7 +308,7 @@ describe("resolveMcpSidecarPath", () => {
         isPackaged: false,
         resourcesPath: path.join(root, "resources"),
         mainDir,
-        platform: "linux",
+        platform: process.platform,
       }),
     ).resolves.toBe(release);
   });

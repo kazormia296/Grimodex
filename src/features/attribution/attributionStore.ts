@@ -1,6 +1,9 @@
 import { create } from "zustand";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
+import {
+  readRuntimeSettingBoolean,
+  writeRuntimeSetting,
+} from "@/features/settings/runtimeSettings";
+import type { LayerSetOptions } from "@/features/post-effect/types";
 
 export type AttributionScope = "scene" | "project";
 export type FilterSource = "human" | "ai" | "unknown" | null;
@@ -23,9 +26,7 @@ export const useAttributionStore = create<AttributionState>()((set, get) => ({
   filterSource: null,
   setShowAttribution: (visible, opts) => {
     if (opts?.persist !== false) {
-      useSettingsStore
-        .getState()
-        .set("display.layerAttribution", String(visible));
+      writeRuntimeSetting("display.layerAttribution", String(visible));
     }
     set({ showAttribution: visible });
   },
@@ -38,9 +39,10 @@ export const useAttributionStore = create<AttributionState>()((set, get) => ({
     })),
   initFromSettings: () => {
     set({
-      showAttribution: useSettingsStore
-        .getState()
-        .getBoolean("display.layerAttribution", false),
+      showAttribution: readRuntimeSettingBoolean(
+        "display.layerAttribution",
+        false,
+      ),
     });
   },
 }));

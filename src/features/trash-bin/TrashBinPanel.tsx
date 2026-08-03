@@ -64,7 +64,7 @@ export function TrashBinPanel() {
       } catch {
         /* prune 失敗は致命的ではない */
       }
-      await loadItems(getCurrentProjectId());
+      await loadItems(getCurrentProjectId()).catch(() => {});
     })();
 
     // 1 時間おきのバックグラウンド prune (設計書 §3.4)
@@ -74,7 +74,7 @@ export function TrashBinPanel() {
         getCurrentProjectId(),
         resolveRetentionDays(),
         PRUNE_MAX_COUNT,
-      ).then(() => loadItems(getCurrentProjectId()));
+      ).then(() => loadItems(getCurrentProjectId()).catch(() => {}));
     }, PRUNE_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, [loadItems]);

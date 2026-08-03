@@ -4,6 +4,7 @@ import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { getDocText } from "./RubyNode";
 import { markStart, markEnd } from "@/lib/perfLog";
+import { scheduleEditorAnalysisTask } from "@/lib/editorAnalysisScheduler";
 
 // ---------------------------------------------------------------------------
 // Per-editor orchestrator state
@@ -11,14 +12,18 @@ import { markStart, markEnd } from "@/lib/perfLog";
 
 interface OrchestratorState {
   version: number;
-  timer: ReturnType<typeof setTimeout> | null;
+  schedulerKey: string;
 }
 
 const states = new WeakMap<Editor, OrchestratorState>();
+let nextSchedulerId = 0;
 
 function getState(editor: Editor): OrchestratorState {
   if (!states.has(editor)) {
-    states.set(editor, { version: 0, timer: null });
+    states.set(editor, {
+      version: 0,
+      schedulerKey: `codex-match:${nextSchedulerId++}`,
+    });
   }
   return states.get(editor)!;
 }
@@ -48,18 +53,13 @@ export function scheduleMatch(
   skipMatchedIds = false,
 ): void {
   const state = getState(editor);
-
-  // Cancel pending timer
-  if (state.timer !== null) {
-    clearTimeout(state.timer);
-    state.timer = null;
-  }
-
   const myVersion = ++state.version;
 
-  state.timer = setTimeout(() => {
-    state.timer = null;
-    void (async () => {
+  scheduleEditorAnalysisTask({
+    key: state.schedulerKey,
+    kind: "codex-match",
+    delayMs: debounceMs,
+    run: async () => {
       try {
         if (editor.isDestroyed || !editor.state) return;
         const text = getDocText(editor.state.doc);
@@ -78,8 +78,8 @@ export function scheduleMatch(
       } catch {
         // Silently ignore match errors (e.g. workspace not open yet)
       }
-    })();
-  }, debounceMs);
+    },
+  });
 }
 
 /**

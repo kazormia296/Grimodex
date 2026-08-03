@@ -28,6 +28,17 @@ describe("runtime target contract", () => {
     expect(capabilities.mcpServer).toBe(false);
     expect(capabilities.multiWindow).toBe(false);
     expect(capabilities.customIme).toBe(false);
+    expect(capabilities.localSemanticReranker).toBe(false);
+  });
+
+  it("exposes the packaged semantic reranker only to Electron", () => {
+    expect(resolveRuntimeCapabilities("electron").localSemanticReranker).toBe(
+      true,
+    );
+    expect(resolveRuntimeCapabilities("web").localSemanticReranker).toBe(false);
+    expect(
+      resolveRuntimeCapabilities("mobile-native").localSemanticReranker,
+    ).toBe(false);
   });
 
   it("only exposes generic project transfer to the Electron application", () => {

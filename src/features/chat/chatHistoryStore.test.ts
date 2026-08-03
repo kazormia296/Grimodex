@@ -1,10 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+vi.mock("./chatHistoryApi", () => ({
+  listSessionsWithStats: vi.fn(),
+  searchChatMessages: vi.fn(),
+}));
+
 import {
   filterAndSortSessions,
   groupSessionsByScene,
   groupSessionsByScope,
+  useChatHistoryStore,
 } from "./chatHistoryStore";
 import type { SessionWithStats } from "./chatHistoryApi";
+import { listSessionsWithStats } from "./chatHistoryApi";
+
+const mockListSessionsWithStats = vi.mocked(listSessionsWithStats);
 
 // Helper to build a minimal SessionWithStats
 function makeSession(
@@ -277,6 +287,72 @@ describe("groupSessionsByScene", () => {
     // All scene-linked sessions fall back to showing their nodeId
     const unknownGroup = groups.find((g) => g.nodeId === "scene-a");
     expect(unknownGroup!.groupLabel).toBe("scene-a");
+  });
+});
+
+describe("chatHistoryStore lifecycle loading", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useChatHistoryStore.getState().resetForProject();
+  });
+
+  it("lets lifecycle strict callers observe a shared load failure", async () => {
+    const failure = new Error("chat history optional hydrate failed");
+    mockListSessionsWithStats.mockRejectedValueOnce(failure);
+
+    const compatibleUiLoad = useChatHistoryStore
+      .getState()
+      .loadSessions("proj-1");
+    const strictLifecycleLoad = useChatHistoryStore
+      .getState()
+      .loadSessions("proj-1", { propagateError: true });
+    const compatibleExpectation =
+      expect(compatibleUiLoad).resolves.toBe(undefined);
+    const strictExpectation = expect(strictLifecycleLoad).rejects.toBe(failure);
+
+    await Promise.all([compatibleExpectation, strictExpectation]);
+    expect(mockListSessionsWithStats).toHaveBeenCalledTimes(1);
+    expect(useChatHistoryStore.getState().isLoading).toBe(false);
+  });
+
+  it("keeps a strict-first load authoritative when an ordinary caller joins", async () => {
+    const failure = new Error("chat history strict-first hydrate failed");
+    mockListSessionsWithStats.mockRejectedValueOnce(failure);
+
+    const strictLifecycleLoad = useChatHistoryStore
+      .getState()
+      .loadSessions("proj-1", { propagateError: true });
+    const compatibleUiLoad = useChatHistoryStore
+      .getState()
+      .loadSessions("proj-1");
+    const strictExpectation = expect(strictLifecycleLoad).rejects.toBe(failure);
+    const compatibleExpectation =
+      expect(compatibleUiLoad).resolves.toBe(undefined);
+
+    await Promise.all([strictExpectation, compatibleExpectation]);
+    expect(mockListSessionsWithStats).toHaveBeenCalledTimes(1);
+    expect(useChatHistoryStore.getState().isLoading).toBe(false);
+  });
+
+  it("does not publish a load invalidated by a Project reset", async () => {
+    let resolveOldLoad!: (value: SessionWithStats[]) => void;
+    const currentSession = makeSession({ id: "current-session" });
+    mockListSessionsWithStats
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveOldLoad = resolve;
+        }),
+      )
+      .mockResolvedValueOnce([currentSession]);
+
+    const oldLoad = useChatHistoryStore.getState().loadSessions("proj-old");
+    useChatHistoryStore.getState().resetForProject();
+    await useChatHistoryStore.getState().loadSessions("proj-current");
+    resolveOldLoad([makeSession({ id: "old-session" })]);
+    await oldLoad;
+
+    expect(useChatHistoryStore.getState().sessions).toEqual([currentSession]);
+    expect(useChatHistoryStore.getState().isLoading).toBe(false);
   });
 });
 

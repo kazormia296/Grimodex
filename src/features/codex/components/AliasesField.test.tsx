@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AliasesField } from "./AliasesField";
 
@@ -44,6 +44,21 @@ describe("AliasesField", () => {
     await user.keyboard("{Enter}");
 
     expect(onChange).toHaveBeenCalledWith(["新しい別名"]);
+  });
+
+  it("does not submit when Enter confirms an IME composition", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<AliasesField label="Aliases" aliases={[]} onChange={onChange} />);
+
+    await user.click(screen.getByTestId("aliases-add-button"));
+    const input = screen.getByTestId("aliases-input");
+    await user.type(input, "せつな");
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveValue("せつな");
   });
 
   it("appends new alias to existing aliases", async () => {

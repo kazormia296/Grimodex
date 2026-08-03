@@ -11,6 +11,7 @@ import { GridFolderCard } from "./GridFolderCard";
 import { GridColumnLabelBar } from "./GridColumnLabelBar";
 import { GridChapterColumnContextMenu } from "./GridChapterColumnContextMenu";
 import { GridChapterColumnMenu } from "./GridChapterColumnMenu";
+import { GridVirtualList } from "./GridVirtualList";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import {
   columnDraggableId,
@@ -21,6 +22,9 @@ import {
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 import type { GridDescendant } from "./gridSelectors";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import { useLatestValueDraftController } from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 interface CardVisibility {
   matchesSearch: boolean;
@@ -47,6 +51,8 @@ interface Props {
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order across all columns, for range selection. */
   flatOrder?: string[];
+  /** Keep only the active DnD source mounted when it leaves this viewport. */
+  pinnedItemId?: string | null;
 }
 
 export function GridColumn({
@@ -61,16 +67,36 @@ export function GridColumn({
   columnAxisLockOffsetPx,
   onRequestDeleteConfirm,
   flatOrder,
+  pinnedItemId,
 }: Props) {
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const editingTitleRef = useRef(false);
+  const mountedRef = useRef(true);
   const createNode = useTreeStore((s) => s.createNode);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const pendingRenameId = useTreeStore((s) => s.pendingRenameId);
   const setPendingRenameId = useTreeStore((s) => s.setPendingRenameId);
+  const titleController = useLatestValueDraftController(
+    `grid-column-title:${folder.id}`,
+    folder.title,
+    async (next) => {
+      const trimmed = next.trim();
+      if (trimmed && trimmed !== folder.title) {
+        await updateNodeTitle(folder.id, trimmed);
+      }
+    },
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const {
     attributes,
@@ -99,18 +125,48 @@ export function GridColumn({
   });
 
   function startTitleEdit() {
+    if (editingTitleRef.current) return;
+    editingTitleRef.current = true;
+    titleController.reset(folder.title);
     setTitleDraft(folder.title);
     setEditingTitle(true);
     setTimeout(() => titleInputRef.current?.select(), 0);
   }
 
-  function commitTitle() {
-    const trimmed = titleDraft.trim();
-    if (trimmed && trimmed !== folder.title) {
-      void updateNodeTitle(folder.id, trimmed);
+  async function commitTitle(
+    options?: QuiescenceParticipantFlushOptions,
+  ): Promise<void> {
+    if (!editingTitleRef.current) return;
+    if (!titleController.latestValue.trim()) {
+      titleController.reset(folder.title);
+    } else {
+      await titleController.save(options);
     }
-    setEditingTitle(false);
+    editingTitleRef.current = false;
+    if (mountedRef.current) setEditingTitle(false);
   }
+
+  function cancelTitle(): void {
+    editingTitleRef.current = false;
+    titleController.reset(folder.title);
+    if (mountedRef.current) setEditingTitle(false);
+  }
+
+  useQuiescentDraftParticipant({
+    id: `grid-column-title:${folder.id}`,
+    enabled: editingTitle,
+    isDirty: () => editingTitleRef.current && titleController.dirty,
+    flush: commitTitle,
+    discard: cancelTitle,
+    recovery: () =>
+      editingTitleRef.current
+        ? {
+            kind: "grid-column-title",
+            nodeId: folder.id,
+            title: titleController.latestValue,
+          }
+        : null,
+  });
 
   async function addScene() {
     await createNode({ nodeType: "scene", parentId: folder.id });
@@ -162,6 +218,20 @@ export function GridColumn({
     .map((d) => d.node);
   const visibleScenes = sceneItems.filter(
     (s) => visibility.get(s.id)?.passesFilter !== false,
+  );
+  const renderedDescendants = useMemo(
+    () =>
+      descendants
+        .filter(
+          ({ node }) =>
+            node.nodeType === "folder" ||
+            visibility.get(node.id)?.passesFilter !== false,
+        )
+        .map((descendant) => ({
+          ...descendant,
+          id: descendant.node.id,
+        })),
+    [descendants, visibility],
   );
   const INDENT_PX = 12;
 
@@ -249,15 +319,21 @@ export function GridColumn({
                 autoFocus
                 className="flex-1 min-w-0 rounded bg-accent px-1 py-0.5 text-sm font-semibold outline-none"
                 value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onBlur={commitTitle}
+                onChange={(e) => {
+                  titleController.markDirty(
+                    e.target.value.trim() ? e.target.value : folder.title,
+                  );
+                  setTitleDraft(e.target.value);
+                }}
+                onBlur={() => void commitTitle().catch(() => {})}
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
                   if (e.key === "Enter") {
                     e.preventDefault();
-                    commitTitle();
+                    void commitTitle().catch(() => {});
                   } else if (e.key === "Escape") {
                     e.preventDefault();
-                    setEditingTitle(false);
+                    cancelTitle();
                   }
                 }}
                 onClick={(e) => e.stopPropagation()}
@@ -295,74 +371,74 @@ export function GridColumn({
           </div>
 
           {/* Items: scenes (cards) + nested folders (folder cards), recursively flattened */}
-          <div className="flex flex-col gap-2 p-2 flex-1 min-h-0 overflow-y-auto">
-            {descendants.length === 0 ? (
+          {descendants.length === 0 ? (
+            <div className="flex min-h-0 flex-1 p-2">
               <div
                 ref={setEmptyRef}
                 className={cn(
-                  "flex-1 rounded-md border-2 border-dashed border-border min-h-16",
-                  "flex items-center justify-center text-[11px] text-muted-foreground",
+                  "flex min-h-16 flex-1 items-center justify-center rounded-md border-2 border-dashed border-border",
+                  "text-[11px] text-muted-foreground",
                   isEmptyOver && "border-primary bg-primary/5",
                 )}
               >
                 {t("grid.column.dropHere", "ここにドロップ")}
               </div>
-            ) : (
-              <>
-                {descendants.map(({ node, depth }) => {
-                  const indentStyle =
-                    depth > 0 ? { paddingLeft: depth * INDENT_PX } : undefined;
-                  if (node.nodeType === "folder") {
-                    return (
-                      <div key={node.id} style={indentStyle}>
-                        <GridFolderCard
-                          folder={node}
-                          compact={display.compactCards}
-                          columnDropIndicator={columnDropIndicator}
-                          axisLockOffsetPx={effectiveAxisLockOffsets.get(
-                            node.id,
-                          )}
-                        />
-                      </div>
-                    );
-                  }
-                  const vis = visibility.get(node.id);
-                  if (vis && !vis.passesFilter) return null;
-                  const isDropBefore =
-                    (dropIndicator?.targetId === node.id &&
-                      dropIndicator.position === "before") ||
-                    (columnDropIndicator?.targetId === node.id &&
-                      columnDropIndicator.position === "before");
-                  const isDropAfter =
-                    (dropIndicator?.targetId === node.id &&
-                      dropIndicator.position === "after") ||
-                    (columnDropIndicator?.targetId === node.id &&
-                      columnDropIndicator.position === "after");
+            </div>
+          ) : (
+            <GridVirtualList
+              items={renderedDescendants}
+              pinnedItemId={pinnedItemId}
+              compact={display.compactCards}
+              endRef={setEndRef}
+              endClassName={cn(
+                "rounded transition-colors",
+                isEndOver && "bg-primary/20",
+              )}
+              testId={`grid-column-list-${folder.id}`}
+              renderItem={({ node, depth }) => {
+                const indentStyle =
+                  depth > 0 ? { paddingLeft: depth * INDENT_PX } : undefined;
+                if (node.nodeType === "folder") {
                   return (
                     <div key={node.id} style={indentStyle}>
-                      <GridSceneCard
-                        scene={node}
-                        display={display}
-                        dimmed={vis !== undefined && !vis.matchesSearch}
-                        isDropBefore={isDropBefore}
-                        isDropAfter={isDropAfter}
+                      <GridFolderCard
+                        folder={node}
+                        compact={display.compactCards}
+                        columnDropIndicator={columnDropIndicator}
                         axisLockOffsetPx={effectiveAxisLockOffsets.get(node.id)}
-                        onRequestDeleteConfirm={onRequestDeleteConfirm}
-                        flatOrder={flatOrder}
                       />
                     </div>
                   );
-                })}
-                <div
-                  ref={setEndRef}
-                  className={cn(
-                    "h-4 rounded transition-colors",
-                    isEndOver && "bg-primary/20",
-                  )}
-                />
-              </>
-            )}
-          </div>
+                }
+                const vis = visibility.get(node.id);
+                if (vis && !vis.passesFilter) return null;
+                const isDropBefore =
+                  (dropIndicator?.targetId === node.id &&
+                    dropIndicator.position === "before") ||
+                  (columnDropIndicator?.targetId === node.id &&
+                    columnDropIndicator.position === "before");
+                const isDropAfter =
+                  (dropIndicator?.targetId === node.id &&
+                    dropIndicator.position === "after") ||
+                  (columnDropIndicator?.targetId === node.id &&
+                    columnDropIndicator.position === "after");
+                return (
+                  <div style={indentStyle}>
+                    <GridSceneCard
+                      scene={node}
+                      display={display}
+                      dimmed={vis !== undefined && !vis.matchesSearch}
+                      isDropBefore={isDropBefore}
+                      isDropAfter={isDropAfter}
+                      axisLockOffsetPx={effectiveAxisLockOffsets.get(node.id)}
+                      onRequestDeleteConfirm={onRequestDeleteConfirm}
+                      flatOrder={flatOrder}
+                    />
+                  </div>
+                );
+              }}
+            />
+          )}
 
           <button
             className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"

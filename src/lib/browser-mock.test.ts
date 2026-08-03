@@ -116,6 +116,52 @@ describe("createBrowserMock", () => {
     });
   });
 
+  describe("map_write_bundle", () => {
+    it("persists a renderer SQL-free board aggregate", async () => {
+      const now = new Date().toISOString();
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "create-board",
+          projectId: "default-project",
+          board: {
+            id: "typed-map-board",
+            projectId: "default-project",
+            title: "Typed map",
+            sortOrder: 1,
+            mode: "free",
+            viewportX: 0,
+            viewportY: 0,
+            viewportZoom: 1,
+            showConfig: "{}",
+            colorBy: "none",
+            createdAt: now,
+            updatedAt: now,
+          },
+          stickies: [],
+          positions: [],
+          edges: [],
+          frames: [],
+        },
+      });
+
+      const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
+        "db_execute",
+        {
+          sql: "select id, project_id, title from map_boards where id = ?",
+          params: ["typed-map-board"],
+          method: "all",
+        },
+      );
+      expect(result.rows).toEqual([
+        {
+          id: "typed-map-board",
+          project_id: "default-project",
+          title: "Typed map",
+        },
+      ]);
+    });
+  });
+
   describe("timelapse_append_batch", () => {
     it("allocates sequence/hash rows in the browser mock and dedupes resend", async () => {
       const events = [
@@ -264,10 +310,42 @@ describe("createBrowserMock", () => {
     it("fails explicitly instead of returning a fake assistant response", async () => {
       // Ensure no key is stored
       await mock.invoke("delete_api_key", { provider: "ollama" });
+      const auditContext = {
+        expectedWorkspacePath: "/dev/workspace",
+        projectId: "default-project",
+        operationId: "operation-missing-model",
+        executionId: "execution-missing-model",
+        parentExecutionId: null,
+        pathId: "browser_byok_web",
+      } as const;
+      const event = (eventType: string, sequence: number) => ({
+        eventId: `missing-model-${sequence}`,
+        executionId: auditContext.executionId,
+        operationId: auditContext.operationId,
+        parentExecutionId: auditContext.parentExecutionId,
+        pathId: auditContext.pathId,
+        eventType,
+        timestamp: sequence,
+        payload: {
+          captureState: "complete",
+          credentialsExcluded: true,
+          request: { messages: [] },
+        },
+      });
+      await mock.invoke("ai_audit_append_batch", {
+        expectedWorkspacePath: auditContext.expectedWorkspacePath,
+        projectId: auditContext.projectId,
+        events: [
+          event("execution.started", 1),
+          event("request.prepared", 2),
+          event("request.dispatched", 3),
+        ],
+      });
 
       await expect(
         mock.invoke("send_chat_message", {
           messages: [{ role: "user", content: "Hello" }],
+          auditContext,
         }),
       ).rejects.toThrow(/model.*設定|モデル.*設定/i);
     });
@@ -284,8 +362,26 @@ describe("createBrowserMock", () => {
 
     it("keeps dense semantic commands as explicit no-ops in Hosted Editor", async () => {
       await expect(
-        mock.invoke("semantic_index_scene", { sceneId: "scene-1" }),
+        mock.invoke("semantic_index_scene", {
+          expectedWorkspacePath: "/dev/workspace",
+          projectId: "default-project",
+          sceneId: "scene-1",
+        }),
       ).resolves.toBe(0);
+      await expect(
+        mock.invoke("semantic_index_scene", {
+          expectedWorkspacePath: "/different/workspace",
+          projectId: "default-project",
+          sceneId: "scene-1",
+        }),
+      ).rejects.toThrow(/AI_AUDIT_WORKSPACE_CHANGED/u);
+      await expect(
+        mock.invoke("semantic_index_scene", {
+          expectedWorkspacePath: "/dev/workspace",
+          projectId: "different-project",
+          sceneId: "scene-1",
+        }),
+      ).rejects.toThrow(/SEMANTIC_INDEX_AUTHORITY_MISMATCH/u);
       await expect(
         mock.invoke("semantic_search", {
           projectId: "default-project",

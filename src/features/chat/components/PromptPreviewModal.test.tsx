@@ -74,6 +74,32 @@ describe("PromptPreviewModal", () => {
     expect(screen.queryByText("should not show yet")).not.toBeInTheDocument();
   });
 
+  it("exact 構築不能時は live prompt と入力を表示・保存しない", () => {
+    render(
+      <PromptPreviewModal
+        systemPrompt="STALE LIVE ESTIMATE PROMPT"
+        layers={[]}
+        totalTokens={999}
+        userMessage="未送信の入力"
+        unavailable
+        onClose={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "正確なプロンプトを構築できませんでした。現在のコンテキストを確認し、プレビューを開き直してください。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("STALE LIVE ESTIMATE PROMPT"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("未送信の入力")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "テンプレート保存" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("userMessage を渡すと送信メッセージを描画する", () => {
     render(
       <PromptPreviewModal
@@ -85,5 +111,45 @@ describe("PromptPreviewModal", () => {
       />,
     );
     expect(screen.getByText("これから送る入力")).toBeInTheDocument();
+  });
+
+  it("Agentツールと応答予約を含むリクエスト全体の超過を表示する", () => {
+    render(
+      <PromptPreviewModal
+        systemPrompt="SYS"
+        layers={[]}
+        totalTokens={1_037}
+        contextWindow={4_096}
+        contextWindowUsage={{
+          contextTokens: 1_037,
+          toolTokens: 5_591,
+          envelopeTokens: 0,
+          safetyMarginTokens: 32,
+          inputTokens: 6_628,
+          outputReservedTokens: 3_072,
+          reservedTotalTokens: 9_732,
+          contextWindow: 4_096,
+          remainingTokens: -5_636,
+          overflowTokens: 5_636,
+          estimated: false,
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("プロンプト・会話")).toBeInTheDocument();
+    expect(screen.getByText("1,037")).toBeInTheDocument();
+    expect(screen.getByText("Agentツール定義")).toBeInTheDocument();
+    expect(screen.getByText("5,591")).toBeInTheDocument();
+    expect(screen.getByText("応答予約")).toBeInTheDocument();
+    expect(screen.getByText("3,072")).toBeInTheDocument();
+    expect(screen.getByText("安全余白")).toBeInTheDocument();
+    expect(screen.getByText("32")).toBeInTheDocument();
+    expect(screen.getByText("リクエスト合計")).toBeInTheDocument();
+    expect(screen.getByText("9,732")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: /238%/ })).toHaveAttribute(
+      "aria-valuenow",
+      "100",
+    );
   });
 });

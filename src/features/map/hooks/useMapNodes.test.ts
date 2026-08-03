@@ -3,10 +3,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { Node } from "@xyflow/react";
 
-import { corkRotation, useMapNodes } from "./useMapNodes";
+import {
+  corkRotation,
+  countStickiesByBranch,
+  mapNodePresentationEqual,
+  useMapNodes,
+} from "./useMapNodes";
 import { layoutForAsync } from "../layouts";
 import { layoutFingerprint } from "../layouts/layoutFingerprint";
 import type { MapNodePositionRecord } from "../types";
+import { projectMapPositions } from "./mapPositionProjection";
 
 // ── Pure exports ────────────────────────────────────────────────────────────
 
@@ -25,6 +31,129 @@ describe("corkRotation", () => {
     const r1 = corkRotation("id-alpha");
     const r2 = corkRotation("id-beta");
     expect(r1).not.toBe(r2);
+  });
+});
+
+describe("map node incremental rebuild helpers", () => {
+  it("counts branch stickies in one pass", () => {
+    const counts = countStickiesByBranch([
+      { id: "s1", aiBranchId: "b1" },
+      { id: "s2", aiBranchId: "b1" },
+      { id: "s3", aiBranchId: "b2" },
+      { id: "s4", aiBranchId: null },
+    ] as unknown as Parameters<typeof countStickiesByBranch>[0]);
+
+    expect(counts).toEqual(
+      new Map([
+        ["b1", 2],
+        ["b2", 1],
+      ]),
+    );
+  });
+
+  it("preserves identity when only rebuilt callback references differ", () => {
+    const previous: Node = {
+      id: "scene:s1",
+      type: "scene",
+      position: { x: 10, y: 20 },
+      data: { title: "Scene", onOpen: () => "old" },
+    };
+    const rebuilt: Node = {
+      ...previous,
+      data: { title: "Scene", onOpen: () => "new" },
+    };
+
+    expect(mapNodePresentationEqual(previous, rebuilt)).toBe(true);
+    expect(
+      mapNodePresentationEqual(previous, {
+        ...rebuilt,
+        data: { ...rebuilt.data, title: "Changed" },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("useMapNodes — reused node callbacks", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("node identity を維持したまま最新の onBranchFrom を呼ぶ", async () => {
+    let nodes: Node[] = [];
+    const setNodes = vi.fn((update: React.SetStateAction<Node[]>) => {
+      nodes = typeof update === "function" ? update(nodes) : update;
+    });
+    const firstOnBranchFrom = vi.fn();
+    const latestOnBranchFrom = vi.fn();
+    const positions = [makePosition("pos1", "s1")];
+    const treeNodes = [
+      {
+        id: "s1",
+        nodeType: "scene",
+        title: "Scene",
+        synopsis: null,
+        status: "outline",
+        sortOrder: "a0",
+      },
+    ] as Parameters<typeof useMapNodes>[0]["treeNodes"];
+    const baseProps: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions,
+      positionsStructureRevision: 1,
+      positionsLayoutRevision: 1,
+      treeNodes,
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: false,
+        notes: false,
+        userEdges: false,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "free",
+      userEdges: [],
+      colorBy: "none",
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes,
+      setForceLayoutRunning: vi.fn(),
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+      onBranchFrom: firstOnBranchFrom,
+    };
+
+    const { rerender } = renderHook((props) => useMapNodes(props), {
+      initialProps: baseProps,
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const originalNode = nodes[0];
+
+    rerender({ ...baseProps, onBranchFrom: latestOnBranchFrom });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(nodes[0]).toBe(originalNode);
+    (nodes[0].data.onBranchFrom as (direction: "left" | "right") => void)(
+      "right",
+    );
+    expect(firstOnBranchFrom).not.toHaveBeenCalled();
+    expect(latestOnBranchFrom).toHaveBeenCalledWith("scene:s1", "right");
   });
 });
 
@@ -55,6 +184,15 @@ vi.mock("../layouts/layoutFingerprint", () => ({
   layoutFingerprint: vi.fn().mockReturnValue("fp-1"),
   computeLayoutFingerprint: vi.fn().mockReturnValue("fp-1"),
 }));
+
+vi.mock("./mapPositionProjection", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./mapPositionProjection")>();
+  return {
+    ...actual,
+    projectMapPositions: vi.fn(actual.projectMapPositions),
+  };
+});
 
 vi.mock("../layouts/forceEngine", () => ({
   WorkerForceLayoutEngine: class {},
@@ -131,6 +269,8 @@ describe("useMapNodes — 手動キュレーション表示判定", () => {
       useMapNodes({
         boardId: "b1",
         positions,
+        positionsStructureRevision: 1,
+        positionsLayoutRevision: 1,
         treeNodes,
         codexEntries: [],
         snippets: [],
@@ -193,6 +333,8 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
     const baseProps: Parameters<typeof useMapNodes>[0] = {
       boardId: "b1",
       positions: [],
+      positionsStructureRevision: 1,
+      positionsLayoutRevision: 1,
       treeNodes: [],
       codexEntries: [],
       snippets: [],
@@ -263,6 +405,8 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
     const props: Parameters<typeof useMapNodes>[0] = {
       boardId: "b1",
       positions: [],
+      positionsStructureRevision: 1,
+      positionsLayoutRevision: 1,
       treeNodes: [],
       codexEntries: [],
       snippets: [],
@@ -318,6 +462,8 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
     const baseProps: Parameters<typeof useMapNodes>[0] = {
       boardId: "b1",
       positions: [makePosition("pos1", "s1")],
+      positionsStructureRevision: 1,
+      positionsLayoutRevision: 1,
       treeNodes: [
         {
           id: "s1",
@@ -372,6 +518,12 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
     });
 
     const callsAfterInitial = vi.mocked(layoutForAsync).mock.calls.length;
+    const fingerprintCallsAfterInitial =
+      vi.mocked(layoutFingerprint).mock.calls.length;
+    const projectionCallsAfterInitial =
+      vi.mocked(projectMapPositions).mock.calls.length;
+    const nodeBuildsAfterInitial = vi.mocked(baseProps.setNodes).mock.calls
+      .length;
     expect(callsAfterInitial).toBe(1);
 
     rerender({
@@ -384,6 +536,110 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
     });
 
     expect(vi.mocked(layoutForAsync).mock.calls.length).toBe(callsAfterInitial);
+    expect(vi.mocked(layoutFingerprint).mock.calls.length).toBe(
+      fingerprintCallsAfterInitial,
+    );
+    expect(vi.mocked(projectMapPositions).mock.calls.length).toBe(
+      projectionCallsAfterInitial,
+    );
+    expect(vi.mocked(baseProps.setNodes).mock.calls.length).toBe(
+      nodeBuildsAfterInitial,
+    );
+  });
+
+  it("structure revision の更新は projection と theme layout を再構築する", async () => {
+    vi.mocked(layoutFingerprint).mockImplementation(({ scenes }) =>
+      scenes
+        .map((scene) => scene.id)
+        .sort()
+        .join("|"),
+    );
+    let nodes: Node[] = [];
+    const setNodes = vi.fn((update: React.SetStateAction<Node[]>) => {
+      nodes = typeof update === "function" ? update(nodes) : update;
+    });
+    const scene = (id: string, sortOrder: string) =>
+      ({
+        id,
+        nodeType: "scene",
+        title: id,
+        synopsis: null,
+        status: "outline",
+        sortOrder,
+      }) as Parameters<typeof useMapNodes>[0]["treeNodes"][number];
+    const baseProps: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions: [makePosition("pos1", "s1")],
+      positionsStructureRevision: 1,
+      positionsLayoutRevision: 1,
+      treeNodes: [scene("s1", "a0")],
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: false,
+        notes: false,
+        userEdges: false,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "theme",
+      userEdges: [],
+      colorBy: "none",
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes,
+      setForceLayoutRunning: vi.fn(),
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+    };
+
+    const { rerender } = renderHook((props) => useMapNodes(props), {
+      initialProps: baseProps,
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const fingerprintCallsAfterInitial =
+      vi.mocked(layoutFingerprint).mock.calls.length;
+    const projectionCallsAfterInitial =
+      vi.mocked(projectMapPositions).mock.calls.length;
+    const layoutCallsAfterInitial = vi.mocked(layoutForAsync).mock.calls.length;
+
+    rerender({
+      ...baseProps,
+      positions: [makePosition("pos1", "s1"), makePosition("pos2", "s2")],
+      positionsStructureRevision: 2,
+      positionsLayoutRevision: 2,
+      treeNodes: [scene("s1", "a0"), scene("s2", "a1")],
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(vi.mocked(layoutFingerprint).mock.calls.length).toBeGreaterThan(
+      fingerprintCallsAfterInitial,
+    );
+    expect(vi.mocked(projectMapPositions).mock.calls.length).toBeGreaterThan(
+      projectionCallsAfterInitial,
+    );
+    expect(vi.mocked(layoutForAsync).mock.calls.length).toBeGreaterThan(
+      layoutCallsAfterInitial,
+    );
+    expect(nodes.map((node) => node.id)).toEqual(["scene:s1", "scene:s2"]);
   });
 });
 
@@ -422,6 +678,8 @@ describe("useMapNodes — userEdges 参照安定時は再構築しない契約",
     const baseProps: Parameters<typeof useMapNodes>[0] = {
       boardId: "b1",
       positions,
+      positionsStructureRevision: 1,
+      positionsLayoutRevision: 1,
       treeNodes,
       codexEntries: [],
       snippets: [],
@@ -491,6 +749,8 @@ describe("useMapNodes — userEdges 参照安定時は再構築しない契約",
     const baseProps: Parameters<typeof useMapNodes>[0] = {
       boardId: "b1",
       positions: [],
+      positionsStructureRevision: 1,
+      positionsLayoutRevision: 1,
       treeNodes: [],
       codexEntries: [],
       snippets: [],

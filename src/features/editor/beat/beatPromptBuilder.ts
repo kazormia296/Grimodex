@@ -1,4 +1,4 @@
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import type { BeatType } from "./beatTypes";
 import { getPromptCatalog } from "@/prompts/index";
 
 export interface BeatPromptInput {

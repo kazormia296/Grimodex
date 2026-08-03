@@ -216,7 +216,7 @@ impl Backend {
 
 ### 5.1 セキュリティ前提
 
-`contextIsolation: true` / `sandbox: true` / `nodeIntegration: false`。preload は `contextBridge.exposeInMainWorld("grimodex", …)` のみ。追加ガード: `will-navigate` 全拒否（dev URL の同一 origin リロードのみ許可 — `dragDropEnabled:false` 相当のファイルドロップ航行防止を兼ねる）、`setWindowOpenHandler` は deny（http/https は main の scheme 検証後 `shell.openExternal`）、`session.setPermissionRequestHandler` は notification のみ許可。
+`contextIsolation: true` / `sandbox: true` / `nodeIntegration: false`。preload は `contextBridge.exposeInMainWorld("grimodex", …)` のみ。追加ガード: `will-navigate` 全拒否（dev URL の同一 origin リロードのみ許可 — `dragDropEnabled:false` 相当のファイルドロップ航行防止を兼ねる）、`setWindowOpenHandler` は deny（http/https は main の scheme 検証後 `shell.openExternal`）。session permission は request/check の両 handler で deny-by-default とし、`app://bundle` または設定済み dev renderer と同一 origin の main frame に限って notification と `clipboard-sanitized-write` を許可する。`clipboard-read`、subframe、外部 origin、その他の権限は拒否する。
 
 ### 5.2 invoke 写像と「エラー文字列契約」
 

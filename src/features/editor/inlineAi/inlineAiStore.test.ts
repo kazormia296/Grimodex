@@ -151,4 +151,30 @@ describe("useInlineAiStore", () => {
       to: 50,
     });
   });
+
+  it("refuses to replace an active preview session", () => {
+    const first = useInlineAiStore.getState().startGeneration({
+      commandId: "continue",
+      mode: "insert",
+      originalRange: null,
+      originalText: "",
+      insertPos: 0,
+      abortController: new AbortController(),
+      sessionId: "first-session",
+    });
+    const second = useInlineAiStore.getState().startGeneration({
+      commandId: "rewrite",
+      mode: "replace",
+      originalRange: RANGE,
+      originalText: "old",
+      insertPos: null,
+      abortController: new AbortController(),
+      sessionId: "second-session",
+    });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(useInlineAiStore.getState().sessionId).toBe("first-session");
+    expect(useInlineAiStore.getState().activeCommandId).toBe("continue");
+  });
 });

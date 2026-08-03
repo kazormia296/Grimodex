@@ -8,14 +8,19 @@ import type { SceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { markEnd, markStart } from "@/lib/perfLog";
-import type { LoadedEditorBinding, LoadedEditorDocument } from "../types";
+import type { EditorDocumentIdentity, LoadedEditorDocument } from "../types";
 
 export interface CodexDocumentLoadServices {
   getCodexEntry: (
     projectId: string,
     id: string,
   ) => Promise<
-    { content?: string | null; summary?: string | null } | undefined
+    | {
+        content?: string | null;
+        summary?: string | null;
+        version: number;
+      }
+    | undefined
   >;
   loadPhasesForEntry: (id: string) => Promise<void>;
   getPhasesForEntry: (
@@ -49,7 +54,7 @@ function parseCodexContent(
 }
 
 export async function loadCodexDocument(
-  binding: Extract<LoadedEditorBinding, { kind: "codex" }>,
+  binding: Extract<EditorDocumentIdentity, { kind: "codex" }>,
   context: CodexDocumentLoadContext,
   services: CodexDocumentLoadServices = defaultCodexDocumentLoadServices,
 ): Promise<LoadedEditorDocument> {
@@ -59,17 +64,26 @@ export async function loadCodexDocument(
     binding.id,
   );
   markEnd("sceneLoad.getCodexEntry");
+  if (!entry) {
+    throw new Error(`Codex entry '${binding.id}' was not found`);
+  }
 
   await services.loadPhasesForEntry(binding.id);
   const phases = services.getPhasesForEntry(binding.id);
   let phaseContentOverride: string | null = null;
   let resolvedPhaseId: string | null = null;
+  let loadedVersion = entry.version;
 
   if (context.phase.mode === "explicit" && context.phase.phaseId) {
     const targetPhase = phases.find(
       (phase) => phase.id === context.phase.phaseId,
     );
-    if (targetPhase && context.sceneTimeIndex && context.resolutionMode) {
+    if (!targetPhase) {
+      throw new Error(
+        `Codex Phase '${context.phase.phaseId}' was not found for '${binding.id}'`,
+      );
+    }
+    if (context.sceneTimeIndex && context.resolutionMode) {
       const resolution = resolveApplicablePhases({
         phases,
         index: context.sceneTimeIndex,
@@ -77,10 +91,11 @@ export async function loadCodexDocument(
         anchor: { kind: "phase", phaseId: targetPhase.id },
       });
       phaseContentOverride = resolvePhaseEditState(resolution, {
-        summary: entry?.summary ?? null,
-        content: entry?.content ?? "{}",
+        summary: entry.summary ?? null,
+        content: entry.content ?? "{}",
       }).content;
       resolvedPhaseId = targetPhase.id;
+      loadedVersion = (targetPhase as { version?: number }).version ?? 0;
     }
   } else if (context.phase.mode === "auto" && context.phase.sceneId) {
     if (context.sceneTimeIndex && context.resolutionMode) {
@@ -91,23 +106,25 @@ export async function loadCodexDocument(
         anchor: { kind: "scene", sceneId: context.phase.sceneId },
       });
       const editState = resolvePhaseEditState(resolution, {
-        summary: entry?.summary ?? null,
-        content: entry?.content ?? "{}",
+        summary: entry.summary ?? null,
+        content: entry.content ?? "{}",
       });
       if (editState.targetPhase) {
         phaseContentOverride = editState.content;
         resolvedPhaseId = editState.targetPhase.id;
+        loadedVersion =
+          (editState.targetPhase as { version?: number }).version ?? 0;
       }
     }
   }
 
-  const rawContent = phaseContentOverride ?? entry?.content ?? null;
+  const rawContent = phaseContentOverride ?? entry.content ?? null;
   markStart("sceneLoad.parseContent.codex");
   const content = parseCodexContent(rawContent);
   markEnd("sceneLoad.parseContent.codex");
 
   return {
-    binding: { ...binding, phaseId: resolvedPhaseId },
+    binding: { ...binding, phaseId: resolvedPhaseId, loadedVersion },
     content,
   };
 }

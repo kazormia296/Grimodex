@@ -175,6 +175,9 @@ describe("Breadcrumb Zen visibility", () => {
     expect(
       container.querySelector<HTMLElement>("[data-editor-breadcrumb]"),
     ).toHaveClass("glass-editor-chrome");
+    expect(
+      container.querySelector<HTMLElement>("[data-editor-breadcrumb]"),
+    ).toHaveAttribute("data-editor-tool-surface");
   });
 
   it("does not render persistent navigation chrome in Zen mode", () => {

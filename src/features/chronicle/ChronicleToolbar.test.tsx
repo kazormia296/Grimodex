@@ -69,4 +69,9 @@ describe("ChronicleToolbar", () => {
     const row = getByTestId("toolbar-new").parentElement as HTMLElement;
     expect(row.className).toContain("@container");
   });
+
+  it("Glass ホストを覆う不透明なカード塗りを持たない", () => {
+    const { getByTestId } = render(<ChronicleToolbar {...makeProps()} />);
+    expect(getByTestId("chronicle-toolbar").className).not.toContain("bg-card");
+  });
 });

@@ -1,7 +1,10 @@
 import { create } from "zustand";
 import * as api from "./api";
-import * as cliApi from "./cliApi";
-import * as codexAppApi from "./codexAppApi";
+import {
+  detectCliBinary,
+  listCliModels,
+  listCodexAppModels,
+} from "./lazyRuntimeApi";
 import { resolveModelApiVariant } from "./aiNovelist";
 import type {
   AiProvider,
@@ -11,6 +14,7 @@ import type {
 } from "./types";
 import {
   DEFAULT_AI_SETTINGS,
+  ollamaContextLengthSettingKeys,
   resolveActiveOpenaiCompatibleEndpoint,
 } from "./types";
 
@@ -22,6 +26,8 @@ const KEYLESS_TEST_PROVIDERS = new Set<AiProvider>([
   "cli",
 ]);
 import {
+  activateDynamicProviderScope,
+  invalidateDynamicEffectiveContext,
   registerDynamicModelCaps,
   isDynamicCapsStale,
 } from "./agent/dynamicModelCaps";
@@ -37,7 +43,7 @@ export interface AiSettingsState {
   isLoadingModels: boolean;
   /** User-visible failure from the last explicit model-list/connection probe. */
   modelLoadError: string | null;
-  /** OpenRouter 動的 capability レジストリの更新カウンタ。購読するとキャップ変更で再レンダリングされる。 */
+  /** 動的 capability レジストリの更新カウンタ。購読するとキャップ変更で再レンダリングされる。 */
   modelCapsRevision: number;
   /**
    * チャットパネルで一時的に選んだチャットモデル(その場限り)。
@@ -76,7 +82,7 @@ export interface AiSettingsState {
   saveApiKey: (key: string) => Promise<void>;
   deleteApiKey: () => Promise<void>;
   testConnection: () => Promise<void>;
-  loadModels: () => Promise<void>;
+  loadModels: (options?: { force?: boolean }) => Promise<void>;
   /**
    * チャット用一時モデルを設定する。
    * - `setChatModelOverride(null)` で既定へ戻す(provider/variant override も解除)。
@@ -94,36 +100,642 @@ export interface AiSettingsState {
   ) => void;
 }
 
-// in-flight ガード（多重発火防止）
-let capsRefreshInFlight = false;
+type DynamicCapsProvider = Extract<AiProvider, "openrouter" | "ollama">;
+
+const DYNAMIC_CAPS_PROVIDERS = new Set<AiProvider>(["openrouter", "ollama"]);
+
+// Full catalog と selected-model probe は返す範囲が異なるため、別 key で共有する。
+const capsRefreshInFlight = new Map<string, Promise<AiModel[] | null>>();
 let modelLoadRequestGeneration = 0;
+let settingsLoadGeneration = 0;
+let settingsWriteGeneration = 0;
+let settingsSaveTail: Promise<void> = Promise.resolve();
+let ollamaObservationRequestGeneration = 0;
+// Rust 側は cold model の preload を最大 60 秒待ってから runner allocation を
+// 再取得する。renderer が先に打ち切って観測結果を捨てないよう、境界側に余裕を持たせる。
+const OLLAMA_SELECTED_PROBE_TIMEOUT_MS = 95_000;
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        handle = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (handle !== undefined) clearTimeout(handle);
+  }
+}
+
+interface OllamaObservedModel {
+  metadataGeneration: number;
+  effectiveGeneration: number;
+  model: AiModel | null;
+}
+
+interface OllamaObservedScope {
+  fullSuccessGeneration: number;
+  fullEffectiveGeneration: number;
+  rows: Map<string, OllamaObservedModel>;
+}
+
+const ollamaObservedScopes = new Map<string, OllamaObservedScope>();
+let activeOllamaObservationEndpoint: string | null = null;
+let ollamaEndpointActivationEpoch = 0;
+
+function isDynamicCapsProvider(
+  provider: AiProvider,
+): provider is DynamicCapsProvider {
+  return DYNAMIC_CAPS_PROVIDERS.has(provider);
+}
+
+function normalizeOllamaEndpoint(endpoint: string | null | undefined): string {
+  return endpoint?.trim().replace(/\/+$/u, "") ?? "";
+}
+
+function normalizeOllamaModelId(modelId: string): string {
+  return modelId
+    .trim()
+    .toLowerCase()
+    .replace(/:latest$/u, "");
+}
+
+function activateOllamaObservationEndpoint(endpoint: string): number {
+  if (activeOllamaObservationEndpoint !== endpoint) {
+    activeOllamaObservationEndpoint = endpoint;
+    ollamaEndpointActivationEpoch += 1;
+    // Runner allocations are process state. Switching away and back must not
+    // resurrect the previous visit's observation for the same URL.
+    ollamaObservedScopes.delete(endpoint);
+  }
+  return ollamaEndpointActivationEpoch;
+}
+
+function getOllamaObservedScope(endpoint: string): OllamaObservedScope {
+  let scope = ollamaObservedScopes.get(endpoint);
+  if (!scope) {
+    scope = {
+      fullSuccessGeneration: 0,
+      fullEffectiveGeneration: 0,
+      rows: new Map(),
+    };
+    ollamaObservedScopes.set(endpoint, scope);
+  }
+  return scope;
+}
+
+function stripEffectiveContext(model: AiModel): AiModel {
+  const {
+    effectiveContextLength: _effectiveContextLength,
+    effectiveContextSource: _effectiveContextSource,
+    ...durableModel
+  } = model;
+  return durableModel;
+}
+
+function hasDurableOllamaMetadata(model: AiModel): boolean {
+  return (
+    model.contextLength !== undefined ||
+    model.maxCompletionTokens !== undefined ||
+    model.supportedParameters !== undefined ||
+    model.pricingPrompt !== undefined ||
+    model.pricingCompletion !== undefined
+  );
+}
+
+function mergeOllamaDurableMetadata(
+  primary: AiModel,
+  fallback: AiModel | undefined,
+): AiModel {
+  if (!fallback) return primary;
+  return {
+    ...fallback,
+    ...primary,
+    contextLength: primary.contextLength ?? fallback.contextLength,
+    maxCompletionTokens:
+      primary.maxCompletionTokens ?? fallback.maxCompletionTokens,
+    supportedParameters:
+      primary.supportedParameters ?? fallback.supportedParameters,
+    pricingPrompt: primary.pricingPrompt ?? fallback.pricingPrompt,
+    pricingCompletion: primary.pricingCompletion ?? fallback.pricingCompletion,
+  };
+}
+
+function mergeOllamaObservedModel(input: {
+  incoming: AiModel;
+  existing: OllamaObservedModel | undefined;
+  generation: number;
+  fullEffectiveGeneration: number;
+}): OllamaObservedModel {
+  const existingMetadataGeneration = input.existing?.metadataGeneration ?? 0;
+  const existingEffectiveGeneration = input.existing?.effectiveGeneration ?? 0;
+  const effectiveAuthorityGeneration = Math.max(
+    existingEffectiveGeneration,
+    input.fullEffectiveGeneration,
+  );
+  const incomingDurableMetadataAvailable = hasDurableOllamaMetadata(
+    input.incoming,
+  );
+  if (
+    input.existing &&
+    existingMetadataGeneration > input.generation &&
+    input.existing.model === null
+  ) {
+    return {
+      metadataGeneration: existingMetadataGeneration,
+      effectiveGeneration: Math.max(
+        effectiveAuthorityGeneration,
+        input.generation,
+      ),
+      model: null,
+    };
+  }
+  const durable =
+    input.existing?.model &&
+    (!incomingDurableMetadataAvailable ||
+      existingMetadataGeneration > input.generation)
+      ? stripEffectiveContext(input.existing.model)
+      : stripEffectiveContext(input.incoming);
+  const effectiveSource =
+    effectiveAuthorityGeneration > input.generation
+      ? input.existing?.model
+      : input.incoming;
+  return {
+    metadataGeneration: Math.max(
+      existingMetadataGeneration,
+      incomingDurableMetadataAvailable ? input.generation : 0,
+    ),
+    effectiveGeneration: Math.max(
+      effectiveAuthorityGeneration,
+      input.generation,
+    ),
+    model: {
+      ...durable,
+      ...(effectiveSource?.effectiveContextLength !== undefined
+        ? {
+            effectiveContextLength: effectiveSource.effectiveContextLength,
+          }
+        : {}),
+      ...(effectiveSource?.effectiveContextSource !== undefined
+        ? {
+            effectiveContextSource: effectiveSource.effectiveContextSource,
+          }
+        : {}),
+    },
+  };
+}
+
+function reconcileOllamaObservation(input: {
+  endpoint: string;
+  generation: number;
+  models: AiModel[];
+  selectedModelId: string | null;
+  fallbackModels?: AiModel[];
+}): { accepted: boolean; models: AiModel[] } {
+  const scope = getOllamaObservedScope(input.endpoint);
+  if (scope.fullSuccessGeneration > input.generation) {
+    return { accepted: false, models: [] };
+  }
+
+  if (input.selectedModelId) {
+    const key = normalizeOllamaModelId(input.selectedModelId);
+    const fallbackModel = input.fallbackModels?.find(
+      (model) => normalizeOllamaModelId(model.id) === key,
+    );
+    const scopedExisting = scope.rows.get(key);
+    const existing = scopedExisting
+      ? {
+          ...scopedExisting,
+          model: scopedExisting.model
+            ? mergeOllamaDurableMetadata(scopedExisting.model, fallbackModel)
+            : null,
+        }
+      : fallbackModel
+        ? {
+            metadataGeneration: 0,
+            effectiveGeneration: 0,
+            model: fallbackModel,
+          }
+        : undefined;
+    const replacement = input.models.find(
+      (model) => normalizeOllamaModelId(model.id) === key,
+    );
+    if (replacement) {
+      scope.rows.set(
+        key,
+        mergeOllamaObservedModel({
+          incoming: replacement,
+          existing,
+          generation: input.generation,
+          fullEffectiveGeneration: scope.fullEffectiveGeneration,
+        }),
+      );
+    } else {
+      scope.rows.set(key, {
+        metadataGeneration: input.generation,
+        effectiveGeneration: Math.max(
+          existing?.effectiveGeneration ?? 0,
+          input.generation,
+        ),
+        model: null,
+      });
+    }
+    const authoritative = scope.rows.get(key)?.model ?? null;
+    return {
+      accepted: true,
+      models: authoritative ? [authoritative] : [],
+    };
+  }
+
+  scope.fullSuccessGeneration = input.generation;
+  if (scope.fullEffectiveGeneration <= input.generation) {
+    scope.fullEffectiveGeneration = input.generation;
+  }
+  const nextRows = new Map<string, OllamaObservedModel>();
+  for (const model of input.models) {
+    const key = normalizeOllamaModelId(model.id);
+    const existing = scope.rows.get(key);
+    nextRows.set(
+      key,
+      mergeOllamaObservedModel({
+        incoming: model,
+        existing,
+        generation: input.generation,
+        fullEffectiveGeneration: scope.fullEffectiveGeneration,
+      }),
+    );
+  }
+  for (const [key, existing] of scope.rows) {
+    if (existing.metadataGeneration > input.generation && !nextRows.has(key)) {
+      nextRows.set(key, existing);
+    }
+  }
+  scope.rows = nextRows;
+  return {
+    accepted: true,
+    models: [...nextRows.values()].flatMap((entry) =>
+      entry.model ? [entry.model] : [],
+    ),
+  };
+}
+
+function recordOllamaObservationFailure(input: {
+  endpoint: string;
+  generation: number;
+  selectedModelId: string | null;
+}): boolean {
+  const scope = getOllamaObservedScope(input.endpoint);
+  if (scope.fullEffectiveGeneration > input.generation) return false;
+
+  if (input.selectedModelId) {
+    const key = normalizeOllamaModelId(input.selectedModelId);
+    const existing = scope.rows.get(key);
+    if (existing && existing.effectiveGeneration > input.generation)
+      return false;
+    scope.rows.set(key, {
+      metadataGeneration: existing?.metadataGeneration ?? 0,
+      effectiveGeneration: input.generation,
+      model: existing?.model ? stripEffectiveContext(existing.model) : null,
+    });
+    return true;
+  }
+
+  scope.fullEffectiveGeneration = input.generation;
+  for (const [key, existing] of scope.rows) {
+    if (existing.effectiveGeneration > input.generation) continue;
+    scope.rows.set(key, {
+      metadataGeneration: existing.metadataGeneration,
+      effectiveGeneration: input.generation,
+      model: existing.model ? stripEffectiveContext(existing.model) : null,
+    });
+  }
+  return true;
+}
 
 async function resolveCliBinaryAvailability(
   settings: AiSettings,
 ): Promise<boolean> {
   if (settings.cli?.binaryPath?.trim()) return true;
-  const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
+  const path = await detectCliBinary(settings.cli?.kind ?? "claude");
   return path !== null;
 }
 
-async function maybeRefreshDynamicCaps(): Promise<void> {
-  if (capsRefreshInFlight) return;
-  if (!isDynamicCapsStale()) return;
-  capsRefreshInFlight = true;
-  try {
-    const { settings } = useAiSettingsStore.getState();
-    if (settings?.provider !== "openrouter") return;
-    const models = await api.listAiModels("openrouter");
-    registerDynamicModelCaps(models);
-    useAiSettingsStore.setState((s) => ({
-      models,
-      modelCapsRevision: s.modelCapsRevision + 1,
-    }));
-  } catch {
-    // network error — silent fail, use stale/hardcoded caps
-  } finally {
-    capsRefreshInFlight = false;
+/**
+ * OpenRouter / Ollama の動的モデル metadata を更新する。
+ *
+ * 同一 provider の多重呼び出しは同じ backend fetch を共有する。失敗時は既存の
+ * capability cache と active models を変更せず null を返すため、送信前の force
+ * refresh 呼び出しは「更新成功」と「更新不能」を判別できる。
+ */
+export async function refreshDynamicCapsForProvider(
+  provider: AiProvider,
+  options: {
+    force?: boolean;
+    endpointId?: string | null;
+    selectedModelId?: string | null;
+    /** Agent/tool routes require an authoritative capability list. */
+    requireOllamaCapabilities?: boolean;
+    /** In-flight scope only; backend still reads the authoritative settings snapshot. */
+    ollamaEndpoint?: string | null;
+  } = {},
+): Promise<AiModel[] | null> {
+  if (!isDynamicCapsProvider(provider)) return null;
+
+  const selectedModelId =
+    provider === "ollama" ? options.selectedModelId?.trim() || null : null;
+  const ollamaEndpoint =
+    provider === "ollama"
+      ? normalizeOllamaEndpoint(
+          options.ollamaEndpoint ??
+            useAiSettingsStore.getState().settings?.ollamaEndpoint,
+        )
+      : "";
+  const ollamaEndpointEpoch =
+    provider === "ollama"
+      ? activateOllamaObservationEndpoint(ollamaEndpoint)
+      : undefined;
+  if (provider === "ollama") {
+    activateDynamicProviderScope("ollama", ollamaEndpoint);
   }
+  const refreshKey = [
+    provider,
+    provider === "ollama" ? ollamaEndpoint : (options.endpointId?.trim() ?? ""),
+    provider === "ollama" ? String(ollamaEndpointEpoch) : "",
+    selectedModelId ?? "*",
+    options.requireOllamaCapabilities ? "capabilities-required" : "",
+  ].join("\u0000");
+  const pending = capsRefreshInFlight.get(refreshKey);
+  if (pending) return pending;
+  if (
+    !selectedModelId &&
+    !options.force &&
+    !isDynamicCapsStale(
+      provider,
+      undefined,
+      provider === "ollama" ? ollamaEndpoint : undefined,
+    )
+  ) {
+    return null;
+  }
+  const observationGeneration =
+    provider === "ollama" ? ++ollamaObservationRequestGeneration : undefined;
+
+  const request = (async (): Promise<AiModel[] | null> => {
+    try {
+      const listModelsRequest = api.listAiModels(
+        provider,
+        provider === "ollama" ? undefined : options.endpointId,
+        selectedModelId,
+        provider === "ollama" ? ollamaEndpoint : undefined,
+      );
+      const models =
+        provider === "ollama" && selectedModelId
+          ? await withTimeout(
+              listModelsRequest,
+              OLLAMA_SELECTED_PROBE_TIMEOUT_MS,
+              `Timed out while inspecting Ollama model ${selectedModelId}`,
+            )
+          : await listModelsRequest;
+      if (
+        provider === "ollama" &&
+        (ollamaEndpointActivationEpoch !== ollamaEndpointEpoch ||
+          normalizeOllamaEndpoint(
+            useAiSettingsStore.getState().settings?.ollamaEndpoint,
+          ) !== ollamaEndpoint)
+      ) {
+        // The response belongs to a connection the user has already left.
+        // Treat it as unusable so catalog callers cannot cache the stale list.
+        return null;
+      }
+      if (provider === "ollama" && selectedModelId) {
+        const normalizedSelected = normalizeOllamaModelId(selectedModelId);
+        const selectedObservation = models.find(
+          (model) => normalizeOllamaModelId(model.id) === normalizedSelected,
+        );
+        const configuredContextLengths =
+          useAiSettingsStore.getState().settings?.ollamaContextLengths ?? {};
+        const hasConfiguredEffectiveContext = ollamaContextLengthSettingKeys(
+          ollamaEndpoint,
+          selectedModelId,
+        ).some((key) => {
+          const value = configuredContextLengths[key];
+          return Number.isSafeInteger(value) && value > 0;
+        });
+        const hasObservedContext =
+          selectedObservation !== undefined &&
+          ((Number.isSafeInteger(selectedObservation.contextLength) &&
+            (selectedObservation.contextLength ?? 0) > 0) ||
+            (Number.isSafeInteger(selectedObservation.effectiveContextLength) &&
+              (selectedObservation.effectiveContextLength ?? 0) > 0));
+        if (
+          selectedObservation &&
+          !hasObservedContext &&
+          !hasConfiguredEffectiveContext
+        ) {
+          throw new Error(
+            `Ollama context metadata unavailable for selected model ${selectedModelId}`,
+          );
+        }
+        if (
+          selectedObservation &&
+          options.requireOllamaCapabilities &&
+          selectedObservation.supportedParameters === undefined
+        ) {
+          // A selected probe is a send-time authority check, not a catalog
+          // fallback. Agent/tool routes must not revive stale tools=true data
+          // when `/api/show` did not establish capabilities. Context maxima and
+          // effective allocation are separate: a manual verified allocation may
+          // remain valid even when the model maximum is unavailable.
+          throw new Error(
+            `Ollama metadata unavailable for selected model ${selectedModelId}`,
+          );
+        }
+      }
+      const registryAccepted = registerDynamicModelCaps(provider, models, {
+        selectedModelId: selectedModelId ?? undefined,
+        ollamaEndpoint: provider === "ollama" ? ollamaEndpoint : undefined,
+        observationGeneration,
+      });
+      const observed =
+        provider === "ollama" && observationGeneration !== undefined
+          ? reconcileOllamaObservation({
+              endpoint: ollamaEndpoint,
+              generation: observationGeneration,
+              models,
+              selectedModelId,
+              fallbackModels:
+                useAiSettingsStore.getState().settings?.provider === "ollama"
+                  ? useAiSettingsStore.getState().models
+                  : undefined,
+            })
+          : { accepted: registryAccepted, models };
+      if (!registryAccepted || !observed.accepted) return null;
+      const authoritativeModels = observed.models;
+
+      // Provider switch 後に旧 provider の応答で active catalog を上書きしない。
+      // registry は provider scope なので、非 active provider の成功結果も安全に保持できる。
+      useAiSettingsStore.setState((state) =>
+        state.settings?.provider === provider &&
+        (provider !== "ollama" ||
+          !ollamaEndpoint ||
+          normalizeOllamaEndpoint(state.settings.ollamaEndpoint) ===
+            ollamaEndpoint)
+          ? selectedModelId
+            ? {
+                models: mergeSelectedModelProbe(
+                  state.models,
+                  selectedModelId,
+                  authoritativeModels,
+                ),
+                modelCapsRevision: state.modelCapsRevision + 1,
+              }
+            : {
+                models: authoritativeModels,
+                modelCapsRevision: state.modelCapsRevision + 1,
+              }
+          : {},
+      );
+      return authoritativeModels;
+    } catch {
+      const ollamaScopeStillCurrent =
+        ollamaEndpointActivationEpoch === ollamaEndpointEpoch &&
+        normalizeOllamaEndpoint(
+          useAiSettingsStore.getState().settings?.ollamaEndpoint,
+        ) === ollamaEndpoint;
+      if (provider === "ollama" && ollamaScopeStillCurrent) {
+        invalidateOllamaEffectiveContexts(selectedModelId ?? undefined, {
+          ollamaEndpoint,
+          notNewerThanGeneration: observationGeneration,
+        });
+      }
+      // Static model metadata is retained after a transient failure. Mutable
+      // runner observations are cleared above because reusing them is unsafe.
+      return null;
+    }
+  })();
+
+  capsRefreshInFlight.set(refreshKey, request);
+  try {
+    return await request;
+  } finally {
+    if (capsRefreshInFlight.get(refreshKey) === request) {
+      capsRefreshInFlight.delete(refreshKey);
+    }
+  }
+}
+
+function mergeSelectedModelProbe(
+  current: AiModel[],
+  selectedModelId: string,
+  probed: AiModel[],
+): AiModel[] {
+  const normalizeOllamaId = (modelId: string) =>
+    modelId
+      .trim()
+      .toLowerCase()
+      .replace(/:latest$/u, "");
+  const normalizedSelected = normalizeOllamaId(selectedModelId);
+  const replacement = probed.find(
+    (model) => normalizeOllamaId(model.id) === normalizedSelected,
+  );
+  let matched = false;
+  const next = current.map((model) => {
+    if (normalizeOllamaId(model.id) !== normalizedSelected) return model;
+    matched = true;
+    if (replacement) {
+      return {
+        ...replacement,
+        // Keep the catalog identity stable when the setting uses a bare alias
+        // and `/api/tags` reports the equivalent `:latest` name.
+        id: model.id,
+        name: model.name,
+      };
+    }
+    const {
+      effectiveContextLength: _effectiveContextLength,
+      effectiveContextSource: _effectiveContextSource,
+      ...durableModel
+    } = model;
+    return durableModel;
+  });
+  if (!matched && replacement) next.push(replacement);
+  return next;
+}
+
+/** Clear mutable Ollama runner observations in both guard and visible catalog. */
+export function invalidateOllamaEffectiveContexts(
+  modelId?: string,
+  options: {
+    ollamaEndpoint?: string;
+    notNewerThanGeneration?: number;
+  } = {},
+): void {
+  invalidateDynamicEffectiveContext("ollama", modelId, {
+    notNewerThanGeneration: options.notNewerThanGeneration,
+  });
+  const endpoint = normalizeOllamaEndpoint(options.ollamaEndpoint);
+  const failureAccepted =
+    options.notNewerThanGeneration === undefined
+      ? true
+      : recordOllamaObservationFailure({
+          endpoint,
+          generation: options.notNewerThanGeneration,
+          selectedModelId: modelId ?? null,
+        });
+  if (!failureAccepted) return;
+
+  const normalizedModelId = modelId
+    ? normalizeOllamaModelId(modelId)
+    : undefined;
+  useAiSettingsStore.setState((state) => {
+    if (
+      state.settings?.provider !== "ollama" ||
+      (endpoint &&
+        normalizeOllamaEndpoint(state.settings.ollamaEndpoint) !== endpoint)
+    ) {
+      return {};
+    }
+    let changed = false;
+    const models = state.models.map((model) => {
+      if (
+        normalizedModelId &&
+        normalizeOllamaModelId(model.id) !== normalizedModelId
+      ) {
+        return model;
+      }
+      const observed = getOllamaObservedScope(endpoint).rows.get(
+        normalizeOllamaModelId(model.id),
+      );
+      if (
+        options.notNewerThanGeneration !== undefined &&
+        observed &&
+        observed.effectiveGeneration > options.notNewerThanGeneration
+      ) {
+        return model;
+      }
+      if (
+        model.effectiveContextLength === undefined &&
+        model.effectiveContextSource === undefined
+      ) {
+        return model;
+      }
+      const durableModel = stripEffectiveContext(model);
+      changed = true;
+      return durableModel;
+    });
+    return changed
+      ? {
+          models,
+          modelCapsRevision: state.modelCapsRevision + 1,
+        }
+      : {};
+  });
 }
 
 export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
@@ -142,6 +754,15 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   chatEndpointIdOverride: null,
 
   loadSettings: async () => {
+    // A read invoked while a save is pending must observe the post-save
+    // backend snapshot, never commit the pre-save endpoint/model afterward.
+    let saveBarrier: Promise<void>;
+    do {
+      saveBarrier = settingsSaveTail;
+      await saveBarrier;
+    } while (saveBarrier !== settingsSaveTail);
+    const observedWriteGeneration = settingsWriteGeneration;
+    const requestGeneration = ++settingsLoadGeneration;
     const settings = await api.getAiSettings();
     const keyPresent = await api.hasApiKey(
       settings.provider,
@@ -151,58 +772,116 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     if (settings.provider === "cli") {
       cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
     }
+    if (
+      requestGeneration !== settingsLoadGeneration ||
+      observedWriteGeneration !== settingsWriteGeneration
+    ) {
+      return;
+    }
+    activateOllamaObservationEndpoint(
+      normalizeOllamaEndpoint(settings.ollamaEndpoint),
+    );
+    const ollamaScopeChanged = activateDynamicProviderScope(
+      "ollama",
+      settings.ollamaEndpoint,
+    );
     set({
       settings,
       hasApiKey: keyPresent,
       cliBinaryAvailable,
       modelLoadError: null,
-    });
-    void maybeRefreshDynamicCaps();
-  },
-
-  saveSettings: async (settings: AiSettings) => {
-    await api.saveAiSettings(settings);
-    const prev = get().settings;
-    let cliBinaryAvailable: boolean | null = get().cliBinaryAvailable;
-    if (settings.provider === "cli") {
-      const providerChanged = prev?.provider !== "cli";
-      const kindChanged = prev?.cli?.kind !== settings.cli?.kind;
-      const binaryPathChanged =
-        (prev?.cli?.binaryPath ?? "") !== (settings.cli?.binaryPath ?? "");
-      if (providerChanged || kindChanged || binaryPathChanged) {
-        cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
-      }
-    } else {
-      cliBinaryAvailable = null;
-    }
-    // 接続テスト結果は provider / model / API 経路(modelApiVariant)に紐づく。これらが
-    // 変わった後も前の結果を表示し続けると「別プロバイダなのに成功と出ている」誤解を生む
-    // ので破棄する(例: OpenAI で成功 → Anthropic タブに切替えても OpenAI の成功表示が
-    // 残る/Responses トグルを切替えても /chat/completions の成功表示が残る)。
-    const providerSwitched = prev?.provider !== settings.provider;
-    const testInvalidated =
-      providerSwitched ||
-      prev?.model !== settings.model ||
-      prev?.modelApiVariant !== settings.modelApiVariant;
-    set({
-      settings,
-      cliBinaryAvailable,
-      ...(testInvalidated ? { connectionTestResult: null } : {}),
-      // チャット用一時モデルはプロバイダ依存(モデル名前空間が違う)なので、
-      // プロバイダが変わったら破棄して新プロバイダの既定に戻す。別プロバイダ override も
-      // 同時にクリアする(切替後のアクティブ設定と矛盾させない)。
-      ...(providerSwitched
+      ...(ollamaScopeChanged
+        ? { modelCapsRevision: get().modelCapsRevision + 1 }
+        : {}),
+      ...(ollamaScopeChanged && settings.provider === "ollama"
         ? {
             models: [],
             isLoadingModels: false,
-            modelLoadError: null,
-            chatModelOverride: null,
-            chatProviderOverride: null,
-            chatModelVariantOverride: null,
-            chatEndpointIdOverride: null,
           }
         : {}),
     });
+    if (
+      isDynamicCapsProvider(settings.provider) &&
+      isDynamicCapsStale(
+        settings.provider,
+        undefined,
+        settings.provider === "ollama" ? settings.ollamaEndpoint : undefined,
+      )
+    ) {
+      void refreshDynamicCapsForProvider(settings.provider, {
+        ollamaEndpoint:
+          settings.provider === "ollama" ? settings.ollamaEndpoint : null,
+      });
+    }
+  },
+
+  saveSettings: async (settings: AiSettings) => {
+    settingsWriteGeneration += 1;
+    const saveTransaction = settingsSaveTail.then(async () => {
+      await api.saveAiSettings(settings);
+      const prev = get().settings;
+      let cliBinaryAvailable: boolean | null = get().cliBinaryAvailable;
+      if (settings.provider === "cli") {
+        const providerChanged = prev?.provider !== "cli";
+        const kindChanged = prev?.cli?.kind !== settings.cli?.kind;
+        const binaryPathChanged =
+          (prev?.cli?.binaryPath ?? "") !== (settings.cli?.binaryPath ?? "");
+        if (providerChanged || kindChanged || binaryPathChanged) {
+          cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
+        }
+      } else {
+        cliBinaryAvailable = null;
+      }
+      // 接続テスト結果は provider / model / API 経路(modelApiVariant)に紐づく。これらが
+      // 変わった後も前の結果を表示し続けると「別プロバイダなのに成功と出ている」誤解を生む
+      // ので破棄する(例: OpenAI で成功 → Anthropic タブに切替えても OpenAI の成功表示が
+      // 残る/Responses トグルを切替えても /chat/completions の成功表示が残る)。
+      const providerSwitched = prev?.provider !== settings.provider;
+      const ollamaEndpointChanged =
+        normalizeOllamaEndpoint(prev?.ollamaEndpoint) !==
+        normalizeOllamaEndpoint(settings.ollamaEndpoint);
+      if (ollamaEndpointChanged) {
+        activateOllamaObservationEndpoint(
+          normalizeOllamaEndpoint(settings.ollamaEndpoint),
+        );
+        activateDynamicProviderScope("ollama", settings.ollamaEndpoint);
+        modelLoadRequestGeneration += 1;
+      }
+      const testInvalidated =
+        providerSwitched ||
+        ollamaEndpointChanged ||
+        prev?.model !== settings.model ||
+        prev?.modelApiVariant !== settings.modelApiVariant;
+      set({
+        settings,
+        cliBinaryAvailable,
+        ...(testInvalidated ? { connectionTestResult: null } : {}),
+        ...(ollamaEndpointChanged
+          ? { modelCapsRevision: get().modelCapsRevision + 1 }
+          : {}),
+        // チャット用一時モデルはプロバイダ依存(モデル名前空間が違う)なので、
+        // プロバイダが変わったら破棄して新プロバイダの既定に戻す。別プロバイダ override も
+        // 同時にクリアする(切替後のアクティブ設定と矛盾させない)。
+        ...(providerSwitched ||
+        (ollamaEndpointChanged && settings.provider === "ollama")
+          ? {
+              models: [],
+              isLoadingModels: false,
+              modelLoadError: null,
+              ...(providerSwitched
+                ? {
+                    chatModelOverride: null,
+                    chatProviderOverride: null,
+                    chatModelVariantOverride: null,
+                    chatEndpointIdOverride: null,
+                  }
+                : {}),
+            }
+          : {}),
+      });
+    });
+    settingsSaveTail = saveTransaction.catch(() => undefined);
+    await saveTransaction;
   },
 
   setChatModelOverride: (model, opts) => {
@@ -270,13 +949,16 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     }
   },
 
-  loadModels: async () => {
+  loadModels: async (options) => {
     const { settings } = get();
     if (!settings) return;
 
     const requestGeneration = ++modelLoadRequestGeneration;
     const requestedProvider = settings.provider;
     const requestedEndpointId = settings.activeOpenaiCompatibleEndpointId;
+    const requestedOllamaEndpoint = normalizeOllamaEndpoint(
+      settings.ollamaEndpoint,
+    );
     const requestedCliKind = settings.cli?.kind ?? "claude";
     const requestedCliTransport = settings.cli?.codexTransport ?? "exec";
     const requestedCliBinaryPath = settings.cli?.binaryPath;
@@ -286,6 +968,9 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         requestGeneration === modelLoadRequestGeneration &&
         current?.provider === requestedProvider &&
         current.activeOpenaiCompatibleEndpointId === requestedEndpointId &&
+        (requestedProvider !== "ollama" ||
+          normalizeOllamaEndpoint(current.ollamaEndpoint) ===
+            requestedOllamaEndpoint) &&
         (requestedProvider !== "cli" ||
           ((current.cli?.kind ?? "claude") === requestedCliKind &&
             (current.cli?.codexTransport ?? "exec") === requestedCliTransport &&
@@ -293,39 +978,58 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       );
     };
 
+    const currentModels = get().models;
+    if (
+      requestedProvider === "ollama" &&
+      !options?.force &&
+      currentModels.length > 0 &&
+      !isDynamicCapsStale("ollama", undefined, requestedOllamaEndpoint)
+    ) {
+      // Opening the model menu must not re-run `/api/show` for the complete
+      // installed catalog while the endpoint-scoped full observation is still
+      // fresh. Empty catalogs are deliberately retried, and send-time selected
+      // probes remain independent so mutable runner context is revalidated.
+      set({ isLoadingModels: false, modelLoadError: null });
+      return;
+    }
+
     set({ isLoadingModels: true, modelLoadError: null });
     try {
       if (settings.provider === "cli") {
         const useCodexAppServer =
           requestedCliKind === "codex" && requestedCliTransport !== "exec";
         const models = useCodexAppServer
-          ? await codexAppApi.listCodexAppModels()
-          : await cliApi.listCliModels(
-              requestedCliKind,
-              requestedCliBinaryPath,
-            );
+          ? await listCodexAppModels()
+          : await listCliModels(requestedCliKind, requestedCliBinaryPath);
         if (!isCurrentRequest()) return;
         set({ models, isLoadingModels: false, modelLoadError: null });
         return;
       }
-      // それ以外は Rust 側 fetch_models に委譲
-      // (Anthropic / AiNovelist は静的リストを返す、OpenAI 互換は active エンドポイントを叩く)
-      const models = await api.listAiModels(
-        requestedProvider,
-        requestedEndpointId,
-      );
+      // それ以外は Rust 側 fetch_models に委譲する。OpenRouter / Ollama は
+      // capability 登録と送信前 refresh と同じ provider-scoped fetch を共有する。
+      // (Anthropic / AiNovelist は静的リスト、OpenAI 互換は active endpoint を叩く)
+      const models = isDynamicCapsProvider(requestedProvider)
+        ? await refreshDynamicCapsForProvider(requestedProvider, {
+            force: true,
+            endpointId: requestedEndpointId,
+            ollamaEndpoint:
+              requestedProvider === "ollama" ? requestedOllamaEndpoint : null,
+          })
+        : await api.listAiModels(requestedProvider, requestedEndpointId);
       if (!isCurrentRequest()) return;
-      if (requestedProvider === "openrouter") {
-        registerDynamicModelCaps(models);
+      if (models === null) {
+        // Dynamic refresh failure: keep the last usable list and capability cache.
         set({
-          models,
           isLoadingModels: false,
-          modelLoadError: null,
-          modelCapsRevision: get().modelCapsRevision + 1,
+          modelLoadError: `Failed to refresh ${requestedProvider} models`,
         });
-      } else {
-        set({ models, isLoadingModels: false, modelLoadError: null });
+        return;
       }
+      set(
+        isDynamicCapsProvider(requestedProvider)
+          ? { isLoadingModels: false, modelLoadError: null }
+          : { models, isLoadingModels: false, modelLoadError: null },
+      );
     } catch (error) {
       if (!isCurrentRequest()) return;
       set({

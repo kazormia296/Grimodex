@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "annotations": [
+    {
+      "queryId": "ja-r01",
+      "relevantCandidateIds": ["ja-chunk-24e847bd52e183535e12"]
+    },
+    {
+      "queryId": "ja-r02",
+      "relevantCandidateIds": ["ja-chunk-24e847bd52e183535e12"]
+    },
+    {
+      "queryId": "ja-r03",
+      "relevantCandidateIds": [
+        "ja-chunk-24e847bd52e183535e12",
+        "ja-chunk-220e7584d1523afbd2f0"
+      ]
+    },
+    {
+      "queryId": "ja-r04",
+      "relevantCandidateIds": ["ja-chunk-64c422ecce5d1d381bb0"]
+    },
+    {
+      "queryId": "ja-r05",
+      "relevantCandidateIds": ["ja-chunk-64c422ecce5d1d381bb0"]
+    },
+    {
+      "queryId": "ja-r06",
+      "relevantCandidateIds": ["ja-chunk-5c3fb4f0fababb873966"]
+    },
+    {
+      "queryId": "ja-r07",
+      "relevantCandidateIds": ["ja-chunk-5c3fb4f0fababb873966"]
+    },
+    {
+      "queryId": "ja-r08",
+      "relevantCandidateIds": ["ja-chunk-220e7584d1523afbd2f0"]
+    },
+    {
+      "queryId": "ja-r09",
+      "relevantCandidateIds": ["ja-chunk-264416859ab5f4d431d8"]
+    },
+    {
+      "queryId": "ja-r10",
+      "relevantCandidateIds": ["ja-chunk-051492e66b640a2b1aad"]
+    },
+    {
+      "queryId": "ja-r11",
+      "relevantCandidateIds": ["ja-chunk-bc3b772f051f67d3578e"]
+    },
+    {
+      "queryId": "ja-r12",
+      "relevantCandidateIds": ["ja-chunk-c291bf17a1d5045f0778"]
+    },
+    { "queryId": "ja-n01", "relevantCandidateIds": [] },
+    { "queryId": "ja-n02", "relevantCandidateIds": [] },
+    { "queryId": "ja-n03", "relevantCandidateIds": [] },
+    { "queryId": "ja-n04", "relevantCandidateIds": [] },
+    { "queryId": "ja-n05", "relevantCandidateIds": [] },
+    { "queryId": "ja-n06", "relevantCandidateIds": [] },
+    {
+      "queryId": "en-r01",
+      "relevantCandidateIds": ["en-chunk-808f5b1bfb8bbf03f604"]
+    },
+    {
+      "queryId": "en-r02",
+      "relevantCandidateIds": ["en-chunk-4e4e786ddc7dae997cda"]
+    },
+    {
+      "queryId": "en-r03",
+      "relevantCandidateIds": [
+        "en-chunk-808f5b1bfb8bbf03f604",
+        "en-chunk-b1105f0892194b2553b0"
+      ]
+    },
+    {
+      "queryId": "en-r04",
+      "relevantCandidateIds": ["en-chunk-e4d704add3be18dca4bf"]
+    },
+    {
+      "queryId": "en-r05",
+      "relevantCandidateIds": ["en-chunk-e4d704add3be18dca4bf"]
+    },
+    {
+      "queryId": "en-r06",
+      "relevantCandidateIds": ["en-chunk-a036c4a5f7878080c2c0"]
+    },
+    {
+      "queryId": "en-r07",
+      "relevantCandidateIds": ["en-chunk-a036c4a5f7878080c2c0"]
+    },
+    {
+      "queryId": "en-r08",
+      "relevantCandidateIds": ["en-chunk-b1105f0892194b2553b0"]
+    },
+    {
+      "queryId": "en-r09",
+      "relevantCandidateIds": ["en-chunk-b1105f0892194b2553b0"]
+    },
+    {
+      "queryId": "en-r10",
+      "relevantCandidateIds": ["en-chunk-f5d65ea85123bc10f1a0"]
+    },
+    {
+      "queryId": "en-r11",
+      "relevantCandidateIds": ["en-chunk-c2b5728468a974303da0"]
+    },
+    {
+      "queryId": "en-r12",
+      "relevantCandidateIds": ["en-chunk-a6a71794278c9c1aec7e"]
+    },
+    {
+      "queryId": "en-r13",
+      "relevantCandidateIds": ["en-chunk-1afa7fb64e416e29023a"]
+    },
+    {
+      "queryId": "en-r14",
+      "relevantCandidateIds": ["en-chunk-e4d704add3be18dca4bf"]
+    },
+    { "queryId": "en-r15", "relevantCandidateIds": [] },
+    { "queryId": "en-r16", "relevantCandidateIds": [] },
+    {
+      "queryId": "en-r17",
+      "relevantCandidateIds": [
+        "en-chunk-a6a71794278c9c1aec7e",
+        "en-chunk-f5d65ea85123bc10f1a0"
+      ]
+    },
+    { "queryId": "en-r18", "relevantCandidateIds": [] },
+    {
+      "queryId": "en-r19",
+      "relevantCandidateIds": ["en-chunk-e4d704add3be18dca4bf"]
+    },
+    {
+      "queryId": "en-r20",
+      "relevantCandidateIds": ["en-chunk-a6a71794278c9c1aec7e"]
+    },
+    {
+      "queryId": "en-r21",
+      "relevantCandidateIds": ["en-chunk-b1105f0892194b2553b0"]
+    },
+    {
+      "queryId": "en-r22",
+      "relevantCandidateIds": ["en-chunk-4e4e786ddc7dae997cda"]
+    },
+    { "queryId": "en-n01", "relevantCandidateIds": [] },
+    { "queryId": "en-n02", "relevantCandidateIds": [] },
+    { "queryId": "en-n03", "relevantCandidateIds": [] },
+    { "queryId": "en-n04", "relevantCandidateIds": [] },
+    { "queryId": "en-n05", "relevantCandidateIds": [] },
+    { "queryId": "en-n06", "relevantCandidateIds": [] }
+  ]
+}

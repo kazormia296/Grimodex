@@ -7,7 +7,7 @@
 //       居残らず新プロジェクトのボードへ再解決され、cross-project な board id では
 //       盤面データを hydrate しない (前プロジェクトのボードが残るバグ #Map 切替)。
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { useMapStore } from "../mapStore";
 import { resolveActiveBoardId, useMapBoardData } from "./useMapBoardData";
 import type { MapBoard } from "@/db/schema";
@@ -152,5 +152,49 @@ describe("useMapBoardData — project switch", () => {
     await waitFor(() =>
       expect(result.current.positions).toEqual([{ nodeId: "node-B" }]),
     );
+  });
+
+  it("座標だけの更新は structure/layout revision を進めず、構造変更は進める", async () => {
+    useMapStore.setState({ activeBoardId: "a1" });
+    const { result } = renderHook(() => useMapBoardData("projA"));
+    await waitFor(() =>
+      expect(result.current.positions).toEqual([{ nodeId: "node-A" }]),
+    );
+    const structureRevision = result.current.positionsStructureRevision;
+    const layoutRevision = result.current.positionsLayoutRevision;
+
+    act(() => {
+      result.current.setPositionCoordinates((previous) =>
+        previous.map((position) => ({
+          ...position,
+          x: 123,
+          y: 456,
+        })),
+      );
+    });
+    expect(result.current.positions).toEqual([
+      { nodeId: "node-A", x: 123, y: 456 },
+    ]);
+    expect(result.current.positionsStructureRevision).toBe(structureRevision);
+    expect(result.current.positionsLayoutRevision).toBe(layoutRevision);
+
+    act(() => {
+      result.current.setPositions((previous) => [
+        ...previous,
+        { nodeId: "node-B" } as never,
+      ]);
+    });
+    expect(result.current.positionsStructureRevision).toBe(
+      structureRevision + 1,
+    );
+    expect(result.current.positionsLayoutRevision).toBe(layoutRevision + 1);
+
+    act(() => {
+      result.current.setPositions((previous) => previous.slice(0, -1));
+    });
+    expect(result.current.positionsStructureRevision).toBe(
+      structureRevision + 2,
+    );
+    expect(result.current.positionsLayoutRevision).toBe(layoutRevision + 2);
   });
 });

@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
-import { useInlineAiDiff } from "./useInlineAiDiff";
+import {
+  useInlineAiDiff,
+  type InlineAiProjectionAuthority,
+} from "./useInlineAiDiff";
 import { useInlineAiStore } from "./inlineAiStore";
 import { inlineAiDiffKey } from "./InlineAIDiffPlugin";
 
@@ -26,8 +29,8 @@ function makeEditor(content: string): Editor {
   return editor;
 }
 
-function renderDiff(editor: Editor) {
-  const r = renderHook(() => useInlineAiDiff(editor));
+function renderDiff(editor: Editor, projection?: InlineAiProjectionAuthority) {
+  const r = renderHook(() => useInlineAiDiff(editor, null, projection));
   hookUnmounts.push(r.unmount);
   return r;
 }
@@ -128,5 +131,92 @@ describe("useInlineAiDiff: 複数エディタ共有時の owner ゲート", () =
       .run();
 
     expect(getText(ed)).toBe("solo");
+  });
+
+  it("projection が切り替わった後の旧 diff を accept しない", () => {
+    const editor = makeEditor("<p>owner</p>");
+    const projection: InlineAiProjectionAuthority = {
+      keyRef: { current: "projection-a" },
+      readyRef: { current: true },
+      writableRef: { current: true },
+    };
+    const rendered = renderDiff(editor, projection);
+
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.insertText("NEW", 6);
+        return true;
+      })
+      .run();
+    useInlineAiStore.getState().startGeneration({
+      commandId: "rewrite",
+      mode: "replace",
+      originalRange: { from: 1, to: 6 },
+      originalText: "owner",
+      insertPos: null,
+      abortController: new AbortController(),
+      activeEditor: editor,
+      projectionKey: "projection-a",
+    });
+    useInlineAiStore.getState().setGeneratedRange({ from: 6, to: 9 });
+    useInlineAiStore.getState().finishGeneration("model-a");
+
+    projection.keyRef.current = "projection-b";
+    act(() => rendered.result.current.accept());
+
+    expect(getText(editor)).toBe("ownerNEW");
+    expect(useInlineAiStore.getState().status).toBe("idle");
+  });
+
+  it("read-only projection rejects provided AI text before it reaches the doc", () => {
+    const editor = makeEditor("<p>owner</p>");
+    const projection: InlineAiProjectionAuthority = {
+      keyRef: { current: "projection-a" },
+      readyRef: { current: true },
+      writableRef: { current: false },
+    };
+    const rendered = renderDiff(editor, projection);
+
+    act(() => {
+      rendered.result.current.showProvidedText("STALE", {
+        mode: "insert",
+        insertPos: 1,
+      });
+    });
+
+    expect(getText(editor)).toBe("owner");
+    expect(useInlineAiStore.getState().status).toBe("idle");
+  });
+
+  it("rollback removes a partial preview without leaving a saveable edit", () => {
+    const editor = makeEditor("<p>owner</p>");
+    const projection: InlineAiProjectionAuthority = {
+      keyRef: { current: "projection-a" },
+      readyRef: { current: true },
+      writableRef: { current: false },
+    };
+    const rendered = renderDiff(editor, projection);
+
+    editor.commands.insertContentAt(1, "STALE");
+    useInlineAiStore.getState().startGeneration({
+      commandId: "continue",
+      mode: "insert",
+      originalRange: null,
+      originalText: "",
+      insertPos: 1,
+      abortController: new AbortController(),
+      activeEditor: editor,
+      projectionKey: "projection-a",
+      sessionId: "partial-session",
+    });
+    useInlineAiStore.getState().setGeneratedRange({ from: 1, to: 6 });
+    useInlineAiStore.getState().finishGeneration("model-a");
+
+    act(() => rendered.result.current.rollback("partial-session"));
+
+    expect(getText(editor)).toBe("owner");
+    expect(useInlineAiStore.getState().status).toBe("idle");
   });
 });

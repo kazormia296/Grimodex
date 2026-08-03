@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-vi.mock("@/db/client", () => ({ db: { insert: vi.fn(), delete: vi.fn() } }));
+vi.mock("@/db/client", () => ({
+  db: { select: vi.fn(), insert: vi.fn(), delete: vi.fn() },
+}));
 vi.mock("@/db/schema", () => ({
   sceneCodexPins: {
     sceneId: "sceneId",
@@ -13,11 +15,16 @@ vi.mock("@/db/schema", () => ({
     source: "source",
     role: "role",
   },
+  treeNodes: {
+    id: "id",
+    projectId: "projectId",
+  },
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col: unknown, val: unknown) => ({ eq: [col, val] })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   asc: vi.fn((col: unknown) => ({ asc: col })),
+  inArray: vi.fn((...args: unknown[]) => ({ inArray: args })),
   sql: Object.assign(
     vi.fn((strings: TemplateStringsArray) => ({ sql: strings.raw[0] })),
     {},
@@ -27,7 +34,11 @@ vi.mock("drizzle-orm", () => ({
 import { db } from "@/db/client";
 const mockDb = vi.mocked(db);
 
-import { upsertScenePin, deleteScenePin } from "./sceneCodexPinsApi";
+import {
+  upsertScenePin,
+  deleteScenePin,
+  listSceneCodexMentions,
+} from "./sceneCodexPinsApi";
 
 type MockChain = Record<string, ReturnType<typeof vi.fn>>;
 
@@ -100,6 +111,32 @@ describe("upsertScenePin", () => {
         role: "mentioned",
       },
     ]);
+  });
+});
+
+describe("listSceneCodexMentions", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("does not query persistence for an empty scene scope", async () => {
+    await expect(listSceneCodexMentions([])).resolves.toEqual([]);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it("returns the typed mention projection for the requested scenes", async () => {
+    const rows = [
+      {
+        sceneId: "scene1",
+        codexEntryId: "entry1",
+        source: "body",
+        role: "mentioned",
+      },
+    ];
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(rows),
+    } as never);
+
+    await expect(listSceneCodexMentions(["scene1"])).resolves.toEqual(rows);
   });
 });
 

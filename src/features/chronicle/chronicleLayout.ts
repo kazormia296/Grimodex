@@ -186,6 +186,18 @@ export interface ChronicleLayout {
   majorGridX: number[];
   /** eventId → 確定描画情報。 */
   markerById: Map<string, MarkerRender>;
+  /** world geometry の原点を現在 viewport へ射影する水平 offset。 */
+  worldOffsetX: number;
+}
+
+export interface ChronicleWorldGeometry {
+  spacing: DensitySpacing;
+  pack: LanePackResult;
+  edges: BezierEdge[];
+  contentHeight: number;
+  markerById: Map<string, MarkerRender>;
+  originDay: number;
+  pxPerDay: number;
 }
 
 export interface BuildLayoutArgs {
@@ -205,22 +217,31 @@ export interface BuildLayoutArgs {
   lang?: DateLang;
 }
 
-export function buildChronicleLayout(args: BuildLayoutArgs): ChronicleLayout {
+export interface BuildWorldGeometryArgs {
+  events: LayoutEventInput[];
+  lanes: LayoutLane[];
+  pxPerDay: number;
+  originDay: number;
+  density: LaneDensity;
+  labelsOn: boolean;
+  relations: CausalRel[];
+  causalConflictPairs: Set<string>;
+}
+
+export function buildChronicleWorldGeometry(
+  args: BuildWorldGeometryArgs,
+): ChronicleWorldGeometry {
   const {
     events,
     lanes,
-    view,
-    trackW,
+    pxPerDay,
+    originDay,
     density,
     labelsOn,
-    calendar,
-    hasCalendarAxis,
-    dataStart,
-    dataEnd,
     relations,
     causalConflictPairs,
-    lang,
   } = args;
+  const worldView: View = { pxPerDay, viewStartDay: originDay };
 
   const spacing = densitySpacing(density);
   const byId = new Map(events.map((e) => [e.id, e]));
@@ -233,10 +254,10 @@ export function buildChronicleLayout(args: BuildLayoutArgs): ChronicleLayout {
     events: lane.eventIds.flatMap((id) => {
       const e = byId.get(id);
       if (!e) return [];
-      const startX = dayToX(view, e.startDay);
+      const startX = dayToX(worldView, e.startDay);
       const isInterval = e.endDay != null;
       const barWidth = isInterval
-        ? Math.max((e.endDay! - e.startDay) * view.pxPerDay, 52)
+        ? Math.max((e.endDay! - e.startDay) * pxPerDay, 52)
         : null;
       const estWidth = estMarkerWidth({
         title: e.title,
@@ -281,34 +302,89 @@ export function buildChronicleLayout(args: BuildLayoutArgs): ChronicleLayout {
     }
   }
 
-  const ticks = adaptiveTicks({
-    pxPerDay: view.pxPerDay,
-    viewStartDay: view.viewStartDay,
-    trackW,
-    calendar,
-    hasCalendarAxis,
-    lang,
-  });
-
   const edges = buildCausalBezier({
     relations,
     centers: pack.centers,
     conflictPairs: causalConflictPairs,
   });
 
-  const scroll = scrollGeom({ view, trackW, dataStart, dataEnd });
-
   return {
     spacing,
     pack,
-    ticks,
     edges,
-    scroll,
     contentHeight: pack.totalHeight,
-    minorGridX: ticks.minor.map((t) => t.x),
-    majorGridX: ticks.major.map((t) => t.x).filter((x) => x >= 0),
     markerById,
+    originDay,
+    pxPerDay,
   };
+}
+
+export function projectChronicleWorldGeometry(args: {
+  world: ChronicleWorldGeometry;
+  view: View;
+  trackW: number;
+  calendar: ChronicleCalendar;
+  hasCalendarAxis: boolean;
+  dataStart: number;
+  dataEnd: number;
+  lang?: DateLang;
+}): ChronicleLayout {
+  const {
+    world,
+    view,
+    trackW,
+    calendar,
+    hasCalendarAxis,
+    dataStart,
+    dataEnd,
+    lang,
+  } = args;
+  const ticks = adaptiveTicks({
+    pxPerDay: view.pxPerDay,
+    viewStartDay: view.viewStartDay,
+    trackW,
+    // Pan preview は React/layout を再計算せず最大1画面ぶん DOM transform
+    // する。目盛りも同じ範囲だけ overscan し、生成量を viewport 比で有界に保つ。
+    overscanPx: trackW,
+    calendar,
+    hasCalendarAxis,
+    lang,
+  });
+  return {
+    spacing: world.spacing,
+    pack: world.pack,
+    ticks,
+    edges: world.edges,
+    scroll: scrollGeom({ view, trackW, dataStart, dataEnd }),
+    contentHeight: world.contentHeight,
+    minorGridX: ticks.minor.map((tick) => tick.x),
+    majorGridX: ticks.major.map((tick) => tick.x),
+    markerById: world.markerById,
+    worldOffsetX: dayToX(view, world.originDay),
+  };
+}
+
+export function buildChronicleLayout(args: BuildLayoutArgs): ChronicleLayout {
+  const world = buildChronicleWorldGeometry({
+    events: args.events,
+    lanes: args.lanes,
+    pxPerDay: args.view.pxPerDay,
+    originDay: args.view.viewStartDay,
+    density: args.density,
+    labelsOn: args.labelsOn,
+    relations: args.relations,
+    causalConflictPairs: args.causalConflictPairs,
+  });
+  return projectChronicleWorldGeometry({
+    world,
+    view: args.view,
+    trackW: args.trackW,
+    calendar: args.calendar,
+    hasCalendarAxis: args.hasCalendarAxis,
+    dataStart: args.dataStart,
+    dataEnd: args.dataEnd,
+    lang: args.lang,
+  });
 }
 
 /** causalConflicts から `${cause}|${effect}` の集合を作る小ヘルパ。 */

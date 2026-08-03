@@ -9,7 +9,8 @@
  * 実ブラウザで getBoundingClientRect() を測って assert し、CI で恒久ガードする。
  */
 import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/react";
+import { useMemo, useState } from "react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
 import {
   buildChronicleLayout,
@@ -77,6 +78,87 @@ function eventsById() {
   return m;
 }
 
+const longPanEvents: LayoutEventInput[] = Array.from(
+  { length: 300 },
+  (_, index) => ({
+    id: `long-${index}`,
+    title: `出来事 ${index}`,
+    primaryCodexId: "c1",
+    kind: "generic" as const,
+    precision: "exact" as const,
+    secret: false,
+    sceneLinked: true,
+    startDay: index * 10,
+    endDay: null,
+  }),
+);
+
+function LongPanHarness() {
+  const [view, setView] = useState({ pxPerDay: 1, viewStartDay: 0 });
+  const trackW = 800;
+  const layout = useMemo(
+    () =>
+      buildChronicleLayout({
+        events: longPanEvents,
+        lanes: [
+          {
+            codexId: "c1",
+            name: "アヤ",
+            kind: "character",
+            unassigned: false,
+            eventIds: longPanEvents.map((event) => event.id),
+          },
+        ],
+        view,
+        trackW,
+        density: "standard",
+        labelsOn: true,
+        calendar: cal,
+        hasCalendarAxis: true,
+        dataStart: 0,
+        dataEnd: 2_990,
+        relations: [],
+        causalConflictPairs: new Set(),
+        lang: "ja",
+      }),
+    [view],
+  );
+  const markerEvents = useMemo(
+    () =>
+      new Map<string, MarkerEvent>(
+        longPanEvents.map((event) => [
+          event.id,
+          {
+            id: event.id,
+            title: event.title,
+            kind: event.kind,
+            precision: event.precision,
+            secret: event.secret,
+            sceneLinked: event.sceneLinked,
+            primaryCodexId: event.primaryCodexId,
+          },
+        ]),
+      ),
+    [],
+  );
+  return (
+    <ChronicleViewport
+      view={view}
+      onViewChange={setView}
+      onMeasureTrack={() => {}}
+      layout={layout}
+      eventsById={markerEvents}
+      selectedEventId={null}
+      activeLaneKey={null}
+      conflictIds={new Set()}
+      relatedIds={new Set()}
+      showEdges
+      labelsOn
+      onSelectEvent={() => {}}
+    />
+  );
+}
+
 function mount(width = 900) {
   const view = { pxPerDay: 1.4, viewStartDay: -10 };
   const trackW = width - densitySpacing("standard").gutterX;
@@ -121,7 +203,139 @@ function mount(width = 900) {
   return { ...r, host };
 }
 
+function mountInWorkspace(
+  backgroundEnabled: boolean,
+  glassEnabled: boolean,
+  backgroundRenderer: "webgl" | "fallback" = "webgl",
+) {
+  const width = 900;
+  const view = { pxPerDay: 1.4, viewStartDay: -10 };
+  const trackW = width - densitySpacing("standard").gutterX;
+  const layout = buildChronicleLayout({
+    events,
+    lanes,
+    view,
+    trackW,
+    density: "standard",
+    labelsOn: true,
+    calendar: cal,
+    hasCalendarAxis: true,
+    dataStart: 18,
+    dataEnd: 545,
+    relations: [],
+    causalConflictPairs: new Set(),
+    lang: "ja",
+  });
+  return render(
+    <div
+      className="app-shell"
+      style={{
+        position: "fixed",
+        inset: 0,
+        width,
+        height: 420,
+      }}
+    >
+      <main id="main-content" style={{ width: "100%", height: "100%" }}>
+        <div
+          data-editor-ambient
+          data-background-enabled={backgroundEnabled ? "true" : "false"}
+          data-background-renderer={backgroundRenderer}
+        />
+        <div
+          data-workspace-glass-root
+          data-workspace-fluid-glass={glassEnabled ? "true" : "false"}
+          style={{ width: "100%", height: "100%" }}
+        >
+          <section
+            data-ambient-glass-surface="panel"
+            className="gx-panel"
+            style={{
+              width: "100%",
+              height: "100%",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <ChronicleViewport
+              view={view}
+              onViewChange={() => {}}
+              onMeasureTrack={() => {}}
+              layout={layout}
+              eventsById={eventsById()}
+              selectedEventId={null}
+              activeLaneKey={null}
+              conflictIds={new Set()}
+              relatedIds={new Set()}
+              showEdges
+              labelsOn
+              onSelectEvent={() => {}}
+            />
+          </section>
+        </div>
+      </main>
+    </div>,
+  );
+}
+
+async function settleBrowserLayout() {
+  await act(async () => {
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+  });
+}
+
 describe("ChronicleViewport geometry (real Chromium)", () => {
+  it("長距離pan中にoverscan境界前で再投影し、新viewportのmarkerをmouseup前に描く", async () => {
+    const host = document.createElement("div");
+    host.style.width = `${800 + densitySpacing("standard").gutterX}px`;
+    host.style.height = "420px";
+    host.style.display = "flex";
+    host.style.flexDirection = "column";
+    document.body.appendChild(host);
+    const mounted = render(<LongPanHarness />, { container: host });
+    await settleBrowserLayout();
+
+    const track = document.getElementById("chronicle-track")!;
+    expect(
+      mounted.container.querySelector('[data-event-id="long-170"]'),
+    ).toBeNull();
+    const rect = track.getBoundingClientRect();
+    const startX = rect.left + rect.width / 2;
+
+    await act(async () => {
+      fireEvent.mouseDown(track, {
+        button: 0,
+        clientX: startX,
+        clientY: rect.top + 100,
+      });
+      fireEvent.mouseMove(document, {
+        clientX: startX - 1_300,
+        clientY: rect.top + 100,
+      });
+    });
+
+    const projected = mounted.container.querySelector(
+      '[data-event-id="long-170"]',
+    ) as HTMLElement | null;
+    expect(projected).not.toBeNull();
+    const markerRect = projected!.getBoundingClientRect();
+    expect(markerRect.left).toBeGreaterThanOrEqual(rect.left - 1);
+    expect(markerRect.left).toBeLessThanOrEqual(rect.right + 1);
+
+    fireEvent.mouseUp(document, {
+      button: 0,
+      clientX: startX - 1_300,
+      clientY: rect.top + 100,
+    });
+    mounted.unmount();
+    host.remove();
+  });
+
   it("ルーラーのガター幅と本体レーンガター幅が一致する", () => {
     const { getByTestId } = mount();
     const rulerGutter = getByTestId(
@@ -253,8 +467,11 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
     const gRect = gutter.getBoundingClientRect();
     const mRect = marker.getBoundingClientRect();
     expect(mRect.left).toBeLessThan(gRect.right);
-    // 塗り順の実測: マーカーがガター上へはみ出す点で最前面がガター側であること。
-    // （マーカーが前面なら elementFromPoint はマーカーを返す＝バグ再発）。
+    // clip + 塗り順の実測: マーカーのレイアウト矩形がガターへはみ出しても、
+    // track の paint は境界で切れ、最前面の操作対象はガターであること。
+    expect(
+      getComputedStyle(container.querySelector("#chronicle-track")!).overflowX,
+    ).toBe("clip");
     const px = gRect.right - 2;
     const py = mRect.top + mRect.height / 2;
     const topEl = document.elementFromPoint(px, py) as HTMLElement | null;
@@ -268,8 +485,8 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
   it("初期可視高さに収まらないレーンでも、ガターの箱がレーン全高を覆う", async () => {
     // 親スクロール領域は flex row（高さ確定）なので、stretch だけだとガターの箱は
     // 可視高さ（flex line）で止まり、fold 外のレーンセルは箱の外へオーバーフローする。
-    // その領域には不透明背景 (bg-card) が無く、横スクロールで負 left になった
-    // マーカーがレーンヘッダー上へ透けて見える（min-h-max 撤去で再発する）。
+    // その領域ではガターの操作面が無くなり、負 left の marker と pointer target の
+    // 境界が崩れる（min-h-max 撤去で再発する）。
     // 10 レーン（contentHeight=520）を高さ 420 のホストに入れ、
     // viewStartDay=50 で全マーカー left≈-54（ガター内へ横スクロール済み相当）にする。
     const N = 10;
@@ -350,15 +567,17 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
     const scrollArea = gutter.parentElement as HTMLElement;
     // 前提保証: fold 外レーンが存在する（コンテンツが可視高さを超えている）。
     expect(layout.contentHeight).toBeGreaterThan(scrollArea.clientHeight);
-    // 核心: ガターの箱（bg-card / z-20 が効く範囲）がレーン全高以上であること。
-    // 可視高さで止まっていると fold 外で不透明背景が抜け、マーカーが透ける。
+    // 核心: ガターの操作面（z-20 が効く範囲）がレーン全高以上であること。
+    // 可視高さで止まると fold 外で marker より前面の操作面が失われる。
     expect(gutter.getBoundingClientRect().height).toBeGreaterThanOrEqual(
       layout.contentHeight,
     );
     // 実測ガード: 最終レーンまで縦スクロールし、fold 外だったマーカーとガターの
     // 交差点でも最前面がガター側であること（既存テストの fold 内版と同じ塗り順 gate）。
-    scrollArea.scrollTop = layout.pack.lanes[N - 1].top - 100;
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    await act(async () => {
+      scrollArea.scrollTop = layout.pack.lanes[N - 1].top - 100;
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
     const marker = container.querySelector(
       `[data-event-id="f${N}"]`,
     ) as HTMLElement;
@@ -375,5 +594,59 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
       topEl!.closest('[data-testid="chronicle-lane-gutter"]'),
     ).not.toBeNull();
     expect(topEl!.closest("[data-event-id]")).toBeNull();
+  });
+
+  it("Glass 時は Chronicle 構造面を透過し、track 境界で marker を clip する", async () => {
+    const { container, getByTestId } = mountInWorkspace(true, true);
+    await settleBrowserLayout();
+    const host = container.querySelector<HTMLElement>(
+      '[data-ambient-glass-surface="panel"]',
+    )!;
+    const surfaces = [
+      getByTestId("chronicle-viewport"),
+      getByTestId("chronicle-ruler"),
+      getByTestId("chronicle-lane-gutter"),
+      getByTestId("chronicle-scrollbar"),
+    ];
+
+    expect(getComputedStyle(host).backdropFilter).toContain("blur(14px)");
+    for (const surface of surfaces) {
+      expect(getComputedStyle(surface).backgroundColor).toBe(
+        "rgba(0, 0, 0, 0)",
+      );
+    }
+    expect(
+      getComputedStyle(container.querySelector("#chronicle-track")!).overflowX,
+    ).toBe("clip");
+  });
+
+  it.each([
+    { backgroundEnabled: false, glassEnabled: true },
+    { backgroundEnabled: true, glassEnabled: false },
+  ])(
+    "背景または Glass が無効なら Chronicle の外側ホストを不透明に戻す ($backgroundEnabled/$glassEnabled)",
+    async ({ backgroundEnabled, glassEnabled }) => {
+      const { container } = mountInWorkspace(backgroundEnabled, glassEnabled);
+      await settleBrowserLayout();
+      const host = container.querySelector<HTMLElement>(
+        '[data-ambient-glass-surface="panel"]',
+      )!;
+
+      expect(getComputedStyle(host).backgroundColor).not.toBe(
+        "rgba(0, 0, 0, 0)",
+      );
+      expect(getComputedStyle(host).backdropFilter).toBe("none");
+    },
+  );
+
+  it("WebGL fallback 時は Chronicle の外側ホストに半透明の塗りを戻して blur を外す", async () => {
+    const { container } = mountInWorkspace(true, true, "fallback");
+    await settleBrowserLayout();
+    const host = container.querySelector<HTMLElement>(
+      '[data-ambient-glass-surface="panel"]',
+    )!;
+
+    expect(getComputedStyle(host).backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(getComputedStyle(host).backdropFilter).toBe("none");
   });
 });

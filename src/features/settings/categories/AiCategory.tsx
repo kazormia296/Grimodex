@@ -11,6 +11,7 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { normalizeDomainList } from "@/features/chat/webSearchConfig";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import { getProviderLabel } from "@/features/chat/providerLabels";
+import { applyModelWhitelistToModels } from "@/features/chat/chatModelCatalog";
 import { FusionSettingsSection } from "./FusionSettingsSection";
 import {
   AI_PROVIDERS,
@@ -18,6 +19,9 @@ import {
   getOpenaiCompatibleEndpoints,
   getOpenrouterProviderPins,
   groupModelsByDeveloper,
+  ollamaContextLengthSettingKey,
+  ollamaContextLengthSettingKeys,
+  normalizeOllamaModelId,
 } from "@/features/chat/types";
 import type {
   AiProvider,
@@ -55,11 +59,23 @@ import { McpIntegrationSection } from "../components/McpIntegrationSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { ControlledToggle, SettingToggle } from "../components/SettingToggle";
+import { SettingDropdown } from "../components/SettingDropdown";
+import { SettingNumberInput } from "../components/SettingNumberInput";
 import { Switch } from "@/components/ui/switch";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import {
+  LIVE_READER_DEFAULT_TRIGGER_MODE,
+  LIVE_READER_MIN_PENDING_CHARS,
+  LIVE_READER_THRESHOLD_MAX_CHARS,
+  LIVE_READER_THRESHOLD_MIN_CHARS,
+  normalizeLiveReaderTriggerMode,
+} from "@/features/post-effect/liveReaderTrigger";
+import { ensureLiveReaderTranslations } from "@/locales/liveReader";
+
+ensureLiveReaderTranslations();
 
 async function archiveActiveCodexThreads(): Promise<void> {
   const projectId = getCurrentProjectId();
@@ -251,9 +267,12 @@ export function AiCategory() {
     }
   }, [settings]);
 
-  const handleLoadModels = useCallback(() => {
-    if (settings) loadModels();
-  }, [settings, loadModels]);
+  const handleLoadModels = useCallback(
+    (force = false) => {
+      if (settings) loadModels({ force });
+    },
+    [settings, loadModels],
+  );
 
   useEffect(() => {
     if (!settings) return;
@@ -424,6 +443,81 @@ export function AiCategory() {
     if (localSettings) await saveSettings(localSettings);
   }
 
+  function handleOllamaContextLengthChange(rawValue: string) {
+    const current = localSettings;
+    if (!current?.model) return;
+    const model = current.model;
+    const settingKeys = ollamaContextLengthSettingKeys(
+      current.ollamaEndpoint,
+      model,
+    );
+    const settingKey = ollamaContextLengthSettingKey(
+      current.ollamaEndpoint,
+      model,
+    );
+    const normalizedModel = normalizeOllamaModelId(model);
+    const modelMaximum = models.find(
+      (candidate) => normalizeOllamaModelId(candidate.id) === normalizedModel,
+    )?.contextLength;
+    const next = { ...(current.ollamaContextLengths ?? {}) };
+    for (const legacyKey of settingKeys) delete next[legacyKey];
+    // Retire unsafe endpoint-unscoped spellings written by older builds.
+    delete next[model];
+    delete next[normalizedModel];
+    delete next[`${normalizedModel}:latest`];
+    const parsed = Number(rawValue);
+    if (
+      rawValue.trim() === "" ||
+      !Number.isSafeInteger(parsed) ||
+      parsed <= 0
+    ) {
+      delete next[settingKey];
+    } else {
+      next[settingKey] =
+        modelMaximum && modelMaximum > 0
+          ? Math.min(parsed, modelMaximum)
+          : parsed;
+    }
+    setLocalSettings({ ...current, ollamaContextLengths: next });
+  }
+
+  async function handleSaveOllamaContextLength() {
+    if (!localSettings) return;
+    const normalizedModel = normalizeOllamaModelId(localSettings.model);
+    const modelMaximum = models.find(
+      (candidate) => normalizeOllamaModelId(candidate.id) === normalizedModel,
+    )?.contextLength;
+    const settingKeys = ollamaContextLengthSettingKeys(
+      localSettings.ollamaEndpoint,
+      localSettings.model,
+    );
+    const configured = settingKeys
+      .map((key) => localSettings.ollamaContextLengths?.[key])
+      .find((value) => value !== undefined);
+    if (modelMaximum && configured && configured > modelMaximum) {
+      const nextContextLengths = {
+        ...(localSettings.ollamaContextLengths ?? {}),
+      };
+      for (const legacyKey of settingKeys) {
+        delete nextContextLengths[legacyKey];
+      }
+      nextContextLengths[
+        ollamaContextLengthSettingKey(
+          localSettings.ollamaEndpoint,
+          localSettings.model,
+        )
+      ] = modelMaximum;
+      const normalized = {
+        ...localSettings,
+        ollamaContextLengths: nextContextLengths,
+      };
+      setLocalSettings(normalized);
+      await saveSettings(normalized);
+      return;
+    }
+    await saveSettings(localSettings);
+  }
+
   // Context budget
   const budgetValues = BUDGET_LAYERS.map((l) => ({
     ...l,
@@ -433,6 +527,12 @@ export function AiCategory() {
   const budgetError = budgetTotal > 100;
 
   const providerLabel = (p: AiProvider) => getProviderLabel(p, t);
+  const liveReaderTriggerMode = normalizeLiveReaderTriggerMode(
+    settingsStore.get(
+      "ai.liveReaderTriggerMode",
+      LIVE_READER_DEFAULT_TRIGGER_MODE,
+    ),
+  );
 
   if (!localSettings) {
     return (
@@ -842,7 +942,7 @@ export function AiCategory() {
                     />
                     <button
                       type="button"
-                      onClick={handleLoadModels}
+                      onClick={() => handleLoadModels(true)}
                       disabled={isLoadingModels}
                       className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
                     >
@@ -999,6 +1099,41 @@ export function AiCategory() {
               : current.filter((id) => id !== modelId);
             settingsStore.set("ai.modelWhitelist", JSON.stringify(next));
           };
+          const selectedOllamaModel =
+            localSettings.provider === "ollama"
+              ? models.find(
+                  (model) =>
+                    normalizeOllamaModelId(model.id) ===
+                    normalizeOllamaModelId(localSettings.model),
+                )
+              : undefined;
+          const modelMaximum = selectedOllamaModel?.contextLength;
+          const detectedOllamaContextRaw =
+            selectedOllamaModel?.effectiveContextLength;
+          const detectedOllamaContext =
+            detectedOllamaContextRaw && modelMaximum
+              ? Math.min(detectedOllamaContextRaw, modelMaximum)
+              : detectedOllamaContextRaw;
+          const ollamaContextSettingKeys = localSettings.model
+            ? ollamaContextLengthSettingKeys(
+                localSettings.ollamaEndpoint,
+                localSettings.model,
+              )
+            : [];
+          const declaredOllamaContextRaw = ollamaContextSettingKeys
+            .map((key) => localSettings.ollamaContextLengths?.[key])
+            .find((value) => value !== undefined);
+          const declaredOllamaContext =
+            declaredOllamaContextRaw && modelMaximum
+              ? Math.min(declaredOllamaContextRaw, modelMaximum)
+              : declaredOllamaContextRaw;
+          const usableOllamaContext =
+            detectedOllamaContext ?? declaredOllamaContext;
+          const usableOllamaContextSource = detectedOllamaContext
+            ? selectedOllamaModel?.effectiveContextSource
+            : declaredOllamaContext
+              ? "settings"
+              : undefined;
 
           return (
             <>
@@ -1013,12 +1148,67 @@ export function AiCategory() {
                     />
                     <button
                       type="button"
-                      onClick={handleLoadModels}
+                      onClick={() => handleLoadModels(true)}
                       disabled={isLoadingModels}
                       className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
                     >
                       {t("settings.ai.refresh")}
                     </button>
+                  </div>
+                </SettingRow>
+              )}
+
+              {localSettings.provider === "ollama" && (
+                <SettingRow
+                  label={t("settings.ai.ollamaEffectiveContext")}
+                  description={t("settings.ai.ollamaEffectiveContextDesc")}
+                >
+                  <div className="w-80 space-y-1.5">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1024}
+                      max={modelMaximum}
+                      value={
+                        localSettings.model ? (declaredOllamaContext ?? "") : ""
+                      }
+                      onChange={(event) =>
+                        handleOllamaContextLengthChange(event.target.value)
+                      }
+                      onBlur={handleSaveOllamaContextLength}
+                      disabled={!localSettings.model}
+                      aria-label={t("settings.ai.ollamaEffectiveContext")}
+                      placeholder={t(
+                        "settings.ai.ollamaEffectiveContextPlaceholder",
+                      )}
+                      className="w-40 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none disabled:opacity-50"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {selectedOllamaModel?.contextLength
+                        ? t("settings.ai.ollamaModelMaximumValue", {
+                            value:
+                              selectedOllamaModel.contextLength.toLocaleString(),
+                          })
+                        : t("settings.ai.ollamaModelMaximumUnknown")}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {usableOllamaContext
+                        ? t("settings.ai.ollamaEffectiveContextValue", {
+                            value: usableOllamaContext.toLocaleString(),
+                            source:
+                              usableOllamaContextSource === "runner"
+                                ? t("settings.ai.ollamaContextSourceRunner")
+                                : usableOllamaContextSource ===
+                                    "model-parameter"
+                                  ? t(
+                                      "settings.ai.ollamaContextSourceModelParameter",
+                                    )
+                                  : t(
+                                      "settings.ai.ollamaContextSourceSettings",
+                                    ),
+                          })
+                        : t("settings.ai.ollamaEffectiveContextUnknown")}
+                    </p>
                   </div>
                 </SettingRow>
               )}
@@ -1312,7 +1502,7 @@ export function AiCategory() {
         )}
       </SettingSection>
 
-      {/* 機能別モデル（ロール単位）— 各 AI 経路を 6 意味ロールに束ねてモデル指定。
+      {/* 機能別モデル（ロール単位）— 各 AI 経路を 7 意味ロールに束ねてモデル指定。
           空 = 既定チャットモデルにフォールバック。解決は modelRouting.ts が正本。 */}
       <SettingSection title={t("settings.ai.roleModel.title")}>
         <p className="mb-3 text-xs text-muted-foreground">
@@ -1329,14 +1519,12 @@ export function AiCategory() {
                 return [];
               }
             })();
-            const inWhitelist =
-              whitelist.length > 0
-                ? models.filter((m) => whitelist.includes(m.id))
-                : models;
+            const inWhitelist = applyModelWhitelistToModels(models, whitelist);
             return MODEL_ROLES.map((role) => (
               <RoleModelRow
                 key={role}
                 role={role}
+                activeProvider={localSettings.provider}
                 activeModels={inWhitelist}
                 sections={roleCatalog.sections}
                 isLoadingModels={isLoadingModels}
@@ -1345,6 +1533,50 @@ export function AiCategory() {
             ));
           })()}
         </div>
+        {/* 発火条件は reader モデルの直下にまとめ、モデルと挙動を続けて設定できるようにする。 */}
+        <SettingSection title={t("settings.ai.liveReader.title")}>
+          <SettingRow
+            label={t("settings.ai.liveReader.triggerMode")}
+            description={t("settings.ai.liveReader.triggerModeDesc")}
+          >
+            <SettingDropdown
+              settingKey="ai.liveReaderTriggerMode"
+              defaultValue={LIVE_READER_DEFAULT_TRIGGER_MODE}
+              options={[
+                {
+                  value: "characters",
+                  label: t("settings.ai.liveReader.modeCharacters"),
+                },
+                {
+                  value: "sentence",
+                  label: t("settings.ai.liveReader.modeSentence"),
+                },
+                {
+                  value: "paragraph",
+                  label: t("settings.ai.liveReader.modeParagraph"),
+                },
+                {
+                  value: "idle",
+                  label: t("settings.ai.liveReader.modeIdle"),
+                },
+              ]}
+            />
+          </SettingRow>
+          <SettingRow
+            label={t("settings.ai.liveReader.threshold")}
+            description={t("settings.ai.liveReader.thresholdDesc")}
+            disabled={liveReaderTriggerMode !== "characters"}
+          >
+            <SettingNumberInput
+              settingKey="ai.liveReaderThreshold"
+              min={LIVE_READER_THRESHOLD_MIN_CHARS}
+              max={LIVE_READER_THRESHOLD_MAX_CHARS}
+              defaultValue={LIVE_READER_MIN_PENDING_CHARS}
+              unit={t("settings.ai.liveReader.charsUnit")}
+              disabled={liveReaderTriggerMode !== "characters"}
+            />
+          </SettingRow>
+        </SettingSection>
         <p className="mt-3 text-xs text-muted-foreground">
           {t("settings.ai.roleModel.cacheNote")}
         </p>
