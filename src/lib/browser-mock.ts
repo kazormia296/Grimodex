@@ -6329,8 +6329,15 @@ export async function createBrowserMock(
         baseTailHash: firstMaterializedEvent?.prevHash ?? prevHash,
         events: orderedMaterializedEvents,
       });
-      // All async hashing is complete. Nothing between BEGIN and COMMIT may
-      // yield, otherwise unrelated browser DB commands can join this txn.
+      // The external journal is the recovery source. Persist it before SQLite
+      // so a crash cannot leave a committed audit tail with no replay record.
+      // withAppendLedgerLock keeps another append from materializing against
+      // this batch while the journal durability barrier is pending.
+      await options.onAiAuditDurabilityRequired?.(journalBatch);
+
+      // All async hashing and journal durability are complete. Nothing between
+      // BEGIN and COMMIT may yield, otherwise unrelated browser DB commands can
+      // join this txn.
       db.run("BEGIN IMMEDIATE");
       try {
         for (const prepared of preparedEvents) {
@@ -6371,7 +6378,6 @@ export async function createBrowserMock(
       }
       const insertedCount = preparedEvents.length;
       if (insertedCount > 0) options.onDatabaseDirty?.();
-      await options.onAiAuditDurabilityRequired?.(journalBatch);
       return { insertedCount, tailSequence: sequence, tailHash: prevHash };
     });
   }

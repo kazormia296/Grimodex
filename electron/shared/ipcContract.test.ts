@@ -107,6 +107,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"insertedCount":2,"tailSequence":2,"tailHash":"audit-h"}',
       ),
     ) as never,
+    aiAuditClaimCliDispatch: record(
+      "aiAuditClaimCliDispatch",
+      Promise.resolve(
+        '{"insertedCount":1,"tailSequence":4,"tailHash":"claim-h"}',
+      ),
+    ) as never,
     aiAuditReadSnapshot: record(
       "aiAuditReadSnapshot",
       Promise.resolve(
@@ -692,55 +698,16 @@ describe("dispatchInvoke", () => {
     );
   });
 
-  it("CLI send の main 監査ゲートは欠落・改ざん・terminal を spawn 前に拒否する", async () => {
+  it("CLI send の main 監査claimはnativeの拒否をspawn前に伝播する", async () => {
     const context = {
       expectedWorkspacePath: "/workspace/test.gdx",
       projectId: "p1",
       operationId: "operation-cli",
       executionId: "execution-cli",
       parentExecutionId: null,
-      pathId: "chat_cli",
+      pathId: "cli_chat_stream",
     } as const;
-    const lifecycleEvents = [
-      {
-        sequence: 1,
-        project_id: "p1",
-        execution_id: context.executionId,
-        operation_id: context.operationId,
-        parent_execution_id: null,
-        path_id: context.pathId,
-        event_type: "execution.started",
-      },
-      {
-        sequence: 2,
-        project_id: "p1",
-        execution_id: context.executionId,
-        operation_id: context.operationId,
-        parent_execution_id: null,
-        path_id: context.pathId,
-        event_type: "request.prepared",
-      },
-      {
-        sequence: 3,
-        project_id: "p1",
-        execution_id: context.executionId,
-        operation_id: context.operationId,
-        parent_execution_id: null,
-        path_id: context.pathId,
-        event_type: "request.dispatched",
-      },
-    ];
-    const backend = fakeBackend({
-      aiAuditReadSnapshot: () =>
-        Promise.resolve(
-          JSON.stringify({
-            projectId: context.projectId,
-            highWaterSequence: 3,
-            nextAfterSequence: null,
-            events: lifecycleEvents,
-          }),
-        ) as never,
-    }).backend;
+    const backend = fakeBackend().backend;
     const runner = vi.fn(async () => null);
     const shell = {
       send_cli_chat_stream: runner,
@@ -761,6 +728,14 @@ describe("dispatchInvoke", () => {
       ...context,
       operationId: "forged-operation",
     };
+    const rejectedBackend = fakeBackend({
+      aiAuditClaimCliDispatch: () =>
+        Promise.reject(
+          new Error(
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: durable execution identity mismatch",
+          ),
+        ),
+    }).backend;
     await expect(
       dispatchInvoke(
         "send_cli_chat_stream",
@@ -769,7 +744,7 @@ describe("dispatchInvoke", () => {
           streamId: context.executionId,
           auditContext: forgedContext,
         },
-        { backend, shell },
+        { backend: rejectedBackend, shell },
       ),
     ).resolves.toMatchObject({
       ok: false,
@@ -777,22 +752,12 @@ describe("dispatchInvoke", () => {
     });
 
     const terminalBackend = fakeBackend({
-      aiAuditReadSnapshot: () =>
-        Promise.resolve(
-          JSON.stringify({
-            projectId: context.projectId,
-            highWaterSequence: 4,
-            nextAfterSequence: null,
-            events: [
-              ...lifecycleEvents,
-              {
-                ...lifecycleEvents[0],
-                sequence: 4,
-                event_type: "execution.failed",
-              },
-            ],
-          }),
-        ) as never,
+      aiAuditClaimCliDispatch: () =>
+        Promise.reject(
+          new Error(
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: execution already has a terminal event",
+          ),
+        ),
     }).backend;
     await expect(
       dispatchInvoke(
@@ -810,6 +775,19 @@ describe("dispatchInvoke", () => {
     });
 
     expect(runner).not.toHaveBeenCalled();
+
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: context,
+        },
+        { backend, shell },
+      ),
+    ).resolves.toEqual({ ok: true, value: null });
+    expect(runner).toHaveBeenCalledOnce();
   });
 
   it("backend 不在の napi コマンドは IPC_BACKEND_UNAVAILABLE", async () => {

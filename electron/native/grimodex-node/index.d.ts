@@ -199,6 +199,11 @@ export declare class Backend {
    */
   aiAuditAppendBatch(expectedWorkspacePath: string, projectId: string | undefined | null, events: any): Promise<string>
   /**
+   * Validate the durable CLI lifecycle and atomically append the
+   * main-owned one-shot dispatch claim before the shell manager can spawn.
+   */
+  aiAuditClaimCliDispatch(expectedWorkspacePath: string, projectId: string | undefined | null, executionId: string, operationId: string, parentExecutionId: string | undefined | null, pathId: string, expectedRequestSha256: string): Promise<string>
+  /**
    * Read one immutable high-water snapshot. Rows appended after the
    * selected high-water sequence are deliberately excluded from export.
    */

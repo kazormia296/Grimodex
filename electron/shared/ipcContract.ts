@@ -415,6 +415,16 @@ export interface NapiBackendLike {
     projectId: string | null,
     events: unknown,
   ): Promise<string>;
+  /** Main-owned, single-transaction claim for a CLI dispatch. */
+  aiAuditClaimCliDispatch(
+    expectedWorkspacePath: string,
+    projectId: string | null,
+    executionId: string,
+    operationId: string,
+    parentExecutionId: string | null,
+    pathId: string,
+    expectedRequestSha256: string,
+  ): Promise<string>;
   aiAuditReadSnapshot(
     expectedWorkspacePath: string,
     projectId: string | null,
@@ -3026,33 +3036,77 @@ function requireNativeAiStreamCorrelation(
   return streamId;
 }
 
-const CLI_AI_AUDIT_TERMINAL_EVENTS = new Set([
-  "execution.succeeded",
-  "execution.failed",
-  "execution.cancelled",
-  "execution.skipped",
-  "execution.cache_hit",
-]);
-
-function nativeAuditEventField(
-  event: Record<string, unknown>,
-  camelCase: string,
-  snakeCase: string,
-): unknown {
-  return Object.prototype.hasOwnProperty.call(event, camelCase)
-    ? event[camelCase]
-    : event[snakeCase];
-}
-
 function cliAuditPreconditionError(reason: string): Error {
   return new Error(`${AI_AUDIT_DISPATCH_PRECONDITION_FAILED_MARKER} ${reason}`);
+}
+
+interface CliDispatchRequestDigestInput {
+  cli: string;
+  model: string | null;
+  prompt: string;
+}
+
+function cliDispatchRequestDigestInput(
+  args: CommandArgs,
+): CliDispatchRequestDigestInput {
+  const payload = args.payload;
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    throw cliAuditPreconditionError("CLI payload is not an object");
+  }
+  const record = payload as Record<string, unknown>;
+  if (typeof record.cli !== "string" || record.cli.trim() !== record.cli) {
+    throw cliAuditPreconditionError("CLI payload.cli is invalid");
+  }
+  if (typeof record.prompt !== "string") {
+    throw cliAuditPreconditionError("CLI payload.prompt is invalid");
+  }
+  const model = record.model;
+  if (
+    model !== undefined &&
+    model !== null &&
+    model !== "" &&
+    typeof model !== "string"
+  ) {
+    throw cliAuditPreconditionError("CLI payload.model is invalid");
+  }
+  return {
+    cli: record.cli,
+    model: typeof model === "string" && model.length > 0 ? model : null,
+    prompt: record.prompt,
+  };
+}
+
+async function sha256HexUtf8(value: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw cliAuditPreconditionError("Web Crypto SHA-256 is unavailable");
+  }
+  const digest = await subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function cliDispatchRequestSha256(
+  args: CommandArgs,
+): Promise<string> {
+  const input = cliDispatchRequestDigestInput(args);
+  return sha256HexUtf8(JSON.stringify(input));
 }
 
 /**
  * Main-side guard for the CLI shell command. The generic preload invoke path
  * must not be able to spawn a subprocess by supplying only a stream id and a
- * prompt. Read the native ledger through the pinned workspace backend and
- * require the exact ordered lifecycle for this execution first.
+ * prompt. The native backend validates the pinned workspace, exact lifecycle,
+ * prepared-request digest, and one-shot claim in one SQLite transaction before
+ * the shell handler is allowed to resolve or spawn a binary.
  */
 async function assertCliAiAuditDispatchPrecondition(
   args: CommandArgs,
@@ -3071,133 +3125,19 @@ async function assertCliAiAuditDispatchPrecondition(
   const executionId = context.executionId as string;
   const parentExecutionId = context.parentExecutionId as string | null;
   const pathId = context.pathId as string;
-  const events: Record<string, unknown>[] = [];
-  let afterSequence = 0;
-  let highWaterSequence: number | undefined;
-
-  for (;;) {
-    const raw = await backend.aiAuditReadSnapshot(
-      expectedWorkspacePath,
-      projectId,
-      afterSequence,
-      highWaterSequence,
-      1_000,
-    );
-    const snapshot = parseWire(raw);
-    if (
-      snapshot === null ||
-      typeof snapshot !== "object" ||
-      Array.isArray(snapshot)
-    ) {
-      throw cliAuditPreconditionError("native audit snapshot is invalid");
-    }
-    const record = snapshot as Record<string, unknown>;
-    if (record.projectId !== undefined && record.projectId !== projectId) {
-      throw cliAuditPreconditionError("audit project does not match context");
-    }
-    const highWater = record.highWaterSequence;
-    if (!Number.isSafeInteger(highWater) || (highWater as number) < 0) {
-      throw cliAuditPreconditionError(
-        "native audit high-water mark is invalid",
-      );
-    }
-    highWaterSequence ??= highWater as number;
-    if (!Array.isArray(record.events)) {
-      throw cliAuditPreconditionError("native audit events are invalid");
-    }
-    for (const candidate of record.events) {
-      if (
-        candidate === null ||
-        typeof candidate !== "object" ||
-        Array.isArray(candidate)
-      ) {
-        throw cliAuditPreconditionError("native audit event is invalid");
-      }
-      events.push(candidate as Record<string, unknown>);
-    }
-    const next = record.nextAfterSequence;
-    if (next === null || next === undefined) break;
-    if (
-      !Number.isSafeInteger(next) ||
-      (next as number) <= afterSequence ||
-      (next as number) >= (highWaterSequence as number)
-    ) {
-      throw cliAuditPreconditionError("native audit pagination is invalid");
-    }
-    afterSequence = next as number;
+  if (typeof backend.aiAuditClaimCliDispatch !== "function") {
+    throw cliAuditPreconditionError("native CLI dispatch claim is unavailable");
   }
-
-  const executionEvents = events
-    .filter(
-      (event) =>
-        nativeAuditEventField(event, "executionId", "execution_id") ===
-        executionId,
-    )
-    .sort(
-      (left, right) =>
-        Number(nativeAuditEventField(left, "sequence", "sequence")) -
-        Number(nativeAuditEventField(right, "sequence", "sequence")),
-    );
-  if (executionEvents.length === 0) {
-    throw cliAuditPreconditionError(
-      "execution.started/request.prepared/request.dispatched are not durable",
-    );
-  }
-
-  for (const event of executionEvents) {
-    const eventProjectId = nativeAuditEventField(
-      event,
-      "projectId",
-      "project_id",
-    );
-    if (
-      eventProjectId !== projectId ||
-      nativeAuditEventField(event, "operationId", "operation_id") !==
-        operationId ||
-      nativeAuditEventField(
-        event,
-        "parentExecutionId",
-        "parent_execution_id",
-      ) !== parentExecutionId ||
-      nativeAuditEventField(event, "pathId", "path_id") !== pathId
-    ) {
-      throw cliAuditPreconditionError(
-        "execution identity does not match the audit context",
-      );
-    }
-  }
-
-  const eventType = (event: Record<string, unknown>): unknown =>
-    nativeAuditEventField(event, "eventType", "event_type");
-  const sequence = (event: Record<string, unknown>): number =>
-    Number(nativeAuditEventField(event, "sequence", "sequence"));
-  const started = executionEvents.find(
-    (event) => eventType(event) === "execution.started",
+  const expectedRequestSha256 = await cliDispatchRequestSha256(args);
+  await backend.aiAuditClaimCliDispatch(
+    expectedWorkspacePath,
+    projectId,
+    executionId,
+    operationId,
+    parentExecutionId,
+    pathId,
+    expectedRequestSha256,
   );
-  const prepared = executionEvents.find(
-    (event) => eventType(event) === "request.prepared",
-  );
-  const dispatched = executionEvents.find(
-    (event) => eventType(event) === "request.dispatched",
-  );
-  if (
-    !started ||
-    !prepared ||
-    !dispatched ||
-    !(sequence(started) < sequence(prepared)) ||
-    !(sequence(prepared) < sequence(dispatched))
-  ) {
-    throw cliAuditPreconditionError(
-      "audit lifecycle is missing or out of order before CLI spawn",
-    );
-  }
-  if (
-    executionEvents.some((event) =>
-      CLI_AI_AUDIT_TERMINAL_EVENTS.has(String(eventType(event))),
-    )
-  ) {
-    throw cliAuditPreconditionError("execution already has a terminal event");
-  }
 }
 
 function requireStreamId(args: CommandArgs, command: string): string {

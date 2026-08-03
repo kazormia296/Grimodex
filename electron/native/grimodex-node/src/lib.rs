@@ -1848,6 +1848,36 @@ impl Backend {
         .await
     }
 
+    /// Validate the durable CLI lifecycle and atomically append the
+    /// main-owned one-shot dispatch claim before the shell manager can spawn.
+    #[napi]
+    pub async fn ai_audit_claim_cli_dispatch(
+        &self,
+        expected_workspace_path: String,
+        project_id: Option<String>,
+        execution_id: String,
+        operation_id: String,
+        parent_execution_id: Option<String>,
+        path_id: String,
+        expected_request_sha256: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
+            let result = workspace.db.claim_cli_ai_audit_dispatch(
+                project_id.as_deref(),
+                &execution_id,
+                &operation_id,
+                parent_execution_id.as_deref(),
+                &path_id,
+                &expected_request_sha256,
+            )?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// Read one immutable high-water snapshot. Rows appended after the
     /// selected high-water sequence are deliberately excluded from export.
     #[napi]
