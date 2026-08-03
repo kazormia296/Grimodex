@@ -3513,6 +3513,7 @@
     "selectPrompt": "Snippetを選択してください",
     "deleteConfirmDesc": "「{{name}}」を削除しますか？この操作は元に戻せません。",
     "copied": "コピーしました",
+    "copyFailed": "コピーに失敗しました",
     "inserted": "挿入しました",
     "extraction": {
       "title": "Snippetとして保存",
@@ -4518,7 +4519,8 @@
   },
   "debugLog": {
     "logCopied": "ログをコピーしました",
-    "lineCopied": "行をコピーしました"
+    "lineCopied": "行をコピーしました",
+    "copyFailed": "ログをコピーできませんでした"
   },
   "dialog": {
     "workspacePathPrompt": "ワークスペースのパスを入力してください:"
