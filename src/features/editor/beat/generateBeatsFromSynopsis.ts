@@ -6,6 +6,10 @@ import { streamInlineAiText } from "./streamInlineAiText";
 import { isBeatType, type BeatType } from "./beatTypes";
 import { getPromptCatalog } from "@/prompts/index";
 import i18next from "@/lib/i18n";
+import {
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 
 interface GenerateBeatsCallbacks {
   onStart?: () => void;
@@ -62,12 +66,13 @@ export async function generateBeatsFromSynopsis(
   const treeNode = state.nodes.find((n) => n.id === sceneId);
   const synopsis = treeNode?.synopsis?.trim() ?? "";
   if (!synopsis) return;
+  const auditAuthority = captureAiOperationAuthority(state.projectId, sceneId);
 
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
   const sceneTitle = treeNode?.title ?? "";
   let project;
   try {
-    project = await getProject(state.projectId);
+    project = await getProject(auditAuthority.projectId);
   } catch {
     // ignore
   }
@@ -81,7 +86,10 @@ export async function generateBeatsFromSynopsis(
 
   const result = await streamInlineAiText(messages, {
     usageSurface: "beat",
-    projectId: state.projectId,
+    projectId: auditAuthority.projectId,
+    auditExpectedWorkspacePath: auditAuthority.expectedWorkspacePath,
+    auditOperationId: auditAuthority.operationId,
+    auditMetadata: { operationScopeId: auditAuthority.resourceId },
     auditPathId: "beats_from_synopsis",
   });
   if (!result.ok) {
@@ -95,6 +103,10 @@ export async function generateBeatsFromSynopsis(
     return;
   }
 
+  assertAiOperationAuthorityCurrent(
+    auditAuthority,
+    useTreeStore.getState().projectId,
+  );
   const store = useUnplacedBeatsStore.getState();
   for (const rb of rawBeats) {
     const instructions =

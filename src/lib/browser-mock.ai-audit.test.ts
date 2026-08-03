@@ -311,6 +311,69 @@ describe("BrowserMock AI audit ledger", () => {
     expect(appendAcknowledged).toBe(true);
   });
 
+  it("restores the materialized journal rows exactly after a snapshot crash", async () => {
+    let journalBatch: { batchId: string; appendArgsJson: string } | undefined;
+    const source = await createBrowserMock({
+      workspaceIdentity: "/dev/workspace",
+      onAiAuditDurabilityRequired: async (batch) => {
+        journalBatch = batch;
+      },
+    });
+    owned.push(source);
+    // This is the last snapshot that existed before the append ACK reached
+    // IndexedDB. The journal is the only durable record of the following rows.
+    const preAppendSnapshot = source.exportDatabase();
+    const events = [
+      auditEvent("crash-start", "execution.started", 1),
+      auditEvent("crash-prepared", "request.prepared", 2),
+      auditEvent("crash-dispatched", "request.dispatched", 3),
+    ];
+    await source.invoke("ai_audit_append_batch", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+      events,
+    });
+    const sourceSnapshot = await source.invoke<{
+      highWaterHash: string;
+      events: unknown[];
+    }>("ai_audit_read_snapshot", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+    });
+    expect(journalBatch).toBeDefined();
+    const materialized = JSON.parse(journalBatch!.appendArgsJson) as {
+      journalVersion: number;
+      events: Array<{
+        recordedAt: number;
+        payloadSha256: string;
+        prevHash: string;
+        hash: string;
+      }>;
+    };
+    expect(materialized.journalVersion).toBe(1);
+    expect(materialized.events.every((event) => event.recordedAt > 0)).toBe(
+      true,
+    );
+    const recovered = await createBrowserMock({
+      databaseBytes: preAppendSnapshot,
+      workspaceIdentity: "/dev/workspace",
+    });
+    owned.push(recovered);
+    await recovered.invoke(
+      "ai_audit_restore_batch",
+      JSON.parse(journalBatch!.appendArgsJson),
+    );
+    const recoveredSnapshot = await recovered.invoke<{
+      highWaterHash: string;
+      events: unknown[];
+    }>("ai_audit_read_snapshot", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+    });
+
+    expect(recoveredSnapshot).toEqual(sourceSnapshot);
+  });
+
   it("does not fetch when the durable journal ACK rejects before dispatch", async () => {
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
@@ -561,13 +624,15 @@ describe("BrowserMock AI audit ledger", () => {
 
     await expect(auditedDispatch()).rejects.toBe(durabilityError);
     expect(complete).not.toHaveBeenCalled();
-    expect(onDatabaseDirty).toHaveBeenCalledOnce();
+    // Journal-first rejects before SQLite is opened, so no unjournaled row is
+    // left behind for a later retry.
+    expect(onDatabaseDirty).not.toHaveBeenCalled();
 
-    // The row already exists in sql.js, so this exact retry inserts zero rows.
-    // The durability barrier must nevertheless run and keep dispatch blocked.
+    // The first attempt stopped before SQLite materialization, so the exact
+    // retry must run the same journal barrier again before it can dispatch.
     await expect(auditedDispatch()).rejects.toBe(durabilityError);
     expect(complete).not.toHaveBeenCalled();
-    expect(onDatabaseDirty).toHaveBeenCalledOnce();
+    expect(onDatabaseDirty).not.toHaveBeenCalled();
     expect(onAiAuditDurabilityRequired).toHaveBeenCalledTimes(2);
 
     persistenceBlocked = false;
@@ -575,7 +640,135 @@ describe("BrowserMock AI audit ledger", () => {
       stopReason: "end_turn",
     });
     expect(complete).toHaveBeenCalledOnce();
+    expect(onDatabaseDirty).toHaveBeenCalledOnce();
     expect(onAiAuditDurabilityRequired).toHaveBeenCalledTimes(3);
+  });
+
+  it("persists the journal before SQLite and serializes the next batch behind it", async () => {
+    let releaseFirstJournal!: () => void;
+    const firstJournalGate = new Promise<void>((resolve) => {
+      releaseFirstJournal = resolve;
+    });
+    let resolveFirstJournalStarted!: () => void;
+    const firstJournalStarted = new Promise<void>((resolve) => {
+      resolveFirstJournalStarted = resolve;
+    });
+    const journalBatches: Array<{
+      eventId: string;
+      sequence: number;
+      hash: string;
+      timestamp: number;
+    }> = [];
+    const journalArgs: string[] = [];
+    let rowsVisibleBeforeFirstCommit: unknown[] | undefined;
+    const onAiAuditDurabilityRequired = async (batch: {
+      appendArgsJson: string;
+    }) => {
+      const parsed = JSON.parse(batch.appendArgsJson) as {
+        events: Array<{
+          eventId: string;
+          sequence: number;
+          hash: string;
+          timestamp: number;
+        }>;
+      };
+      journalArgs.push(batch.appendArgsJson);
+      const event = parsed.events[0];
+      journalBatches.push(event);
+      if (event.eventId === "journal-first-a") {
+        resolveFirstJournalStarted();
+        const beforeCommit = await mock.invoke<{ rows: unknown[] }>(
+          "db_execute",
+          {
+            sql: "SELECT event_id FROM ai_audit_events ORDER BY sequence",
+            params: [],
+            method: "all",
+          },
+        );
+        rowsVisibleBeforeFirstCommit = beforeCommit.rows;
+        await firstJournalGate;
+      }
+    };
+    const mock = await createBrowserMock({
+      workspaceIdentity: "/dev/workspace",
+      onAiAuditDurabilityRequired,
+    });
+    owned.push(mock);
+    const oldSnapshotBytes = mock.exportDatabase();
+
+    const append = (eventId: string, executionId: string) =>
+      mock.invoke("ai_audit_append_batch", {
+        expectedWorkspacePath: "/dev/workspace",
+        projectId: "default-project",
+        events: [auditEvent(eventId, "execution.started", 1, executionId)],
+      });
+    const first = append("journal-first-a", "journal-execution-a");
+    await firstJournalStarted;
+    const second = append("journal-first-b", "journal-execution-b");
+    await Promise.resolve();
+    expect(journalBatches.map((batch) => batch.eventId)).toEqual([
+      "journal-first-a",
+    ]);
+
+    releaseFirstJournal();
+    await Promise.all([first, second]);
+
+    expect(rowsVisibleBeforeFirstCommit).toEqual([]);
+    expect(journalBatches.map((batch) => batch.eventId)).toEqual([
+      "journal-first-a",
+      "journal-first-b",
+    ]);
+    expect(journalBatches.map((batch) => batch.sequence)).toEqual([1, 2]);
+
+    const snapshot = await mock.invoke<{
+      events: Array<{
+        eventId: string;
+        sequence: number;
+        hash: string;
+        timestamp: number;
+      }>;
+    }>("ai_audit_read_snapshot", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+      afterSequence: 0,
+    });
+    expect(snapshot.events.map((event) => event.eventId)).toEqual(
+      journalBatches.map((batch) => batch.eventId),
+    );
+    expect(snapshot.events.map((event) => event.sequence)).toEqual([1, 2]);
+    expect(snapshot.events.map((event) => event.timestamp)).toEqual(
+      journalBatches.map((batch) => batch.timestamp),
+    );
+    expect(snapshot.events.map((event) => event.hash)).toEqual(
+      journalBatches.map((batch) => batch.hash),
+    );
+
+    // Simulate a crash before the SQLite snapshot was published: replaying the
+    // durable journal onto the old snapshot must reproduce the exact ledger,
+    // including the original materialized timestamps and hash tail.
+    const recovered = await createBrowserMock({
+      databaseBytes: oldSnapshotBytes,
+      workspaceIdentity: "/dev/workspace",
+    });
+    owned.push(recovered);
+    for (const appendArgsJson of journalArgs) {
+      await recovered.invoke("ai_audit_restore_batch", {
+        ...JSON.parse(appendArgsJson),
+      });
+    }
+    const recoveredSnapshot = await recovered.invoke<{
+      events: Array<{
+        eventId: string;
+        sequence: number;
+        timestamp: number;
+        hash: string;
+      }>;
+    }>("ai_audit_read_snapshot", {
+      expectedWorkspacePath: "/dev/workspace",
+      projectId: "default-project",
+      afterSequence: 0,
+    });
+    expect(recoveredSnapshot.events).toEqual(snapshot.events);
   });
 
   it("rejects non-trimmed or mismatched stream correlation before Browser AI dispatch", async () => {

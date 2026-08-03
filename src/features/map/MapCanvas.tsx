@@ -26,6 +26,11 @@ import {
   getCurrentProjectId,
   useCurrentProjectId,
 } from "@/features/project/projectStore";
+import {
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+  type AiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureMapStickyDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
@@ -295,6 +300,8 @@ export function MapCanvas() {
     seedNodeIds: string[];
     seedNodeTitles: string[];
     seeds: AiBranchSeed[];
+    /** Authority captured together with the frozen seed snapshot. */
+    authority: AiOperationAuthority;
   } | null>(null);
   // null = idle. spinner は seed ノード直下（indicatorPosition）に
   // ViewportPortal で flow 座標固定で出すため pan/zoom に追従する。
@@ -1538,6 +1545,18 @@ export function MapCanvas() {
   const handleOpenAiBranch = useCallback(
     (explicitSeedNodeId?: string) => {
       if (!boardId) return;
+      let authority: AiOperationAuthority;
+      try {
+        // Seeds are a synchronous snapshot. Capture the board/project/workspace
+        // authority in the same turn so the confirmation dialog cannot later
+        // retarget those seeds to a replacement board.
+        authority = captureAiOperationAuthority(getCurrentProjectId(), boardId);
+      } catch (error) {
+        toast.error(t("map.toast.aiBranchGenerateFailed"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+        return;
+      }
       // When invoked from a node context menu (explicitSeedNodeId), seed
       // from that node regardless of selection state. Otherwise fall back
       // to the current multi-node selection (Palette / keyboard path).
@@ -1585,9 +1604,10 @@ export function MapCanvas() {
         seedNodeIds,
         seedNodeTitles,
         seeds,
+        authority,
       });
     },
-    [boardId, getNodes, getSpawnPosition, stickies, aiBranches],
+    [aiBranches, boardId, getNodes, getSpawnPosition, stickies, t],
   );
 
   const handleAiBranchConfirm = useCallback(
@@ -1596,17 +1616,37 @@ export function MapCanvas() {
       if (blockIfPolicyOff("chat")) return;
       const dialogState = aiBranchDialog;
       setAiBranchDialog(null);
-      setGeneratingAiBranch({
-        indicatorPosition: dialogState.indicatorPosition,
-      });
 
       try {
+        const assertDialogAuthority = (): void => {
+          assertAiOperationAuthorityCurrent(
+            dialogState.authority,
+            getCurrentProjectId(),
+          );
+          if (boardId !== dialogState.authority.resourceId) {
+            throw new Error(
+              "AI Branch board changed before the confirmation completed",
+            );
+          }
+        };
+
+        // The dialog may have remained open across a project/workspace/board
+        // switch. Reject before any context read or provider dispatch.
+        assertDialogAuthority();
+        setGeneratingAiBranch({
+          indicatorPosition: dialogState.indicatorPosition,
+        });
+
         // project info と Spotlight pins を並列 fetch。失敗時はそれぞれ
         // null / [] にフォールバックして prompt のセクションが落ちるだけ。
         const [projectCtx, spotlight] = await Promise.all([
-          fetchAiBranchProjectContext(getCurrentProjectId()),
+          fetchAiBranchProjectContext(dialogState.authority.projectId),
           fetchActiveSessionSpotlight(),
         ]);
+        // Context/spotlight are asynchronous and may have observed a stale
+        // store during a switch. The authority check must happen again before
+        // any provider call can consume them.
+        assertDialogAuthority();
         // Verbalized Sampling: 意外性ノブが標準 (null) のときは VS オフで従来挙動。
         // CoT 前置きは小型/ローカル (cli) では認知負荷で品質が落ちうるため切る。
         const provider = useAiSettingsStore.getState().settings?.provider;
@@ -1614,6 +1654,7 @@ export function MapCanvas() {
           vsThreshold != null
             ? { threshold: vsThreshold, cot: provider !== "cli" }
             : null;
+        assertDialogAuthority();
         const cards = await generateAiBranchCards(
           prompt,
           count,
@@ -1621,6 +1662,7 @@ export function MapCanvas() {
           projectCtx,
           spotlight,
           vs,
+          dialogState.authority,
         );
 
         const pos = dialogState.spawnPosition;
@@ -1632,8 +1674,9 @@ export function MapCanvas() {
           cards.length,
           positionsRef.current.map((p) => ({ x: p.x, y: p.y })),
         );
+        assertDialogAuthority();
         const result = await createAiBranch(
-          boardId,
+          dialogState.authority.resourceId,
           prompt,
           dialogState.seedNodeIds,
           cards,

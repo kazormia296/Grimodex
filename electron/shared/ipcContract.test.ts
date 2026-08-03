@@ -107,6 +107,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"insertedCount":2,"tailSequence":2,"tailHash":"audit-h"}',
       ),
     ) as never,
+    aiAuditClaimCliDispatch: record(
+      "aiAuditClaimCliDispatch",
+      Promise.resolve(
+        '{"insertedCount":1,"tailSequence":4,"tailHash":"claim-h"}',
+      ),
+    ) as never,
     aiAuditReadSnapshot: record(
       "aiAuditReadSnapshot",
       Promise.resolve(
@@ -633,7 +639,7 @@ describe("dispatchInvoke", () => {
     ).toBe(true);
   });
 
-  it("CLI AI 5コマンドはbackend不在でもmain shell handlerへ委譲される", async () => {
+  it("CLI AI の検出は委譲されるが、送信は監査証跡なしで拒否される", async () => {
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const shell = Object.fromEntries(
       [
@@ -663,13 +669,12 @@ describe("dispatchInvoke", () => {
     );
 
     expect(detected).toEqual({ ok: true, value: "/bin/claude" });
-    expect(sent).toEqual({ ok: true, value: null });
+    expect(sent.ok).toBe(false);
+    if (!sent.ok) {
+      expect(sent.error).toContain("auditContext");
+    }
     expect(calls).toEqual([
       { command: "detect_cli_binary", args: { cli: "claude" } },
-      {
-        command: "send_cli_chat_stream",
-        args: { payload: { cli: "claude", prompt: "hi" } },
-      },
     ]);
     expect(SHELL_COMMAND_NAMES).toEqual(
       expect.arrayContaining([
@@ -691,6 +696,98 @@ describe("dispatchInvoke", () => {
         "mozkey_download_and_install",
       ]),
     );
+  });
+
+  it("CLI send の main 監査claimはnativeの拒否をspawn前に伝播する", async () => {
+    const context = {
+      expectedWorkspacePath: "/workspace/test.gdx",
+      projectId: "p1",
+      operationId: "operation-cli",
+      executionId: "execution-cli",
+      parentExecutionId: null,
+      pathId: "cli_chat_stream",
+    } as const;
+    const backend = fakeBackend().backend;
+    const runner = vi.fn(async () => null);
+    const shell = {
+      send_cli_chat_stream: runner,
+    };
+    const payload = { payload: { cli: "claude", prompt: "hi" } };
+
+    await expect(
+      dispatchInvoke("send_cli_chat_stream", payload, {
+        backend: null,
+        shell,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("auditContext"),
+    });
+
+    const forgedContext = {
+      ...context,
+      operationId: "forged-operation",
+    };
+    const rejectedBackend = fakeBackend({
+      aiAuditClaimCliDispatch: () =>
+        Promise.reject(
+          new Error(
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: durable execution identity mismatch",
+          ),
+        ),
+    }).backend;
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: forgedContext,
+        },
+        { backend: rejectedBackend, shell },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("AI_AUDIT_DISPATCH_PRECONDITION_FAILED"),
+    });
+
+    const terminalBackend = fakeBackend({
+      aiAuditClaimCliDispatch: () =>
+        Promise.reject(
+          new Error(
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: execution already has a terminal event",
+          ),
+        ),
+    }).backend;
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: context,
+        },
+        { backend: terminalBackend, shell },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("AI_AUDIT_DISPATCH_PRECONDITION_FAILED"),
+    });
+
+    expect(runner).not.toHaveBeenCalled();
+
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: context,
+        },
+        { backend, shell },
+      ),
+    ).resolves.toEqual({ ok: true, value: null });
+    expect(runner).toHaveBeenCalledOnce();
   });
 
   it("backend 不在の napi コマンドは IPC_BACKEND_UNAVAILABLE", async () => {

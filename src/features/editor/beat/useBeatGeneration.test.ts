@@ -135,6 +135,7 @@ describe("useBeatGeneration", () => {
 
     // Seed stores with a minimal scene + project + codex.
     useTreeStore.setState({
+      projectId: "p1",
       nodes: [
         {
           id: "scene-1",
@@ -618,6 +619,7 @@ describe("runRoleInference (C-7)", () => {
       cache: { ...s.cache, "beat.inferRoles": "true" },
     }));
     useTreeStore.setState({
+      projectId: "p1",
       nodes: [
         {
           id: "scene-1",

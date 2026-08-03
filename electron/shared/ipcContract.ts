@@ -87,6 +87,10 @@ export const IPC_UNIMPLEMENTED_MARKER = "IPC_UNIMPLEMENTED:";
 /** napi Backend (.node) のロードに失敗した状態で napi コマンドを呼んだ場合。 */
 export const IPC_BACKEND_UNAVAILABLE_MARKER = "IPC_BACKEND_UNAVAILABLE:";
 
+/** A CLI subprocess may not start without a durable audit dispatch proof. */
+export const AI_AUDIT_DISPATCH_PRECONDITION_FAILED_MARKER =
+  "AI_AUDIT_DISPATCH_PRECONDITION_FAILED:";
+
 export function unimplementedError(cmd: string): string {
   return `${IPC_UNIMPLEMENTED_MARKER} ${cmd}`;
 }
@@ -410,6 +414,16 @@ export interface NapiBackendLike {
     expectedWorkspacePath: string,
     projectId: string | null,
     events: unknown,
+  ): Promise<string>;
+  /** Main-owned, single-transaction claim for a CLI dispatch. */
+  aiAuditClaimCliDispatch(
+    expectedWorkspacePath: string,
+    projectId: string | null,
+    executionId: string,
+    operationId: string,
+    parentExecutionId: string | null,
+    pathId: string,
+    expectedRequestSha256: string,
   ): Promise<string>;
   aiAuditReadSnapshot(
     expectedWorkspacePath: string,
@@ -3022,6 +3036,110 @@ function requireNativeAiStreamCorrelation(
   return streamId;
 }
 
+function cliAuditPreconditionError(reason: string): Error {
+  return new Error(`${AI_AUDIT_DISPATCH_PRECONDITION_FAILED_MARKER} ${reason}`);
+}
+
+interface CliDispatchRequestDigestInput {
+  cli: string;
+  model: string | null;
+  prompt: string;
+}
+
+function cliDispatchRequestDigestInput(
+  args: CommandArgs,
+): CliDispatchRequestDigestInput {
+  const payload = args.payload;
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    throw cliAuditPreconditionError("CLI payload is not an object");
+  }
+  const record = payload as Record<string, unknown>;
+  if (typeof record.cli !== "string" || record.cli.trim() !== record.cli) {
+    throw cliAuditPreconditionError("CLI payload.cli is invalid");
+  }
+  if (typeof record.prompt !== "string") {
+    throw cliAuditPreconditionError("CLI payload.prompt is invalid");
+  }
+  const model = record.model;
+  if (
+    model !== undefined &&
+    model !== null &&
+    model !== "" &&
+    typeof model !== "string"
+  ) {
+    throw cliAuditPreconditionError("CLI payload.model is invalid");
+  }
+  return {
+    cli: record.cli,
+    model: typeof model === "string" && model.length > 0 ? model : null,
+    prompt: record.prompt,
+  };
+}
+
+async function sha256HexUtf8(value: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw cliAuditPreconditionError("Web Crypto SHA-256 is unavailable");
+  }
+  const digest = await subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function cliDispatchRequestSha256(
+  args: CommandArgs,
+): Promise<string> {
+  const input = cliDispatchRequestDigestInput(args);
+  return sha256HexUtf8(JSON.stringify(input));
+}
+
+/**
+ * Main-side guard for the CLI shell command. The generic preload invoke path
+ * must not be able to spawn a subprocess by supplying only a stream id and a
+ * prompt. The native backend validates the pinned workspace, exact lifecycle,
+ * prepared-request digest, and one-shot claim in one SQLite transaction before
+ * the shell handler is allowed to resolve or spawn a binary.
+ */
+async function assertCliAiAuditDispatchPrecondition(
+  args: CommandArgs,
+  backend: NapiBackendLike | null,
+): Promise<void> {
+  const command = "send_cli_chat_stream";
+  const context = requireNativeAiAuditContext(args, command);
+  requireNativeAiStreamCorrelation(args, command);
+  if (!backend) {
+    throw cliAuditPreconditionError("native audit backend is unavailable");
+  }
+
+  const expectedWorkspacePath = context.expectedWorkspacePath as string;
+  const projectId = context.projectId as string | null;
+  const operationId = context.operationId as string;
+  const executionId = context.executionId as string;
+  const parentExecutionId = context.parentExecutionId as string | null;
+  const pathId = context.pathId as string;
+  if (typeof backend.aiAuditClaimCliDispatch !== "function") {
+    throw cliAuditPreconditionError("native CLI dispatch claim is unavailable");
+  }
+  const expectedRequestSha256 = await cliDispatchRequestSha256(args);
+  await backend.aiAuditClaimCliDispatch(
+    expectedWorkspacePath,
+    projectId,
+    executionId,
+    operationId,
+    parentExecutionId,
+    pathId,
+    expectedRequestSha256,
+  );
+}
+
 function requireStreamId(args: CommandArgs, command: string): string {
   const streamId = requireNonEmptyString(args, "streamId", command);
   if (streamId !== streamId.trim()) {
@@ -5126,6 +5244,9 @@ export async function dispatchInvoke(
       };
     }
     if (Object.hasOwn(deps.shell, cmd)) {
+      if (cmd === "send_cli_chat_stream") {
+        await assertCliAiAuditDispatchPrecondition(args, deps.backend);
+      }
       return { ok: true, value: await deps.shell[cmd](args) };
     }
     return failureEnvelope(unimplementedError(cmd));

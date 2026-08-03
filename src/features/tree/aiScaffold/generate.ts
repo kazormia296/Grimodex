@@ -9,9 +9,12 @@
  */
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
-import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import {
+  aiAuditContextForOperation,
+  type AiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 import { cmpKeys } from "../fractionalIndex";
-import { useTreeStore, type TreeNodeData, type NodeType } from "../treeStore";
+import type { TreeNodeData, NodeType } from "../treeStore";
 import type { AiTreePlan, AiTreeOp } from "./types";
 import { TEMP_ID_PREFIX } from "./types";
 
@@ -58,6 +61,8 @@ export interface GenerateTreePlanInput {
   /** scope の root。新規ノードはここ(またはその配下/新規 folder)に入る。 */
   rootRef: string | null;
   project?: ProjectPromptContext | null;
+  /** Captured before the orchestration's first await. Required for dispatch. */
+  auditAuthority?: AiOperationAuthority;
 }
 
 /**
@@ -382,6 +387,9 @@ export function stripSynopsisIfDisabled(
 export async function generateAiTreePlan(
   input: GenerateTreePlanInput,
 ): Promise<AiTreePlan> {
+  if (!input.auditAuthority) {
+    throw new Error("AI tree generation requires captured audit authority");
+  }
   const { invokeSingleShotChat } =
     await import("@/features/chat/singleShotTransport");
   const messages = [
@@ -403,7 +411,7 @@ export async function generateAiTreePlan(
       endpointId: ov.endpointId,
     },
     {
-      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      ...aiAuditContextForOperation(input.auditAuthority, "tree_scaffold"),
       pathId: "tree_scaffold",
     },
   );
