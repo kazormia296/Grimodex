@@ -60,7 +60,7 @@ describe("ImeDiagnosticsPlugin", () => {
     expect(document.querySelector("[data-ime-diagnostics-overlay]")).toBeNull();
   });
 
-  it("records all three composition events with data when enabled", () => {
+  it("records all three composition events without retaining their text", () => {
     enableImeLog();
     view.dom.dispatchEvent(compositionEvent("compositionstart"));
     view.dom.dispatchEvent(compositionEvent("compositionupdate", "あい"));
@@ -72,8 +72,9 @@ describe("ImeDiagnosticsPlugin", () => {
       "compositionupdate",
       "compositionend",
     ]);
-    expect(entries[1]?.data).toBe("あい");
-    expect(entries[0]?.data).toBeNull();
+    expect(entries[1]?.dataLength).toBe(2);
+    expect(entries[0]?.dataLength).toBeNull();
+    expect(JSON.stringify(entries)).not.toContain("あい");
     expect(entries[0]?.selectionFrom).toBe(1);
     expect(entries[0]?.vertical).toBe(false);
   });

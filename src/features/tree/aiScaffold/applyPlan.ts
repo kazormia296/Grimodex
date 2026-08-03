@@ -267,8 +267,14 @@ export async function applyAiTreePlan(
   };
 
   const runUndoBatch = async () => {
-    const stmts = buildUndoStatements(beforeStates, createdIds, ctx.projectId);
-    await invoke("db_execute_batch", { statements: stmts });
+    await invoke("tree_plan_undo", {
+      payload: {
+        projectId: ctx.projectId,
+        beforeStates,
+        createdIds,
+        updatedAt: new Date().toISOString(),
+      },
+    });
     await resyncTree();
     const tab = useTabStore.getState();
     for (const id of createdIds) {

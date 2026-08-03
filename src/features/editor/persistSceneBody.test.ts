@@ -1,5 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { BeatMention } from "@/features/editor/beat/extractBeatMentions";
+import {
+  getCurrentWorkspaceIdentity,
+  setCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import {
+  _resetSceneBodyCommitRegistryForTests,
+  subscribeSceneBodyCommits,
+  type SceneBodyCommitPublication,
+} from "@/lib/sceneBodyCommitRegistry";
 
 /**
  * Behavioral contract for persistSceneBody — the single source of truth for the
@@ -14,9 +24,10 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 const h = vi.hoisted(() => ({
   state: {
     treeNodes: [] as Array<{ id: string; sourceUri?: string }>,
-    codexEntries: [] as unknown[],
+    codexEntries: [] as Array<{ id: string; name?: string }>,
     activeChatSceneId: null as string | null,
     fileBacked: false,
+    electron: false,
   },
   saveSceneContent: vi.fn(async () => ({
     placedBeatPreview: null,
@@ -27,19 +38,60 @@ const h = vi.hoisted(() => ({
   saveAuthorshipSpans: vi.fn(async () => {}),
   saveForeshadowAnchors: vi.fn(async () => {}),
   saveAnnotationAnchors: vi.fn(async () => {}),
-  upsertSceneBeatMentions: vi.fn(() => Promise.resolve()),
-  upsertSceneBeatPovOverrides: vi.fn(() => Promise.resolve()),
+  extractBeatMentions: vi.fn<(doc: ProseMirrorNode) => BeatMention[]>(() => []),
+  upsertSceneBeatMentions: vi.fn<
+    (sceneId: string, mentions: BeatMention[]) => Promise<void>
+  >(() => Promise.resolve()),
+  extractBeatPovOverrides: vi.fn<(doc: ProseMirrorNode) => string[]>(() => []),
+  upsertSceneBeatPovOverrides: vi.fn<
+    (sceneId: string, povs: string[]) => Promise<void>
+  >(() => Promise.resolve()),
   upsertSceneBodyMentions: vi.fn(() => Promise.resolve()),
+  listCodexMatchTargets: vi.fn(async () => [] as Array<{ id: string }>),
   recordBodyMentionScans: vi.fn(() => Promise.resolve()),
   scheduleSceneIndex: vi.fn(),
   scheduleWriteBack: vi.fn(),
   setCharCount: vi.fn(),
   setNodePreview: vi.fn(),
+  setAiRatio: vi.fn(),
   refreshAiRatio: vi.fn(() => Promise.resolve()),
   refreshContextLayers: vi.fn(() => Promise.resolve()),
+  scheduleEditorAnalysisTask: vi.fn(),
+  deriveSceneAiRatio: vi.fn(() => 37 as number | undefined),
+  deriveSceneBodySnapshot: vi.fn((_doc: ProseMirrorNode) => ({
+    contentJson: JSON.stringify({ type: "doc", content: [] }),
+    charCount: 42,
+    placedBeatPreview: null,
+    unplacedBeatsDoc: "[]",
+    unplacedBeatPreview: null,
+    authorshipSpans: [],
+    foreshadowSetups: [],
+    foreshadowPayoffs: [],
+    annotationAnchors: [],
+    beatMentions: [],
+    beatPovOverrides: [],
+    docContentSize: 2,
+  })),
+  saveSceneBodyBundle: vi.fn(async () => ({
+    placedBeatPreview: null,
+    unplacedBeatPreview: null,
+    contentVersion: 2,
+    contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+    dbTransactionCount: 1,
+  })),
+  bumpMatrixDataVersion: vi.fn(),
+  recordCounter: vi.fn(),
+  recordSerializedByteCounter: vi.fn(),
+  publishTreeNodeMutation: vi.fn(),
+  nextTreeNodeMutationTimestamp: vi.fn(() => "2026-07-28T00:00:00.000Z"),
 }));
 
-vi.mock("@/lib/perfLog", () => ({ markStart: vi.fn(), markEnd: vi.fn() }));
+vi.mock("@/lib/perfLog", () => ({
+  markStart: vi.fn(),
+  markEnd: vi.fn(),
+  recordCounter: h.recordCounter,
+  recordSerializedByteCounter: h.recordSerializedByteCounter,
+}));
 vi.mock("@/lib/debugLog", () => ({
   debugLog: { error: vi.fn(), warn: vi.fn() },
   errorDetail: (e: unknown) => e,
@@ -64,6 +116,7 @@ vi.mock("@/features/tree/treeStore", () => ({
       projectId: "proj-1",
       setCharCount: h.setCharCount,
       setNodePreview: h.setNodePreview,
+      setAiRatio: h.setAiRatio,
       refreshAiRatio: h.refreshAiRatio,
     }),
   },
@@ -84,13 +137,13 @@ vi.mock("@/features/post-effect/syncAnnotations", () => ({
   saveAnnotationAnchors: h.saveAnnotationAnchors,
 }));
 vi.mock("@/features/editor/beat/extractBeatMentions", () => ({
-  extractBeatMentions: () => [],
+  extractBeatMentions: h.extractBeatMentions,
 }));
 vi.mock("@/features/editor/beat/mentionApi", () => ({
   upsertSceneBeatMentions: h.upsertSceneBeatMentions,
 }));
 vi.mock("@/features/editor/beat/extractBeatPovOverrides", () => ({
-  extractBeatPovOverrides: () => [],
+  extractBeatPovOverrides: h.extractBeatPovOverrides,
 }));
 vi.mock("@/features/editor/beat/beatPovCacheApi", () => ({
   upsertSceneBeatPovOverrides: h.upsertSceneBeatPovOverrides,
@@ -101,8 +154,8 @@ vi.mock("@/features/editor/beat/bodyMentionApi", () => ({
 vi.mock("@/features/codex/bodyMentionIndexState", () => ({
   recordBodyMentionScans: h.recordBodyMentionScans,
 }));
-vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: { getState: () => ({ entries: h.state.codexEntries }) },
+vi.mock("@/features/codex/api", () => ({
+  listCodexMatchTargets: h.listCodexMatchTargets,
 }));
 vi.mock("@/features/chat/chatStore", () => ({
   useChatStore: {
@@ -115,21 +168,195 @@ vi.mock("@/features/chat/chatStore", () => ({
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleSceneIndex: h.scheduleSceneIndex,
 }));
+vi.mock("@/lib/editorAnalysisScheduler", () => ({
+  scheduleEditorAnalysisTask: h.scheduleEditorAnalysisTask,
+}));
+vi.mock("@/lib/shell", () => ({
+  isElectron: () => h.state.electron,
+}));
+vi.mock("@/features/editor/sceneBodySnapshot", () => ({
+  deriveSceneAiRatio: h.deriveSceneAiRatio,
+  deriveSceneBodySnapshot: h.deriveSceneBodySnapshot,
+}));
+vi.mock("@/features/editor/sceneBodyBundleApi", () => ({
+  saveSceneBodyBundle: h.saveSceneBodyBundle,
+}));
+vi.mock("@/features/matrix/matrixDataVersion", () => ({
+  bumpMatrixDataVersion: h.bumpMatrixDataVersion,
+}));
+vi.mock("@/lib/treeNodeMutationRegistry", () => ({
+  nextTreeNodeMutationTimestamp: h.nextTreeNodeMutationTimestamp,
+  publishTreeNodeMutation: h.publishTreeNodeMutation,
+}));
 
-import { persistSceneBody } from "@/features/editor/persistSceneBody";
+import {
+  _resetBodyMentionScanSchedulerForTests,
+  persistSceneBody,
+} from "@/features/editor/persistSceneBody";
+import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
 
 const DOC_JSON = { type: "doc", content: [] };
 const fakeDoc = { toJSON: () => DOC_JSON } as unknown as ProseMirrorNode;
 
+async function runLatestDerivedTask(): Promise<void> {
+  const call = h.scheduleEditorAnalysisTask.mock.calls.at(-1);
+  expect(call).toBeDefined();
+  const task = call?.[0] as
+    | { kind: string; run: () => void | Promise<void> }
+    | undefined;
+  expect(task?.kind).toBe("derived");
+  await task?.run();
+}
+
 beforeEach(() => {
+  _resetBodyMentionScanSchedulerForTests();
+  _resetSceneBodyCommitRegistryForTests();
   vi.clearAllMocks();
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/test",
+    openRevision: 7,
+  });
+  h.listCodexMatchTargets.mockResolvedValue([]);
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.codexEntries = [];
   h.state.activeChatSceneId = null;
   h.state.fileBacked = false;
+  h.state.electron = false;
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+  _resetSceneBodyCommitRegistryForTests();
+});
+
+describe("persistSceneBody — committed-body publication", () => {
+  it("publishes the exact scope immediately after content commit even if a later side effect fails", async () => {
+    const publications: SceneBodyCommitPublication[] = [];
+    const unsubscribe = subscribeSceneBodyCommits((publication) => {
+      publications.push(publication);
+    });
+    h.saveAuthorshipSpans.mockRejectedValueOnce(
+      new Error("authorship side effect failed"),
+    );
+
+    await expect(persistSceneBody("scene-1", fakeDoc)).rejects.toThrow(
+      "authorship side effect failed",
+    );
+
+    expect(getCurrentWorkspaceIdentity()).toEqual({
+      path: "/workspace/test",
+      openRevision: 7,
+    });
+    expect(publications).toEqual([
+      {
+        workspacePath: "/workspace/test",
+        openRevision: 7,
+        projectId: "proj-1",
+        sceneId: "scene-1",
+        contentVersion: 1,
+      },
+    ]);
+    unsubscribe();
+  });
 });
 
 describe("persistSceneBody — DB-native scene", () => {
+  it("serializes an Electron tree save once and returns that exact durable snapshot", async () => {
+    h.state.electron = true;
+    const toJSON = vi.fn(() => DOC_JSON);
+    h.deriveSceneBodySnapshot.mockImplementationOnce((doc) => ({
+      contentJson: JSON.stringify(doc.toJSON()),
+      charCount: 42,
+      placedBeatPreview: null,
+      unplacedBeatsDoc: "[]",
+      unplacedBeatPreview: null,
+      authorshipSpans: [],
+      foreshadowSetups: [],
+      foreshadowPayoffs: [],
+      annotationAnchors: [],
+      beatMentions: [],
+      beatPovOverrides: [],
+      docContentSize: 2,
+    }));
+
+    const persisted = await persistSceneBody("scene-1", {
+      toJSON,
+    } as unknown as ProseMirrorNode);
+
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentJson: JSON.stringify(DOC_JSON),
+        updatedAt: expect.any(String),
+      }),
+    );
+    expect(persisted).toEqual({
+      contentJson: JSON.stringify(DOC_JSON),
+      contentVersion: 2,
+      contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+    });
+  });
+
+  it("Electron uses one derived snapshot and one domain IPC for content + sidecars", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+
+    expect(h.deriveSceneBodySnapshot).toHaveBeenCalledWith(fakeDoc, [], true);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledTimes(1);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sceneId: "scene-1",
+        projectId: "proj-1",
+        includeSidecars: true,
+        contentJson: JSON.stringify(DOC_JSON),
+        charCount: 42,
+        updatedAt: expect.any(String),
+      }),
+    );
+    expect(h.saveSceneContent).not.toHaveBeenCalled();
+    expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
+    expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
+    expect(h.saveAnnotationAnchors).not.toHaveBeenCalled();
+    expect(h.upsertSceneBeatMentions).not.toHaveBeenCalled();
+    expect(h.upsertSceneBeatPovOverrides).not.toHaveBeenCalled();
+    expect(h.bumpMatrixDataVersion).toHaveBeenCalledTimes(1);
+    expect(h.recordCounter).toHaveBeenCalledWith("editor.coreSave.domainIpc");
+    expect(h.recordCounter).toHaveBeenCalledWith(
+      "editor.coreSave.dbTransaction",
+      1,
+    );
+    expect(h.publishTreeNodeMutation).toHaveBeenCalledWith({
+      workspacePath: "/workspace/test",
+      workspaceOpenRevision: 7,
+      projectId: "proj-1",
+      nodeId: "scene-1",
+      updatedAt: "2026-07-28T00:00:00.000Z",
+    });
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
+    expect(h.setAiRatio).not.toHaveBeenCalled();
+
+    await runLatestDerivedTask();
+
+    expect(h.deriveSceneAiRatio).toHaveBeenCalledWith(
+      h.deriveSceneBodySnapshot.mock.results[0]?.value,
+    );
+    expect(h.setAiRatio).toHaveBeenCalledWith("scene-1", 37);
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
+  });
+
+  it("forwards the loaded OCC version through the browser fallback", async () => {
+    await persistSceneBody("scene-1", fakeDoc, { baseVersion: 7 });
+
+    expect(h.saveSceneContent).toHaveBeenCalledWith("scene-1", {
+      content: JSON.stringify(DOC_JSON),
+      unplacedBeatsDoc: "[]",
+      charCount: 42,
+      updatedAt: "2026-07-28T00:00:00.000Z",
+      baseVersion: 7,
+    });
+  });
+
   it("saves content with serialized doc JSON + char count", async () => {
     await persistSceneBody("scene-1", fakeDoc);
     expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
@@ -137,12 +364,37 @@ describe("persistSceneBody — DB-native scene", () => {
       content: JSON.stringify(DOC_JSON),
       unplacedBeatsDoc: "[]",
       charCount: 42,
+      updatedAt: "2026-07-28T00:00:00.000Z",
     });
+    expect(h.publishTreeNodeMutation).not.toHaveBeenCalled();
+  });
+
+  it("records the serialized scene payload as UTF-8 bytes", async () => {
+    const localizedJson = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "日本語の本文" }],
+        },
+      ],
+    };
+    const serialized = JSON.stringify(localizedJson);
+
+    await persistSceneBody("scene-1", {
+      toJSON: () => localizedJson,
+    } as unknown as ProseMirrorNode);
+
+    expect(h.recordSerializedByteCounter).toHaveBeenCalledWith(
+      "editor.coreSave.serializeBytes",
+      serialized,
+    );
   });
 
   it("reuses the save serialization for deferred body mention indexing", async () => {
     const toJSON = vi.fn(() => DOC_JSON);
     h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
 
     await persistSceneBody("scene-1", {
       toJSON,
@@ -170,6 +422,7 @@ describe("persistSceneBody — DB-native scene", () => {
 
   it("coalesces deferred body mention scans to the latest saved document", async () => {
     h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
     const firstDoc = {
       toJSON: () => ({ type: "doc", content: [{ text: "first" }] }),
     } as unknown as ProseMirrorNode;
@@ -191,6 +444,75 @@ describe("persistSceneBody — DB-native scene", () => {
     );
   });
 
+  it("strict quiescence drains a deferred body mention scan before scope replacement", async () => {
+    h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
+    let releaseUpsert!: () => void;
+    h.upsertSceneBodyMentions.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseUpsert = resolve;
+        }),
+    );
+
+    await persistSceneBody("scene-1", fakeDoc);
+    const flushing = flushQuiescenceProviderStage("scoped-mutations");
+    await vi.waitFor(() => {
+      expect(h.upsertSceneBodyMentions).toHaveBeenCalledTimes(1);
+    });
+    let settled = false;
+    void flushing.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseUpsert();
+    await expect(flushing).resolves.toBeUndefined();
+    expect(h.recordBodyMentionScans).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a deferred body mention scan after its Workspace authority changes", async () => {
+    h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
+
+    await persistSceneBody("scene-1", fakeDoc);
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/replacement",
+      openRevision: 8,
+    });
+    await flushQuiescenceProviderStage("scoped-mutations");
+
+    expect(h.listCodexMatchTargets).not.toHaveBeenCalled();
+    expect(h.upsertSceneBodyMentions).not.toHaveBeenCalled();
+    expect(h.recordBodyMentionScans).not.toHaveBeenCalled();
+  });
+
+  it("skips body parsing and scan-state writes when the project has no match targets", async () => {
+    await persistSceneBody("scene-1", fakeDoc);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(h.listCodexMatchTargets).toHaveBeenCalledWith("proj-1");
+    expect(h.upsertSceneBodyMentions).not.toHaveBeenCalled();
+    expect(h.recordBodyMentionScans).not.toHaveBeenCalled();
+  });
+
+  it("uses the complete project target set even while panel entries are filtered", async () => {
+    const character = { id: "character-a", name: "太郎" };
+    const location = { id: "location-b", name: "東京" };
+    h.state.codexEntries = [character];
+    h.listCodexMatchTargets.mockResolvedValue([character, location]);
+
+    await persistSceneBody("scene-1", fakeDoc);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(h.upsertSceneBodyMentions).toHaveBeenCalledWith(
+      "scene-1",
+      JSON.stringify(DOC_JSON),
+      [character, location],
+    );
+  });
+
   it("runs the schema-dependent anchor/provenance cascade against the doc", async () => {
     await persistSceneBody("scene-1", fakeDoc);
     expect(h.saveAuthorshipSpans).toHaveBeenCalledWith("scene-1", fakeDoc);
@@ -201,8 +523,12 @@ describe("persistSceneBody — DB-native scene", () => {
       fakeDoc,
     );
     expect(h.setNodePreview).toHaveBeenCalled();
-    expect(h.refreshAiRatio).toHaveBeenCalledWith("scene-1");
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
     expect(h.scheduleSceneIndex).toHaveBeenCalledWith("scene-1");
+
+    await runLatestDerivedTask();
+
+    expect(h.refreshAiRatio).toHaveBeenCalledWith("scene-1");
   });
 
   it("does not take the file-backed write-back path", async () => {
@@ -212,10 +538,29 @@ describe("persistSceneBody — DB-native scene", () => {
 
   it("refreshes chat context layers only when the scene is the active chat scene", async () => {
     await persistSceneBody("scene-1", fakeDoc);
+    await runLatestDerivedTask();
     expect(h.refreshContextLayers).not.toHaveBeenCalled();
     h.state.activeChatSceneId = "scene-1";
     await persistSceneBody("scene-1", fakeDoc);
+    expect(h.refreshContextLayers).not.toHaveBeenCalled();
+    await runLatestDerivedTask();
     expect(h.refreshContextLayers).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a deferred refresh after workspace authority changes", async () => {
+    h.state.electron = true;
+    h.state.activeChatSceneId = "scene-1";
+    await persistSceneBody("scene-1", fakeDoc);
+
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/reopened",
+      openRevision: 8,
+    });
+    await runLatestDerivedTask();
+
+    expect(h.setAiRatio).not.toHaveBeenCalled();
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
+    expect(h.refreshContextLayers).not.toHaveBeenCalled();
   });
 });
 
@@ -239,6 +584,29 @@ describe("persistSceneBody — file-backed scene", () => {
     expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
     expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
     expect(h.saveAnnotationAnchors).not.toHaveBeenCalled();
+  });
+
+  it("uses the Electron bundle without sidecars and preserves write-back", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+
+    expect(h.deriveSceneBodySnapshot).toHaveBeenCalledWith(fakeDoc, [], false);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledTimes(1);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sceneId: "scene-1",
+        includeSidecars: false,
+        updatedAt: expect.any(String),
+      }),
+    );
+    expect(h.saveSceneContent).not.toHaveBeenCalled();
+    expect(h.bumpMatrixDataVersion).not.toHaveBeenCalled();
+    expect(h.scheduleWriteBack).toHaveBeenCalledWith(
+      "scene-1",
+      "file:///x.md",
+      JSON.stringify(DOC_JSON),
+    );
   });
 });
 
@@ -295,5 +663,115 @@ describe("persistSceneBody — write-write serialization (M3 review I1)", () => 
     releaseA();
     await Promise.all([pA, pB]);
     expect(order).toEqual(["content_A", "spans_A", "content_B", "spans_B"]);
+  });
+
+  it("古い保存の Beat mention / POV cache が完了するまで後続保存を開始しない", async () => {
+    const mentionsA = [
+      { beatId: "beat-a", codexId: "codex-a", role: "actor" as const },
+    ];
+    const mentionsB = [
+      { beatId: "beat-b", codexId: "codex-b", role: "target" as const },
+    ];
+    const povsA = ["character-a"];
+    const povsB = ["character-b"];
+    const docA = {
+      toJSON: () => ({ type: "doc", content: [{ text: "first" }] }),
+    } as unknown as ProseMirrorNode;
+    const docB = {
+      toJSON: () => ({ type: "doc", content: [{ text: "second" }] }),
+    } as unknown as ProseMirrorNode;
+    h.extractBeatMentions.mockImplementation((doc) =>
+      doc === docA ? mentionsA : mentionsB,
+    );
+    h.extractBeatPovOverrides.mockImplementation((doc) =>
+      doc === docA ? povsA : povsB,
+    );
+
+    let releaseMentionA!: () => void;
+    const mentionGateA = new Promise<void>((resolve) => {
+      releaseMentionA = resolve;
+    });
+    let releasePovA!: () => void;
+    const povGateA = new Promise<void>((resolve) => {
+      releasePovA = resolve;
+    });
+    let mentionHead: BeatMention[] = [];
+    let povHead: string[] = [];
+    const order: string[] = [];
+
+    h.saveSceneContent
+      .mockImplementationOnce(async () => {
+        order.push("content_A");
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 1,
+          contentUpdatedAt: "2026-07-13T00:00:01.000Z",
+        };
+      })
+      .mockImplementationOnce(async () => {
+        order.push("content_B");
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 2,
+          contentUpdatedAt: "2026-07-13T00:00:02.000Z",
+        };
+      });
+    h.upsertSceneBeatMentions
+      .mockImplementationOnce(async (_sceneId, mentions) => {
+        order.push("mentions_A:start");
+        await mentionGateA;
+        mentionHead = mentions;
+        order.push("mentions_A:end");
+      })
+      .mockImplementationOnce(async (_sceneId, mentions) => {
+        mentionHead = mentions;
+        order.push("mentions_B");
+      });
+    h.upsertSceneBeatPovOverrides
+      .mockImplementationOnce(async (_sceneId, povs) => {
+        order.push("pov_A:start");
+        await povGateA;
+        povHead = povs;
+        order.push("pov_A:end");
+      })
+      .mockImplementationOnce(async (_sceneId, povs) => {
+        povHead = povs;
+        order.push("pov_B");
+      });
+
+    const saveA = persistSceneBody("scene-1", docA);
+    const saveB = persistSceneBody("scene-1", docB);
+
+    await flushTasks();
+    expect(order).toEqual(["content_A", "mentions_A:start"]);
+    expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
+
+    releaseMentionA();
+    await flushTasks();
+    expect(order).toEqual([
+      "content_A",
+      "mentions_A:start",
+      "mentions_A:end",
+      "pov_A:start",
+    ]);
+    expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
+
+    releasePovA();
+    await Promise.all([saveA, saveB]);
+
+    expect(order).toEqual([
+      "content_A",
+      "mentions_A:start",
+      "mentions_A:end",
+      "pov_A:start",
+      "pov_A:end",
+      "content_B",
+      "mentions_B",
+      "pov_B",
+    ]);
+    expect(mentionHead).toEqual(mentionsB);
+    expect(povHead).toEqual(povsB);
   });
 });

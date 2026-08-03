@@ -14,6 +14,15 @@ function docFromParagraphs(...paragraphs: string[]) {
 }
 
 describe("buildOffsetMap", () => {
+  it("reuses the map for the same immutable ProseMirror document", () => {
+    const doc = docFromParagraphs("cached");
+
+    const first = buildOffsetMap(doc);
+    const second = buildOffsetMap(doc);
+
+    expect(second).toBe(first);
+  });
+
   it("single paragraph yields one block with offset 0", () => {
     const doc = docFromParagraphs("hello");
     const map = buildOffsetMap(doc);

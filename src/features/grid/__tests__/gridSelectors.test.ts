@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGridStore } from "../gridStore";
@@ -435,5 +435,37 @@ describe("useGridDerivedData", () => {
     ]);
     // totalScenes counts all scene descendants recursively
     expect(result.current.totalScenes).toBe(4);
+    expect(result.current.flatOrder).toEqual(["s1", "s2", "s3", "s4"]);
+    expect(result.current.nestedFolderIds).toEqual(["subA", "subB"]);
+    expect(result.current.orderedScenes).toEqual([
+      { id: "s1", parentId: "ch1" },
+      { id: "s2", parentId: "subA" },
+      { id: "s3", parentId: "subB" },
+      { id: "s4", parentId: "ch1" },
+    ]);
+  });
+
+  it("does not rescan the full nodes array once per folder", () => {
+    const nodes = Array.from({ length: 40 }, (_, index) =>
+      makeNodeData({
+        id: `folder-${index}`,
+        nodeType: "folder",
+        parentId: index === 0 ? null : `folder-${index - 1}`,
+        sortOrder: `a${index}`,
+      }),
+    );
+    nodes.push(
+      makeNodeData({
+        id: "deep-scene",
+        nodeType: "scene",
+        parentId: "folder-39",
+      }),
+    );
+    const fullArrayFilter = vi.spyOn(nodes, "filter");
+    useTreeStore.setState((state) => ({ ...state, nodes }));
+
+    renderHook(() => useGridDerivedData(null));
+
+    expect(fullArrayFilter).not.toHaveBeenCalled();
   });
 });

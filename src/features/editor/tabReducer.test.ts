@@ -40,6 +40,7 @@ describe("tabReducer", () => {
     expect(next.secondaryTabs[0]).toMatchObject({
       nodeId: "entry-1",
       contentType: "codex",
+      overridePhaseId: "phase-1",
     });
   });
 

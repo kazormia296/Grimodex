@@ -10,6 +10,11 @@ import { useShallow } from "zustand/react/shallow";
 import { useLayoutStore } from "./layoutStore";
 import {
   DND_NEW_SLOT_BETWEEN_HALF_PX,
+  HORIZONTAL_STRIPE_ICON_INSET_PX,
+  HORIZONTAL_STRIPE_ICON_SIZE,
+  STRIPE_ICON_GAP_PX,
+  STRIPE_ICON_INSET_PX,
+  STRIPE_ICON_SIZE,
   slotSplitterPx,
 } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
@@ -282,6 +287,14 @@ export function RegionStripe({
   const showDropZones = useDragDropZonesReady(
     Boolean(draggingPanel && !layoutLocked),
   );
+  const stripeIconSize =
+    orientation === "horizontal"
+      ? HORIZONTAL_STRIPE_ICON_SIZE
+      : STRIPE_ICON_SIZE;
+  const stripeIconInsetPx =
+    orientation === "horizontal"
+      ? HORIZONTAL_STRIPE_ICON_INSET_PX
+      : STRIPE_ICON_INSET_PX;
 
   // segments が空でも null にせず描画する（center stripe を空のままドロップ先
   // にするため）。side/bottom region は全 panel 事前登録なので空にはならない。
@@ -320,14 +333,18 @@ export function RegionStripe({
     leadingCluster && hasOpenBands
       ? leadingCluster.segments.reduce((sum, seg) => sum + seg.panels.length, 0)
       : 0;
-  // h-7 w-7 = 28px / gap-0.5 = 2px / 末尾に小さい呼吸を確保。
+  // icon 実寸 / icon 間 gap / 末尾に小さい呼吸を確保。
   const leadingClusterIconSpanPx =
     leadingClusterIconCount > 0
-      ? leadingClusterIconCount * 28 + (leadingClusterIconCount - 1) * 2 + 4
+      ? leadingClusterIconCount * stripeIconSize +
+        (leadingClusterIconCount - 1) * STRIPE_ICON_GAP_PX +
+        stripeIconInsetPx
       : 0;
   // 先頭 open band は corner toggle (reserveStartPx) と先頭 collapsed overlay
-  // (leadingClusterIconSpanPx) の両方を避けて absolute シフトする。
-  const firstOpenBandLeadingPx = leadingClusterIconSpanPx + reserveStartPx;
+  // (leadingClusterIconSpanPx) の両方を避け、stripe 外周から icon を同心
+  // inset した位置へ absolute シフトする。
+  const firstOpenBandLeadingPx =
+    stripeIconInsetPx + leadingClusterIconSpanPx + reserveStartPx;
 
   const slotIndexOf = (slotId: string): number => {
     const i = slotIds.indexOf(slotId);
@@ -430,7 +447,7 @@ export function RegionStripe({
                   segments={item.segments}
                   orientation={orientation}
                   region={region}
-                  offsetPx={reserveStartPx}
+                  offsetPx={reserveStartPx + stripeIconInsetPx}
                 />
               );
             }
@@ -445,7 +462,7 @@ export function RegionStripe({
                 orientation={orientation}
                 region={region}
                 anchor="end"
-                offsetPx={isTrailing ? reserveEndPx : 0}
+                offsetPx={isTrailing ? reserveEndPx + stripeIconInsetPx : 0}
               />
             );
           }

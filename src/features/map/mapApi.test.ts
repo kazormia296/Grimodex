@@ -10,9 +10,6 @@ vi.mock("@/db/client", () => ({
   },
 }));
 
-// M11: atomic writes go through invoke("db_execute_batch"). These tests assert
-// on the (mocked) drizzle builder calls + returned rows, not real persistence,
-// so the batch invoke is a no-op here.
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn().mockResolvedValue([]),
 }));
@@ -23,8 +20,10 @@ vi.mock("@/features/timelapse/recorder", () => ({
 
 import { db } from "@/db/client";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { invoke } from "@/lib/tauri";
 
 const mockRecord = vi.mocked(recordChangeEvent);
+const mockInvoke = vi.mocked(invoke);
 
 function pmDoc(text: string): string {
   return JSON.stringify({
@@ -48,8 +47,6 @@ function makeMock(returnValue: unknown) {
   for (const m of allMethods) {
     chain[m] = vi.fn().mockReturnValue(chain);
   }
-  // M11: atomic map writes go through db.insert(...).values(...).toSQL() +
-  // db_execute_batch. The mock must supply toSQL() for those builders.
   chain["toSQL"] = vi
     .fn()
     .mockReturnValue({ sql: "INSERT INTO t VALUES (?)", params: [] });
@@ -576,6 +573,103 @@ describe("mapApi — duplicateBoard", () => {
     const { duplicateBoard } = await import("./mapApi");
     await expect(duplicateBoard("nonexistent", "proj")).rejects.toThrow();
   });
+
+  it("AI branch position/edge を除外し、派生 Sticky を採用済みとして複製する", async () => {
+    const source = {
+      id: "source",
+      projectId: "proj",
+      title: "Source",
+      sortOrder: 0,
+      mode: "free",
+      viewportX: 0,
+      viewportY: 0,
+      viewportZoom: 1,
+      showConfig: "{}",
+      colorBy: "none",
+      createdAt: "old",
+      updatedAt: "old",
+    };
+    const sticky = {
+      id: "sticky-1",
+      boardId: "source",
+      title: "Idea",
+      body: pmDoc("idea"),
+      previewText: "idea",
+      paletteId: "post-it-playful",
+      colorSlot: 0,
+      aiBranchId: "branch-1",
+      aiDerived: 1,
+      sourceChatMessageId: "message-1",
+      createdAt: "old",
+      updatedAt: "old",
+    };
+    const branchPosition = {
+      id: "position-branch",
+      boardId: "source",
+      nodeRefType: "ai_branch",
+      treeNodeId: null,
+      codexEntryId: null,
+      snippetId: null,
+      stickyId: null,
+      aiBranchId: "branch-1",
+      x: 0,
+      y: 0,
+      pinned: 0,
+      zIndex: 0,
+      createdAt: "old",
+      updatedAt: "old",
+    };
+    const stickyPosition = {
+      ...branchPosition,
+      id: "position-sticky",
+      nodeRefType: "sticky",
+      stickyId: "sticky-1",
+      aiBranchId: null,
+    };
+    const edge = {
+      id: "edge-1",
+      boardId: "source",
+      fromPositionId: "position-branch",
+      toPositionId: "position-sticky",
+      forwardLabel: null,
+      backwardLabel: null,
+      labels: "[]",
+      style: "dashed",
+      color: "#888",
+      direction: "forward",
+      createdAt: "old",
+      updatedAt: "old",
+    };
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([source]))
+      .mockReturnValueOnce(makeMock([]))
+      .mockReturnValueOnce(makeMock([sticky]))
+      .mockReturnValueOnce(makeMock([branchPosition, stickyPosition]))
+      .mockReturnValueOnce(makeMock([edge]))
+      .mockReturnValueOnce(makeMock([]));
+
+    const { duplicateBoard } = await import("./mapApi");
+    await duplicateBoard("source", "proj");
+
+    const payload = mockInvoke.mock.calls[0][1]?.payload as {
+      stickies: Array<{
+        aiBranchId: string | null;
+        sourceChatMessageId: string | null;
+      }>;
+      positions: Array<{ nodeRefType: string }>;
+      edges: unknown[];
+    };
+    expect(payload.stickies).toEqual([
+      expect.objectContaining({
+        aiBranchId: null,
+        sourceChatMessageId: null,
+      }),
+    ]);
+    expect(payload.positions).toEqual([
+      expect.objectContaining({ nodeRefType: "sticky" }),
+    ]);
+    expect(payload.edges).toEqual([]);
+  });
 });
 
 describe("mapApi — createAiBranch", () => {
@@ -584,63 +678,9 @@ describe("mapApi — createAiBranch", () => {
   });
 
   it("branch + positions + stickies + edges + authorship spans を作成する", async () => {
-    const branch = {
-      id: "branch-1",
-      boardId: "b1",
-      prompt: "アイデアを出して",
-      seedNodeIds: "[]",
-      sessionId: null,
-      model: null,
-      tokenUsage: null,
-      createdAt: "2024-01-01",
-      updatedAt: "2024-01-01",
-    };
-    const branchPos = {
-      id: "pos-branch",
-      boardId: "b1",
-      nodeRefType: "ai_branch",
-      aiBranchId: "branch-1",
-      x: 0,
-      y: 0,
-    };
-    const sticky1 = {
-      id: "sticky-1",
-      boardId: "b1",
-      title: "アイデア1",
-      body: '{"type":"doc","content":[]}',
-      previewText: null,
-      paletteId: "post-it-playful",
-      colorSlot: 0,
-      aiBranchId: "branch-1",
-      sourceChatMessageId: null,
-      createdAt: "2024-01-01",
-      updatedAt: "2024-01-01",
-    };
-    const stickyPos1 = {
-      id: "pos-s1",
-      boardId: "b1",
-      nodeRefType: "sticky",
-      stickyId: "sticky-1",
-      x: 0,
-      y: -280,
-    };
-    const edge1 = { id: "edge-1", boardId: "b1", style: "dashed" };
-    const span1 = { id: "span-1" };
-
-    // Sequence of insert calls:
-    // 1: mapAiBranches → branch
-    // 2: mapNodePositions (branch pos)
-    // 3: mapStickies (sticky 1)
-    // 4: mapNodePositions (sticky pos 1)
-    // 5: mapEdges (edge 1)
-    // 6: authorshipSpans (span 1)
-    (db.insert as ReturnType<typeof vi.fn>)
-      .mockReturnValueOnce(makeMock([branch]))
-      .mockReturnValueOnce(makeMock([branchPos]))
-      .mockReturnValueOnce(makeMock([sticky1]))
-      .mockReturnValueOnce(makeMock([stickyPos1]))
-      .mockReturnValueOnce(makeMock([edge1]))
-      .mockReturnValueOnce(makeMock([span1]));
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([{ id: "b1", projectId: "p1" }]),
+    );
 
     const { createAiBranch } = await import("./mapApi");
     const result = await createAiBranch(
@@ -652,31 +692,26 @@ describe("mapApi — createAiBranch", () => {
 
     expect(result.branch.prompt).toBe("アイデアを出して");
     expect(result.stickies).toHaveLength(1);
-    // M11: ids are generated in JS (crypto.randomUUID), not read back from the
-    // insert's .returning(); the sticky links to the actual generated branch id.
     expect(result.stickies[0].aiBranchId).toBe(result.branch.id);
-    // branch position + 1 sticky position
     expect(result.positions).toHaveLength(2);
-    // insert builders are still invoked per table/chunk (branch, branchPos,
-    // sticky, stickyPos, edge, span) to produce .toSQL() for the batch.
-    expect(db.insert).toHaveBeenCalledTimes(6);
+    expect(mockInvoke).toHaveBeenCalledWith("map_write_bundle", {
+      payload: expect.objectContaining({
+        kind: "create-ai-branch",
+        projectId: "p1",
+        branch: result.branch,
+        branchPosition: result.positions[0],
+        stickies: result.stickies,
+        positions: [result.positions[1]],
+        edges: result.edges,
+        spans: [expect.objectContaining({ stickyId: result.stickies[0].id })],
+      }),
+    });
   });
 
   it("sticky 本文に作成時 'ai' authorship mark がシードされる", async () => {
-    const branch = { id: "branch-2", boardId: "b1" };
-    const branchPos = { id: "pos-b" };
-    const sticky = { id: "sticky-2", aiBranchId: "branch-2" };
-    const stickyPos = { id: "pos-s" };
-    const edge = { id: "edge-2" };
-    const span = { id: "span-2" };
-
-    (db.insert as ReturnType<typeof vi.fn>)
-      .mockReturnValueOnce(makeMock([branch]))
-      .mockReturnValueOnce(makeMock([branchPos]))
-      .mockReturnValueOnce(makeMock([sticky]))
-      .mockReturnValueOnce(makeMock([stickyPos]))
-      .mockReturnValueOnce(makeMock([edge]))
-      .mockReturnValueOnce(makeMock([span]));
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([{ id: "b1", projectId: "p1" }]),
+    );
 
     const { createAiBranch } = await import("./mapApi");
     await createAiBranch(
@@ -696,11 +731,10 @@ describe("mapApi — createAiBranch", () => {
       ],
     );
 
-    // 3rd insert は mapStickies。M11 で values() には行の配列が渡るので
-    // 先頭要素の body を検査する。
-    const stickyChain = (db.insert as ReturnType<typeof vi.fn>).mock.results[2]
-      .value as { values: ReturnType<typeof vi.fn> };
-    const insertedBody = stickyChain.values.mock.calls[0][0][0].body as string;
+    const payload = mockInvoke.mock.calls[0][1]?.payload as {
+      stickies: Array<{ body: string }>;
+    };
+    const insertedBody = payload.stickies[0].body;
     const parsed = JSON.parse(insertedBody);
     expect(parsed.content[0].content[0].marks[0]).toMatchObject({
       type: "authorship",
@@ -709,36 +743,24 @@ describe("mapApi — createAiBranch", () => {
   });
 
   it("cards が空のとき branch と branchPosition だけ作成する", async () => {
-    const branch = {
-      id: "branch-empty",
-      boardId: "b1",
-      prompt: "テスト",
-      seedNodeIds: "[]",
-      sessionId: null,
-      model: null,
-      tokenUsage: null,
-      createdAt: "2024-01-01",
-      updatedAt: "2024-01-01",
-    };
-    const branchPos = {
-      id: "pos-branch-empty",
-      boardId: "b1",
-      nodeRefType: "ai_branch",
-      aiBranchId: "branch-empty",
-      x: 0,
-      y: 0,
-    };
-
-    (db.insert as ReturnType<typeof vi.fn>)
-      .mockReturnValueOnce(makeMock([branch]))
-      .mockReturnValueOnce(makeMock([branchPos]));
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([{ id: "b1", projectId: "p1" }]),
+    );
 
     const { createAiBranch } = await import("./mapApi");
     const result = await createAiBranch("b1", "テスト", [], []);
 
     expect(result.stickies).toHaveLength(0);
     expect(result.positions).toHaveLength(1);
-    expect(db.insert).toHaveBeenCalledTimes(2);
+    expect(mockInvoke).toHaveBeenCalledWith("map_write_bundle", {
+      payload: expect.objectContaining({
+        kind: "create-ai-branch",
+        stickies: [],
+        positions: [],
+        edges: [],
+        spans: [],
+      }),
+    });
   });
 });
 

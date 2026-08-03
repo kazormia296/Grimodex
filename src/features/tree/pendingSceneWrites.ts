@@ -70,19 +70,39 @@ export function serializeSceneWrite<T>(
  * writes) has settled. Used to quiesce the DB before `open_workspace` swaps
  * the active database — an in-flight write landing after the swap would be
  * silently lost (UPDATE, 0 rows) or leak rows into the new workspace (INSERT).
- * Best-effort: bounded rounds so a writer that keeps re-issuing cannot hang
- * the switch (the Rust-side `switching` guard is the backstop).
+ * Strict and bounded: every write is allowed to settle, but any failure (or a
+ * producer that never reaches quiescence within the round cap) rejects the
+ * destructive lifecycle operation. Proceeding would discard the only live
+ * copy of an editor buffer.
  */
 export async function awaitAllPendingSceneWrites(): Promise<void> {
+  const failures: unknown[] = [];
   for (let round = 0; round < 50; round++) {
-    if (writeChains.size === 0 && pendingWrites.size === 0) return;
-    const snapshot = [...writeChains.values(), ...pendingWrites.values()];
-    await Promise.all(snapshot.map((p) => p.catch(() => {})));
+    if (writeChains.size === 0 && pendingWrites.size === 0) {
+      if (failures.length > 0) {
+        throw new AggregateError(failures, "One or more scene writes failed");
+      }
+      return;
+    }
+    const snapshot = [
+      ...new Set([...writeChains.values(), ...pendingWrites.values()]),
+    ];
+    const results = await Promise.allSettled(snapshot);
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
   }
-  console.warn(
-    "[pendingSceneWrites] quiesce did not settle after 50 rounds; proceeding",
+  throw new AggregateError(
+    failures,
+    "Scene writes did not reach quiescence after 50 rounds",
   );
 }
+
+registerQuiescenceProvider({
+  id: "scene-writes",
+  stage: "scene-writes",
+  flush: awaitAllPendingSceneWrites,
+});
 
 /**
  * Register an in-flight content write for a scene. Must be called
@@ -127,3 +147,4 @@ export async function awaitPendingSceneContentWrite(
     write = next === write ? undefined : next;
   }
 }
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";

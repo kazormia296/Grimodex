@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type {
+  CodexAppEffectiveRequestReceipt,
   CodexRuntimeThreadBinding,
   JsonRpcId,
+  StartCodexAppTurnPayload,
 } from "../../shared/codexAppProtocol.js";
 import { createCodexAppServerManager } from "./manager.js";
 import type {
@@ -226,7 +228,378 @@ const input = (revision: string, turnSuffix = revision) => ({
   userMessage: "最新の質問",
 });
 
+function auditedInput(
+  revision: string,
+  turnSuffix = revision,
+): StartCodexAppTurnPayload {
+  const turn = input(revision, turnSuffix);
+  return {
+    ...turn,
+    auditContext: {
+      expectedWorkspacePath: TEST_WORKSPACE,
+      projectId: turn.projectId,
+      operationId: turn.grimodexTurnId,
+      executionId: `execution-${turnSuffix}`,
+      parentExecutionId: null,
+      pathId: "codex_app_server",
+    },
+  };
+}
+
+function modelAffectingWrites(
+  process: FakeProcess,
+): Array<Record<string, unknown>> {
+  return process.writes.filter((request) =>
+    ["thread/start", "thread/resume", "turn/start"].includes(
+      String(request.method),
+    ),
+  );
+}
+
 describe("Codex App Server manager", () => {
+  it("durably ACKs exact effective requests before each model-affecting RPC", async () => {
+    const process = new FakeProcess();
+    const observations: CodexAppEffectiveRequestReceipt[] = [];
+    const appendAuditObservations = vi.fn(
+      async (_context, batch: readonly CodexAppEffectiveRequestReceipt[]) => {
+        expect(batch).toHaveLength(1);
+        const observation = batch[0];
+        observations.push(observation);
+        if (observation.rpcMethod === "thread/start") {
+          expect(modelAffectingWrites(process)).toEqual([]);
+        } else if (observation.rpcMethod === "turn/start") {
+          expect(
+            process.writes.filter(
+              (request) => request.method === "thread/start",
+            ),
+          ).toHaveLength(1);
+          expect(
+            process.writes.filter((request) => request.method === "turn/start"),
+          ).toHaveLength(0);
+        }
+      },
+    );
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      getReadOnlyMcpServer: async () => ({
+        command: "/opt/grimodex-mcp",
+        args: ["--workspace", TEST_WORKSPACE, "--readonly"],
+        env: { GRIMODEX_TEST_SECRET: "must-not-enter-audit" },
+      }),
+      appendAuditObservations,
+    });
+
+    await expect(
+      manager.startTurn(auditedInput("audit-exact")),
+    ).resolves.toMatchObject({
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-1",
+      reusedThread: false,
+    });
+
+    expect(observations).toHaveLength(2);
+    expect(observations[0]).toMatchObject({
+      rpcMethod: "thread/start",
+      provider: "cli",
+      model: "gpt-fake",
+      effort: null,
+      modelVisibleMessages: [
+        { role: "developer", content: expect.stringContaining("read-only") },
+      ],
+      approvalPolicy: "never",
+      sandboxMode: "read-only",
+      networkAccess: null,
+      retryWithoutMcp: false,
+      mcpObservation: {
+        inheritedThreadConfigurationUnobserved: false,
+        configurationIncluded: true,
+        serverName: "grimodex",
+        command: "/opt/grimodex-mcp",
+        args: ["--workspace", TEST_WORKSPACE, "--readonly"],
+        mcpServerEnvExcluded: true,
+        toolSchemasObserved: false,
+      },
+    });
+    expect(observations[1]).toMatchObject({
+      rpcMethod: "turn/start",
+      effort: "medium",
+      modelVisibleMessages: [
+        {
+          role: "user",
+          content: expect.stringMatching(
+            /old history[\s\S]*latest context[\s\S]*最新の質問/,
+          ),
+        },
+      ],
+      networkAccess: false,
+    });
+    expect(JSON.stringify(observations)).not.toContain("must-not-enter-audit");
+    expect(appendAuditObservations).toHaveBeenNthCalledWith(
+      1,
+      auditedInput("audit-exact").auditContext,
+      [observations[0]],
+    );
+    await manager.dispose();
+  });
+
+  it("does not dispatch a model-affecting RPC when the audit append ACK rejects", async () => {
+    const process = new FakeProcess();
+    const appendAuditObservations = vi.fn(async () => {
+      throw new Error("ledger append rejected");
+    });
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      appendAuditObservations,
+    });
+
+    await expect(
+      manager.handlers.codex_app_start_turn({
+        ...auditedInput("audit-rejected"),
+      }),
+    ).resolves.toMatchObject({
+      status: "rejected-before-turn",
+      message: "ledger append rejected",
+    });
+    expect(appendAuditObservations).toHaveBeenCalledOnce();
+    expect(modelAffectingWrites(process)).toEqual([]);
+    await manager.dispose();
+  });
+
+  it("ACKs the exact thread/resume receipt before resuming and excludes bootstrap history", async () => {
+    const process = new FakeProcess();
+    const bindings = createBindings();
+    bindings.rows.set("p1/s1/codex-app-server", {
+      projectId: "p1",
+      sessionId: "s1",
+      runtime: "codex-app-server",
+      externalThreadId: "thread-existing",
+      historyRevision: "resume-revision",
+      lastTurnId: "turn-existing",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    let releaseResumeAppend!: () => void;
+    let markResumeAppendStarted!: () => void;
+    const resumeAppendGate = new Promise<void>((resolve) => {
+      releaseResumeAppend = resolve;
+    });
+    const resumeAppendStarted = new Promise<void>((resolve) => {
+      markResumeAppendStarted = resolve;
+    });
+    const observations: CodexAppEffectiveRequestReceipt[] = [];
+    const appendAuditObservations = vi.fn(
+      async (_context, batch: readonly CodexAppEffectiveRequestReceipt[]) => {
+        const observation = batch[0];
+        observations.push(observation);
+        if (observation.rpcMethod === "thread/resume") {
+          markResumeAppendStarted();
+          await resumeAppendGate;
+        } else if (observation.rpcMethod === "turn/start") {
+          expect(
+            process.writes.filter(
+              (request) => request.method === "thread/resume",
+            ),
+          ).toHaveLength(1);
+          expect(
+            process.writes.filter((request) => request.method === "turn/start"),
+          ).toHaveLength(0);
+        }
+      },
+    );
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: bindings,
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      appendAuditObservations,
+    });
+
+    const start = manager.startTurn(auditedInput("resume-revision"));
+    await resumeAppendStarted;
+    expect(modelAffectingWrites(process)).toEqual([]);
+    releaseResumeAppend();
+    await expect(start).resolves.toMatchObject({
+      codexThreadId: "thread-existing",
+      reusedThread: true,
+    });
+
+    expect(observations[0]).toMatchObject({
+      rpcMethod: "thread/resume",
+      effort: null,
+      networkAccess: null,
+      modelVisibleMessages: [
+        { role: "developer", content: expect.stringContaining("read-only") },
+      ],
+      mcpObservation: expect.objectContaining({
+        inheritedThreadConfigurationUnobserved: true,
+        configurationIncluded: false,
+      }),
+    });
+    expect(observations[1]).toMatchObject({
+      rpcMethod: "turn/start",
+      modelVisibleMessages: [
+        {
+          role: "user",
+          content: expect.stringContaining("最新の質問"),
+        },
+      ],
+    });
+    expect(observations[1]?.modelVisibleMessages[0]?.content).not.toContain(
+      "old history",
+    );
+    await manager.dispose();
+  });
+
+  it("ACKs an MCP-free retry receipt before the second thread/start RPC", async () => {
+    const process = new FakeProcess(true);
+    let releaseRetryAppend!: () => void;
+    let markRetryAppendStarted!: () => void;
+    const retryAppendGate = new Promise<void>((resolve) => {
+      releaseRetryAppend = resolve;
+    });
+    const retryAppendStarted = new Promise<void>((resolve) => {
+      markRetryAppendStarted = resolve;
+    });
+    const observations: CodexAppEffectiveRequestReceipt[] = [];
+    const appendAuditObservations = vi.fn(
+      async (_context, batch: readonly CodexAppEffectiveRequestReceipt[]) => {
+        const observation = batch[0];
+        observations.push(observation);
+        if (
+          observation.rpcMethod === "thread/start" &&
+          observation.retryWithoutMcp
+        ) {
+          markRetryAppendStarted();
+          await retryAppendGate;
+        }
+      },
+    );
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      getReadOnlyMcpServer: async () => ({
+        command: "/opt/grimodex-mcp",
+        args: ["--readonly"],
+        env: { GRIMODEX_TEST_SECRET: "retry-secret" },
+      }),
+      appendAuditObservations,
+    });
+
+    const start = manager.startTurn(auditedInput("mcp-audit-retry"));
+    await retryAppendStarted;
+    expect(
+      process.writes.filter((request) => request.method === "thread/start"),
+    ).toHaveLength(1);
+    expect(
+      process.writes.filter((request) => request.method === "turn/start"),
+    ).toHaveLength(0);
+    const retryReceipt = observations.find(
+      (observation) =>
+        observation.rpcMethod === "thread/start" && observation.retryWithoutMcp,
+    );
+    expect(retryReceipt).toMatchObject({
+      retryWithoutMcp: true,
+      mcpObservation: {
+        inheritedThreadConfigurationUnobserved: false,
+        configurationIncluded: false,
+        serverName: null,
+        command: null,
+        args: [],
+        mcpServerEnvExcluded: true,
+        toolSchemasObserved: false,
+      },
+    });
+    expect(JSON.stringify(retryReceipt)).not.toContain("retry-secret");
+
+    releaseRetryAppend();
+    await expect(start).resolves.toMatchObject({
+      codexThreadId: "thread-1",
+      codexTurnId: "turn-1",
+    });
+    expect(
+      process.writes.filter((request) => request.method === "thread/start"),
+    ).toHaveLength(2);
+    await manager.dispose();
+  });
+
+  it("rechecks an interrupt after the audit append ACK and dispatches no external turn", async () => {
+    const process = new FakeProcess();
+    let releaseAppend!: () => void;
+    let markAppendStarted!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    const appendStarted = new Promise<void>((resolve) => {
+      markAppendStarted = resolve;
+    });
+    const appendAuditObservations = vi.fn(async () => {
+      markAppendStarted();
+      await appendGate;
+    });
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      appendAuditObservations,
+    });
+    const start = manager.startTurn(auditedInput("audit-interrupted"));
+    await appendStarted;
+    expect(modelAffectingWrites(process)).toEqual([]);
+
+    await manager.interruptTurn({
+      projectId: "p1",
+      sessionId: "s1",
+      grimodexTurnId: "grim-audit-interrupted",
+    });
+    releaseAppend();
+
+    await expect(start).rejects.toThrow("interrupted before it started");
+    expect(modelAffectingWrites(process)).toEqual([]);
+    await manager.dispose();
+  });
+
+  it("rechecks workspace authority after the audit append ACK and dispatches no external turn", async () => {
+    const process = new FakeProcess();
+    let workspace = TEST_WORKSPACE;
+    let releaseAppend!: () => void;
+    let markAppendStarted!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    const appendStarted = new Promise<void>((resolve) => {
+      markAppendStarted = resolve;
+    });
+    const appendAuditObservations = vi.fn(async () => {
+      markAppendStarted();
+      await appendGate;
+    });
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => workspace,
+      appendAuditObservations,
+    });
+    const start = manager.handlers.codex_app_start_turn({
+      ...auditedInput("audit-workspace-race"),
+    });
+    await appendStarted;
+    expect(modelAffectingWrites(process)).toEqual([]);
+
+    workspace = tmpdir();
+    releaseAppend();
+
+    await expect(start).resolves.toMatchObject({
+      status: "rejected-before-turn",
+      message: expect.stringContaining("Active workspace changed"),
+    });
+    expect(modelAffectingWrites(process)).toEqual([]);
+    await manager.dispose();
+  });
+
   it("returns a typed IPC result for successful and proven pre-turn outcomes", async () => {
     const successManager = createCodexAppServerManager({
       createProcess: () => new FakeProcess(),
@@ -1634,12 +2007,14 @@ describe("Codex App Server manager", () => {
 
   it("revalidates file paths when an approval is accepted", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "grimodex-approval-race-"));
+    const canonicalWorkspace = path.join(root, "workspace-real");
     const workspace = path.join(root, "workspace");
-    const inside = path.join(workspace, "inside");
+    const inside = path.join(canonicalWorkspace, "inside");
     const outside = path.join(root, "outside");
-    mkdirSync(workspace);
+    mkdirSync(canonicalWorkspace);
     mkdirSync(inside);
     mkdirSync(outside);
+    symlinkSync(canonicalWorkspace, workspace, "dir");
     const linked = path.join(workspace, "linked");
     symlinkSync(inside, linked, "dir");
     const process = new FakeProcess();

@@ -2,7 +2,7 @@ import {
   buildWebEditorHandoffFilename,
   buildWebEditorWorkspaceHandoff,
   type WebEditorUiLanguage,
-} from "@grimodex/scan-contract";
+} from "@grimodex/scan-contract/web-editor-handoff";
 import {
   registeredSaveHandlerIds,
   saveScene,

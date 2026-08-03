@@ -128,6 +128,7 @@ export function PanelPickerMenuItems({
           <div
             role="button"
             tabIndex={0}
+            aria-pressed={isPanelActive("editor")}
             data-panel-toggle-item="editor"
             data-testid="panel-toggle-item-editor"
             data-tauri-drag-region="false"
@@ -176,6 +177,7 @@ export function PanelPickerMenuItems({
                 key={panelId}
                 role="button"
                 tabIndex={0}
+                aria-pressed={visible}
                 data-panel-toggle-item={panelId}
                 data-testid={`panel-toggle-item-${panelId}`}
                 data-tauri-drag-region="false"

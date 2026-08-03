@@ -2,6 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as PMNode } from "@tiptap/pm/model";
+import { markEnd, markStart } from "@/lib/perfLog";
 
 export const BRACKET_CLASS = "beat-bracket-instruction";
 
@@ -54,7 +55,12 @@ export const BracketInstructionDecoration = Extension.create({
           },
           apply(tr, old) {
             if (!tr.docChanged) return old;
-            return buildDecorations(tr.doc);
+            markStart("plugin.bracketInstruction.apply");
+            try {
+              return buildDecorations(tr.doc);
+            } finally {
+              markEnd("plugin.bracketInstruction.apply");
+            }
           },
         },
         props: {

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { GridSceneCard } from "./GridSceneCard";
 import { GridLooseColumnContextMenu } from "./GridLooseColumnContextMenu";
 import { GridLooseColumnMenu } from "./GridLooseColumnMenu";
+import { GridVirtualList } from "./GridVirtualList";
 import { columnEndId, columnEmptyId } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
@@ -28,6 +29,7 @@ interface Props {
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order across all columns, for range selection. */
   flatOrder?: string[];
+  pinnedItemId?: string | null;
 }
 
 /**
@@ -46,6 +48,7 @@ export function GridLooseColumn({
   axisLockOffsets,
   onRequestDeleteConfirm,
   flatOrder,
+  pinnedItemId,
 }: Props) {
   const { t } = useTranslation();
   const createNode = useTreeStore((s) => s.createNode);
@@ -103,57 +106,57 @@ export function GridLooseColumn({
         </div>
 
         {/* Cards */}
-        <div className="flex flex-col gap-2 p-2 flex-1 min-h-0 overflow-y-auto">
-          {scenes.length === 0 ? (
+        {scenes.length === 0 ? (
+          <div className="flex min-h-0 flex-1 p-2">
             <div
               ref={setEmptyRef}
               className={cn(
-                "flex-1 rounded-md border-2 border-dashed border-border min-h-16",
-                "flex items-center justify-center text-[11px] text-muted-foreground",
+                "flex min-h-16 flex-1 items-center justify-center rounded-md border-2 border-dashed border-border",
+                "text-[11px] text-muted-foreground",
                 isEmptyOver && "border-primary bg-primary/5",
               )}
             >
               {t("grid.column.dropHere", "ここにドロップ")}
             </div>
-          ) : (
-            <>
-              {scenes.map((scene) => {
-                const vis = visibility.get(scene.id);
-                if (vis && !vis.passesFilter) return null;
-                const isDropBefore =
-                  (dropIndicator?.targetId === scene.id &&
-                    dropIndicator.position === "before") ||
-                  (columnDropIndicator?.targetId === scene.id &&
-                    columnDropIndicator.position === "before");
-                const isDropAfter =
-                  (dropIndicator?.targetId === scene.id &&
-                    dropIndicator.position === "after") ||
-                  (columnDropIndicator?.targetId === scene.id &&
-                    columnDropIndicator.position === "after");
-                return (
-                  <GridSceneCard
-                    key={scene.id}
-                    scene={scene}
-                    display={display}
-                    dimmed={vis !== undefined && !vis.matchesSearch}
-                    isDropBefore={isDropBefore}
-                    isDropAfter={isDropAfter}
-                    axisLockOffsetPx={axisLockOffsets?.get(scene.id)}
-                    onRequestDeleteConfirm={onRequestDeleteConfirm}
-                    flatOrder={flatOrder}
-                  />
-                );
-              })}
-              <div
-                ref={setEndRef}
-                className={cn(
-                  "h-4 rounded transition-colors",
-                  isEndOver && "bg-primary/20",
-                )}
-              />
-            </>
-          )}
-        </div>
+          </div>
+        ) : (
+          <GridVirtualList
+            items={visibleScenes}
+            pinnedItemId={pinnedItemId}
+            compact={display.compactCards}
+            endRef={setEndRef}
+            endClassName={cn(
+              "rounded transition-colors",
+              isEndOver && "bg-primary/20",
+            )}
+            testId="grid-loose-column-list"
+            renderItem={(scene) => {
+              const vis = visibility.get(scene.id);
+              const isDropBefore =
+                (dropIndicator?.targetId === scene.id &&
+                  dropIndicator.position === "before") ||
+                (columnDropIndicator?.targetId === scene.id &&
+                  columnDropIndicator.position === "before");
+              const isDropAfter =
+                (dropIndicator?.targetId === scene.id &&
+                  dropIndicator.position === "after") ||
+                (columnDropIndicator?.targetId === scene.id &&
+                  columnDropIndicator.position === "after");
+              return (
+                <GridSceneCard
+                  scene={scene}
+                  display={display}
+                  dimmed={vis !== undefined && !vis.matchesSearch}
+                  isDropBefore={isDropBefore}
+                  isDropAfter={isDropAfter}
+                  axisLockOffsetPx={axisLockOffsets?.get(scene.id)}
+                  onRequestDeleteConfirm={onRequestDeleteConfirm}
+                  flatOrder={flatOrder}
+                />
+              );
+            }}
+          />
+        )}
 
         <button
           className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"

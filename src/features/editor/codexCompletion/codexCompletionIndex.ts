@@ -14,6 +14,8 @@ export interface CodexCompletionIndex {
   all(): CodexCompletionCandidate[];
   /** Prefix matches in the order in which a single ghost candidate is chosen. */
   find(prefix: string): CodexCompletionCandidate[];
+  /** Best prefix match without allocating and sorting a result array. */
+  findFirst(prefix: string): CodexCompletionCandidate | null;
 }
 
 let sharedSource: readonly CodexCompletionSourceEntry[] | null = null;
@@ -23,15 +25,9 @@ function normalizeSurface(surface: string): string {
   return surface.normalize("NFC").toLowerCase();
 }
 
-const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, {
-  granularity: "grapheme",
-});
-
-function firstGrapheme(text: string): string {
-  return (
-    GRAPHEME_SEGMENTER.segment(text)[Symbol.iterator]().next().value?.segment ??
-    ""
-  );
+function firstCodePoint(text: string): string {
+  const codePoint = text.codePointAt(0);
+  return codePoint === undefined ? "" : String.fromCodePoint(codePoint);
 }
 
 function parseStringArray(raw: string[] | string | null | undefined): string[] {
@@ -115,26 +111,56 @@ export function buildCodexCompletionIndex(
   const candidates = [...bySurface.values()].sort(compareSurface);
   const candidatesByInitial = new Map<string, CodexCompletionCandidate[]>();
   for (const candidate of candidates) {
-    const initial = firstGrapheme(candidate.normalizedSurface);
+    const initial = firstCodePoint(candidate.normalizedSurface);
     const bucket = candidatesByInitial.get(initial) ?? [];
     bucket.push(candidate);
     candidatesByInitial.set(initial, bucket);
   }
 
+  function prefixPool(prefix: string): {
+    normalizedPrefix: string;
+    pool: CodexCompletionCandidate[];
+  } | null {
+    if (prefix.length === 0) return null;
+    const normalizedPrefix = normalizeSurface(prefix);
+    return {
+      normalizedPrefix,
+      pool: candidatesByInitial.get(firstCodePoint(normalizedPrefix)) ?? [],
+    };
+  }
+
+  function matchesPrefix(
+    candidate: CodexCompletionCandidate,
+    normalizedPrefix: string,
+  ): boolean {
+    return (
+      candidate.normalizedSurface.startsWith(normalizedPrefix) &&
+      candidate.normalizedSurface !== normalizedPrefix
+    );
+  }
+
   return {
     all: () => [...candidates],
     find(prefix) {
-      if (prefix.length === 0) return [];
-      const normalizedPrefix = normalizeSurface(prefix);
-      const pool =
-        candidatesByInitial.get(firstGrapheme(normalizedPrefix)) ?? [];
-      return pool
-        .filter(
-          (candidate) =>
-            candidate.normalizedSurface.startsWith(normalizedPrefix) &&
-            candidate.normalizedSurface !== normalizedPrefix,
+      const lookup = prefixPool(prefix);
+      if (!lookup) return [];
+      return lookup.pool
+        .filter((candidate) =>
+          matchesPrefix(candidate, lookup.normalizedPrefix),
         )
         .sort((a, b) => compareForPrefix(prefix, a, b));
+    },
+    findFirst(prefix) {
+      const lookup = prefixPool(prefix);
+      if (!lookup) return null;
+      let best: CodexCompletionCandidate | null = null;
+      for (const candidate of lookup.pool) {
+        if (!matchesPrefix(candidate, lookup.normalizedPrefix)) continue;
+        if (!best || compareForPrefix(prefix, candidate, best) < 0) {
+          best = candidate;
+        }
+      }
+      return best;
     },
   };
 }

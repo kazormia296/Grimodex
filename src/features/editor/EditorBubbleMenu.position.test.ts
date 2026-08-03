@@ -56,9 +56,9 @@ describe("computeBubblePosition", () => {
   });
 
   it("uses the estimated width before a measurement is available", () => {
-    // menuWidth=0 → EST_WIDTH(560) で保守的にクランプ (初回フレームも画面外に出ない)。
+    // menuWidth=0 → EST_WIDTH(520) で保守的にクランプ (初回フレームも画面外に出ない)。
     const rect = new DOMRect(0, 300, 20, 20);
     const { left } = computeBubblePosition(rect, 0, 1200);
-    expect(left).toBeGreaterThanOrEqual(560 / 2 + EDGE - 0.001);
+    expect(left).toBeGreaterThanOrEqual(520 / 2 + EDGE - 0.001);
   });
 });

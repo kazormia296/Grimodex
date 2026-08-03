@@ -12,15 +12,18 @@ import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { debugLog } from "@/lib/debugLog";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import type { VerifyResult } from "./hashChain";
 
 const FLUSH_DEBOUNCE_MS = 100;
 
 /**
- * How many consecutive failed flushes to tolerate before dropping the in-flight
- * batch. A genuinely unrecoverable insert (disk full, malformed row, ...) must
- * not tight-loop forever. Sequence/hash allocation is now Rust-owned, so a
+ * How many consecutive failed automatic flushes to tolerate before pausing
+ * retries. A genuinely unrecoverable insert (disk full, malformed row, ...)
+ * must not tight-loop forever, but the in-memory batch is retained so close /
+ * Project / Workspace quiescence can report the failure and retry. Sequence/hash
+ * allocation is now Rust-owned, so a
  * resend after a transient or committed-but-rejected blip is idempotent — Rust
  * skips already-present `eventUid`s and appends only the new suffix — so the
  * retry just succeeds rather than colliding.
@@ -93,11 +96,22 @@ export interface RecordEventInput {
   sceneId?: string | null;
   entityType?: string | null;
   entityId?: string | null;
+  /** Original domain mutation time when a durable retry records it later. */
+  timestamp?: number;
 }
 
-interface PendingEvent extends Required<RecordEventInput> {
+type PendingEventStatus = "reserved" | "committed";
+
+interface PendingEvent extends Omit<Required<RecordEventInput>, "timestamp"> {
   eventUid: string;
   timestamp: number;
+  status: PendingEventStatus;
+  reservationId: string | null;
+}
+
+export interface ChangeEventReservation {
+  commit: () => void;
+  discard: () => void;
 }
 
 interface TimelapseAppendEvent {
@@ -148,6 +162,11 @@ interface RecorderState {
   flushPromise: Promise<void> | null;
   /** Consecutive failed-flush count; gates retry backoff and the give-up cap. */
   flushRetries: number;
+  /**
+   * Active destructive-lifecycle drains. A strict waiter promotes an already
+   * running automatic append to lossless failure handling.
+   */
+  strictFlushWaiters: number;
   /** 現行 init。resolve 値は「束縛を書いたか」(bystander/世代跨ぎ abort = false)。 */
   initPromise: Promise<boolean> | null;
   /**
@@ -192,6 +211,7 @@ const state: RecorderState = {
   flushTimer: null,
   flushPromise: null,
   flushRetries: 0,
+  strictFlushWaiters: 0,
   initPromise: null,
   switchInProgress: false,
   bindingInvalidated: false,
@@ -434,6 +454,7 @@ export function _resetRecorderForTests(): void {
   state.lastSequence = 0;
   state.queue = [];
   state.flushRetries = 0;
+  state.strictFlushWaiters = 0;
   if (state.flushTimer) clearTimeout(state.flushTimer);
   state.flushTimer = null;
   state.flushPromise = null;
@@ -450,8 +471,8 @@ export function _resetRecorderForTests(): void {
  * never awaits the flush. If the recorder is disabled or no project bound
  * yet, the call is silently dropped.
  */
-export function recordChangeEvent(input: RecordEventInput): void {
-  if (input.projectId && input.projectId !== state.projectId) return;
+function canCaptureChangeEvent(input: RecordEventInput): boolean {
+  if (input.projectId && input.projectId !== state.projectId) return false;
   if (state.switchInProgress || state.bindingInvalidated) {
     // 束縛が無効 (切替中 or 正規 rebind 未完了): 誤った束縛で新 workspace の
     // hash chain へ混入させるより破棄が正しい。ただし無警告にしない —
@@ -463,10 +484,20 @@ export function recordChangeEvent(input: RecordEventInput): void {
       );
     }
     state.droppedWhileInvalidated += 1;
-    return;
+    return false;
   }
-  if (!state.enabled || !state.projectId) return;
-  state.queue.push({
+  return state.enabled && state.projectId !== null;
+}
+
+function createPendingEvent(
+  input: RecordEventInput,
+  status: PendingEventStatus,
+  reservationId: string | null,
+): PendingEvent {
+  if (!state.projectId) {
+    throw new Error("Timelapse recorder is not bound to a Project");
+  }
+  return {
     eventUid: crypto.randomUUID(),
     domain: input.domain,
     opType: input.opType,
@@ -475,7 +506,71 @@ export function recordChangeEvent(input: RecordEventInput): void {
     sceneId: input.sceneId ?? null,
     entityType: input.entityType ?? null,
     entityId: input.entityId ?? null,
-    timestamp: Date.now(),
+    timestamp: input.timestamp ?? Date.now(),
+    status,
+    reservationId,
+  };
+}
+
+/**
+ * Reserves one contiguous position in the forward-only Chronicle without
+ * making the events flushable. This lets a completed Chat turn retain its
+ * original order while its durable rows are retried. A reservation must be
+ * committed only after the source mutation is durable, or discarded when the
+ * source payload is explicitly abandoned.
+ */
+export function reserveChangeEvents(
+  inputs: readonly RecordEventInput[],
+): ChangeEventReservation {
+  if (
+    inputs.length === 0 ||
+    !inputs.every((input) => canCaptureChangeEvent(input))
+  ) {
+    return {
+      commit() {},
+      discard() {},
+    };
+  }
+
+  const reservationId = crypto.randomUUID();
+  state.queue.push(
+    ...inputs.map((input) =>
+      createPendingEvent(input, "reserved", reservationId),
+    ),
+  );
+  let active = true;
+  return {
+    commit() {
+      if (!active) return;
+      active = false;
+      let committed = false;
+      for (const event of state.queue) {
+        if (event.reservationId !== reservationId) continue;
+        event.status = "committed";
+        event.reservationId = null;
+        committed = true;
+      }
+      if (committed) scheduleFlush();
+    },
+    discard() {
+      if (!active) return;
+      active = false;
+      const retained = state.queue.filter(
+        (event) => event.reservationId !== reservationId,
+      );
+      if (retained.length === state.queue.length) return;
+      state.queue = retained;
+      if (state.queue.some((event) => event.status === "committed")) {
+        scheduleFlush();
+      }
+    },
+  };
+}
+
+export function recordChangeEvent(input: RecordEventInput): void {
+  if (!canCaptureChangeEvent(input)) return;
+  state.queue.push({
+    ...createPendingEvent(input, "committed", null),
   });
   scheduleFlush();
 }
@@ -485,9 +580,15 @@ function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
   if (state.flushTimer) return;
   state.flushTimer = setTimeout(() => {
     state.flushTimer = null;
-    void flushNow().catch((err) =>
-      console.warn("[timelapse] flush failed", err),
-    );
+    void flushNow().catch((_error) => {
+      debugLog.warn("timelapse", "flush failed", {
+        sensitivity: "safe",
+        fields: {
+          operation: "flush",
+          outcome: "failed",
+        },
+      });
+    });
   }, delayMs);
 }
 
@@ -520,8 +621,14 @@ export async function flushNow(): Promise<void> {
     }
     if (state.queue.length === 0) return;
 
-    const batch = state.queue;
-    state.queue = [];
+    const firstReservedIndex = state.queue.findIndex(
+      (event) => event.status === "reserved",
+    );
+    const batchEnd =
+      firstReservedIndex === -1 ? state.queue.length : firstReservedIndex;
+    if (batchEnd === 0) return;
+    const batch = state.queue.slice(0, batchEnd);
+    state.queue = state.queue.slice(batchEnd);
 
     const events: TimelapseAppendEvent[] = batch.map((ev) => ({
       eventUid: ev.eventUid,
@@ -551,6 +658,14 @@ export async function flushNow(): Promise<void> {
       // に旧イベントが新 workspace の chain へ混入する (C1)。バッチは破棄して
       // 件数を warn。
       if (isWorkspaceSwitchingError(err)) {
+        if (state.strictFlushWaiters > 0) {
+          state.queue = batch.concat(state.queue);
+          debugLog.warn(
+            "timelapse",
+            `workspace switching: retaining ${batch.length} event(s) for strict lifecycle recovery`,
+          );
+          throw err;
+        }
         debugLog.warn(
           "timelapse",
           `workspace switching: dropping ${batch.length} event(s) instead of re-queueing`,
@@ -562,11 +677,12 @@ export async function flushNow(): Promise<void> {
       // committed but the transport rejected, Rust treats the resend as a no-op.
       state.flushRetries += 1;
       if (state.flushRetries > MAX_FLUSH_RETRIES) {
+        state.queue = batch.concat(state.queue);
+        state.flushRetries = MAX_FLUSH_RETRIES;
         console.warn(
-          `[timelapse] dropping ${batch.length} event(s) after ${MAX_FLUSH_RETRIES} failed flush attempts`,
+          `[timelapse] pausing automatic retry for ${batch.length} event(s) after ${MAX_FLUSH_RETRIES} failed flush attempts`,
         );
-        state.flushRetries = 0;
-        return;
+        throw err;
       }
       state.queue = batch.concat(state.queue);
       scheduleFlush(flushBackoffMs(state.flushRetries));
@@ -577,6 +693,72 @@ export async function flushNow(): Promise<void> {
   });
   return state.flushPromise;
 }
+
+/**
+ * Destructive-lifecycle drain. It also catches events queued while a previous
+ * flush was in flight and never treats the retry cap as permission to discard.
+ */
+export async function flushStrict(): Promise<void> {
+  state.strictFlushWaiters += 1;
+  let completed = false;
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+  try {
+    for (let round = 0; round < 50; round++) {
+      await flushNow();
+      if (state.queue.length === 0 && state.flushPromise === null) {
+        completed = true;
+        return;
+      }
+      if (state.queue[0]?.status === "reserved") {
+        throw new Error(
+          "Timelapse recorder has an unresolved event reservation",
+        );
+      }
+    }
+    throw new Error("Timelapse recorder did not reach quiescence");
+  } finally {
+    state.strictFlushWaiters = Math.max(0, state.strictFlushWaiters - 1);
+    // Preserve strict recovery material until an explicit retry. Otherwise an
+    // older debounce/backoff timer could wake after this waiter releases and
+    // apply the automatic WORKSPACE_SWITCHING drop policy to the retained batch.
+    if (!completed && state.flushTimer) {
+      clearTimeout(state.flushTimer);
+      state.flushTimer = null;
+    }
+  }
+}
+
+function discardPendingTimelapseEvents(): void {
+  if (state.flushTimer) clearTimeout(state.flushTimer);
+  state.flushTimer = null;
+  state.queue = [];
+  state.flushRetries = 0;
+}
+
+registerQuiescenceProvider({
+  id: "timelapse-recorder",
+  stage: "timelapse",
+  flush: flushStrict,
+  discard: discardPendingTimelapseEvents,
+  recovery: () =>
+    state.queue
+      .filter((event) => event.status === "committed")
+      .map((event) => ({
+        kind: "timelapse-event",
+        projectId: event.projectId,
+        eventUid: event.eventUid,
+        sceneId: event.sceneId,
+        domain: event.domain,
+        opType: event.opType,
+        entityType: event.entityType,
+        entityId: event.entityId,
+        payload: event.payload,
+        timestamp: event.timestamp,
+      })),
+});
 
 function canonicalisePayload(p: unknown): string {
   if (typeof p === "string") return p;

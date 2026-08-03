@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X, MoreVertical, Plus } from "lucide-react";
@@ -7,11 +7,27 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { formatInstant } from "@/lib/time";
 import { useChatStore } from "@/features/chat/chatStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { resolveScopeSessionKey } from "../chatScope";
+import {
+  resolveScopeSessionKey,
+  scopeSessionKeysEqual,
+  type ChatScope,
+  type ScopeSessionKey,
+} from "../chatScope";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
 import { SessionRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import {
+  useLatestValueDraftController,
+  type LatestValueDraftPersistContext,
+} from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
+import {
+  getCurrentImeWorkspaceIdentity,
+  isCurrentImeWorkspaceIdentity,
+  type ImeWorkspaceIdentity,
+} from "@/features/ime/workspaceScope";
 
 interface SessionsPanelProps {
   sceneTitle: string;
@@ -20,11 +36,66 @@ interface SessionsPanelProps {
   mutationsDisabled?: boolean;
 }
 
+interface PanelSessionScopeAuthority {
+  workspaceIdentity: ImeWorkspaceIdentity | null;
+  projectId: string;
+  chatScope: ChatScope;
+  scopeKey: ScopeSessionKey;
+}
+
+function capturePanelSessionScopeAuthority(
+  expectedScope: ChatScope,
+  expectedKey: ScopeSessionKey,
+): PanelSessionScopeAuthority | null {
+  const state = useChatStore.getState();
+  const currentKey = resolveScopeSessionKey(
+    state.chatScope,
+    state.activeSceneId,
+    state.scopeAnchorId,
+  );
+  if (
+    state.chatScope !== expectedScope ||
+    !scopeSessionKeysEqual(currentKey, expectedKey)
+  ) {
+    return null;
+  }
+  return {
+    workspaceIdentity: getCurrentImeWorkspaceIdentity(),
+    projectId: state.activeProjectId ?? getCurrentProjectId(),
+    chatScope: state.chatScope,
+    scopeKey: currentKey,
+  };
+}
+
+function isPanelSessionScopeAuthorityCurrent(
+  authority: PanelSessionScopeAuthority,
+): boolean {
+  const state = useChatStore.getState();
+  return (
+    (authority.workspaceIdentity
+      ? isCurrentImeWorkspaceIdentity(authority.workspaceIdentity)
+      : getCurrentImeWorkspaceIdentity() === null) &&
+    (state.activeProjectId ?? getCurrentProjectId()) === authority.projectId &&
+    state.chatScope === authority.chatScope &&
+    scopeSessionKeysEqual(
+      resolveScopeSessionKey(
+        state.chatScope,
+        state.activeSceneId,
+        state.scopeAnchorId,
+      ),
+      authority.scopeKey,
+    )
+  );
+}
+
 interface SessionItemProps {
   session: ChatSession;
   isActive: boolean;
   onSelect: () => void;
-  onRename: (newTitle: string) => void;
+  onRename: (
+    newTitle: string,
+    context?: LatestValueDraftPersistContext,
+  ) => Promise<void>;
   onDelete: () => void;
   mutationsDisabled: boolean;
 }
@@ -42,6 +113,22 @@ function SessionItem({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const renameController = useLatestValueDraftController(
+    `chat-session-title:${session.id}`,
+    session.title,
+    async (next, context) => {
+      const trimmed = next.trim();
+      if (trimmed && trimmed !== session.title) {
+        if (context.preexistingDraft) {
+          await onRename(trimmed, context);
+        } else {
+          await onRename(trimmed);
+        }
+      }
+    },
+  );
   // セッションメニューはチャットパネル内のドロワーにあり、inline absolute だと
   // 祖先 stacking context に埋もれる。document.body へ portal して脱出する。
   const { popoverRef, style } = useAnchoredPopover(
@@ -52,28 +139,74 @@ function SessionItem({
   );
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (isEditing && inputRef.current) {
       inputRef.current.focus();
       inputRef.current.select();
     }
   }, [isEditing]);
 
+  useEffect(() => {
+    if (editingRef.current || renameController.dirty) return;
+    renameController.reset(session.title);
+    setEditValue(session.title);
+  }, [renameController, session.title]);
+
   const { t } = useTranslation();
 
-  const handleRenameSubmit = () => {
-    const trimmed = editValue.trim();
-    if (trimmed && trimmed !== session.title) {
-      onRename(trimmed);
+  const handleRenameSubmit = async (
+    options?: QuiescenceParticipantFlushOptions,
+  ): Promise<void> => {
+    if (!editingRef.current) return;
+    if (!renameController.latestValue.trim()) {
+      renameController.reset(session.title);
+    } else {
+      await renameController.save(options);
     }
-    setIsEditing(false);
+    editingRef.current = false;
+    if (mountedRef.current) {
+      setEditValue(renameController.latestValue.trim() || session.title);
+      setIsEditing(false);
+    }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      handleRenameSubmit();
-    } else if (e.key === "Escape") {
+  const cancelRename = () => {
+    editingRef.current = false;
+    renameController.reset(session.title);
+    if (mountedRef.current) {
       setEditValue(session.title);
       setIsEditing(false);
+    }
+  };
+
+  useQuiescentDraftParticipant({
+    id: `chat-session-title:${session.id}`,
+    enabled: isEditing,
+    isDirty: () => editingRef.current && renameController.dirty,
+    flush: handleRenameSubmit,
+    discard: cancelRename,
+    recovery: () =>
+      editingRef.current
+        ? {
+            kind: "chat-session-title",
+            sessionId: session.id,
+            title: renameController.latestValue,
+          }
+        : null,
+  });
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter") {
+      void handleRenameSubmit().catch(() => {});
+    } else if (e.key === "Escape") {
+      cancelRename();
     }
   };
 
@@ -101,9 +234,14 @@ function SessionItem({
           <input
             ref={inputRef}
             value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
+            onChange={(e) => {
+              renameController.markDirty(
+                e.target.value.trim() ? e.target.value : session.title,
+              );
+              setEditValue(e.target.value);
+            }}
             onKeyDown={handleKeyDown}
-            onBlur={handleRenameSubmit}
+            onBlur={() => void handleRenameSubmit().catch(() => {})}
             onClick={(e) => e.stopPropagation()}
             className="w-full rounded border border-input bg-background px-1 py-0 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
           />
@@ -141,6 +279,10 @@ function SessionItem({
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen(false);
+                  if (editingRef.current) return;
+                  editingRef.current = true;
+                  renameController.reset(session.title);
+                  setEditValue(session.title);
                   setIsEditing(true);
                 }}
                 className="w-full px-3 py-1.5 text-left text-xs hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
@@ -184,10 +326,9 @@ export function SessionsPanel({
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const { t } = useTranslation();
 
-  const sessionKey = resolveScopeSessionKey(
-    chatScope,
-    activeSceneId,
-    scopeAnchorId,
+  const sessionKey = useMemo(
+    () => resolveScopeSessionKey(chatScope, activeSceneId, scopeAnchorId),
+    [activeSceneId, chatScope, scopeAnchorId],
   );
 
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -198,12 +339,7 @@ export function SessionsPanel({
       sessionKey.codexAnchorId,
       sessionKey.snippetAnchorId,
     );
-  }, [
-    sessionKey.nodeId,
-    sessionKey.codexAnchorId,
-    sessionKey.snippetAnchorId,
-    loadSessions,
-  ]);
+  }, [loadSessions, sessionKey]);
 
   const handleSelect = useCallback(
     (sessionId: string) => {
@@ -215,25 +351,28 @@ export function SessionsPanel({
 
   const handleRename = useCallback(
     async (sessionId: string, newTitle: string) => {
+      const authority = capturePanelSessionScopeAuthority(
+        chatScope,
+        sessionKey,
+      );
+      if (!authority) return;
       try {
         await chatApi.updateSessionTitle(sessionId, newTitle);
+        if (!isPanelSessionScopeAuthorityCurrent(authority)) return;
         await loadSessions(
-          sessionKey.nodeId,
-          sessionKey.codexAnchorId,
-          sessionKey.snippetAnchorId,
+          authority.scopeKey.nodeId,
+          authority.scopeKey.codexAnchorId,
+          authority.scopeKey.snippetAnchorId,
         );
       } catch (e) {
         debugLog.error("SessionsPanel", "rename failed", errorDetail(e));
-        toast.error(t("chat.sessionRenameFailed"));
+        if (isPanelSessionScopeAuthorityCurrent(authority)) {
+          toast.error(t("chat.sessionRenameFailed"));
+        }
+        throw e;
       }
     },
-    [
-      sessionKey.nodeId,
-      sessionKey.codexAnchorId,
-      sessionKey.snippetAnchorId,
-      loadSessions,
-      t,
-    ],
+    [sessionKey, chatScope, loadSessions, t],
   );
 
   const handleDelete = useCallback(
@@ -241,53 +380,60 @@ export function SessionsPanel({
       if (mutationsDisabled) return;
       const confirmed = window.confirm(t("chat.sessionDeleteConfirm"));
       if (!confirmed) return;
+      const authority = capturePanelSessionScopeAuthority(
+        chatScope,
+        sessionKey,
+      );
+      if (!authority) return;
       try {
         await deleteSession(sessionId);
+        if (!isPanelSessionScopeAuthorityCurrent(authority)) return;
         await loadSessions(
-          sessionKey.nodeId,
-          sessionKey.codexAnchorId,
-          sessionKey.snippetAnchorId,
+          authority.scopeKey.nodeId,
+          authority.scopeKey.codexAnchorId,
+          authority.scopeKey.snippetAnchorId,
         );
       } catch (e) {
         debugLog.error("SessionsPanel", "delete failed", errorDetail(e));
-        toast.error(t("chat.deleteSessionFailed"));
+        if (isPanelSessionScopeAuthorityCurrent(authority)) {
+          toast.error(t("chat.deleteSessionFailed"));
+        }
       }
     },
-    [
-      sessionKey.nodeId,
-      sessionKey.codexAnchorId,
-      sessionKey.snippetAnchorId,
-      deleteSession,
-      loadSessions,
-      t,
-      mutationsDisabled,
-    ],
+    [sessionKey, chatScope, deleteSession, loadSessions, t, mutationsDisabled],
   );
 
   const handleCreate = useCallback(async () => {
     if (mutationsDisabled) return;
+    const authority = capturePanelSessionScopeAuthority(chatScope, sessionKey);
+    if (!authority) return;
     try {
       await createNewSession(
-        getCurrentProjectId(),
+        authority.projectId,
         "New session",
-        sessionKey.nodeId === null ? undefined : sessionKey.nodeId,
-        sessionKey.codexAnchorId,
-        sessionKey.snippetAnchorId,
+        authority.scopeKey.nodeId === null
+          ? undefined
+          : authority.scopeKey.nodeId,
+        authority.scopeKey.codexAnchorId,
+        authority.scopeKey.snippetAnchorId,
       );
-      await loadSessions(
-        sessionKey.nodeId,
-        sessionKey.codexAnchorId,
-        sessionKey.snippetAnchorId,
+      if (!isPanelSessionScopeAuthorityCurrent(authority)) return;
+      const loaded = await loadSessions(
+        authority.scopeKey.nodeId,
+        authority.scopeKey.codexAnchorId,
+        authority.scopeKey.snippetAnchorId,
       );
+      if (!loaded || !isPanelSessionScopeAuthorityCurrent(authority)) return;
       onClose();
     } catch (e) {
       debugLog.error("SessionsPanel", "create failed", errorDetail(e));
-      toast.error(t("chat.createSessionFailed"));
+      if (isPanelSessionScopeAuthorityCurrent(authority)) {
+        toast.error(t("chat.createSessionFailed"));
+      }
     }
   }, [
-    sessionKey.nodeId,
-    sessionKey.codexAnchorId,
-    sessionKey.snippetAnchorId,
+    sessionKey,
+    chatScope,
     createNewSession,
     loadSessions,
     onClose,

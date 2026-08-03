@@ -5,13 +5,29 @@ import {
   isAinoveristV1Model,
 } from "../aiNovelist";
 import { getDynamicModelMeta, type DynamicModelMeta } from "./dynamicModelCaps";
+import { ollamaContextLengthSettingKeys, type AiProvider } from "../types";
 
 /** モデルの能力情報 */
 export type EffortLevel = "low" | "medium" | "high" | "max";
 export type ThinkingDisplay = "summarized" | "omitted";
+export type ModelContextWindowSource =
+  | "default"
+  | "hardcoded"
+  | "dynamic"
+  | "runner"
+  | "model-parameter"
+  | "ollama-settings"
+  | "model-maximum";
 
 export interface ModelCapabilities {
+  /** Context used by planners and the final local request guard. */
   contextWindow: number;
+  /** Provider-advertised architecture/model maximum, kept separate from runtime allocation. */
+  modelContextWindow: number;
+  /** True only when contextWindow is an observed or explicitly configured effective limit. */
+  contextWindowIsEffective: boolean;
+  /** Provenance for contextWindow, used by route diagnostics. */
+  contextWindowSource: ModelContextWindowSource;
   /** Default user-visible response cap used for both reservation and wire. */
   defaultVisibleOutputTokens?: number;
   /** Reservation/wire cap for models whose output includes hidden reasoning. */
@@ -48,7 +64,12 @@ export interface ModelCapabilities {
   supportsStructuredJson?: boolean;
 }
 
-const DEFAULT_CAPABILITIES: ModelCapabilities = {
+type ModelCapabilityDefinition = Omit<
+  ModelCapabilities,
+  "modelContextWindow" | "contextWindowIsEffective" | "contextWindowSource"
+>;
+
+const DEFAULT_CAPABILITIES: ModelCapabilityDefinition = {
   contextWindow: 8_000,
   defaultVisibleOutputTokens: 4_096,
   defaultReasoningReservationTokens: 32_000,
@@ -60,7 +81,7 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   supportsReasoning: false,
 };
 
-const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
+const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Fable 5 (adaptive thinking + max effort)
   "claude-fable-5": {
     contextWindow: 1_000_000,
@@ -381,7 +402,7 @@ function normalizeModelVersion(model: string): string {
  * ハードコード表のみでモデル能力を解決する内部関数。
  * 完全一致 → バージョン正規化後に再試行 → プレフィックス前方一致（日付サフィックス対応）
  */
-function resolveHardcoded(model: string): ModelCapabilities {
+function resolveHardcoded(model: string): ModelCapabilityDefinition {
   if (MODEL_CAPABILITIES[model]) return MODEL_CAPABILITIES[model];
 
   const resolved = OPENROUTER_PREFIXED[model];
@@ -414,6 +435,31 @@ function resolveHardcoded(model: string): ModelCapabilities {
   return DEFAULT_CAPABILITIES;
 }
 
+function materializeHardcodedCapabilities(
+  definition: ModelCapabilityDefinition,
+): ModelCapabilities {
+  const isFallback = definition === DEFAULT_CAPABILITIES;
+  return {
+    ...definition,
+    modelContextWindow: definition.contextWindow,
+    contextWindowIsEffective: !isFallback,
+    contextWindowSource: isFallback ? "default" : "hardcoded",
+    defaultVisibleOutputTokens:
+      definition.defaultVisibleOutputTokens ??
+      DEFAULT_CAPABILITIES.defaultVisibleOutputTokens,
+    defaultReasoningReservationTokens:
+      definition.defaultReasoningReservationTokens ??
+      DEFAULT_CAPABILITIES.defaultReasoningReservationTokens,
+  };
+}
+
+function dynamicContextSource(
+  source: string | undefined,
+): ModelContextWindowSource {
+  if (source === "runner" || source === "model-parameter") return source;
+  return "dynamic";
+}
+
 /**
  * 動的メタデータとハードコード能力をマージする。
  * supportsThinking/supportsAdaptiveThinking/supportsEffort/supportsMaxEffort は
@@ -424,16 +470,34 @@ function resolveHardcoded(model: string): ModelCapabilities {
 function mergeDynamicCaps(
   dyn: DynamicModelMeta,
   hardcoded: ModelCapabilities,
+  provider: AiProvider,
 ): ModelCapabilities {
-  const supportsReasoning = dyn.reasoning;
+  const supportsReasoning = dyn.reasoning ?? hardcoded.supportsReasoning;
   const inheritNuance = supportsReasoning && hardcoded.supportsReasoning;
+  const hasDynamicEffective = dyn.effectiveCtx !== undefined;
+  const hasDynamicMaximum = dyn.ctx !== undefined;
+  const ollama = provider === "ollama";
+  const contextWindow = dyn.effectiveCtx ?? dyn.ctx ?? hardcoded.contextWindow;
   return {
-    contextWindow: dyn.ctx ?? hardcoded.contextWindow,
+    contextWindow,
+    modelContextWindow: dyn.ctx ?? hardcoded.modelContextWindow,
+    contextWindowIsEffective: ollama
+      ? hasDynamicEffective
+      : hasDynamicEffective ||
+        hasDynamicMaximum ||
+        hardcoded.contextWindowIsEffective,
+    contextWindowSource: hasDynamicEffective
+      ? dynamicContextSource(dyn.effectiveSource)
+      : hasDynamicMaximum
+        ? ollama
+          ? "model-maximum"
+          : "dynamic"
+        : hardcoded.contextWindowSource,
     maxOutputTokens: dyn.out ?? hardcoded.maxOutputTokens,
     defaultVisibleOutputTokens: hardcoded.defaultVisibleOutputTokens,
     defaultReasoningReservationTokens:
       hardcoded.defaultReasoningReservationTokens,
-    supportsTools: dyn.tools,
+    supportsTools: dyn.tools ?? hardcoded.supportsTools,
     supportsThinking: false,
     supportsAdaptiveThinking: false,
     supportsEffort: false,
@@ -453,23 +517,12 @@ function mergeDynamicCaps(
 
 /**
  * モデルの能力情報を取得する。
- * 動的レジストリ（OpenRouter /models から登録）→ ハードコード表 の順で解決する。
- * 未知のモデルはデフォルト値を返す。
+ * provider が不明な呼び出しではハードコード表だけを参照する。
+ * provider-scoped な動的 metadata は resolveModelCapabilities で解決し、
+ * 同名 bare id の provider 間衝突を防ぐ。未知モデルはデフォルト値を返す。
  */
 export function getModelCapabilities(model: string): ModelCapabilities {
-  const hardcoded = resolveHardcoded(model);
-  const withOutputDefaults: ModelCapabilities = {
-    ...hardcoded,
-    defaultVisibleOutputTokens:
-      hardcoded.defaultVisibleOutputTokens ??
-      DEFAULT_CAPABILITIES.defaultVisibleOutputTokens,
-    defaultReasoningReservationTokens:
-      hardcoded.defaultReasoningReservationTokens ??
-      DEFAULT_CAPABILITIES.defaultReasoningReservationTokens,
-  };
-  const dyn = getDynamicModelMeta(model);
-  if (dyn) return mergeDynamicCaps(dyn, withOutputDefaults);
-  return withOutputDefaults;
+  return materializeHardcodedCapabilities(resolveHardcoded(model));
 }
 
 /**
@@ -500,6 +553,91 @@ function resolveCompatCapsSource(settings: {
     | undefined;
 }
 
+function positiveSafeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function resolveConfiguredOllamaContext(
+  settings: { ollamaEndpoint?: unknown; ollamaContextLengths?: unknown },
+  model: string,
+): number | undefined {
+  if (
+    typeof settings.ollamaContextLengths !== "object" ||
+    settings.ollamaContextLengths === null ||
+    Array.isArray(settings.ollamaContextLengths)
+  ) {
+    return undefined;
+  }
+  if (typeof settings.ollamaEndpoint !== "string") return undefined;
+  const contextLengths = settings.ollamaContextLengths as Record<
+    string,
+    unknown
+  >;
+  for (const scopedKey of ollamaContextLengthSettingKeys(
+    settings.ollamaEndpoint,
+    model,
+  )) {
+    const configured = positiveSafeInteger(contextLengths[scopedKey]);
+    if (configured !== undefined) return configured;
+  }
+  return undefined;
+}
+
+function resolveOllamaCapabilities(
+  hardcoded: ModelCapabilities,
+  dynamic: DynamicModelMeta | null,
+  settings: { ollamaEndpoint?: unknown; ollamaContextLengths?: unknown },
+  model: string,
+): ModelCapabilities {
+  const merged = dynamic
+    ? mergeDynamicCaps(dynamic, hardcoded, "ollama")
+    : hardcoded;
+  // For Ollama, only `/api/show` is authoritative for the installed artifact.
+  // A curated family value can describe a similarly named cloud/base model but
+  // must not clamp a local fork or quantization's explicit num_ctx setting.
+  const knownModelMaximum = dynamic?.ctx;
+  const dynamicEffective = positiveSafeInteger(dynamic?.effectiveCtx);
+  const configuredEffective = resolveConfiguredOllamaContext(settings, model);
+  const selectedEffective = dynamicEffective ?? configuredEffective;
+
+  if (selectedEffective !== undefined) {
+    const contextWindow =
+      knownModelMaximum === undefined
+        ? selectedEffective
+        : Math.min(selectedEffective, knownModelMaximum);
+    return {
+      ...merged,
+      contextWindow,
+      // Zero means `/api/show` did not establish a model maximum. Do not
+      // relabel a user/runner effective allocation as the model's own limit.
+      modelContextWindow: knownModelMaximum ?? 0,
+      contextWindowIsEffective: true,
+      contextWindowSource:
+        dynamicEffective !== undefined
+          ? dynamicContextSource(dynamic?.effectiveSource)
+          : "ollama-settings",
+    };
+  }
+
+  if (knownModelMaximum !== undefined) {
+    return {
+      ...merged,
+      contextWindow: knownModelMaximum,
+      modelContextWindow: knownModelMaximum,
+      contextWindowIsEffective: false,
+      contextWindowSource: "model-maximum",
+    };
+  }
+
+  return {
+    ...merged,
+    contextWindowIsEffective: false,
+    contextWindowSource: "default",
+  };
+}
+
 /**
  * AiSettings を考慮してモデルの能力を解決する。
  * 第二引数を Optional にしているのは、AiSettings が不明な呼び出し場所
@@ -513,17 +651,40 @@ export function resolveModelCapabilities(
     openaiCompatibleEndpoints?: unknown;
     activeOpenaiCompatibleEndpointId?: string | null;
     aiNovelist?: unknown;
+    ollamaEndpoint?: unknown;
+    ollamaContextLengths?: unknown;
   } | null,
   apiVariant?: string | null,
 ): ModelCapabilities {
-  const base = getModelCapabilities(model);
+  const hardcoded = getModelCapabilities(model);
+  const provider = settings?.provider as AiProvider | undefined;
+  const dynamic = provider
+    ? getDynamicModelMeta(
+        provider,
+        model,
+        provider === "ollama" && typeof settings?.ollamaEndpoint === "string"
+          ? settings.ollamaEndpoint
+          : undefined,
+      )
+    : null;
+  const base =
+    provider && dynamic
+      ? mergeDynamicCaps(dynamic, hardcoded, provider)
+      : hardcoded;
   if (!settings) return base;
+
+  if (settings.provider === "ollama") {
+    return resolveOllamaCapabilities(hardcoded, dynamic, settings, model);
+  }
 
   // CLI プロバイダ: モデル能力は CLI 側に委譲。コンテキスト窓は 200k と仮定。
   if (settings.provider === "cli") {
     return {
       ...base,
       contextWindow: 200_000,
+      modelContextWindow: 200_000,
+      contextWindowIsEffective: true,
+      contextWindowSource: "hardcoded",
       supportsTools: false,
       supportsThinking: false,
       supportsAdaptiveThinking: false,
@@ -538,6 +699,9 @@ export function resolveModelCapabilities(
       return {
         ...base,
         contextWindow: v1.contextWindow,
+        modelContextWindow: v1.contextWindow,
+        contextWindowIsEffective: true,
+        contextWindowSource: "hardcoded",
         maxOutputTokens: v1.maxOutputTokens,
         supportsTools: true,
         supportsThinking: false,
@@ -552,6 +716,9 @@ export function resolveModelCapabilities(
       return {
         ...base,
         contextWindow: aino.contextWindow,
+        modelContextWindow: aino.contextWindow,
+        contextWindowIsEffective: true,
+        contextWindowSource: "hardcoded",
         maxOutputTokens: aino.maxOutputTokens,
         supportsTools: false,
         supportsThinking: false,
@@ -598,6 +765,9 @@ export function resolveModelCapabilities(
     return {
       ...base,
       contextWindow: 1_000_000,
+      modelContextWindow: 1_000_000,
+      contextWindowIsEffective: true,
+      contextWindowSource: "hardcoded",
       maxOutputTokens: 32_000,
       defaultVisibleOutputTokens: 32_000,
       supportsTools: true,
@@ -614,9 +784,15 @@ export function resolveModelCapabilities(
   // カスタム OpenAI 互換: active（または先頭）エンドポイントの customMax* を反映。
   // 複数エンドポイント未設定時は legacy 単一設定にフォールバック。
   const oc = resolveCompatCapsSource(settings);
+  const customMaxContext = positiveSafeInteger(oc?.customMaxContext);
   return {
     ...base,
-    contextWindow: oc?.customMaxContext ?? base.contextWindow,
+    contextWindow: customMaxContext ?? base.contextWindow,
+    modelContextWindow: customMaxContext ?? base.modelContextWindow,
+    contextWindowIsEffective:
+      customMaxContext !== undefined || base.contextWindowIsEffective,
+    contextWindowSource:
+      customMaxContext !== undefined ? "hardcoded" : base.contextWindowSource,
     maxOutputTokens: oc?.customMaxOutput ?? base.maxOutputTokens,
     supportsThinking: false,
     supportsAdaptiveThinking: false,
@@ -627,9 +803,13 @@ export function resolveModelCapabilities(
 }
 
 /** ツール結果のトークン予算 = コンテキスト上限の30%（最低2,000） */
+export function getToolTokenBudgetForContext(contextWindow: number): number {
+  return Math.max(2_000, Math.floor(contextWindow * 0.3));
+}
+
 export function getToolTokenBudget(model: string): number {
   const { contextWindow } = getModelCapabilities(model);
-  return Math.max(2_000, Math.floor(contextWindow * 0.3));
+  return getToolTokenBudgetForContext(contextWindow);
 }
 
 /**
@@ -642,12 +822,18 @@ export function getToolTokenBudget(model: string): number {
  * 文脈溢れ・コスト爆発を避ける。さらに大規模タスクは run_research サブエージェント
  * （独立予算・要約のみ返す）と「続行」アフォーダンスで伸ばす設計。
  */
-export function getAgentToolCallBudget(model: string): number {
-  const { contextWindow } = getModelCapabilities(model);
+export function getAgentToolCallBudgetForContext(
+  contextWindow: number,
+): number {
   if (contextWindow >= 400_000) return 25;
   if (contextWindow >= 200_000) return 16;
   if (contextWindow >= 64_000) return 12;
   return 10;
+}
+
+export function getAgentToolCallBudget(model: string): number {
+  const { contextWindow } = getModelCapabilities(model);
+  return getAgentToolCallBudgetForContext(contextWindow);
 }
 
 /** Tool Use 対応モデルの判定 */
@@ -719,7 +905,11 @@ export function buildThinkingParams(
   settings?: {
     provider?: string;
     openaiCompatible?: unknown;
+    openaiCompatibleEndpoints?: unknown;
+    activeOpenaiCompatibleEndpointId?: string | null;
     aiNovelist?: unknown;
+    ollamaEndpoint?: unknown;
+    ollamaContextLengths?: unknown;
   } | null,
   apiVariant?: string | null,
   effortOverride?: "low" | "medium" | "high",

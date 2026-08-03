@@ -11,13 +11,19 @@
 
 use serde_json::Value;
 
-use super::Database;
+use super::{
+    idempotency::{load_row, payload_fingerprint, run_atomic_create, IdempotencyRequest},
+    Database,
+};
 
 /// `trash_bin_create` の引数 (FE は camelCase で送る — Tauri の引数
 /// deserialize と napi 側 `from_wire` の両方が serde の rename_all で受ける)。
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrashBinCreatePayload {
+    /// Domain-owned idempotency key supplied by the renderer.
+    #[serde(default)]
+    id: Option<String>,
     project_id: String,
     kind: String,
     sub_kind: String,
@@ -28,53 +34,165 @@ pub struct TrashBinCreatePayload {
     payload: String,
     char_count: i64,
     is_interesting: bool,
-    deleted_at: String,
+    /// Omitted means "assign once in the native transaction". Keeping omission
+    /// in the fingerprint makes a retry stable without requiring renderer to
+    /// remember the first wall-clock value.
+    deleted_at: Option<String>,
+}
+
+fn semantic_json(raw: &str) -> Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
 }
 
 /// INSERT して作成行 (`SELECT *` の JSON object — 列名は snake_case のまま)
 /// を返す。
 pub fn create(db: &Database, payload: TrashBinCreatePayload) -> anyhow::Result<Value> {
-    let id = uuid::Uuid::new_v4().to_string();
-    db.execute(
-        "INSERT INTO trash_items
-         (id, project_id, kind, sub_kind, origin_scene_id, origin_codex_id,
-          preview_text, preview_meta, payload, char_count, is_interesting, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &[
-            Value::String(id.clone()),
-            Value::String(payload.project_id),
-            Value::String(payload.kind),
-            Value::String(payload.sub_kind),
-            payload
-                .origin_scene_id
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-            payload
-                .origin_codex_id
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-            Value::String(payload.preview_text),
-            payload
-                .preview_meta
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-            Value::String(payload.payload),
-            Value::Number(payload.char_count.into()),
-            Value::Bool(payload.is_interesting),
-            Value::String(payload.deleted_at),
-        ],
-        "run",
-    )?;
-    let rows = db.execute(
-        "SELECT * FROM trash_items WHERE id = ?",
-        &[Value::String(id)],
-        "get",
-    )?;
-    Ok(rows
-        .first()
-        .cloned()
-        .map(Value::Object)
-        .unwrap_or(Value::Null))
+    let fingerprint_payload = serde_json::json!({
+        "projectId": payload.project_id,
+        "kind": payload.kind,
+        "subKind": payload.sub_kind,
+        "originSceneId": payload.origin_scene_id,
+        "originCodexId": payload.origin_codex_id,
+        "previewText": payload.preview_text,
+        "previewMeta": payload.preview_meta.as_deref().map(semantic_json),
+        "payload": semantic_json(&payload.payload),
+        "charCount": payload.char_count,
+        "isInteresting": payload.is_interesting,
+        "deletedAt": payload.deleted_at,
+    });
+    let payload_hash = payload_fingerprint("trash_bin_create", &fingerprint_payload)?;
+    let has_request_id = payload.id.is_some();
+    let id = payload
+        .id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let project_id = payload.project_id;
+    let kind = payload.kind;
+    let sub_kind = payload.sub_kind;
+    let origin_scene_id = payload.origin_scene_id;
+    let origin_codex_id = payload.origin_codex_id;
+    let preview_text = payload.preview_text;
+    let preview_meta = payload.preview_meta;
+    let item_payload = payload.payload;
+    let char_count = payload.char_count;
+    let is_interesting = payload.is_interesting;
+    let deleted_at = payload
+        .deleted_at
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    run_atomic_create(
+        db,
+        IdempotencyRequest {
+            domain: "trash_bin_create",
+            request_id: has_request_id.then_some(id.as_str()),
+            payload_hash: &payload_hash,
+            conflict_marker: "TRASH_BIN_CREATE_IDEMPOTENCY_CONFLICT",
+        },
+        |conn| {
+            Database::execute_with_conn(
+                conn,
+                "INSERT INTO trash_items
+                 (id, project_id, kind, sub_kind, origin_scene_id, origin_codex_id,
+                  preview_text, preview_meta, payload, char_count, is_interesting, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &[
+                    Value::String(id.clone()),
+                    Value::String(project_id.clone()),
+                    Value::String(kind.clone()),
+                    Value::String(sub_kind.clone()),
+                    origin_scene_id
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                    origin_codex_id
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                    Value::String(preview_text.clone()),
+                    preview_meta
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                    Value::String(item_payload.clone()),
+                    Value::Number(char_count.into()),
+                    Value::Bool(is_interesting),
+                    Value::String(deleted_at.clone()),
+                ],
+                "run",
+            )
+            .or_else(|error| {
+                let existing = Database::execute_with_conn(
+                    conn,
+                    "SELECT * FROM trash_items WHERE id = ?",
+                    &[Value::String(id.clone())],
+                    "get",
+                )?;
+                let Some(row) = existing.first() else {
+                    return Err(error);
+                };
+                let stored_interesting = row.get("is_interesting").and_then(|value| {
+                    value
+                        .as_bool()
+                        .or_else(|| value.as_i64().map(|number| number != 0))
+                });
+                let stored_preview_meta = row
+                    .get("preview_meta")
+                    .and_then(Value::as_str)
+                    .map(semantic_json);
+                let stored_payload = row
+                    .get("payload")
+                    .and_then(Value::as_str)
+                    .map(semantic_json);
+                let matches = row.get("project_id").and_then(Value::as_str)
+                    == Some(project_id.as_str())
+                    && row.get("kind").and_then(Value::as_str) == Some(kind.as_str())
+                    && row.get("sub_kind").and_then(Value::as_str)
+                        == Some(sub_kind.as_str())
+                    && row.get("origin_scene_id")
+                        == Some(
+                            &origin_scene_id
+                                .clone()
+                                .map(Value::String)
+                                .unwrap_or(Value::Null),
+                        )
+                    && row.get("origin_codex_id")
+                        == Some(
+                            &origin_codex_id
+                                .clone()
+                                .map(Value::String)
+                                .unwrap_or(Value::Null),
+                        )
+                    && row.get("preview_text").and_then(Value::as_str)
+                        == Some(preview_text.as_str())
+                    && stored_preview_meta
+                        == preview_meta.as_deref().map(semantic_json)
+                    && stored_payload == Some(semantic_json(&item_payload))
+                    && row.get("char_count").and_then(Value::as_i64) == Some(char_count)
+                    && stored_interesting == Some(is_interesting)
+                    && row.get("deleted_at").and_then(Value::as_str)
+                        == Some(deleted_at.as_str());
+                if matches {
+                    Ok(Vec::new())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "TRASH_BIN_CREATE_IDEMPOTENCY_CONFLICT: request id reused with different payload"
+                    ))
+                }
+            })?;
+            let rows = Database::execute_with_conn(
+                conn,
+                "SELECT * FROM trash_items WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?;
+            let row = rows
+                .first()
+                .cloned()
+                .map(Value::Object)
+                .ok_or_else(|| anyhow::anyhow!("trash create completed without a persisted row"))?;
+            Ok((project_id.clone(), row))
+        },
+        |conn| load_row(conn, "trash_items", &id),
+    )
+    .map(|outcome| outcome.into_wire_value())
 }
 
 /// project の trash item を deleted_at 降順で返す (既定 50 件)。
@@ -174,6 +292,7 @@ mod tests {
 
     fn payload(preview: &str, deleted_at: &str) -> TrashBinCreatePayload {
         TrashBinCreatePayload {
+            id: None,
             project_id: PROJECT.to_string(),
             kind: "text-fragment".to_string(),
             sub_kind: "text-fragment".to_string(),
@@ -184,15 +303,18 @@ mod tests {
             payload: "{\"text\":\"…\"}".to_string(),
             char_count: preview.chars().count() as i64,
             is_interesting: false,
-            deleted_at: deleted_at.to_string(),
+            deleted_at: Some(deleted_at.to_string()),
         }
     }
 
     #[test]
     fn create_list_delete_roundtrip() {
         let db = test_db();
-        let created = create(&db, payload("消した文字屑（日本語）", "2026-07-10T00:00:00Z"))
-            .expect("create");
+        let created = create(
+            &db,
+            payload("消した文字屑（日本語）", "2026-07-10T00:00:00Z"),
+        )
+        .expect("create");
         assert_eq!(
             created["preview_text"].as_str(),
             Some("消した文字屑（日本語）"),
@@ -208,6 +330,101 @@ mod tests {
         assert!(list(&db, PROJECT.to_string(), None)
             .expect("list after delete")
             .is_empty());
+    }
+
+    #[test]
+    fn create_is_idempotent_by_client_id_and_conflicts_on_payload_change() {
+        let db = test_db();
+        let mut request = payload("SECRET_TRASH_MANUSCRIPT_SENTINEL", "2026-07-10T00:00:00Z");
+        request.id = Some("trash-request-1".to_string());
+        let first = create(&db, request.clone()).expect("first create");
+        let ledger = db
+            .execute(
+                "SELECT tombstone_json FROM idempotency_requests
+                  WHERE domain = 'trash_bin_create'
+                    AND request_id = 'trash-request-1'",
+                &[],
+                "get",
+            )
+            .expect("read ledger");
+        assert!(!ledger[0]["tombstone_json"]
+            .as_str()
+            .expect("tombstone")
+            .contains("SECRET_TRASH_MANUSCRIPT_SENTINEL"));
+        let retry = create(&db, request.clone()).expect("exact retry");
+        assert_eq!(retry["id"], first["id"]);
+        assert_eq!(first["__idempotency"]["replayed"], Value::Bool(false));
+        assert_eq!(retry["__idempotency"]["replayed"], Value::Bool(true));
+        assert_eq!(retry["__idempotency"]["entityPresent"], Value::Bool(true));
+
+        prune(&db, PROJECT.to_string(), 1, 0).expect("prune created entity");
+        let deleted_retry = create(&db, request.clone()).expect("retry after prune");
+        assert_eq!(deleted_retry["id"], first["id"]);
+        assert_eq!(
+            deleted_retry["__idempotency"]["entityPresent"],
+            Value::Bool(false)
+        );
+
+        let mut conflicting = request;
+        conflicting.preview_text = "別の文字屑".to_string();
+        let error = create(&db, conflicting).expect_err("payload conflict");
+        assert!(error
+            .to_string()
+            .contains("TRASH_BIN_CREATE_IDEMPOTENCY_CONFLICT"));
+        assert!(list(&db, PROJECT.to_string(), None)
+            .expect("list")
+            .is_empty());
+    }
+
+    #[test]
+    fn omitted_deleted_at_is_assigned_once_and_survives_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-trash-idempotency-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let mut request = payload("再送", "unused");
+        request.id = Some("trash-reopen-request".to_string());
+        request.deleted_at = None;
+
+        let first = {
+            let db = Database::new(&path).expect("open database");
+            db.migrate().expect("migrate");
+            create(&db, request.clone()).expect("first create")
+        };
+        let retry = {
+            let db = Database::new(&path).expect("reopen database");
+            db.migrate().expect("migrate after reopen");
+            create(&db, request).expect("retry after reopen")
+        };
+        assert_eq!(retry["deleted_at"], first["deleted_at"]);
+        assert_eq!(retry["__idempotency"]["replayed"], Value::Bool(true));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn json_string_key_order_is_semantic_but_explicit_deleted_at_is_not() {
+        let db = test_db();
+        let mut first = payload("json", "2026-07-10T00:00:00Z");
+        first.id = Some("trash-json-request".to_string());
+        first.preview_meta = Some(r#"{"b":2,"a":{"y":2,"x":1}}"#.to_string());
+        first.payload = r#"{"text":"same","meta":{"b":2,"a":1}}"#.to_string();
+        create(&db, first.clone()).expect("first create");
+
+        let mut reordered = first.clone();
+        reordered.preview_meta = Some(r#"{"a":{"x":1,"y":2},"b":2}"#.to_string());
+        reordered.payload = r#"{"meta":{"a":1,"b":2},"text":"same"}"#.to_string();
+        let replay = create(&db, reordered).expect("semantic JSON retry");
+        assert_eq!(replay["__idempotency"]["replayed"], Value::Bool(true));
+
+        let mut changed_time = first;
+        changed_time.deleted_at = Some("2026-07-11T00:00:00Z".to_string());
+        let error = create(&db, changed_time).expect_err("timestamp conflict");
+        assert!(error
+            .to_string()
+            .contains("TRASH_BIN_CREATE_IDEMPOTENCY_CONFLICT"));
     }
 
     #[test]

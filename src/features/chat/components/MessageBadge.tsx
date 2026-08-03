@@ -11,6 +11,8 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 interface MessageBadgeProps {
@@ -116,7 +118,14 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
       });
       if (!cancelled) setData(data);
     }
-    void load();
+    void load().catch((error: unknown) => {
+      if (cancelled || isIpcLifecycleCancellation(error)) return;
+      debugLog.error(
+        "MessageBadge",
+        "failed to load linked Codex/Snippet entries",
+        errorDetail(error),
+      );
+    });
     return () => {
       cancelled = true;
     };

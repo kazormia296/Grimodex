@@ -1,5 +1,10 @@
 import { create } from "zustand";
 import { isVersionConflictError } from "@/lib/versionConflict";
+import type { DocumentKey } from "@/features/editor/document/documentKey";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
+import { isChatNavigationBlocked } from "@/lib/chatNavigationGuard";
 
 type AsyncFn = () => Promise<void>;
 
@@ -18,13 +23,115 @@ export type HistoryKind =
 export interface HistoryCommand {
   kind: HistoryKind;
   label: string;
+  /**
+   * Stable backend operation identity. Retrying an idempotent write returns
+   * the original undo journal id; keep that replay from adding the same
+   * command to history twice.
+   */
+  operationId?: string;
+  /**
+   * Stable operation identities represented by a compound command.
+   * `runAsTransaction` derives this from its collected commands.
+   */
+  operationIds?: readonly string[];
   /** Entity id for per-entry invalidation on external writes. */
   entityId?: string;
+  /**
+   * Every entity owned by a composite command. An external write to any one of
+   * these targets invalidates the whole command rather than leaving a replay
+   * closure whose mixed OCC snapshot is already stale.
+   */
+  affectedEntities?: readonly {
+    kind: HistoryKind;
+    entityId: string;
+  }[];
+  /** Exact editor document affected by the command, when one exists. */
+  documentKey?: DocumentKey;
+  /**
+   * Keep this command on its source stack when replay hits a version conflict.
+   * Phase replay uses this so a failed CAS is visible and does not silently
+   * consume the user's undo/redo entry.
+   */
+  retainOnVersionConflict?: boolean;
   undo: AsyncFn;
   redo: AsyncFn;
 }
 
 const MAX_HISTORY = 50;
+const MAX_SEEN_OPERATION_IDS = 4096;
+/**
+ * Session/project-scoped replay registry. Project lifecycle calls `clear()`,
+ * which resets this alongside both stacks. IDs deliberately survive normal
+ * stack eviction and per-entity invalidation.
+ */
+const seenOperationIds = new Set<string>();
+const pendingHistoryReplays = new Set<Promise<void>>();
+
+function commandOperationIds(command: HistoryCommand): string[] {
+  return [
+    ...(command.operationId ? [command.operationId] : []),
+    ...(command.operationIds ?? []),
+  ].filter((id, index, ids) => id.length > 0 && ids.indexOf(id) === index);
+}
+
+function rememberOperationIds(ids: readonly string[]): void {
+  for (const id of ids) {
+    seenOperationIds.add(id);
+  }
+  while (seenOperationIds.size > MAX_SEEN_OPERATION_IDS) {
+    const oldest = seenOperationIds.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    seenOperationIds.delete(oldest);
+  }
+}
+
+function removeCommandByIdentity(
+  stack: HistoryCommand[],
+  command: HistoryCommand,
+  findFromEnd: boolean,
+): HistoryCommand[] | null {
+  const index = findFromEnd
+    ? stack.lastIndexOf(command)
+    : stack.indexOf(command);
+  if (index < 0) return null;
+  return [...stack.slice(0, index), ...stack.slice(index + 1)];
+}
+
+async function runTrackedHistoryReplay(replay: AsyncFn): Promise<void> {
+  let pending: Promise<void>;
+  try {
+    // Invoke synchronously so a lifecycle boundary cannot appear between the
+    // scheduling gate and registration of the resulting persistence task.
+    pending = Promise.resolve(replay());
+  } catch (error) {
+    pending = Promise.reject(error);
+  }
+  pendingHistoryReplays.add(pending);
+  try {
+    await pending;
+  } finally {
+    pendingHistoryReplays.delete(pending);
+  }
+}
+
+async function awaitPendingHistoryReplays(): Promise<void> {
+  const failures: unknown[] = [];
+  while (pendingHistoryReplays.size > 0) {
+    const results = await Promise.allSettled([...pendingHistoryReplays]);
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "One or more history replays failed");
+  }
+}
+
+registerQuiescenceProvider({
+  id: "global-history-replays",
+  stage: "scoped-mutations",
+  flush: awaitPendingHistoryReplays,
+});
 
 /**
  * Conflict surfacer registered by the concurrency layer (externalWriteFeed).
@@ -33,8 +140,10 @@ const MAX_HISTORY = 50;
  * (treeStore's createStore calls getCurrentProjectId(), which reads
  * useProjectStore before it is initialized → TDZ ReferenceError). Dependency
  * injection via registration keeps globalHistoryStore free of feature-store
- * imports. When no handler is registered, conflict surfacing is a no-op (the
- * failed entry is still dropped from history by undo/redo).
+ * imports. When no handler is registered, conflict surfacing is a no-op.
+ * Commands opt into retaining their source-stack entry with
+ * `retainOnVersionConflict`; other commands keep the legacy drop-on-conflict
+ * behavior.
  */
 let undoConflictHandler: ((cmd: HistoryCommand) => void) | null = null;
 
@@ -64,20 +173,13 @@ export function setHistoryReplayGuard(guard: (() => boolean) | null): void {
 }
 
 /**
- * Active batch frame for {@link HistoryState.runAsTransaction}. When set, `push`
- * appends into `entries` instead of committing to `past`, so that one user
- * action made of several store mutations (e.g. dragging a plot marker that
- * moves the marker AND re-anchors a branch edge) collapses into a SINGLE undo
- * entry. Kept module-level (not in zustand state) so it never triggers a
- * re-render and so reentrancy is cheap to detect. Not concurrency-safe across
- * truly parallel transactions — UI commit handlers run sequentially, which is
- * the only caller.
+ * Explicit sink for one compound user operation. Feature mutations receive
+ * this object as an argument; ambient global state is deliberately forbidden
+ * because an `await` yields to unrelated UI events.
  */
-interface BatchFrame {
-  meta: { kind: HistoryKind; label: string; entityId?: string };
-  entries: HistoryCommand[];
+export interface HistoryCollector {
+  push: (cmd: HistoryCommand) => void;
 }
-let activeBatch: BatchFrame | null = null;
 
 interface HistoryState {
   past: HistoryCommand[];
@@ -110,7 +212,7 @@ interface HistoryState {
        */
       shouldCommit?: () => boolean;
     },
-    fn: () => Promise<void>,
+    fn: (collector: HistoryCollector) => Promise<void>,
   ) => Promise<void>;
 }
 
@@ -127,12 +229,19 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     // should still guard themselves to skip building closures on the no-op
     // path (defense in depth).
     if (get().isReplaying) return;
-    // Inside a transaction, divert into the batch frame instead of committing
-    // so the whole user action becomes one undo entry (see runAsTransaction).
-    if (activeBatch) {
-      activeBatch.entries.push(cmd);
+    const operationIds = commandOperationIds(cmd);
+    if (
+      operationIds.some(
+        (id) =>
+          seenOperationIds.has(id) ||
+          [...get().past, ...get().future].some((entry) =>
+            commandOperationIds(entry).includes(id),
+          ),
+      )
+    ) {
       return;
     }
+    rememberOperationIds(operationIds);
     set((state) => {
       const past = [...state.past, cmd].slice(-MAX_HISTORY);
       return { past, future: [], canUndo: true, canRedo: false };
@@ -142,17 +251,29 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   async undo() {
     const { past, isReplaying } = get();
     if (past.length === 0 || isReplaying) return;
-    // Veto while an inline-AI diff is pending (would destroy un-accepted text).
-    if (replayGuard?.()) return;
+    // Project / Workspace replacement and window close own a destructive
+    // lifecycle lease. Refuse before touching either stack so a shortcut
+    // cannot create a post-quiescence DB write or consume a no-op command.
+    if (!canScheduleQuiescenceMutation()) return;
+    // Tree history can replace the active Scene as part of create/delete
+    // replay. Keep the source stack intact while either editor or Chat owns
+    // authority that must not be navigated away from.
+    if (replayGuard?.() || isChatNavigationBlocked()) return;
     const cmd = past[past.length - 1];
     set({ isReplaying: true });
     let versionConflict = false;
+    let unknownOutcome = false;
     try {
-      await cmd.undo();
+      await runTrackedHistoryReplay(cmd.undo);
     } catch (err) {
       if (isVersionConflictError(err)) {
         versionConflict = true;
         surfaceUndoConflict(cmd);
+      } else if (isUnknownIpcOutcomeError(err)) {
+        // The native write may already have committed. Keep the exact command
+        // closure reachable so the user can retry with its retained requestId.
+        unknownOutcome = true;
+        throw err;
       } else {
         get().clear();
         throw err;
@@ -160,8 +281,22 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     } finally {
       set((state) => {
         if (state.isReplaying === false) return state;
+        if (unknownOutcome) {
+          return { ...state, isReplaying: false };
+        }
         if (versionConflict) {
-          const newPast = state.past.slice(0, -1);
+          if (cmd.retainOnVersionConflict) {
+            return { ...state, isReplaying: false };
+          }
+          const newPast = removeCommandByIdentity(state.past, cmd, true);
+          if (newPast === null) {
+            return {
+              ...state,
+              canUndo: state.past.length > 0,
+              canRedo: state.future.length > 0,
+              isReplaying: false,
+            };
+          }
           return {
             past: newPast,
             future: state.future,
@@ -170,7 +305,15 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
             isReplaying: false,
           };
         }
-        const newPast = state.past.slice(0, -1);
+        const newPast = removeCommandByIdentity(state.past, cmd, true);
+        if (newPast === null) {
+          return {
+            ...state,
+            canUndo: state.past.length > 0,
+            canRedo: state.future.length > 0,
+            isReplaying: false,
+          };
+        }
         const newFuture = [cmd, ...state.future];
         return {
           past: newPast,
@@ -186,17 +329,24 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   async redo() {
     const { future, isReplaying } = get();
     if (future.length === 0 || isReplaying) return;
-    // Veto while an inline-AI diff is pending (would destroy un-accepted text).
-    if (replayGuard?.()) return;
+    if (!canScheduleQuiescenceMutation()) return;
+    // See undo: both guards must run before consuming the future entry.
+    if (replayGuard?.() || isChatNavigationBlocked()) return;
     const cmd = future[0];
     set({ isReplaying: true });
     let versionConflict = false;
+    let unknownOutcome = false;
     try {
-      await cmd.redo();
+      await runTrackedHistoryReplay(cmd.redo);
     } catch (err) {
       if (isVersionConflictError(err)) {
         versionConflict = true;
         surfaceUndoConflict(cmd);
+      } else if (isUnknownIpcOutcomeError(err)) {
+        // See undo: preserving the source stack preserves the idempotency
+        // request identity captured by this history command.
+        unknownOutcome = true;
+        throw err;
       } else {
         get().clear();
         throw err;
@@ -204,8 +354,22 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     } finally {
       set((state) => {
         if (state.isReplaying === false) return state;
+        if (unknownOutcome) {
+          return { ...state, isReplaying: false };
+        }
         if (versionConflict) {
-          const newFuture = state.future.slice(1);
+          if (cmd.retainOnVersionConflict) {
+            return { ...state, isReplaying: false };
+          }
+          const newFuture = removeCommandByIdentity(state.future, cmd, false);
+          if (newFuture === null) {
+            return {
+              ...state,
+              canUndo: state.past.length > 0,
+              canRedo: state.future.length > 0,
+              isReplaying: false,
+            };
+          }
           return {
             past: state.past,
             future: newFuture,
@@ -214,7 +378,15 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
             isReplaying: false,
           };
         }
-        const newFuture = state.future.slice(1);
+        const newFuture = removeCommandByIdentity(state.future, cmd, false);
+        if (newFuture === null) {
+          return {
+            ...state,
+            canUndo: state.past.length > 0,
+            canRedo: state.future.length > 0,
+            isReplaying: false,
+          };
+        }
         const newPast = [...state.past, cmd];
         return {
           past: newPast,
@@ -228,6 +400,7 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   },
 
   clear() {
+    seenOperationIds.clear();
     set({
       past: [],
       future: [],
@@ -240,7 +413,11 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   invalidateForEntity(kind, entityId) {
     set((state) => {
       const matches = (c: HistoryCommand) =>
-        c.kind === kind && c.entityId === entityId;
+        (c.kind === kind && c.entityId === entityId) ||
+        c.affectedEntities?.some(
+          (affected) =>
+            affected.kind === kind && affected.entityId === entityId,
+        ) === true;
       const past = state.past.filter((c) => !matches(c));
       const future = state.future.filter((c) => !matches(c));
       return {
@@ -253,21 +430,36 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   },
 
   async runAsTransaction(meta, fn) {
-    // During replay or inside another transaction, just run inline: replay
-    // must not record, and a nested transaction's pushes belong to the outer
-    // frame (flatten). The reentrancy guard keeps the single batch frame valid.
-    if (get().isReplaying || activeBatch) {
-      await fn();
+    // Replay must never create history. Pass a no-op collector so feature
+    // mutations can keep the same explicit call shape.
+    if (get().isReplaying) {
+      await fn({ push: () => {} });
       return;
     }
-    const frame: BatchFrame = { meta, entries: [] };
-    activeBatch = frame;
-    try {
-      await fn();
-    } finally {
-      activeBatch = null;
-    }
-    const entries = frame.entries;
+    // A new compound UI operation is subject to the same lifecycle barrier as
+    // a direct undo/redo. Existing replay is allowed above so strict
+    // quiescence can wait for and finish work that began before acquisition.
+    if (!canScheduleQuiescenceMutation()) return;
+    const entries: HistoryCommand[] = [];
+    const collectedOperationIds = new Set<string>();
+    const collector: HistoryCollector = {
+      push: (command) => {
+        const operationIds = commandOperationIds(command);
+        if (
+          operationIds.some(
+            (id) => seenOperationIds.has(id) || collectedOperationIds.has(id),
+          )
+        ) {
+          return;
+        }
+        entries.push(command);
+        for (const id of operationIds) collectedOperationIds.add(id);
+      },
+    };
+    // A rejected callback commits no composite entry. Already-persisted
+    // feature mutations remain an operation-level atomicity concern, but they
+    // cannot contaminate unrelated history.
+    await fn(collector);
     if (entries.length === 0) return;
     // 完了ガード: 例えば await 中にプロジェクトが切り替わった場合、旧プロジェクトの
     // 行を参照するクロージャを新プロジェクトの履歴へ commit しない（XPROJ 汚染防止）。
@@ -275,6 +467,9 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     get().push({
       kind: meta.kind,
       label: meta.label,
+      ...(collectedOperationIds.size > 0
+        ? { operationIds: [...collectedOperationIds] }
+        : {}),
       entityId: meta.entityId,
       async undo() {
         for (let i = entries.length - 1; i >= 0; i--) {

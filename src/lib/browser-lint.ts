@@ -62,6 +62,7 @@ interface DisableDirective {
 interface LintResponse {
   diagnostics: Diagnostic[];
   warnings: RuleWarning[];
+  incremental_scope: "block" | "nextBlock" | "scene";
   computed_at: number;
 }
 
@@ -308,6 +309,8 @@ export function lintTextBrowser(args: {
   return {
     diagnostics: filtered,
     warnings,
+    // The browser preview currently implements only block-local rules.
+    incremental_scope: "block",
     computed_at: Date.now(),
   };
 }

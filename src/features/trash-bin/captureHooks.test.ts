@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   captureCodexDeletion,
+  captureForeshadowDeletion,
   captureSceneDeletion,
   captureSnippetDeletion,
 } from "./captureHooks";
@@ -8,7 +9,13 @@ import { useTrashBinStore } from "./trashBinStore";
 import type { CodexEntry } from "@/features/codex/api";
 import type { Snippet } from "@/features/snippets/api";
 import type { TreeNode } from "@/features/tree/api";
-import type { CodexEntryPayload, ScenePayload, SnippetPayload } from "./types";
+import type { ForeshadowRow } from "@/features/foreshadow/types";
+import type {
+  CodexEntryPayload,
+  ForeshadowPayload,
+  ScenePayload,
+  SnippetPayload,
+} from "./types";
 
 const enqueueSpy = vi.fn();
 
@@ -235,6 +242,47 @@ describe("captureSnippetDeletion", () => {
     expect(payload.body).toContain("snippet 本文");
     expect(payload.tags).toBe('[{"name":"foo","color":"#f00"}]');
     expect(options.tempId).toBe("tmp-sn");
+  });
+});
+
+describe("captureForeshadowDeletion", () => {
+  it("restorable state axes and dirty timestamp are kept in the durable snapshot", () => {
+    const foreshadow: ForeshadowRow = {
+      id: "f1",
+      projectId: "p",
+      title: "伏線",
+      intent: "意図",
+      notes: "メモ",
+      payoffSceneId: "scene-1",
+      payoffFromPos: 2,
+      payoffToPos: 8,
+      payoffConfirmed: true,
+      abandoned: true,
+      secret: false,
+      loadBearing: "critical",
+      codexLinkDirtyAt: new Date(1_784_000_000_000),
+      createdAt: new Date(1_783_000_000_000),
+      updatedAt: new Date(1_783_000_000_001),
+    };
+
+    captureForeshadowDeletion({
+      projectId: "p",
+      foreshadow,
+      tempId: "tmp-foreshadow",
+    });
+
+    const [input] = enqueueSpy.mock.calls[0];
+    const payload = input.payload as ForeshadowPayload;
+    expect(payload).toMatchObject({
+      originalId: "f1",
+      payoffSceneRef: "scene-1",
+      payoffFromPos: 2,
+      payoffToPos: 8,
+      payoffConfirmed: true,
+      abandoned: true,
+      secret: false,
+      codexLinkDirtyAt: 1_784_000_000_000,
+    });
   });
 });
 

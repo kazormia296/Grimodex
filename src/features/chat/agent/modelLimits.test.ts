@@ -4,9 +4,11 @@ import {
   clampReasoningEffort,
   formatContextWindow,
   getAgentToolCallBudget,
+  getAgentToolCallBudgetForContext,
   getEffortForTask,
   getModelCapabilities,
   getToolTokenBudget,
+  getToolTokenBudgetForContext,
   modelSupportsTools,
   resolveModelCapabilities,
 } from "./modelLimits";
@@ -14,7 +16,9 @@ import {
   __resetDynamicModelCapsForTests,
   registerDynamicModelCaps,
 } from "./dynamicModelCaps";
-import type { AiModel } from "../types";
+import { ollamaContextLengthSettingKey, type AiModel } from "../types";
+
+const OLLAMA_ENDPOINT = "http://localhost:11434";
 
 // localStorage スタブ（dynamicModelCaps が参照する）
 const lsStore: Record<string, string> = {};
@@ -520,15 +524,223 @@ describe("動的 capability レジストリ統合", () => {
     expect(caps.supportsAdaptiveThinking).toBe(true);
   });
 
+  it("Ollama /api/show の未知モデル最大値を 8k fallback に落とさない", () => {
+    registerDynamicModelCaps("ollama", [
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131_072,
+        supportedParameters: ["tools"],
+      },
+    ]);
+
+    const caps = resolveModelCapabilities("gemma4:latest", {
+      provider: "ollama",
+    });
+    expect(caps).toMatchObject({
+      contextWindow: 131_072,
+      modelContextWindow: 131_072,
+      contextWindowIsEffective: false,
+      contextWindowSource: "model-maximum",
+      supportsTools: true,
+    });
+  });
+
+  it("Ollama runner の実効値を手動設定より優先する", () => {
+    registerDynamicModelCaps(
+      "ollama",
+      [
+        {
+          id: "gemma4:latest",
+          name: "gemma4:latest",
+          contextLength: 131_072,
+          effectiveContextLength: 16_384,
+          effectiveContextSource: "runner",
+        },
+      ],
+      { ollamaEndpoint: OLLAMA_ENDPOINT },
+    );
+
+    const caps = resolveModelCapabilities("gemma4:latest", {
+      provider: "ollama",
+      ollamaEndpoint: OLLAMA_ENDPOINT,
+      ollamaContextLengths: {
+        [ollamaContextLengthSettingKey(OLLAMA_ENDPOINT, "gemma4:latest")]:
+          65_536,
+      },
+    });
+    expect(caps).toMatchObject({
+      contextWindow: 16_384,
+      modelContextWindow: 131_072,
+      contextWindowIsEffective: true,
+      contextWindowSource: "runner",
+    });
+  });
+
+  it("Ollama Modelfile num_ctx を実効値として扱う", () => {
+    registerDynamicModelCaps("ollama", [
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131_072,
+        effectiveContextLength: 32_768,
+        effectiveContextSource: "model-parameter",
+      },
+    ]);
+
+    expect(
+      resolveModelCapabilities("gemma4:latest", {
+        provider: "ollama",
+      }),
+    ).toMatchObject({
+      contextWindow: 32_768,
+      modelContextWindow: 131_072,
+      contextWindowIsEffective: true,
+      contextWindowSource: "model-parameter",
+    });
+  });
+
+  it("Ollama 手動実効値をモデル最大値で clamp する", () => {
+    registerDynamicModelCaps(
+      "ollama",
+      [
+        {
+          id: "gemma4:latest",
+          name: "gemma4:latest",
+          contextLength: 131_072,
+        },
+      ],
+      { ollamaEndpoint: OLLAMA_ENDPOINT },
+    );
+
+    const caps = resolveModelCapabilities("gemma4:latest", {
+      provider: "ollama",
+      ollamaEndpoint: OLLAMA_ENDPOINT,
+      ollamaContextLengths: {
+        [ollamaContextLengthSettingKey(OLLAMA_ENDPOINT, "gemma4:latest")]:
+          262_144,
+      },
+    });
+    expect(caps).toMatchObject({
+      contextWindow: 131_072,
+      modelContextWindow: 131_072,
+      contextWindowIsEffective: true,
+      contextWindowSource: "ollama-settings",
+    });
+  });
+
+  it("Ollama bare ID と :latest を同じ手動設定namespaceとして扱う", () => {
+    expect(ollamaContextLengthSettingKey(OLLAMA_ENDPOINT, "Gemma4")).toBe(
+      ollamaContextLengthSettingKey(OLLAMA_ENDPOINT, "gemma4:latest"),
+    );
+  });
+
+  it("Ollama :latest のlegacy exact keyをbare ID選択でも読む", () => {
+    registerDynamicModelCaps(
+      "ollama",
+      [
+        {
+          id: "gemma4:latest",
+          name: "gemma4:latest",
+          contextLength: 131_072,
+        },
+      ],
+      { ollamaEndpoint: OLLAMA_ENDPOINT },
+    );
+
+    const legacyLatestKey = JSON.stringify([OLLAMA_ENDPOINT, "gemma4:latest"]);
+    const caps = resolveModelCapabilities("gemma4", {
+      provider: "ollama",
+      ollamaEndpoint: OLLAMA_ENDPOINT,
+      ollamaContextLengths: {
+        [legacyLatestKey]: 65_536,
+      },
+    });
+
+    expect(caps).toMatchObject({
+      contextWindow: 65_536,
+      modelContextWindow: 131_072,
+      contextWindowIsEffective: true,
+      contextWindowSource: "ollama-settings",
+    });
+  });
+
+  it("Ollama 手動実効値を未知モデルの 8k fallback で clamp しない", () => {
+    const caps = resolveModelCapabilities("unlisted-local:latest", {
+      provider: "ollama",
+      ollamaEndpoint: OLLAMA_ENDPOINT,
+      ollamaContextLengths: {
+        [ollamaContextLengthSettingKey(
+          OLLAMA_ENDPOINT,
+          "unlisted-local:latest",
+        )]: 131_072,
+      },
+    });
+    expect(caps).toMatchObject({
+      contextWindow: 131_072,
+      contextWindowIsEffective: true,
+      contextWindowSource: "ollama-settings",
+    });
+  });
+
+  it("Ollama 手動実効値を同名 curated モデル値で clamp しない", () => {
+    const caps = resolveModelCapabilities("qwen3", {
+      provider: "ollama",
+      ollamaEndpoint: OLLAMA_ENDPOINT,
+      ollamaContextLengths: {
+        [ollamaContextLengthSettingKey(OLLAMA_ENDPOINT, "qwen3")]: 131_072,
+      },
+    });
+    expect(caps).toMatchObject({
+      contextWindow: 131_072,
+      modelContextWindow: 0,
+      contextWindowIsEffective: true,
+      contextWindowSource: "ollama-settings",
+    });
+  });
+
+  it("Ollama 手動実効値を別endpointの同名モデルへ流用しない", () => {
+    const caps = resolveModelCapabilities("unlisted-local:latest", {
+      provider: "ollama",
+      ollamaEndpoint: "http://localhost:21434",
+      ollamaContextLengths: {
+        [ollamaContextLengthSettingKey(
+          OLLAMA_ENDPOINT,
+          "unlisted-local:latest",
+        )]: 131_072,
+      },
+    });
+
+    expect(caps).toMatchObject({
+      contextWindow: 8_000,
+      contextWindowIsEffective: false,
+      contextWindowSource: "default",
+    });
+  });
+
+  it("動的 metadata は provider を指定しない lookup へ漏れない", () => {
+    registerDynamicModelCaps("ollama", [
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131_072,
+      },
+    ]);
+
+    expect(getModelCapabilities("gemma4:latest").contextWindow).toBe(8_000);
+  });
+
   it("登録後: anthropic/claude-sonnet-4.6 → 1M context + supportsReasoning", () => {
-    registerDynamicModelCaps([
+    registerDynamicModelCaps("openrouter", [
       makeOpenRouterModel("anthropic/claude-sonnet-4.6", {
         contextLength: 1_000_000,
         maxCompletionTokens: 64_000,
         supportedParameters: ["tools", "reasoning"],
       }),
     ]);
-    const caps = getModelCapabilities("anthropic/claude-sonnet-4.6");
+    const caps = resolveModelCapabilities("anthropic/claude-sonnet-4.6", {
+      provider: "openrouter",
+    });
     expect(caps.contextWindow).toBe(1_000_000);
     expect(caps.maxOutputTokens).toBe(64_000);
     expect(caps.supportsReasoning).toBe(true);
@@ -538,25 +750,29 @@ describe("動的 capability レジストリ統合", () => {
   });
 
   it("未知 Opus id が 8k fallback から脱出する", () => {
-    registerDynamicModelCaps([
+    registerDynamicModelCaps("openrouter", [
       makeOpenRouterModel("anthropic/claude-opus-99-9", {
         contextLength: 1_000_000,
         supportedParameters: ["tools", "reasoning"],
       }),
     ]);
-    const caps = getModelCapabilities("anthropic/claude-opus-99-9");
+    const caps = resolveModelCapabilities("anthropic/claude-opus-99-9", {
+      provider: "openrouter",
+    });
     expect(caps.contextWindow).toBe(1_000_000);
     expect(caps.supportsReasoning).toBe(true);
   });
 
   it("openai/o3 の canDisableReasoning=false を継承する", () => {
-    registerDynamicModelCaps([
+    registerDynamicModelCaps("openrouter", [
       makeOpenRouterModel("openai/o3", {
         contextLength: 200_000,
         supportedParameters: ["tools", "reasoning"],
       }),
     ]);
-    const caps = getModelCapabilities("openai/o3");
+    const caps = resolveModelCapabilities("openai/o3", {
+      provider: "openrouter",
+    });
     expect(caps.supportsReasoning).toBe(true);
     expect(caps.canDisableReasoning).toBe(false);
   });
@@ -595,7 +811,7 @@ describe("動的 capability レジストリ統合", () => {
 
   it("buildThinkingParams: Claude via OpenRouter → reasoning wire format", () => {
     // 動的データあり（supportsReasoning=true）
-    registerDynamicModelCaps([
+    registerDynamicModelCaps("openrouter", [
       makeOpenRouterModel("anthropic/claude-opus-4-6", {
         contextLength: 1_000_000,
         supportedParameters: ["tools", "reasoning"],
@@ -636,6 +852,11 @@ describe("getAgentToolCallBudget — model-aware tool-call limit", () => {
     expect(getAgentToolCallBudget("claude-haiku-4-5-20251001")).toBe(16); // 200k
     expect(getAgentToolCallBudget("deepseek-r1")).toBe(12); // 64k
     expect(getAgentToolCallBudget("qwen3")).toBe(10); // 32k
+  });
+
+  it("route で解決済みの context を直接利用できる", () => {
+    expect(getAgentToolCallBudgetForContext(131_072)).toBe(12);
+    expect(getToolTokenBudgetForContext(131_072)).toBe(39_321);
   });
 
   it("keeps small / unknown models at the safe floor of 10", () => {

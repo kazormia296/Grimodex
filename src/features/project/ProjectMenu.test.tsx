@@ -5,6 +5,7 @@ import { ProjectMenu } from "./ProjectMenu";
 import { useProjectStore } from "./projectStore";
 import { PROJECT_ID } from "./constants";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
+import { toast } from "sonner";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -50,8 +51,13 @@ vi.mock("./CreateProjectDialog", () => ({
 }));
 
 beforeEach(() => {
+  vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.success).mockClear();
   useProjectStore.setState({
     currentProjectId: PROJECT_ID,
+    projectLoadStatus: "ready",
+    degradedParticipants: [],
+    refreshProjects: vi.fn().mockResolvedValue(undefined),
     projects: [
       {
         id: PROJECT_ID,
@@ -111,6 +117,46 @@ describe("ProjectMenu", () => {
 
     await waitFor(() => {
       expect(loadProject).toHaveBeenCalledWith("proj-b");
+    });
+  });
+
+  it("keeps degraded Project state visible and offers a retry", async () => {
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    useProjectStore.setState({
+      loadProject,
+      projectLoadStatus: "degraded",
+      degradedParticipants: ["plot-threads-load", "last-active-project"],
+    });
+
+    render(<ProjectMenu />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    expect(screen.getByTestId("project-load-degraded")).toHaveTextContent(
+      "project.loadDegraded",
+    );
+    fireEvent.click(screen.getByText("common.retry"));
+
+    await waitFor(() => {
+      expect(loadProject).toHaveBeenCalledWith(PROJECT_ID);
+    });
+  });
+
+  it("terminates a rejected degraded retry with the existing switch failure toast", async () => {
+    const loadProject = vi
+      .fn()
+      .mockRejectedValue(new Error("retry load unavailable"));
+    useProjectStore.setState({
+      loadProject,
+      projectLoadStatus: "degraded",
+      degradedParticipants: ["last-active-project"],
+    });
+
+    render(<ProjectMenu />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    fireEvent.click(screen.getByText("common.retry"));
+
+    await waitFor(() => {
+      expect(loadProject).toHaveBeenCalledWith(PROJECT_ID);
+      expect(toast.error).toHaveBeenCalledTimes(1);
     });
   });
 

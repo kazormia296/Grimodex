@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import type { BindParams } from "sql.js";
 
-// C2: setEventParticipants が invoke("db_execute_batch") を使うため、そのバッチを
-// 下の @/db/client モックと同じ sqldb 上で実行できるよう共有ホルダーを立てる。
+// setEventParticipants の typed command を下の @/db/client モックと同じ
+// sqldb 上で実行できるよう共有ホルダーを立てる。
 const chronicleTestDb = vi.hoisted(
   () =>
-    ({ runBatch: undefined }) as {
-      runBatch?: (statements: { sql: string; params: unknown[] }[]) => void;
+    ({ setParticipants: undefined }) as {
+      setParticipants?: (payload: {
+        eventId: string;
+        projectId: string;
+        codexEntryIds: string[];
+        baseVersion: number;
+        updatedAt: string;
+      }) => number | null;
     },
 );
 
@@ -16,9 +22,15 @@ const chronicleTestDb = vi.hoisted(
 // 「実際の SQL 挙動」を assert できる(SQL 文字列の捕捉では足りない部分)。
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "db_execute_batch") {
-      chronicleTestDb.runBatch?.(
-        (args?.statements as { sql: string; params: unknown[] }[]) ?? [],
+    if (cmd === "event_set_participants") {
+      return chronicleTestDb.setParticipants?.(
+        args?.payload as {
+          eventId: string;
+          projectId: string;
+          codexEntryIds: string[];
+          baseVersion: number;
+          updatedAt: string;
+        },
       );
     }
     return [];
@@ -54,6 +66,7 @@ vi.mock("@/db/client", async () => {
       kind TEXT NOT NULL DEFAULT 'generic',
       secret INTEGER NOT NULL DEFAULT 0,
       reveal_scene_id TEXT,
+      version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -123,17 +136,47 @@ vi.mock("@/db/client", async () => {
     },
     { schema },
   );
-  // Route db_execute_batch (setEventParticipants) to the same sqldb.
-  chronicleTestDb.runBatch = (statements) => {
+  // Route the typed Chronicle aggregate command to the same sqldb.
+  chronicleTestDb.setParticipants = (payload) => {
     sqldb.run("BEGIN");
     try {
-      for (const s of statements) {
-        const st = sqldb.prepare(s.sql);
-        st.bind(s.params as BindParams);
-        st.step();
-        st.free();
+      const versionQuery = sqldb.prepare(
+        "SELECT version FROM events WHERE id = ? AND project_id = ?",
+      );
+      versionQuery.bind([payload.eventId, payload.projectId]);
+      const currentVersion = versionQuery.step()
+        ? Number(versionQuery.get()[0])
+        : null;
+      versionQuery.free();
+      if (currentVersion !== payload.baseVersion) {
+        sqldb.run("ROLLBACK");
+        return null;
+      }
+
+      const nextVersion = payload.baseVersion + 1;
+      sqldb.run(
+        `UPDATE events SET version = ?, updated_at = ?
+          WHERE id = ? AND project_id = ? AND version = ?`,
+        [
+          nextVersion,
+          payload.updatedAt,
+          payload.eventId,
+          payload.projectId,
+          payload.baseVersion,
+        ] as BindParams,
+      );
+      sqldb.run("DELETE FROM event_participants WHERE event_id = ?", [
+        payload.eventId,
+      ] as BindParams);
+      for (const codexEntryId of payload.codexEntryIds) {
+        sqldb.run(
+          `INSERT INTO event_participants (event_id, codex_entry_id, role)
+           VALUES (?, ?, NULL)`,
+          [payload.eventId, codexEntryId] as BindParams,
+        );
       }
       sqldb.run("COMMIT");
+      return nextVersion;
     } catch (e) {
       sqldb.run("ROLLBACK");
       throw e;
@@ -170,6 +213,7 @@ import {
   listSceneEventsForProject,
   calendarFromRow,
 } from "./api";
+import { EventVersionConflictError } from "./eventOcc";
 
 const NOW = "2026-06-27T00:00:00.000Z";
 
@@ -207,6 +251,7 @@ describe("normalizeEvent", () => {
       kind: "birth",
       secret: 1,
       reveal_scene_id: "s3",
+      version: 4,
       created_at: NOW,
       updated_at: NOW,
     };
@@ -230,6 +275,7 @@ describe("normalizeEvent", () => {
       kind: "birth",
       secret: true,
       revealSceneId: "s3",
+      version: 4,
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -340,9 +386,22 @@ describe("updateEvent (fail-closed scoping)", () => {
 
   it("projectId が一致すれば更新される", async () => {
     await seed("e1", "p1", "a0", "orig");
-    await updateEvent("e1", "p1", { title: "ok" });
+    const updated = await updateEvent("e1", "p1", { title: "ok" });
     const [row] = await listEvents("p1");
     expect(row.title).toBe("ok");
+    expect(updated?.version).toBe(1);
+  });
+
+  it("古い baseVersion は拒否し、現行行を上書きしない", async () => {
+    await seed("e1", "p1", "a0", "orig");
+    await updateEvent("e1", "p1", { title: "fresh" }, { baseVersion: 0 });
+
+    await expect(
+      updateEvent("e1", "p1", { title: "stale" }, { baseVersion: 0 }),
+    ).rejects.toBeInstanceOf(EventVersionConflictError);
+    const row = await getEvent("p1", "e1");
+    expect(row?.title).toBe("fresh");
+    expect(row?.version).toBe(1);
   });
 });
 
@@ -600,6 +659,21 @@ describe("setEventParticipants (fail-closed scoping)", () => {
     expect(await listEventParticipants("e1")).toEqual([
       { eventId: "e1", codexEntryId: "keep", role: null },
     ]);
+  });
+
+  it("participants は event aggregate version を進め、古い base を拒否する", async () => {
+    await seed("e1", "p1", "a0");
+    await expect(
+      setEventParticipants("e1", "p1", ["fresh"], { baseVersion: 0 }),
+    ).resolves.toBe(1);
+
+    await expect(
+      setEventParticipants("e1", "p1", ["stale"], { baseVersion: 0 }),
+    ).rejects.toBeInstanceOf(EventVersionConflictError);
+    expect(await listEventParticipants("e1")).toEqual([
+      { eventId: "e1", codexEntryId: "fresh", role: null },
+    ]);
+    expect((await getEvent("p1", "e1"))?.version).toBe(1);
   });
 });
 

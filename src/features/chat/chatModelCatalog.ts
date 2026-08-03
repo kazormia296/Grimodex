@@ -186,26 +186,35 @@ export function filterCatalog(
 }
 
 /**
- * グローバルなモデル whitelist(設定でチェックしたモデル id の配列)でセクションを絞る。
+ * 1 プロバイダ分のモデルを whitelist で絞る。
  *
- * `ai.modelWhitelist` は **全プロバイダ横断のグローバルな絞り込み**(設定 UI は
- * アクティブプロバイダのモデルを見せるが、保存先は単一のグローバル id 配列)。よって
- * ピッカーでも **全プロバイダのセクションに適用**し、チェックの入っていないモデルは
- * 出さない(アクティブプロバイダだけ絞ると、別プロバイダのセクションに未チェックの
- * モデルが残るバグになる)。
- *
- * whitelist が空なら絞り込み無効(全件表示=従来挙動)。マッチ 0 件のセクションは落とす。
+ * `ai.modelWhitelist` の保存先は全プロバイダ共通だが、設定 UI でチェックできるのは
+ * その時点のアクティブプロバイダだけ。したがって、このモデル集合に 1 件でも一致する
+ * id がある場合だけ絞り込み、一致がなければ「このプロバイダでは未選択」として全件を
+ * 返す。ローカルモデルの選択がクラウドプロバイダを丸ごと隠すことを防ぐ。
+ */
+export function applyModelWhitelistToModels<T extends { id: string }>(
+  models: T[],
+  whitelist: string[],
+): T[] {
+  if (!Array.isArray(whitelist) || whitelist.length === 0) return models;
+  const allow = new Set(whitelist);
+  const matched = models.filter((model) => allow.has(model.id));
+  return matched.length > 0 ? matched : models;
+}
+
+/**
+ * グローバル保存された whitelist を、各プロバイダ／エンドポイントのセクション内で
+ * 相対的に適用する。セクション内にチェック済みモデルがあればそのモデルだけを表示し、
+ * 一致がなければそのセクションは全件表示する。
  */
 export function applyModelWhitelist(
   sections: CatalogSection[],
   whitelist: string[],
 ): CatalogSection[] {
   if (whitelist.length === 0) return sections;
-  const allow = new Set(whitelist);
-  const out: CatalogSection[] = [];
-  for (const section of sections) {
-    const models = section.models.filter((m) => allow.has(m.id));
-    if (models.length > 0) out.push({ ...section, models });
-  }
-  return out;
+  return sections.map((section) => {
+    const models = applyModelWhitelistToModels(section.models, whitelist);
+    return models === section.models ? section : { ...section, models };
+  });
 }

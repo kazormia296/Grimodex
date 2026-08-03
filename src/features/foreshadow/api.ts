@@ -12,6 +12,7 @@ import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import {
   foreshadows,
   foreshadowSetups,
@@ -38,6 +39,11 @@ import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { instantEpochMilliseconds } from "@/lib/time";
+import {
+  attachCreateResultMetadata,
+  getCreateResultMetadata,
+  isCreateResultEntityPresent,
+} from "@/lib/createResultMetadata";
 
 /** Max chars of a scene-prefix excerpt used when `foreshadows.notes` is empty. */
 const SETUP_EXCERPT_FALLBACK_MAX_CHARS = 200;
@@ -82,38 +88,41 @@ function toBool(value: unknown): boolean {
 
 function normalizeForeshadowRow(raw: unknown): ForeshadowRow {
   const row = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: String(row.id ?? ""),
-    projectId: String(row.projectId ?? row.project_id ?? ""),
-    title: String(row.title ?? ""),
-    intent: (row.intent as string | null | undefined) ?? null,
-    notes: (row.notes as string | null | undefined) ?? null,
-    payoffSceneId:
-      (row.payoffSceneId as string | null | undefined) ??
-      (row.payoff_scene_id as string | null | undefined) ??
-      null,
-    payoffFromPos:
-      (row.payoffFromPos as number | null | undefined) ??
-      (row.payoff_from_pos as number | null | undefined) ??
-      null,
-    payoffToPos:
-      (row.payoffToPos as number | null | undefined) ??
-      (row.payoff_to_pos as number | null | undefined) ??
-      null,
-    payoffConfirmed: toBool(row.payoffConfirmed ?? row.payoff_confirmed),
-    abandoned: toBool(row.abandoned),
-    secret: toBool(row.secret ?? false),
-    loadBearing:
-      ((row.loadBearing ?? row.load_bearing) as
-        | ForeshadowLoadBearing
-        | null
-        | undefined) ?? null,
-    codexLinkDirtyAt: toNullableDate(
-      row.codexLinkDirtyAt ?? row.codex_link_dirty_at,
-    ),
-    createdAt: toDate(row.createdAt ?? row.created_at),
-    updatedAt: toDate(row.updatedAt ?? row.updated_at),
-  };
+  return attachCreateResultMetadata(
+    {
+      id: String(row.id ?? ""),
+      projectId: String(row.projectId ?? row.project_id ?? ""),
+      title: String(row.title ?? ""),
+      intent: (row.intent as string | null | undefined) ?? null,
+      notes: (row.notes as string | null | undefined) ?? null,
+      payoffSceneId:
+        (row.payoffSceneId as string | null | undefined) ??
+        (row.payoff_scene_id as string | null | undefined) ??
+        null,
+      payoffFromPos:
+        (row.payoffFromPos as number | null | undefined) ??
+        (row.payoff_from_pos as number | null | undefined) ??
+        null,
+      payoffToPos:
+        (row.payoffToPos as number | null | undefined) ??
+        (row.payoff_to_pos as number | null | undefined) ??
+        null,
+      payoffConfirmed: toBool(row.payoffConfirmed ?? row.payoff_confirmed),
+      abandoned: toBool(row.abandoned),
+      secret: toBool(row.secret ?? false),
+      loadBearing:
+        ((row.loadBearing ?? row.load_bearing) as
+          | ForeshadowLoadBearing
+          | null
+          | undefined) ?? null,
+      codexLinkDirtyAt: toNullableDate(
+        row.codexLinkDirtyAt ?? row.codex_link_dirty_at,
+      ),
+      createdAt: toDate(row.createdAt ?? row.created_at),
+      updatedAt: toDate(row.updatedAt ?? row.updated_at),
+    },
+    raw,
+  );
 }
 
 function normalizeSetupRow(raw: unknown): ForeshadowSetupRow {
@@ -176,37 +185,44 @@ function recordForeshadow(
 }
 
 export async function createForeshadow(
-  data: Omit<NewForeshadow, "createdAt" | "updatedAt">,
+  data: Omit<NewForeshadow, "createdAt" | "updatedAt" | "id"> & {
+    id?: string;
+  },
+  options: {
+    /** Reuse after an uncertain response; use a fresh value for deliberate restore. */
+    requestId?: string;
+  } = {},
 ): Promise<ForeshadowRow> {
-  if (isTauriRuntime()) {
-    const created = await invoke("foreshadow_create", {
-      payload: {
-        projectId: data.projectId,
-        title: data.title,
-        intent: data.intent ?? null,
-        loadBearing: data.loadBearing ?? null,
-      },
-    });
-    const norm = normalizeForeshadowRow(created);
+  const id = data.id ?? crypto.randomUUID();
+  const created = await invoke("foreshadow_create", {
+    payload: {
+      id,
+      requestId: options.requestId ?? id,
+      projectId: data.projectId,
+      title: data.title,
+      intent: data.intent ?? null,
+      notes: data.notes ?? null,
+      payoffSceneId: data.payoffSceneId ?? null,
+      payoffFromPos: data.payoffFromPos ?? null,
+      payoffToPos: data.payoffToPos ?? null,
+      payoffConfirmed: data.payoffConfirmed ?? false,
+      abandoned: data.abandoned ?? false,
+      secret: data.secret ?? true,
+      loadBearing: data.loadBearing ?? null,
+      codexLinkDirtyAt: data.codexLinkDirtyAt?.getTime() ?? null,
+    },
+  });
+  const norm = normalizeForeshadowRow(created);
+  if (
+    isCreateResultEntityPresent(norm) &&
+    getCreateResultMetadata(norm)?.replayed !== true
+  ) {
     recordForeshadow("create", norm.id, {
       foreshadowId: norm.id,
       title: norm.title,
     });
-    return norm;
   }
-
-  const now = new Date();
-  const row: NewForeshadow = { ...data, createdAt: now, updatedAt: now };
-  await db.insert(foreshadows).values(row);
-  const [created] = await db
-    .select()
-    .from(foreshadows)
-    .where(eq(foreshadows.id, data.id));
-  recordForeshadow("create", data.id, {
-    foreshadowId: data.id,
-    title: data.title,
-  });
-  return created as ForeshadowRow;
+  return norm;
 }
 
 export async function getForeshadow(id: string): Promise<ForeshadowRow | null> {
@@ -925,10 +941,6 @@ export async function updateForeshadow(
     >
   >,
 ): Promise<void> {
-  recordForeshadow("update", id, {
-    foreshadowId: id,
-    fields: Object.keys(patch),
-  });
   if (isTauriRuntime()) {
     const tauriPatch: Record<string, unknown> = {};
     if (patch.title !== undefined) tauriPatch.title = patch.title;
@@ -954,13 +966,40 @@ export async function updateForeshadow(
       id,
       patch: tauriPatch,
     });
+    recordForeshadow("update", id, {
+      foreshadowId: id,
+      fields: Object.keys(patch),
+    });
     return;
   }
 
+  if (patch.payoffSceneId !== undefined && patch.payoffSceneId !== null) {
+    const [owner, payoffScene] = await Promise.all([
+      db
+        .select({ projectId: foreshadows.projectId })
+        .from(foreshadows)
+        .where(eq(foreshadows.id, id))
+        .then((rows) => rows[0]),
+      db
+        .select({ projectId: treeNodes.projectId })
+        .from(treeNodes)
+        .where(eq(treeNodes.id, patch.payoffSceneId))
+        .then((rows) => rows[0]),
+    ]);
+    if (owner && payoffScene?.projectId !== owner.projectId) {
+      throw new Error(
+        "foreshadow payoff scene must belong to the same project",
+      );
+    }
+  }
   await db
     .update(foreshadows)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(foreshadows.id, id));
+  recordForeshadow("update", id, {
+    foreshadowId: id,
+    fields: Object.keys(patch),
+  });
 }
 
 export async function deleteForeshadow(id: string): Promise<void> {
@@ -1417,6 +1456,10 @@ export async function proposePastSetups(
   const ovPropose = resolveRoleSendOverride("foreshadow_propose_past_setups");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "foreshadow_propose_past_setups",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ovPropose.apiVariant, // apiVariant（横断割り当て時のみ）
@@ -1472,6 +1515,10 @@ export async function evaluateSetupStrength(
   const ovEval = resolveRoleSendOverride("foreshadow_evaluate_setup_strength");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "foreshadow_evaluate_setup_strength",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ovEval.apiVariant, // apiVariant（横断割り当て時のみ）
@@ -1569,6 +1616,10 @@ export async function auditChapter(
   const ovAudit = resolveRoleSendOverride("foreshadow_audit_chapter");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "foreshadow_audit_chapter",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ovAudit.apiVariant, // apiVariant（横断割り当て時のみ）

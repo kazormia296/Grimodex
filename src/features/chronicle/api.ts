@@ -16,6 +16,7 @@ export { calendarFromRow } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { EventVersionConflictError } from "./eventOcc";
 
 /**
  * Timelapse record for a chronicle (作中年表) mutation. Uses the SAME `event`
@@ -73,6 +74,8 @@ export interface EventRow {
   secret: boolean;
   /** 読む順の開示アンカー（明示上書き専用）。null=自動導出 or 恒久秘匿。 */
   revealSceneId: string | null;
+  /** Aggregate OCC version (event row + participant set). */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -123,6 +126,7 @@ export function normalizeEvent(raw: unknown): EventRow {
     kind: s(r.kind, "generic") as EventKind,
     secret: boolFrom(r.secret),
     revealSceneId: nullableStr(r.revealSceneId ?? r.reveal_scene_id),
+    version: Number(r.version ?? 0),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -248,13 +252,29 @@ export async function updateEvent(
       | "revealSceneId"
     >
   >,
-): Promise<void> {
+  opts?: { baseVersion?: number },
+): Promise<EventRow | null> {
+  const current = await getEvent(projectId, id);
+  if (!current) return null;
+  const baseVersion = opts?.baseVersion ?? current.version;
   // projectId を WHERE に AND して fail-closed にする（他プロジェクトの id を
   // 渡されても no-op で、cross-project の書込みを構造的に遮断）。
-  await db
+  const [updated] = await db
     .update(events)
-    .set({ ...patch, updatedAt: new Date().toISOString() })
-    .where(and(eq(events.id, id), eq(events.projectId, projectId)));
+    .set({
+      ...patch,
+      version: baseVersion + 1,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(
+      and(
+        eq(events.id, id),
+        eq(events.projectId, projectId),
+        eq(events.version, baseVersion),
+      ),
+    )
+    .returning();
+  if (!updated) throw new EventVersionConflictError(id);
   bumpChronicleRevision();
   recordEvent(projectId, "event.update", id, {
     eventId: id,
@@ -262,6 +282,7 @@ export async function updateEvent(
   });
   // 作中年表 RAG (Phase 3): 出来事更新をデバウンス付きで意味検索 index に反映。
   scheduleEventIndex(id);
+  return normalizeEvent(updated);
 }
 
 export async function deleteEvent(
@@ -305,41 +326,41 @@ export async function setEventParticipants(
   eventId: string,
   projectId: string,
   codexEntryIds: string[],
-): Promise<void> {
+  opts?: { baseVersion?: number },
+): Promise<number | null> {
   // event_participants は project_id 列を持たないため、まず対象 event が
   // projectId に属するかを検証してから書き換える（XPROJ fail-closed：他
   // プロジェクトの event の参加者は触れない。linkSceneToEvent と同じ流儀）。
   // この検証は read-only gate なので batch の外に置く（属さなければ何も書かない）。
   const [ev] = await db
-    .select({ id: events.id })
+    .select({ id: events.id, version: events.version })
     .from(events)
     .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
-  if (!ev) return;
-  // 全削除→再挿入を db_execute_batch(Rust 側 execute_batch_tx = 単一 lock 内
-  // BEGIN..COMMIT)で原子化し、insert 失敗時に delete を巻き戻して参加者集合が
-  // 中途半端に空になるのを防ぐ。sqlite-proxy では db.transaction の BEGIN/COMMIT が
-  // 別 IPC となり共有接続上の無関係な書込みを巻き込むため使わない（attribution/api.ts
-  // の replaceAuthorshipSpansForLaneAtomic と同じ流儀）。
-  const del = db
-    .delete(eventParticipants)
-    .where(eq(eventParticipants.eventId, eventId))
-    .toSQL();
-  const statements: { sql: string; params: unknown[]; method: string }[] = [
-    { sql: del.sql, params: del.params, method: "run" },
-  ];
-  if (codexEntryIds.length > 0) {
-    const ins = db
-      .insert(eventParticipants)
-      .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })))
-      .toSQL();
-    statements.push({ sql: ins.sql, params: ins.params, method: "run" });
+  if (!ev) return null;
+  const baseVersion = opts?.baseVersion ?? ev.version;
+  const resultVersion = baseVersion + 1;
+  const finalUpdatedAt = new Date().toISOString();
+  const committedVersion = await invoke<number | null>(
+    "event_set_participants",
+    {
+      payload: {
+        eventId,
+        projectId,
+        codexEntryIds,
+        baseVersion,
+        updatedAt: finalUpdatedAt,
+      },
+    },
+  );
+  if (committedVersion !== resultVersion) {
+    throw new EventVersionConflictError(eventId);
   }
-  await invoke("db_execute_batch", { statements });
   bumpChronicleRevision();
   recordEvent(projectId, "participants.set", eventId, {
     eventId,
     codexEntryIds,
   });
+  return resultVersion;
 }
 
 /**

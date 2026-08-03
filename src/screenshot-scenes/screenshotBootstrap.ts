@@ -49,10 +49,12 @@ export function isScreenshotCapture(): boolean {
  * 撮影時はエディタ起動直後に一元ロードする。
  */
 export async function bootstrapScreenshotWorkspace(): Promise<void> {
-  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  const projectId = getCurrentProjectId();
+  useTrashBinStore.getState().resetForProject(projectId);
+  await useTreeStore.getState().loadTree(projectId);
   await useCodexStore.getState().loadEntries();
   await useSnippetStore.getState().loadEntries();
-  await useTrashBinStore.getState().loadItems(getCurrentProjectId());
+  await useTrashBinStore.getState().loadItems(projectId);
 }
 
 export function markScreenshotStageReady(): void {

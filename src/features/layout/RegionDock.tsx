@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { STRIPE_SIZE } from "./layoutConstants";
+import { HORIZONTAL_STRIPE_SIZE } from "./layoutConstants";
 import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { RegionStripe } from "./RegionStripe";
 import { RegionContent } from "./RegionContent";
@@ -109,7 +109,7 @@ function BottomRegionDock({
         style={
           bottomZoomed
             ? { height: 0, flexShrink: 0, visibility: "hidden" }
-            : { height: STRIPE_SIZE, flexShrink: 0 }
+            : { height: HORIZONTAL_STRIPE_SIZE, flexShrink: 0 }
         }
         aria-hidden={bottomZoomed || undefined}
         inert={bottomZoomed || undefined}

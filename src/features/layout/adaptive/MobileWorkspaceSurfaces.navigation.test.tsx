@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatStore } from "@/features/chat/chatStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
@@ -120,6 +121,7 @@ beforeEach(async () => {
   } as never);
   useEditorSessionStore.getState().resetForProject();
   useInlineAiStore.getState().reset();
+  useExternalWriteStore.getState().clear();
   useSemanticNavStore.setState({ pendingJump: null });
   useCodexStore.setState({
     entries: [],
@@ -133,6 +135,7 @@ beforeEach(async () => {
   useChatStore.setState({
     activeSceneId: "scene-0",
     chatScope: "scene",
+    agentMode: false,
     isStreaming: false,
     messages: [],
   } as never);
@@ -147,6 +150,7 @@ afterEach(() => {
   searchResult.id = "lexical-scene:scene-1";
   searchResult.kind = "lexical-scene";
   useInlineAiStore.getState().reset();
+  useExternalWriteStore.getState().clear();
   useCompactNavigationStore.getState().reset();
 });
 
@@ -316,6 +320,34 @@ describe("ConnectedMobileWorkspaceSurface", () => {
     expect(useTabStore.getState().tabs).toBe(tabsBefore);
     expect(useTabStore.getState().secondaryTabs).toBe(secondaryTabsBefore);
     expect(useTabStore.getState().activeGroupIndex).toBe(0);
+  });
+
+  it("keeps Tree and Chat authority unchanged when the active editor has an external conflict", async () => {
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "tree", id: "scene-0", storage: "database" },
+      sceneId: "scene-0",
+      domain: "scene",
+      opType: "update",
+      entityId: "scene-0",
+    });
+
+    render(
+      <ConnectedMobileWorkspaceSurface
+        surface="search"
+        onOpenSettings={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Search result" }),
+    );
+
+    expect(useTreeStore.getState().activeSceneId).toBe("scene-0");
+    expect(useChatStore.getState().activeSceneId).toBe("scene-0");
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("search");
+    expect(useEditorSessionStore.getState().focusRequests).toEqual({
+      0: false,
+      1: false,
+    });
   });
 
   it("routes Codex hits to Codex and leaves unsupported snippets in Search", async () => {

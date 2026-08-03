@@ -106,7 +106,7 @@ export function ChronicleEventList({
   return (
     <div
       data-testid="chronicle-event-list"
-      className="flex w-60 flex-none flex-col overflow-hidden border-r border-border bg-card"
+      className="flex w-60 flex-none flex-col overflow-hidden border-r border-border"
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <span className="text-xs font-medium">

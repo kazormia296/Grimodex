@@ -26,6 +26,12 @@ export interface MarkerEvent {
 
 export interface EventMarkerProps {
   event: MarkerEvent;
+  /** DOM/layout identity. Participant copies keep their synthetic marker id. */
+  markerInstanceId?: string;
+  /** Exact rendered lane identity (Codex id / unassigned group key). */
+  laneKey?: string;
+  /** Only the home instance may expose interval and causal handles. */
+  homeInstance?: boolean;
   /** 絶対配置 left（lanePack 由来＝point は startX-9）。 */
   left: number;
   top: number;
@@ -89,6 +95,9 @@ const RESIZE_GRIP: CSSProperties = {
  */
 function EventMarkerBase({
   event,
+  markerInstanceId = event.id,
+  laneKey,
+  homeInstance = true,
   left,
   top,
   tokenH,
@@ -366,6 +375,9 @@ function EventMarkerBase({
     <button
       type="button"
       data-event-id={event.id}
+      data-marker-instance-id={markerInstanceId}
+      data-lane-key={laneKey}
+      data-home-instance={homeInstance ? "true" : undefined}
       data-selected={selected || undefined}
       onClick={(e) => onSelect(event.id, e)}
       onMouseEnter={onHover ? () => onHover(event.id, true) : undefined}
@@ -382,7 +394,7 @@ function EventMarkerBase({
         textAlign: "left",
       }}
     >
-      {isInterval && resizable && (
+      {homeInstance && isInterval && resizable && (
         <>
           <span
             data-resize="start"
@@ -430,7 +442,7 @@ function EventMarkerBase({
           </span>
         </>
       )}
-      {edgeHandle && (
+      {homeInstance && edgeHandle && (
         <span
           data-edge-handle
           title={t("chronicle.edgeHandleHint", "ドラッグで因果エッジを作成")}

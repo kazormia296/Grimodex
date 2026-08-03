@@ -7,6 +7,10 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { fetchProjectContext } from "@/features/project/contextAtoms";
 import { isAiFeatureBlockedByPolicy } from "@/features/ai-policy/policyGuard";
 import { useAiSettingsStore } from "@/features/chat/store";
+import {
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 import { useTreeStore } from "../treeStore";
 import {
   generateAiTreePlan,
@@ -38,10 +42,15 @@ export async function runAiTreeGeneration(
     throw new Error("bodyWrite policy is disabled");
   }
 
-  const projectId = getCurrentProjectId();
+  const auditAuthority = captureAiOperationAuthority(
+    getCurrentProjectId(),
+    input.rootRef ?? "project",
+  );
   const nodes = useTreeStore.getState().nodes;
   const outline = buildOutlineContext(nodes, input.rootRef);
-  const projectCtx = await fetchProjectContext(projectId).catch(() => null);
+  const projectCtx = await fetchProjectContext(auditAuthority.projectId).catch(
+    () => null,
+  );
 
   const plan = await generateAiTreePlan({
     kind: input.mode,
@@ -49,6 +58,7 @@ export async function runAiTreeGeneration(
     withSynopsis: input.withSynopsis,
     outline,
     rootRef: input.rootRef,
+    auditAuthority,
     project: projectCtx
       ? {
           title: projectCtx.title,
@@ -80,11 +90,12 @@ export async function runAiTreeGeneration(
         : new Set(),
   };
 
+  assertAiOperationAuthorityCurrent(auditAuthority, getCurrentProjectId());
   return applyAiTreePlan(safePlan, {
-    projectId,
+    projectId: auditAuthority.projectId,
     source: "ai",
     model: useAiSettingsStore.getState().settings?.model ?? null,
-    traceId: crypto.randomUUID(),
+    traceId: auditAuthority.operationId,
     scope,
   });
 }

@@ -6,9 +6,10 @@ import {
 } from "./zenContrastGuard";
 import {
   makePaperFragmentRefractable,
-  ZEN_GLASS_REFRACTION_FRAGMENT,
+  buildZenGlassRefractionFragment,
 } from "./zenGlassRefraction";
 import type { ZenGlassLayout } from "./useZenShaderLayouts";
+import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
 export const ZEN_UI_SURFACE_MAX = 32;
 
@@ -50,7 +51,7 @@ uniform float u_zenUiContrastMix;
 uniform vec3 u_zenContrastBackdropColor;
 uniform float u_zenContrastSurfaceOpacity;
 
-${ZEN_GLASS_REFRACTION_FRAGMENT}
+/*__ZEN_GLASS_FRAGMENT__*/
 
 float zenBayer4(vec2 pixel) {
   ivec2 p = ivec2(mod(floor(pixel), 4.0));
@@ -346,7 +347,10 @@ const PIXEL_RATIO_UNIFORM_PATTERN =
  * Rename Paper's main and append our post pass so both filters operate on the
  * generated color in the same fragment invocation, without a readback/copy.
  */
-export function buildZenPostProcessedFragment(fragment: string): string {
+export function buildZenPostProcessedFragment(
+  fragment: string,
+  uiSurfaceCapacity = ZEN_UI_SURFACE_MAX,
+): string {
   const mainPattern = /void\s+main\s*\(\s*\)/;
   if (!mainPattern.test(fragment)) {
     throw new Error("Paper shader fragment has no compatible main function");
@@ -367,6 +371,10 @@ export function buildZenPostProcessedFragment(fragment: string): string {
     resolutionUniform,
   )
     .replace("/*__ZEN_PIXEL_RATIO_UNIFORM__*/", pixelRatioUniform)
+    .replace(
+      "/*__ZEN_GLASS_FRAGMENT__*/",
+      buildZenGlassRefractionFragment(uiSurfaceCapacity),
+    )
     .replace("/*__ZEN_GLASS_COORDINATE_SETUP__*/", refractable.coordinateSetup);
   return `${renamed}\n// Paper is refracted before Dither, Halftone and the dynamic contrast guard.\n${postProcess}`;
 }
@@ -374,20 +382,10 @@ export function buildZenPostProcessedFragment(fragment: string): string {
 export function buildZenPostProcessUniforms(
   config: ZenShaderConfig,
   runtime: ZenPostProcessRuntime = DEFAULT_RUNTIME,
+  surfaceBuffer = new ZenUiSurfaceUniformBuffer(ZEN_UI_SURFACE_MAX),
 ) {
   const uiSurfaces = (runtime.uiSurfaces ?? []).slice(0, ZEN_UI_SURFACE_MAX);
-  const uiSurfaceRects = Array.from(
-    { length: ZEN_UI_SURFACE_MAX },
-    (_, index) =>
-      index < uiSurfaces.length ? [...uiSurfaces[index].rect] : [0, 0, 0, 0],
-  );
-  const uiSurfaceParams = Array.from(
-    { length: ZEN_UI_SURFACE_MAX },
-    (_, index) =>
-      index < uiSurfaces.length
-        ? [uiSurfaces[index].cornerRadius, 0, 0, 0]
-        : [0, 0, 0, 0],
-  );
+  const packedSurfaces = surfaceBuffer.update(uiSurfaces);
 
   return {
     u_zenDitherStrength: config.dither.enabled ? config.dither.strength : 0,
@@ -411,8 +409,8 @@ export function buildZenPostProcessUniforms(
     u_zenGlassRefraction: config.glass.enabled ? config.glass.refraction : 0,
     u_zenGlassRect: runtime.glassRect,
     u_zenGlassCornerRadius: runtime.glassCornerRadius,
-    u_zenUiSurfaceCount: uiSurfaces.length,
-    "u_zenUiSurfaceRects[0]": uiSurfaceRects,
-    "u_zenUiSurfaceParams[0]": uiSurfaceParams,
+    u_zenUiSurfaceCount: packedSurfaces.count,
+    "u_zenUiSurfaceRects[0]": packedSurfaces.rects,
+    "u_zenUiSurfaceParams[0]": packedSurfaces.params,
   };
 }

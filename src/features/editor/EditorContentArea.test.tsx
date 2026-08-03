@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import type { Editor } from "@tiptap/react";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 
@@ -49,6 +50,24 @@ vi.mock("@/features/foreshadow/ForeshadowMarkHoverPopover", () => ({
 }));
 vi.mock("@/features/editor/FindReplaceBar", () => ({
   FindReplaceBar: () => null,
+}));
+vi.mock("@/features/editor/FindScrollbarMarkers", () => ({
+  FindScrollbarMarkers: ({
+    editor,
+    enabled,
+    verticalMode,
+  }: {
+    editor: Editor | null;
+    enabled: boolean;
+    verticalMode: boolean;
+  }) => (
+    <div
+      data-testid="find-scrollbar-markers-mock"
+      data-has-editor={editor ? "true" : "false"}
+      data-enabled={enabled ? "true" : "false"}
+      data-vertical={verticalMode ? "true" : "false"}
+    />
+  ),
 }));
 vi.mock("@/features/editor/EditorContentSkeleton", () => ({
   EditorBodyWithLoading: ({ children }: { children: React.ReactNode }) => (
@@ -120,17 +139,26 @@ function renderArea(
     profile?: "wide" | "compact" | "phone";
     gutterReserve?: string | null;
     showLineNumbers?: boolean;
+    titleEditing?: boolean;
+    titleDraft?: string;
+    editorTitle?: string;
+    handleTitleSave?: () => Promise<void>;
+    editor?: Editor | null;
+    findOpen?: boolean;
+    isSceneContentLoading?: boolean;
+    verticalMode?: boolean;
   } = {},
 ) {
   const settings = makeSettings(spellCheck);
   settings.showLineNumbers = options.showLineNumbers ?? false;
+  settings.verticalMode = options.verticalMode ?? false;
   return render(
     <WorkspaceViewportProvider profile={options.profile ?? "wide"}>
       <EditorContentArea
-        editor={null}
+        editor={options.editor ?? null}
         editorContainerRef={{ current: null }}
         toolbarActionsRef={{ current: null }}
-        findOpen={false}
+        findOpen={options.findOpen ?? false}
         findShowReplace={false}
         setFindOpen={() => {}}
         showForeshadowMarks
@@ -140,15 +168,15 @@ function renderArea(
         typewriterMode={false}
         filterSource={filterSource}
         editorSettings={settings}
-        editorTitle=""
+        editorTitle={options.editorTitle ?? ""}
         loadedPhaseLabel={null}
-        titleEditing={false}
-        titleDraft=""
+        titleEditing={options.titleEditing ?? false}
+        titleDraft={options.titleDraft ?? ""}
         setTitleDraft={() => {}}
-        handleTitleSave={() => {}}
+        handleTitleSave={options.handleTitleSave ?? (() => Promise.resolve())}
         handleTitleCancel={() => {}}
         handleTitleEditStart={() => {}}
-        isSceneContentLoading={false}
+        isSceneContentLoading={options.isSceneContentLoading ?? false}
         sceneId="scene-1"
         zenMode={zenMode}
       />
@@ -224,5 +252,61 @@ describe("EditorContentArea phone projection", () => {
       "editor-gutter-reserve",
     );
     expect(paper.style.getPropertyValue("--gutter-reserve")).toBe("");
+  });
+});
+
+describe("EditorContentArea find scrollbar markers", () => {
+  it("binds the active editor and writing axis while find is open", () => {
+    const editor = {} as Editor;
+    const { getByTestId } = renderArea(false, null, false, {
+      editor,
+      findOpen: true,
+      verticalMode: true,
+    });
+
+    expect(getByTestId("find-scrollbar-markers-mock")).toHaveAttribute(
+      "data-has-editor",
+      "true",
+    );
+    expect(getByTestId("find-scrollbar-markers-mock")).toHaveAttribute(
+      "data-enabled",
+      "true",
+    );
+    expect(getByTestId("find-scrollbar-markers-mock")).toHaveAttribute(
+      "data-vertical",
+      "true",
+    );
+  });
+
+  it("disables markers while the editor is loading a different document", () => {
+    const { getByTestId } = renderArea(false, null, false, {
+      editor: {} as Editor,
+      findOpen: true,
+      isSceneContentLoading: true,
+    });
+
+    expect(getByTestId("find-scrollbar-markers-mock")).toHaveAttribute(
+      "data-enabled",
+      "false",
+    );
+  });
+});
+
+describe("EditorContentArea title IME boundary", () => {
+  it("does not commit or blur the title on composition Enter", () => {
+    const handleTitleSave = vi.fn().mockResolvedValue(undefined);
+    renderArea(false, null, false, {
+      titleEditing: true,
+      titleDraft: "変換中",
+      editorTitle: "元の題",
+      handleTitleSave,
+    });
+    const input = screen.getByRole("textbox");
+    input.focus();
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(handleTitleSave).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
   });
 });

@@ -74,6 +74,9 @@ describe("Codex completion index", () => {
       "Setuko",
     ]);
     expect(index.find("Set")[0]?.surface).toBe("Setsuna");
+    expect(index.findFirst("Set")).toEqual(index.find("Set")[0]);
+    expect(index.findFirst("set")).toEqual(index.find("set")[0]);
+    expect(index.findFirst("missing")).toBeNull();
   });
 
   it("does not return a candidate when the surface is already complete", () => {

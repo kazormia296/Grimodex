@@ -12,6 +12,7 @@ import {
   sideLayoutChromePx,
 } from "./layoutMetrics";
 import {
+  HORIZONTAL_STRIPE_SIZE,
   SPLITTER_GUTTER_PX,
   STRIPE_GAP_PX,
   STRIPE_SIZE,
@@ -31,9 +32,9 @@ describe("layoutMetrics", () => {
 
   it("bottomDockPx includes stripe, content, and the content↔stripe gap", () => {
     expect(bottomDockPx(true, true, 220)).toBe(
-      STRIPE_SIZE + 220 + STRIPE_GAP_PX,
+      HORIZONTAL_STRIPE_SIZE + 220 + STRIPE_GAP_PX,
     );
-    expect(bottomDockPx(true, false, 220)).toBe(STRIPE_SIZE);
+    expect(bottomDockPx(true, false, 220)).toBe(HORIZONTAL_STRIPE_SIZE);
   });
 
   it("computeLayoutGridMetrics splits stripe, content, and splitter columns", () => {
@@ -58,7 +59,7 @@ describe("layoutMetrics", () => {
     expect(m.rightSplitterPx).toBe(SPLITTER_GUTTER_PX);
     expect(m.leftDockPx).toBe(STRIPE_SIZE + 260);
     expect(m.rightDockPx).toBe(STRIPE_SIZE + 340);
-    expect(m.bottomDockPx).toBe(STRIPE_SIZE + 220 + STRIPE_GAP_PX);
+    expect(m.bottomDockPx).toBe(HORIZONTAL_STRIPE_SIZE + 220 + STRIPE_GAP_PX);
     expect(m.bottomCellPx).toBe(m.bottomDockPx + SPLITTER_GUTTER_PX);
   });
 
@@ -166,7 +167,7 @@ describe("layoutMetrics", () => {
     expect(m.leftStripePx).toBe(STRIPE_SIZE);
     expect(m.rightStripePx).toBe(STRIPE_SIZE);
     // content を閉じていても bottom stripe を浮かせる stripe-gap は残る。
-    expect(m.bottomCellPx).toBe(STRIPE_SIZE + STRIPE_GAP_PX);
+    expect(m.bottomCellPx).toBe(HORIZONTAL_STRIPE_SIZE + STRIPE_GAP_PX);
   });
 
   it("buildCenterStripeGridTemplateColumns spans the full 9-column grid", () => {
@@ -312,16 +313,16 @@ describe("layoutMetrics", () => {
   describe("buildZoomGridTemplateRows", () => {
     it("keeps the restore-bar row and frees only the main row for non-bottom zoom", () => {
       expect(buildZoomGridTemplateRows("left", false, 0)).toBe(
-        `${STRIPE_SIZE}px 0px minmax(0, 1fr)`,
+        `${HORIZONTAL_STRIPE_SIZE}px 0px minmax(0, 1fr)`,
       );
       expect(buildZoomGridTemplateRows("center", true, STRIPE_GAP_PX)).toBe(
-        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px minmax(0, 1fr) 0px`,
+        `${HORIZONTAL_STRIPE_SIZE}px ${STRIPE_GAP_PX}px minmax(0, 1fr) 0px`,
       );
     });
 
     it("keeps the restore-bar row and frees only the bottom row for bottom zoom", () => {
       expect(buildZoomGridTemplateRows("bottom", true, STRIPE_GAP_PX)).toBe(
-        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 0px minmax(0, 1fr)`,
+        `${HORIZONTAL_STRIPE_SIZE}px ${STRIPE_GAP_PX}px 0px minmax(0, 1fr)`,
       );
     });
   });

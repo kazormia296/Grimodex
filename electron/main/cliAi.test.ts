@@ -403,6 +403,7 @@ describe("CliAiManager", () => {
       binaryPath: "/opt/claude",
     });
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: {
         cli: "claude",
         binaryPath: "/opt/claude",
@@ -451,6 +452,7 @@ describe("CliAiManager", () => {
     });
     await expect(
       manager.handlers.send_cli_chat_stream({
+        streamId: "stream-test",
         payload: {
           cli: "claude",
           binaryPath: "/opt/claude",
@@ -528,6 +530,7 @@ describe("CliAiManager", () => {
     ).resolves.toBeNull();
     await expect(
       manager.handlers.send_cli_chat_stream({
+        streamId: "stream-test",
         payload: { cli: "claude", prompt: "hello" },
       }),
     ).rejects.toThrow("CLI executable not found: claude");
@@ -565,6 +568,7 @@ describe("CliAiManager", () => {
     await expect(first).resolves.toBeNull();
     await expect(
       manager.handlers.send_cli_chat_stream({
+        streamId: "stream-test",
         payload: { cli: "claude", prompt: "hello" },
       }),
     ).rejects.toThrow("CLI executable not found: claude");
@@ -619,6 +623,7 @@ describe("CliAiManager", () => {
   it("streamはchunkを配信し、adapter Doneを終端で一度だけemitする", async () => {
     const { manager, runner, events } = createHarness();
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: {
         cli: "claude",
         binaryPath: "/usr/local/bin/claude",
@@ -639,11 +644,16 @@ describe("CliAiManager", () => {
     expect(events).toEqual([
       {
         channel: "cli:stream-chunk",
-        payload: { delta: "Hello", block_type: "text" },
+        payload: {
+          streamId: "stream-test",
+          delta: "Hello",
+          block_type: "text",
+        },
       },
       {
         channel: "cli:stream-done",
         payload: {
+          streamId: "stream-test",
           stop_reason: "end_turn",
           input_tokens: 3,
           output_tokens: 1,
@@ -652,10 +662,17 @@ describe("CliAiManager", () => {
     ]);
   });
 
-  it("mismatched binaryと並行2本目を明示拒否する", async () => {
-    const { manager, runner } = createHarness();
+  it("streamIdをstrict検証し、mismatched binaryと並行2本目をevent誤配信なしで拒否する", async () => {
+    const { manager, runner, events } = createHarness();
     await expect(
       manager.handlers.send_cli_chat_stream({
+        streamId: "   ",
+        payload: { cli: "codex", prompt: "missing correlation" },
+      }),
+    ).rejects.toThrow(/streamId.*non-empty/iu);
+    await expect(
+      manager.handlers.send_cli_chat_stream({
+        streamId: "stream-test",
         payload: {
           cli: "claude",
           binaryPath: "/usr/bin/node",
@@ -666,41 +683,191 @@ describe("CliAiManager", () => {
     expect(runner.startCalls).toHaveLength(0);
 
     const first = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "codex", prompt: "first" },
     });
     await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
     await expect(
       manager.handlers.send_cli_chat_stream({
+        streamId: "stream-busy",
         payload: { cli: "codex", prompt: "second" },
       }),
     ).rejects.toThrow("CLI stream is already running");
+    expect(events).toEqual([]);
     runner.nextRunning.finish();
     await first;
+    expect(events).toEqual([
+      {
+        channel: "cli:stream-done",
+        payload: {
+          streamId: "stream-test",
+          stop_reason: "end_turn",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    ]);
   });
 
-  it("abortは無出力childを即TERMし、deltaを止めてstopped Doneにする", async () => {
+  it("abortは対象childだけをTERMし、late deltaを旧IDのまま残してから次streamを分離する", async () => {
     const { manager, runner, events } = createHarness();
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "opencode", prompt: "hello" },
     });
     await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
 
-    await expect(
-      manager.handlers.abort_cli_chat_stream({}),
-    ).resolves.toBeNull();
+    const abort = manager.handlers.abort_cli_chat_stream({
+      streamId: "stream-test",
+    });
     expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGTERM");
     runner.nextRunning.stdout.write(
       '{"type":"text","part":{"id":"p1","text":"late"}}\n',
     );
     runner.nextRunning.finish(null, "SIGTERM");
+    await expect(abort).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+    await expect(send).resolves.toBeNull();
+    runner.nextRunning = new FakeRunningProcess();
+    const next = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-next",
+      payload: { cli: "claude", prompt: "next" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(2));
+    runner.nextRunning.stdout.write(
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"next"}]}}\n',
+    );
+    runner.nextRunning.finish();
+    await next;
+    expect(events).toEqual([
+      {
+        channel: "cli:stream-chunk",
+        payload: {
+          streamId: "stream-test",
+          delta: "late",
+          block_type: "text",
+        },
+      },
+      {
+        channel: "cli:stream-done",
+        payload: {
+          streamId: "stream-test",
+          stop_reason: "stopped",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+      {
+        channel: "cli:stream-chunk",
+        payload: {
+          streamId: "stream-next",
+          delta: "next",
+          block_type: "text",
+        },
+      },
+      {
+        channel: "cli:stream-done",
+        payload: {
+          streamId: "stream-next",
+          stop_reason: "end_turn",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    ]);
+  });
+
+  it("provider terminalがabortより先なら後続semantic bytesを抑止して最初のterminalを維持する", async () => {
+    const { manager, runner, events } = createHarness();
+    const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-provider-first",
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+    runner.nextRunning.stdout.write(
+      '{"type":"result","usage":{"input_tokens":7,"output_tokens":3},"stop_reason":"end_turn"}\n',
+    );
+
+    const abort = manager.handlers.abort_cli_chat_stream({
+      streamId: "stream-provider-first",
+    });
+    runner.nextRunning.stdout.write(
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"late evidence"}]}}\n',
+    );
+    runner.nextRunning.stdout.write(
+      '{"type":"result","usage":{"input_tokens":99,"output_tokens":99},"stop_reason":"error"}\n',
+    );
+    runner.nextRunning.finish(null, "SIGTERM");
+
+    await expect(abort).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
     await expect(send).resolves.toBeNull();
     expect(events).toEqual([
       {
         channel: "cli:stream-done",
         payload: {
-          stop_reason: "stopped",
-          input_tokens: null,
-          output_tokens: null,
+          streamId: "stream-provider-first",
+          stop_reason: "end_turn",
+          input_tokens: 7,
+          output_tokens: 3,
+        },
+      },
+    ]);
+  });
+
+  it("provider terminal後のnon-zero exitは成功terminalを上書きしない", async () => {
+    const { manager, runner, events } = createHarness();
+    const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-provider-exit",
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+    runner.nextRunning.stdout.write(
+      '{"type":"result","usage":{"input_tokens":7,"output_tokens":3},"stop_reason":"end_turn"}\n',
+    );
+    runner.nextRunning.stderr.write("late process diagnostic");
+    runner.nextRunning.finish(2);
+
+    await expect(send).resolves.toBeNull();
+    expect(events).toEqual([
+      {
+        channel: "cli:stream-done",
+        payload: {
+          streamId: "stream-provider-exit",
+          stop_reason: "end_turn",
+          input_tokens: 7,
+          output_tokens: 3,
+        },
+      },
+    ]);
+  });
+
+  it("provider terminal後のstdout limit失敗も成功terminalを上書きしない", async () => {
+    const { manager, runner, events } = createHarness();
+    const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-provider-stdout-limit",
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+    runner.nextRunning.stdout.write(
+      '{"type":"result","usage":{"input_tokens":5,"output_tokens":2},"stop_reason":"end_turn"}\n',
+    );
+    runner.nextRunning.stdout.write("x".repeat(MAX_CLI_LINE_BYTES + 1));
+    runner.nextRunning.finish(2);
+
+    await expect(send).resolves.toBeNull();
+    expect(events).toEqual([
+      {
+        channel: "cli:stream-done",
+        payload: {
+          streamId: "stream-provider-stdout-limit",
+          stop_reason: "end_turn",
+          input_tokens: 5,
+          output_tokens: 2,
         },
       },
     ]);
@@ -730,6 +897,7 @@ describe("CliAiManager", () => {
     );
 
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: {
         cli: "claude",
         binaryPath: "/usr/local/bin/claude",
@@ -737,16 +905,23 @@ describe("CliAiManager", () => {
       },
     });
     await vi.waitFor(() => expect(isFile).toHaveBeenCalledOnce());
-    await manager.handlers.abort_cli_chat_stream({});
+    const abort = manager.handlers.abort_cli_chat_stream({
+      streamId: "stream-test",
+    });
     resolveIsFile(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(runner.startCalls).toHaveLength(0);
     await expect(send).resolves.toBeNull();
+    await expect(abort).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
     expect(events).toEqual([
       {
         channel: "cli:stream-done",
         payload: {
+          streamId: "stream-test",
           stop_reason: "stopped",
           input_tokens: null,
           output_tokens: null,
@@ -755,23 +930,123 @@ describe("CliAiManager", () => {
     ]);
   });
 
+  it("abort-before-send tombstoneは同じstreamIdだけをzero-spawn stoppedにする", async () => {
+    const { manager, runner, events } = createHarness();
+    await expect(
+      manager.handlers.abort_cli_chat_stream({ streamId: "stream-future" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+
+    await expect(
+      manager.handlers.send_cli_chat_stream({
+        streamId: "stream-future",
+        payload: { cli: "claude", prompt: "must not spawn" },
+      }),
+    ).resolves.toBeNull();
+
+    expect(runner.startCalls).toHaveLength(0);
+    expect(events).toEqual([
+      {
+        channel: "cli:stream-done",
+        payload: {
+          streamId: "stream-future",
+          stop_reason: "stopped",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    ]);
+  });
+
+  it("wrong streamId abortはactive runへ影響せず、completed IDのreceiptを再利用する", async () => {
+    const { manager, runner, events } = createHarness();
+    const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-a",
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+
+    await expect(
+      manager.handlers.abort_cli_chat_stream({ streamId: "stream-wrong" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    expect(runner.nextRunning.terminate).not.toHaveBeenCalled();
+    runner.nextRunning.stdout.write(
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"A"}]}}\n',
+    );
+    runner.nextRunning.finish();
+    await send;
+
+    expect(events).toEqual([
+      {
+        channel: "cli:stream-chunk",
+        payload: { streamId: "stream-a", delta: "A", block_type: "text" },
+      },
+      {
+        channel: "cli:stream-done",
+        payload: {
+          streamId: "stream-a",
+          stop_reason: "end_turn",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    ]);
+    await expect(
+      manager.handlers.abort_cli_chat_stream({ streamId: "stream-a" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+  });
+
+  it("timeout fallbackだけのabort receiptはtransportTerminationObserved=false", async () => {
+    const { manager, runner } = createHarness();
+    const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-timeout",
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+
+    await expect(
+      manager.handlers.abort_cli_chat_stream({ streamId: "stream-timeout" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGTERM");
+    expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGKILL");
+
+    runner.nextRunning.finish(null, "SIGKILL");
+    await send;
+  });
+
   it("spawn/非zero/巨大lineはerror eventとinvoke rejectの両方にする", async () => {
     const spawnHarness = createHarness();
     spawnHarness.runner.startError = new Error("ENOENT");
     await expect(
       spawnHarness.manager.handlers.send_cli_chat_stream({
+        streamId: "stream-test",
         payload: { cli: "claude", prompt: "hello" },
       }),
     ).rejects.toThrow("Failed to spawn CLI");
     expect(spawnHarness.events).toEqual([
       {
         channel: "cli:stream-error",
-        payload: { message: expect.stringContaining("Failed to spawn CLI") },
+        payload: {
+          streamId: "stream-test",
+          message: expect.stringContaining("Failed to spawn CLI"),
+        },
       },
     ]);
 
     const exitHarness = createHarness();
     const failed = exitHarness.manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "codex", prompt: "hello" },
     });
     await vi.waitFor(() =>
@@ -786,6 +1061,7 @@ describe("CliAiManager", () => {
 
     const lineHarness = createHarness();
     const oversized = lineHarness.manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "claude", prompt: "hello" },
     });
     await vi.waitFor(() =>
@@ -817,6 +1093,7 @@ describe("CliAiManager", () => {
       },
     );
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "claude", prompt: "hello" },
     });
     await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
@@ -842,6 +1119,7 @@ describe("CliAiManager", () => {
       forceKillAfterMs: 20,
     });
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "claude", prompt: "hello" },
     });
     await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
@@ -865,6 +1143,7 @@ describe("CliAiManager", () => {
       forceKillAfterMs: 20,
     });
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "claude", prompt: "hello" },
     });
     await vi.waitFor(() =>
@@ -892,6 +1171,7 @@ describe("CliAiManager", () => {
       forceKillAfterMs: 20,
     });
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: {
         cli: "claude",
         binaryPath: "/usr/local/bin/claude",
@@ -913,6 +1193,7 @@ describe("CliAiManager", () => {
   it("disposeAllはactive childを停止する", async () => {
     const { manager, runner } = createHarness();
     const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
       payload: { cli: "claude", prompt: "hello" },
     });
     await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));

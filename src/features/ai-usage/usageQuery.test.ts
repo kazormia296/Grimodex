@@ -5,6 +5,7 @@ const { selectMock } = vi.hoisted(() => ({ selectMock: vi.fn() }));
 interface Row {
   surface: string;
   model: string | null;
+  provider?: string | null;
   tokensIn: number | null;
   tokensOut: number | null;
   costUsd: number | null;
@@ -72,6 +73,23 @@ describe("getProjectUsageSummary", () => {
     expect(chat?.count).toBe(2);
     expect(chat?.costEstimated).toBe(true); // row 2 was estimated
     expect(chat?.costUsd).toBeCloseTo(0.041, 5);
+  });
+
+  it("does not assign cloud pricing to an Ollama row with the same bare model id", async () => {
+    setRows([
+      {
+        surface: "chat",
+        model: "claude-sonnet-4-6",
+        provider: "ollama",
+        tokensIn: 1_000_000,
+        tokensOut: 1_000_000,
+        costUsd: null,
+      },
+    ]);
+
+    const summary = await getProjectUsageSummary("p1");
+    expect(summary.totalCostUsd).toBe(0);
+    expect(summary.anyCostEstimated).toBe(false);
   });
 
   it("aggregates prompt-cache read/write tokens (null treated as 0)", async () => {

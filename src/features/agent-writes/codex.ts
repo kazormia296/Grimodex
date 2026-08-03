@@ -16,8 +16,14 @@ import type { CodexEntry } from "@/features/codex/api";
 import { getCodexEntryVersion } from "@/features/codex/version";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
+import { validateAgentProseMirrorJson } from "./richTextInput";
 
 export interface AgentCodexCreateInput {
+  /** Stable identity of the logical request; distinct from the created entity. */
+  requestId?: string;
+  /** Reuse this domain ID when retrying the same logical create. */
+  entryId?: string;
   type: string;
   name: string;
   summary?: string;
@@ -77,19 +83,15 @@ export function markCodexContentAsAi(
     traceId?: string | null;
   } = {},
 ): string {
-  if (!contentJson || contentJson === "{}") return contentJson;
-  try {
-    const doc = JSON.parse(contentJson) as Record<string, unknown>;
-    const attrs = aiAuthorshipAttrs({
-      model: opts.model,
-      chatMessageId: opts.chatMessageId,
-      traceId: opts.traceId,
-    });
-    applyAiMarkToDoc(doc, attrs);
-    return JSON.stringify(doc);
-  } catch {
-    return contentJson;
-  }
+  const normalized = validateAgentProseMirrorJson(contentJson);
+  const doc = JSON.parse(normalized) as Record<string, unknown>;
+  const attrs = aiAuthorshipAttrs({
+    model: opts.model,
+    chatMessageId: opts.chatMessageId,
+    traceId: opts.traceId,
+  });
+  applyAiMarkToDoc(doc, attrs);
+  return validateAgentProseMirrorJson(JSON.stringify(doc));
 }
 
 function applyAiMarkToDoc(
@@ -118,6 +120,7 @@ export async function agentCreateCodexEntry(
   }
 
   const projectId = getCurrentProjectId();
+  const entryId = input.entryId ?? crypto.randomUUID();
   const content = input.content
     ? markCodexContentAsAi(input.content, {
         model: input.model,
@@ -137,6 +140,8 @@ export async function agentCreateCodexEntry(
 
   const result = await invoke<AgentWriteResult>("agent_codex_create", {
     payload: {
+      requestId: input.requestId ?? null,
+      entryId,
       projectId,
       sessionId: getRecorderSessionId(),
       typeSlug: input.type,
@@ -175,6 +180,7 @@ export async function agentCreateCodexEntry(
     useGlobalHistoryStore.getState().push({
       kind: "codex",
       label: i18next.t("codex.store.agentHistoryCreate"),
+      operationId: journalId,
       entityId,
       async undo() {
         await applyUndoJournal(journalId, "undo");
@@ -250,6 +256,14 @@ export async function agentUpdateCodexEntry(
   });
 
   await useCodexStore.getState().loadEntries();
+  notifySameRendererDocumentWrite(
+    { kind: "codex", id: result.entityId, phaseId: null },
+    {
+      domain: "codex",
+      opType: "entry.update",
+      entityId: result.entityId,
+    },
+  );
 
   // 段階3: agent 経路の codex 更新も semantic index へ (api.ts は通らない)。
   scheduleCodexIndex(result.entityId);
@@ -272,6 +286,7 @@ export async function agentUpdateCodexEntry(
     useGlobalHistoryStore.getState().push({
       kind: "codex",
       label: i18next.t("codex.store.agentHistoryUpdate"),
+      operationId: journalId,
       entityId,
       async undo() {
         await applyUndoJournal(journalId, "undo");

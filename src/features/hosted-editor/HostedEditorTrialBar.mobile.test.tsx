@@ -32,7 +32,7 @@ describe("HostedEditorTrialBar phone presentation", () => {
     );
   });
 
-  it("can be dismissed for the browser session without hiding desktop notice", async () => {
+  it("shares the browser-session dismissal with the desktop notice", async () => {
     await i18n.changeLanguage("ja");
     const onContinue = vi.fn();
     const { rerender } = render(
@@ -58,7 +58,7 @@ describe("HostedEditorTrialBar phone presentation", () => {
 
     rerender(<HostedEditorTrialBar onContinue={onContinue} />);
     expect(
-      screen.getByRole("region", { name: "Web Editor 試用版" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("region", { name: "Web Editor 試用版" }),
+    ).toBeNull();
   });
 });

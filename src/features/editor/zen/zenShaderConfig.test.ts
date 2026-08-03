@@ -203,6 +203,13 @@ describe("editor background shader settings", () => {
     });
   });
 
+  it("leaves the live render resolution policy to ZenShaderSurface", () => {
+    const props = buildZenShaderProps(ZEN_SHADER_DEFAULTS, palette);
+
+    expect(props).not.toHaveProperty("minPixelRatio");
+    expect(props).not.toHaveProperty("maxPixelCount");
+  });
+
   it("uses custom colors only in custom palette mode", () => {
     const custom = parseZenShaderConfig({
       "editor.zenBackground.shader": "mesh-gradient",

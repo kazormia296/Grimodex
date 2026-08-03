@@ -1,6 +1,15 @@
 import { create } from "zustand";
+import { encodeDocumentKey, type DocumentKey } from "./document/documentKey";
 
-type ContentCallback = (content: object, sourceGroupIndex: number) => void;
+type DocumentReference = string | DocumentKey;
+type LiveContentSource = number | string;
+type ContentCallback = (content: object, source: LiveContentSource) => void;
+
+function contentKey(reference: DocumentReference): string {
+  return typeof reference === "string"
+    ? reference
+    : encodeDocumentKey(reference);
+}
 
 interface SceneContentState {
   /** In-memory TipTap JSON content for scenes currently open in multiple panes */
@@ -13,13 +22,13 @@ interface SceneContentState {
    * @param sourceGroupIndex - which editor group emitted this update (0 or 1)
    */
   setLiveContent: (
-    sceneId: string,
+    document: DocumentReference,
     content: object,
-    sourceGroupIndex: number,
+    source: LiveContentSource,
   ) => void;
 
   /** Remove cached content when a scene is no longer open in any pane */
-  clearContent: (sceneId: string) => void;
+  clearContent: (document: DocumentReference) => void;
   /** Clear all project-owned live content before a project reload. */
   resetForProject: () => void;
 
@@ -28,7 +37,7 @@ interface SceneContentState {
    * The callback is called whenever another pane updates the scene's content.
    * @returns unsubscribe function
    */
-  subscribe: (sceneId: string, cb: ContentCallback) => () => void;
+  subscribe: (document: DocumentReference, cb: ContentCallback) => () => void;
 }
 
 // Subscribers are stored outside Zustand state to avoid serialisation issues
@@ -43,8 +52,10 @@ const subscribers = new Map<string, Set<ContentCallback>>();
  *
  *  Callers use this to skip an expensive `e.getJSON()` deep-clone when no
  *  external listener exists — the common case during normal scene editing. */
-export function hasOtherLiveContentSubscriber(sceneId: string): boolean {
-  const cbs = subscribers.get(sceneId);
+export function hasOtherLiveContentSubscriber(
+  document: DocumentReference,
+): boolean {
+  const cbs = subscribers.get(contentKey(document));
   return !!cbs && cbs.size > 1;
 }
 
@@ -55,8 +66,8 @@ export function hasOtherLiveContentSubscriber(sceneId: string): boolean {
  *  resync has an audience. A tab-list check is wrong for this: linear-mode
  *  editors have no tab, and an unsynced live editor's next autosave would
  *  clobber the headless write. */
-export function hasLiveContentSubscriber(sceneId: string): boolean {
-  const cbs = subscribers.get(sceneId);
+export function hasLiveContentSubscriber(document: DocumentReference): boolean {
+  const cbs = subscribers.get(contentKey(document));
   return !!cbs && cbs.size > 0;
 }
 
@@ -67,34 +78,39 @@ export const useSceneContentStore = create<SceneContentState>()((set) => ({
     set({ liveContent: {} });
   },
 
-  setLiveContent(sceneId, content, sourceGroupIndex) {
+  setLiveContent(document, content, source) {
+    const key = contentKey(document);
     set((state) => ({
-      liveContent: { ...state.liveContent, [sceneId]: content },
+      liveContent: { ...state.liveContent, [key]: content },
     }));
     // Notify subscribers
-    const cbs = subscribers.get(sceneId);
+    const cbs = subscribers.get(key);
     if (cbs) {
       for (const cb of cbs) {
-        cb(content, sourceGroupIndex);
+        cb(content, source);
       }
     }
   },
 
-  clearContent(sceneId) {
+  clearContent(document) {
+    const key = contentKey(document);
     set((state) => {
       const next = { ...state.liveContent };
-      delete next[sceneId];
+      delete next[key];
       return { liveContent: next };
     });
   },
 
-  subscribe(sceneId, cb) {
-    if (!subscribers.has(sceneId)) {
-      subscribers.set(sceneId, new Set());
+  subscribe(document, cb) {
+    const key = contentKey(document);
+    if (!subscribers.has(key)) {
+      subscribers.set(key, new Set());
     }
-    subscribers.get(sceneId)!.add(cb);
+    subscribers.get(key)!.add(cb);
     return () => {
-      subscribers.get(sceneId)?.delete(cb);
+      const current = subscribers.get(key);
+      current?.delete(cb);
+      if (current?.size === 0) subscribers.delete(key);
     };
   },
 }));
@@ -116,8 +132,8 @@ export const useSceneContentStore = create<SceneContentState>()((set) => ({
  * @returns an unsubscribe function that also cancels any pending frame
  */
 export function subscribeLiveContentRafCoalesced(
-  sceneId: string,
-  ownGroupIndex: number,
+  document: DocumentReference,
+  ownSource: LiveContentSource,
   apply: (content: object) => void,
 ): () => void {
   let pending: object | null = null;
@@ -131,8 +147,8 @@ export function subscribeLiveContentRafCoalesced(
   };
   const unsubscribe = useSceneContentStore
     .getState()
-    .subscribe(sceneId, (content, sourceGroupIndex) => {
-      if (sourceGroupIndex === ownGroupIndex) return;
+    .subscribe(document, (content, source) => {
+      if (source === ownSource) return;
       pending = content;
       if (frame === null) frame = requestAnimationFrame(flush);
     });

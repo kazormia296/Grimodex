@@ -3,12 +3,13 @@ import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const MOBILE_DISMISS_KEY = "grimodex.hosted-editor.trial-banner-dismissed";
+const TRIAL_BANNER_DISMISS_KEY =
+  "grimodex.hosted-editor.trial-banner-dismissed";
 
 function wasDismissedThisSession(): boolean {
   if (typeof window === "undefined") return false;
   try {
-    return window.sessionStorage.getItem(MOBILE_DISMISS_KEY) === "1";
+    return window.sessionStorage.getItem(TRIAL_BANNER_DISMISS_KEY) === "1";
   } catch {
     return false;
   }
@@ -25,16 +26,14 @@ export function HostedEditorTrialBar({
 }: HostedEditorTrialBarProps) {
   const { t } = useTranslation();
   const titleId = useId();
-  const [mobileDismissed, setMobileDismissed] = useState(
-    wasDismissedThisSession,
-  );
+  const [dismissed, setDismissed] = useState(wasDismissedThisSession);
 
-  if (compact && mobileDismissed) return null;
+  if (dismissed) return null;
 
-  const dismissMobileBanner = () => {
-    setMobileDismissed(true);
+  const dismissBanner = () => {
+    setDismissed(true);
     try {
-      window.sessionStorage.setItem(MOBILE_DISMISS_KEY, "1");
+      window.sessionStorage.setItem(TRIAL_BANNER_DISMISS_KEY, "1");
     } catch {
       // The in-memory state still keeps the banner dismissed when storage is
       // unavailable (for example, a privacy-restricted browser context).
@@ -94,17 +93,19 @@ export function HostedEditorTrialBar({
           {t("hostedEditor.trial.continueInGrimodex")}
         </Button>
       )}
-      {compact && (
-        <button
-          type="button"
-          aria-label={t("common.close")}
-          title={t("common.close")}
-          onClick={dismissMobileBanner}
-          className="flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <X className="h-4 w-4" aria-hidden />
-        </button>
-      )}
+      <button
+        type="button"
+        aria-label={t("common.close")}
+        title={t("common.close")}
+        onClick={dismissBanner}
+        className={
+          compact
+            ? "flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            : "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        }
+      >
+        <X className={compact ? "h-4 w-4" : "h-3.5 w-3.5"} aria-hidden />
+      </button>
     </section>
   );
 }

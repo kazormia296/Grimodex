@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { compareInstantValues } from "@/lib/time";
+import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { listSessionsWithStats, searchChatMessages } from "./chatHistoryApi";
 import type { SessionWithStats, MessageSearchHit } from "./chatHistoryApi";
 
@@ -164,7 +165,10 @@ interface ChatHistoryState {
   sortMode: SortMode;
 
   // Actions
-  loadSessions: (projectId: string) => Promise<void>;
+  loadSessions: (
+    projectId: string,
+    options?: { propagateError?: boolean },
+  ) => Promise<void>;
   /** Clear project-owned sessions and search state before a reload. */
   resetForProject: () => void;
   setSearchQuery: (q: string) => void;
@@ -173,6 +177,13 @@ interface ChatHistoryState {
   toggleHasExtractionsOnly: () => void;
   toggleProjectScopeOnly: () => void;
   setSortMode: (mode: SortMode) => void;
+}
+
+const sessionsLoadTracker = createInFlightTracker();
+let sessionsLoadGeneration = 0;
+
+function swallowSessionsLoadFailure(promise: Promise<void>): Promise<void> {
+  return promise.catch(() => undefined);
 }
 
 export const useChatHistoryStore = create<ChatHistoryState>()((set, get) => ({
@@ -187,24 +198,43 @@ export const useChatHistoryStore = create<ChatHistoryState>()((set, get) => ({
   projectScopeOnly: false,
   sortMode: "recent",
 
-  resetForProject: () =>
+  resetForProject: () => {
+    sessionsLoadGeneration++;
+    sessionsLoadTracker.clear();
     set({
       sessions: [],
+      isLoading: false,
       searchQuery: "",
       searchResults: [],
       isSearchMode: false,
       isSearching: false,
       sceneFilter: null,
-    }),
+    });
+  },
 
-  async loadSessions(projectId) {
-    set({ isLoading: true });
-    try {
-      const sessions = await listSessionsWithStats(projectId);
-      set({ sessions, isLoading: false });
-    } catch {
-      set({ isLoading: false });
+  loadSessions(projectId, options) {
+    const inFlight = sessionsLoadTracker.peek(projectId);
+    if (inFlight) {
+      return options?.propagateError
+        ? inFlight
+        : swallowSessionsLoadFailure(inFlight);
     }
+    const generation = ++sessionsLoadGeneration;
+    const run = (async () => {
+      set({ isLoading: true });
+      try {
+        const sessions = await listSessionsWithStats(projectId);
+        if (generation !== sessionsLoadGeneration) return;
+        set({ sessions, isLoading: false });
+      } catch (error) {
+        if (generation === sessionsLoadGeneration) {
+          set({ isLoading: false });
+        }
+        throw error;
+      }
+    })();
+    sessionsLoadTracker.track(projectId, run);
+    return options?.propagateError ? run : swallowSessionsLoadFailure(run);
   },
 
   setSearchQuery(q) {

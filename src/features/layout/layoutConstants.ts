@@ -9,8 +9,28 @@ export const MIN_SLOT_SIZE = 40;
 /** 中央エディタの実効最小幅 (px) — Splitter クランプ用 */
 export const MIN_EDITOR_SIZE = 320;
 
-/** stripe 固定幅/高さ (px) */
-export const STRIPE_SIZE = 32;
+/**
+ * stripe 固定幅/高さ (px)。
+ *
+ * gx-panel の 18px radius と 28px の円形 icon を 4px inset で同心にする。
+ */
+export const STRIPE_SIZE = 36;
+
+/** stripe 内の円形 icon 実寸 (h-7 / w-7)。 */
+export const STRIPE_ICON_SIZE = 28;
+
+/** stripe 外周と icon 外周の同心オフセット。 */
+export const STRIPE_ICON_INSET_PX = (STRIPE_SIZE - STRIPE_ICON_SIZE) / 2;
+
+/** 上下の水平 stripe は、視覚重量を抑えるため縦 stripe より一段細くする。 */
+export const HORIZONTAL_STRIPE_SIZE = 35;
+
+/** 水平 stripe 内の円形 icon 実寸。 */
+export const HORIZONTAL_STRIPE_ICON_SIZE = 27;
+
+/** 水平 stripe 外周と icon 外周の同心オフセット。 */
+export const HORIZONTAL_STRIPE_ICON_INSET_PX =
+  (HORIZONTAL_STRIPE_SIZE - HORIZONTAL_STRIPE_ICON_SIZE) / 2;
 
 /**
  * Card layout (D案) — 構造ギャップ。階層 outer > stripe > panel が重要。

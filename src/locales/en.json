@@ -388,6 +388,10 @@
       "fallback": "Project"
     },
     "switchFailed": "Failed to switch project",
+    "loadDegraded": "The project opened, but some data could not be loaded",
+    "loadDegradedCount_one": "{{count}} component needs to be reloaded",
+    "loadDegradedCount_other": "{{count}} components need to be reloaded",
+    "recovering": "Project recovery is in progress.",
     "import": {
       "action": "Import…"
     },
@@ -648,6 +652,7 @@
   },
   "app": {
     "loading": "Loading…",
+    "lifecycleBusy": "Saving changes. Please wait for switching or closing to finish…",
     "invalidLayout": "Saved layout was invalid and has been reset to default. ({{reason}})",
     "degenLayout": "Layout was degenerate and has been reset to default. ({{reason}})",
     "exportTitle": "Export (Ctrl+Shift+E)",
@@ -899,6 +904,16 @@
       "provider": "Provider",
       "ollamaLocal": "Ollama (local)",
       "endpoint": "Endpoint",
+      "ollamaEffectiveContext": "Effective Ollama context",
+      "ollamaEffectiveContextDesc": "This is the context actually allocated to this model by the Ollama runner. Grimodex detects it from ollama ps while the model is loaded and uses this value only as a fallback while it is unloaded. Grimodex cannot change the allocation through the OpenAI-compatible route, so keep it aligned with PARAMETER num_ctx in the Modelfile or OLLAMA_CONTEXT_LENGTH.",
+      "ollamaEffectiveContextPlaceholder": "Unset (detect automatically)",
+      "ollamaModelMaximumValue": "Model maximum: {{value}} tokens",
+      "ollamaModelMaximumUnknown": "Model maximum: unavailable",
+      "ollamaEffectiveContextValue": "Effective: {{value}} tokens ({{source}})",
+      "ollamaEffectiveContextUnknown": "Effective context is unknown. Runner information will be refreshed before an Agent send.",
+      "ollamaContextSourceRunner": "running runner",
+      "ollamaContextSourceModelParameter": "Modelfile num_ctx",
+      "ollamaContextSourceSettings": "Grimodex setting",
       "apiKey": "API Key",
       "keySet": "Set",
       "showKey": "Show",
@@ -916,7 +931,7 @@
       "sameChatModel": "Same as chat model",
       "roleModel": {
         "title": "Per-Feature Models (by role)",
-        "intro": "Assign a model to each of six semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model. Each role can also be assigned a model from a different provider (only providers with a saved key are selectable).",
+        "intro": "Assign a model to each of seven semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model. Each role can also be assigned a model from a different provider (only providers with a saved key are selectable).",
         "providerLabel": "Provider",
         "sameProvider": "Same provider as chat",
         "unavailableProvider": "The selected provider/endpoint is no longer available (key or endpoint removed). Sends will fail or go to a different target.",
@@ -925,6 +940,7 @@
         "staleModelOption": "{{model}} (not in list)",
         "reset": "Reset",
         "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
+        "cliSingleShotUnsupported": "Codex CLI (exec / App Server) does not support this one-shot AI feature. Assign an HTTP provider such as OpenRouter to the relevant role under per-feature models.",
         "conversation": {
           "label": "Conversation (chat)",
           "description": "Main editor chat. Highest quality; uses prompt caching the most."
@@ -1224,6 +1240,9 @@
       "aiSemanticRecallDesc": "On chat send, search for excerpts from past scenes semantically related to what you're writing and auto-inject them into the AI context. Nothing is injected for projects without an index.",
       "aiHybridRecall": "Also match proper nouns by keyword (hybrid search)",
       "aiHybridRecallDesc": "Fuse semantic search with full-text search (FTS5/bm25) via rank fusion (RRF) so proper nouns like character and place names help surface related scenes. Disabled when auto-injecting related scenes is off.",
+      "aiSemanticReranker": "Semantic reranking (experimental)",
+      "aiSemanticRerankerDesc": "Rerank related-scene candidates with a local model. If processing takes too long, Grimodex uses the original search order.",
+      "aiSemanticRerankerUnavailableDesc": "Currently available only in the desktop app for Japanese and English projects.",
       "aiChatRecall": "Auto-inject past conversations (episodic memory)",
       "aiChatRecallDesc": "On chat send, search past conversations (chat history) semantically related to what you're writing and auto-inject them into the AI context. Toggled independently from related-scene injection, so turning it off stops only past-conversation injection while keeping scene injection. Excludes the in-progress session.",
       "trashBin": "Trash bin",
@@ -1343,6 +1362,12 @@
       "imeLinuxInstallTitle": "No compatible Linux IME found",
       "imeLinuxInstallDescription": "Install the IME separately from Grimodex. Enable a compatible IME in Fcitx 5 or IBus and Grimodex will detect its consumer automatically.",
       "imeLinuxInstallDocs": "Open the IME distribution page",
+      "imeMozkeyInstallTitle": "Install Mozkey IbG",
+      "imeMozkeyInstallDescription": "Download the package for this device from the published experimental / pre-release on the official GitHub Releases page, verify its SHA-256 checksum, and open the operating system installer.",
+      "imeMozkeyInstallAction": "Download and install",
+      "imeMozkeyInstalling": "Downloading and verifying…",
+      "imeMozkeyInstallStarted": "The Mozkey IbG {{version}} installer was opened. Follow the operating system prompts to finish installation.",
+      "imeMozkeyInstallFailed": "Mozkey IbG could not be installed: {{error}}",
       "imeClear": "Delete all generated dictionaries",
       "imeClearDone": "IME dictionaries deleted",
       "imeClearFailed": "Failed to delete IME dictionaries",
@@ -2065,11 +2090,15 @@
     "createSessionFailed": "Failed to create session",
     "deleteSessionFailed": "Failed to delete session",
     "saveMessageFailed": "Failed to save message",
+    "pendingCompletedTurnPersistence": "A completed Chat turn is still waiting to be saved. Retry sending, switch again after storage recovers, or export recovery data before changing this history.",
     "invalidApiKey": "Invalid API key. Please check your settings.",
     "networkError": "A network error occurred. Please check your connection.",
     "agentFailed": "Agent execution failed: {{message}}",
     "rateLimited": "Rate limited. Retrying in 10 seconds…",
     "sendFailed": "Send failed: {{message}}",
+    "ollamaMetadataUnavailable": "Could not verify context and tool capabilities for Ollama model \"{{model}}\" via /api/show. Confirm that Ollama is running and reload the model before retrying.",
+    "ollamaModelUnavailable": "Ollama model \"{{model}}\" is not installed on the configured endpoint. Select an installed model and retry.",
+    "sendCancelledScopeChanged": "The destination changed, so sending was cancelled and the draft was kept.",
     "openSettings": "Open Settings",
     "deleteMessageFailed": "Failed to delete message",
     "linkedSessionReference": "Started a new session referencing \"{{title}}\" (ID: {{sessionId}}).",
@@ -2080,6 +2109,16 @@
     },
     "copied": "Copied",
     "noMessages": "No messages yet",
+    "transcript": {
+      "open": "Read full transcript",
+      "title": "Full chat transcript",
+      "description": "{{count}} loaded messages, in conversation order.",
+      "listLabel": "Full loaded chat transcript",
+      "virtualListLabel": "Chat messages",
+      "user": "You",
+      "assistant": "Assistant",
+      "system": "System"
+    },
     "actions": {
       "insertToEditor": "Insert to editor",
       "extractCodexQuick": "Quick extract to Codex",
@@ -2119,10 +2158,12 @@
     "context": {
       "showPrompt": "Show full prompt",
       "tokensWithCostTitle": "Show full prompt (estimated input cost for this message: {{cost}}; output not included)",
+      "requestUsageTitle": "Request total {{total}} tokens (prompt/conversation {{context}}, Agent tools {{tools}}, message framing {{framing}}, output reserve {{output}}, safety margin {{safety}})",
       "costRow": "Estimated input cost",
       "costNote": "Output not included",
       "windowFill": "Context window usage: {{pct}}%",
       "windowFillOfWindow": "Context window usage: {{pct}}% (of {{window}})",
+      "windowFillUnknown": "Usage cannot be calculated because the effective context window is unknown",
       "windowFillRow": "Window usage",
       "multiSummaryWarning": "{{count}} summaries — new session recommended",
       "cacheRebuilt": "cache rebuilt",
@@ -2140,6 +2181,8 @@
       "pinEntry": "Spotlight {{name}}",
       "pinCodexSnippet": "Spotlight Codex/Snippet",
       "pin": "Spotlight",
+      "spotlightUnavailable": "Spotlight could not be changed because the chat session was not ready. Please try again.",
+      "spotlightUpdateFailed": "Failed to update Spotlight. Please try again.",
       "group": "{{label}} group",
       "noResults": "No matching entries found.",
       "inputPlaceholder": "Describe what to add to context...",
@@ -2165,6 +2208,12 @@
       "usedTokens": "Used tokens",
       "usageRate": "Usage",
       "totalRow": "Total",
+      "contextInputRow": "Prompt and conversation",
+      "agentToolsRow": "Agent tool definitions",
+      "messageFramingRow": "Message framing",
+      "outputReserveRow": "Output reserve",
+      "safetyMarginRow": "Safety margin",
+      "requestTotalRow": "Request total",
       "fullPrompt": "Full prompt",
       "emptyPrompt": "(No prompt)",
       "outgoingMessage": "Outgoing message",
@@ -2183,6 +2232,7 @@
         "CONVERSATION": "Conversation history"
       },
       "promptPreviewLoading": "Building prompt…",
+      "promptPreviewUnavailable": "The exact prompt could not be built. Check the current context and reopen the preview.",
       "promptSnapshotMissing": "No sent-prompt record for this message (it was sent before this feature was added).",
       "promptSnapshotError": "Failed to load the prompt record",
       "projectLabel": "Project",
@@ -2259,6 +2309,7 @@
       "judge": "Evaluate with AI",
       "judging": "Evaluating…",
       "judgeFailed": "AI evaluation failed",
+      "judgeNoResult": "AI returned no valid evaluation results. Check the model settings and try again.",
       "acceptAlias": "Register as an alias of \"{{name}}\"",
       "acceptNew": "Create as a new entry instead",
       "aliasHint": "alias of \"{{name}}\"?",
@@ -2446,8 +2497,13 @@
     },
     "readings": {
       "label": "Readings (furigana)",
+      "placeholder": "Reading...",
       "estimate": "Estimate with AI",
+      "estimateFailed": "Reading estimation failed",
+      "estimateNoResult": "AI returned no valid readings. Check the model settings and try again.",
       "manage": "Manage readings",
+      "heroLabel": "Primary reading",
+      "heroPlaceholder": "Add reading…",
       "auto": "Auto: {{yomi}}",
       "noSurfaces": "Set a name or aliases to add readings",
       "backfillTitle": "Bulk reading estimation",
@@ -3782,8 +3838,7 @@
       "codexReadingPromptDisable": "Don't ask again",
       "urlPlaceholder": "https://...",
       "label": "Editor toolbar",
-      "zenMode": "Zen mode",
-      "fullscreenMode": "Fullscreen"
+      "zenMode": "Zen mode"
     },
     "reorder": {
       "title": "Reorder — within paragraph",
@@ -3958,6 +4013,7 @@
       "autoFollowHint": "Automatically match layer visibility to open panels",
       "attribution": "Attribution highlight",
       "comments": "Comments",
+      "pseudoComments": "Pseudo comments",
       "readerComments": "Reader comments",
       "foreshadow": "Foreshadow marks",
       "review": "Review issues",
@@ -3985,7 +4041,17 @@
     "bodyPlaceholder": "Write whatever comes to mind…",
     "a11y": {
       "editorBody": "Editor body: {{title}}",
-      "editorBodyUntitled": "Editor body"
+      "editorBodyUntitled": "Editor body",
+      "openLinearReader": "Read all scenes",
+      "linearReaderTitle": "All scenes — reading view",
+      "linearReaderDescription": "{{count}} scenes in manuscript order. This static view does not mount additional editors.",
+      "linearReaderLoading": "Loading all scenes…",
+      "linearReaderFailed": "Could not load the all-scenes reading view.",
+      "linearReaderRetry": "Retry",
+      "linearReaderListLabel": "All manuscript scenes",
+      "untitledScene": "Untitled scene",
+      "emptyScene": "Empty scene",
+      "unsavedContent": "Includes unsaved changes"
     }
   },
   "inlineAi": {
@@ -4187,6 +4253,12 @@
     "exportJson": "JSON",
     "exportHtml": "HTML",
     "exportProjectReportTitle": "Export project-wide authorship report",
+    "exportAiAuditBundle": "AI evidence audit ZIP",
+    "exportAiAuditBundleTitle": "Export current body attribution, the forward execution ledger, and selected surviving legacy evidence with a structural AI-origin basis. This is not a complete pre-ledger history. The ZIP may contain full prompts, context, responses, other scenes, and secrets typed into model-visible content; review every file before sharing",
+    "aiAudit": {
+      "verificationFailed": "The audit ZIP was exported, but hash-chain verification failed. Review its README and manifest.",
+      "exportFailed": "The AI use audit ZIP could not be exported."
+    },
     "knowledgeAiChars": "Codex/Snippet AI: {{chars}} chars",
     "aiUsageLocations": "AI usage locations",
     "provenanceChat": "Chat",
@@ -4341,6 +4413,10 @@
     "aiExposureHidden": "Never show to AI (hidden)",
     "aiExposureHint": "suppress is injected only when explicitly selected via Spotlight/Codex scope; hidden never reaches AI through any path. Both are excluded from normal automatic injection.",
     "saving": "Saving...",
+    "updateFailed": "Failed to update Phase",
+    "deleteFailed": "Failed to delete Phase",
+    "updateMissing": "Could not save because this Phase was deleted or could not be found.",
+    "editConflict": "This Phase was updated in another window. Reload the latest version before editing it again.",
     "history": {
       "created": "Phase created",
       "updated": "Phase updated",
@@ -4435,7 +4511,16 @@
   "autoSave": {
     "failed": "Auto-save failed: {{reason}}",
     "recovered": "Auto-save recovered; your changes are saved",
-    "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)"
+    "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)",
+    "unresolvedChanges": "The workspace was not switched because some changes are unsaved or still in conflict"
+  },
+  "closeSaveFailure": {
+    "title": "Closing was stopped because changes could not be saved",
+    "description": "Retry saving or export a recovery file. Discarding and closing will lose unsaved changes.",
+    "retry": "Retry saving",
+    "export": "Export recovery file",
+    "discard": "Discard and close",
+    "exportFailed": "Could not export the recovery file"
   },
   "sceneLoad": {
     "failed": "Failed to load scene content (saving paused for this scene): {{reason}}"
@@ -4512,8 +4597,6 @@
       "firstRunNote": "The first run downloads Chromium and may take several minutes.",
       "abort": "Abort",
       "done": "Typesetting finished",
-      "save": "Save",
-      "saving": "Saving…",
       "saved": "Saved: {{path}}",
       "saveFailed": "Failed to save: {{error}}",
       "failed": "Export failed"
@@ -5604,6 +5687,17 @@
       "analyze": "Analyze",
       "import": "Import",
       "imported": "Imported {{n}} thread(s)",
+      "importPartial": "Imported {{created}} thread(s), skipped {{skipped}} item(s), and failed {{failed}} item(s)",
+      "importFailed": "The import could not be completed",
+      "importResult": "Created {{created}} / skipped {{skipped}} / failed {{failed}}",
+      "importAborted": "Import stopped because the project or workspace changed.",
+      "issue": {
+        "INVALID_PROPOSAL": "Invalid thread proposal",
+        "INVALID_PHASE": "Invalid narrative phase",
+        "MISSING_NODE": "Scene is missing",
+        "DUPLICATE": "Duplicate marker",
+        "CREATE_FAILED": "Could not create this item"
+      },
       "failed": "Extraction failed",
       "none": "No sub-plots could be extracted."
     },
@@ -5656,6 +5750,8 @@
     "zoomOut": "Zoom out",
     "unassigned": "Unassigned",
     "viewportLabel": "Story chronicle",
+    "scrollbarLabel": "Horizontal story chronicle scroll",
+    "scrollbarValue": "View starts at story day {{day}}",
     "tieView": "Reading × story time",
     "readingOrder": "Reading order",
     "storyTime": "Story time",

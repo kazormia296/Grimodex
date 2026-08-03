@@ -6,11 +6,17 @@ import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
+import {
+  aiAuditContextForOperation,
+  captureAiOperationAuthority,
+  type AiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 
 export interface RoleInferenceInput {
   beatInstructions: string;
   generatedProse: string;
   mentions: { codexId: string; name: string; currentRole: MentionRole }[];
+  auditAuthority?: AiOperationAuthority;
 }
 
 export interface RoleSuggestion {
@@ -33,8 +39,7 @@ function isValidRole(value: unknown): value is MentionRole {
   return value === "actor" || value === "target" || value === "mentioned";
 }
 
-async function getPromptLang(): Promise<string> {
-  const projectId = useTreeStore.getState().projectId;
+async function getPromptLang(projectId: string): Promise<string> {
   let project;
   try {
     project = await getProject(projectId);
@@ -58,7 +63,10 @@ export async function inferMentionRoles(
 ): Promise<RoleSuggestion[]> {
   if (input.mentions.length === 0) return [];
 
-  const lang = await getPromptLang();
+  const auditAuthority =
+    input.auditAuthority ??
+    captureAiOperationAuthority(useTreeStore.getState().projectId, "beat_role");
+  const lang = await getPromptLang(auditAuthority.projectId);
   const prompt = buildPrompt(input, lang);
 
   let responseText: string;
@@ -66,6 +74,10 @@ export async function inferMentionRoles(
     const ov = resolveRoleSendOverride("beat_role");
     const result = await sendChatMessageWithThinking(
       [{ role: "user", content: prompt }],
+      {
+        ...aiAuditContextForOperation(auditAuthority, "beat_role"),
+        pathId: "beat_role",
+      },
       undefined, // thinkingParams
       undefined, // systemCacheSegments
       ov.apiVariant, // apiVariant（横断割り当て時のみ）

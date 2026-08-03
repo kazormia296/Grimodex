@@ -50,6 +50,5 @@ export async function saveAnnotationAnchors(
   doc: ProseMirrorNode,
 ): Promise<void> {
   const annotations = extractAnnotationMarks(sceneId, doc);
-  if (annotations.length === 0) return;
   await savePostEffectAnnotations({ projectId, sceneId, annotations });
 }

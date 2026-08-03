@@ -10,7 +10,7 @@ import { createChatSlashCommandExtension } from "./ChatSlashCommandExtension";
 
 export interface ChatInputExtensionOptions {
   placeholder: string;
-  onSubmit: (markdown: string) => void;
+  onSubmit: (markdown: string) => Promise<boolean>;
   onStop: () => void;
   onEditLast?: () => void;
   setMentionPopup?: (state: MentionPopupState | null) => void;

@@ -45,6 +45,7 @@ describe("CenterStripe", () => {
     expect(stripe?.className).toContain("grid");
     expect(stripe?.style.gridTemplateColumns).toContain("minmax(0, 1fr)");
     expect(stripe).toHaveAttribute("data-ambient-glass-surface", "stripe");
+    expect(stripe?.children).toHaveLength(9);
   });
 
   it("distributes flex-grow among open segments including editor", () => {

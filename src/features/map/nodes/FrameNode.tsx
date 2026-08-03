@@ -1,17 +1,27 @@
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { NodeResizer } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import {
+  useLatestValueDraftController,
+  type LatestValueDraftPersistContext,
+} from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 export interface FrameNodeData {
   title: string;
   background: string;
   borderColor: string;
-  onTitleChange?: (title: string) => void;
+  onTitleChange?: (
+    title: string,
+    context?: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
   onDelete?: () => void;
   [key: string]: unknown;
 }
 
 export const FrameNode = memo(function FrameNode({
+  id,
   data,
   selected,
 }: NodeProps) {
@@ -19,18 +29,78 @@ export const FrameNode = memo(function FrameNode({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(d.title);
   const inputRef = useRef<HTMLInputElement>(null);
-  const cancelledRef = useRef(false);
+  const editingTitleRef = useRef(false);
+  const mountedRef = useRef(true);
+  const titleController = useLatestValueDraftController(
+    `map-frame-title:${id}`,
+    d.title,
+    async (next, context) => {
+      const trimmed = next.trim() || d.title;
+      if (trimmed !== d.title) {
+        if (context.preexistingDraft) {
+          await d.onTitleChange?.(trimmed, context);
+        } else {
+          await d.onTitleChange?.(trimmed);
+        }
+      }
+    },
+  );
 
-  const commitTitle = useCallback(() => {
-    setEditingTitle(false);
-    if (cancelledRef.current) {
-      cancelledRef.current = false;
-      return;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (editingTitleRef.current) return;
+    titleController.reset(d.title);
+    setTitleValue(d.title);
+  }, [d.title, titleController]);
+
+  const commitTitle = useCallback(
+    async (options?: QuiescenceParticipantFlushOptions): Promise<void> => {
+      if (!editingTitleRef.current) return Promise.resolve();
+      const trimmed = titleController.latestValue.trim();
+      if (!trimmed) {
+        titleController.reset(d.title);
+      } else {
+        await titleController.save(options);
+      }
+      editingTitleRef.current = false;
+      if (mountedRef.current) {
+        setTitleValue(titleController.latestValue.trim() || d.title);
+        setEditingTitle(false);
+      }
+    },
+    [d.title, titleController],
+  );
+
+  const cancelTitle = useCallback(() => {
+    editingTitleRef.current = false;
+    titleController.reset(d.title);
+    if (mountedRef.current) {
+      setTitleValue(d.title);
+      setEditingTitle(false);
     }
-    const trimmed = titleValue.trim() || d.title;
-    setTitleValue(trimmed);
-    d.onTitleChange?.(trimmed);
-  }, [titleValue, d]);
+  }, [d.title, titleController]);
+
+  useQuiescentDraftParticipant({
+    id: `map-frame-title:${id}`,
+    enabled: editingTitle,
+    isDirty: () => editingTitleRef.current && titleController.dirty,
+    flush: commitTitle,
+    discard: cancelTitle,
+    recovery: () =>
+      editingTitleRef.current
+        ? {
+            kind: "map-frame-title",
+            frameNodeId: id,
+            title: titleController.latestValue,
+          }
+        : null,
+  });
 
   const edgeZoneStyle = {
     position: "absolute" as const,
@@ -129,6 +199,10 @@ export const FrameNode = memo(function FrameNode({
         }}
         onDoubleClick={(e) => {
           e.stopPropagation();
+          if (editingTitleRef.current) return;
+          editingTitleRef.current = true;
+          titleController.reset(d.title);
+          setTitleValue(d.title);
           setEditingTitle(true);
           setTimeout(() => inputRef.current?.focus(), 0);
         }}
@@ -137,20 +211,24 @@ export const FrameNode = memo(function FrameNode({
           <input
             ref={inputRef}
             value={titleValue}
-            onChange={(e) => setTitleValue(e.target.value)}
+            onChange={(e) => {
+              titleController.markDirty(
+                e.target.value.trim() ? e.target.value : d.title,
+              );
+              setTitleValue(e.target.value);
+            }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
               if (e.key === "Enter") {
                 e.preventDefault();
-                commitTitle();
+                void commitTitle().catch(() => {});
               }
               if (e.key === "Escape") {
                 e.preventDefault();
-                cancelledRef.current = true;
-                setTitleValue(d.title);
-                setEditingTitle(false);
+                cancelTitle();
               }
             }}
-            onBlur={commitTitle}
+            onBlur={() => void commitTitle().catch(() => {})}
             onPointerDown={(e) => e.stopPropagation()}
             style={{
               border: "none",

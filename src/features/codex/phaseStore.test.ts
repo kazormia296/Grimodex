@@ -6,6 +6,7 @@ vi.mock("./phaseApi", () => ({
   listPhasesByEntryIds: vi.fn(),
   createPhase: vi.fn(),
   updatePhase: vi.fn(),
+  getPhase: vi.fn(),
   deletePhase: vi.fn(),
   listDetailOverridesByPhaseIds: vi.fn(),
   upsertDetailOverride: vi.fn(),
@@ -17,6 +18,10 @@ import type { CodexEntryPhase, CodexPhaseDetailOverride } from "./phaseApi";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { buildSceneTimeIndex } from "./context/sceneTimeIndex";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -32,6 +37,7 @@ const mockListDetailOverridesByPhaseIds = vi.mocked(
 );
 const mockCreatePhase = vi.mocked(phaseApi.createPhase);
 const mockUpdatePhase = vi.mocked(phaseApi.updatePhase);
+const mockGetPhase = vi.mocked(phaseApi.getPhase);
 const mockDeletePhase = vi.mocked(phaseApi.deletePhase);
 const mockUpsertDetailOverride = vi.mocked(phaseApi.upsertDetailOverride);
 const mockDeleteDetailOverride = vi.mocked(phaseApi.deleteDetailOverride);
@@ -44,6 +50,7 @@ const mockPhase: CodexEntryPhase = {
   summaryOverride: "変化後のsummary",
   contentOverride: null,
   contextModeOverride: null,
+  version: 0,
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
 };
@@ -78,6 +85,8 @@ describe("phaseStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useGlobalHistoryStore.getState().clear();
+    useExternalWriteStore.getState().clear();
+    usePhaseStore.getState().resetForProject();
     usePhaseStore.setState({
       projectEpoch: 0,
       phasesByEntry: {},
@@ -199,6 +208,15 @@ describe("phaseStore", () => {
       expect(usePhaseStore.getState().phasesByEntry["entry-1"]).toContain(
         mockPhase,
       );
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey({
+            kind: "codex",
+            id: mockPhase.entryId,
+            phaseId: mockPhase.id,
+          })
+        ],
+      ).toBe(1);
     });
 
     it("Project reset 後に完了した作成を store と履歴へ公開しない", async () => {
@@ -218,8 +236,14 @@ describe("phaseStore", () => {
     });
 
     it("redo で元の createdAt と updatedAt を復元する", async () => {
-      mockCreatePhase.mockResolvedValue(mockPhase);
-      mockDeletePhase.mockResolvedValue(undefined);
+      mockCreatePhase
+        .mockResolvedValueOnce(mockPhase)
+        .mockImplementation(async (input) => ({
+          ...mockPhase,
+          id: input.id,
+          version: input.version ?? 0,
+        }));
+      mockDeletePhase.mockResolvedValue(true);
       await usePhaseStore.getState().createPhase({
         entryId: "entry-1",
         label: "フェーズ1",
@@ -228,13 +252,72 @@ describe("phaseStore", () => {
       await useGlobalHistoryStore.getState().undo();
       await useGlobalHistoryStore.getState().redo();
 
+      expect(mockDeletePhase).toHaveBeenCalledWith(mockPhase.id, {
+        expectedVersion: mockPhase.version,
+      });
       expect(mockCreatePhase).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
           id: mockPhase.id,
+          version: 1,
           createdAt: mockPhase.createdAt,
           updatedAt: mockPhase.updatedAt,
         }),
+      );
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey({
+            kind: "codex",
+            id: mockPhase.entryId,
+            phaseId: mockPhase.id,
+          })
+        ],
+      ).toBe(3);
+    });
+
+    it("create と後続 update を跨ぐ undo/redo でも再作成 token を伝播する", async () => {
+      mockCreatePhase
+        .mockResolvedValueOnce(mockPhase)
+        .mockImplementation(async (input) => ({
+          ...mockPhase,
+          id: input.id,
+          version: input.version ?? 0,
+        }));
+      let persisted = { ...mockPhase };
+      mockUpdatePhase.mockImplementation(async (_id, patch, options) => {
+        persisted = {
+          ...persisted,
+          ...patch,
+          version: options.baseVersion + 1,
+        };
+        return persisted;
+      });
+      mockDeletePhase.mockResolvedValue(true);
+
+      await usePhaseStore.getState().createPhase({
+        entryId: mockPhase.entryId,
+        label: mockPhase.label,
+      });
+      await usePhaseStore
+        .getState()
+        .updatePhase(mockPhase.id, { label: "更新済み" });
+      await useGlobalHistoryStore.getState().undo();
+      await useGlobalHistoryStore.getState().undo();
+
+      expect(mockDeletePhase).toHaveBeenLastCalledWith(mockPhase.id, {
+        expectedVersion: 2,
+      });
+
+      await useGlobalHistoryStore.getState().redo();
+      await useGlobalHistoryStore.getState().redo();
+
+      expect(mockCreatePhase).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: mockPhase.id, version: 3 }),
+      );
+      expect(mockUpdatePhase).toHaveBeenLastCalledWith(
+        mockPhase.id,
+        { label: "更新済み" },
+        { baseVersion: 3 },
       );
     });
   });
@@ -270,13 +353,156 @@ describe("phaseStore", () => {
       const updated = { ...mockPhase, label: "更新済み" };
       mockUpdatePhase.mockResolvedValue(updated);
 
-      await usePhaseStore
+      const result = await usePhaseStore
         .getState()
         .updatePhase("phase-1", { label: "更新済み" });
 
+      expect(result).toEqual(updated);
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        { label: "更新済み" },
+        { baseVersion: 0 },
+      );
       expect(usePhaseStore.getState().phasesByEntry["entry-1"]![0]!.label).toBe(
         "更新済み",
       );
+      expect(useGlobalHistoryStore.getState().past.at(-1)).toMatchObject({
+        kind: "phase",
+        entityId: "phase-1",
+        documentKey: {
+          kind: "codex",
+          id: "entry-1",
+          phaseId: "phase-1",
+        },
+        retainOnVersionConflict: true,
+      });
+    });
+
+    it("store に未ロードなら最新行の version を読み、CAS する", async () => {
+      mockGetPhase.mockResolvedValue({ ...mockPhase, version: 4 });
+      mockUpdatePhase.mockResolvedValue({
+        ...mockPhase,
+        label: "更新済み",
+        version: 5,
+      });
+
+      const result = await usePhaseStore
+        .getState()
+        .updatePhase("phase-1", { label: "更新済み" });
+
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        { label: "更新済み" },
+        { baseVersion: 4 },
+      );
+      expect(result?.version).toBe(5);
+    });
+
+    it("複数履歴を連続 undo/redo しても logical endpoint の OCC token を伝播する", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [mockPhase] },
+      });
+      let persisted = { ...mockPhase };
+      mockUpdatePhase.mockImplementation(async (_id, patch, options) => {
+        if (options.baseVersion !== persisted.version) {
+          throw new Error(
+            `stale ${options.baseVersion}, current ${persisted.version}`,
+          );
+        }
+        persisted = {
+          ...persisted,
+          ...patch,
+          version: options.baseVersion + 1,
+        };
+        return persisted;
+      });
+
+      await usePhaseStore.getState().updatePhase("phase-1", { label: "更新A" });
+      await usePhaseStore
+        .getState()
+        .updatePhase("phase-1", { summaryOverride: "更新B" });
+      await useGlobalHistoryStore.getState().undo();
+      await useGlobalHistoryStore.getState().undo();
+      await useGlobalHistoryStore.getState().redo();
+      await useGlobalHistoryStore.getState().redo();
+
+      expect(
+        mockUpdatePhase.mock.calls.map((call) => call[2].baseVersion),
+      ).toEqual([0, 1, 2, 3, 4, 5]);
+      expect(
+        usePhaseStore.getState().phasesByEntry["entry-1"]![0],
+      ).toMatchObject({
+        label: "更新A",
+        summaryOverride: "更新B",
+        version: 6,
+      });
+    });
+
+    it("OCC 衝突時は store を変更せず null を返す", async () => {
+      const { PhaseVersionConflictError } = await import("./phaseOcc");
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 2 }] },
+      });
+      mockUpdatePhase.mockRejectedValue(
+        new PhaseVersionConflictError("phase-1"),
+      );
+
+      const result = await usePhaseStore
+        .getState()
+        .updatePhase("phase-1", { label: "競合する更新" });
+
+      expect(result).toBeNull();
+      expect(usePhaseStore.getState().phasesByEntry["entry-1"]![0]).toEqual({
+        ...mockPhase,
+        version: 2,
+      });
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+    });
+
+    it("明示 baseVersion を優先する", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 8 }] },
+      });
+      mockUpdatePhase.mockResolvedValue({ ...mockPhase, version: 4 });
+
+      await usePhaseStore
+        .getState()
+        .updatePhase("phase-1", { label: "更新済み" }, { baseVersion: 3 });
+
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        { label: "更新済み" },
+        { baseVersion: 3 },
+      );
+    });
+
+    it("履歴 undo の OCC 衝突時はコマンドを保持する", async () => {
+      const { PhaseVersionConflictError } = await import("./phaseOcc");
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 2 }] },
+      });
+      mockUpdatePhase
+        .mockResolvedValueOnce({
+          ...mockPhase,
+          label: "更新済み",
+          version: 3,
+        })
+        .mockRejectedValueOnce(new PhaseVersionConflictError("phase-1"));
+
+      await usePhaseStore
+        .getState()
+        .updatePhase("phase-1", { label: "更新済み" });
+      const command = useGlobalHistoryStore.getState().past.at(-1);
+
+      await useGlobalHistoryStore.getState().undo();
+
+      expect(mockUpdatePhase).toHaveBeenLastCalledWith(
+        "phase-1",
+        { label: mockPhase.label },
+        { baseVersion: 3 },
+      );
+      expect(useGlobalHistoryStore.getState().past).toEqual([command]);
+      expect(useGlobalHistoryStore.getState().future).toEqual([]);
     });
   });
 
@@ -286,22 +512,38 @@ describe("phaseStore", () => {
         phasesByEntry: { "entry-1": [mockPhase] },
         detailOverrides: { "phase-1": [mockOverride] },
       });
-      mockDeletePhase.mockResolvedValue(undefined);
+      mockDeletePhase.mockResolvedValue(true);
 
       await usePhaseStore.getState().deletePhase("phase-1");
 
+      expect(mockDeletePhase).toHaveBeenCalledWith("phase-1", {
+        expectedVersion: 0,
+      });
       expect(usePhaseStore.getState().phasesByEntry["entry-1"]).toEqual([]);
       expect(
         usePhaseStore.getState().detailOverrides["phase-1"],
       ).toBeUndefined();
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey({
+            kind: "codex",
+            id: mockPhase.entryId,
+            phaseId: mockPhase.id,
+          })
+        ],
+      ).toBe(1);
     });
 
     it("undo で削除前の createdAt と updatedAt を復元する", async () => {
       usePhaseStore.setState({
         phasesByEntry: { "entry-1": [mockPhase] },
       });
-      mockDeletePhase.mockResolvedValue(undefined);
-      mockCreatePhase.mockResolvedValue(mockPhase);
+      mockDeletePhase.mockResolvedValue(true);
+      mockCreatePhase.mockImplementation(async (input) => ({
+        ...mockPhase,
+        id: input.id,
+        version: input.version ?? 0,
+      }));
 
       await usePhaseStore.getState().deletePhase("phase-1");
       await useGlobalHistoryStore.getState().undo();
@@ -309,10 +551,47 @@ describe("phaseStore", () => {
       expect(mockCreatePhase).toHaveBeenCalledWith(
         expect.objectContaining({
           id: mockPhase.id,
+          version: 1,
           createdAt: mockPhase.createdAt,
           updatedAt: mockPhase.updatedAt,
         }),
       );
+
+      await useGlobalHistoryStore.getState().redo();
+      expect(mockDeletePhase).toHaveBeenLastCalledWith("phase-1", {
+        expectedVersion: 1,
+      });
+
+      await useGlobalHistoryStore.getState().undo();
+      expect(mockCreatePhase).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: mockPhase.id, version: 2 }),
+      );
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey({
+            kind: "codex",
+            id: mockPhase.entryId,
+            phaseId: mockPhase.id,
+          })
+        ],
+      ).toBe(4);
+    });
+
+    it("OCC衝突時は削除せずstoreと履歴を維持する", async () => {
+      const { PhaseVersionConflictError } = await import("./phaseOcc");
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 4 }] },
+      });
+      mockDeletePhase.mockRejectedValue(
+        new PhaseVersionConflictError("phase-1"),
+      );
+
+      await usePhaseStore.getState().deletePhase("phase-1");
+
+      expect(usePhaseStore.getState().phasesByEntry["entry-1"]).toEqual([
+        { ...mockPhase, version: 4 },
+      ]);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
     });
   });
 

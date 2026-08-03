@@ -5,13 +5,20 @@ import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneStore } from "@/features/tree/store";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { toast } from "sonner";
 import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
+
+export async function loadStorySoFarContents(
+  sceneIds: readonly string[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
+): Promise<Map<string, string> | null> {
+  return loadContents([...sceneIds]).catch(() => null);
+}
 
 /**
  * B-10: storySoFar coverage warning pill.
@@ -70,9 +77,13 @@ export function StorySoFarCoverage() {
 
     let done = 0;
     let failed = 0;
+    const contents = await loadStorySoFarContents(
+      missing.map((scene) => scene.id),
+    );
     for (const scene of missing) {
       try {
-        const rawContent = await loadSceneContent(scene.id);
+        if (!contents) throw new Error("scene batch load failed");
+        const rawContent = contents.get(scene.id) ?? "";
         const content = prosemirrorToText(rawContent);
         if (content?.trim()) {
           const synopsis = await generateSynopsisFromContent(

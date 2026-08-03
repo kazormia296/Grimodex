@@ -1,7 +1,24 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspaces/novel",
+    operationId: input.operationId ?? "operation-test",
+    executionId: input.executionId ?? "execution-test",
+    parentExecutionId: input.parentExecutionId ?? null,
+    startedAt: 1,
+  })),
+  markAiAuditDispatched: vi.fn(async () => undefined),
+  completeAiAuditExecution: vi.fn(async () => undefined),
+  failAiAuditExecution: vi.fn(async () => undefined),
+  cancelAiAuditExecution: vi.fn(async () => undefined),
+  recordAiAuditPartial: vi.fn(async () => undefined),
+  skipAiAuditExecution: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/db/client", () => ({
@@ -48,25 +65,51 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleChatIndex: vi.fn(),
 }));
 
+vi.mock("@/features/ime/workspaceScope", () => ({
+  getCurrentImeWorkspaceIdentity: () => ({
+    path: "/workspaces/novel",
+    openRevision: 3,
+  }),
+}));
+
+vi.mock("@/features/timelapse/captureChat", () => ({
+  recordChatMessageAdd: vi.fn(),
+  recordChatMessageDelete: vi.fn(),
+  recordChatMessagesDeleteFrom: vi.fn(),
+}));
+
 import { db } from "@/db/client";
+import { invoke } from "@/lib/tauri";
 const mockDb = vi.mocked(db);
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
+import { recordChatMessageAdd } from "@/features/timelapse/captureChat";
+const mockRecordChatMessageAdd = vi.mocked(recordChatMessageAdd);
 
 import {
   listSessions,
   getSessionForProject,
   createSession,
   deleteSession,
+  deleteMessage,
+  deleteMessagesFrom,
+  clearProjectChatHistory,
+  getSessionTitleForMessage,
   listMessages,
   addMessage,
+  updateMessageMetadata,
   updateSessionTitle,
   unpinStickyEntry,
   saveMessagePrompt,
   getMessagePrompt,
   pinCodexEntry,
+  sendAgentMessage,
+  sendChatMessageWithThinking,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
+import { useAiSettingsStore } from "./store";
+import { DEFAULT_AI_SETTINGS } from "./types";
+import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 // Helper to set up chained drizzle query mock
 function mockSelectChain(rows: Record<string, unknown>[]) {
@@ -83,7 +126,7 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
   const chain = {
     values: vi.fn().mockReturnThis(),
     returning: vi.fn().mockResolvedValue(rows),
-    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    onConflictDoNothing: vi.fn().mockReturnThis(),
     onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
   };
   mockDb.insert.mockReturnValue(chain as never);
@@ -93,6 +136,7 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
 function mockSelectLimitChain(rows: Record<string, unknown>[]) {
   const chain = {
     from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     limit: vi.fn().mockResolvedValue(rows),
   };
@@ -117,9 +161,42 @@ function mockDeleteChain() {
   return chain;
 }
 
+async function registerPendingCompletedTurn(): Promise<void> {
+  await expect(
+    pendingCompletedTurnPersistence.persist({
+      turnId: "turn-pending",
+      workspaceIdentity: {
+        path: "/workspaces/novel",
+        openRevision: 3,
+      },
+      projectId: "project-1",
+      sessionId: "session-1",
+      userMessage: {
+        id: "user-pending",
+        sessionId: "session-1",
+        role: "user",
+        content: "unsaved question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      assistantMessage: {
+        id: "assistant-pending",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "unsaved answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+      retry: vi.fn().mockRejectedValue(new Error("database unavailable")),
+    }),
+  ).rejects.toThrow("database unavailable");
+}
+
 describe("chatApi - session/message persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pendingCompletedTurnPersistence.discard();
+  });
+  afterEach(() => {
+    pendingCompletedTurnPersistence.discard();
   });
 
   describe("pinCodexEntry", () => {
@@ -130,9 +207,22 @@ describe("chatApi - session/message persistence", () => {
 
       expect(chain.onConflictDoUpdate).toHaveBeenCalledWith({
         target: ["sessionId", "codexEntryId"],
+        targetWhere: { isNotNull: "codexEntryId" },
         set: { pinSource: "manual", withChildren: 0 },
       });
       expect(chain.onConflictDoNothing).not.toHaveBeenCalled();
+    });
+
+    it("matches the partial snippet pin index when promoting Spotlight", async () => {
+      const chain = mockInsertChain([]);
+
+      await pinCodexEntry("session-1", "snippet-1", true, "manual", "snippet");
+
+      expect(chain.onConflictDoUpdate).toHaveBeenCalledWith({
+        target: ["sessionId", "snippetId"],
+        targetWhere: { isNotNull: "snippetId" },
+        set: { pinSource: "manual", withChildren: 1 },
+      });
     });
   });
 
@@ -401,6 +491,52 @@ describe("chatApi - session/message persistence", () => {
 
       expect(mockDb.delete).toHaveBeenCalled();
     });
+
+    it("refuses to delete a Session owned by an unresolved turn", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(deleteSession("session-1")).rejects.toThrow(
+        "still waiting to be saved",
+      );
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("destructive message operations", () => {
+    it.each([
+      ["the pending message", () => deleteMessage("assistant-pending")],
+      [
+        "the pending Session suffix",
+        () => deleteMessagesFrom("session-1", "2026-07-30T00:00:00.000Z"),
+      ],
+    ])("refuses to delete %s", async (_label, operation) => {
+      await registerPendingCompletedTurn();
+
+      await expect(operation()).rejects.toThrow("still waiting to be saved");
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+
+    it("refuses metadata mutation before the pending row is durable", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(
+        updateMessageMetadata("assistant-pending", {
+          insertedToEditor: true,
+        }),
+      ).rejects.toThrow("still waiting to be saved");
+      expect(mockDb.select).not.toHaveBeenCalled();
+      expect(mockDb.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getSessionTitleForMessage", () => {
+    it("returns the owning session title through the typed query", async () => {
+      mockSelectLimitChain([{ title: "Source session" }]);
+
+      await expect(getSessionTitleForMessage("message-1")).resolves.toBe(
+        "Source session",
+      );
+    });
   });
 
   describe("listMessages", () => {
@@ -447,6 +583,67 @@ describe("chatApi - session/message persistence", () => {
   });
 
   describe("addMessage", () => {
+    it("retains the preflight createdAt in the row and timelapse event", async () => {
+      const createdAt = "2026-07-30T00:00:00.123Z";
+      const insert = mockInsertChain([
+        {
+          id: "msg-original-time",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "retry-safe answer",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt,
+        },
+      ]);
+      mockUpdateChain();
+
+      await addMessage("session-1", "assistant", "retry-safe answer", {
+        id: "msg-original-time",
+        createdAt,
+      });
+
+      expect(insert.values).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "msg-original-time", createdAt }),
+      );
+      expect(mockRecordChatMessageAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: "msg-original-time",
+          createdAt,
+        }),
+      );
+    });
+
+    it("does not duplicate a completed turn event reserved before DB retry", async () => {
+      mockInsertChain([
+        {
+          id: "msg-reserved-event",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "already captured",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2026-07-30T00:00:00.123Z",
+        },
+      ]);
+      mockUpdateChain();
+
+      await addMessage("session-1", "assistant", "already captured", {
+        id: "msg-reserved-event",
+        createdAt: "2026-07-30T00:00:00.123Z",
+        recordTimelapse: false,
+      });
+
+      expect(mockRecordChatMessageAdd).not.toHaveBeenCalled();
+      expect(mockScheduleChatIndex).toHaveBeenCalledWith("msg-reserved-event");
+    });
+
     it("inserts a message and returns it", async () => {
       // Mock insert for message
       mockInsertChain([
@@ -473,6 +670,154 @@ describe("chatApi - session/message persistence", () => {
       expect(result.content).toBe("テストメッセージ");
     });
 
+    it("treats an exact existing explicit message id as an idempotent retry", async () => {
+      const existing = {
+        id: "msg-retry",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "復旧後も同じ回答",
+        model: "model-1",
+        tokensIn: 12,
+        tokensOut: 8,
+        durationMs: 100,
+        metadata: '{"retry":true}',
+        createdAt: "2025-01-01T00:00:00Z",
+      };
+      const insert = mockInsertChain([]);
+      mockSelectLimitChain([existing]);
+      mockUpdateChain();
+
+      const result = await addMessage(
+        "session-1",
+        "assistant",
+        "復旧後も同じ回答",
+        {
+          id: "msg-retry",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        },
+      );
+
+      expect(insert.onConflictDoNothing).toHaveBeenCalledWith({
+        target: "id",
+      });
+      expect(result).toMatchObject(existing);
+      expect(mockRecordChatMessageAdd).not.toHaveBeenCalled();
+      expect(mockScheduleChatIndex).not.toHaveBeenCalled();
+    });
+
+    it("accepts additive metadata after a committed insert and retries only the failed session update", async () => {
+      const initial = {
+        id: "msg-retry-metadata",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "挿入後も失わない回答",
+        model: "model-1",
+        tokensIn: 12,
+        tokensOut: 8,
+        durationMs: 100,
+        metadata: '{"retry":true}',
+        createdAt: "2025-01-01T00:00:00Z",
+      };
+      mockInsertChain([initial]);
+      const update = {
+        set: vi.fn().mockReturnThis(),
+        where: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("session updatedAt failed"))
+          .mockResolvedValue(undefined),
+      };
+      mockDb.update.mockReturnValue(update as never);
+
+      await expect(
+        addMessage("session-1", "assistant", "挿入後も失わない回答", {
+          id: "msg-retry-metadata",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        }),
+      ).rejects.toThrow("session updatedAt failed");
+
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          ...initial,
+          metadata: '{"retry":true,"insertedToEditor":true}',
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "挿入後も失わない回答", {
+          id: "msg-retry-metadata",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        }),
+      ).resolves.toMatchObject({
+        id: "msg-retry-metadata",
+        metadata: '{"retry":true,"insertedToEditor":true}',
+      });
+
+      expect(mockRecordChatMessageAdd).toHaveBeenCalledTimes(1);
+      expect(mockScheduleChatIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects an explicit message id collision with different content", async () => {
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          id: "msg-collision",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "別の回答",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2025-01-01T00:00:00Z",
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "期待した回答", {
+          id: "msg-collision",
+        }),
+      ).rejects.toThrow("chat message id collision");
+    });
+
+    it("rejects an explicit message id retry with a different createdAt", async () => {
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          id: "msg-time-collision",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "same answer",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2026-07-30T00:00:00.000Z",
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "same answer", {
+          id: "msg-time-collision",
+          createdAt: "2026-07-30T00:00:01.000Z",
+        }),
+      ).rejects.toThrow("chat message id collision");
+    });
+
     it("schedules episodic index for a non-empty user/assistant message", async () => {
       mockScheduleChatIndex.mockClear();
       mockInsertChain([{ id: "msg-x", sessionId: "s1", role: "assistant" }]);
@@ -497,6 +842,17 @@ describe("chatApi - session/message persistence", () => {
     });
   });
 
+  describe("clearProjectChatHistory", () => {
+    it("refuses to delete the retry target of an unresolved completed turn", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(clearProjectChatHistory("project-1")).rejects.toThrow(
+        "still waiting to be saved",
+      );
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+  });
+
   describe("updateSessionTitle", () => {
     it("updates the session title", async () => {
       mockUpdateChain();
@@ -518,6 +874,130 @@ describe("chatApi - session/message persistence", () => {
   });
 });
 
+describe("chatApi - Ollama endpoint snapshots", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(invoke).mockResolvedValue({
+      blocks: [],
+      stopReason: "end_turn",
+    });
+  });
+
+  it("passes the finalized endpoint on a plain request", async () => {
+    await sendChatMessageWithThinking(
+      [{ role: "user", content: "hello" }],
+      { projectId: "project-1", pathId: "summarization" },
+      undefined,
+      undefined,
+      null,
+      undefined,
+      "gemma4:latest",
+      null,
+      null,
+      4_096,
+      "ollama",
+      null,
+      "http://127.0.0.1:11434",
+    );
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      "send_chat_message",
+      expect.objectContaining({
+        provider: "ollama",
+        model: "gemma4:latest",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      }),
+    );
+  });
+
+  it("passes the finalized endpoint on an Agent request", async () => {
+    await sendAgentMessage(
+      [{ role: "user", content: "hello" }],
+      [],
+      { projectId: "project-1", pathId: "chat_agent_main" },
+      undefined,
+      undefined,
+      null,
+      null,
+      undefined,
+      "gemma4:latest",
+      null,
+      null,
+      4_096,
+      "ollama",
+      null,
+      "native",
+      "http://127.0.0.1:11434",
+    );
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      "send_agent_message",
+      expect.objectContaining({
+        provider: "ollama",
+        model: "gemma4:latest",
+        resolvedToolProtocol: "native",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      }),
+    );
+  });
+});
+
+describe("chatApi - unsupported CLI single-shot transport", () => {
+  afterEach(() => {
+    useAiSettingsStore.setState({ settings: { ...DEFAULT_AI_SETTINGS } });
+  });
+
+  it("rejects before IPC when Codex App Server is the active provider", async () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "cli",
+        cli: { kind: "codex", codexTransport: "app-server" },
+      },
+    });
+    vi.mocked(invoke).mockClear();
+
+    await expect(
+      sendChatMessageWithThinking([{ role: "user", content: "hello" }], {
+        projectId: "project-1",
+        pathId: "summarization",
+      }),
+    ).rejects.toMatchObject({ code: "AI_SINGLE_SHOT_CLI_UNSUPPORTED" });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("allows an HTTP role override while the active provider remains CLI", async () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "cli",
+        cli: { kind: "codex", codexTransport: "app-server" },
+      },
+    });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "ok" }],
+      stopReason: "end_turn",
+    });
+
+    await expect(
+      sendChatMessageWithThinking(
+        [{ role: "user", content: "hello" }],
+        { projectId: "project-1", pathId: "summarization" },
+        undefined,
+        undefined,
+        null,
+        undefined,
+        null,
+        "openrouter",
+      ),
+    ).resolves.toMatchObject({ text: "ok" });
+    expect(invoke).toHaveBeenCalledWith(
+      "send_chat_message",
+      expect.objectContaining({ provider: "openrouter" }),
+    );
+  });
+});
+
 describe("chatApi - message prompt snapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -533,6 +1013,8 @@ describe("chatApi - message prompt snapshot", () => {
       layers: [{ layer: "L1", label: "Project", used: 10 } as never],
       totalTokens: 42,
       model: "openrouter/anthropic/claude-sonnet-4.6",
+      provider: "openrouter",
+      contextWindow: 1_000_000,
     });
 
     expect(mockDb.insert).toHaveBeenCalled();
@@ -540,7 +1022,11 @@ describe("chatApi - message prompt snapshot", () => {
     expect(inserted.messageId).toBe("msg-1");
     expect(inserted.systemPrompt).toBe("SYSTEM PROMPT BODY");
     expect(inserted.totalTokens).toBe(42);
-    expect(JSON.parse(inserted.layers as string)).toHaveLength(1);
+    expect(JSON.parse(inserted.layers as string)).toEqual({
+      layers: [{ layer: "L1", label: "Project", used: 10 }],
+      provider: "openrouter",
+      contextWindow: 1_000_000,
+    });
     // 同一メッセージの再送で最新内容に上書きされる (upsert) こと。
     expect(onConflictDoUpdate).toHaveBeenCalled();
     const conflictArg = onConflictDoUpdate.mock.calls[0][0] as {
@@ -568,6 +1054,33 @@ describe("chatApi - message prompt snapshot", () => {
     expect(snap?.layers).toHaveLength(1);
     expect(snap?.totalTokens).toBe(7);
     expect(snap?.model).toBe("m");
+    expect(snap?.provider).toBeNull();
+    expect(snap?.contextWindow).toBeNull();
+  });
+
+  it("getMessagePrompt reads provider and context window from the v2 payload", async () => {
+    const where = vi.fn().mockResolvedValue([
+      {
+        messageId: "msg-1",
+        systemPrompt: "BODY",
+        layers: JSON.stringify({
+          layers: [{ layer: "L1", label: "Project", used: 5 }],
+          provider: "ollama",
+          contextWindow: 131_072,
+        }),
+        totalTokens: 7,
+        model: "gemma4:latest",
+      },
+    ]);
+    const from = vi.fn().mockReturnValue({ where });
+    mockDb.select.mockReturnValue({ from } as never);
+
+    await expect(getMessagePrompt("msg-1")).resolves.toMatchObject({
+      provider: "ollama",
+      contextWindow: 131_072,
+      model: "gemma4:latest",
+      layers: [{ layer: "L1", label: "Project", used: 5 }],
+    });
   });
 
   it("getMessagePrompt returns null for an unrecorded (pre-feature) message", async () => {
@@ -595,5 +1108,7 @@ describe("chatApi - message prompt snapshot", () => {
     const snap = await getMessagePrompt("msg-1");
     expect(snap?.layers).toEqual([]);
     expect(snap?.totalTokens).toBeNull();
+    expect(snap?.provider).toBeNull();
+    expect(snap?.contextWindow).toBeNull();
   });
 });

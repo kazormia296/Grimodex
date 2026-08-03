@@ -62,6 +62,7 @@ export async function getProjectUsageSummary(
     .select({
       surface: aiUsage.surface,
       model: aiUsage.model,
+      provider: aiUsage.provider,
       tokensIn: aiUsage.tokensIn,
       tokensOut: aiUsage.tokensOut,
       cacheReadTokens: aiUsage.cacheReadTokens,
@@ -94,7 +95,7 @@ export async function getProjectUsageSummary(
     let cost = r.costUsd ?? null;
     let estimated = false;
     if (cost == null) {
-      const est = estimateTotalCost(r.model, tin, tout);
+      const est = estimateTotalCost(r.model, tin, tout, r.provider);
       if (est != null) {
         cost = est;
         estimated = true;
@@ -197,6 +198,7 @@ export async function getProjectUsageInRange(
     .select({
       createdAt: aiUsage.createdAt,
       model: aiUsage.model,
+      provider: aiUsage.provider,
       tokensIn: aiUsage.tokensIn,
       tokensOut: aiUsage.tokensOut,
       costUsd: aiUsage.costUsd,
@@ -212,7 +214,12 @@ export async function getProjectUsageInRange(
     let cost = r.costUsd ?? null;
     let estimated = false;
     if (cost == null) {
-      const est = estimateTotalCost(r.model, r.tokensIn ?? 0, r.tokensOut ?? 0);
+      const est = estimateTotalCost(
+        r.model,
+        r.tokensIn ?? 0,
+        r.tokensOut ?? 0,
+        r.provider,
+      );
       if (est != null) {
         cost = est;
         estimated = true;

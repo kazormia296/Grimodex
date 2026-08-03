@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # RPM upgrades run the new package's %post before removing the old package's
-# obsolete payload and running its %postun. The published Tauri v1 RPM owns
+# obsolete payload and running its %postun. The published Tauri RPM owns
 # /usr/bin/grimodex directly, while electron-builder creates that launcher from
 # %post. A final %posttrans is therefore required to restore the launcher after
 # the whole transaction. Future Electron upgrades need the same repair because

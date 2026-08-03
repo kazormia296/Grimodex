@@ -1,26 +1,51 @@
 import { DOMSerializer } from "@tiptap/pm/model";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { uiUpdateEvent } from "@/features/agent-writes/event";
-import { persistSceneBody } from "@/features/editor/persistSceneBody";
+import {
+  persistSceneBody,
+  type PersistedSceneBody,
+} from "@/features/editor/persistSceneBody";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
+import type { AgentWriteResult } from "@/features/agent-writes/event";
 import { AlreadyNotifiedSaveError } from "./saveErrors";
 import type { LoadedEditorBinding } from "./types";
 
 export interface EditorDocumentServices {
-  persistSceneBody: (id: string, doc: ProseMirrorNode) => Promise<void>;
+  persistSceneBody: (
+    id: string,
+    doc: ProseMirrorNode,
+    options: { baseVersion: number },
+  ) => Promise<PersistedSceneBody>;
   updateCodexPhase: (
     phaseId: string,
     data: { contentOverride: string },
-  ) => Promise<void>;
-  updateCodexText: (id: string, data: { content: string }) => Promise<void>;
-  updateSnippet: (id: string, data: { content: string }) => Promise<boolean>;
+    options: { baseVersion: number },
+  ) => Promise<CodexEntryPhase | null>;
+  updateCodexText: (
+    id: string,
+    data: { content: string },
+    options: { baseVersion: number },
+  ) => Promise<VersionedSaveOutcome>;
+  updateSnippet: (
+    id: string,
+    data: { content: string },
+    options: { baseVersion: number },
+  ) => Promise<VersionedSaveOutcome>;
   updateChronicleEvent: (input: {
     eventId: string;
     detail: string;
-  }) => Promise<void>;
+    baseVersion: number;
+  }) => Promise<AgentWriteResult>;
   serializeSnippet: (doc: ProseMirrorNode) => string;
+}
+
+export interface SaveEditorDocumentResult {
+  binding: LoadedEditorBinding;
+  persistedSceneBody?: PersistedSceneBody;
 }
 
 /** Serialize with the same ProseMirror schema used by the live editor. */
@@ -39,11 +64,16 @@ export function serializeSnippet(doc: ProseMirrorNode): string {
 
 export const defaultEditorDocumentServices: EditorDocumentServices = {
   persistSceneBody,
-  updateCodexPhase: (phaseId, data) =>
-    usePhaseStore.getState().updatePhase(phaseId, data),
-  updateCodexText: (id, data) => useCodexStore.getState().updateText(id, data),
-  updateSnippet: (id, data) => useSnippetStore.getState().update(id, data),
-  updateChronicleEvent: uiUpdateEvent,
+  updateCodexPhase: (phaseId, data, options) =>
+    usePhaseStore.getState().updatePhase(phaseId, data, options),
+  updateCodexText: (id, data, options) =>
+    useCodexStore.getState().updateText(id, data, options),
+  updateSnippet: (id, data, options) =>
+    useSnippetStore.getState().update(id, data, options),
+  // This editor session advances its own loadedVersion from the returned
+  // result; notifying it as an external writer would create a self-conflict.
+  updateChronicleEvent: (input) =>
+    uiUpdateEvent(input, { suppressDocumentNotification: true }),
   serializeSnippet,
 };
 
@@ -56,41 +86,81 @@ export async function saveEditorDocument(
   binding: LoadedEditorBinding,
   doc: ProseMirrorNode,
   services: EditorDocumentServices = defaultEditorDocumentServices,
-): Promise<void> {
+): Promise<SaveEditorDocumentResult> {
   switch (binding.kind) {
-    case "tree":
-      await services.persistSceneBody(binding.id, doc);
-      return;
+    case "tree": {
+      const persistedSceneBody = await services.persistSceneBody(
+        binding.id,
+        doc,
+        { baseVersion: binding.loadedVersion },
+      );
+      return {
+        binding: {
+          ...binding,
+          loadedVersion: persistedSceneBody.contentVersion,
+        },
+        persistedSceneBody,
+      };
+    }
 
     case "codex": {
       const content = JSON.stringify(doc.toJSON());
       if (binding.phaseId) {
-        await services.updateCodexPhase(binding.phaseId, {
-          contentOverride: content,
-        });
+        const updated = await services.updateCodexPhase(
+          binding.phaseId,
+          { contentOverride: content },
+          { baseVersion: binding.loadedVersion },
+        );
+        if (!updated) {
+          throw new AlreadyNotifiedSaveError(
+            `Codex phase save not persisted: ${binding.phaseId}`,
+          );
+        }
+        return {
+          binding: { ...binding, loadedVersion: updated.version },
+        };
       } else {
-        await services.updateCodexText(binding.id, { content });
+        const outcome = await services.updateCodexText(
+          binding.id,
+          { content },
+          { baseVersion: binding.loadedVersion },
+        );
+        if (!outcome.persisted) {
+          throw new AlreadyNotifiedSaveError(
+            `Codex save not persisted: ${binding.id}`,
+          );
+        }
+        return {
+          binding: { ...binding, loadedVersion: outcome.version },
+        };
       }
-      return;
     }
 
     case "snippet": {
-      const saved = await services.updateSnippet(binding.id, {
-        content: services.serializeSnippet(doc),
-      });
-      if (!saved) {
+      const outcome = await services.updateSnippet(
+        binding.id,
+        { content: services.serializeSnippet(doc) },
+        { baseVersion: binding.loadedVersion },
+      );
+      if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
           `snippet save not persisted: ${binding.id}`,
         );
       }
-      return;
+      return {
+        binding: { ...binding, loadedVersion: outcome.version },
+      };
     }
 
-    case "chronicle-event":
-      await services.updateChronicleEvent({
+    case "chronicle-event": {
+      const result = await services.updateChronicleEvent({
         eventId: binding.id,
         detail: JSON.stringify(doc.toJSON()),
+        baseVersion: binding.loadedVersion,
       });
-      return;
+      return {
+        binding: { ...binding, loadedVersion: result.version },
+      };
+    }
   }
 }

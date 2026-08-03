@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
@@ -13,6 +13,7 @@ import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { DocumentKey } from "@/features/editor/document/documentKey";
 
 // Sentinel group index — distinguishes mini-editor updates from pane 0 / pane 1
 const CODEX_MINI_GROUP = 99;
@@ -21,6 +22,11 @@ interface CodexContentEditorProps {
   content: string;
   onContentChange: (content: string) => void;
   entryId?: string;
+  /**
+   * Canonical live-sync target. `undefined` keeps the legacy entryId-derived
+   * target, while `null` explicitly disables live sync (Phase preview).
+   */
+  liveDocumentKey?: DocumentKey | null;
   /** どのエンティティの本文か。Codex 説明欄以外（Chronicle 出来事の詳細など）でも
    *  Codex ハイライト付きミニエディタとして再利用する。Trash Bin 捕捉と
    *  focusedContentEditorStore 登録は "codex" のときだけ行う（id↔kind 不整合回避）。 */
@@ -48,6 +54,7 @@ export function CodexContentEditor({
   content,
   onContentChange,
   entryId,
+  liveDocumentKey,
   entryKind = "codex",
   onExternalSync,
   externalContent,
@@ -55,6 +62,14 @@ export function CodexContentEditor({
   readOnly = false,
 }: CodexContentEditorProps) {
   const isCodexEntry = entryKind === "codex";
+  const defaultDocumentKey = useMemo<DocumentKey | null>(() => {
+    if (!entryId) return null;
+    return entryKind === "codex"
+      ? { kind: "codex", id: entryId, phaseId: null }
+      : { kind: "chronicle-event", id: entryId };
+  }, [entryId, entryKind]);
+  const documentKey =
+    liveDocumentKey === undefined ? defaultDocumentKey : liveDocumentKey;
   const isApplyingExternalUpdate = useRef(false);
   const onExternalSyncRef = useRef(onExternalSync);
   onExternalSyncRef.current = onExternalSync;
@@ -77,10 +92,10 @@ export function CodexContentEditor({
         const serialized = JSON.stringify(json);
         onContentChange(serialized);
         // Publish to sceneContentStore so the EditorPane tab stays in sync
-        if (entryId) {
+        if (documentKey) {
           useSceneContentStore
             .getState()
-            .setLiveContent(entryId, json, CODEX_MINI_GROUP);
+            .setLiveContent(documentKey, json, CODEX_MINI_GROUP);
         }
       } catch {
         // ignore serialization errors
@@ -144,9 +159,9 @@ export function CodexContentEditor({
   // rAF-coalesced: a typing burst in the source EditorPane collapses to one
   // full-doc setContent per frame (and one JSON.stringify for onExternalSync).
   useEffect(() => {
-    if (!entryId || !editor) return;
+    if (!documentKey || !editor) return;
     return subscribeLiveContentRafCoalesced(
-      entryId,
+      documentKey,
       CODEX_MINI_GROUP,
       (next) => {
         isApplyingExternalUpdate.current = true;
@@ -162,7 +177,7 @@ export function CodexContentEditor({
         }
       },
     );
-  }, [entryId, editor]);
+  }, [documentKey, editor]);
 
   return (
     <>

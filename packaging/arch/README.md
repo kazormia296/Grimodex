@@ -6,7 +6,7 @@ Electronリリースで生成した `.deb` を [PKGBUILD](./PKGBUILD) で再パ�
 
 | 経路                     | 担当ワークフロー                              | 成果物                                                                                                             |
 | ------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| GitHub Releases アセット | `release.yml` の `build-arch` ジョブ          | `grimodex-bin-<ver>-1-x86_64.pkg.tar.zst`（`sudo pacman -U` で導入）                                               |
+| GitHub Releases アセット | `release.yml` の `build-arch` ジョブ          | `grimodex-bin-<ver>-<pkgrel>-x86_64.pkg.tar.zst`（`sudo pacman -U` で導入）                                        |
 | AUR                      | `aur-publish.yml`（リリース**公開時**に発火） | AUR パッケージ [`grimodex-bin`](https://aur.archlinux.org/packages/grimodex-bin)（`yay -S grimodex-bin` 等で導入） |
 
 ## PKGBUILD テンプレート
@@ -26,7 +26,15 @@ sed 置換してから使う。手で `makepkg` する場合も同様に置換�
 - `depends` はelectron-builder 26のdeb既定dependsをArch名へ対応させ、
   legacy keyring migration用の `libsecret` / `dbus` を加えた。WebKitGTKは必要ない。
 - Debianの `postinst` は再packされないため、PKGBUILD自身が
-  `/usr/bin/grimodex -> /opt/Grimodex/grimodex` を作り、`chrome-sandbox` を0755へ固定する。
+  `/opt/Grimodex/grimodex` ランチャーと `/usr/bin/grimodex` symlinkを置き、
+  実バイナリを `/opt/Grimodex/grimodex-bin` へ移して `chrome-sandbox` を0755へ固定する。
+- ChromiumはFcitxのアプリ識別子を汎用値 `electron` で初期化し、起動直後に
+  `LD_PRELOAD` を消去する。PKGBUILDは小さな `g_get_prgname()` interposerをElectron
+  ELFの `DT_NEEDED` へ追加し、main / zygote / rendererの全GrimodexプロセスでMozkeyへ
+  `grimodex` を渡す。Mozkey側で全Electronアプリを許可しないための限定的な処置である。
+- GNOME Waylandのtext-input経路はFcitxへapplication programを渡さないため、Arch版
+  ランチャーはGrimodexだけを `--ozone-platform=x11` で起動する。これによりGTK/Fcitx
+  clientが直接接続し、上記の `grimodex` app scopeがMozkeyへ届く。
 - `.deb` の `resources/package-type=deb` はpayloadに残るが、追加marker
   `resources/grimodex-package-channel=arch` をmainが優先して内蔵electron-updaterを無効化する。
   Arch/AUR版の更新はpacman/AUR helperで行う。
@@ -37,12 +45,14 @@ sed 置換してから使う。手で `makepkg` する場合も同様に置換�
 ```sh
 mkdir /tmp/grimodex-pkg && cd /tmp/grimodex-pkg
 sed 's/@PKGVER@/2.0.0/' /path/to/repo/packaging/arch/PKGBUILD > PKGBUILD
+cp /path/to/repo/packaging/arch/grimodex-launcher .
+cp /path/to/repo/packaging/arch/grimodex-ime-identity.c .
 # 公開前リリースを試す場合は .deb と LICENSE をローカルに置く
 gh release download v2.0.0 --repo kazormia296/Grimodex --pattern 'Grimodex-2.0.0-linux-amd64.deb'
 cp /path/to/repo/LICENSE LICENSE-v2.0.0
 updpkgsums          # sha256sums を実値に更新（pacman-contrib）
 makepkg -fd         # 依存チェックをスキップして再パッケージ
-namcap grimodex-bin-*.pkg.tar.zst   # E: が 0 件であること
+namcap grimodex-bin-*.pkg.tar.zst   # 依存・権限に想定外の指摘がないこと
 ```
 
 ## AUR 公開の初回セットアップ
@@ -53,25 +63,27 @@ PKGBUILD / .SRCINFO を push する。動かすには以下の一度きりの準
 1. [AUR アカウント](https://aur.archlinux.org/register) を作成する。
 2. AUR 専用の SSH 鍵を作る: `ssh-keygen -t ed25519 -f aur -C aur@grimodex -N ''`
 3. AUR の **My Account → SSH Public Key** に `aur.pub` の内容を登録する。
-4. GitHub リポジトリの **Settings → Secrets and variables → Actions** に登録:
-   - `AUR_USERNAME` — AUR のユーザー名（AUR リポジトリのコミット名義になる）
-   - `AUR_EMAIL` — コミット用メールアドレス
-   - `AUR_SSH_PRIVATE_KEY` — `aur`（秘密鍵）の中身全文
-5. 初回はパッケージ未登録の状態で問題ない。AUR は初回 push で
+4. GitHub リポジトリの **Settings → Environments** に `aur` environment を作る。
+5. `aur` environment の secret に、Mozkey IbG と同じ契約で
+   `AUR_SSH_PRIVATE_KEY` — `aur`（秘密鍵）の中身全文 — を登録する。
+   コミット名義は workflow 内の `kazormia296` /
+   `kazormia296@users.noreply.github.com` に固定するため、追加 secret は不要。
+6. 初回はパッケージ未登録の状態で問題ない。AUR は初回 push で
    `grimodex-bin` パッケージが自動作成される。
 
-シークレット未設定の場合、`aur-publish.yml` は warning を出して安全にスキップする
-（リリース公開が赤 CI にならない）。
+`AUR_SSH_PRIVATE_KEY` が未設定または不正な場合、AUR 更新の取りこぼしを成功扱いに
+しないよう `aur-publish.yml` は fail closed する。
 
 ## 注意事項
 
-- 既存 Tauri v1 の Arch パッケージは `.deb` 由来で、アプリ内 updater が
-  `linux-x86_64-deb` を選び `dpkg` を起動するため Arch 上では移行できない。
-  **Tauri v1 の Arch ユーザーはアプリ内更新を使わず、pacman / AUR から
-  `grimodex-bin` v2 へ更新する。** 既存 v1.0.0 asset は凍結し、再ビルドしない。
+- 最終公開 Tauri v0.10.4 には updater 設定がなく、Arch 上でもアプリ内更新はできない。
+  **v0.10.4 の Arch ユーザーは pacman / AUR から `grimodex-bin` v2 へ更新する。**
+  v1.0.0 Draft の deb channel は凍結し、Draft asset も再ビルドしない。
 - pacman / AUR 版の更新は、新リリースごとの `aur-publish.yml`（AUR 側）と
   GitHub Releasesアセット再取得で配る。package markerでElectronアプリ内updaterを
   明示的に無効化し、`.deb` updaterをArch上で誤起動させない。
+- デスクトップアイコン、`/usr/bin/grimodex`、従来の `/opt/Grimodex/grimodex` の
+  いずれから起動しても、XWaylandとFcitx向けアプリ識別依存を含む同じElectron ELFが起動する。
 - prerelease タグ（`v2.1.0-beta.1` など）はハイフンが pkgver に使えないため
   GitHub Releases の `.pkg.tar.zst` 生成と AUR 公開の対象外。プレリリースは
   AppImage / deb / rpm を使い、stable 公開時に pacman / AUR へ戻る。

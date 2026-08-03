@@ -5,7 +5,7 @@
  * GrimodexBridge の close veto 応答・ハンドラ登録数通知・resize 通知・
  * イベント多重化を検証する。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IPC } from "../shared/ipcContract.js";
 
@@ -39,6 +39,9 @@ vi.mock("electron", () => ({
 /** preload が公開するブリッジの、このテストで使う部分の構造型。 */
 interface BridgeUnderTest {
   shell: string;
+  runtimePerformance?: {
+    ownerToken: string;
+  };
   listen(channel: string, cb: (payload: unknown) => void): () => void;
   emit(channel: string, payload?: unknown): Promise<void>;
   dialog: {
@@ -54,6 +57,11 @@ interface BridgeUnderTest {
     onCloseRequested(cb: () => boolean): () => void;
   };
 }
+
+const runtimePerformanceOwnerTokenEnv =
+  "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
+const originalRuntimePerformanceOwnerToken =
+  process.env[runtimePerformanceOwnerTokenEnv];
 
 describe("window fullscreen bridge", () => {
   it("maps fullscreen operations onto the allowlisted window-control channel", async () => {
@@ -92,11 +100,46 @@ function fire(channel: string, ...args: unknown[]): void {
 
 beforeEach(() => {
   vi.resetModules();
+  delete process.env[runtimePerformanceOwnerTokenEnv];
   mocks.onHandlers.clear();
   mocks.send.mockClear();
   mocks.invoke.mockReset();
   mocks.exposed.name = "";
   mocks.exposed.bridge = undefined;
+});
+
+afterAll(() => {
+  if (originalRuntimePerformanceOwnerToken === undefined) {
+    delete process.env[runtimePerformanceOwnerTokenEnv];
+  } else {
+    process.env[runtimePerformanceOwnerTokenEnv] =
+      originalRuntimePerformanceOwnerToken;
+  }
+});
+
+describe("runtime performance capability", () => {
+  it("is absent from the normal production preload bridge", async () => {
+    const bridge = await loadPreload();
+    expect(bridge.runtimePerformance).toBeUndefined();
+  });
+
+  it("exposes only a valid owner token supplied before preload import", async () => {
+    const ownerToken = "11111111-1111-4111-8111-111111111111";
+    process.env[runtimePerformanceOwnerTokenEnv] = ownerToken;
+
+    const bridge = await loadPreload();
+
+    expect(bridge.runtimePerformance).toEqual({ ownerToken });
+    expect(Object.isFrozen(bridge.runtimePerformance)).toBe(true);
+  });
+
+  it("rejects malformed environment values instead of creating a capability", async () => {
+    process.env[runtimePerformanceOwnerTokenEnv] = "not-a-benchmark-token";
+
+    const bridge = await loadPreload();
+
+    expect(bridge.runtimePerformance).toBeUndefined();
+  });
 });
 
 describe("close veto プロトコル（§6.4 手順 2）", () => {
@@ -126,14 +169,20 @@ describe("close veto プロトコル（§6.4 手順 2）", () => {
     const bridge = await loadPreload();
     const after = vi.fn(() => false);
     bridge.windowControls.onCloseRequested(() => {
-      throw new Error("boom");
+      throw new Error("private manuscript path: /home/user/secret.gri");
     });
     bridge.windowControls.onCloseRequested(after);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     fire(IPC.closeRequested);
-    errorSpy.mockRestore();
     expect(after).toHaveBeenCalledTimes(1);
     expect(mocks.send).toHaveBeenCalledWith(IPC.closeReply, { veto: false });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[grimodex] close-requested handler failed",
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(
+      "private manuscript",
+    );
+    errorSpy.mockRestore();
   });
 
   it("登録 / 解除でハンドラ数を main に通知する（§6.4 手順 4 の判定材料）", async () => {
@@ -168,6 +217,25 @@ describe("resize 通知（§6.3）", () => {
     expect(a).toHaveBeenCalledTimes(2);
     expect(b).toHaveBeenCalledTimes(1);
   });
+
+  it("resize handler の例外内容を console へ漏らさず、後続 handler を実行する", async () => {
+    const bridge = await loadPreload();
+    const after = vi.fn();
+    bridge.windowControls.onResized(() => {
+      throw new Error("SECRET_NOVEL_SENTINEL");
+    });
+    bridge.windowControls.onResized(after);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    fire(IPC.windowResized);
+
+    expect(after).toHaveBeenCalledOnce();
+    expect(errorSpy).toHaveBeenCalledWith("[grimodex] resize handler failed");
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(
+      "SECRET_NOVEL_SENTINEL",
+    );
+    errorSpy.mockRestore();
+  });
 });
 
 describe("イベント多重化（§7.2 — grim:event 1 本）", () => {
@@ -182,6 +250,27 @@ describe("イベント多重化（§7.2 — grim:event 1 本）", () => {
     unlisten();
     fire(IPC.event, "codex:data-changed", { rev: 3 });
     expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it("listener の例外内容を console へ漏らさず、同一 channel の後続 listener を実行する", async () => {
+    const bridge = await loadPreload();
+    const after = vi.fn();
+    bridge.listen("codex:data-changed", () => {
+      throw new Error("SECRET_NOVEL_SENTINEL");
+    });
+    bridge.listen("codex:data-changed", after);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    fire(IPC.event, "codex:data-changed", { rev: 1 });
+
+    expect(after).toHaveBeenCalledWith({ rev: 1 });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[grimodex] event listener failed (codex:data-changed)",
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(
+      "SECRET_NOVEL_SENTINEL",
+    );
+    errorSpy.mockRestore();
   });
 
   it("allowlist 外チャネルは listen / emit とも拒否する（§5.4）", async () => {

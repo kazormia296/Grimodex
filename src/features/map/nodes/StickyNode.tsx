@@ -5,11 +5,13 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useSyncExternalStore,
   type CSSProperties,
 } from "react";
 import { Check, X } from "lucide-react";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { NodeToolbar, Position, type NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
@@ -30,6 +32,20 @@ import {
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { rootCause } from "@/lib/debugLog";
+import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
+import { registerQuiescenceParticipant } from "@/application/lifecycle/quiescenceParticipants";
+import {
+  canScheduleQuiescenceMutation,
+  isQuiescenceLeaseActive,
+  subscribeQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 export interface StickyNodeData {
   id: string;
@@ -63,6 +79,85 @@ export interface StickyNodeData {
   }) => Promise<void>;
   onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
+}
+
+type StickyUpdate = NonNullable<StickyNodeData["onUpdate"]>;
+
+interface StickyDraftController {
+  readonly id: string;
+  latestBody: string;
+  dirty: boolean;
+  generation: number;
+  setOnUpdate: (onUpdate: StickyUpdate | undefined) => void;
+  markDirty: (body: string) => void;
+  save: () => Promise<void>;
+  discard: () => void;
+}
+
+/**
+ * The controller deliberately outlives the React surface that created it.
+ * A virtualized/unmounted Sticky can therefore keep one retryable lifecycle
+ * participant until its final body is saved or explicitly discarded.
+ */
+function createStickyDraftController(
+  id: string,
+  initialBody: string,
+): StickyDraftController {
+  let onUpdate: StickyUpdate | undefined;
+  let inFlight: Promise<void> | null = null;
+
+  const controller: StickyDraftController = {
+    id,
+    latestBody: initialBody,
+    dirty: false,
+    generation: 0,
+    setOnUpdate(nextOnUpdate) {
+      onUpdate = nextOnUpdate;
+    },
+    markDirty(body) {
+      controller.latestBody = body;
+      controller.dirty = true;
+      controller.generation += 1;
+    },
+    async save() {
+      if (inFlight) return inFlight;
+
+      const drain = async (): Promise<void> => {
+        while (controller.dirty) {
+          const body = controller.latestBody;
+          const generation = controller.generation;
+          const updates = {
+            body,
+            previewText: extractPreviewText(body),
+          };
+          const write = onUpdate
+            ? onUpdate(updates)
+            : updateSticky(id, updates).then(() => undefined);
+          await trackPendingEditorWrite(write);
+          if (controller.generation === generation) {
+            controller.dirty = false;
+          }
+        }
+      };
+
+      const pending = drain();
+      inFlight = pending;
+      void pending.then(
+        () => {
+          if (inFlight === pending) inFlight = null;
+        },
+        () => {
+          if (inFlight === pending) inFlight = null;
+        },
+      );
+      return pending;
+    },
+    discard() {
+      controller.dirty = false;
+    },
+  };
+
+  return controller;
 }
 
 const STICKY_ANIMATE = {
@@ -213,27 +308,52 @@ export const StickyNode = memo(function StickyNode({
   const exitFiredRef = useRef(false);
 
   const [editing, setEditing] = useState(false);
+  const [deletePersistenceReady, setDeletePersistenceReady] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
   const [glueOrient, setGlueOrient] = useState<"left" | "top">("left");
-  const latestBodyRef = useRef<string>(d.body);
+  const quiescenceLeaseActive = useSyncExternalStore(
+    subscribeQuiescenceLease,
+    isQuiescenceLeaseActive,
+    () => false,
+  );
+  const draftControllerRef = useRef<StickyDraftController | null>(null);
+  if (
+    draftControllerRef.current === null ||
+    draftControllerRef.current.id !== d.id
+  ) {
+    draftControllerRef.current = createStickyDraftController(d.id, d.body);
+  }
+  const draftController = draftControllerRef.current;
+  draftController.setOnUpdate(d.onUpdate);
   const measureRef = useRef<HTMLDivElement>(null);
   const wrapperElRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(false);
+  const isDeletingRef = useRef(isDeleting);
+  isDeletingRef.current = isDeleting;
 
   // Sync body from parent when not editing
   useEffect(() => {
-    if (!editing) {
-      latestBodyRef.current = d.body;
+    if (!editing && !draftController.dirty) {
+      draftController.latestBody = d.body;
     }
-  }, [d.body, editing]);
+  }, [d.body, draftController, editing]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Auto-enter edit mode for newly created stickies (branch / add)
   useEffect(() => {
+    if (quiescenceLeaseActive) return;
     if (pendingAutoFocusIds.has(d.id)) {
       pendingAutoFocusIds.delete(d.id);
       setEditing(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [d.id, quiescenceLeaseActive]);
 
   // ResizeObserver: switch glue side based on content height with hysteresis
   // left→top at >= 110px, top→left at <= 90px (dead band avoids oscillation)
@@ -252,27 +372,84 @@ export const StickyNode = memo(function StickyNode({
     return () => ro.disconnect();
   }, []);
 
-  const save = useCallback(async () => {
-    const json = latestBodyRef.current;
-    const preview = extractPreviewText(json);
-    await (d.onUpdate?.({ body: json, previewText: preview }) ??
-      updateSticky(d.id, { body: json, previewText: preview }));
-  }, [d]);
+  useEffect(() => {
+    let mounted = true;
+    let unregister = () => {};
+    const participant = {
+      id: `sticky:${draftController.id}`,
+      flush: async () => {
+        await draftController.save();
+        if (!mounted && !draftController.dirty) unregister();
+      },
+      discard: () => {
+        draftController.discard();
+        if (!mounted) unregister();
+      },
+      recovery: () =>
+        draftController.dirty
+          ? {
+              kind: "map-sticky",
+              id: draftController.id,
+              prosemirror: draftController.latestBody,
+            }
+          : null,
+    };
+    unregister = registerQuiescenceParticipant(participant);
 
-  const exitEditing = useCallback(async () => {
-    setEditing(false);
-    await save();
-  }, [save]);
+    return () => {
+      mounted = false;
+      if (!draftController.dirty) {
+        unregister();
+        return;
+      }
+      // Do not retire the participant until persistence succeeds. A failed
+      // background flush keeps both its detached save closure and recovery
+      // snapshot available to the next lifecycle retry.
+      void participant.flush().catch(() => {
+        // Background cleanup must terminate its rejection. The participant
+        // remains registered, so strict quiescence can retry or discard it.
+      });
+    };
+  }, [draftController]);
+
+  const finishEditingRef = useRef<Promise<boolean> | null>(null);
+  const exitEditing = useCallback((): Promise<boolean> => {
+    if (finishEditingRef.current) return finishEditingRef.current;
+
+    const pending = draftController
+      .save()
+      .then(() => {
+        finishEditingRef.current = null;
+        if (mountedRef.current) {
+          setEditing(false);
+          if (isDeletingRef.current) setDeletePersistenceReady(true);
+        }
+        return true;
+      })
+      .catch((error: unknown) => {
+        finishEditingRef.current = null;
+        if (mountedRef.current) {
+          toast.error(t("autoSave.failed", { reason: rootCause(error) }));
+        }
+        // Keep the editor and dirty controller alive for Escape/click-away,
+        // lifecycle retry, or recovery export. User event callers intentionally
+        // fire-and-forget this promise, so the rejection must end here.
+        return false;
+      });
+    finishEditingRef.current = pending;
+    return pending;
+  }, [draftController, t]);
 
   // 削除トリガー (isDeleting=true) が立ったら、編集中の未保存内容を即保存する。
-  // exitEditing 経由でないと save が走らないため、Undo で復元する内容に
-  // ユーザーが編集中だった文字が反映されないバグの根本対応。
+  // 永続化が成功するまでは exit animation / delete completion を開始しない。
   useEffect(() => {
-    if (isDeleting && editing) {
-      void save();
-      setEditing(false);
+    if (!isDeleting) {
+      exitFiredRef.current = false;
+      setDeletePersistenceReady(false);
+      return;
     }
-  }, [isDeleting, editing, save]);
+    void exitEditing();
+  }, [exitEditing, isDeleting]);
 
   // Click-away: document-level pointerdown 監視。React Flow が pane に
   // transform をかけているため `position: fixed` + `zIndex: -1` の
@@ -289,116 +466,144 @@ export const StickyNode = memo(function StickyNode({
     return () => document.removeEventListener("pointerdown", handler, true);
   }, [editing, exitEditing]);
 
-  // Unmount safety net: パネル切替 / ボード切替 / アプリ終了などで
-  // StickyNode が unmount された際、編集中なら最新本文を flush する。
-  const editingRef = useRef(editing);
-  const saveRef = useRef(save);
-  useEffect(() => {
-    editingRef.current = editing;
-    saveRef.current = save;
-  });
-  useEffect(() => {
-    return () => {
-      if (editingRef.current) {
-        void saveRef.current();
-      }
-    };
-  }, []);
-
-  const showAdoptUI = (d.branchAttached ?? false) && !editing;
+  const showAdoptUI =
+    (d.branchAttached ?? false) &&
+    !editing &&
+    !isDeleting &&
+    !quiescenceLeaseActive;
 
   return (
-    <div
-      ref={wrapperElRef}
-      style={{ position: "relative" }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <FloatingHandle isConnectable={isConnectable} />
-      <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          ref={wrapperElRef}
+          style={{ position: "relative" }}
+          aria-disabled={quiescenceLeaseActive || undefined}
+          data-quiescence-locked={quiescenceLeaseActive || undefined}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          onContextMenu={(event) => {
+            // MapCanvas already owns the general node context menu on the
+            // enclosing ReactFlow node. A branch-attached Sticky exposes its
+            // dedicated Adopt/Reject menu here, so do not let the same native
+            // contextmenu event open both Radix menus. Normal/adopted Stickies
+            // have no local menu and must keep bubbling to MapCanvas.
+            if (showAdoptUI) event.stopPropagation();
+          }}
+          onFocusCapture={() => setFocusWithin(true)}
+          onBlurCapture={(event) => {
+            if (
+              !event.currentTarget.contains(event.relatedTarget as Node | null)
+            ) {
+              setFocusWithin(false);
+            }
+          }}
+        >
+          <FloatingHandle isConnectable={isConnectable} />
+          <NodeBranchToolbar
+            onBranchFrom={quiescenceLeaseActive ? undefined : d.onBranchFrom}
+          />
 
-      {/* AI Branch 由来 Sticky の採用 / 不採用。branch 在籍中かつ hover 時のみ。
+          {/* AI Branch 由来 Sticky の採用 / 不採用。branch 在籍中かつ hover 時のみ。
           採用 = branch から切り離して通常 Sticky 化 (provenance は保持)。
           不採用 = ゴミ箱へ (既存の削除アニメーション経由)。 */}
-      {showAdoptUI && (
-        <NodeToolbar
-          position={Position.Top}
-          offset={6}
-          isVisible={hovered}
-          className="map-sticky-adopt-toolbar"
-        >
-          <button
-            type="button"
-            aria-label={t("map.sticky.adoptAriaLabel")}
-            title={t("map.sticky.adoptTitle")}
-            onClick={(e) => {
-              e.stopPropagation();
-              d.onAdopt?.();
-            }}
-            className="map-sticky-adopt-btn"
-          >
-            <Check size={11} strokeWidth={3} aria-hidden />
-            {t("map.sticky.adopt")}
-          </button>
-          <button
-            type="button"
-            aria-label={t("map.sticky.rejectAriaLabel")}
-            title={t("map.sticky.rejectTitle")}
-            onClick={(e) => {
-              e.stopPropagation();
-              d.onReject?.();
-            }}
-            className="map-sticky-reject-btn"
-          >
-            <X size={11} aria-hidden />
-            {t("map.sticky.reject")}
-          </button>
-        </NodeToolbar>
-      )}
+          {showAdoptUI && (
+            <NodeToolbar
+              position={Position.Top}
+              offset={6}
+              isVisible={hovered || focusWithin || selected}
+              className="map-sticky-adopt-toolbar"
+            >
+              <button
+                type="button"
+                aria-label={t("map.sticky.adoptAriaLabel")}
+                title={t("map.sticky.adoptTitle")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  d.onAdopt?.();
+                }}
+                className="map-sticky-adopt-btn"
+              >
+                <Check size={11} strokeWidth={3} aria-hidden />
+                {t("map.sticky.adopt")}
+              </button>
+              <button
+                type="button"
+                aria-label={t("map.sticky.rejectAriaLabel")}
+                title={t("map.sticky.rejectTitle")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  d.onReject?.();
+                }}
+                className="map-sticky-reject-btn"
+              >
+                <X size={11} aria-hidden />
+                {t("map.sticky.reject")}
+              </button>
+            </NodeToolbar>
+          )}
 
-      {/* motion wrapper: enter/exit animation. transformOrigin switches on delete. */}
-      <motion.div
-        data-testid="sticky-motion"
-        initial={enterVariants.initial}
-        animate={isDeleting ? enterVariants.exit : enterVariants.animate}
-        style={{ transformOrigin: isDeleting ? "100% 100%" : "50% 0%" }}
-        onAnimationComplete={() => {
-          if (isDeleting && !exitFiredRef.current) {
-            exitFiredRef.current = true;
-            d.onExitComplete?.(d.id);
-          }
-        }}
-      >
-        {/* sticky-paper-wrap: carries rotation. */}
-        <div
-          data-testid="sticky-paper-wrap"
-          style={{ position: "relative", transform: `rotate(${rotation}deg)` }}
-        >
-          <div
-            data-testid="sticky-paper"
-            className="sticky-paper"
-            data-glue={glueOrient}
-            style={
-              {
-                width: 200,
-                minHeight: 52,
-                maxHeight: editing ? 480 : undefined,
-                overflow: editing ? "auto" : "visible",
-                outline: selected ? "2px solid #534AB7" : "none",
-                outlineOffset: "2px",
-                cursor: editing ? "text" : "default",
-                userSelect: editing ? "text" : "none",
-                "--sticky-bg-light": resolveStickyHex(d.paletteId, d.colorSlot),
-              } as CSSProperties
+          {/* motion wrapper: enter/exit animation. transformOrigin switches on delete. */}
+          <motion.div
+            data-testid="sticky-motion"
+            initial={enterVariants.initial}
+            animate={
+              isDeleting && deletePersistenceReady
+                ? enterVariants.exit
+                : enterVariants.animate
             }
-            onDoubleClick={(e) => {
-              if (!editing) {
-                e.stopPropagation();
-                setEditing(true);
+            style={{ transformOrigin: isDeleting ? "100% 100%" : "50% 0%" }}
+            onAnimationComplete={() => {
+              if (
+                isDeleting &&
+                deletePersistenceReady &&
+                !exitFiredRef.current
+              ) {
+                exitFiredRef.current = true;
+                d.onExitComplete?.(d.id);
               }
             }}
           >
-            {/* Content area measured by ResizeObserver。
+            {/* sticky-paper-wrap: carries rotation. */}
+            <div
+              data-testid="sticky-paper-wrap"
+              style={{
+                position: "relative",
+                transform: `rotate(${rotation}deg)`,
+              }}
+            >
+              <div
+                data-testid="sticky-paper"
+                className="sticky-paper"
+                data-glue={glueOrient}
+                style={
+                  {
+                    width: 200,
+                    minHeight: 52,
+                    maxHeight: editing ? 480 : undefined,
+                    overflow: editing ? "auto" : "visible",
+                    outline: selected ? "2px solid #534AB7" : "none",
+                    outlineOffset: "2px",
+                    cursor: editing ? "text" : "default",
+                    userSelect: editing ? "text" : "none",
+                    "--sticky-bg-light": resolveStickyHex(
+                      d.paletteId,
+                      d.colorSlot,
+                    ),
+                  } as CSSProperties
+                }
+                onDoubleClick={(e) => {
+                  if (
+                    !editing &&
+                    !isDeleting &&
+                    canScheduleQuiescenceMutation()
+                  ) {
+                    e.stopPropagation();
+                    setEditing(true);
+                  }
+                }}
+              >
+                {/* Content area measured by ResizeObserver。
                 コピーの provenance は ProseMirror ネイティブの copy serialization に
                 委譲する。AI Branch 由来 Sticky の本文は作成時に "ai" authorship mark
                 をシード済みで、人間が編集した範囲は AiEditedPlugin が mark を剥がす
@@ -407,28 +612,50 @@ export const StickyNode = memo(function StickyNode({
                 拾う)。一律 source でスタンプしていた旧 onCopy だと AI Sticky の
                 人間編集部分まで "ai" になっていた (本 fix の対象)。非編集時は
                 userSelect:none で選択不可なのでコピー自体が発生しない。 */}
-            <div
-              ref={measureRef}
-              data-testid="sticky-content"
-              className="sticky-content"
-            >
-              {/* Body */}
-              {editing ? (
-                <StickyBodyEditor
-                  stickyId={d.id}
-                  body={d.body}
-                  onContentChange={(json) => {
-                    latestBodyRef.current = json;
-                  }}
-                  onEscape={exitEditing}
-                />
-              ) : (
-                <StickyBodyView body={d.body} />
-              )}
+                <div
+                  ref={measureRef}
+                  data-testid="sticky-content"
+                  className="sticky-content"
+                >
+                  {/* Body */}
+                  {editing ? (
+                    <StickyBodyEditor
+                      stickyId={d.id}
+                      body={
+                        draftController.dirty
+                          ? draftController.latestBody
+                          : d.body
+                      }
+                      onContentChange={(json) => {
+                        if (!canScheduleQuiescenceMutation()) return;
+                        draftController.markDirty(json);
+                      }}
+                      onEscape={exitEditing}
+                    />
+                  ) : (
+                    <StickyBodyView body={d.body} />
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
+          </motion.div>
         </div>
-      </motion.div>
-    </div>
+      </ContextMenuTrigger>
+      {showAdoptUI && (
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => d.onAdopt?.()}>
+            <Check size={13} aria-hidden />
+            {t("map.sticky.adopt")}
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => d.onReject?.()}
+            className="text-destructive focus:text-destructive"
+          >
+            <X size={13} aria-hidden />
+            {t("map.sticky.reject")}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      )}
+    </ContextMenu>
   );
 });

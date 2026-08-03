@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::{AppError, AppResult};
-use crate::open::SwitchingGuard;
+use crate::open::{claim_workspace_maintenance_exclusive, SwitchingGuard};
 use crate::state::{ActiveWorkspace, WorkspaceState};
 use crate::Database;
 
@@ -135,6 +135,13 @@ pub fn restore_backup_core(
     // app cannot migrate. Migrate the disposable staged copy before touching
     // the live DB so an incompatible backup leaves the current session intact.
     preflight_candidate(&staged_plain)?;
+
+    // Detached backup maintenance owns an independent SQLite connection, so
+    // `wait_for_sole_owner(old.db)` cannot observe it. Wait for the path-scoped
+    // worker lease before detaching the active handle, and keep the exclusive
+    // claim through sidecar removal, replacement, rollback, and reopen. The
+    // candidate preflight above remains parallel with maintenance.
+    let _maintenance_claim = claim_workspace_maintenance_exclusive(&ws_path)?;
 
     // Quiesce new DB access before detaching the active handle. This closes the
     // write-loss window between the safety snapshot and replacement.
@@ -409,15 +416,18 @@ fn copy_path_into(src: &Path, output: &mut File) -> io::Result<()> {
 }
 
 fn preflight_candidate(path: &Path) -> AppResult<()> {
-    match open_active(path) {
-        Ok(database) => drop(database),
-        Err(error) => {
-            cleanup_path_best_effort(&sidecar(path, "-wal"));
-            cleanup_path_best_effort(&sidecar(path, "-shm"));
-            return Err(
-                anyhow::anyhow!("このバックアップは現在のアプリで開けません: {error}").into(),
-            );
+    let result = (|| -> anyhow::Result<()> {
+        let database = Database::new(path)?;
+        database.migrate_for_restore_preflight()?;
+        if let Err(error) = database.optimize() {
+            tracing::warn!("PRAGMA optimize during restore preflight failed: {error}");
         }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        cleanup_path_best_effort(&sidecar(path, "-wal"));
+        cleanup_path_best_effort(&sidecar(path, "-shm"));
+        return Err(anyhow::anyhow!("このバックアップは現在のアプリで開けません: {error}").into());
     }
     verify_sqlite_ok(path)?;
     remove_db_sidecars(path)
@@ -552,8 +562,13 @@ fn wait_for_sole_owner(db: &Arc<Database>) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::open::{
+        spawn_workspace_maintenance_worker, try_claim_workspace_maintenance,
+        workspace_maintenance_exclusive_waiters,
+    };
     use crate::with_db_state;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
 
     fn fixture(label: &str) -> (PathBuf, WorkspaceState) {
         let dir = std::env::temp_dir().join(format!(
@@ -695,6 +710,93 @@ mod tests {
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
         assert_no_internal_restore_files(&dir);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_waits_for_detached_workspace_maintenance_before_detaching_live_db() {
+        let (dir, state) = fixture("maintenance-barrier");
+        set_marker(&state, "before-backup");
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+        set_marker(&state, "live-after-backup");
+
+        // Hold the private production worker at a deterministic start gate with
+        // its real path claim and detached SQLite connection alive.
+        with_db_state(&state, |db| {
+            db.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value)
+                 VALUES ('data.autoBackup', 'false')",
+                &[],
+                "run",
+            )?;
+            Ok(())
+        })
+        .expect("disable fixture auto backup");
+        let (maintenance_started_tx, maintenance_started_rx) = std::sync::mpsc::channel();
+        let (release_maintenance_tx, release_maintenance_rx) = std::sync::mpsc::channel();
+        let maintenance = spawn_workspace_maintenance_worker(
+            &dir,
+            &dir.join("global-settings.json"),
+            move || {
+                let _ = maintenance_started_tx.send(());
+                let _ = release_maintenance_rx.recv();
+            },
+        )
+        .expect("spawn production maintenance worker")
+        .expect("maintenance claim");
+        maintenance_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("maintenance owns detached connection");
+
+        let state = Arc::new(state);
+        let restore_state = Arc::clone(&state);
+        let restore_dir = dir.clone();
+        let hook_ran_under_claim = Arc::new(AtomicBool::new(false));
+        let hook_flag = Arc::clone(&hook_ran_under_claim);
+        let restore = std::thread::spawn(move || {
+            restore_backup_core(&restore_state, backup_name, || {
+                assert!(
+                    try_claim_workspace_maintenance(&restore_dir).is_none(),
+                    "restore must retain its exclusive claim through reopen"
+                );
+                hook_flag.store(true, Ordering::SeqCst);
+            })
+        });
+
+        // Full-crate tests run many migration-heavy fixtures in parallel, so
+        // allow preflight to reach the deterministic registry wait without a
+        // one-second scheduling assumption.
+        let wait_deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < wait_deadline {
+            if workspace_maintenance_exclusive_waiters(&dir) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(workspace_maintenance_exclusive_waiters(&dir), 1);
+        assert!(!restore.is_finished(), "restore must wait for maintenance");
+        assert!(
+            !state.switching.load(Ordering::SeqCst),
+            "restore must not detach the live DB while maintenance owns it"
+        );
+        assert_eq!(marker(&state), "live-after-backup");
+
+        release_maintenance_tx
+            .send(())
+            .expect("release production maintenance worker");
+        maintenance.join().expect("maintenance worker");
+        restore
+            .join()
+            .expect("restore thread")
+            .expect("restore after maintenance");
+
+        assert!(hook_ran_under_claim.load(Ordering::SeqCst));
+        assert_eq!(marker(&state), "before-backup");
+        let post_restore_claim =
+            try_claim_workspace_maintenance(&dir).expect("claim released after restore");
+        drop(post_restore_claim);
+        assert_no_internal_restore_files(&dir);
         let _ = std::fs::remove_dir_all(dir);
     }
 

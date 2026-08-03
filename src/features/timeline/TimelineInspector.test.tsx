@@ -1,9 +1,13 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, act } from "@testing-library/react";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
+import { render, act, fireEvent, screen } from "@testing-library/react";
 import { TimelineInspector } from "./TimelineInspector";
 import { useTimelineStore } from "./timelineStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import {
+  _resetQuiescenceParticipantsForTests,
+  flushQuiescenceParticipants,
+} from "@/application/lifecycle/quiescenceParticipants";
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
 
@@ -39,6 +43,7 @@ const mockNode: TreeNodeData = {
 };
 
 function resetStore() {
+  _resetQuiescenceParticipantsForTests();
   useTimelineStore.setState({
     axisMode: "story",
     spacingMode: "proportional",
@@ -56,6 +61,10 @@ function resetStore() {
     },
   });
 }
+
+afterEach(() => {
+  _resetQuiescenceParticipantsForTests();
+});
 
 describe("TimelineInspector – pendingEditNodeId focus wiring", () => {
   beforeEach(resetStore);
@@ -128,5 +137,49 @@ describe("TimelineInspector – close ボタン a11y", () => {
     );
     const btn = getByLabelText("インスペクターを閉じる");
     expect(btn.className).toContain("focus-visible:ring-1");
+  });
+});
+
+describe("TimelineInspector – strict draft persistence", () => {
+  beforeEach(resetStore);
+
+  it("flushes a dirty story label through the lifecycle participant", async () => {
+    const onUpdateStoryTimeLabel = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TimelineInspector
+        node={mockNode}
+        width={224}
+        onClose={vi.fn()}
+        onUpdateStoryTimeLabel={onUpdateStoryTimeLabel}
+      />,
+    );
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Day 2" },
+    });
+
+    await flushQuiescenceParticipants();
+
+    expect(onUpdateStoryTimeLabel).toHaveBeenCalledWith("scene-1", "Day 2");
+  });
+
+  it("does not commit or cancel on IME composition Enter/Escape", () => {
+    const onUpdateStoryTimeLabel = vi.fn();
+    render(
+      <TimelineInspector
+        node={mockNode}
+        width={224}
+        onClose={vi.fn()}
+        onUpdateStoryTimeLabel={onUpdateStoryTimeLabel}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "変換中" } });
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+
+    expect(onUpdateStoryTimeLabel).not.toHaveBeenCalled();
+    expect(input).toHaveValue("変換中");
+    fireEvent.keyDown(input, { key: "Escape" });
   });
 });

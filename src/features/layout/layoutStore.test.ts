@@ -781,6 +781,63 @@ describe("useLayoutStore", () => {
       expect(layout.regions.right.size).toBe(989);
       expect(layout.regions.bottom.size).toBe(871);
     });
+
+    it("restores a collapsed region snapshot after reloading persisted layout", async () => {
+      const saved = buildDefaultLayoutState({ allInactive: true });
+      saved.regions.left.slots[0].activePanel = "scenes";
+      useLayoutStore.setState({ layout: saved });
+      useLayoutStore.getState().collapseLayoutRegion("left");
+      const collapsed = structuredClone(useLayoutStore.getState().layout);
+
+      resetStore();
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+        layout: {
+          layoutVersion: 3,
+          state: collapsed,
+        },
+        layoutPresets: [],
+      });
+
+      await useLayoutStore.getState().initializeLayout();
+      useLayoutStore.getState().expandLayoutRegion("left");
+
+      const left = useLayoutStore.getState().layout.regions.left.slots;
+      expect(left.find((slot) => slot.id === "l0")?.activePanel).toBe("scenes");
+      expect(left.find((slot) => slot.id === "l1")?.activePanel).toBeNull();
+    });
+
+    it("loads a deleted snapshot panel as a safe null restore", async () => {
+      const saved = buildDefaultLayoutState({ allInactive: true });
+      saved.regions.left.collapsedActivePanels = {
+        l0: "retired-panel" as ToolWindowPanelId,
+        l1: null,
+      };
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+        layout: {
+          layoutVersion: 3,
+          state: saved,
+        },
+        layoutPresets: [],
+      });
+
+      await useLayoutStore.getState().initializeLayout();
+      useLayoutStore.getState().expandLayoutRegion("left");
+
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.left.slots.every((slot) => slot.activePanel === null),
+      ).toBe(true);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
   });
 });
 
@@ -927,23 +984,30 @@ describe("layout store property invariants", () => {
   });
 
   describe("expandLayoutRegion", () => {
-    it("reopens each slot to its first panel after a collapse", () => {
+    it("restores only the slots that were open before a collapse", () => {
       useLayoutStore.getState().showPanel("scenes");
-      useLayoutStore.getState().showPanel("codex");
       useLayoutStore.getState().collapseLayoutRegion("left");
       useLayoutStore.getState().expandLayoutRegion("left");
       const left = useLayoutStore.getState().layout.regions.left.slots;
-      // The region is open again. Each slot with panels reopens to its first
-      // panel — the last-active panel is NOT preserved across a collapse.
-      expect(left.some((slot) => slot.activePanel !== null)).toBe(true);
-      for (const slot of left) {
-        if (slot.panels.length > 0) {
-          expect(slot.activePanel).toBe(slot.panels[0]);
-        } else {
-          expect(slot.activePanel).toBeNull();
-        }
-      }
+      expect(left.find((slot) => slot.id === "l0")?.activePanel).toBe("scenes");
+      expect(left.find((slot) => slot.id === "l1")?.activePanel).toBeNull();
+      expect(
+        useLayoutStore.getState().layout.regions.left.collapsedActivePanels,
+      ).toBeUndefined();
       assertValidLayout(useLayoutStore.getState().layout);
+    });
+
+    it("restores the exact active panel in a multi-panel slot", () => {
+      useLayoutStore.getState().showPanel("codex-quick");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+      useLayoutStore.getState().expandLayoutRegion("left");
+
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.left.slots.find((slot) => slot.id === "l1")
+          ?.activePanel,
+      ).toBe("codex-quick");
     });
 
     it("does not clobber a slot that is already open", () => {
@@ -958,8 +1022,8 @@ describe("layout store property invariants", () => {
       expect(codexSlot?.activePanel).toBe("codex");
     });
 
-    it("reopens the right region too", () => {
-      useLayoutStore.getState().showPanel("chat");
+    it("restores the right region without opening its other slots", () => {
+      useLayoutStore.getState().showPanel("chat-history");
       useLayoutStore.getState().collapseLayoutRegion("right");
       expect(
         useLayoutStore
@@ -967,10 +1031,112 @@ describe("layout store property invariants", () => {
           .layout.regions.right.slots.every((s) => s.activePanel === null),
       ).toBe(true);
       useLayoutStore.getState().expandLayoutRegion("right");
+      const right = useLayoutStore.getState().layout.regions.right.slots;
+      expect(right.find((slot) => slot.id === "r0")?.activePanel).toBe(
+        "chat-history",
+      );
+      expect(right.find((slot) => slot.id === "r1")?.activePanel).toBeNull();
+    });
+
+    it("discards the old snapshot after an explicit panel open", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+
+      useLayoutStore.getState().showPanel("codex");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+      useLayoutStore.getState().expandLayoutRegion("left");
+
+      const left = useLayoutStore.getState().layout.regions.left.slots;
+      expect(left.find((slot) => slot.id === "l0")?.activePanel).toBeNull();
+      expect(left.find((slot) => slot.id === "l1")?.activePanel).toBe("codex");
+    });
+
+    it("does not revive source or target snapshots after a panel moves", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.getState().collapseLayoutRegion("right");
+
+      useLayoutStore.getState().movePanelToSlot("scenes", "right", "r0");
+      useLayoutStore.getState().collapseLayoutRegion("right");
+      useLayoutStore.getState().expandLayoutRegion("right");
+      useLayoutStore.getState().expandLayoutRegion("left");
+
       expect(
         useLayoutStore
           .getState()
-          .layout.regions.right.slots.some((s) => s.activePanel !== null),
+          .layout.regions.left.slots.every((slot) => slot.activePanel === null),
+      ).toBe(true);
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.right.slots.find((slot) => slot.id === "r0")
+          ?.activePanel,
+      ).toBe("scenes");
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.right.slots.find((slot) => slot.id === "r1")
+          ?.activePanel,
+      ).toBeNull();
+    });
+
+    it("does not restore a collapsed panel removed from the stripe", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("codex");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+
+      useLayoutStore.getState().removePanelFromStripe("scenes");
+      useLayoutStore.getState().expandLayoutRegion("left");
+
+      const left = useLayoutStore.getState().layout.regions.left.slots;
+      expect(left.find((slot) => slot.id === "l0")?.activePanel).toBeNull();
+      expect(left.find((slot) => slot.id === "l1")?.activePanel).toBe("codex");
+    });
+
+    it("keeps the original snapshot across a repeated collapse", () => {
+      useLayoutStore.getState().showPanel("codex-quick");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+      const snapshot = structuredClone(
+        useLayoutStore.getState().layout.regions.left.collapsedActivePanels,
+      );
+
+      useLayoutStore.getState().collapseLayoutRegion("left");
+
+      expect(
+        useLayoutStore.getState().layout.regions.left.collapsedActivePanels,
+      ).toEqual(snapshot);
+      useLayoutStore.getState().expandLayoutRegion("left");
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.left.slots.find((slot) => slot.id === "l1")
+          ?.activePanel,
+      ).toBe("codex-quick");
+    });
+
+    it("uses the first-panel fallback only when no snapshot exists", () => {
+      useLayoutStore.getState().expandLayoutRegion("left");
+
+      for (const slot of useLayoutStore.getState().layout.regions.left.slots) {
+        expect(slot.activePanel).toBe(slot.panels[0] ?? null);
+      }
+    });
+
+    it("falls back to null when a saved panel no longer belongs to its slot", () => {
+      const layout = buildDefaultLayoutState({ allInactive: true });
+      layout.regions.left.collapsedActivePanels = {
+        l0: "codex-quick",
+        l1: null,
+      };
+      useLayoutStore.setState({ layout });
+
+      useLayoutStore.getState().expandLayoutRegion("left");
+
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.left.slots.every((slot) => slot.activePanel === null),
       ).toBe(true);
     });
   });

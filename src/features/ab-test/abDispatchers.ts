@@ -16,6 +16,22 @@ import { streamInlineAiText } from "@/features/editor/beat/streamInlineAiText";
 import type { AbDispatcher, AbRunResult } from "./abHarness";
 import { resolveSlotApiVariant } from "./abConfig";
 
+function resolveAbProjectAuthority(
+  factoryProjectId: string | null | undefined,
+  dispatchProjectId: string | null,
+): string | null {
+  const normalizedFactoryProjectId = factoryProjectId?.trim() || null;
+  if (
+    factoryProjectId !== undefined &&
+    normalizedFactoryProjectId !== dispatchProjectId
+  ) {
+    throw new Error(
+      `AI_AUDIT_PROJECT_CHANGED: expected ${normalizedFactoryProjectId ?? "workspace"}, active ${dispatchProjectId ?? "workspace"}`,
+    );
+  }
+  return dispatchProjectId;
+}
+
 /**
  * chat surface の dispatcher。1 構成 = 非ストリーミング 1 ショット。
  * provider override (枠ごとの別プロバイダ) を per-call で渡す。provider を上書きする
@@ -25,8 +41,13 @@ import { resolveSlotApiVariant } from "./abConfig";
 export function createChatAbDispatcher(
   projectId?: string | null,
 ): AbDispatcher {
-  return async (messages, config): Promise<AbRunResult> => {
+  return async (messages, config, context): Promise<AbRunResult> => {
     try {
+      const slotContext = context;
+      const auditProjectId = resolveAbProjectAuthority(
+        projectId,
+        slotContext.projectId,
+      );
       const provider = config.provider?.trim() || undefined;
       const apiVariant = resolveSlotApiVariant(config);
       // OpenAI 互換の枠だけ endpoint override を糸通しする (他 provider では backend が無視)。
@@ -36,6 +57,16 @@ export function createChatAbDispatcher(
           : undefined;
       const res = await sendChatMessageOnceAb(
         messages,
+        {
+          projectId: auditProjectId,
+          expectedWorkspacePath: slotContext.expectedWorkspacePath,
+          pathId: "ab_chat",
+          operationId: slotContext.operationId,
+          metadata: {
+            slotIndex: slotContext.slotIndex,
+            configFingerprint: slotContext.configFingerprint,
+          },
+        },
         config.model,
         provider,
         apiVariant,
@@ -46,7 +77,7 @@ export function createChatAbDispatcher(
         model: config.model ?? undefined,
         tokensIn: res.inputTokens,
         tokensOut: res.outputTokens,
-        projectId: projectId ?? undefined,
+        projectId: auditProjectId ?? undefined,
         metadata: { abTest: true, provider: provider ?? null },
       });
       return { ok: true, text: res.text };
@@ -67,11 +98,23 @@ export function createChatAbDispatcher(
 export function createInlineAbDispatcher(
   projectId?: string | null,
 ): AbDispatcher {
-  return async (messages, config): Promise<AbRunResult> => {
+  return async (messages, config, context): Promise<AbRunResult> => {
+    const slotContext = context;
+    const auditProjectId = resolveAbProjectAuthority(
+      projectId,
+      slotContext.projectId,
+    );
     const res = await streamInlineAiText(messages, {
       model: config.model ?? undefined,
       usageSurface: "inline_ai",
-      projectId: projectId ?? undefined,
+      projectId: auditProjectId,
+      auditExpectedWorkspacePath: slotContext.expectedWorkspacePath,
+      auditPathId: "ab_inline",
+      auditOperationId: slotContext.operationId,
+      auditMetadata: {
+        slotIndex: slotContext.slotIndex,
+        configFingerprint: slotContext.configFingerprint,
+      },
     });
     if (res.ok) return { ok: true, text: res.text };
     return { ok: false, error: res.error };

@@ -3,10 +3,13 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getProject } from "@/features/project/api";
 import { streamInlineAiText } from "./streamInlineAiText";
-import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import { isBeatType, type BeatType } from "./beatTypes";
 import { getPromptCatalog } from "@/prompts/index";
 import i18next from "@/lib/i18n";
+import {
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 
 interface GenerateBeatsCallbacks {
   onStart?: () => void;
@@ -47,13 +50,7 @@ function parseBeatJson(raw: string): RawBeat[] | null {
 }
 
 function toBeatType(value: unknown): BeatType {
-  if (
-    typeof value === "string" &&
-    (BEAT_TYPES as readonly string[]).includes(value)
-  ) {
-    return value as BeatType;
-  }
-  return "free";
+  return isBeatType(value) ? value : "free";
 }
 
 /**
@@ -69,12 +66,13 @@ export async function generateBeatsFromSynopsis(
   const treeNode = state.nodes.find((n) => n.id === sceneId);
   const synopsis = treeNode?.synopsis?.trim() ?? "";
   if (!synopsis) return;
+  const auditAuthority = captureAiOperationAuthority(state.projectId, sceneId);
 
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
   const sceneTitle = treeNode?.title ?? "";
   let project;
   try {
-    project = await getProject(state.projectId);
+    project = await getProject(auditAuthority.projectId);
   } catch {
     // ignore
   }
@@ -86,7 +84,14 @@ export async function generateBeatsFromSynopsis(
 
   callbacks?.onStart?.();
 
-  const result = await streamInlineAiText(messages, { usageSurface: "beat" });
+  const result = await streamInlineAiText(messages, {
+    usageSurface: "beat",
+    projectId: auditAuthority.projectId,
+    auditExpectedWorkspacePath: auditAuthority.expectedWorkspacePath,
+    auditOperationId: auditAuthority.operationId,
+    auditMetadata: { operationScopeId: auditAuthority.resourceId },
+    auditPathId: "beats_from_synopsis",
+  });
   if (!result.ok) {
     callbacks?.onError?.(result.error);
     return;
@@ -98,6 +103,10 @@ export async function generateBeatsFromSynopsis(
     return;
   }
 
+  assertAiOperationAuthorityCurrent(
+    auditAuthority,
+    useTreeStore.getState().projectId,
+  );
   const store = useUnplacedBeatsStore.getState();
   for (const rb of rawBeats) {
     const instructions =

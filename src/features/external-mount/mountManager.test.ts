@@ -1,36 +1,48 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
 import type { TreeNodeLite } from "@/features/tree/api";
 
 const {
   mockUpdateNode,
   mockListAllNodes,
+  mockListExpiredArchivedNodeIds,
+  mockDeleteNode,
   mockSaveSceneContent,
   mockCreateNode,
   mockLoadSceneContent,
   mockLoadSceneContents,
   mockLoadTree,
   mockSetCharCount,
-  mockUpsertSceneBodyMentions,
-  mockCodexState,
+  mockScheduleBodyMentionScan,
   mockChatState,
   mockReadExternalFile,
   mockGetExternalFileMtime,
+  mockWriteExternalFile,
   mockRegisterMount,
+  mockUnregisterMount,
   mockScanMount,
+  mockCurrentProject,
+  mockWorkspaceIdentity,
+  mockTreeState,
+  mockLoadTabState,
+  mockInitAutoSave,
 } = vi.hoisted(() => ({
   mockUpdateNode: vi.fn().mockResolvedValue(undefined),
   mockListAllNodes: vi.fn(),
-  mockSaveSceneContent: vi.fn().mockResolvedValue({ placedBeatPreview: null }),
+  mockListExpiredArchivedNodeIds: vi.fn().mockResolvedValue([]),
+  mockDeleteNode: vi.fn().mockResolvedValue(undefined),
+  mockSaveSceneContent: vi.fn().mockResolvedValue({
+    placedBeatPreview: null,
+    contentVersion: 7,
+    contentUpdatedAt: "2026-05-24T12:00:01.000Z",
+  }),
   mockCreateNode: vi.fn(),
   mockLoadSceneContent: vi.fn().mockResolvedValue("{}"),
   mockLoadSceneContents: vi.fn().mockResolvedValue(new Map<string, string>()),
   mockLoadTree: vi.fn().mockResolvedValue(undefined),
   mockSetCharCount: vi.fn(),
-  mockUpsertSceneBodyMentions: vi.fn().mockResolvedValue(undefined),
-  mockCodexState: {
-    entries: [] as Array<{ id: string; name: string; type: string }>,
-  },
+  mockScheduleBodyMentionScan: vi.fn(),
   mockChatState: {
     activeSceneId: "",
     refreshContextLayers: vi.fn().mockResolvedValue(undefined),
@@ -39,8 +51,23 @@ const {
   mockGetExternalFileMtime: vi
     .fn()
     .mockResolvedValue("2026-05-24T12:00:00.000Z"),
+  mockWriteExternalFile: vi.fn().mockResolvedValue(undefined),
   mockRegisterMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+  mockUnregisterMount: vi.fn().mockResolvedValue(undefined),
   mockScanMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+  mockCurrentProject: { id: "p1" },
+  mockWorkspaceIdentity: {
+    current: null as { path: string; openRevision: number } | null,
+  },
+  mockTreeState: {
+    nodes: [] as TreeNodeLite[],
+    projectId: "p1",
+    hydratedProjectId: null as string | null,
+    hydratedWorkspaceOpenRevision: null as number | null,
+    setActiveScene: vi.fn(),
+  },
+  mockLoadTabState: vi.fn(),
+  mockInitAutoSave: vi.fn(),
 }));
 
 vi.mock("@/features/tree/api", async (importOriginal) => {
@@ -49,6 +76,8 @@ vi.mock("@/features/tree/api", async (importOriginal) => {
     ...actual,
     updateNode: mockUpdateNode,
     listAllNodes: mockListAllNodes,
+    listExpiredArchivedNodeIds: mockListExpiredArchivedNodeIds,
+    deleteNode: mockDeleteNode,
     saveSceneContent: mockSaveSceneContent,
     createNode: mockCreateNode,
     loadSceneContent: mockLoadSceneContent,
@@ -59,7 +88,9 @@ vi.mock("@/features/tree/api", async (importOriginal) => {
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
     getState: () => ({
+      ...mockTreeState,
       loadTree: mockLoadTree,
+      reloadTreeOrThrow: mockLoadTree,
       setCharCount: mockSetCharCount,
     }),
   },
@@ -70,7 +101,12 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
 }));
 
 vi.mock("@/features/project/projectStore", () => ({
-  getCurrentProjectId: () => "p1",
+  getCurrentProjectId: () => mockCurrentProject.id,
+}));
+
+vi.mock("@/runtime/workspaceIdentity", () => ({
+  getCurrentWorkspaceIdentity: () =>
+    mockWorkspaceIdentity.current ? { ...mockWorkspaceIdentity.current } : null,
 }));
 
 vi.mock("@/features/editor/tabStore", () => ({
@@ -79,6 +115,8 @@ vi.mock("@/features/editor/tabStore", () => ({
       tabs: [],
       secondaryTabs: [],
       dirtyTabIds: new Set<string>(),
+      loadTabState: mockLoadTabState,
+      initAutoSave: mockInitAutoSave,
     }),
   },
 }));
@@ -89,33 +127,29 @@ vi.mock("@/features/editor/linearEditorStore", () => ({
   },
 }));
 
-vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: {
-    getState: () => mockCodexState,
-  },
-}));
-
 vi.mock("@/features/chat/chatStore", () => ({
   useChatStore: {
     getState: () => mockChatState,
   },
 }));
 
-vi.mock("@/features/editor/beat/bodyMentionApi", () => ({
-  upsertSceneBodyMentions: mockUpsertSceneBodyMentions,
+vi.mock("@/features/editor/persistSceneBody", () => ({
+  scheduleBodyMentionScan: mockScheduleBodyMentionScan,
 }));
 
 vi.mock("./api", () => ({
   readExternalFile: (...args: unknown[]) => mockReadExternalFile(...args),
   getExternalFileMtime: (...args: unknown[]) =>
     mockGetExternalFileMtime(...args),
-  unregisterMount: vi.fn().mockResolvedValue(undefined),
+  writeExternalFile: (...args: unknown[]) => mockWriteExternalFile(...args),
+  unregisterMount: (...args: unknown[]) => mockUnregisterMount(...args),
   registerMount: (...args: unknown[]) => mockRegisterMount(...args),
   scanMount: (...args: unknown[]) => mockScanMount(...args),
 }));
 
 vi.mock("sonner", () => ({
   toast: {
+    error: vi.fn(),
     success: vi.fn(),
     warning: vi.fn(),
     info: vi.fn(),
@@ -140,11 +174,36 @@ import {
   hashForDiskContent,
   hashForNodeContent,
   initializeExternalMounts,
+  purgeExpiredArchives,
+  resolveReloadConflict,
+  _resetMountAuthorityForTests,
   _resetPendingArchives,
   _resetRecentDeletes,
 } from "./mountManager";
 import { useExternalRootStore } from "./externalRootStore";
 import { buildMountFolderUri, buildSourceUri } from "./sourceUri";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { _resetWriteBackTimers, scheduleWriteBack } from "./writeBack";
+import {
+  createDocumentSaveSession,
+  _resetDocumentSaveCoordinatorForTests,
+  isExclusiveDocumentLeaseActive,
+  runCoordinatedDocumentSave,
+  StaleRetiredDocumentSaveError,
+} from "@/features/editor/document/documentSaveCoordinator";
+import { serializeSceneWrite } from "@/features/tree/pendingSceneWrites";
+import { discardAutoSavesForDocument, useAutoSave } from "@/hooks/useAutoSave";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
+
+beforeEach(() => {
+  _resetMountAuthorityForTests();
+  mockCurrentProject.id = "p1";
+  mockWorkspaceIdentity.current = null;
+  useExternalWriteStore.getState().clear();
+});
 
 // listAllNodes は H4 projection で content / unplacedBeatsDoc を返さない
 // (TreeNodeLite)。本文が要る経路は loadSceneContent / loadSceneContents の
@@ -279,6 +338,7 @@ describe("addExternalMount", () => {
     vi.clearAllMocks();
     mockGetProjectSetting.mockResolvedValue("[]");
     mockListAllNodes.mockResolvedValue([]);
+    mockListExpiredArchivedNodeIds.mockResolvedValue([]);
     mockCreateNode.mockImplementation(async (params) =>
       node({
         id: params.id,
@@ -372,6 +432,32 @@ describe("addExternalMount", () => {
 
     uuidSpy.mockRestore();
   });
+
+  it("unregisters a native watcher when its add scope is superseded", async () => {
+    let releaseRegister!: (scan: { files: []; dirs: [] }) => void;
+    mockRegisterMount.mockImplementationOnce(
+      () =>
+        new Promise<{ files: []; dirs: [] }>((resolve) => {
+          releaseRegister = resolve;
+        }),
+    );
+
+    const adding = addExternalMount("/mnt/old", "Old");
+    await vi.waitFor(() => expect(mockRegisterMount).toHaveBeenCalledTimes(1));
+    const registeredRootId = mockRegisterMount.mock.calls[0][0] as string;
+
+    mockCurrentProject.id = "p2";
+    const switching = initializeExternalMounts({
+      projectId: "p2",
+      workspaceOpenRevision: 2,
+    });
+    releaseRegister({ files: [], dirs: [] });
+    await Promise.all([adding, switching]);
+
+    expect(mockUnregisterMount).toHaveBeenCalledWith(registeredRootId);
+    expect(mockSetProjectSetting).not.toHaveBeenCalled();
+    expect(mockCreateNode).not.toHaveBeenCalled();
+  });
 });
 
 describe("applyExternalContent", () => {
@@ -413,13 +499,10 @@ describe("applyExternalContent — Codex body mention + chat refresh", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useExternalRootStore.setState({ mutedWrites: [], conflicts: [] });
-    mockCodexState.entries = [];
     mockChatState.activeSceneId = "";
   });
 
-  it("calls upsertSceneBodyMentions when codex entries exist", async () => {
-    mockCodexState.entries = [{ id: "e1", name: "太郎", type: "character" }];
-
+  it("schedules the project-wide authoritative body mention scanner", async () => {
     await applyExternalContent(
       "scene-1",
       "root-1",
@@ -428,26 +511,13 @@ describe("applyExternalContent — Codex body mention + chat refresh", () => {
       "2026-05-24T12:00:00.000Z",
     );
 
-    expect(mockUpsertSceneBodyMentions).toHaveBeenCalledTimes(1);
-    expect(mockUpsertSceneBodyMentions).toHaveBeenCalledWith(
-      "scene-1",
-      expect.any(String),
-      mockCodexState.entries,
-    );
-  });
-
-  it("skips upsertSceneBodyMentions when codex entries are empty", async () => {
-    mockCodexState.entries = [];
-
-    await applyExternalContent(
-      "scene-1",
-      "root-1",
-      "chapter/01.md",
-      "External text.",
-      "2026-05-24T12:00:00.000Z",
-    );
-
-    expect(mockUpsertSceneBodyMentions).not.toHaveBeenCalled();
+    expect(mockScheduleBodyMentionScan).toHaveBeenCalledWith({
+      projectId: "p1",
+      sceneId: "scene-1",
+      docJsonStr: expect.any(String),
+      sceneVersion: 7,
+      sceneUpdatedAt: "2026-05-24T12:00:01.000Z",
+    });
   });
 
   it("calls refreshContextLayers when the synced scene is active in chat", async () => {
@@ -622,6 +692,53 @@ describe("handleFileEvent rename detection (removed → added)", () => {
 describe("initializeExternalMounts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCurrentProject.id = "p1";
+    mockWorkspaceIdentity.current = null;
+    Object.assign(mockTreeState, {
+      nodes: [],
+      projectId: "p1",
+      hydratedProjectId: null,
+      hydratedWorkspaceOpenRevision: null,
+    });
+    mockLoadTree.mockImplementation(
+      async (projectId = "p1", workspaceOpenRevision?: number) => {
+        Object.assign(mockTreeState, {
+          projectId,
+          hydratedProjectId: projectId,
+          hydratedWorkspaceOpenRevision: workspaceOpenRevision ?? null,
+        });
+      },
+    );
+    mockLoadTabState.mockImplementation(
+      async (
+        _projectId: string,
+        _validNodeIds: Set<string>,
+        beforeApply?: (snapshot: {
+          tabs: Array<{
+            nodeId: string;
+            isPreview: boolean;
+            contentType: "scene";
+          }>;
+          activeTabId: string | null;
+          secondaryTabs: [];
+          secondaryActiveTabId: null;
+          secondaryGroupOpen: false;
+          activeGroupIndex: 0;
+          splitDirection: "right";
+          isLinearMode: false;
+        }) => boolean | void,
+      ) =>
+        beforeApply?.({
+          tabs: [],
+          activeTabId: null,
+          secondaryTabs: [],
+          secondaryActiveTabId: null,
+          secondaryGroupOpen: false,
+          activeGroupIndex: 0,
+          splitDirection: "right",
+          isLinearMode: false,
+        }) !== false,
+    );
     mockGetProjectSetting.mockResolvedValue(null);
     mockListAllNodes.mockResolvedValue([]);
     useExternalRootStore.setState({
@@ -679,11 +796,304 @@ describe("initializeExternalMounts", () => {
 
     expect(useExternalRootStore.getState().isInitialized).toBe(true);
   });
+
+  it("forwards the target Workspace revision to the final tree reload", async () => {
+    await initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 27,
+    });
+
+    expect(mockLoadTree).toHaveBeenCalledWith("p1", 27);
+  });
+
+  it("reuses the scoped critical Tree when mounts and archive purge made no changes", async () => {
+    Object.assign(mockTreeState, {
+      nodes: [
+        node({ id: "scene-1", nodeType: "scene", sourceUri: null }),
+        node({ id: "note-1", nodeType: "note", sourceUri: null }),
+      ],
+      projectId: "p1",
+      hydratedProjectId: "p1",
+      hydratedWorkspaceOpenRevision: 27,
+    });
+
+    await initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 27,
+    });
+
+    expect(mockLoadTree).not.toHaveBeenCalled();
+    expect(mockLoadTabState).toHaveBeenCalledWith(
+      "p1",
+      new Set(["scene-1", "note-1"]),
+      expect.any(Function),
+    );
+  });
+
+  it("purges only the targeted expired archive IDs", async () => {
+    mockListExpiredArchivedNodeIds.mockResolvedValue([
+      "expired-1",
+      "expired-2",
+    ]);
+
+    await expect(purgeExpiredArchives("p1")).resolves.toBe(2);
+
+    expect(mockListAllNodes).not.toHaveBeenCalled();
+    expect(mockDeleteNode.mock.calls).toEqual([["expired-1"], ["expired-2"]]);
+  });
+
+  it("restores tabs only after the scoped tree hydration succeeds", async () => {
+    mockTreeState.nodes = [
+      node({ id: "scene-1", sourceUri: null, nodeType: "scene" }),
+      node({ id: "note-1", sourceUri: null, nodeType: "note" }),
+      node({ id: "folder-1", sourceUri: null, nodeType: "folder" }),
+    ];
+    mockLoadTabState.mockImplementationOnce(
+      async (_projectId, _validNodeIds, beforeApply) =>
+        beforeApply?.({
+          tabs: [
+            {
+              nodeId: "scene-1",
+              isPreview: false,
+              contentType: "scene",
+            },
+          ],
+          activeTabId: "scene-1",
+          secondaryTabs: [],
+          secondaryActiveTabId: null,
+          secondaryGroupOpen: false,
+          activeGroupIndex: 0,
+          splitDirection: "right",
+          isLinearMode: false,
+        }) !== false,
+    );
+
+    await initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 27,
+    });
+
+    expect(mockLoadTabState).toHaveBeenCalledWith(
+      "p1",
+      new Set(["scene-1", "note-1"]),
+      expect.any(Function),
+    );
+    expect(mockTreeState.setActiveScene).toHaveBeenCalledWith("scene-1");
+    expect(mockInitAutoSave).toHaveBeenCalledWith("p1");
+  });
+
+  it("does not restore a stale project after a queued project switch", async () => {
+    const initializedProjects: Array<string | null> = [];
+    const unsubscribe = useExternalRootStore.subscribe((state, previous) => {
+      if (!previous.isInitialized && state.isInitialized) {
+        initializedProjects.push(mockTreeState.hydratedProjectId);
+      }
+    });
+    let releaseFirstTreeLoad!: () => void;
+    const firstTreeLoad = new Promise<void>((resolve) => {
+      releaseFirstTreeLoad = resolve;
+    });
+    mockLoadTree
+      .mockImplementationOnce(async (projectId, workspaceOpenRevision) => {
+        await firstTreeLoad;
+        Object.assign(mockTreeState, {
+          nodes: [node({ id: "p1-scene", sourceUri: null })],
+          projectId,
+          hydratedProjectId: projectId,
+          hydratedWorkspaceOpenRevision: workspaceOpenRevision,
+        });
+      })
+      .mockImplementationOnce(async (projectId, workspaceOpenRevision) => {
+        Object.assign(mockTreeState, {
+          nodes: [node({ id: "p2-scene", sourceUri: null, projectId: "p2" })],
+          projectId,
+          hydratedProjectId: projectId,
+          hydratedWorkspaceOpenRevision: workspaceOpenRevision,
+        });
+      });
+
+    const oldInit = initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 1,
+    });
+    await vi.waitFor(() => expect(mockLoadTree).toHaveBeenCalledTimes(1));
+    mockCurrentProject.id = "p2";
+    const currentInit = initializeExternalMounts({
+      projectId: "p2",
+      workspaceOpenRevision: 2,
+    });
+    releaseFirstTreeLoad();
+    await Promise.all([oldInit, currentInit]);
+    unsubscribe();
+
+    expect(initializedProjects).toEqual(["p2"]);
+    expect(mockLoadTabState).toHaveBeenCalledTimes(1);
+    expect(mockLoadTabState).toHaveBeenCalledWith(
+      "p2",
+      new Set(["p2-scene"]),
+      expect.any(Function),
+    );
+    expect(mockInitAutoSave).toHaveBeenCalledWith("p2");
+  });
+
+  it("cancels stale reconcile mutations when the workspace switches during register", async () => {
+    let releaseOldScan!: (scan: { files: []; dirs: [] }) => void;
+    const oldScan = new Promise<{ files: []; dirs: [] }>((resolve) => {
+      releaseOldScan = resolve;
+    });
+    mockGetProjectSetting.mockImplementation(async (projectId, key) => {
+      if (projectId === "p1" && key === "external.roots") {
+        return JSON.stringify([
+          { id: "root-p1", path: "/old-root", label: "Old root" },
+        ]);
+      }
+      return null;
+    });
+    mockRegisterMount.mockImplementationOnce(() => oldScan);
+
+    const oldInit = initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 1,
+    });
+    await vi.waitFor(() => expect(mockRegisterMount).toHaveBeenCalledTimes(1));
+
+    mockCurrentProject.id = "p2";
+    const currentInit = initializeExternalMounts({
+      projectId: "p2",
+      workspaceOpenRevision: 2,
+    });
+    releaseOldScan({ files: [], dirs: [] });
+    await Promise.all([oldInit, currentInit]);
+
+    expect(mockCreateNode).not.toHaveBeenCalled();
+    expect(mockUpdateNode).not.toHaveBeenCalled();
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
+    expect(mockUnregisterMount).toHaveBeenCalledWith("root-p1");
+  });
+
+  it("rejects an unscoped init when the captured workspace revision changes", async () => {
+    let releaseTreeLoad!: () => void;
+    const treeLoad = new Promise<void>((resolve) => {
+      releaseTreeLoad = resolve;
+    });
+    mockWorkspaceIdentity.current = {
+      path: "/workspace-a.grimodex",
+      openRevision: 1,
+    };
+    mockLoadTree.mockImplementationOnce(
+      async (projectId, workspaceOpenRevision) => {
+        await treeLoad;
+        Object.assign(mockTreeState, {
+          nodes: [node({ id: "scene-1", sourceUri: null })],
+          projectId,
+          hydratedProjectId: projectId,
+          hydratedWorkspaceOpenRevision: workspaceOpenRevision,
+        });
+      },
+    );
+
+    const initialization = initializeExternalMounts();
+    await vi.waitFor(() => expect(mockLoadTree).toHaveBeenCalledTimes(1));
+    mockWorkspaceIdentity.current = {
+      path: "/workspace-a.grimodex",
+      openRevision: 2,
+    };
+    releaseTreeLoad();
+    await initialization;
+
+    expect(mockLoadTree).toHaveBeenCalledWith("p1", 1);
+    expect(mockLoadTabState).not.toHaveBeenCalled();
+    expect(mockInitAutoSave).not.toHaveBeenCalled();
+  });
+
+  it("cancels a deferred archive before a new workspace can receive it", async () => {
+    vi.useFakeTimers();
+    useEditorSessionStore.getState().resetForProject();
+    useExternalRootStore.setState({
+      roots: [{ id: "root-1", path: "/old-root", label: "Old root" }],
+      missingRoots: [],
+      isInitialized: true,
+      conflicts: [],
+      mutedWrites: [],
+    });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "old-scene",
+        sourceUri: buildSourceUri("root-1", "scene.md"),
+      }),
+    ]);
+    mockLoadSceneContent.mockResolvedValueOnce("{}");
+
+    await handleFileEvent({
+      rootId: "root-1",
+      kind: "removed",
+      relPath: "scene.md",
+    });
+
+    mockCurrentProject.id = "p2";
+    mockListAllNodes.mockResolvedValue([]);
+    await initializeExternalMounts({
+      projectId: "p2",
+      workspaceOpenRevision: 2,
+    });
+    const loadCallsAfterSwitch = mockLoadTree.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(mockUpdateNode).not.toHaveBeenCalled();
+    expect(mockLoadTree).toHaveBeenCalledTimes(loadCallsAfterSwitch);
+    vi.useRealTimers();
+  });
+
+  it("does not let an unscoped init absorb a queued target-revision init", async () => {
+    let releaseFirstTreeLoad!: () => void;
+    const firstTreeLoad = new Promise<void>((resolve) => {
+      releaseFirstTreeLoad = resolve;
+    });
+    mockLoadTree
+      .mockImplementationOnce(() => firstTreeLoad)
+      .mockResolvedValue(undefined);
+
+    const unscoped = initializeExternalMounts();
+    await vi.waitFor(() => expect(mockLoadTree).toHaveBeenCalledTimes(1));
+    const targetRevision = initializeExternalMounts({
+      projectId: "p1",
+      workspaceOpenRevision: 28,
+    });
+    releaseFirstTreeLoad();
+    await Promise.all([unscoped, targetRevision]);
+
+    expect(mockLoadTree.mock.calls).toEqual([
+      ["p1", undefined],
+      ["p1", 28],
+    ]);
+  });
 });
 
 describe("reload conflict queue", () => {
   beforeEach(() => {
-    useExternalRootStore.setState({ conflicts: [] });
+    vi.clearAllMocks();
+    _resetWriteBackTimers();
+    _resetDocumentSaveCoordinatorForTests();
+    useEditorSessionStore.getState().resetForProject();
+    useExternalRootStore.setState({
+      roots: [{ id: "root-1", path: "/mnt", label: "M" }],
+      mutedWrites: [],
+      conflicts: [],
+    });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "scene-1",
+        sourceUri: "external-root://root-1/chapter/01.md",
+      }),
+    ]);
+    mockReadExternalFile.mockResolvedValue("external winner\n");
+    mockGetExternalFileMtime.mockResolvedValue("2026-05-24T12:00:00.000Z");
+    mockWriteExternalFile.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    _resetWriteBackTimers();
+    _resetDocumentSaveCoordinatorForTests();
   });
 
   it("queues multiple conflicts instead of overwriting", () => {
@@ -710,5 +1120,239 @@ describe("reload conflict queue", () => {
     useExternalRootStore.getState().shiftConflict();
 
     expect(useExternalRootStore.getState().conflicts).toEqual([second]);
+  });
+
+  it("queues an external change behind a scheduled OUT write and reload cancels the stale draft", async () => {
+    scheduleWriteBack(
+      "scene-1",
+      "external-root://root-1/chapter/01.md",
+      JSON.stringify(markdownToPmJson("stale local\n")),
+    );
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "changed",
+    });
+
+    expect(useExternalRootStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        sceneId: "scene-1",
+        incomingContent: "external winner\n",
+      }),
+    ]);
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
+    expect(mockWriteExternalFile).not.toHaveBeenCalled();
+
+    await resolveReloadConflict("reload");
+
+    expect(mockWriteExternalFile).toHaveBeenCalledOnce();
+    expect(mockWriteExternalFile).toHaveBeenCalledWith(
+      "root-1",
+      "chapter/01.md",
+      "external winner\n",
+    );
+    expect(mockSaveSceneContent).toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({
+        content: JSON.stringify(markdownToPmJson("external winner\n")),
+      }),
+    );
+    expect(useExternalRootStore.getState().conflicts).toEqual([]);
+  });
+
+  it("queues an external change while a failed unmounted AutoSave retains the local draft", async () => {
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+    const retiredSave = vi.fn().mockRejectedValue(new Error("disk full"));
+    const hook = renderHook(() =>
+      useAutoSave(retiredSave, 0, { documentKey: () => documentKey }),
+    );
+
+    act(() => {
+      hook.result.current.schedule();
+    });
+    hook.unmount();
+    await vi.waitFor(() => expect(retiredSave).toHaveBeenCalledOnce());
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "changed",
+    });
+
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
+    expect(useExternalRootStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        sceneId: "scene-1",
+        incomingContent: "external winner\n",
+      }),
+    ]);
+
+    discardAutoSavesForDocument(documentKey);
+  });
+
+  it("rechecks after the initial clean snapshot and preserves an edit that appears while a prior scene write settles", async () => {
+    let releasePriorWrite!: () => void;
+    const priorWriteGate = new Promise<void>((resolve) => {
+      releasePriorWrite = resolve;
+    });
+    const priorWrite = serializeSceneWrite("scene-1", () => priorWriteGate);
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+
+    const changed = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "changed",
+    });
+    await vi.waitFor(() =>
+      expect(isExclusiveDocumentLeaseActive(documentKey)).toBe(true),
+    );
+
+    // The watcher already observed a clean document, but a transaction that
+    // was admitted just before the synchronous lease can publish dirty while
+    // the older DB chain is still settling.
+    useEditorSessionStore.getState().setDocumentDirty(documentKey, true);
+    releasePriorWrite();
+    await Promise.all([priorWrite, changed]);
+
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
+    expect(useExternalRootStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        sceneId: "scene-1",
+        incomingContent: "external winner\n",
+      }),
+    ]);
+  });
+
+  it("reload re-cancels an OUT draft scheduled by a local save after the first cancellation", async () => {
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+    let releaseLocalSave!: () => void;
+    const localSaveGate = new Promise<void>((resolve) => {
+      releaseLocalSave = resolve;
+    });
+    const stalePmJson = JSON.stringify(markdownToPmJson("stale local\n"));
+    const localSave = runCoordinatedDocumentSave(documentKey, async () => {
+      await localSaveGate;
+      scheduleWriteBack(
+        "scene-1",
+        "external-root://root-1/chapter/01.md",
+        stalePmJson,
+      );
+    });
+    useExternalRootStore.getState().enqueueConflict({
+      sceneId: "scene-1",
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      incomingContent: "external winner\n",
+      incomingMtime: "2026-05-24T12:00:00.000Z",
+    });
+
+    const reload = resolveReloadConflict("reload");
+    expect(isExclusiveDocumentLeaseActive(documentKey)).toBe(true);
+    releaseLocalSave();
+    await Promise.all([localSave, reload]);
+
+    expect(mockWriteExternalFile).toHaveBeenCalledOnce();
+    expect(mockWriteExternalFile).toHaveBeenCalledWith(
+      "root-1",
+      "chapter/01.md",
+      "external winner\n",
+    );
+    expect(useExternalRootStore.getState().conflicts).toEqual([]);
+  });
+
+  it("publishes the exact-document reload and foreign revision before automatic-import side effects", async () => {
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+    const detached = createDocumentSaveSession();
+    detached.retire(documentKey);
+    mockUpdateNode.mockImplementationOnce(async () => {
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey(documentKey)
+        ],
+      ).toBe(1);
+      throw new Error("metadata update failed");
+    });
+
+    await expect(
+      handleFileEvent({
+        rootId: "root-1",
+        relPath: "chapter/01.md",
+        kind: "changed",
+      }),
+    ).rejects.toThrow("metadata update failed");
+
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        externalDocumentStateKey(documentKey)
+      ],
+    ).toBe(1);
+    const staleRetry = vi.fn(async () => true);
+    await expect(
+      runCoordinatedDocumentSave(documentKey, staleRetry, {
+        session: detached,
+        didPersist: Boolean,
+      }),
+    ).rejects.toBeInstanceOf(StaleRetiredDocumentSaveError);
+    expect(staleRetry).not.toHaveBeenCalled();
+  });
+
+  it("publishes the chosen disk version before explicit Reload side effects", async () => {
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+    const detached = createDocumentSaveSession();
+    detached.retire(documentKey);
+    useExternalRootStore.getState().enqueueConflict({
+      sceneId: "scene-1",
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      incomingContent: "external winner\n",
+      incomingMtime: "2026-05-24T12:00:00.000Z",
+    });
+    mockUpdateNode.mockImplementationOnce(async () => {
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey(documentKey)
+        ],
+      ).toBe(1);
+      throw new Error("metadata update failed");
+    });
+
+    await expect(resolveReloadConflict("reload")).rejects.toThrow(
+      "metadata update failed",
+    );
+
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        externalDocumentStateKey(documentKey)
+      ],
+    ).toBe(1);
+    const staleRetry = vi.fn(async () => true);
+    await expect(
+      runCoordinatedDocumentSave(documentKey, staleRetry, {
+        session: detached,
+        didPersist: Boolean,
+      }),
+    ).rejects.toBeInstanceOf(StaleRetiredDocumentSaveError);
+    expect(staleRetry).not.toHaveBeenCalled();
   });
 });

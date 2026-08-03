@@ -1,7 +1,7 @@
 # Grimodex - 製品仕様書
 
-> バージョン: 2.0.0
-> 最終更新: 2026-07-11
+> バージョン: 2.0.10
+> 最終更新: 2026-08-02
 
 ## 1. 製品概要
 
@@ -44,7 +44,7 @@ Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 - **コンテンツ本文**（Scene/Note/Codex/Snippet）
 - **コンテンツバージョン履歴**
 
-**設計根拠:** 単一ファイル（project.db）で完結し、ファイル同期・命名規則・I/O管理の複雑さを排除。Markdownとの相互運用はインポート/エクスポート機能で提供する。
+**設計根拠:** 単一ファイル（grimodex.db）で完結し、ファイル同期・命名規則・I/O管理の複雑さを排除。Markdownとの相互運用はインポート/エクスポート機能で提供する。
 
 ### 2.2 ディレクトリ構造
 
@@ -52,10 +52,10 @@ Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 
 ```
 my-novel/
-  project.db                 # SQLite（全データを格納）
+  grimodex.db                # SQLite（全データを格納）
   .grimodex/
     workspace.json           # ワークスペースID + 作成日時
-  backups/                   # 自動バックアップ（ZIP）
+  backups/                   # 自動バックアップ（.db / .db.gz）
 ```
 
 - **階層構造は `tree_nodes` テーブル**で管理（Part/Chapter/Scene/Folder/Note）
@@ -131,9 +131,9 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 | `showLauncherOnStartup` | boolean | `false` | 起動時にランチャーを表示するか |
 
 **ワークスペースの判定:**
-- `project.db` がルートに存在するディレクトリ → 既存ワークスペース
+- `grimodex.db` がルートに存在するディレクトリ → 既存ワークスペース
 - 空ディレクトリまたは存在しないパス → 新規ワークスペース作成可能
-- 上記以外（`project.db` がないファイルを含むディレクトリ）→ 無効
+- 上記以外（`grimodex.db` がないファイルを含むディレクトリ）→ 無効
 
 ### 2.6 外部ファイルマウント（File-backed Scenes）
 
@@ -648,7 +648,7 @@ Jotai atoms（ローカル）:
 
 > **正規版は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) を参照。** 以下は概要のみ。
 
-データベース: SQLite（WALモード有効）、ORM: Drizzle ORM（sqlite-proxy）、ファイル: `project.db`
+データベース: SQLite（WALモード有効）、ORM: Drizzle ORM（sqlite-proxy）、ファイル: `grimodex.db`
 
 ### テーブル一覧
 
@@ -797,9 +797,8 @@ FTS5仮想テーブルはトリガーにより自動同期される。
 
 ## 8. Electron IPC API（renderer ↔ preload ↔ main ↔ Rust N-API）
 
-IPC の正本は `electron/shared/ipcContract.ts`。renderer は `src/lib/tauri.ts` の
-互換 facade を呼び、sandboxed preload が公開する `window.grimodex.invoke` だけを通る。
-main はコマンド名・引数を再検証し、OS API を使う shell handler または
+IPC の正本は `electron/shared/ipcContract.ts`。renderer は `window.grimodex` の
+typed preload APIだけを通る。mainはコマンド名・引数を再検証し、OS APIを使うshell handlerまたは
 `electron/native/grimodex-node/` の Rust N-API backend へ dispatch する。
 返却値は `Envelope` で正規化し、任意の Node/Electron API は renderer へ公開しない。
 

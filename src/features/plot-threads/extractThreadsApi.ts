@@ -8,6 +8,7 @@ import { getProject } from "@/features/project/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export interface ProposeThreadsRequest {
   scenes: Array<{
@@ -127,6 +128,10 @@ export async function proposePlotThreads(
   const ov = resolveRoleSendOverride("plot_thread_propose");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "plot_thread_propose",
+    },
     undefined,
     undefined,
     ov.apiVariant,

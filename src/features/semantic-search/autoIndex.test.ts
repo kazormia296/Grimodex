@@ -30,6 +30,7 @@ const {
     workspaceHydrated: true,
     projectId: "p1" as string | null,
     panelWindow: false,
+    performanceCapability: false,
   },
 }));
 
@@ -64,6 +65,9 @@ vi.mock("@/features/project/projectStore", () => ({
 vi.mock("@/features/layout/multiwindow/panelWindow", () => ({
   isPanelWindow: () => runtime.panelWindow,
 }));
+vi.mock("@/lib/perfLog", () => ({
+  hasRuntimePerformanceCapability: () => runtime.performanceCapability,
+}));
 
 import {
   ensureCodexIndexed,
@@ -78,6 +82,10 @@ import {
   _resetAutoIndexForTests,
 } from "./autoIndex";
 import { useReindexProgressStore } from "./reindexProgressStore";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 function sceneStatus(over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -93,6 +101,7 @@ function sceneStatus(over: Partial<Record<string, unknown>> = {}) {
 }
 
 beforeEach(() => {
+  _resetQuiescenceLeasesForTests();
   _resetAutoIndexForTests();
   mockCodexIndexStatus.mockReset();
   mockCodexReindexAll.mockReset().mockResolvedValue(0);
@@ -110,10 +119,19 @@ beforeEach(() => {
   runtime.workspaceHydrated = true;
   runtime.projectId = "p1";
   runtime.panelWindow = false;
+  runtime.performanceCapability = false;
   useReindexProgressStore.getState().clear();
 });
 
 describe("ensureSemanticModelForProject", () => {
+  it("does not download a model inside the deterministic runtime fixture", async () => {
+    runtime.performanceCapability = true;
+
+    await ensureSemanticModelForProject("p1", "/workspace/a");
+
+    expect(mockDownloadSemanticModel).not.toHaveBeenCalled();
+  });
+
   it("retries A after its result becomes stale during an A -> B -> A switch", async () => {
     runtime.projectId = "default-project";
     let finishA: (status: string) => void = () => {};
@@ -487,6 +505,51 @@ describe("ensureSceneIndexed", () => {
 });
 
 describe("ensureSemanticIndexesOnOpen", () => {
+  it("does not start derived indexing while a lifecycle lease is active", async () => {
+    const lease = acquireQuiescenceLease("window-close");
+    await ensureSemanticIndexesOnOpen("p1", "/workspace/a");
+    lease.release({ disposition: "renderer-teardown" });
+    // The native close IPC may resolve before React unmounts. The released
+    // lease still leaves this renderer in a terminal state during that gap.
+    await ensureSemanticIndexesOnOpen("p1", "/workspace/a");
+
+    expect(mockDownloadSemanticModel).not.toHaveBeenCalled();
+    expect(mockCodexIndexStatus).not.toHaveBeenCalled();
+    expect(mockEventsIndexStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not advance a cancelled pipeline after close quiescence begins", async () => {
+    mockCodexIndexStatus.mockResolvedValue({
+      indexedEntryCount: 0,
+      totalEntryCount: 0,
+    });
+    mockEventsIndexStatus.mockResolvedValue({
+      indexedEventCount: 0,
+      totalEventCount: 1,
+    });
+    let finishEvents: (count: number) => void = () => {};
+    mockEventsReindexAll.mockReturnValueOnce(
+      new Promise<number>((resolve) => {
+        finishEvents = resolve;
+      }),
+    );
+    mockChatIndexStatus.mockResolvedValue({
+      indexedMessageCount: 0,
+      totalMessageCount: 1,
+    });
+    mockSemanticIndexStatus.mockResolvedValue(sceneStatus());
+
+    const pending = ensureSemanticIndexesOnOpen("p1", "/workspace/a");
+    await vi.waitFor(() => expect(mockEventsReindexAll).toHaveBeenCalledOnce());
+    const lease = acquireQuiescenceLease("window-close");
+    finishEvents(1);
+    await pending;
+
+    expect(mockChatIndexStatus).not.toHaveBeenCalled();
+    expect(mockSemanticIndexStatus).not.toHaveBeenCalled();
+    lease.release({ disposition: "renderer-teardown" });
+  });
+
   it("runs codex, events, chat and scene back-index", async () => {
     mockCodexIndexStatus.mockResolvedValue({
       indexedEntryCount: 0,

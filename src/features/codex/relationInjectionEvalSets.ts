@@ -74,6 +74,7 @@ function mkPhase(
     summaryOverride: null,
     contentOverride: null,
     contextModeOverride: null,
+    version: 0,
     createdAt: T,
     updatedAt: T,
     ...partial,

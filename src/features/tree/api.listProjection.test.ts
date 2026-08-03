@@ -5,7 +5,9 @@ import { treeNodes } from "@/db/schema";
 import {
   listNodes,
   listAllNodes,
+  listExpiredArchivedNodeIds,
   listNoteContents,
+  listProjectSceneDocuments,
   loadSceneContents,
   saveSceneContent,
   updateNode,
@@ -130,6 +132,29 @@ describe("listAllNodes projection", () => {
   });
 });
 
+describe("listExpiredArchivedNodeIds", () => {
+  it("期限切れの archived row ID だけを DB 側で抽出する", async () => {
+    await insertNode({
+      id: "expired",
+      nodeType: "scene",
+      archivedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await insertNode({
+      id: "recent",
+      nodeType: "scene",
+      archivedAt: "2026-07-01T00:00:00.000Z",
+    });
+    await insertNode({ id: "live", nodeType: "scene", archivedAt: null });
+
+    await expect(
+      listExpiredArchivedNodeIds(PROJECT_ID, "2026-06-01T00:00:00.000Z"),
+    ).resolves.toEqual(["expired"]);
+    expect((await listAllNodes(PROJECT_ID)).map((node) => node.id)).toEqual(
+      expect.arrayContaining(["expired", "recent", "live"]),
+    );
+  });
+});
+
 describe("listNoteContents", () => {
   it("note の content だけを id → content の Map で返す", async () => {
     await insertNode({ id: "s1", nodeType: "scene", content: SCENE_DOC });
@@ -141,6 +166,23 @@ describe("listNoteContents", () => {
     expect(map.get("n1")).toBe(NOTE_DOC);
     expect(map.has("s1")).toBe(false);
     expect(map.has("f1")).toBe(false);
+  });
+});
+
+describe("listProjectSceneDocuments", () => {
+  it("returns scene identity, title, and content without notes or folders", async () => {
+    await insertNode({
+      id: "s1",
+      title: "Scene",
+      nodeType: "scene",
+      content: SCENE_DOC,
+    });
+    await insertNode({ id: "n1", nodeType: "note", content: NOTE_DOC });
+    await insertNode({ id: "f1", nodeType: "folder" });
+
+    await expect(listProjectSceneDocuments(PROJECT_ID)).resolves.toEqual([
+      { id: "s1", title: "Scene", content: SCENE_DOC },
+    ]);
   });
 });
 

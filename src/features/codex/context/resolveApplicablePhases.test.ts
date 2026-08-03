@@ -46,6 +46,7 @@ function phase(
     summaryOverride: id,
     contentOverride: null,
     contextModeOverride: null,
+    version: 0,
     createdAt,
     updatedAt: createdAt,
   };

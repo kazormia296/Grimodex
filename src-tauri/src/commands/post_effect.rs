@@ -81,6 +81,59 @@ struct TauriPostEffectAiClient {
 }
 
 impl PostEffectAiClient for TauriPostEffectAiClient {
+    fn resolve_audit_route(
+        &self,
+        request: &PostEffectAiRequest<'_>,
+    ) -> grimodex_post_effect::PostEffectAiResolvedRoute {
+        let settings = apply_model_override(
+            read_ai_settings(&self.settings_path),
+            request.model_override,
+            request.role_override,
+        );
+        grimodex_post_effect::PostEffectAiResolvedRoute::from_settings(&settings)
+    }
+
+    fn prepare_call<'a>(
+        &'a self,
+        request: PostEffectAiRequest<'a>,
+    ) -> anyhow::Result<(
+        grimodex_post_effect::PostEffectAiResolvedRoute,
+        grimodex_post_effect::PostEffectAiDispatch<'a>,
+    )> {
+        let settings = apply_model_override(
+            read_ai_settings(&self.settings_path),
+            request.model_override,
+            request.role_override,
+        );
+        let prepared = grimodex_ai::prepare_post_effect_request(
+            &settings,
+            request.system_prompt,
+            request.codex_content,
+            request.scene_content,
+        )?;
+        let route = grimodex_post_effect::PostEffectAiResolvedRoute::from_settings_and_prepared(
+            &settings,
+            prepared.clone(),
+        );
+        let dispatch: grimodex_post_effect::PostEffectAiDispatch<'a> = Box::new(move || {
+            Box::pin(async move {
+                let api_key = resolve_api_key(
+                    &settings.provider,
+                    settings.active_openai_compatible_endpoint_id.as_deref(),
+                )?;
+                let detected_model = settings.model.clone();
+                let raw_response =
+                    grimodex_ai::call_post_effect_api_prepared(&settings, &api_key, &prepared)
+                        .await?;
+                Ok(PostEffectAiOutput {
+                    raw_response,
+                    detected_model,
+                })
+            })
+        });
+        Ok((route, dispatch))
+    }
+
     fn call<'a>(
         &'a self,
         request: PostEffectAiRequest<'a>,

@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 export interface AiUsageCostRow {
   surface: string;
   model: string | null;
+  provider: string | null;
   tokensIn: number | null;
   tokensOut: number | null;
   /** プロバイダ報告コスト (USD)。OpenRouter のみ実値、他は null。 */
@@ -31,6 +32,7 @@ export async function loadProjectUsageCostRows(
     .select({
       surface: aiUsage.surface,
       model: aiUsage.model,
+      provider: aiUsage.provider,
       tokensIn: aiUsage.tokensIn,
       tokensOut: aiUsage.tokensOut,
       costUsd: aiUsage.costUsd,

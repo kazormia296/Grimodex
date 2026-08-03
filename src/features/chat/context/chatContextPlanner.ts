@@ -179,6 +179,9 @@ export async function planChatContext(
   const rendered = deps.renderPrompt({
     ...required.promptInput,
     ...optional,
+    // A live refresh only feeds the ContextBar display cache. Provider-bound
+    // surfaces rebuild from their immutable request and keep exact BPE counts.
+    tokenCountingMode: request.purpose === "live" ? "live-estimate" : "exact",
     contextRequestId: request.requestId,
     commandInstruction: request.commandInstruction,
     agentMode: request.mode === "agent",

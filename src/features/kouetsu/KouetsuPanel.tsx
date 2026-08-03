@@ -10,6 +10,10 @@ import { BlockerTab } from "./BlockerTab";
 import { recordMark } from "@/lib/perfLog";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { PanelHeader } from "@/features/layout/PanelHeader";
+import { useIsLiveReaderRunning } from "@/features/post-effect/runStore";
+import { ensureLiveReaderTranslations } from "@/locales/liveReader";
+
+ensureLiveReaderTranslations();
 
 const TABS: { id: KouetsuTab; labelKey: string; icon: LucideIcon }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues", icon: SearchCheck },
@@ -22,6 +26,7 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
   const { t } = useTranslation();
   const storedTab = useKouetsuStore((s) => s.activeTab);
   const setActiveTab = useKouetsuStore((s) => s.setActiveTab);
+  const liveReaderRunning = useIsLiveReaderRunning();
   // persist 済み store から不正値（旧 "editorial" 等）が来ても tab 選択が
   // 壊れないよう既知の tab に正規化する
   const activeTab = TABS.some(({ id }) => id === storedTab)
@@ -48,6 +53,14 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
             <TabsTrigger key={id} value={id}>
               <Icon size={12} className="shrink-0" />
               {t(labelKey)}
+              {id === "comments" && liveReaderRunning && (
+                <span
+                  data-testid="comments-live-reader-indicator"
+                  aria-label={t("kouetsu.comments.liveReaderRunning")}
+                  title={t("kouetsu.comments.liveReaderRunning")}
+                  className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+                />
+              )}
             </TabsTrigger>
           ))}
         </TabsList>

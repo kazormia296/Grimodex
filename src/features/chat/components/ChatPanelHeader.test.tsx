@@ -141,6 +141,7 @@ describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
 
   it("opens with a Scene/Codex/Snippet tablist, Scene tab active for tree scopes", () => {
     render(<ChatPanelHeader {...baseProps({ chatScope: "scene" })} />);
+    expect(screen.getByTestId("chat-scope-picker")).toBeInTheDocument();
     openDropdown();
 
     expect(screen.getByRole("tablist")).toBeInTheDocument();
@@ -157,6 +158,7 @@ describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
     expect(
       screen.getByRole("button", { name: /chat\.scope\.project/ }),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("chat-scope-project")).toBeInTheDocument();
   });
 
   it("Codex tab lists codex entries and picking one fires onScopeChange('codex', id)", () => {
@@ -342,6 +344,11 @@ describe("ChatPanelHeader — Map overlay toggle gated on Map panel visibility",
 });
 
 describe("ChatPanelHeader — 新規セッションボタンの accessible name", () => {
+  it("下罫線を含む外形に対して内容を光学的に中央へ置く", () => {
+    render(<ChatPanelHeader {...baseProps()} />);
+    expect(screen.getByTestId("chat-panel-header")).toHaveClass("pt-2", "pb-1");
+  });
+
   it("Plus ボタンが title と同文言の aria-label を持つ", () => {
     const onNewSession = vi.fn();
     render(<ChatPanelHeader {...baseProps({ onNewSession })} />);

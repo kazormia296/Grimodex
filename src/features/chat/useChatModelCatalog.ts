@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useAiSettingsStore } from "./store";
+import { refreshDynamicCapsForProvider, useAiSettingsStore } from "./store";
 import { hasApiKey, listAiModels } from "./api";
 import {
   AI_PROVIDERS,
@@ -14,6 +14,7 @@ import {
 } from "./chatModelCatalog";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "./browserProviderPolicy";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import { isDynamicCapsStale } from "./agent/dynamicModelCaps";
 
 /**
  * チャット入力欄のモデルピッカー(複数プロバイダ横断)用カタログ取得フック。
@@ -42,6 +43,8 @@ const REQUIRES_KEY = new Set<AiProvider>([
   "ai-novelist",
 ]);
 
+const DYNAMIC_CAPS_PROVIDERS = new Set<AiProvider>(["openrouter", "ollama"]);
+
 /**
  * 別プロバイダ/別エンドポイントのモデルはピッカー開閉ごとに re-fetch すると無駄なので
  * module で持つ。OpenAI 互換は endpointId 単位でキャッシュキーを分ける(異なる base_url の
@@ -49,8 +52,13 @@ const REQUIRES_KEY = new Set<AiProvider>([
  */
 const moduleCache = new Map<string, AiModel[]>();
 
-const cacheKeyFor = (provider: AiProvider, endpointId?: string): string =>
-  provider === "openai-compatible" ? `oc:${endpointId ?? ""}` : provider;
+const cacheKeyFor = (provider: AiProvider, endpointId?: string): string => {
+  if (provider === "openai-compatible") return `oc:${endpointId ?? ""}`;
+  if (provider === "ollama") {
+    return `ollama:${endpointId?.trim().replace(/\/+$/u, "") ?? ""}`;
+  }
+  return provider;
+};
 
 export function useChatModelCatalog(open: boolean): {
   sections: CatalogSection[];
@@ -99,10 +107,38 @@ export function useChatModelCatalog(open: boolean): {
           const ok = await hasApiKey(p);
           if (!ok) return null;
         }
-        const key = cacheKeyFor(p);
+        const ollamaEndpoint =
+          p === "ollama" ? settings?.ollamaEndpoint : undefined;
+        const key = cacheKeyFor(p, ollamaEndpoint);
         const cached = moduleCache.get(key);
-        const models = cached ?? (await listAiModels(p));
+        let models: AiModel[] | null;
+        let refreshedDynamicCaps = false;
+        if (DYNAMIC_CAPS_PROVIDERS.has(p)) {
+          // stale metadata は更新する。永続 metadata cache だけが fresh で、この
+          // picker 用モデル一覧がまだ無い起動直後は force して一覧も取得する。
+          const refreshed = await refreshDynamicCapsForProvider(p, {
+            force:
+              !isDynamicCapsStale(p, undefined, ollamaEndpoint) &&
+              cached === undefined,
+            ollamaEndpoint: ollamaEndpoint ?? null,
+          });
+          refreshedDynamicCaps = refreshed !== null;
+          models = refreshed ?? cached ?? null;
+        } else {
+          models = cached ?? (await listAiModels(p));
+        }
+        if (!models) return null;
         moduleCache.set(key, models);
+        if (
+          refreshedDynamicCaps &&
+          useAiSettingsStore.getState().settings?.provider !== p
+        ) {
+          // refresh helper は active provider の revision を更新する。横断取得した
+          // 非 active provider も、選択直後の解決が新 metadata を参照できるよう通知する。
+          useAiSettingsStore.setState((state) => ({
+            modelCapsRevision: state.modelCapsRevision + 1,
+          }));
+        }
         if (models.length === 0) return null;
         return { provider: p, models };
       } catch {
@@ -149,7 +185,13 @@ export function useChatModelCatalog(open: boolean): {
     };
     // compatKey は compatEndpoints の id 列(配列 identity に依存させない)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeProvider, compatKey, runtimeCapabilities.browserDirectAi]);
+  }, [
+    open,
+    activeProvider,
+    compatKey,
+    settings?.ollamaEndpoint,
+    runtimeCapabilities.browserDirectAi,
+  ]);
 
   const sections = useMemo(() => {
     if (!activeProvider) return [];

@@ -25,6 +25,10 @@ import {
 } from "./exportReport";
 import { ProvenanceAnalyticsSection } from "./ProvenanceAnalyticsSection";
 import { Download } from "lucide-react";
+import {
+  captureAiAuditExportIdentity,
+  runAiAuditExportBoundary,
+} from "@/features/ai-audit/exportBoundary";
 
 type SortColumn = "scene" | "total" | "human" | "ai" | "unknown" | "aiPct";
 type SortDir = "asc" | "desc";
@@ -86,6 +90,9 @@ export function AttributionProjectView() {
   const [knowledgeAiChars, setKnowledgeAiChars] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [auditExportNotice, setAuditExportNotice] = useState<
+    "verificationFailed" | "exportFailed" | null
+  >(null);
   const [collapsedChapters, setCollapsedChapters] = useState<Set<string>>(
     new Set(),
   );
@@ -172,6 +179,36 @@ export function AttributionProjectView() {
     [projectId, isExporting],
   );
 
+  const handleAiAuditExport = useCallback(async () => {
+    if (!projectId || isExporting) return;
+    setIsExporting(true);
+    setAuditExportNotice(null);
+    try {
+      const identity = captureAiAuditExportIdentity(projectId);
+      const { result, download } = await runAiAuditExportBoundary(
+        identity,
+        async (frozenReadProof) => {
+          const exportBundle = await import("@/features/ai-audit/exportBundle");
+          return {
+            result: await exportBundle.buildAiAuditBundle(projectId, {
+              frozenReadProof,
+            }),
+            download: exportBundle.downloadAiAuditBundle,
+          };
+        },
+      );
+      download(result.bytes, result.filename);
+      if (result.manifest.integrityLimitations.verificationFailed) {
+        setAuditExportNotice("verificationFailed");
+      }
+    } catch (error) {
+      console.error("[AiAuditBundle] export failed", error);
+      setAuditExportNotice("exportFailed");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [projectId, isExporting]);
+
   const chapters = nodes.filter((n) => n.nodeType === "folder");
   const scenesByChapter: Record<string, typeof nodes> = {};
   for (const node of nodes) {
@@ -179,12 +216,6 @@ export function AttributionProjectView() {
       if (!scenesByChapter[node.parentId]) scenesByChapter[node.parentId] = [];
       scenesByChapter[node.parentId].push(node);
     }
-  }
-
-  if (chapters.length === 0) {
-    return (
-      <p className="text-xs text-muted-foreground">{t("chat.noScenes")}</p>
-    );
   }
 
   const thClass =
@@ -217,6 +248,16 @@ export function AttributionProjectView() {
         </button>
         <button
           type="button"
+          onClick={handleAiAuditExport}
+          disabled={isExporting || !projectId}
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
+          title={t("attribution.exportAiAuditBundleTitle")}
+        >
+          <Download className="h-3 w-3" />
+          {t("attribution.exportAiAuditBundle")}
+        </button>
+        <button
+          type="button"
           onClick={load}
           disabled={isLoading}
           className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
@@ -235,183 +276,200 @@ export function AttributionProjectView() {
         )}
       </div>
 
-      <table className="w-full text-xs border-collapse">
-        <thead>
-          <tr className="border-b border-border">
-            {(
-              [
-                ["scene", thClass],
-                ["total", numThClass],
-                ["human", numThClass],
-                ["ai", numThClass],
-                ["unknown", numThClass],
-                ["aiPct", numThClass],
-              ] as [SortColumn, string][]
-            ).map(([col, cls]) => (
-              <th key={col} className={cls}>
-                <button
-                  type="button"
-                  onClick={() => handleSortCol(col)}
-                  className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
-                  title={
-                    sortCol === col && sortDir === "asc"
-                      ? t("attribution.sortDesc")
-                      : t("attribution.sortAsc")
-                  }
-                >
-                  {t(
-                    `attribution.column${col.charAt(0).toUpperCase()}${col.slice(1)}`,
-                  )}
-                  <SortIcon col={col} active={sortCol} dir={sortDir} />
-                </button>
-              </th>
-            ))}
-          </tr>
-        </thead>
+      {auditExportNotice && (
+        <p
+          role={auditExportNotice === "exportFailed" ? "alert" : "status"}
+          className={
+            auditExportNotice === "exportFailed"
+              ? "px-2 text-xs text-destructive"
+              : "px-2 text-xs text-amber-600 dark:text-amber-400"
+          }
+        >
+          {t(`attribution.aiAudit.${auditExportNotice}`)}
+        </p>
+      )}
 
-        <tbody>
-          {chapters.map((chapter) => {
-            const rawScenes = scenesByChapter[chapter.id] ?? [];
-            const isCollapsed = collapsedChapters.has(chapter.id);
+      {chapters.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t("chat.noScenes")}</p>
+      ) : (
+        <table className="w-full text-xs border-collapse">
+          <thead>
+            <tr className="border-b border-border">
+              {(
+                [
+                  ["scene", thClass],
+                  ["total", numThClass],
+                  ["human", numThClass],
+                  ["ai", numThClass],
+                  ["unknown", numThClass],
+                  ["aiPct", numThClass],
+                ] as [SortColumn, string][]
+              ).map(([col, cls]) => (
+                <th key={col} className={cls}>
+                  <button
+                    type="button"
+                    onClick={() => handleSortCol(col)}
+                    className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
+                    title={
+                      sortCol === col && sortDir === "asc"
+                        ? t("attribution.sortDesc")
+                        : t("attribution.sortAsc")
+                    }
+                  >
+                    {t(
+                      `attribution.column${col.charAt(0).toUpperCase()}${col.slice(1)}`,
+                    )}
+                    <SortIcon col={col} active={sortCol} dir={sortDir} />
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
 
-            const chapterStats = rawScenes.reduce(
-              (acc, s) => {
-                const st = statsMap[s.id];
-                if (!st) return acc;
-                return {
-                  human: acc.human + st.human + st.unmarked,
-                  ai: acc.ai + st.ai,
-                  unknown: acc.unknown + st.unknown,
-                  total: acc.total + st.total,
-                };
-              },
-              { human: 0, ai: 0, unknown: 0, total: 0 },
-            );
+          <tbody>
+            {chapters.map((chapter) => {
+              const rawScenes = scenesByChapter[chapter.id] ?? [];
+              const isCollapsed = collapsedChapters.has(chapter.id);
 
-            const aiPct =
-              chapterStats.total > 0
-                ? Math.round((chapterStats.ai / chapterStats.total) * 100)
-                : 0;
+              const chapterStats = rawScenes.reduce(
+                (acc, s) => {
+                  const st = statsMap[s.id];
+                  if (!st) return acc;
+                  return {
+                    human: acc.human + st.human + st.unmarked,
+                    ai: acc.ai + st.ai,
+                    unknown: acc.unknown + st.unknown,
+                    total: acc.total + st.total,
+                  };
+                },
+                { human: 0, ai: 0, unknown: 0, total: 0 },
+              );
 
-            const scenes: SceneRow[] = rawScenes.map((s) => ({
-              id: s.id,
-              title: s.title,
-              stats: statsMap[s.id] ?? null,
-            }));
+              const aiPct =
+                chapterStats.total > 0
+                  ? Math.round((chapterStats.ai / chapterStats.total) * 100)
+                  : 0;
 
-            if (sortCol !== "scene") {
-              scenes.sort((a, b) => {
-                const va = getSceneValue(a.stats, sortCol);
-                const vb = getSceneValue(b.stats, sortCol);
-                return sortDir === "asc" ? va - vb : vb - va;
-              });
-            } else if (sortDir === "desc") {
-              scenes.reverse();
-            }
+              const scenes: SceneRow[] = rawScenes.map((s) => ({
+                id: s.id,
+                title: s.title,
+                stats: statsMap[s.id] ?? null,
+              }));
 
-            return (
-              <React.Fragment key={chapter.id}>
-                {/* Chapter row */}
-                <tr
-                  key={chapter.id}
-                  className="hover:bg-accent/50 cursor-pointer font-medium"
-                  onClick={() => toggleChapter(chapter.id)}
-                >
-                  <td className="px-2 py-1">
-                    <span className="flex items-center gap-1">
-                      {isCollapsed ? (
-                        <ChevronRight className="h-3 w-3 shrink-0" />
-                      ) : (
-                        <ChevronDown className="h-3 w-3 shrink-0" />
-                      )}
-                      <span className="truncate">{chapter.title}</span>
-                    </span>
-                  </td>
-                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
-                    {chapterStats.total}
-                  </td>
-                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
-                    {chapterStats.human}
-                  </td>
-                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
-                    {chapterStats.ai}
-                  </td>
-                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
-                    {chapterStats.unknown}
-                  </td>
-                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
-                    {aiPct}%
-                  </td>
-                </tr>
+              if (sortCol !== "scene") {
+                scenes.sort((a, b) => {
+                  const va = getSceneValue(a.stats, sortCol);
+                  const vb = getSceneValue(b.stats, sortCol);
+                  return sortDir === "asc" ? va - vb : vb - va;
+                });
+              } else if (sortDir === "desc") {
+                scenes.reverse();
+              }
 
-                {/* Scene rows */}
-                {!isCollapsed &&
-                  scenes.map(({ id, title, stats: st }) => {
-                    const aiP =
-                      st && st.total > 0
-                        ? Math.round((st.ai / st.total) * 100)
-                        : 0;
-                    const humanV = st ? st.human + st.unmarked : 0;
-                    return (
-                      <tr
-                        key={id}
-                        className="hover:bg-accent/40 cursor-pointer"
-                        onClick={() => handleRowClick(id)}
-                      >
-                        <td className="pl-6 pr-2 py-0.5 text-muted-foreground">
-                          <span className="truncate block max-w-[160px]">
-                            {title}
-                          </span>
-                        </td>
-                        {st ? (
-                          <>
-                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
-                              {st.total}
-                            </td>
-                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
-                              {humanV}
-                            </td>
-                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
-                              {st.ai}
-                            </td>
-                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
-                              {st.unknown}
-                            </td>
-                            <td className="px-2 py-0.5">
-                              <div className="flex items-center gap-1">
-                                <span className="tabular-nums text-muted-foreground w-7 text-right shrink-0">
-                                  {aiP}%
-                                </span>
-                                <div className="w-16 shrink-0">
-                                  <BreakdownBar
-                                    human={humanV}
-                                    ai={st.ai}
-                                    unknown={st.unknown}
-                                    total={st.total}
-                                    height={6}
-                                  />
-                                </div>
-                              </div>
-                            </td>
-                          </>
+              return (
+                <React.Fragment key={chapter.id}>
+                  {/* Chapter row */}
+                  <tr
+                    key={chapter.id}
+                    className="hover:bg-accent/50 cursor-pointer font-medium"
+                    onClick={() => toggleChapter(chapter.id)}
+                  >
+                    <td className="px-2 py-1">
+                      <span className="flex items-center gap-1">
+                        {isCollapsed ? (
+                          <ChevronRight className="h-3 w-3 shrink-0" />
                         ) : (
-                          <td
-                            colSpan={5}
-                            className="px-2 py-0.5 text-right text-muted-foreground/40"
-                          >
-                            —
-                          </td>
+                          <ChevronDown className="h-3 w-3 shrink-0" />
                         )}
-                      </tr>
-                    );
-                  })}
-              </React.Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+                        <span className="truncate">{chapter.title}</span>
+                      </span>
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                      {chapterStats.total}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                      {chapterStats.human}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                      {chapterStats.ai}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                      {chapterStats.unknown}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                      {aiPct}%
+                    </td>
+                  </tr>
 
-      {projectId && (
+                  {/* Scene rows */}
+                  {!isCollapsed &&
+                    scenes.map(({ id, title, stats: st }) => {
+                      const aiP =
+                        st && st.total > 0
+                          ? Math.round((st.ai / st.total) * 100)
+                          : 0;
+                      const humanV = st ? st.human + st.unmarked : 0;
+                      return (
+                        <tr
+                          key={id}
+                          className="hover:bg-accent/40 cursor-pointer"
+                          onClick={() => handleRowClick(id)}
+                        >
+                          <td className="pl-6 pr-2 py-0.5 text-muted-foreground">
+                            <span className="truncate block max-w-[160px]">
+                              {title}
+                            </span>
+                          </td>
+                          {st ? (
+                            <>
+                              <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                                {st.total}
+                              </td>
+                              <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                                {humanV}
+                              </td>
+                              <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                                {st.ai}
+                              </td>
+                              <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                                {st.unknown}
+                              </td>
+                              <td className="px-2 py-0.5">
+                                <div className="flex items-center gap-1">
+                                  <span className="tabular-nums text-muted-foreground w-7 text-right shrink-0">
+                                    {aiP}%
+                                  </span>
+                                  <div className="w-16 shrink-0">
+                                    <BreakdownBar
+                                      human={humanV}
+                                      ai={st.ai}
+                                      unknown={st.unknown}
+                                      total={st.total}
+                                      height={6}
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+                            </>
+                          ) : (
+                            <td
+                              colSpan={5}
+                              className="px-2 py-0.5 text-right text-muted-foreground/40"
+                            >
+                              —
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {projectId && chapters.length > 0 && (
         <ProvenanceAnalyticsSection
           projectId={projectId}
           refreshKey={refreshKey}

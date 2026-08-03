@@ -18,7 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,6 +78,7 @@ test("openWorkspace が新規 workspace を scaffold + migrate し workspace:ope
   const result = JSON.parse(await backend.openWorkspace(wsDir));
   assert.equal(result.isExisting, false);
   assert.equal(result.name, basename(wsDir));
+  assert.match(result.workspaceId, /^[0-9a-f-]{36}$/);
 
   // migrate 済み: user_version が backend:ready の schemaVersion
   // (= grimodex_core::SCHEMA_VERSION) と一致する。
@@ -272,6 +273,10 @@ test("getGlobalSettings / saveGlobalSettings の roundtrip と recent-workspaces
 test("再オープンで isExisting=true になり書き込み内容が永続している (A2 の核)", async () => {
   const reopened = JSON.parse(await backend.openWorkspace(wsDir));
   assert.equal(reopened.isExisting, true);
+  const workspaceMeta = JSON.parse(
+    readFileSync(join(wsDir, ".grimodex", "workspace.json"), "utf8"),
+  );
+  assert.equal(reopened.workspaceId, workspaceMeta.id);
   const [{ title }] = await exec("SELECT title FROM projects WHERE id = ?", ["p1"], "get");
   assert.equal(title, "スモーク作品");
 });

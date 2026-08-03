@@ -101,12 +101,15 @@ describe("buildImeLogEntry", () => {
     expect(entry.at).toBe(1235);
   });
 
-  it("truncates composition data to 32 chars (本文混入を抑える)", () => {
+  it("keeps only composition length and never retains manuscript text", () => {
     const long = "縦".repeat(40);
     const entry = buildImeLogEntry(makeSnapshot({ data: long }));
-    expect(entry.data).toBe(`${"縦".repeat(32)}…`);
-    expect(buildImeLogEntry(makeSnapshot({ data: null })).data).toBeNull();
-    expect(buildImeLogEntry(makeSnapshot({ data: "短い" })).data).toBe("短い");
+    expect(entry.dataLength).toBe(40);
+    expect(JSON.stringify(entry)).not.toContain("縦");
+    expect(
+      buildImeLogEntry(makeSnapshot({ data: null })).dataLength,
+    ).toBeNull();
+    expect(buildImeLogEntry(makeSnapshot({ data: "短い" })).dataLength).toBe(2);
   });
 });
 
@@ -114,7 +117,8 @@ describe("formatImeLogEntry", () => {
   it("renders a single greppable line with all rects", () => {
     const line = formatImeLogEntry(buildImeLogEntry(makeSnapshot()));
     expect(line).toContain("compositionupdate vertical");
-    expect(line).toContain('data="あいう"');
+    expect(line).toContain("dataLength=3");
+    expect(line).not.toContain("あいう");
     expect(line).toContain("sel=5..5");
     expect(line).toContain("dom=(100,200.1 7×112)");
     expect(line).toContain("dpr=1.5");

@@ -27,6 +27,7 @@ import {
   supportsTrashBin,
 } from "./api";
 import type { TrashItemInput } from "./types";
+import { getCreateResultMetadata } from "@/lib/createResultMetadata";
 
 type AnyWindow = Record<string, unknown>;
 
@@ -86,6 +87,7 @@ describe("trash_bin API（Electron シェル）", () => {
       charCount: 6,
       isInteresting: false,
       deletedAt: "2026-07-10T00:00:00.000Z",
+      id: "trash-request-1",
     });
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -96,6 +98,7 @@ describe("trash_bin API（Electron シェル）", () => {
     expect(cmd).toBe("trash_bin_create");
     // struct 内は camelCase のまま、payload / previewMeta は JSON 文字列化済み
     expect(args.payload).toMatchObject({
+      id: "trash-request-1",
       projectId: "p1",
       previewText: "消した文字屑",
       payload: JSON.stringify(input.payload),
@@ -107,6 +110,31 @@ describe("trash_bin API（Electron シェル）", () => {
     // snake_case の生行（napi/Tauri とも SELECT * を返す）が正規化される
     expect(created.previewText).toBe("消した文字屑");
     expect(created.isInteresting).toBe(false);
+  });
+
+  it("deletedAt 省略を native に保ち、削除済み replay metadata を正規化後も保持する", async () => {
+    installElectronBridge();
+    invokeMock.mockResolvedValue({
+      id: "trash-request-omitted-time",
+      deleted_at: "2026-07-10T00:00:00.000Z",
+      __idempotency: { replayed: true, entityPresent: false },
+    });
+
+    const created = await createTrashItem(input, {
+      charCount: 6,
+      isInteresting: false,
+      id: "trash-request-omitted-time",
+    });
+
+    const [, args] = invokeMock.mock.calls[0] as [
+      string,
+      { payload: Record<string, unknown> },
+    ];
+    expect(args.payload).not.toHaveProperty("deletedAt");
+    expect(getCreateResultMetadata(created)).toEqual({
+      replayed: true,
+      entityPresent: false,
+    });
   });
 
   it("deleteTrashItem / clearAllTrashItems が no-op にならず invoke する", async () => {

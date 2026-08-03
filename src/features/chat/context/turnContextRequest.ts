@@ -4,6 +4,7 @@ import type { ProjectContext, SceneContext } from "../contextBuilder";
 import type { CodexContextEntry } from "@/features/codex/api";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { ChatScope } from "../chatScope";
+import type { SemanticRerankerMode } from "../semanticRerankerMode";
 
 export type ContextPlanningPurpose = "live" | "preview" | "copy" | "send";
 
@@ -32,6 +33,7 @@ export interface TurnContextSettings {
   semanticRecallEnabled: boolean;
   episodicRecallEnabled: boolean;
   hybridRecallEnabled: boolean;
+  semanticRerankerMode: SemanticRerankerMode;
   customChatInstruction: string;
 }
 
@@ -50,6 +52,11 @@ interface TurnContextRequestBase {
   requestId: string;
   purpose: ContextPlanningPurpose;
   projectId: string;
+  /** Workspace DB generation captured before any async context source read. */
+  workspaceIdentity?: {
+    workspaceKey: string;
+    workspaceOpenRevision: number;
+  };
   sessionId: string | null;
   mode: "chat" | "agent";
   route: ResolvedChatTurnRoute | null;

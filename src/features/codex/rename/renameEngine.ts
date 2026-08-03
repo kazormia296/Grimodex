@@ -51,6 +51,10 @@ import {
   applyReplacementsToString,
   type FlatSpan,
 } from "./applyReplacementsToDoc";
+import {
+  encodeDocumentKey,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
 
 /**
  * Rename propagation engine (Item C apply layer).
@@ -287,14 +291,13 @@ function toStatement(q: { sql: string; params: unknown[] }): BatchStatement {
   return { sql: q.sql, params: q.params, method: "run" };
 }
 
-/** Build forward + undo UPDATE statements for one source's new/old value. */
-function buildStatements(
+/** Build the forward UPDATE for one source. Undo SQL is owned by Rust. */
+function buildRenameStatement(
   source: RenameSourceText,
-  oldValue: string,
-  newValue: string,
+  value: string,
   projectId: string,
   now: string,
-): { forward: BatchStatement[]; undo: BatchStatement[] } {
+): BatchStatement {
   const id = source.refId;
   const scoped = (
     idCol: typeof treeNodes.id,
@@ -303,51 +306,32 @@ function buildStatements(
 
   switch (source.kind) {
     case "scene-body": {
-      const set = (content: string) => ({
-        content,
-        charCount: countSceneBodyCharsFromJson(content),
-        placedBeatPreview: extractPlacedBeatPreviewFromString(content),
-        // 権威的一括上書きも scene 本文の writer なので version を進め、pending
-        // prose proposal の stale 検知 (autoApplyProse) を働かせる。OCC 検査
-        // (WHERE version=?) は付けない — 正当な一括置換を衝突で落とさない。
-        // undo statement も本文を書き戻す writer なので同様に bump する
-        // (scene は FE に version 在庫を持たず OCC 検査も無いので自己衝突しない)。
-        version: sql`${treeNodes.version} + 1`,
-        updatedAt: now,
-      });
-      return {
-        forward: [
-          toStatement(
-            db
-              .update(treeNodes)
-              .set(set(newValue))
-              .where(scoped(treeNodes.id, treeNodes.projectId))
-              .toSQL(),
-          ),
-        ],
-        undo: [
-          toStatement(
-            db
-              .update(treeNodes)
-              .set(set(oldValue))
-              .where(scoped(treeNodes.id, treeNodes.projectId))
-              .toSQL(),
-          ),
-        ],
-      };
+      return toStatement(
+        db
+          .update(treeNodes)
+          .set({
+            content: value,
+            charCount: countSceneBodyCharsFromJson(value),
+            placedBeatPreview: extractPlacedBeatPreviewFromString(value),
+            // Every authoritative scene-body writer advances version so a
+            // pending prose proposal observes the replacement as stale.
+            version: sql`${treeNodes.version} + 1`,
+            updatedAt: now,
+          })
+          .where(scoped(treeNodes.id, treeNodes.projectId))
+          .toSQL(),
+      );
     }
     case "node-title":
     case "node-synopsis": {
       const col = source.kind === "node-title" ? "title" : "synopsis";
-      const mk = (v: string) =>
-        toStatement(
-          db
-            .update(treeNodes)
-            .set({ [col]: v, updatedAt: now })
-            .where(scoped(treeNodes.id, treeNodes.projectId))
-            .toSQL(),
-        );
-      return { forward: [mk(newValue)], undo: [mk(oldValue)] };
+      return toStatement(
+        db
+          .update(treeNodes)
+          .set({ [col]: value, updatedAt: now })
+          .where(scoped(treeNodes.id, treeNodes.projectId))
+          .toSQL(),
+      );
     }
     case "codex-summary":
     case "codex-content":
@@ -358,54 +342,74 @@ function buildStatements(
           : source.kind === "codex-content"
             ? "content"
             : "notes";
-      const mk = (v: string) =>
-        toStatement(
-          db
-            .update(codexEntries)
-            .set({ [col]: v, updatedAt: now })
-            .where(
-              and(
-                eq(codexEntries.id, id),
-                eq(codexEntries.projectId, projectId),
-              ),
-            )
-            .toSQL(),
-        );
-      return { forward: [mk(newValue)], undo: [mk(oldValue)] };
+      return toStatement(
+        db
+          .update(codexEntries)
+          .set({ [col]: value, updatedAt: now })
+          .where(
+            and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
+          )
+          .toSQL(),
+      );
     }
     case "codex-detail": {
-      const mk = (v: string) =>
-        toStatement(
-          db
-            .update(codexDetailValues)
-            .set({ value: v })
-            .where(
-              and(
-                eq(codexDetailValues.entryId, id),
-                eq(codexDetailValues.definitionId, source.detailDefinitionId!),
-              ),
-            )
-            .toSQL(),
-        );
-      return { forward: [mk(newValue)], undo: [mk(oldValue)] };
+      return toStatement(
+        db
+          .update(codexDetailValues)
+          .set({ value })
+          .where(
+            and(
+              eq(codexDetailValues.entryId, id),
+              eq(codexDetailValues.definitionId, source.detailDefinitionId!),
+            ),
+          )
+          .toSQL(),
+      );
     }
     case "codex-relation-label": {
-      const mk = (v: string) =>
-        toStatement(
-          db
-            .update(codexRelations)
-            .set({ label: v })
-            .where(
-              and(
-                eq(codexRelations.id, id),
-                eq(codexRelations.projectId, projectId),
-              ),
-            )
-            .toSQL(),
-        );
-      return { forward: [mk(newValue)], undo: [mk(oldValue)] };
+      return toStatement(
+        db
+          .update(codexRelations)
+          .set({ label: value })
+          .where(
+            and(
+              eq(codexRelations.id, id),
+              eq(codexRelations.projectId, projectId),
+            ),
+          )
+          .toSQL(),
+      );
     }
   }
+}
+
+interface RenameUndoUpdate {
+  kind: RenameSourceText["kind"];
+  refId: string;
+  detailDefinitionId: string | null;
+  value: string;
+  charCount: number | null;
+  placedBeatPreview: string | null;
+}
+
+function buildRenameUndoUpdate(
+  source: RenameSourceText,
+  oldValue: string,
+): RenameUndoUpdate {
+  return {
+    kind: source.kind,
+    refId: source.refId,
+    detailDefinitionId: source.detailDefinitionId ?? null,
+    value: oldValue,
+    charCount:
+      source.kind === "scene-body"
+        ? countSceneBodyCharsFromJson(oldValue)
+        : null,
+    placedBeatPreview:
+      source.kind === "scene-body"
+        ? extractPlacedBeatPreviewFromString(oldValue)
+        : null,
+  };
 }
 
 export interface ApplyRenameParams {
@@ -447,13 +451,13 @@ export async function applyRenamePropagation(
 
   const now = new Date().toISOString();
   const forward: BatchStatement[] = [];
-  const undo: BatchStatement[] = [];
+  const undoUpdates: RenameUndoUpdate[] = [];
   // Live scene/codex bodies → new & old JSON for live-editor resync per
   // direction. Subscriber check, NOT a tab-list check: linear-mode editors
   // have no tab but must still be resynced or their next autosave clobbers
   // the propagated rename.
-  const liveNew = new Map<string, object>();
-  const liveOld = new Map<string, object>();
+  const liveNew = new Map<string, { key: DocumentKey; content: object }>();
+  const liveOld = new Map<string, { key: DocumentKey; content: object }>();
   let applied = 0;
 
   for (const { source, spans } of groups.values()) {
@@ -471,9 +475,19 @@ export async function applyRenamePropagation(
       const nextJson = res.doc.toJSON();
       newValue = JSON.stringify(nextJson);
       applied += res.applied;
-      if (hasLiveContentSubscriber(source.refId)) {
-        liveNew.set(source.refId, nextJson);
-        liveOld.set(source.refId, JSON.parse(oldValue));
+      const documentKey: DocumentKey | null =
+        source.kind === "scene-body"
+          ? { kind: "tree", id: source.refId, storage: "database" }
+          : source.kind === "codex-content"
+            ? { kind: "codex", id: source.refId, phaseId: null }
+            : null;
+      if (documentKey && hasLiveContentSubscriber(documentKey)) {
+        const encoded = encodeDocumentKey(documentKey);
+        liveNew.set(encoded, { key: documentKey, content: nextJson });
+        liveOld.set(encoded, {
+          key: documentKey,
+          content: JSON.parse(oldValue) as object,
+        });
       }
     } else {
       oldValue = source.text;
@@ -482,20 +496,15 @@ export async function applyRenamePropagation(
       applied += spans.length;
     }
 
-    const { forward: f, undo: u } = buildStatements(
-      source,
-      oldValue,
-      newValue,
-      projectId,
-      now,
-    );
-    forward.push(...f);
-    undo.push(...u);
+    forward.push(buildRenameStatement(source, newValue, projectId, now));
+    undoUpdates.push(buildRenameUndoUpdate(source, oldValue));
   }
 
   if (forward.length === 0) return { applied: 0 };
 
-  const resync = async (live: Map<string, object>) => {
+  const resync = async (
+    live: Map<string, { key: DocumentKey; content: object }>,
+  ) => {
     try {
       await useTreeStore.getState().reloadTreeOrThrow(projectId);
     } catch (e) {
@@ -507,7 +516,9 @@ export async function applyRenamePropagation(
       console.error("[codexRename] codex reload failed (change committed)", e);
     }
     const setLive = useSceneContentStore.getState().setLiveContent;
-    for (const [id, content] of live) setLive(id, content, RESYNC_GROUP);
+    for (const { key, content } of live.values()) {
+      setLive(key, content, RESYNC_GROUP);
+    }
     // Re-establish body-mention rows/highlights stripped by the rename commit's
     // own enqueueRescan (which ran with the NEW name before the prose existed).
     void enqueueRescan(entryId);
@@ -545,7 +556,13 @@ export async function applyRenamePropagation(
   };
 
   const runUndo = async () => {
-    await invoke("db_execute_batch", { statements: undo });
+    await invoke("codex_rename_undo", {
+      payload: {
+        projectId,
+        updatedAt: now,
+        updates: undoUpdates,
+      },
+    });
     await resync(liveOld);
   };
 

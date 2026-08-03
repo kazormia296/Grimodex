@@ -1,4 +1,5 @@
-import { defineConfig } from "vite";
+import { realpathSync } from "node:fs";
+import { defineConfig, searchForWorkspaceRoot } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { visualizer } from "rollup-plugin-visualizer";
@@ -6,6 +7,17 @@ import path from "path";
 
 // @ts-expect-error process is a nodejs global
 const analyze = process.env.ANALYZE === "1";
+
+function devServerFsAllow(root: string) {
+  const dependencies = path.resolve(root, "node_modules");
+  let dependencyRoot = dependencies;
+  try {
+    dependencyRoot = realpathSync(dependencies);
+  } catch {
+    // Vite will report the missing install with its normal module error.
+  }
+  return [...new Set([searchForWorkspaceRoot(root), dependencyRoot])];
+}
 
 /**
  * 同梱フォント (@fontsource) の CSS から legacy `.woff` フォールバックを除去する。
@@ -32,6 +44,7 @@ function stripWoffFromFontsource() {
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }) => {
   const webEditorOnly = mode === "web-editor";
+  const rendererTarget = webEditorOnly ? "web-editor" : "desktop";
   const webEditorUnavailableDialogs = path.resolve(
     __dirname,
     "./src/features/hosted-editor/WebEditorUnavailableDialogs.tsx",
@@ -42,6 +55,11 @@ export default defineConfig(async ({ mode }) => {
   );
 
   return {
+    // The Web Editor and Electron renderer resolve different module graphs
+    // (the Web Editor installs four mode-only aliases). Sharing Vite's default
+    // dependency cache makes alternating `pnpm dev` and `pnpm electron:dev`
+    // invalidate and rebuild the other target's optimized dependencies.
+    cacheDir: path.resolve(__dirname, "node_modules/.vite", rendererTarget),
     plugins: [
       stripWoffFromFontsource(),
       react(),
@@ -92,6 +110,12 @@ export default defineConfig(async ({ mode }) => {
     server: {
       port: 1430,
       strictPort: true,
+      fs: {
+        // A Codex worktree may reuse node_modules through a symlink. Vite
+        // validates /@fs/ requests against the real path, so allow only that
+        // resolved dependency tree in addition to the workspace itself.
+        allow: devServerFsAllow(__dirname),
+      },
       watch: {
         // Native Rust changes are rebuilt by the N-API workflow, not Vite HMR.
         ignored: ["**/src-tauri/**"],

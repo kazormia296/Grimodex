@@ -134,3 +134,28 @@ test("measureCommand captures process-tree CPU and RSS without GNU time", async 
   assert.ok(result.peakRssBytes > 0);
   assert.ok(result.peakProcessCount >= 1);
 });
+
+test("measureCommand observes a child that exits during the initial sample", async () => {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error("short command completion was missed")),
+      2_000,
+    );
+  });
+
+  let result;
+  try {
+    result = await Promise.race([
+      measureCommand(process.execPath, ["-e", ""], {
+        sampleIntervalMs: 5,
+        stdio: "ignore",
+      }),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  assert.equal(result.exitCode, 0);
+});

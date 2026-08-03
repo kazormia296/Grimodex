@@ -11,13 +11,21 @@
     "./schema": {
       "types": "./dist/schema.js",
       "import": "./dist/schema.js"
+    },
+    "./web-editor-handoff": {
+      "types": "./dist/webEditorWorkspaceHandoff.d.ts",
+      "import": "./dist/webEditorWorkspaceHandoff.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "generate:validator": "tsx scripts/generateScanBundleV1Validator.ts",
+    "check:validator": "tsx scripts/generateScanBundleV1Validator.ts --check",
+    "build": "tsx scripts/generateScanBundleV1Validator.ts --check && tsc -p tsconfig.build.json",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsx scripts/generateScanBundleV1Validator.ts --check && tsc --noEmit"
   },
   "dependencies": {
     "ajv": "8.20.0"

@@ -12,7 +12,9 @@ import { describe, it, expect } from "vitest";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import ts from "typescript";
 import {
+  AI_AUDIT_RENDERER_CALLSITES,
   AI_PATHS,
   AI_RUNTIME_ROUTES,
   GENERATION_LAYERS,
@@ -29,7 +31,59 @@ const REAL_VERIFIERS: AiPathVerifier[] = [
   "js-live",
   "rust-live",
   "covered-by-agent-loop",
+  "contract",
 ];
+
+/**
+ * Same-transport surfaces are deliberately listed separately.  Scanning only
+ * the raw IPC command cannot distinguish (for example) a synopsis from a
+ * Chronicle extraction, so this list is the regression boundary for the
+ * production inventory that must remain auditable.
+ */
+const REQUIRED_AUDITED_PATH_IDS = [
+  "chat_agent_main",
+  "agent_research_subagent",
+  "context_creator",
+  "synopsis",
+  "session_title",
+  "summarization",
+  "foreshadow_audit_chapter",
+  "foreshadow_propose_past_setups",
+  "foreshadow_evaluate_setup_strength",
+  "plot_thread_propose",
+  "chronicle_extract",
+  "beat_role",
+  "codex_judgment",
+  "codex_yomi",
+  "map_branch",
+  "tree_scaffold",
+  "ai_connection_test",
+  "ab_chat",
+  "ab_inline",
+  "chat_stream_non_agent",
+  "inline_ai_stream",
+  "beat_generation",
+  "beat_alternative",
+  "beats_from_synopsis",
+  "synopsis_from_beats",
+  "codex_app_server",
+  "codex_app_cli_fallback",
+  "cli_chat_stream",
+  "post_effect_intent_drift",
+  "post_effect_review",
+  "post_effect_consistency",
+  "post_effect_intra_scene_consistency",
+  "post_effect_typo_detection",
+  "post_effect_meta_structure",
+  "post_effect_timeline_consistency",
+  "post_effect_pseudo_comment",
+  "post_effect_live_pseudo_comment",
+  "post_effect_impact_review",
+  "semantic_search",
+  "semantic_embedding_index",
+  "semantic_reranker",
+  "semantic_reranker_shadow",
+] as const;
 
 /**
  * JS から observable な「AI トランスポート」Tauri command と、それを網羅すべき
@@ -48,12 +102,26 @@ const AI_TRANSPORT_COMMANDS: Record<string, string[]> = {
   send_inline_ai_stream: ["send_inline_ai_stream"],
   // CLI: JS invoke は send_cli_chat_stream、registry は subprocess 表記。
   send_cli_chat_stream: ["subprocess (cli:stream-*)"],
+  codex_app_start_turn: ["codex_app_start_turn"],
+  test_ai_connection: ["test_ai_connection"],
   // post-effect: JS は start_post_effect_run(_multi) で起動 → Rust 内 call_post_effect_api。
   start_post_effect_run: ["call_post_effect_api"],
   start_post_effect_run_multi: ["call_post_effect_api"],
   // 埋め込み / 全文検索（LLM 生成ではないが AI サーフェスとして網羅対象）。
   semantic_search: ["semantic_search (Rust ONNX)"],
+  codex_semantic_search: ["semantic_search (Rust ONNX)"],
+  events_semantic_search: ["semantic_search (Rust ONNX)"],
+  chat_message_search: ["semantic_search (Rust ONNX)"],
+  semantic_index_scene: ["semantic_index_* (Rust ONNX)"],
+  semantic_reindex_all: ["semantic_index_* (Rust ONNX)"],
+  codex_index_entry: ["semantic_index_* (Rust ONNX)"],
+  codex_reindex_all: ["semantic_index_* (Rust ONNX)"],
+  events_index_entry: ["semantic_index_* (Rust ONNX)"],
+  events_reindex_all: ["semantic_index_* (Rust ONNX)"],
+  chat_index_message: ["semantic_index_* (Rust ONNX)"],
+  chat_reindex_all: ["semantic_index_* (Rust ONNX)"],
   fts_search: ["fts_search (Rust SQLite)"],
+  semantic_reranker_shadow_score: ["semantic_reranker_score (Rust ONNX)"],
 };
 
 /**
@@ -94,6 +162,54 @@ function scanInvokedAiCommands(): Set<string> {
   return found;
 }
 
+function callCarriesLiteralAuditPath(input: {
+  sourceRef: string;
+  dispatchCall: string;
+  auditProperty: "pathId" | "auditPathId";
+  pathId: string;
+}): boolean {
+  const absolute = join(REPO_ROOT, input.sourceRef);
+  const sourceText = readFileSync(absolute, "utf8");
+  const sourceFile = ts.createSourceFile(
+    absolute,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    absolute.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  let matched = false;
+
+  const callHasLiteral = (call: ts.CallExpression): boolean => {
+    const callee = call.expression.getText(sourceFile);
+    if (callee !== input.dispatchCall) return false;
+    let hasLiteral = false;
+    const inspect = (node: ts.Node): void => {
+      if (
+        ts.isPropertyAssignment(node) &&
+        node.name.getText(sourceFile) === input.auditProperty &&
+        ts.isStringLiteral(node.initializer) &&
+        node.initializer.text === input.pathId
+      ) {
+        hasLiteral = true;
+        return;
+      }
+      ts.forEachChild(node, inspect);
+    };
+    for (const argument of call.arguments) inspect(argument);
+    return hasLiteral;
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && callHasLiteral(node)) {
+      matched = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return matched;
+}
+
 describe("AI path registry — completeness", () => {
   it("経路 ID は一意", () => {
     const ids = AI_PATHS.map((p) => p.id);
@@ -108,7 +224,109 @@ describe("AI path registry — completeness", () => {
     }
   });
 
-  it("実検証エントリ(js-live/rust-live/covered-by-agent-loop)は実在テストを指す", () => {
+  it("全production AI経路が監査ownerとcapture levelを持つ", () => {
+    for (const path of AI_PATHS) {
+      expect(path, `${path.id} auditOwner`).toHaveProperty("auditOwner");
+      expect(path, `${path.id} captureLevel`).toHaveProperty("captureLevel");
+      expect(
+        (path as unknown as { auditOwner?: string }).auditOwner?.length,
+        `${path.id} auditOwner`,
+      ).toBeGreaterThan(0);
+      expect(
+        (path as unknown as { captureLevel?: string }).captureLevel,
+        `${path.id} captureLevel`,
+      ).not.toBe("unassigned");
+    }
+  });
+
+  it("full/partial-observable 経路は実在する監査contract testへ対応する", () => {
+    const observablePaths = AI_PATHS.filter((path) =>
+      ["full-observable", "partial-observable"].includes(path.captureLevel),
+    );
+    expect(observablePaths.length).toBeGreaterThan(0);
+    for (const path of observablePaths) {
+      const contract = path as unknown as {
+        auditTestRef?: string | null;
+        auditTestName?: string;
+      };
+      expect(contract.auditTestRef, `${path.id} auditTestRef`).toBeTruthy();
+      expect(contract.auditTestName, `${path.id} auditTestName`).toBeTruthy();
+      const absolute = join(REPO_ROOT, contract.auditTestRef as string);
+      expect(
+        existsSync(absolute),
+        `${path.id} の auditTestRef が存在しない: ${contract.auditTestRef}`,
+      ).toBe(true);
+      expect(
+        readFileSync(absolute, "utf8").includes(
+          contract.auditTestName as string,
+        ),
+        `${path.id} の監査contract ${contract.auditTestName} が ${contract.auditTestRef} に無い`,
+      ).toBe(true);
+    }
+  });
+
+  it("classifies the instrumented native connection probe as full-observable", () => {
+    const connectionProbe = AI_PATHS.find(
+      (path) => path.id === "ai_connection_test",
+    );
+    expect(connectionProbe).toMatchObject({
+      captureLevel: "full-observable",
+      auditTestName: "AI audit path: ai_connection_test",
+    });
+    expect(connectionProbe?.note).toContain("完全なJSON値");
+    expect(connectionProbe?.note).toContain("object key orderは非保持");
+    expect(connectionProbe?.note).toContain(
+      "共通observerを通らないnative HTTP経路",
+    );
+  });
+
+  it("同一transport上のproduction surfaceも個別の監査経路として登録する", () => {
+    const registered = new Set(AI_PATHS.map((path) => path.id));
+    for (const id of REQUIRED_AUDITED_PATH_IDS) {
+      expect(registered.has(id), `${id} が AI_PATHS に未登録`).toBe(true);
+    }
+  });
+
+  it("full/partial-observable renderer経路は実production callsiteに結線される", () => {
+    const callsitePathIds = new Set(
+      AI_AUDIT_RENDERER_CALLSITES.map((callsite) => callsite.pathId),
+    );
+    const rendererOwners = new Set([
+      "renderer-agent",
+      "renderer-single-shot",
+      "renderer-stream",
+      "electron-runtime",
+    ]);
+    const required = AI_PATHS.filter(
+      (path) =>
+        ["full-observable", "partial-observable"].includes(path.captureLevel) &&
+        rendererOwners.has(path.auditOwner),
+    );
+    for (const path of required) {
+      expect(
+        callsitePathIds.has(path.id),
+        `${path.id} は実production callsite契約が必要`,
+      ).toBe(true);
+    }
+  });
+
+  it.each(AI_AUDIT_RENDERER_CALLSITES)(
+    "renderer audit callsite: $pathId ($sourceRef)",
+    (callsite) => {
+      const absolute = join(REPO_ROOT, callsite.sourceRef);
+      expect(
+        existsSync(absolute),
+        `${callsite.pathId} sourceRef が存在しない: ${callsite.sourceRef}`,
+      ).toBe(true);
+      expect(
+        callCarriesLiteralAuditPath(callsite),
+        `${callsite.sourceRef} の ${callsite.dispatchCall}(...) に ` +
+          `${callsite.auditProperty}: "${callsite.pathId}" が無い`,
+      ).toBe(true);
+    },
+  );
+
+  it("実検証エントリ(js-live/rust-live/agent-loop/contract)は実在テストを指す", () => {
     const real = AI_PATHS.filter((p) => REAL_VERIFIERS.includes(p.verifier));
     expect(real.length).toBeGreaterThan(0);
     for (const p of real) {
@@ -140,6 +358,23 @@ describe("AI path registry — completeness", () => {
         expect(p.verifier, `生成経路 ${p.id} が n/a`).not.toBe("n/a");
       }
     }
+  });
+
+  it("relation injection evalは製品project ledgerから静的に分離される", () => {
+    const relationEval = AI_PATHS.find(
+      (path) => path.id === "relation_injection",
+    );
+    expect(relationEval).toEqual(
+      expect.objectContaining({
+        auditOwner: "evaluation-harness",
+        captureLevel: "control-event",
+        transport: "direct-fetch (OpenRouter)",
+      }),
+    );
+    expect(relationEval?.testRef).toMatch(/\.live\.test\.ts$/u);
+    expect(relationEval?.surface).not.toMatch(/^src\//u);
+    expect(relationEval?.note).toContain("製品bundle");
+    expect(relationEval?.note).toContain("到達不可");
   });
 
   it("全ての生成経路の層が最低 1 つレジストリに存在する", () => {
@@ -213,8 +448,23 @@ describe("AI runtime route registry — Web Editor direct transports", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("classifies the final-body BrowserMock runtime route as full-observable", () => {
+    expect(
+      AI_RUNTIME_ROUTES.find((route) => route.id === "browser_byok_web"),
+    ).toMatchObject({
+      auditOwner: "browser-runtime",
+      captureLevel: "full-observable",
+    });
+  });
+
   it("assigns every runtime route a capability decision and executable contract verifier", () => {
     for (const route of AI_RUNTIME_ROUTES) {
+      expect(route, `${route.id} auditOwner`).toHaveProperty("auditOwner");
+      expect(route, `${route.id} captureLevel`).toHaveProperty("captureLevel");
+      expect(route, `${route.id} auditTestRef`).toHaveProperty("auditTestRef");
+      expect(route, `${route.id} auditTestName`).toHaveProperty(
+        "auditTestName",
+      );
       expect(route.providers.length, `${route.id} providers`).toBeGreaterThan(
         0,
       );

@@ -1,0 +1,17 @@
+extends: common.yaml
+
+benchmark:
+  device: cpu
+  lengths: [256, 512, 1024, 2048, 4096, 8192]
+  batch_sizes: [1, 2, 4, 8]
+  thread_counts: [1, 2, 4, 8, physical]
+  warmup_count: 3
+  short_repetitions: 30
+  long_repetitions: 10
+  cold_repetitions: 5
+  bootstrap_iterations: 1000
+  length_buckets:
+    - { name: A, maximum_tokens: 512 }
+    - { name: B, maximum_tokens: 1024 }
+    - { name: C, maximum_tokens: 2048 }
+    - { name: D, maximum_tokens: null }

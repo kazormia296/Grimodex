@@ -214,6 +214,7 @@ pub fn run() {
             commands::agent_writes::agent_event_create,
             commands::agent_writes::agent_event_update,
             commands::agent_writes::agent_event_delete,
+            commands::agent_writes::agent_chronicle_bulk_mutate,
             commands::agent_writes::agent_event_set_participants,
             commands::agent_writes::agent_scene_event_link,
             commands::agent_writes::agent_scene_event_unlink,
@@ -279,6 +280,10 @@ pub fn run() {
             commands::plot_threads::plot_thread_link_update,
             commands::plot_threads::plot_thread_link_delete,
             commands::plot_threads::plot_thread_list_links,
+            commands::plot_threads::plot_thread_branch_create,
+            commands::plot_threads::plot_thread_move_marker_bundle,
+            commands::plot_threads::plot_thread_restore_snapshot,
+            commands::plot_threads::plot_thread_delete_snapshot,
             commands::lint::lint_text,
             commands::reorder::segment_bunsetsu,
             commands::post_effect::start_post_effect_run,
@@ -294,6 +299,8 @@ pub fn run() {
             commands::onboarding::seed_sample_workspace,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_index_scene,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_cancel_background,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_search,
             #[cfg(feature = "semantic-embedding")]

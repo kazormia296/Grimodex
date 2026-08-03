@@ -20,7 +20,9 @@ describe("EditorToggleIcon", () => {
 
   it("is pressed while the editor is open", () => {
     render(<EditorToggleIcon />);
-    expect(screen.getByRole("button", { pressed: true })).toBeDefined();
+    const button = screen.getByRole("button", { pressed: true });
+    expect(button).toBeDefined();
+    expect(button.querySelector("span[aria-hidden]")).toBeNull();
   });
 
   it("closes the editor when clicked while open", async () => {
@@ -32,9 +34,11 @@ describe("EditorToggleIcon", () => {
   it("reopens the editor with the same control", async () => {
     useLayoutStore.getState().setEditorOpen(false);
     render(<EditorToggleIcon />);
-    expect(screen.getByRole("button", { pressed: false })).toBeDefined();
+    const button = screen.getByRole("button", { pressed: false });
+    expect(button.className).toContain("text-muted-foreground");
+    expect(button.className).not.toMatch(/text-muted-foreground\/\d+/);
 
-    await userEvent.setup().click(screen.getByRole("button"));
+    await userEvent.setup().click(button);
     expect(useLayoutStore.getState().layout.center.editorOpen).toBe(true);
   });
 

@@ -76,6 +76,7 @@ export function ReadingsField({
                 label={surface}
                 aliases={current}
                 fieldId={`reading-${i}`}
+                placeholder={t("codex.readings.placeholder")}
                 onChange={(next) => onChange({ ...readings, [surface]: next })}
               />
               {current.length === 0 && derived && (

@@ -1,6 +1,6 @@
 # 開発環境構築ガイド
 
-> 最終更新: 2026-07-11
+> 最終更新: 2026-07-26
 
 > 推奨は下記の **devcontainer** です。Docker を使わずローカルホストへ直接構築したい場合は
 > [ネイティブ（非Docker）セットアップ](#ネイティブ非dockerセットアップ) を参照してください。
@@ -54,7 +54,9 @@ pnpm electron:dev
 ## ネイティブ（非Docker）セットアップ
 
 Docker / devcontainer を使わず、ローカルホスト上に直接ビルド環境を構築する場合の手順です。
-**対応 OS: Debian / Ubuntu（apt）、Arch / Manjaro（pacman）、macOS（Homebrew + Xcode CLT）。Windows ではネイティブの Node.js + Rust も利用できますが、このガイドでは WSL2 上の Ubuntu または devcontainer を推奨します。**
+**対応 OS: Debian / Ubuntu（apt）、Arch / Manjaro（pacman）、macOS（Homebrew + Xcode CLT）、Windows 10 / 11（Visual Studio C++ Build Tools + Windows SDK）。**
+Linux / macOS ではブートストラップスクリプトを利用できます。Windows ネイティブでは、
+下記の専用手順に従い、x64 用の Visual Studio 開発者シェルからビルドしてください。
 
 ### 前提
 
@@ -65,7 +67,7 @@ Docker / devcontainer を使わず、ローカルホスト上に直接ビルド�
 
 ### 一撃セットアップ
 
-リポジトリ直下で次を実行すると、OS を判定して Electron / N-API のビルド依存・Rust ツールチェーン・pnpm 依存を導入します（冪等・再実行安全）。Electron は Chromium を同梱するため外部 WebView の開発パッケージは不要です。
+Linux / macOS では、リポジトリ直下で次を実行すると、OS を判定して Electron / N-API のビルド依存・Rust ツールチェーン・pnpm 依存を導入します（冪等・再実行安全）。Electron は Chromium を同梱するため外部 WebView の開発パッケージは不要です。
 
 ```bash
 bash scripts/bootstrap-build-env.sh
@@ -75,6 +77,53 @@ bash scripts/bootstrap-build-env.sh
 
 ```bash
 SKIP_PNPM_INSTALL=1 bash scripts/bootstrap-build-env.sh
+```
+
+このスクリプトは Windows ネイティブを対象にしていません。Windows では次の手順を使用してください。
+
+### 手動で入れる場合（Windows ネイティブ）
+
+Windows 10 / 11 上で WSL を介さずに N-API モジュールをビルドする場合は、先に以下を
+インストールします。
+
+1. Node.js 20 LTS 以上
+2. rustup（既定の `stable-x86_64-pc-windows-msvc` toolchain）
+3. Visual Studio Build Tools の **Desktop development with C++** workload
+   - MSVC x64 / x86 build tools
+   - Windows 10 SDK または Windows 11 SDK
+
+ビルドには、Visual Studio Installer と一緒に導入される **Developer PowerShell for Visual Studio**
+（x64 用に初期化したもの）または **x64 Native Tools Command Prompt for Visual Studio** を推奨します。
+通常の PowerShell やコマンドプロンプトでは、MSVC や Windows SDK の環境変数が不足することがあります。
+
+特に Git Bash の `/usr/bin/link.exe` は、MSVC linker と同名ですが別のプログラムです。
+Git Bash のパスが優先されると Rust / N-API build が誤った `link.exe` を実行するため、
+Visual Studio の x64 開発者シェルを使用してください。
+
+Developer PowerShell では、依存をインストールする前に次を確認します。
+
+```powershell
+where.exe link.exe
+($env:INCLUDE -split ';') | Where-Object { $_ -match '\\VC\\Tools\\MSVC\\.+\\include\\?$' }
+($env:LIB -split ';') | Where-Object { $_ -match '\\(ucrt|um)\\x64\\?$' }
+```
+
+- `where.exe link.exe` の先頭が
+  `...\VC\Tools\MSVC\...\bin\Hostx64\x64\link.exe` であること
+- `C:\Program Files\Git\usr\bin\link.exe`（Git Bash の `/usr/bin/link.exe`）が先頭でないこと
+- `INCLUDE` の確認結果に MSVC toolset の `VC\Tools\MSVC\...\include` が含まれること
+- `LIB` の確認結果に Windows SDK の `ucrt\x64` と `um\x64` が両方含まれること
+
+x64 Native Tools Command Prompt では `where.exe link.exe`、`echo %INCLUDE%`、`echo %LIB%` で同じ内容を確認できます。
+不足している場合は Visual Studio Installer で C++ workload と Windows SDK を追加し、
+Build Tools を修復してから新しい x64 開発者シェルを開き直してください。
+
+環境が正しいことを確認したら、リポジトリ直下で依存と N-API モジュールをビルドします。
+
+```powershell
+corepack enable pnpm
+pnpm install --frozen-lockfile
+pnpm napi:build
 ```
 
 ### 手動で入れる場合（Ubuntu / Debian）
@@ -195,20 +244,20 @@ pnpm electron:package         # 現在の OS 向け配布パッケージを作�
 
 ## よく使うコマンド
 
-| コマンド                                                                                               | 説明                                                    |
-| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `pnpm electron:dev`                                                                                    | Electron開発起動（renderer + main/preload）             |
-| `pnpm dev`                                                                                             | フロントエンドのみ起動（Vite）                          |
-| `pnpm napi:build`                                                                                      | Electron用Rust N-APIモジュールをビルド                  |
-| `pnpm electron:build`                                                                                  | Electron本番JavaScriptをビルド                          |
-| `pnpm electron:package`                                                                                | native release成果物と配布パッケージを作成              |
-| `pnpm electron:smoke`                                                                                  | packaged相当の `app://` 経路をスモークテスト            |
-| `pnpm test:electron --run`                                                                             | Electron main/preloadテスト                             |
-| `pnpm test`                                                                                            | テスト実行（Vitest）                                    |
-| `pnpm test --run <path>`                                                                               | 単体テスト実行                                          |
-| `pnpm lint:fix`                                                                                        | ESLint自動修正                                          |
-| `npx tsc --noEmit`                                                                                     | TypeScript型チェック                                    |
-| `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml`                                 | N-API Rustコンパイルチェック                            |
+| コマンド                                                                                                                          | 説明                                                    |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `pnpm electron:dev`                                                                                                               | Electron開発起動（renderer + main/preload）             |
+| `pnpm dev`                                                                                                                        | フロントエンドのみ起動（Vite）                          |
+| `pnpm napi:build`                                                                                                                 | Electron用Rust N-APIモジュールをビルド                  |
+| `pnpm electron:build`                                                                                                             | Electron本番JavaScriptをビルド                          |
+| `pnpm electron:package`                                                                                                           | native release成果物と配布パッケージを作成              |
+| `pnpm electron:smoke`                                                                                                             | packaged相当の `app://` 経路をスモークテスト            |
+| `pnpm test:electron --run`                                                                                                        | Electron main/preloadテスト                             |
+| `pnpm test`                                                                                                                       | テスト実行（Vitest）                                    |
+| `pnpm test --run <path>`                                                                                                          | 単体テスト実行                                          |
+| `pnpm lint:fix`                                                                                                                   | ESLint自動修正                                          |
+| `npx tsc --noEmit`                                                                                                                | TypeScript型チェック                                    |
+| `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml`                                                            | N-API Rustコンパイルチェック                            |
 | `cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding` | 共有Rust crates / MCPチェック（frozen Tauri shell除外） |
 | `cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding`  | Electron active featuresを含む共有Rustテスト            |
 

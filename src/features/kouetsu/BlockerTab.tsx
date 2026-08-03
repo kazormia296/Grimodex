@@ -53,7 +53,10 @@ export function BlockerTab() {
     let cancelled = false;
     setForeshadows(null);
     void useLensStore.getState().load(projectId);
-    void useTrashBinStore.getState().loadItems(projectId);
+    void useTrashBinStore
+      .getState()
+      .loadItems(projectId)
+      .catch(() => {});
     listForeshadowsWithLabels(projectId)
       .then((r) => {
         if (!cancelled) setForeshadows(r.items);

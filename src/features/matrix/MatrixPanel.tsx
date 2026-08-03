@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { db } from "@/db/client";
-import { sceneCodexMentions, codexTags, sceneBeatPovCache } from "@/db/schema";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -11,7 +9,10 @@ import { useGridStore } from "@/features/grid/gridStore";
 import {
   upsertScenePin,
   deleteScenePin,
+  listAllSceneCodexMentionsForProject,
 } from "@/features/codex/sceneCodexPinsApi";
+import { listCodexTags } from "@/features/codex/tagApi";
+import { listAllBeatPovForProject } from "@/features/editor/beat/beatPovCacheApi";
 import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";
 import {
   needsBodyBackfill,
@@ -41,6 +42,7 @@ interface MentionRow {
 export function MatrixPanel() {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
+  const projectId = useTreeStore((s) => s.projectId);
   const allEntries = useCodexStore((s) => s.entries);
 
   const showMode = useMatrixStore((s) => s.showMode);
@@ -80,24 +82,12 @@ export function MatrixPanel() {
   }, [dataVersion]);
 
   async function loadMentions() {
-    const rows = await db
-      .select({
-        sceneId: sceneCodexMentions.sceneId,
-        codexEntryId: sceneCodexMentions.codexEntryId,
-        source: sceneCodexMentions.source,
-        role: sceneCodexMentions.role,
-      })
-      .from(sceneCodexMentions);
+    const rows = await listAllSceneCodexMentionsForProject(projectId);
     setMentions(rows);
   }
 
   async function loadBeatPovCache() {
-    const rows = await db
-      .select({
-        sceneId: sceneBeatPovCache.sceneId,
-        povCharacterId: sceneBeatPovCache.povCharacterId,
-      })
-      .from(sceneBeatPovCache);
+    const rows = await listAllBeatPovForProject(projectId);
     setBeatPovCache(
       new Set(rows.map((r) => `${r.sceneId}::${r.povCharacterId}`)),
     );
@@ -105,11 +95,10 @@ export function MatrixPanel() {
 
   // Load available tags for autocomplete
   useEffect(() => {
-    db.select({ name: codexTags.name })
-      .from(codexTags)
+    listCodexTags(projectId)
       .then((rows) => setAvailableTags([...new Set(rows.map((r) => r.name))]))
       .catch(() => {});
-  }, []);
+  }, [projectId]);
 
   // Startup backfill: always consult the versioned, project-scoped index marker
   // once per mount. `bodyBackfillCompleted` is a legacy persisted UI flag, so an
@@ -299,14 +288,9 @@ export function MatrixPanel() {
       nodeType: "scene",
       parentId,
     });
+    if (!newNode) return;
     if (synopsis.trim()) {
-      const { updateNode } = await import("@/features/tree/api");
-      await updateNode(newNode.id, { synopsis: synopsis.trim() });
-      useTreeStore.setState((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === newNode.id ? { ...n, synopsis: synopsis.trim() } : n,
-        ),
-      }));
+      await treeState.patchNode(newNode.id, { synopsis: synopsis.trim() });
     }
     if (entryId) {
       await upsertScenePin(newNode.id, entryId);
@@ -317,13 +301,7 @@ export function MatrixPanel() {
   async function handleRenameNode(id: string, _currentTitle: string) {
     const newTitle = window.prompt("Rename scene:", _currentTitle);
     if (!newTitle?.trim()) return;
-    const { updateNode } = await import("@/features/tree/api");
-    await updateNode(id, { title: newTitle.trim() });
-    useTreeStore.setState((s) => ({
-      nodes: s.nodes.map((n) =>
-        n.id === id ? { ...n, title: newTitle.trim() } : n,
-      ),
-    }));
+    await useTreeStore.getState().patchNode(id, { title: newTitle.trim() });
   }
 
   function handleRevealInScenes(id: string) {

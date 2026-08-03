@@ -147,6 +147,54 @@ fn options(mode: ImeIntegrationMode) -> ImeExportOptions {
     }
 }
 
+#[cfg(unix)]
+fn unix_mode(path: &Path) -> Result<u32, Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    Ok(fs::metadata(path)?.permissions().mode() & 0o777)
+}
+
+#[cfg(unix)]
+#[test]
+fn exporter_creates_and_repairs_private_contract_permissions() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new()?;
+    seed_project(
+        fixture.db(),
+        "private-project",
+        "Private project",
+        "ja",
+        None,
+        None,
+    )?;
+    let export_options = options(ImeIntegrationMode::On);
+
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "private-project",
+        &export_options,
+    )?;
+    let projects = fixture.ime_root.join("projects");
+    let snapshot = project_snapshot_path(&fixture.ime_root, "private-project");
+    assert_eq!(unix_mode(&fixture.ime_root)?, 0o700);
+    assert_eq!(unix_mode(&projects)?, 0o700);
+    assert_eq!(unix_mode(&snapshot)?, 0o600);
+
+    fs::set_permissions(&fixture.ime_root, fs::Permissions::from_mode(0o755))?;
+    fs::set_permissions(&projects, fs::Permissions::from_mode(0o755))?;
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "private-project",
+        &export_options,
+    )?;
+    assert_eq!(unix_mode(&fixture.ime_root)?, 0o700);
+    assert_eq!(unix_mode(&projects)?, 0o700);
+    Ok(())
+}
+
 fn write_consumer_handshake(
     root: &Path,
     id: &str,

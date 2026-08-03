@@ -71,6 +71,8 @@ struct EventListItem {
     title: String,
     kind: String,
     ordinal: String,
+    /// Aggregate OCC token used as `baseVersion` by Event write tools.
+    version: i64,
     start_time: Option<i64>,
     /// 暦整形済みの絶対日付（暦なし/粒度 none は None）。TS list_events と同 shape。
     start_date: Option<String>,
@@ -101,6 +103,7 @@ pub async fn list_events(
             title: e.title,
             kind: e.kind,
             ordinal: e.ordinal,
+            version: e.version,
             start_time: e.start_time,
             start_date: fmt_event_date(
                 cal_input.as_ref(),
@@ -156,6 +159,8 @@ struct EventDetail {
     note: Option<String>,
     kind: String,
     ordinal: String,
+    /// Aggregate OCC token used as `baseVersion` by Event write tools.
+    version: i64,
     start_time: Option<i64>,
     end_time: Option<i64>,
     start_minute: Option<i64>,
@@ -212,6 +217,7 @@ pub async fn get_event_detail(
         note: ev.note.clone(),
         kind: ev.kind.clone(),
         ordinal: ev.ordinal.clone(),
+        version: ev.version,
         start_time: ev.start_time,
         end_time: ev.end_time,
         start_minute: ev.start_minute,
@@ -534,6 +540,8 @@ pub struct CreateEventParams {
 struct CreateEventResult {
     id: String,
     title: String,
+    /// Initial aggregate OCC token. Pass this as `base_version` to the next write.
+    version: i64,
 }
 
 pub async fn create_event(
@@ -582,6 +590,7 @@ pub async fn create_event(
     ok_json(&CreateEventResult {
         id: res.entity_id,
         title,
+        version: res.version,
     })
 }
 
@@ -589,6 +598,8 @@ pub async fn create_event(
 pub struct UpdateEventParams {
     /// The event id (required).
     pub event_id: String,
+    /// Required aggregate OCC token returned by create/list/detail/the previous write.
+    pub base_version: i64,
     pub title: Option<String>,
     pub note: Option<String>,
     pub kind: Option<String>,
@@ -650,6 +661,7 @@ pub async fn update_event(
         &server.project_id(),
         &server.session_id,
         &event_id,
+        params.base_version,
         db::ChroniclePatch {
             title: title.as_deref(),
             note: note.as_deref(),
@@ -675,6 +687,8 @@ pub async fn update_event(
 pub struct EventIdParams {
     /// The event id (required).
     pub event_id: String,
+    /// Required aggregate OCC token returned by create/list/detail/the previous write.
+    pub base_version: i64,
 }
 
 pub async fn delete_event(
@@ -690,8 +704,13 @@ pub async fn delete_event(
         ));
     }
     let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome =
-        db::chronicle_delete_event(&conn, &server.project_id(), &server.session_id, &event_id);
+    let outcome = db::chronicle_delete_event(
+        &conn,
+        &server.project_id(),
+        &server.session_id,
+        &event_id,
+        params.base_version,
+    );
     map_write(outcome, "Event not found in this project")
 }
 
@@ -757,6 +776,8 @@ pub async fn unstamp_scene_event(
 pub struct SetParticipantsParams {
     /// The event id (required).
     pub event_id: String,
+    /// Required aggregate OCC token returned by create/list/detail/the previous write.
+    pub base_version: i64,
     /// The full replacement set of participant codex ids.
     pub codex_entry_ids: Vec<String>,
 }
@@ -779,6 +800,7 @@ pub async fn set_event_participants(
         &server.project_id(),
         &server.session_id,
         &event_id,
+        params.base_version,
         &params.codex_entry_ids,
     );
     map_write(outcome, "Event not found in this project")
@@ -907,6 +929,15 @@ mod tests {
         .unwrap();
     }
 
+    fn seed_codex(server: &GrimodexServer, project: &str, id: &str) {
+        let conn = server.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, name) VALUES (?1, ?2, ?1)",
+            params![id, project],
+        )
+        .unwrap();
+    }
+
     /// Extract the tool's JSON payload (CallToolResult.content[0].text), parsed.
     fn result_json(res: &CallToolResult) -> serde_json::Value {
         let v = serde_json::to_value(res).unwrap();
@@ -923,6 +954,32 @@ mod tests {
         let conn = server.conn.lock().unwrap();
         conn.execute("UPDATE events SET secret = 1 WHERE id = ?1", params![id])
             .unwrap();
+    }
+
+    #[test]
+    fn event_mutation_params_require_base_version() {
+        assert!(
+            serde_json::from_value::<UpdateEventParams>(serde_json::json!({
+                "event_id": "e1"
+            }))
+            .is_err(),
+            "update_event must reject a missing base_version"
+        );
+        assert!(
+            serde_json::from_value::<EventIdParams>(serde_json::json!({
+                "event_id": "e1"
+            }))
+            .is_err(),
+            "delete_event must reject a missing base_version"
+        );
+        assert!(
+            serde_json::from_value::<SetParticipantsParams>(serde_json::json!({
+                "event_id": "e1",
+                "codex_entry_ids": []
+            }))
+            .is_err(),
+            "set_event_participants must reject a missing base_version"
+        );
     }
 
     // ── AI secrecy (fail-closed: MCP has no current-scene context) ────────────
@@ -969,6 +1026,7 @@ mod tests {
             &server,
             UpdateEventParams {
                 event_id: "sec".into(),
+                base_version: 0,
                 title: Some("leaked".into()),
                 note: None,
                 kind: None,
@@ -990,6 +1048,7 @@ mod tests {
             &server,
             EventIdParams {
                 event_id: "sec".into(),
+                base_version: 0,
             },
         )
         .await;
@@ -1032,7 +1091,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let id = result_json(&res)["id"].as_str().unwrap().to_string();
+        let result = result_json(&res);
+        assert_eq!(
+            result["version"], 1,
+            "create must return the token for the next write"
+        );
+        let id = result["id"].as_str().unwrap().to_string();
         let conn = server.conn.lock().unwrap();
         let (secret, reveal): (i64, Option<String>) = conn
             .query_row(
@@ -1060,6 +1124,10 @@ mod tests {
         let events = json["events"].as_array().unwrap();
         assert_eq!(events.len(), 1, "only p1's event is visible");
         assert_eq!(events[0]["id"], "mine");
+        assert_eq!(
+            events[0]["version"], 0,
+            "list must expose the Event OCC token"
+        );
     }
 
     #[tokio::test]
@@ -1252,8 +1320,9 @@ mod tests {
         .await
         .unwrap();
         let json = result_json(&detail);
+        assert_eq!(json["version"], 1, "detail must expose the Event OCC token");
         assert_eq!(json["startMinute"], 540);
-        assert_eq!(json["endMinute"], 600);
+        assert!(json["endMinute"].is_null());
         assert_eq!(json["startGranularity"], "time");
         assert_eq!(json["endGranularity"], "day");
 
@@ -1268,9 +1337,45 @@ mod tests {
             .unwrap();
         let snap: serde_json::Value = serde_json::from_str(&after).unwrap();
         assert_eq!(snap["eventData"]["startMinute"], 540);
-        assert_eq!(snap["eventData"]["endMinute"], 600);
+        assert!(snap["eventData"]["endMinute"].is_null());
         assert_eq!(snap["eventData"]["startGranularity"], "time");
         assert_eq!(snap["eventData"]["endGranularity"], "day");
+    }
+
+    #[tokio::test]
+    async fn create_event_infers_omitted_granularity_from_date_components() {
+        let server = make_server(false);
+        let res = create_event(
+            &server,
+            CreateEventParams {
+                title: "Inferred".to_string(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: Some(3),
+                end_time: Some(4),
+                start_minute: None,
+                end_minute: Some(600),
+                start_granularity: None,
+                end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .await
+        .expect("inferred create");
+        let id = result_json(&res)["id"].as_str().unwrap().to_string();
+        let detail = get_event_detail(&server, GetEventDetailParams { event_id: id })
+            .await
+            .expect("event detail");
+        let json = result_json(&detail);
+        assert_eq!(json["startGranularity"], "day");
+        assert!(json["startMinute"].is_null());
+        assert_eq!(json["endGranularity"], "time");
+        assert_eq!(json["endMinute"], 600);
     }
 
     #[tokio::test]
@@ -1313,16 +1418,26 @@ mod tests {
     async fn update_event_changes_calendar_fields() {
         let server = make_server(false);
         seed_event(&server, "p1", "e1", "E1", "a0");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE events SET detail = 'rich-detail', lane_group = 'lane-a'
+                 WHERE id = 'e1'",
+                [],
+            )
+            .unwrap();
+        }
         update_event(
             &server,
             UpdateEventParams {
                 event_id: "e1".to_string(),
+                base_version: 0,
                 title: None,
                 note: None,
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(5),
                 end_time: None,
                 start_minute: Some(720),
                 end_minute: None,
@@ -1343,17 +1458,143 @@ mod tests {
         .await
         .unwrap();
         let json = result_json(&detail);
-        assert_eq!(json["startMinute"], 720);
+        assert_eq!(json["startTime"], 5);
+        assert!(json["startMinute"].is_null());
         assert_eq!(json["startGranularity"], "month");
         // untouched end_* keep the seeded defaults
         assert_eq!(json["endGranularity"], "none");
         assert!(json["endMinute"].is_null());
+
+        let conn = server.conn.lock().unwrap();
+        let (before, after): (String, String) = conn
+            .query_row(
+                "SELECT before_json, after_json FROM undo_journal
+                 WHERE entity_id = 'e1' AND op_kind = 'update'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        for snapshot in [before, after] {
+            let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+            assert_eq!(snapshot["eventData"]["detail"], "rich-detail");
+            assert_eq!(snapshot["eventData"]["laneGroup"], "lane-a");
+        }
+    }
+
+    #[tokio::test]
+    async fn update_event_rejects_stale_base_version_non_destructively() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "Seed", "a0");
+        let params = |title: &str, base_version| UpdateEventParams {
+            event_id: "e1".to_string(),
+            base_version,
+            title: Some(title.to_string()),
+            note: None,
+            kind: None,
+            primary_codex_id: None,
+            location_codex_id: None,
+            start_time: None,
+            end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
+            secret: None,
+            reveal_scene_id: None,
+        };
+
+        let fresh = update_event(&server, params("Fresh", 0))
+            .await
+            .expect("fresh update");
+        assert_eq!(
+            result_json(&fresh)["version"],
+            1,
+            "update must return the incremented token"
+        );
+        assert!(update_event(&server, params("Stale", 0)).await.is_err());
+
+        let conn = server.conn.lock().unwrap();
+        let (title, version): (String, i64) = conn
+            .query_row(
+                "SELECT title, version FROM events WHERE id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "Fresh");
+        assert_eq!(version, 1);
+        let journal_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM undo_journal WHERE entity_id = 'e1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(journal_count, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_event_rejects_stale_base_version_non_destructively() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "Seed", "a0");
+        update_event(
+            &server,
+            UpdateEventParams {
+                event_id: "e1".to_string(),
+                base_version: 0,
+                title: Some("Fresh".to_string()),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
+            },
+        )
+        .await
+        .expect("fresh update");
+
+        assert!(delete_event(
+            &server,
+            EventIdParams {
+                event_id: "e1".to_string(),
+                base_version: 0,
+            },
+        )
+        .await
+        .is_err());
+
+        let conn = server.conn.lock().unwrap();
+        let (title, version): (String, i64) = conn
+            .query_row(
+                "SELECT title, version FROM events WHERE id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "Fresh");
+        assert_eq!(version, 1);
+        let delete_journals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM undo_journal WHERE op_kind = 'delete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(delete_journals, 0);
     }
 
     #[tokio::test]
     async fn delete_event_cascades_and_snapshots_associations() {
         let server = make_server(false);
         seed_scene(&server, "p1", "s1");
+        seed_codex(&server, "p1", "alice");
         seed_event(&server, "p1", "cause", "Cause", "a0");
         // Effect event the relation points at; create the host via tool so it
         // carries participants + scene link, then relate + delete it.
@@ -1394,6 +1635,7 @@ mod tests {
             &server,
             EventIdParams {
                 event_id: host.clone(),
+                base_version: 1,
             },
         )
         .await
@@ -1447,15 +1689,20 @@ mod tests {
     async fn set_participants_replaces_and_tracks() {
         let server = make_server(false);
         seed_event(&server, "p1", "e1", "E1", "a0");
-        set_event_participants(
+        for id in ["a", "b", "c"] {
+            seed_codex(&server, "p1", id);
+        }
+        let first = set_event_participants(
             &server,
             SetParticipantsParams {
                 event_id: "e1".to_string(),
+                base_version: 0,
                 codex_entry_ids: vec!["a".to_string(), "b".to_string()],
             },
         )
         .await
         .unwrap();
+        assert_eq!(result_json(&first)["version"], 1);
         assert_eq!(
             scalar(
                 &server,
@@ -1465,15 +1712,17 @@ mod tests {
             2
         );
         // Replace with a single participant.
-        set_event_participants(
+        let second = set_event_participants(
             &server,
             SetParticipantsParams {
                 event_id: "e1".to_string(),
+                base_version: 1,
                 codex_entry_ids: vec!["c".to_string()],
             },
         )
         .await
         .unwrap();
+        assert_eq!(result_json(&second)["version"], 2);
         assert_eq!(
             scalar(
                 &server,
@@ -1482,6 +1731,266 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn set_participants_rejects_stale_aggregate_version() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "E1", "a0");
+        seed_codex(&server, "p1", "fresh");
+        seed_codex(&server, "p1", "stale");
+        set_event_participants(
+            &server,
+            SetParticipantsParams {
+                event_id: "e1".to_string(),
+                base_version: 0,
+                codex_entry_ids: vec!["fresh".to_string()],
+            },
+        )
+        .await
+        .expect("fresh participants");
+
+        assert!(set_event_participants(
+            &server,
+            SetParticipantsParams {
+                event_id: "e1".to_string(),
+                base_version: 0,
+                codex_entry_ids: vec!["stale".to_string()],
+            },
+        )
+        .await
+        .is_err());
+
+        let conn = server.conn.lock().unwrap();
+        let participants: Vec<String> = conn
+            .prepare(
+                "SELECT codex_entry_id FROM event_participants
+                 WHERE event_id = 'e1' ORDER BY codex_entry_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(participants, vec!["fresh"]);
+        let version: i64 = conn
+            .query_row("SELECT version FROM events WHERE id = 'e1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 1);
+    }
+
+    #[tokio::test]
+    async fn set_participants_rejects_foreign_codex_without_mutation() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "E1", "a0");
+        seed_codex(&server, "p2", "foreign");
+
+        assert!(set_event_participants(
+            &server,
+            SetParticipantsParams {
+                event_id: "e1".to_string(),
+                base_version: 0,
+                codex_entry_ids: vec!["foreign".to_string()],
+            },
+        )
+        .await
+        .is_err());
+
+        let conn = server.conn.lock().unwrap();
+        let (version, participants): (i64, i64) = conn
+            .query_row(
+                "SELECT e.version, COUNT(ep.codex_entry_id)
+                 FROM events e
+                 LEFT JOIN event_participants ep ON ep.event_id = e.id
+                 WHERE e.id = 'e1'
+                 GROUP BY e.id",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(version, 0);
+        assert_eq!(participants, 0);
+        let journals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journals, 0);
+    }
+
+    #[tokio::test]
+    async fn create_event_rejects_foreign_participant_and_scene_atomically() {
+        let server = make_server(false);
+        seed_codex(&server, "p2", "foreign-codex");
+        seed_scene(&server, "p2", "foreign-scene");
+
+        let params = |participants: Vec<String>, scenes: Vec<String>| CreateEventParams {
+            title: "Host".to_string(),
+            note: None,
+            kind: None,
+            primary_codex_id: None,
+            location_codex_id: None,
+            start_time: None,
+            end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
+            secret: None,
+            reveal_scene_id: None,
+            participant_codex_ids: Some(participants),
+            scene_ids: Some(scenes),
+        };
+
+        assert!(create_event(
+            &server,
+            params(vec!["foreign-codex".to_string()], Vec::new()),
+        )
+        .await
+        .is_err());
+        assert!(create_event(
+            &server,
+            params(Vec::new(), vec!["foreign-scene".to_string()]),
+        )
+        .await
+        .is_err());
+
+        let conn = server.conn.lock().unwrap();
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        let journals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))
+            .unwrap();
+        let changes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((events, journals, changes), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn create_event_rejects_foreign_scalar_references_atomically() {
+        let server = make_server(false);
+        seed_codex(&server, "p2", "foreign-codex");
+        seed_scene(&server, "p2", "foreign-scene");
+
+        let params = |primary_codex_id: Option<&str>,
+                      location_codex_id: Option<&str>,
+                      reveal_scene_id: Option<&str>| CreateEventParams {
+            title: "Host".to_string(),
+            note: None,
+            kind: None,
+            primary_codex_id: primary_codex_id.map(str::to_string),
+            location_codex_id: location_codex_id.map(str::to_string),
+            start_time: None,
+            end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
+            secret: None,
+            reveal_scene_id: reveal_scene_id.map(str::to_string),
+            participant_codex_ids: None,
+            scene_ids: None,
+        };
+
+        assert!(
+            create_event(&server, params(Some("foreign-codex"), None, None),)
+                .await
+                .is_err()
+        );
+        assert!(
+            create_event(&server, params(None, Some("foreign-codex"), None),)
+                .await
+                .is_err()
+        );
+        assert!(
+            create_event(&server, params(None, None, Some("foreign-scene")),)
+                .await
+                .is_err()
+        );
+
+        let conn = server.conn.lock().unwrap();
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        let journals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))
+            .unwrap();
+        let changes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((events, journals, changes), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn update_event_rejects_foreign_scalar_references_atomically() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "Original", "a0");
+        seed_codex(&server, "p2", "foreign-codex");
+        seed_scene(&server, "p2", "foreign-scene");
+
+        let params = |primary_codex_id: Option<&str>,
+                      location_codex_id: Option<&str>,
+                      reveal_scene_id: Option<&str>| UpdateEventParams {
+            event_id: "e1".to_string(),
+            base_version: 0,
+            title: None,
+            note: None,
+            kind: None,
+            primary_codex_id: primary_codex_id.map(str::to_string),
+            location_codex_id: location_codex_id.map(str::to_string),
+            start_time: None,
+            end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
+            secret: None,
+            reveal_scene_id: reveal_scene_id.map(str::to_string),
+        };
+
+        assert!(
+            update_event(&server, params(Some("foreign-codex"), None, None),)
+                .await
+                .is_err()
+        );
+        assert!(
+            update_event(&server, params(None, Some("foreign-codex"), None),)
+                .await
+                .is_err()
+        );
+        assert!(
+            update_event(&server, params(None, None, Some("foreign-scene")),)
+                .await
+                .is_err()
+        );
+
+        let conn = server.conn.lock().unwrap();
+        let row: (String, i64, Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT title, version, primary_codex_id, location_codex_id, reveal_scene_id
+                 FROM events WHERE id = 'e1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row, ("Original".to_string(), 0, None, None, None));
+        let journals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))
+            .unwrap();
+        let changes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((journals, changes), (0, 0));
     }
 
     #[tokio::test]
@@ -1582,6 +2091,7 @@ mod tests {
             &server,
             UpdateEventParams {
                 event_id: "theirs".to_string(),
+                base_version: 0,
                 title: Some("hijack".to_string()),
                 note: None,
                 kind: None,

@@ -9,6 +9,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { isNotNull } from "drizzle-orm";
 import { nowInstantString } from "@/lib/time";
 
 export const projects = sqliteTable("projects", {
@@ -47,6 +48,31 @@ export const projects = sqliteTable("projects", {
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
+
+/**
+ * Durable create-request tombstones shared by native SQLite and the browser
+ * editor. `tombstoneJson` is intentionally content-free (`{"id":"…"}`).
+ */
+export const idempotencyRequests = sqliteTable(
+  "idempotency_requests",
+  {
+    domain: text("domain").notNull(),
+    requestId: text("request_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    payloadHash: text("payload_hash").notNull(),
+    tombstoneJson: text("tombstone_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.domain, table.requestId] }),
+    index("idx_idempotency_requests_project_created").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
 
 export const treeNodes = sqliteTable(
   "tree_nodes",
@@ -492,7 +518,8 @@ export const chatMessagePrompts = sqliteTable("chat_message_prompts", {
     .primaryKey()
     .references(() => chatMessages.id, { onDelete: "cascade" }),
   systemPrompt: text("system_prompt").notNull(),
-  layers: text("layers"), // JSON LayerBreakdown[]
+  // JSON { layers: LayerBreakdown[], provider, contextWindow }; legacy rows are arrays.
+  layers: text("layers"),
   totalTokens: integer("total_tokens"),
   model: text("model"),
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -701,9 +728,15 @@ export const chatSessionPinnedCodex = sqliteTable(
   },
   (table) => [
     index("idx_chat_pin_session").on(table.sessionId, table.createdAt),
-    uniqueIndex("uq_chat_pin_codex").on(table.sessionId, table.codexEntryId),
-    uniqueIndex("uq_chat_pin_snippet").on(table.sessionId, table.snippetId),
-    uniqueIndex("uq_chat_pin_sticky").on(table.sessionId, table.stickyId),
+    uniqueIndex("uq_chat_pin_codex")
+      .on(table.sessionId, table.codexEntryId)
+      .where(isNotNull(table.codexEntryId)),
+    uniqueIndex("uq_chat_pin_snippet")
+      .on(table.sessionId, table.snippetId)
+      .where(isNotNull(table.snippetId)),
+    uniqueIndex("uq_chat_pin_sticky")
+      .on(table.sessionId, table.stickyId)
+      .where(isNotNull(table.stickyId)),
   ],
 );
 
@@ -943,6 +976,8 @@ export const codexEntryPhases = sqliteTable(
     contextModeOverride: text("context_mode_override"),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    /** Optimistic-lock version shared by editor, history, and external writers. */
+    version: integer("version").notNull().default(0),
   },
   (table) => [
     index("idx_codex_phases_entry").on(table.entryId),
@@ -1366,6 +1401,8 @@ export const events = sqliteTable(
     }),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    /** Aggregate optimistic-lock version for the event row and participants. */
+    version: integer("version").notNull().default(0),
   },
   (table) => [
     index("idx_events_project").on(table.projectId),
@@ -2017,6 +2054,56 @@ export const codexChunks = sqliteTable(
   (t) => [index("idx_codex_chunks_model").on(t.modelId)],
 );
 
+// Read-only renderer mirrors for semantic indexes otherwise owned by Rust.
+// Audit export selects every model-input/index-metadata column but deliberately
+// omits `embedding`, which the sqlite proxy cannot round-trip faithfully.
+export const eventChunks = sqliteTable(
+  "event_chunks",
+  {
+    eventId: text("event_id")
+      .primaryKey()
+      .references(() => events.id, { onDelete: "cascade" }),
+    eventTitle: text("event_title").notNull(),
+    eventKind: text("event_kind").notNull(),
+    text: text("text").notNull(),
+    embedding: blob("embedding", { mode: "buffer" }).notNull(),
+    embeddingDim: integer("embedding_dim").notNull(),
+    modelId: text("model_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    chunkerVersion: text("chunker_version").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_event_chunks_model").on(table.modelId)],
+);
+
+export const chatMessageChunks = sqliteTable(
+  "chat_message_chunks",
+  {
+    messageId: text("message_id")
+      .primaryKey()
+      .references(() => chatMessages.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    projectId: text("project_id").notNull(),
+    role: text("role").notNull(),
+    text: text("text").notNull(),
+    insertedToEditor: integer("inserted_to_editor").notNull().default(0),
+    extractedCount: integer("extracted_count").notNull().default(0),
+    embedding: blob("embedding", { mode: "buffer" }).notNull(),
+    embeddingDim: integer("embedding_dim").notNull(),
+    modelId: text("model_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    chunkerVersion: text("chunker_version").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("idx_chat_message_chunks_project").on(table.projectId),
+    index("idx_chat_message_chunks_model").on(table.modelId),
+    index("idx_chat_message_chunks_session").on(table.sessionId),
+  ],
+);
+
 /**
  * 執筆タイムラプス (Timelapse) — append-only change event log.
  *
@@ -2066,6 +2153,64 @@ export const changeEvents = sqliteTable(
 );
 
 /**
+ * Forward-only complete AI-use audit ledger, hash-chained independently for
+ * each project and for workspace-scoped executions that have no project yet.
+ *
+ * Rows are appended exclusively through the typed native/browser audit
+ * command. Project/scene/message identifiers are deliberately not foreign
+ * keys: deleting or restoring mutable content cannot erase the execution
+ * history, and a durable Browser journal can be replayed before its project
+ * snapshot exists. Exact legacy requests are not backfilled.
+ */
+export const aiAuditEvents = sqliteTable(
+  "ai_audit_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    scopeId: text("scope_id").notNull(),
+    projectId: text("project_id"),
+    sequence: integer("sequence").notNull(),
+    eventId: text("event_id").notNull(),
+    executionId: text("execution_id").notNull(),
+    operationId: text("operation_id").notNull(),
+    parentExecutionId: text("parent_execution_id"),
+    pathId: text("path_id").notNull(),
+    eventType: text("event_type").notNull(),
+    /** Client-observed occurrence time; sequence remains the order authority. */
+    timestamp: integer("timestamp").notNull(),
+    /** Native/browser ledger clock captured during the durable append. */
+    recordedAt: integer("recorded_at").notNull(),
+    payload: text("payload").notNull(),
+    payloadSha256: text("payload_sha256").notNull(),
+    prevHash: text("prev_hash").notNull(),
+    hash: text("hash").notNull(),
+  },
+  (t) => [
+    uniqueIndex("uq_ai_audit_scope_seq").on(t.scopeId, t.sequence),
+    uniqueIndex("uq_ai_audit_scope_event").on(t.scopeId, t.eventId),
+    index("idx_ai_audit_scope_execution").on(
+      t.scopeId,
+      t.executionId,
+      t.sequence,
+    ),
+    index("idx_ai_audit_scope_execution_event_type").on(
+      t.scopeId,
+      t.executionId,
+      t.eventType,
+    ),
+    index("idx_ai_audit_scope_operation").on(
+      t.scopeId,
+      t.operationId,
+      t.sequence,
+    ),
+    index("idx_ai_audit_scope_timestamp").on(
+      t.scopeId,
+      t.timestamp,
+      t.sequence,
+    ),
+  ],
+);
+
+/**
  * 執筆タイムラプス — periodic state snapshots that anchor replay.
  *
  * The replay engine seeks by jumping to the nearest snapshot then applying
@@ -2101,6 +2246,38 @@ export const stateSnapshots = sqliteTable(
       t.projectId,
       t.domain,
       t.anchorSequence,
+    ),
+  ],
+);
+
+/**
+ * Read-only renderer mirror of successful tracked mutations. The write path is
+ * native and appends a row only in the same successful transaction as the
+ * entity mutation and its change event.
+ */
+export const undoJournal = sqliteTable(
+  "undo_journal",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    surface: text("surface").notNull(),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    opKind: text("op_kind").notNull(),
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+    baseVersion: integer("base_version").notNull(),
+    resultVersion: integer("result_version").notNull(),
+    changeEventUid: text("change_event_uid"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_undo_journal_project_entity").on(
+      table.projectId,
+      table.entityKind,
+      table.entityId,
     ),
   ],
 );
@@ -2253,8 +2430,19 @@ export type NewSceneChunk = typeof sceneChunks.$inferInsert;
 export type CodexChunk = typeof codexChunks.$inferSelect;
 export type NewCodexChunk = typeof codexChunks.$inferInsert;
 
+export type EventChunk = typeof eventChunks.$inferSelect;
+export type NewEventChunk = typeof eventChunks.$inferInsert;
+
+export type ChatMessageChunk = typeof chatMessageChunks.$inferSelect;
+export type NewChatMessageChunk = typeof chatMessageChunks.$inferInsert;
+
+export type UndoJournal = typeof undoJournal.$inferSelect;
+export type NewUndoJournal = typeof undoJournal.$inferInsert;
+
 export type ChangeEvent = typeof changeEvents.$inferSelect;
 export type NewChangeEvent = typeof changeEvents.$inferInsert;
+export type AiAuditEvent = typeof aiAuditEvents.$inferSelect;
+export type NewAiAuditEvent = typeof aiAuditEvents.$inferInsert;
 export type StateSnapshot = typeof stateSnapshots.$inferSelect;
 export type NewStateSnapshot = typeof stateSnapshots.$inferInsert;
 

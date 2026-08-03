@@ -21,9 +21,24 @@ vi.mock("@/features/tree/treeStore", () => ({
 }));
 const apiMock = vi.hoisted(() => ({
   listEvents: vi.fn(async () => [
-    { id: "e1", secret: false, revealSceneId: null as string | null },
-    { id: "a", secret: false, revealSceneId: null as string | null },
-    { id: "b", secret: false, revealSceneId: null as string | null },
+    {
+      id: "e1",
+      secret: false,
+      revealSceneId: null as string | null,
+      version: 4,
+    },
+    {
+      id: "a",
+      secret: false,
+      revealSceneId: null as string | null,
+      version: 2,
+    },
+    {
+      id: "b",
+      secret: false,
+      revealSceneId: null as string | null,
+      version: 3,
+    },
   ]),
   listSceneEventsForProject: vi.fn(async () => []),
 }));
@@ -61,16 +76,20 @@ describe("createEventTool", () => {
   });
 
   it("入力を parse して agentCreateEvent を呼び id を返す", async () => {
-    const r = await createEventTool({
-      title: "戴冠",
-      kind: "generic",
-      primaryCodexId: "c1",
-      startTime: 12,
-      participantCodexIds: ["c2", "c3"],
-      sceneIds: ["s1"],
-    });
+    const r = await createEventTool(
+      {
+        title: "戴冠",
+        kind: "generic",
+        primaryCodexId: "c1",
+        startTime: 12,
+        participantCodexIds: ["c2", "c3"],
+        sceneIds: ["s1"],
+      },
+      "agent-tool:event-request",
+    );
     expect(m.agentCreateEvent).toHaveBeenCalledWith(
       expect.objectContaining({
+        requestId: "agent-tool:event-request",
         title: "戴冠",
         kind: "generic",
         primaryCodexId: "c1",
@@ -101,9 +120,21 @@ describe("update/delete", () => {
   it("update_event は eventId 必須", async () => {
     expect((await updateEventTool({})).error).toBe("eventId is required");
   });
+  it("update_event は可視性確認時の version を CAS base に渡す", async () => {
+    await updateEventTool({ eventId: "e1", title: "updated" });
+    expect(m.agentUpdateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 4,
+        title: "updated",
+      }),
+    );
+  });
   it("delete_event は agentDeleteEvent を呼ぶ", async () => {
     await deleteEventTool({ eventId: "e1" });
-    expect(m.agentDeleteEvent).toHaveBeenCalledWith("e1");
+    expect(m.agentDeleteEvent).toHaveBeenCalledWith("e1", {
+      baseVersion: 4,
+    });
   });
 });
 
@@ -127,10 +158,11 @@ describe("participants / relations", () => {
       eventId: "e1",
       codexEntryIds: ["c1", "c2"],
     });
-    expect(m.agentSetEventParticipants).toHaveBeenCalledWith("e1", [
-      "c1",
-      "c2",
-    ]);
+    expect(m.agentSetEventParticipants).toHaveBeenCalledWith(
+      "e1",
+      ["c1", "c2"],
+      { baseVersion: 4 },
+    );
   });
   it("relation add/remove は cause+effect 必須＋呼び出し", async () => {
     expect((await addEventRelationTool({ causeEventId: "a" })).error).toContain(
@@ -161,7 +193,7 @@ describe("ターン内共有キャッシュ", () => {
 describe("AI 秘匿 write-by-id ゲート", () => {
   it("hidden な secret event への update/delete は呼ばず generic not found", async () => {
     apiMock.listEvents.mockResolvedValueOnce([
-      { id: "sec", secret: true, revealSceneId: null },
+      { id: "sec", secret: true, revealSceneId: null, version: 5 },
     ]);
     const r = await updateEventTool({ eventId: "sec", title: "leak" });
     expect(r.error).toBe("Event not found");
@@ -170,7 +202,7 @@ describe("AI 秘匿 write-by-id ゲート", () => {
     // 次ターン相当としてキャッシュを破棄し、2 個目の mockResolvedValueOnce を使わせる。
     invalidateChronicleToolCache();
     apiMock.listEvents.mockResolvedValueOnce([
-      { id: "sec", secret: true, revealSceneId: null },
+      { id: "sec", secret: true, revealSceneId: null, version: 5 },
     ]);
     const d = await deleteEventTool({ eventId: "sec" });
     expect(d.error).toBe("Event not found");

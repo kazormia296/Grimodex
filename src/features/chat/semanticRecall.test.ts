@@ -1,16 +1,32 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const rerankerMocks = vi.hoisted(() => ({
+  apply: vi.fn(),
+  scheduleShadow: vi.fn(),
+}));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("./semanticRerankerApply", () => ({
+  applySemanticReranker: rerankerMocks.apply,
+}));
+
+vi.mock("./semanticRerankerShadow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./semanticRerankerShadow")>()),
+  scheduleSemanticRerankerShadow: rerankerMocks.scheduleShadow,
+}));
+
 import { invoke } from "@/lib/tauri";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 const mockInvoke = vi.mocked(invoke);
 
 import type { SemanticSearchHit } from "../semantic-search/api";
 import {
   buildSemanticRecallQuery,
   selectSemanticRecallChunks,
+  selectHybridRecallHits,
   selectHybridRecallChunks,
   fetchSemanticRecall,
   recallParamsForLang,
@@ -26,6 +42,19 @@ import {
   SEMANTIC_RECALL_HYBRID_FETCH_LIMIT,
   SEMANTIC_RECALL_SPARSE_LIMIT,
 } from "./semanticRecall";
+
+const TEST_WORKSPACE_IDENTITY = {
+  path: "/workspace",
+  openRevision: 3,
+} as const;
+
+beforeEach(() => {
+  setCurrentWorkspaceIdentity(TEST_WORKSPACE_IDENTITY);
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+});
 
 function makeHit(over: Partial<SemanticSearchHit> = {}): SemanticSearchHit {
   return {
@@ -321,6 +350,39 @@ describe("selectHybridRecallChunks", () => {
     expect(chunks.map((c) => c.sceneId)).toEqual(["win", "second"]);
   });
 
+  it("uses the same hit selection contract as the production chunk adapter", () => {
+    const hits = [
+      makeHit({ sceneId: "a", score: GATE + 0.05, chunkText: "a-best" }),
+      makeHit({ sceneId: "a", score: FLOOR + 0.01, chunkText: "a-second" }),
+      makeHit({ sceneId: "b", score: RESCUE_BAND, chunkText: "b-best" }),
+    ];
+    const options = {
+      excludeSceneIds: [] as string[],
+      minScore: FLOOR,
+      gateScore: GATE,
+      maxChunks: 3,
+      maxChunkChars: 600,
+      rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
+    };
+
+    const selectedHits = selectHybridRecallHits(hits, ["b"], options);
+    const chunks = selectHybridRecallChunks(hits, ["b"], options);
+
+    expect(
+      chunks.map((chunk) => ({
+        sceneId: chunk.sceneId,
+        chunkText: chunk.chunkText,
+        score: chunk.score,
+      })),
+    ).toEqual(
+      selectedHits.map((selected) => ({
+        sceneId: selected.sceneId,
+        chunkText: selected.chunkText,
+        score: selected.score,
+      })),
+    );
+  });
+
   it("injects nothing when there is no dense winner and no sparse rescue", () => {
     // 団子だけ (>=floor, <gate) で sparse ヒットも無い → precision 維持で空。
     const hits = [
@@ -551,4 +613,175 @@ describe("fetchSemanticRecall (hybrid mode)", () => {
     );
     expect(ftsCalled).toBe(false);
   });
+
+  it("awaits apply mode and returns the reranked admitted order", async () => {
+    const first = makeHit({
+      sceneId: "first",
+      score: 0.94,
+      charStart: 0,
+      charEnd: 10,
+    });
+    const second = makeHit({
+      sceneId: "second",
+      score: 0.9,
+      charStart: 10,
+      charEnd: 20,
+    });
+    routeInvoke({
+      dense: [first, second],
+      sparse: [
+        { sourceType: "scene", id: "first", title: "First", excerpt: "" },
+        { sourceType: "scene", id: "second", title: "Second", excerpt: "" },
+      ],
+    });
+    rerankerMocks.apply.mockResolvedValueOnce({
+      status: "applied",
+      hits: [second, first],
+    });
+
+    const chunks = await fetchSemanticRecall({
+      projectId: "p1",
+      query: "灯台の約束",
+      excludeSceneIds: [],
+      hybrid: true,
+      reranker: {
+        mode: "apply",
+        requestId: "request-1",
+        scope: {
+          workspaceKey: "/workspace",
+          workspaceOpenRevision: 3,
+          projectId: "p1",
+        },
+        userMessage: "約束を思い出して",
+        sceneTail: "灯台の鐘が鳴った。",
+        language: "ja",
+        localInferenceExpected: true,
+      },
+    });
+
+    expect(chunks.map((chunk) => chunk.sceneId)).toEqual(["second", "first"]);
+    expect(rerankerMocks.apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "request-1",
+        denseHits: [first, second],
+        baselineInjectedHits: [first, second],
+        hybrid: true,
+      }),
+    );
+    expect(rerankerMocks.scheduleShadow).not.toHaveBeenCalled();
+  });
+
+  it("keeps the baseline order when apply mode falls back", async () => {
+    const first = makeHit({ sceneId: "first", score: 0.94 });
+    const second = makeHit({ sceneId: "second", score: 0.9 });
+    routeInvoke({
+      dense: [first, second],
+      sparse: [
+        { sourceType: "scene", id: "first", title: "First", excerpt: "" },
+        { sourceType: "scene", id: "second", title: "Second", excerpt: "" },
+      ],
+    });
+    rerankerMocks.apply.mockResolvedValueOnce({
+      status: "fallback",
+      reason: "timeout",
+      hits: [first, second],
+    });
+
+    const chunks = await fetchSemanticRecall({
+      projectId: "p1",
+      query: "灯台の約束",
+      excludeSceneIds: [],
+      hybrid: true,
+      reranker: {
+        mode: "apply",
+        requestId: "request-1",
+        scope: {
+          workspaceKey: "/workspace",
+          workspaceOpenRevision: 3,
+          projectId: "p1",
+        },
+        userMessage: "約束を思い出して",
+        sceneTail: "灯台の鐘が鳴った。",
+        language: "ja",
+        localInferenceExpected: true,
+      },
+    });
+
+    expect(chunks.map((chunk) => chunk.sceneId)).toEqual(["first", "second"]);
+  });
+
+  it("keeps shadow mode fire-and-forget and never changes injection", async () => {
+    const first = makeHit({ sceneId: "first", score: 0.94 });
+    const second = makeHit({ sceneId: "second", score: 0.9 });
+    routeInvoke({
+      dense: [first, second],
+      sparse: [
+        { sourceType: "scene", id: "first", title: "First", excerpt: "" },
+        { sourceType: "scene", id: "second", title: "Second", excerpt: "" },
+      ],
+    });
+
+    const chunks = await fetchSemanticRecall({
+      projectId: "p1",
+      query: "灯台の約束",
+      excludeSceneIds: [],
+      hybrid: true,
+      reranker: {
+        mode: "shadow",
+        requestId: "request-1",
+        scope: {
+          workspaceKey: "/workspace",
+          workspaceOpenRevision: 3,
+          projectId: "p1",
+        },
+        userMessage: "約束を思い出して",
+        sceneTail: "灯台の鐘が鳴った。",
+        language: "ja",
+        localInferenceExpected: true,
+      },
+    });
+
+    expect(chunks.map((chunk) => chunk.sceneId)).toEqual(["first", "second"]);
+    expect(rerankerMocks.scheduleShadow).toHaveBeenCalledOnce();
+    expect(rerankerMocks.apply).not.toHaveBeenCalled();
+  });
+
+  it.each(["zh", "ko"])(
+    "keeps baseline order and never invokes a reranker for unsupported language %s",
+    async (language) => {
+      const first = makeHit({ sceneId: "first", score: 0.94 });
+      const second = makeHit({ sceneId: "second", score: 0.9 });
+      routeInvoke({
+        dense: [first, second],
+        sparse: [
+          { sourceType: "scene", id: "first", title: "First", excerpt: "" },
+          { sourceType: "scene", id: "second", title: "Second", excerpt: "" },
+        ],
+      });
+
+      const chunks = await fetchSemanticRecall({
+        projectId: "p1",
+        query: "灯台の約束",
+        excludeSceneIds: [],
+        hybrid: true,
+        reranker: {
+          mode: "apply",
+          requestId: "request-unsupported",
+          scope: {
+            workspaceKey: "/workspace",
+            workspaceOpenRevision: 3,
+            projectId: "p1",
+          },
+          userMessage: "約束を思い出して",
+          sceneTail: "灯台の鐘が鳴った。",
+          language,
+          localInferenceExpected: true,
+        },
+      });
+
+      expect(chunks.map((chunk) => chunk.sceneId)).toEqual(["first", "second"]);
+      expect(rerankerMocks.apply).not.toHaveBeenCalled();
+      expect(rerankerMocks.scheduleShadow).not.toHaveBeenCalled();
+    },
+  );
 });

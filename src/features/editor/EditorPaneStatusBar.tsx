@@ -84,7 +84,10 @@ export function EditorPaneStatusBar({
   if (zenMode || phoneWorkspace) return null;
 
   return (
-    <div className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
+    <div
+      data-editor-tool-surface
+      className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground"
+    >
       <div className="relative flex min-w-0 items-center gap-2">
         {activeStatus ? (
           <>
@@ -93,7 +96,7 @@ export function EditorPaneStatusBar({
               type="button"
               title={i18next.t("editor.status.changeStatus")}
               onClick={() => setStatusPopoverOpen((v) => !v)}
-              className={`rounded px-1.5 py-0.5 font-medium hover:bg-accent ${STATUS_COLORS[activeStatus]}`}
+              className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-medium hover:bg-accent ${STATUS_COLORS[activeStatus]}`}
             >
               {getStatusLabels()[activeStatus]}
             </button>

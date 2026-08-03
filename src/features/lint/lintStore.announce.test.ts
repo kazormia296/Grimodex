@@ -37,6 +37,7 @@ function response(count: number): LintResponse {
       diag(i, i + 1, `ja/rule-${i}`),
     ),
     warnings: [],
+    incremental_scope: "block",
     computed_at: Date.now(),
   };
 }

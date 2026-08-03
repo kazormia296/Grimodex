@@ -107,6 +107,48 @@ describe("EditorBubbleMenu", () => {
     editor.destroy();
   });
 
+  it("matches the editor chrome icon vocabulary at a compact desktop size", () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    render(
+      <EditorBubbleMenu
+        editor={editor}
+        toolbarActionsRef={actionsRef()}
+        canEditCodexSemanticLink
+      />,
+    );
+
+    const toolbar = screen.getByRole("toolbar");
+    expect(toolbar).toHaveClass("p-0.5");
+    expect(screen.getByTestId("bubble-bold")).toHaveClass(
+      "h-6",
+      "min-w-[24px]",
+    );
+
+    for (const level of [1, 2, 3]) {
+      const heading = screen.getByTestId(`bubble-h${level}`);
+      expect(heading).toHaveTextContent(`H${level}`);
+      expect(heading.querySelector("svg")).toBeNull();
+    }
+
+    expect(screen.getByTestId("bubble-quote").querySelector("svg")).toHaveClass(
+      "lucide-text-quote",
+    );
+    expect(screen.getByTestId("bubble-ruby")).toHaveTextContent("ふり仮名");
+
+    const linkIcon = screen.getByTestId("bubble-link").querySelector("svg");
+    const semanticLinkIcon = screen
+      .getByTestId("bubble-semantic-link")
+      .querySelector("svg");
+    expect(linkIcon).toHaveClass("lucide-link");
+    expect(semanticLinkIcon).toHaveClass("lucide-book-open");
+    expect(linkIcon?.getAttribute("class")).not.toBe(
+      semanticLinkIcon?.getAttribute("class"),
+    );
+
+    editor.destroy();
+  });
+
   it("is gated off by the editor.bubbleMenu setting", () => {
     setBubble(false);
     const editor = makeEditor("<p>hello world</p>");

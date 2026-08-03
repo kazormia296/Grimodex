@@ -82,11 +82,15 @@ const BLOCK_KIND_MAP: Record<string, LintBlockKind | undefined> = {
 };
 
 const SKIP_NODE_TYPES = new Set(["codeBlock", "image", "horizontalRule"]);
+const offsetMapCache = new WeakMap<ProseMirrorNode, SceneOffsetMap>();
 
 /**
  * Build a scene-wide offset map from a ProseMirror document.
  */
 export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
+  const cached = offsetMapCache.get(doc);
+  if (cached) return cached;
+
   const blocks: LintBlock[] = [];
   const intervals: PosInterval[] = [];
   const disables: OffsetMapDisable[] = [];
@@ -204,7 +208,9 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
     visit(child, offset);
   });
 
-  return { blocks, intervals, disables, totalLength: sceneCursor };
+  const result = { blocks, intervals, disables, totalLength: sceneCursor };
+  offsetMapCache.set(doc, result);
+  return result;
 }
 
 function collectLeafBlock(

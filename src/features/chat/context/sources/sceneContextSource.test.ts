@@ -8,6 +8,8 @@ import type { PinnedCodexEntryWithData } from "../../chatApi";
 import type { ChatMessage } from "../../chatTypes";
 import { buildSystemPrompt } from "../../contextBuilder";
 import { createSceneTurnContextRequest } from "../turnContextRequest";
+import { resolveChatTurnRoute } from "../../turn/resolveTurnRoute";
+import { DEFAULT_AI_SETTINGS, type AiSettings } from "../../types";
 import {
   collectSceneContext,
   createSceneContextSourceDeps,
@@ -81,6 +83,7 @@ function phase(
     summaryOverride: null,
     contentOverride: null,
     contextModeOverride: null,
+    version: 0,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,
@@ -107,6 +110,7 @@ const sceneNode: TreeNodeData = {
 };
 
 interface RequestOverrides {
+  purpose?: "live" | "send";
   includeBodies?: boolean;
   entries?: CodexContextEntry[];
   sceneContent?: string;
@@ -120,17 +124,27 @@ interface RequestOverrides {
   sessionId?: string | null;
   excludedAutoEntryIds?: string[];
   semanticRecallEnabled?: boolean;
+  hybridRecallEnabled?: boolean;
+  semanticRerankerMode?: "off" | "shadow" | "apply";
+  route?: ReturnType<typeof resolveChatTurnRoute> | null;
+  workspaceIdentity?: {
+    workspaceKey: string;
+    workspaceOpenRevision: number;
+  };
 }
 
 function request(overrides: RequestOverrides = {}) {
   return createSceneTurnContextRequest({
     requestId: "request-1",
-    purpose: "live",
+    purpose: overrides.purpose ?? "live",
     projectId: "project-1",
+    ...(overrides.workspaceIdentity
+      ? { workspaceIdentity: overrides.workspaceIdentity }
+      : {}),
     sessionId: overrides.sessionId ?? null,
     sceneId: "scene-1",
     mode: "chat",
-    route: null,
+    route: overrides.route ?? null,
     budget: { contextWindow: 16_384, deliveryMode: "plain" },
     messages: overrides.messages ?? [],
     outgoingUserMessage: overrides.outgoingUserMessage ?? "",
@@ -149,7 +163,8 @@ function request(overrides: RequestOverrides = {}) {
       chronicleEnabled: false,
       semanticRecallEnabled: overrides.semanticRecallEnabled ?? false,
       episodicRecallEnabled: false,
-      hybridRecallEnabled: false,
+      hybridRecallEnabled: overrides.hybridRecallEnabled ?? false,
+      semanticRerankerMode: overrides.semanticRerankerMode ?? "off",
       customChatInstruction: "",
     },
     trackRecallPromote: false,
@@ -301,6 +316,80 @@ describe("collectSceneContext", () => {
       expect(diagnostic.latencyMs).toEqual(expect.any(Number));
       expect(diagnostic.latencyMs).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it("passes the immutable apply mode and local route identity only at send time", async () => {
+    const localSettings: AiSettings = {
+      ...DEFAULT_AI_SETTINGS,
+      provider: "openai-compatible",
+      model: "local-model",
+      openaiCompatibleEndpoints: [
+        {
+          id: "lm-studio",
+          label: "LM Studio",
+          baseUrl: "http://127.0.0.1:1234/v1",
+        },
+      ],
+      activeOpenaiCompatibleEndpointId: "lm-studio",
+    };
+    const fetchSemanticRecall = vi.fn(async () => []);
+
+    await collectSceneContext(
+      request({
+        purpose: "send",
+        outgoingUserMessage: "Find the lighthouse promise",
+        semanticRecallEnabled: true,
+        hybridRecallEnabled: true,
+        semanticRerankerMode: "apply",
+        route: resolveChatTurnRoute({
+          surface: "chat",
+          activeSettings: localSettings,
+          taskEffort: "medium",
+        }),
+        workspaceIdentity: {
+          workspaceKey: "/private/workspace",
+          workspaceOpenRevision: 9,
+        },
+      }),
+      createSceneContextSourceDeps({ fetchSemanticRecall }),
+    );
+
+    expect(fetchSemanticRecall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reranker: expect.objectContaining({
+          mode: "apply",
+          localInferenceExpected: true,
+          scope: {
+            workspaceKey: "/private/workspace",
+            workspaceOpenRevision: 9,
+            projectId: "project-1",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("never exposes an apply request from a live context refresh", async () => {
+    const fetchSemanticRecall = vi.fn(async () => []);
+
+    await collectSceneContext(
+      request({
+        purpose: "live",
+        outgoingUserMessage: "Find the lighthouse promise",
+        semanticRecallEnabled: true,
+        hybridRecallEnabled: true,
+        semanticRerankerMode: "apply",
+        workspaceIdentity: {
+          workspaceKey: "/private/workspace",
+          workspaceOpenRevision: 9,
+        },
+      }),
+      createSceneContextSourceDeps({ fetchSemanticRecall }),
+    );
+
+    expect(fetchSemanticRecall).toHaveBeenCalledWith(
+      expect.not.objectContaining({ reranker: expect.anything() }),
+    );
   });
 
   it("applies eco mode from the immutable request snapshot", async () => {
