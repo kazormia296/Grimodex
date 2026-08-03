@@ -1538,7 +1538,6 @@ function createChatTurnStoreActions(
                   : null,
               });
 
-              // セッションタイトル自動生成 (P1-2) — fire-and-forget
               const isFirstAgentResponse =
                 prevMessages.filter((m) => m.role === "assistant").length === 0;
               const currentSession = get().sessions.find(
@@ -1547,7 +1546,7 @@ function createChatTurnStoreActions(
               if (isFirstAgentResponse && currentSession?.titleManual === 0) {
                 const titleModel =
                   useAiSettingsStore.getState().settings?.model ?? "";
-                chatApi
+                const titleGeneration = chatApi
                   .generateSessionTitle(
                     content,
                     lastMsg.content,
@@ -1576,6 +1575,7 @@ function createChatTurnStoreActions(
                       errorDetail(e),
                     );
                   });
+                void turnRuntime.trackTurn(titleGeneration);
               }
             },
           });
@@ -2254,7 +2254,6 @@ function createChatTurnStoreActions(
                     }
                   }
 
-                  // セッションタイトル自動生成 (P1-2) — fire-and-forget
                   const currentSession = get().sessions.find(
                     (s) => s.id === sessionIdForPersist,
                   );
@@ -2265,7 +2264,7 @@ function createChatTurnStoreActions(
                     lastMsg?.role === "assistant" &&
                     lastMsg.content
                   ) {
-                    chatApi
+                    const titleGeneration = chatApi
                       .generateSessionTitle(
                         content,
                         lastMsg.content,
@@ -2315,6 +2314,7 @@ function createChatTurnStoreActions(
                           errorDetail(e),
                         );
                       });
+                    void turnRuntime.trackTurn(titleGeneration);
                   }
                 },
               });

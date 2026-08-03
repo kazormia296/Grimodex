@@ -78,6 +78,10 @@ vi.mock("@/features/timelapse/captureChat", () => ({
   recordChatMessagesDeleteFrom: vi.fn(),
 }));
 
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: vi.fn(() => Promise.resolve()),
+}));
+
 import { db } from "@/db/client";
 import { invoke } from "@/lib/tauri";
 const mockDb = vi.mocked(db);
@@ -85,6 +89,8 @@ import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
 import { recordChatMessageAdd } from "@/features/timelapse/captureChat";
 const mockRecordChatMessageAdd = vi.mocked(recordChatMessageAdd);
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+const mockRecordAiUsage = vi.mocked(recordAiUsage);
 
 import {
   listSessions,
@@ -103,6 +109,7 @@ import {
   saveMessagePrompt,
   getMessagePrompt,
   pinCodexEntry,
+  generateSessionTitle,
   sendAgentMessage,
   sendChatMessageWithThinking,
 } from "./chatApi";
@@ -939,6 +946,50 @@ describe("chatApi - Ollama endpoint snapshots", () => {
         expectedOllamaEndpoint: "http://127.0.0.1:11434",
       }),
     );
+  });
+});
+
+describe("chatApi - session title usage scope", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openrouter",
+        model: "openrouter/anthropic/claude-sonnet-4.6",
+      },
+    });
+  });
+
+  afterEach(() => {
+    useAiSettingsStore.setState({ settings: { ...DEFAULT_AI_SETTINGS } });
+  });
+
+  it("records usage against the project captured by the chat turn", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "Captured title" }],
+      stopReason: "end_turn",
+      inputTokens: 3,
+      outputTokens: 4,
+    });
+
+    await expect(
+      generateSessionTitle(
+        "Question",
+        "Answer",
+        "openrouter/anthropic/claude-sonnet-4.6",
+        "ja",
+        "captured-project",
+      ),
+    ).resolves.toBe("Captured title");
+
+    expect(mockRecordAiUsage).toHaveBeenCalledWith({
+      surface: "session_title",
+      model: "openrouter/anthropic/claude-sonnet-4.6",
+      projectId: "captured-project",
+      tokensIn: 3,
+      tokensOut: 4,
+    });
   });
 });
 

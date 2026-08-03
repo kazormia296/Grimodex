@@ -424,10 +424,10 @@ export async function generateSessionTitle(
         pathId: "session_title",
       },
     );
-    // N4: セッションタイトル自動生成の usage を台帳に記録する。
     void recordAiUsage({
       surface: "session_title",
       model: effectiveModel,
+      projectId,
       tokensIn: response.inputTokens,
       tokensOut: response.outputTokens,
     });
