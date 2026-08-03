@@ -119507,7 +119507,7 @@ SOFTWARE.
 - License: Apache-2.0 OR MIT
 - Repository: https://github.com/tauri-apps/tauri
 
-### tauri-plugin-dialog (2.7.1)
+### tauri-plugin-dialog (2.7.2)
 
 - License: Apache-2.0 OR MIT
 - Repository: https://github.com/tauri-apps/plugins-workspace
