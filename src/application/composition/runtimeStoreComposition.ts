@@ -52,7 +52,8 @@ const workspaceHydrationDependencies: WorkspaceHydrationDependencies = {
   initCodexHighlight: () =>
     useCodexHighlightStore.getState().initFromSettings(),
   initAttribution: () => useAttributionStore.getState().initFromSettings(),
-  initAnnotation: () => useAnnotationStore.getState().initFromSettings(),
+  initAnnotation: () =>
+    useAnnotationStore.getState().initFromSettings({ resetLiveReader: true }),
   loadLintConfig: () => useLintConfigStore.getState().load(),
   loadTimelineSettings: loadAndSyncTimelineSettings,
   loadChronicleSettings: loadAndSyncChronicleSettings,

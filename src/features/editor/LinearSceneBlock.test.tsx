@@ -1003,7 +1003,7 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
 
     // まだ generate は呼ばれず、パレットが該当コマンドで開く
     expect(inlineAiSpies.generate).not.toHaveBeenCalled();
-    const palette = getByTestId("inline-ai-palette");
+    const palette = await waitFor(() => getByTestId("inline-ai-palette"));
     expect(palette.getAttribute("data-command")).toBe("describe");
 
     act(() => {

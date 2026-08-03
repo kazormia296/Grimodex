@@ -454,7 +454,7 @@ Inline AI palette                Ctrl+Space
 
 ### 永続化
 
-カスタムキーバインドは `project.db` の `app_settings` テーブルにJSON形式で保存。
+カスタムキーバインドはワークスペースの `grimodex.db` にある `app_settings` テーブルへJSON形式で保存。
 
 ---
 
@@ -471,7 +471,7 @@ Inline AI palette                Ctrl+Space
 | Last modified | 最終更新日時 |
 | Scene count | シーン数 |
 | Total characters | プロジェクト全体の合計文字数 |
-| Database size | project.db のファイルサイズ |
+| Database size | grimodex.db のファイルサイズ |
 
 ### バックアップ
 
@@ -480,10 +480,10 @@ Inline AI palette                Ctrl+Space
 | Auto-backup | トグル | ON | 定期的に自動バックアップを作成。キー: `data.autoBackup` |
 | Backup interval | スライダー（15 - 360 分、15 分刻み） | 60 分 | キー: `data.backupInterval` |
 | Max backups | スライダー（1 - 50） | 10 | キー: `data.maxBackups` |
-| Backup location | — | プロジェクトフォルダ内 `backups/` | ※ 現状未実装（フォルダ選択 UI はまだ存在せず、出力先は固定） |
-| [Backup now] / [Open backups folder] | — | — | ※ 現状未実装 |
+| Backup location | — | ワークスペース内 `backups/` | 自動バックアップの保存先。 |
+| Backup list / Restore | 一覧・復元 | — | `.db` / `.db.gz` に対応。復元はワークスペース全体を置き換える。 |
 
-バックアップ形式: プロジェクトフォルダ全体（`content/` + `codex/` + `snippets/` + `project.db`）をZIPアーカイブ。ファイル名: `{project_title}_{YYYYMMDD_HHmmss}.zip`
+バックアップ形式: ワークスペースの `grimodex.db` を圧縮・派生データ除外した `.db.gz`（既存の `.db` も復元可能）。
 
 ### リビジョン
 
@@ -725,7 +725,7 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 
 #### プロジェクト固有設定
 
-`KEY_SCOPE` が `project` のキーは `setProjectSetting` 経由で `project_settings` テーブルに 300ms debounce で保存する。プロジェクトを開き直すと当該プロジェクトの `project.db` から読み戻される。`KEY_SCOPE` に載っていない旧来キー（legacy 層）は従来どおり `app_settings` テーブル（`setSetting`）へ保存される。
+`KEY_SCOPE` が `project` のキーは `setProjectSetting` 経由で `project_settings` テーブルに 300ms debounce で保存する。プロジェクトを開き直すとワークスペースの `grimodex.db` から読み戻される。`KEY_SCOPE` に載っていない旧来キー（legacy 層）は従来どおり `app_settings` テーブル（`setSetting`）へ保存される。
 
 > `settingsStore` は legacy（`app_settings`）/ project（`project_settings`）/ global（`global-settings.json` の `userPreferences`）の 3 層を `DEFAULT_SETTINGS` < 言語別オーバーライド（`LANGUAGE_DEFAULT_OVERRIDES`）< legacy < project < global の優先順位でマージする。書き込み先は `KEY_SCOPE[key]` で決まる（`persistSetting`）。
 

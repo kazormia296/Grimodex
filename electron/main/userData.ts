@@ -9,6 +9,7 @@ import path from "node:path";
 
 export const DEVELOPMENT_APP_NAME = "GrimodexElectronDev";
 export const PRODUCTION_APP_NAME = "Grimodex";
+export const LINUX_DESKTOP_NAME = "grimodex.desktop";
 const LEGACY_TAURI_DIRECTORY = "com.miyakey.grimodex";
 
 type SupportedPlatform = "linux" | "darwin" | "win32";
@@ -103,6 +104,7 @@ export function resolveUserDataConfiguration(
 export interface ElectronAppPathController {
   readonly isPackaged: boolean;
   setName(name: string): void;
+  setDesktopName(name: string): void;
   setPath(name: "userData", value: string): void;
   getPath(name: "appData" | "userData"): string;
 }
@@ -123,12 +125,18 @@ export function configureAppUserData(
   app: ElectronAppPathController,
   options: ConfigureUserDataOptions = {},
 ): string {
+  const platform = options.platform ?? process.platform;
   const appName = app.isPackaged ? PRODUCTION_APP_NAME : DEVELOPMENT_APP_NAME;
+  if (app.isPackaged && platform === "linux") {
+    // Electron maps this to CHROME_DESKTOP before ready. Keep the Linux XDG
+    // identity aligned with the packaged desktop file and Mozkey scope.
+    app.setDesktopName(LINUX_DESKTOP_NAME);
+  }
   app.setName(appName);
 
   const configuration = resolveUserDataConfiguration({
     isPackaged: app.isPackaged,
-    platform: options.platform ?? process.platform,
+    platform,
     env: options.env ?? process.env,
     homeDir: options.homeDir ?? homedir(),
     appDataDir: app.getPath("appData"),

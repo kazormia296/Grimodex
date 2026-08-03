@@ -9,7 +9,10 @@ import {
 import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
+import {
+  getCurrentImeWorkspaceIdentity,
+  setCurrentImeWorkspaceIdentity,
+} from "@/features/ime/workspaceScope";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 import type { AiModel } from "./types";
 import { toast } from "sonner";
@@ -314,6 +317,8 @@ const mockAdvanceCodexHistoryRevision = vi.mocked(
   codexAppApi.advanceCodexHistoryRevision,
 );
 const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
+const mockGenerateSessionTitle = vi.mocked(chatApi.generateSessionTitle);
+const mockUpdateSessionTitle = vi.mocked(chatApi.updateSessionTitle);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
 const mockCountTokens = vi.mocked(contextBuilder.countTokens);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
@@ -369,6 +374,7 @@ function chatQuiescenceDependencies(options?: {
   onScopedMutations?: () => void;
 }): QuiescenceDependencies {
   return {
+    awaitAiExecutions: async () => {},
     flushAutoSaves: async () => {},
     flushParticipants: async () => {},
     flushExternalWriteBacks: async () => {},
@@ -2522,6 +2528,74 @@ describe("useChatStore", () => {
       }
     });
 
+    it("holds workspace quiescence until first-response title persistence finishes", async () => {
+      let callbacks: StreamCallbacks | undefined;
+      const titleGeneration = deferred<string | null>();
+      const titleUpdateWorkspacePaths: Array<string | null> = [];
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitle.mockImplementationOnce(async () => {
+        titleUpdateWorkspacePaths.push(
+          getCurrentImeWorkspaceIdentity()?.path ?? null,
+        );
+      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+      });
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("workspace-scoped title");
+      await vi.waitFor(() => expect(callbacks).toBeDefined());
+      const providerEntered = deferred<void>();
+      let switchSettled = false;
+      const switching = flushStrictQuiescence(
+        chatQuiescenceDependencies({
+          onScopedMutations: () => providerEntered.resolve(),
+        }),
+      ).then(() => {
+        setCurrentImeWorkspaceIdentity({
+          path: "/workspace/next",
+          openRevision: 2,
+        });
+        switchSettled = true;
+      });
+
+      try {
+        await providerEntered.promise;
+        callbacks?.onTextDelta("first response");
+        callbacks?.onDone({ stopReason: "end_turn" });
+        await send;
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+        await Promise.resolve();
+
+        expect(switchSettled).toBe(false);
+
+        titleGeneration.resolve("Scoped title");
+        await switching;
+
+        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+          session1.id,
+          "Scoped title",
+        );
+        expect(titleUpdateWorkspacePaths).toEqual([
+          "/workspace/chat-store-test",
+        ]);
+      } finally {
+        titleGeneration.resolve("Scoped title");
+        await switching;
+      }
+    });
+
     it("keeps a partially persisted turn sticky across switches until retry succeeds", async () => {
       Object.assign(globalThis, {
         [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
@@ -3435,9 +3509,9 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().sendMessage("テスト");
 
-      // sendChatMessageStream の第 7 引数(0-indexed 6)が送信モデル。
+      // sendChatMessageStream の第 8 引数(0-indexed 7)が送信モデル。
       const call = mockSendChatMessageStream.mock.calls.at(-1);
-      expect(call?.[6]).toBe("temp-model");
+      expect(call?.[7]).toBe("temp-model");
       // 既定チャットモデルは一時選択で書き換わらない。
       expect(useAiSettingsStore.getState().settings?.model).toBe(
         "default-model",
@@ -3465,10 +3539,10 @@ describe("useChatStore", () => {
       await useChatStore.getState().sendMessage("テスト");
 
       const call = mockSendChatMessageStream.mock.calls.at(-1);
-      // 第7引数(idx6)=model, 第8引数(idx7)=provider, 第5引数(idx4)=apiVariant。
-      expect(call?.[6]).toBe("fugu");
-      expect(call?.[7]).toBe("sakana");
-      expect(call?.[4]).toBe("responses");
+      // 第8引数(idx7)=model, 第9引数(idx8)=provider, 第6引数(idx5)=apiVariant。
+      expect(call?.[7]).toBe("fugu");
+      expect(call?.[8]).toBe("sakana");
+      expect(call?.[5]).toBe("responses");
       // 別プロバイダ一時選択は active 設定(provider/model)を書き換えない。
       expect(useAiSettingsStore.getState().settings?.provider).toBe("openai");
       expect(useAiSettingsStore.getState().settings?.model).toBe(
@@ -3502,8 +3576,8 @@ describe("useChatStore", () => {
       await useChatStore.getState().sendMessage("テスト");
 
       const call = mockSendChatMessageStream.mock.calls.at(-1);
-      expect(call?.[6]).toBe("temp-model");
-      expect(call?.[7] ?? null).toBeNull();
+      expect(call?.[7]).toBe("temp-model");
+      expect(call?.[8] ?? null).toBeNull();
 
       useAiSettingsStore.setState({ settings: null, chatModelOverride: null });
     });
@@ -3728,7 +3802,7 @@ describe("useChatStore", () => {
           ollamaSettings.ollamaEndpoint,
         );
         expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
-        expect(mockSendChatMessageStream.mock.calls[0]?.[12]).toBe(
+        expect(mockSendChatMessageStream.mock.calls[0]?.[13]).toBe(
           ollamaSettings.ollamaEndpoint,
         );
         expect(mockSendAgentMessage).not.toHaveBeenCalled();
@@ -3828,8 +3902,8 @@ describe("useChatStore", () => {
 
           const call = mockSendChatMessageStream.mock.calls.at(-1);
           expect(mockListAiModels).not.toHaveBeenCalled();
-          expect(call?.[6]).toBe("openai/gpt-4o");
-          expect(call?.[7]).toBeNull();
+          expect(call?.[7]).toBe("openai/gpt-4o");
+          expect(call?.[8]).toBeNull();
           expect(mockSendAgentMessage).not.toHaveBeenCalled();
         } finally {
           useSettingsStore.setState((state) => ({
@@ -3876,7 +3950,7 @@ describe("useChatStore", () => {
           ollamaSettings.ollamaEndpoint,
         );
         expect(mockSendAgentMessage).toHaveBeenCalledOnce();
-        expect(mockSendAgentMessage.mock.calls[0]?.[14]).toBe(
+        expect(mockSendAgentMessage.mock.calls[0]?.[15]).toBe(
           ollamaSettings.ollamaEndpoint,
         );
         expect(useChatStore.getState().error).toBeNull();
@@ -4975,6 +5049,83 @@ describe("useChatStore", () => {
       },
     );
 
+    it("holds workspace quiescence until first Agent title persistence finishes", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+        ragEnabled: false,
+      });
+      const agentResponse =
+        deferred<Awaited<ReturnType<typeof chatApi.sendAgentMessage>>>();
+      const titleGeneration = deferred<string | null>();
+      const titleUpdateWorkspacePaths: Array<string | null> = [];
+      mockSendAgentMessage.mockImplementationOnce(() => agentResponse.promise);
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitle.mockImplementationOnce(async () => {
+        titleUpdateWorkspacePaths.push(
+          getCurrentImeWorkspaceIdentity()?.path ?? null,
+        );
+      });
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("workspace-scoped Agent title");
+      await vi.waitFor(() => expect(mockSendAgentMessage).toHaveBeenCalled());
+      const providerEntered = deferred<void>();
+      let switchSettled = false;
+      const switching = flushStrictQuiescence(
+        chatQuiescenceDependencies({
+          onScopedMutations: () => providerEntered.resolve(),
+        }),
+      ).then(() => {
+        setCurrentImeWorkspaceIdentity({
+          path: "/workspace/next",
+          openRevision: 2,
+        });
+        switchSettled = true;
+      });
+
+      try {
+        await providerEntered.promise;
+        agentResponse.resolve({
+          blocks: [{ type: "text", content: "first Agent response" }],
+          stopReason: "end_turn",
+        });
+        await send;
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+        await Promise.resolve();
+
+        expect(switchSettled).toBe(false);
+
+        titleGeneration.resolve("Scoped Agent title");
+        await switching;
+
+        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+          session1.id,
+          "Scoped Agent title",
+        );
+        expect(titleUpdateWorkspacePaths).toEqual([
+          "/workspace/chat-store-test",
+        ]);
+      } finally {
+        titleGeneration.resolve("Scoped Agent title");
+        await switching;
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
     it("public RAGはprivate historyを除外しつつcommandInstructionを保持する", async () => {
       useAiSettingsStore.setState({
         settings: {
@@ -5963,8 +6114,8 @@ describe("useChatStore", () => {
 
       const callArgs = mockSendChatMessageStream.mock.calls[0];
       // (messages, thinking, callbacks, systemCacheSegments, apiVariant, systemVolatileTail)
-      expect(callArgs[3]).toEqual(["seg1"]);
-      expect(callArgs[5]).toBe("L5 要約");
+      expect(callArgs[4]).toEqual(["seg1"]);
+      expect(callArgs[6]).toBe("L5 要約");
     });
 
     it("sets activeSceneId and updates context", () => {
@@ -6058,8 +6209,8 @@ describe("useChatStore", () => {
         role: "system",
         content: "DIRECT TURN PROMPT",
       });
-      expect(call[3]).toEqual(["DIRECT CACHE"]);
-      expect(call[5]).toBe("DIRECT TAIL");
+      expect(call[4]).toEqual(["DIRECT CACHE"]);
+      expect(call[6]).toBe("DIRECT TAIL");
     });
 
     it("sendMessage sends no system message when lastSystemPrompt is empty", async () => {
@@ -9453,11 +9604,11 @@ describe("useChatStore", () => {
   describe("送信先 override の優先順位 (xprov > role > active)", () => {
     let useSettingsStore: typeof import("@/features/settings/settingsStore").useSettingsStore;
 
-    // sendChatMessageStream 引数: [4]=apiVariant, [6]=model, [7]=provider, [8]=endpointId。
-    const A_VARIANT = 4;
-    const A_MODEL = 6;
-    const A_PROVIDER = 7;
-    const A_ENDPOINT = 8;
+    // sendChatMessageStream 引数: [5]=apiVariant, [7]=model, [8]=provider, [9]=endpointId。
+    const A_VARIANT = 5;
+    const A_MODEL = 7;
+    const A_PROVIDER = 8;
+    const A_ENDPOINT = 9;
 
     async function setConversationRole(
       model: string | null,

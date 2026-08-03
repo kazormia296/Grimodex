@@ -12,6 +12,8 @@ use grimodex_db::events::EventSink;
 use grimodex_db::Database;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
+#[cfg(feature = "semantic-embedding")]
+use serde_json::json;
 
 use crate::chat_index::{collect_chat_index_status, ChatIndexStatus};
 use crate::chat_search::ChatSearchCache;
@@ -29,15 +31,15 @@ use crate::spec::spec_for_language;
 
 #[cfg(feature = "semantic-embedding")]
 use crate::chat_index::{
-    embed_chat_text, list_message_ids_in_project, project_language_for_chat_message,
-    read_chat_message_for_index, upsert_chat_chunk, ChatUpsertOutcome,
+    list_message_ids_in_project, project_language_for_chat_message, read_chat_message_for_index,
+    upsert_chat_chunk, ChatUpsertOutcome,
 };
 #[cfg(feature = "semantic-embedding")]
 use crate::chat_search::{run_chat_search, ChatSearchHit};
 #[cfg(feature = "semantic-embedding")]
 use crate::codex_index::{
-    embed_codex_text, list_entry_ids_in_project, project_language_for_codex_entry,
-    read_codex_for_index, upsert_codex_chunk, CodexUpsertOutcome,
+    list_entry_ids_in_project, project_language_for_codex_entry, read_codex_for_index,
+    upsert_codex_chunk, CodexUpsertOutcome,
 };
 #[cfg(feature = "semantic-embedding")]
 use crate::codex_search::{run_codex_search, CodexSearchHit};
@@ -47,14 +49,14 @@ use crate::download;
 use crate::embedding::Embedder;
 #[cfg(feature = "semantic-embedding")]
 use crate::events_index::{
-    embed_event_text, list_event_ids_in_project, project_language_for_event, read_event_for_index,
+    list_event_ids_in_project, project_language_for_event, read_event_for_index,
     upsert_event_chunk, EventUpsertOutcome,
 };
 #[cfg(feature = "semantic-embedding")]
 use crate::events_search::{run_events_search, EventSearchHit};
 #[cfg(feature = "semantic-embedding")]
 use crate::index::{
-    embed_scene_payloads_cancellable, list_scene_ids_in_project, project_language_for_scene,
+    embed_scene_payloads_cancellable_with, list_scene_ids_in_project, project_language_for_scene,
     read_scene_for_index, upsert_scene_chunks, UpsertOutcome,
 };
 #[cfg(feature = "semantic-embedding")]
@@ -144,6 +146,7 @@ impl SemanticEpoch {
 pub struct SemanticRequest {
     db: Arc<Database>,
     epoch: SemanticEpoch,
+    operation_id: String,
 }
 
 impl SemanticRequest {
@@ -157,6 +160,10 @@ impl SemanticRequest {
 
     pub fn epoch(&self) -> &SemanticEpoch {
         &self.epoch
+    }
+
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
     }
 }
 
@@ -387,7 +394,11 @@ impl SemanticRuntime {
             let epoch = self.snapshot_epoch();
             let db = resolve_database()?;
             if self.current_generation() == epoch.generation {
-                return Ok(SemanticRequest { db, epoch });
+                return Ok(SemanticRequest {
+                    db,
+                    epoch,
+                    operation_id: uuid::Uuid::new_v4().to_string(),
+                });
             }
         }
     }
@@ -797,6 +808,150 @@ fn l2_norm_of_f32_le(blob: &[u8]) -> f64 {
         .sqrt()
 }
 
+#[cfg(feature = "semantic-embedding")]
+struct AuditedEmbeddingInput<'a> {
+    path_id: &'a str,
+    inference_kind: &'a str,
+    spec: &'static EmbeddingModelSpec,
+    model_artifact_identity: crate::audit::ModelArtifactIdentity,
+    tokenizer_identity: crate::audit::TokenizerIdentity,
+    raw_text: &'a str,
+    model_prefix: &'a str,
+    metadata: serde_json::Value,
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn audited_embedding(
+    request: &SemanticRequest,
+    project_id: &str,
+    input: AuditedEmbeddingInput<'_>,
+    inference: impl FnOnce() -> Result<Vec<f32>>,
+) -> Result<Vec<f32>> {
+    use crate::audit::{
+        embedding_output_payload, sha256_hex, SemanticAuditAppender, SemanticAuditContext,
+        SemanticAuditSession,
+    };
+
+    let AuditedEmbeddingInput {
+        path_id,
+        inference_kind,
+        spec,
+        model_artifact_identity,
+        tokenizer_identity,
+        raw_text,
+        model_prefix,
+        metadata,
+    } = input;
+    let model_text = format!("{model_prefix}{raw_text}");
+    let appender: Arc<dyn SemanticAuditAppender> = request.database();
+    let mut audit = SemanticAuditSession::start(
+        appender,
+        SemanticAuditContext {
+            project_id: Some(project_id.to_string()),
+            operation_id: request.operation_id().to_string(),
+            parent_execution_id: None,
+            path_id: path_id.to_string(),
+            inference_kind: inference_kind.to_string(),
+            model: json!({
+                "engine": "onnx-runtime",
+                "executionProvider": "cpu",
+                "modelId": spec.full_model_id(),
+                "artifactSha256": model_artifact_identity.sha256.clone(),
+                "artifactIdentity": model_artifact_identity,
+                "embeddingDim": spec.embedding_dim,
+                "chunkerVersion": spec.chunker_version,
+                "maxSequenceTokens": spec.max_seq_len,
+                "pooling": format!("{:?}", spec.pooling),
+                "needsTokenTypeIds": spec.needs_token_type_ids,
+                "tokenizerIdentity": tokenizer_identity,
+            }),
+            input: json!({
+                "rawText": raw_text,
+                "rawTextSha256": sha256_hex(raw_text.as_bytes()),
+                "rawTextByteLength": raw_text.len(),
+                "rawTextCharLength": raw_text.chars().count(),
+                "modelPrefix": model_prefix,
+                "modelText": model_text,
+                "modelTextSha256": sha256_hex(model_text.as_bytes()),
+                "modelTextByteLength": model_text.len(),
+                "tokenizerAddsSpecialTokens": true,
+                "tokenizerMayTruncateAt": spec.max_seq_len,
+            }),
+            metadata,
+        },
+    )?;
+    audit.dispatch_and_run(inference, |embedding| embedding_output_payload(embedding))
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn audit_non_execution(
+    request: &SemanticRequest,
+    project_id: Option<&str>,
+    event_type: &str,
+    reason: &str,
+    metadata: serde_json::Value,
+) -> Result<()> {
+    use crate::audit::{append_semantic_non_execution, SemanticAuditAppender};
+    let appender: Arc<dyn SemanticAuditAppender> = request.database();
+    append_semantic_non_execution(
+        appender,
+        project_id,
+        request.operation_id(),
+        "semantic_embedding_index",
+        event_type,
+        reason,
+        metadata,
+    )
+    .map(|_| ())
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn audit_reindex_non_execution(
+    request: &SemanticRequest,
+    project_id: &str,
+    domain: &str,
+    completion: &SingleflightCompletion,
+) -> Result<()> {
+    if completion.joined_existing {
+        return audit_non_execution(
+            request,
+            Some(project_id),
+            "execution.cache_hit",
+            "joined-existing-semantic-reindex-flight",
+            json!({
+                "domain": domain,
+                "leaderRunId": completion.leader_run_id,
+                "chunksIndexed": completion.outcome.chunks_indexed,
+                "totalItems": completion.outcome.total_items,
+            }),
+        );
+    }
+    if completion.outcome.total_items == 0 {
+        return audit_non_execution(
+            request,
+            Some(project_id),
+            "execution.skipped",
+            "no-indexable-items",
+            json!({ "domain": domain, "chunksIndexed": 0, "totalItems": 0 }),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn embedding_to_le_bytes(embedding: &[f32], expected_dim: usize) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        embedding.len() == expected_dim,
+        "embedder returned {} dims, expected {}",
+        embedding.len(),
+        expected_dim
+    );
+    Ok(embedding
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect())
+}
+
 // -------------------------------------------------------------------------
 // Embedding and download commands.
 // -------------------------------------------------------------------------
@@ -835,15 +990,33 @@ impl SemanticRuntime {
         operation(embedder)
     }
 
-    pub fn semantic_index_scene(&self, request: &SemanticRequest, scene_id: &str) -> Result<usize> {
+    pub fn semantic_index_scene(
+        &self,
+        request: &SemanticRequest,
+        expected_project_id: &str,
+        scene_id: &str,
+    ) -> Result<usize> {
         self.ensure_background_request_current(request)?;
+        let project_id = project_id_for_scene(request.db(), scene_id)?
+            .filter(|project_id| project_id == expected_project_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "SEMANTIC_INDEX_AUTHORITY_MISMATCH: scene {scene_id} does not belong to project {expected_project_id}"
+                )
+            })?;
         let language = project_language_for_scene(request.db(), scene_id)?;
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let outcome = self.with_embedder(spec, |embedder| {
-            index_scene(request.db(), embedder, scene_id, &model_id, spec, || {
-                self.request_is_current(request)
-            })
+            index_scene(
+                request,
+                embedder,
+                &project_id,
+                scene_id,
+                &model_id,
+                spec,
+                || self.request_is_current(request),
+            )
         })?;
         self.ensure_background_request_current(request)?;
         match outcome {
@@ -870,7 +1043,29 @@ impl SemanticRuntime {
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let (query_embedding, embedding_dim) = self.with_embedder(spec, |embedder| {
-            Ok((embedder.embed_query(query)?, embedder.embedding_dim()))
+            let model_artifact_identity = embedder.model_artifact_identity().clone();
+            let tokenizer_identity = embedder.tokenizer_identity().clone();
+            let embedding = audited_embedding(
+                request,
+                project_id,
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({
+                        "domain": "scene",
+                        "sceneScope": scene_scope,
+                        "descriptionMode": description_mode.unwrap_or(false),
+                        "requestedLimit": limit,
+                    }),
+                },
+                || embedder.embed_query(query),
+            )?;
+            Ok((embedding, embedder.embedding_dim()))
         })?;
         run_search(
             request.db(),
@@ -886,13 +1081,25 @@ impl SemanticRuntime {
         )
     }
 
-    pub fn codex_index_entry(&self, request: &SemanticRequest, entry_id: &str) -> Result<usize> {
+    pub fn codex_index_entry(
+        &self,
+        request: &SemanticRequest,
+        expected_project_id: &str,
+        entry_id: &str,
+    ) -> Result<usize> {
         self.ensure_background_request_current(request)?;
+        let project_id = project_id_for_codex(request.db(), entry_id)?
+            .filter(|project_id| project_id == expected_project_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "SEMANTIC_INDEX_AUTHORITY_MISMATCH: codex entry {entry_id} does not belong to project {expected_project_id}"
+                )
+            })?;
         let language = project_language_for_codex_entry(request.db(), entry_id)?;
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let outcome = self.with_embedder(spec, |embedder| {
-            index_codex(request.db(), embedder, entry_id, &model_id, spec)
+            index_codex(request, embedder, &project_id, entry_id, &model_id, spec)
         })?;
         self.ensure_background_request_current(request)?;
         match outcome {
@@ -915,7 +1122,24 @@ impl SemanticRuntime {
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let (query_embedding, embedding_dim) = self.with_embedder(spec, |embedder| {
-            Ok((embedder.embed_query(query)?, embedder.embedding_dim()))
+            let model_artifact_identity = embedder.model_artifact_identity().clone();
+            let tokenizer_identity = embedder.tokenizer_identity().clone();
+            let embedding = audited_embedding(
+                request,
+                project_id,
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({ "domain": "codex", "requestedLimit": limit }),
+                },
+                || embedder.embed_query(query),
+            )?;
+            Ok((embedding, embedder.embedding_dim()))
         })?;
         run_codex_search(
             request.db(),
@@ -929,13 +1153,25 @@ impl SemanticRuntime {
         )
     }
 
-    pub fn events_index_entry(&self, request: &SemanticRequest, event_id: &str) -> Result<usize> {
+    pub fn events_index_entry(
+        &self,
+        request: &SemanticRequest,
+        expected_project_id: &str,
+        event_id: &str,
+    ) -> Result<usize> {
         self.ensure_background_request_current(request)?;
+        let project_id = project_id_for_event(request.db(), event_id)?
+            .filter(|project_id| project_id == expected_project_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "SEMANTIC_INDEX_AUTHORITY_MISMATCH: event {event_id} does not belong to project {expected_project_id}"
+                )
+            })?;
         let language = project_language_for_event(request.db(), event_id)?;
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let outcome = self.with_embedder(spec, |embedder| {
-            index_event(request.db(), embedder, event_id, &model_id, spec)
+            index_event(request, embedder, &project_id, event_id, &model_id, spec)
         })?;
         self.ensure_background_request_current(request)?;
         match outcome {
@@ -958,7 +1194,24 @@ impl SemanticRuntime {
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let (query_embedding, embedding_dim) = self.with_embedder(spec, |embedder| {
-            Ok((embedder.embed_query(query)?, embedder.embedding_dim()))
+            let model_artifact_identity = embedder.model_artifact_identity().clone();
+            let tokenizer_identity = embedder.tokenizer_identity().clone();
+            let embedding = audited_embedding(
+                request,
+                project_id,
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({ "domain": "events", "requestedLimit": limit }),
+                },
+                || embedder.embed_query(query),
+            )?;
+            Ok((embedding, embedder.embedding_dim()))
         })?;
         run_events_search(
             request.db(),
@@ -972,16 +1225,30 @@ impl SemanticRuntime {
         )
     }
 
-    pub fn chat_index_message(&self, request: &SemanticRequest, message_id: &str) -> Result<usize> {
+    pub fn chat_index_message(
+        &self,
+        request: &SemanticRequest,
+        expected_project_id: &str,
+        message_id: &str,
+    ) -> Result<usize> {
         self.ensure_background_request_current(request)?;
         if read_chat_message_for_index(request.db(), message_id)?.is_none() {
-            return Ok(0);
+            return Err(anyhow!(
+                "SEMANTIC_INDEX_AUTHORITY_MISMATCH: chat message {message_id} is not indexable in project {expected_project_id}"
+            ));
         }
+        let project_id = project_id_for_chat(request.db(), message_id)?
+            .filter(|project_id| project_id == expected_project_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "SEMANTIC_INDEX_AUTHORITY_MISMATCH: chat message {message_id} does not belong to project {expected_project_id}"
+                )
+            })?;
         let language = project_language_for_chat_message(request.db(), message_id)?;
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let outcome = self.with_embedder(spec, |embedder| {
-            index_chat(request.db(), embedder, message_id, &model_id, spec)
+            index_chat(request, embedder, &project_id, message_id, &model_id, spec)
         })?;
         self.ensure_background_request_current(request)?;
         match outcome {
@@ -1004,7 +1271,24 @@ impl SemanticRuntime {
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let (query_embedding, embedding_dim) = self.with_embedder(spec, |embedder| {
-            Ok((embedder.embed_query(query)?, embedder.embedding_dim()))
+            let model_artifact_identity = embedder.model_artifact_identity().clone();
+            let tokenizer_identity = embedder.tokenizer_identity().clone();
+            let embedding = audited_embedding(
+                request,
+                project_id,
+                AuditedEmbeddingInput {
+                    path_id: "semantic_search",
+                    inference_kind: "embedding.query",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: query,
+                    model_prefix: spec.query_prefix,
+                    metadata: json!({ "domain": "chat", "requestedLimit": limit }),
+                },
+                || embedder.embed_query(query),
+            )?;
+            Ok((embedding, embedder.embedding_dim()))
         })?;
         run_chat_search(
             request.db(),
@@ -1097,8 +1381,9 @@ impl SemanticRuntime {
                                 });
                             }
                             let Some(outcome) = index_scene(
-                                request.db(),
+                                request,
                                 embedder,
+                                project_id,
                                 scene_id,
                                 &model_id,
                                 spec,
@@ -1150,8 +1435,18 @@ impl SemanticRuntime {
                 })
             },
         )?;
-        self.ensure_background_request_current(request)?;
+        if let Err(error) = self.ensure_background_request_current(request) {
+            audit_non_execution(
+                request,
+                Some(project_id),
+                "execution.cancelled",
+                "semantic-reindex-workspace-epoch-cancelled",
+                json!({ "domain": "scene" }),
+            )?;
+            return Err(error);
+        }
         self.emit_joined_scene_completion(&completion, project_id, &run_id);
+        audit_reindex_non_execution(request, project_id, "scene", &completion)?;
         Ok(completion.outcome.chunks_indexed)
     }
 
@@ -1196,7 +1491,7 @@ impl SemanticRuntime {
                                 break;
                             }
                             if let CodexUpsertOutcome::Indexed(count) =
-                                index_codex(request.db(), embedder, &id, &model_id, spec)?
+                                index_codex(request, embedder, project_id, &id, &model_id, spec)?
                             {
                                 request.epoch.caches.codex.invalidate(&id)?;
                                 total += count;
@@ -1211,7 +1506,17 @@ impl SemanticRuntime {
                 })
             },
         )?;
-        self.ensure_background_request_current(request)?;
+        if let Err(error) = self.ensure_background_request_current(request) {
+            audit_non_execution(
+                request,
+                Some(project_id),
+                "execution.cancelled",
+                "semantic-reindex-workspace-epoch-cancelled",
+                json!({ "domain": "codex" }),
+            )?;
+            return Err(error);
+        }
+        audit_reindex_non_execution(request, project_id, "codex", &completion)?;
         Ok(completion.outcome.chunks_indexed)
     }
 
@@ -1256,7 +1561,7 @@ impl SemanticRuntime {
                                 break;
                             }
                             if let EventUpsertOutcome::Indexed(count) =
-                                index_event(request.db(), embedder, &id, &model_id, spec)?
+                                index_event(request, embedder, project_id, &id, &model_id, spec)?
                             {
                                 request.epoch.caches.events.invalidate(&id)?;
                                 total += count;
@@ -1271,7 +1576,17 @@ impl SemanticRuntime {
                 })
             },
         )?;
-        self.ensure_background_request_current(request)?;
+        if let Err(error) = self.ensure_background_request_current(request) {
+            audit_non_execution(
+                request,
+                Some(project_id),
+                "execution.cancelled",
+                "semantic-reindex-workspace-epoch-cancelled",
+                json!({ "domain": "events" }),
+            )?;
+            return Err(error);
+        }
+        audit_reindex_non_execution(request, project_id, "events", &completion)?;
         Ok(completion.outcome.chunks_indexed)
     }
 
@@ -1316,7 +1631,7 @@ impl SemanticRuntime {
                                 break;
                             }
                             if let ChatUpsertOutcome::Indexed(count) =
-                                index_chat(request.db(), embedder, &id, &model_id, spec)?
+                                index_chat(request, embedder, project_id, &id, &model_id, spec)?
                             {
                                 request.epoch.caches.chat.invalidate(&id)?;
                                 total += count;
@@ -1331,7 +1646,17 @@ impl SemanticRuntime {
                 })
             },
         )?;
-        self.ensure_background_request_current(request)?;
+        if let Err(error) = self.ensure_background_request_current(request) {
+            audit_non_execution(
+                request,
+                Some(project_id),
+                "execution.cancelled",
+                "semantic-reindex-workspace-epoch-cancelled",
+                json!({ "domain": "chat" }),
+            )?;
+            return Err(error);
+        }
+        audit_reindex_non_execution(request, project_id, "chat", &completion)?;
         Ok(completion.outcome.chunks_indexed)
     }
 
@@ -1362,9 +1687,54 @@ impl SemanticRuntime {
 }
 
 #[cfg(feature = "semantic-embedding")]
+fn optional_project_id(db: &Database, sql: &str, entity_id: &str) -> Result<Option<String>> {
+    db.with_conn(|conn| {
+        conn.query_row(sql, params![entity_id], |row| row.get::<_, String>(0))
+            .optional()
+            .map_err(anyhow::Error::from)
+    })
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn project_id_for_scene(db: &Database, scene_id: &str) -> Result<Option<String>> {
+    optional_project_id(
+        db,
+        "SELECT project_id FROM tree_nodes WHERE id = ? AND node_type = 'scene'",
+        scene_id,
+    )
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn project_id_for_codex(db: &Database, entry_id: &str) -> Result<Option<String>> {
+    optional_project_id(
+        db,
+        "SELECT project_id FROM codex_entries WHERE id = ?",
+        entry_id,
+    )
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn project_id_for_event(db: &Database, event_id: &str) -> Result<Option<String>> {
+    optional_project_id(db, "SELECT project_id FROM events WHERE id = ?", event_id)
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn project_id_for_chat(db: &Database, message_id: &str) -> Result<Option<String>> {
+    optional_project_id(
+        db,
+        "SELECT cs.project_id
+           FROM chat_messages cm
+           JOIN chat_sessions cs ON cs.id = cm.session_id
+          WHERE cm.id = ?",
+        message_id,
+    )
+}
+
+#[cfg(feature = "semantic-embedding")]
 fn index_scene(
-    db: &Database,
+    request: &SemanticRequest,
     embedder: &mut Embedder,
+    project_id: &str,
     scene_id: &str,
     model_id: &str,
     spec: &'static EmbeddingModelSpec,
@@ -1373,11 +1743,35 @@ fn index_scene(
     if !should_continue() {
         return Ok(None);
     }
-    let Some((content, initial_hash)) = read_scene_for_index(db, scene_id)? else {
+    let Some((content, initial_hash)) = read_scene_for_index(request.db(), scene_id)? else {
         return Ok(Some(UpsertOutcome::SkippedNotScene));
     };
-    let Some(payloads) =
-        embed_scene_payloads_cancellable(embedder, scene_id, &content, spec, &mut should_continue)?
+    let Some(payloads) = embed_scene_payloads_cancellable_with(
+        embedder,
+        scene_id,
+        &content,
+        spec,
+        &mut should_continue,
+        |embedder, text| {
+            let model_artifact_identity = embedder.model_artifact_identity().clone();
+            let tokenizer_identity = embedder.tokenizer_identity().clone();
+            audited_embedding(
+                request,
+                project_id,
+                AuditedEmbeddingInput {
+                    path_id: "semantic_embedding_index",
+                    inference_kind: "embedding.document",
+                    spec,
+                    model_artifact_identity,
+                    tokenizer_identity,
+                    raw_text: text,
+                    model_prefix: spec.document_prefix,
+                    metadata: json!({ "domain": "scene", "sceneId": scene_id }),
+                },
+                || embedder.embed_document(text),
+            )
+        },
+    )?
     else {
         return Ok(None);
     };
@@ -1385,7 +1779,7 @@ fn index_scene(
         return Ok(None);
     }
     upsert_scene_chunks(
-        db,
+        request.db(),
         scene_id,
         &initial_hash,
         &payloads,
@@ -1398,18 +1792,36 @@ fn index_scene(
 
 #[cfg(feature = "semantic-embedding")]
 fn index_codex(
-    db: &Database,
+    request: &SemanticRequest,
     embedder: &mut Embedder,
+    project_id: &str,
     entry_id: &str,
     model_id: &str,
     spec: &'static EmbeddingModelSpec,
 ) -> Result<CodexUpsertOutcome> {
-    let Some((text, initial_hash)) = read_codex_for_index(db, entry_id)? else {
+    let Some((text, initial_hash)) = read_codex_for_index(request.db(), entry_id)? else {
         return Ok(CodexUpsertOutcome::SkippedMissing);
     };
-    let embedding = embed_codex_text(embedder, &text)?;
+    let model_artifact_identity = embedder.model_artifact_identity().clone();
+    let tokenizer_identity = embedder.tokenizer_identity().clone();
+    let vector = audited_embedding(
+        request,
+        project_id,
+        AuditedEmbeddingInput {
+            path_id: "semantic_embedding_index",
+            inference_kind: "embedding.document",
+            spec,
+            model_artifact_identity,
+            tokenizer_identity,
+            raw_text: &text,
+            model_prefix: spec.document_prefix,
+            metadata: json!({ "domain": "codex", "entryId": entry_id }),
+        },
+        || embedder.embed_document(&text),
+    )?;
+    let embedding = embedding_to_le_bytes(&vector, embedder.embedding_dim())?;
     upsert_codex_chunk(
-        db,
+        request.db(),
         entry_id,
         &initial_hash,
         &embedding,
@@ -1422,18 +1834,36 @@ fn index_codex(
 
 #[cfg(feature = "semantic-embedding")]
 fn index_event(
-    db: &Database,
+    request: &SemanticRequest,
     embedder: &mut Embedder,
+    project_id: &str,
     event_id: &str,
     model_id: &str,
     spec: &'static EmbeddingModelSpec,
 ) -> Result<EventUpsertOutcome> {
-    let Some((text, initial_hash)) = read_event_for_index(db, event_id)? else {
+    let Some((text, initial_hash)) = read_event_for_index(request.db(), event_id)? else {
         return Ok(EventUpsertOutcome::SkippedMissing);
     };
-    let embedding = embed_event_text(embedder, &text)?;
+    let model_artifact_identity = embedder.model_artifact_identity().clone();
+    let tokenizer_identity = embedder.tokenizer_identity().clone();
+    let vector = audited_embedding(
+        request,
+        project_id,
+        AuditedEmbeddingInput {
+            path_id: "semantic_embedding_index",
+            inference_kind: "embedding.document",
+            spec,
+            model_artifact_identity,
+            tokenizer_identity,
+            raw_text: &text,
+            model_prefix: spec.document_prefix,
+            metadata: json!({ "domain": "events", "eventId": event_id }),
+        },
+        || embedder.embed_document(&text),
+    )?;
+    let embedding = embedding_to_le_bytes(&vector, embedder.embedding_dim())?;
     upsert_event_chunk(
-        db,
+        request.db(),
         event_id,
         &initial_hash,
         &embedding,
@@ -1446,18 +1876,36 @@ fn index_event(
 
 #[cfg(feature = "semantic-embedding")]
 fn index_chat(
-    db: &Database,
+    request: &SemanticRequest,
     embedder: &mut Embedder,
+    project_id: &str,
     message_id: &str,
     model_id: &str,
     spec: &'static EmbeddingModelSpec,
 ) -> Result<ChatUpsertOutcome> {
-    let Some(input) = read_chat_message_for_index(db, message_id)? else {
+    let Some(input) = read_chat_message_for_index(request.db(), message_id)? else {
         return Ok(ChatUpsertOutcome::SkippedMissing);
     };
-    let embedding = embed_chat_text(embedder, &input.text)?;
+    let model_artifact_identity = embedder.model_artifact_identity().clone();
+    let tokenizer_identity = embedder.tokenizer_identity().clone();
+    let vector = audited_embedding(
+        request,
+        project_id,
+        AuditedEmbeddingInput {
+            path_id: "semantic_embedding_index",
+            inference_kind: "embedding.document",
+            spec,
+            model_artifact_identity,
+            tokenizer_identity,
+            raw_text: &input.text,
+            model_prefix: spec.document_prefix,
+            metadata: json!({ "domain": "chat", "messageId": message_id }),
+        },
+        || embedder.embed_document(&input.text),
+    )?;
+    let embedding = embedding_to_le_bytes(&vector, embedder.embedding_dim())?;
     upsert_chat_chunk(
-        db,
+        request.db(),
         message_id,
         &input.hash,
         &embedding,
@@ -1653,13 +2101,13 @@ mod tests {
         runtime.semantic_cancel_background();
 
         for result in [
-            runtime.semantic_index_scene(&request, "missing"),
+            runtime.semantic_index_scene(&request, "project", "missing"),
             runtime.semantic_reindex_all(&request, "p1", Some("cancelled")),
-            runtime.codex_index_entry(&request, "missing"),
+            runtime.codex_index_entry(&request, "project", "missing"),
             runtime.codex_reindex_all(&request, "p1"),
-            runtime.events_index_entry(&request, "missing"),
+            runtime.events_index_entry(&request, "project", "missing"),
             runtime.events_reindex_all(&request, "p1"),
-            runtime.chat_index_message(&request, "missing"),
+            runtime.chat_index_message(&request, "project", "missing"),
             runtime.chat_reindex_all(&request, "p1"),
         ] {
             assert!(result

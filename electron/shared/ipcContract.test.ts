@@ -101,6 +101,30 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "timelapseAppendBatch",
       Promise.resolve('{"insertedCount":1,"tailSequence":2,"tailHash":"h"}'),
     ) as never,
+    aiAuditAppendBatch: record(
+      "aiAuditAppendBatch",
+      Promise.resolve(
+        '{"insertedCount":2,"tailSequence":2,"tailHash":"audit-h"}',
+      ),
+    ) as never,
+    aiAuditClaimCliDispatch: record(
+      "aiAuditClaimCliDispatch",
+      Promise.resolve(
+        '{"insertedCount":1,"tailSequence":4,"tailHash":"claim-h"}',
+      ),
+    ) as never,
+    aiAuditReadSnapshot: record(
+      "aiAuditReadSnapshot",
+      Promise.resolve(
+        '{"scopeId":"project:p1","projectId":"p1","afterSequence":0,"highWaterSequence":2,"highWaterHash":"audit-h","nextAfterSequence":null,"events":[]}',
+      ),
+    ) as never,
+    aiAuditVerify: record(
+      "aiAuditVerify",
+      Promise.resolve(
+        '{"ok":true,"verifiedThroughSequence":2,"brokenAtSequence":null,"reason":null,"tailHash":"audit-h"}',
+      ),
+    ) as never,
     // IME 連携 Phase 2（Status DTO は JSON 文字列、clear/remove は unit）
     imeExportRefresh: record("imeExportRefresh", IME_EXPORT_STATUS) as never,
     imeExportSetActiveProject: record(
@@ -430,7 +454,7 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "sendChatMessageStream",
       Promise.resolve(undefined),
     ) as never,
-    abortChatStream: record("abortChatStream", undefined) as never,
+    abortChatStream: record("abortChatStream", Promise.resolve(true)) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -615,7 +639,7 @@ describe("dispatchInvoke", () => {
     ).toBe(true);
   });
 
-  it("CLI AI 5コマンドはbackend不在でもmain shell handlerへ委譲される", async () => {
+  it("CLI AI の検出は委譲されるが、送信は監査証跡なしで拒否される", async () => {
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const shell = Object.fromEntries(
       [
@@ -645,13 +669,12 @@ describe("dispatchInvoke", () => {
     );
 
     expect(detected).toEqual({ ok: true, value: "/bin/claude" });
-    expect(sent).toEqual({ ok: true, value: null });
+    expect(sent.ok).toBe(false);
+    if (!sent.ok) {
+      expect(sent.error).toContain("auditContext");
+    }
     expect(calls).toEqual([
       { command: "detect_cli_binary", args: { cli: "claude" } },
-      {
-        command: "send_cli_chat_stream",
-        args: { payload: { cli: "claude", prompt: "hi" } },
-      },
     ]);
     expect(SHELL_COMMAND_NAMES).toEqual(
       expect.arrayContaining([
@@ -673,6 +696,98 @@ describe("dispatchInvoke", () => {
         "mozkey_download_and_install",
       ]),
     );
+  });
+
+  it("CLI send の main 監査claimはnativeの拒否をspawn前に伝播する", async () => {
+    const context = {
+      expectedWorkspacePath: "/workspace/test.gdx",
+      projectId: "p1",
+      operationId: "operation-cli",
+      executionId: "execution-cli",
+      parentExecutionId: null,
+      pathId: "cli_chat_stream",
+    } as const;
+    const backend = fakeBackend().backend;
+    const runner = vi.fn(async () => null);
+    const shell = {
+      send_cli_chat_stream: runner,
+    };
+    const payload = { payload: { cli: "claude", prompt: "hi" } };
+
+    await expect(
+      dispatchInvoke("send_cli_chat_stream", payload, {
+        backend: null,
+        shell,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("auditContext"),
+    });
+
+    const forgedContext = {
+      ...context,
+      operationId: "forged-operation",
+    };
+    const rejectedBackend = fakeBackend({
+      aiAuditClaimCliDispatch: () =>
+        Promise.reject(
+          new Error(
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: durable execution identity mismatch",
+          ),
+        ),
+    }).backend;
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: forgedContext,
+        },
+        { backend: rejectedBackend, shell },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("AI_AUDIT_DISPATCH_PRECONDITION_FAILED"),
+    });
+
+    const terminalBackend = fakeBackend({
+      aiAuditClaimCliDispatch: () =>
+        Promise.reject(
+          new Error(
+            "AI_AUDIT_DISPATCH_PRECONDITION_FAILED: execution already has a terminal event",
+          ),
+        ),
+    }).backend;
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: context,
+        },
+        { backend: terminalBackend, shell },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("AI_AUDIT_DISPATCH_PRECONDITION_FAILED"),
+    });
+
+    expect(runner).not.toHaveBeenCalled();
+
+    await expect(
+      dispatchInvoke(
+        "send_cli_chat_stream",
+        {
+          ...payload,
+          streamId: context.executionId,
+          auditContext: context,
+        },
+        { backend, shell },
+      ),
+    ).resolves.toEqual({ ok: true, value: null });
+    expect(runner).toHaveBeenCalledOnce();
   });
 
   it("backend 不在の napi コマンドは IPC_BACKEND_UNAVAILABLE", async () => {
@@ -742,7 +857,10 @@ describe("dispatchInvoke", () => {
     });
     const env = await dispatchInvoke(
       "semantic_reindex_all",
-      { projectId: "project-1" },
+      {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+      },
       { backend, shell: noShell },
     );
 
@@ -771,6 +889,9 @@ describe("dispatchInvoke", () => {
       "semantic_reranker_shadow_score",
       {
         requestId: "request-1",
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+        auditPathId: "semantic_reranker_shadow",
         language: "ja",
         userMessage: "query",
         sceneTail: "",
@@ -825,6 +946,202 @@ describe("dispatchInvoke", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("NAPI_COMMANDS 引数アダプタ", () => {
+  it("semantic per-entity commands forward workspace/project authority before the entity id", async () => {
+    const semanticIndexScene = vi.fn().mockResolvedValue("1");
+    const codexIndexEntry = vi.fn().mockResolvedValue("2");
+    const eventsIndexEntry = vi.fn().mockResolvedValue("3");
+    const chatIndexMessage = vi.fn().mockResolvedValue("4");
+    const { backend } = fakeBackend({
+      semanticIndexScene: semanticIndexScene as never,
+      codexIndexEntry: codexIndexEntry as never,
+      eventsIndexEntry: eventsIndexEntry as never,
+      chatIndexMessage: chatIndexMessage as never,
+    });
+    const authority = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+    };
+
+    await dispatchInvoke(
+      "semantic_index_scene",
+      { ...authority, sceneId: "scene-1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "codex_index_entry",
+      { ...authority, entryId: "entry-1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "events_index_entry",
+      { ...authority, eventId: "event-1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "chat_index_message",
+      { ...authority, messageId: "message-1" },
+      { backend, shell: noShell },
+    );
+
+    expect(semanticIndexScene).toHaveBeenCalledExactlyOnceWith(
+      "/workspace/project-1",
+      "project-1",
+      "scene-1",
+    );
+    expect(codexIndexEntry).toHaveBeenCalledExactlyOnceWith(
+      "/workspace/project-1",
+      "project-1",
+      "entry-1",
+    );
+    expect(eventsIndexEntry).toHaveBeenCalledExactlyOnceWith(
+      "/workspace/project-1",
+      "project-1",
+      "event-1",
+    );
+    expect(chatIndexMessage).toHaveBeenCalledExactlyOnceWith(
+      "/workspace/project-1",
+      "project-1",
+      "message-1",
+    );
+  });
+
+  it.each([
+    {
+      command: "semantic_search",
+      methodName: "semanticSearch",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+        query: "storm",
+        limit: 5,
+        sceneScope: null,
+        descriptionMode: false,
+      },
+      expected: [
+        "/workspace/project-1",
+        "project-1",
+        "storm",
+        5,
+        undefined,
+        false,
+      ],
+    },
+    {
+      command: "semantic_reindex_all",
+      methodName: "semanticReindexAll",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+        runId: "run-1",
+      },
+      expected: ["/workspace/project-1", "project-1", "run-1"],
+    },
+    {
+      command: "codex_semantic_search",
+      methodName: "codexSemanticSearch",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+        query: "hero",
+        limit: 6,
+      },
+      expected: ["/workspace/project-1", "project-1", "hero", 6],
+    },
+    {
+      command: "codex_reindex_all",
+      methodName: "codexReindexAll",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+      },
+      expected: ["/workspace/project-1", "project-1"],
+    },
+    {
+      command: "events_semantic_search",
+      methodName: "eventsSemanticSearch",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+        query: "storm",
+        limit: 7,
+      },
+      expected: ["/workspace/project-1", "project-1", "storm", 7],
+    },
+    {
+      command: "events_reindex_all",
+      methodName: "eventsReindexAll",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+      },
+      expected: ["/workspace/project-1", "project-1"],
+    },
+    {
+      command: "chat_message_search",
+      methodName: "chatMessageSearch",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+        query: "memory",
+        limit: 8,
+      },
+      expected: ["/workspace/project-1", "project-1", "memory", 8],
+    },
+    {
+      command: "chat_reindex_all",
+      methodName: "chatReindexAll",
+      args: {
+        expectedWorkspacePath: "/workspace/project-1",
+        projectId: "project-1",
+      },
+      expected: ["/workspace/project-1", "project-1"],
+    },
+  ])(
+    "$command forwards the immutable workspace path before inference inputs",
+    async ({ command, methodName, args, expected }) => {
+      const method = vi.fn().mockResolvedValue("[]");
+      const { backend } = fakeBackend({
+        [methodName]: method,
+      } as Partial<NapiBackendLike>);
+
+      const env = await dispatchInvoke(command, args, {
+        backend,
+        shell: noShell,
+      });
+
+      expect(env.ok).toBe(true);
+      expect(method).toHaveBeenCalledExactlyOnceWith(...expected);
+    },
+  );
+
+  it.each([
+    ["semantic_search", "semanticSearch", { query: "storm", limit: 5 }],
+    ["semantic_reindex_all", "semanticReindexAll", {}],
+    ["codex_semantic_search", "codexSemanticSearch", { query: "hero", limit: 5 }],
+    ["codex_reindex_all", "codexReindexAll", {}],
+    ["events_semantic_search", "eventsSemanticSearch", { query: "storm", limit: 5 }],
+    ["events_reindex_all", "eventsReindexAll", {}],
+    ["chat_message_search", "chatMessageSearch", { query: "memory", limit: 5 }],
+    ["chat_reindex_all", "chatReindexAll", {}],
+  ])(
+    "%s rejects a missing workspace path before native inference",
+    async (command, methodName, commandArgs) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        [methodName]: method,
+      } as Partial<NapiBackendLike>);
+
+      const env = await dispatchInvoke(
+        command,
+        { projectId: "project-1", ...commandArgs },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    },
+  );
+
   it("db_execute: {sql, params, method} → 位置引数、JSON 文字列 → オブジェクト", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -1837,6 +2154,301 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("AI audit commands: workspace identityと型検証済みイベントをnativeへ写像する", async () => {
+    const { backend, calls } = fakeBackend();
+    const events = [
+      {
+        eventId: "event-1",
+        executionId: "execution-1",
+        operationId: "operation-1",
+        parentExecutionId: null,
+        pathId: "chat.direct",
+        eventType: "request.prepared",
+        timestamp: 1_700_000_000_000,
+        payload: {
+          captureState: "complete",
+          credentialsExcluded: true,
+          request: { messages: [] },
+        },
+      },
+    ];
+    const append = await dispatchInvoke(
+      "ai_audit_append_batch",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/novel",
+        events,
+      },
+      { backend, shell: noShell },
+    );
+    const read = await dispatchInvoke(
+      "ai_audit_read_snapshot",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/novel",
+        afterSequence: 0,
+        highWaterSequence: 2,
+        limit: 500,
+      },
+      { backend, shell: noShell },
+    );
+    const verify = await dispatchInvoke(
+      "ai_audit_verify",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/novel",
+        highWaterSequence: 2,
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      {
+        method: "aiAuditAppendBatch",
+        args: ["/workspaces/novel", "p1", events],
+      },
+      {
+        method: "aiAuditReadSnapshot",
+        args: ["/workspaces/novel", "p1", 0, 2, 500],
+      },
+      {
+        method: "aiAuditVerify",
+        args: ["/workspaces/novel", "p1", 2],
+      },
+    ]);
+    expect(append).toEqual({
+      ok: true,
+      value: {
+        insertedCount: 2,
+        tailSequence: 2,
+        tailHash: "audit-h",
+      },
+    });
+    expect(read).toMatchObject({
+      ok: true,
+      value: { highWaterSequence: 2, highWaterHash: "audit-h" },
+    });
+    expect(verify).toMatchObject({ ok: true, value: { ok: true } });
+  });
+
+  it("ai_audit_append_batch: allowlist外eventTypeとcredential-bearing payloadを拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const base = {
+      eventId: "event-1",
+      executionId: "execution-1",
+      operationId: "operation-1",
+      parentExecutionId: null,
+      pathId: "chat.direct",
+      timestamp: 1_700_000_000_000,
+      payload: { captureState: "complete", credentialsExcluded: true },
+    };
+
+    const forbiddenPayloads = [
+      { authorization: "Bearer secret" },
+      { request: { headers: { Authorization: "Bearer secret" } } },
+      { request: { options: { apiKey: "secret" } } },
+      { request: { options: { API_KEY: "secret" } } },
+      { request: { headers: { "x-api-key": "secret" } } },
+      { request: { headers: { Cookie: "session=secret" } } },
+      { request: { headers: { "Set-Cookie": "session=secret" } } },
+      { request: { process: { env: { TOKEN: "secret" } } } },
+      { request: { auditMetadata: { apiKey: "secret" } } },
+      { request: { context: { apiKey: "legacy-secret" } } },
+    ];
+    const events = [
+      { ...base, eventType: "arbitrary.event" },
+      ...forbiddenPayloads.map((forbidden) => ({
+        ...base,
+        eventType: "request.prepared",
+        payload: {
+          captureState: "complete",
+          credentialsExcluded: true,
+          ...forbidden,
+        },
+      })),
+    ];
+
+    for (const event of events) {
+      const result = await dispatchInvoke(
+        "ai_audit_append_batch",
+        {
+          projectId: "p1",
+          expectedWorkspacePath: "/workspaces/novel",
+          events: [event],
+        },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("ai_audit_append_batch: AI-visible tool schemaとuser contentのcredential同名キーはexactに保持する", async () => {
+    const aiAuditAppendBatch = vi
+      .fn()
+      .mockResolvedValue('{"insertedCount":1,"tailSequence":1,"tailHash":"h"}');
+    const { backend } = fakeBackend({
+      aiAuditAppendBatch: aiAuditAppendBatch as never,
+    });
+    const event = {
+      eventId: "event-visible-content",
+      executionId: "execution-1",
+      operationId: "operation-1",
+      parentExecutionId: null,
+      pathId: "chat.direct",
+      eventType: "request.prepared",
+      timestamp: 1_700_000_000_000,
+      payload: {
+        captureState: "complete",
+        credentialsExcluded: true,
+        request: {
+          messages: [
+            {
+              role: "user",
+              content: {
+                apiKey: "this is fictional manuscript content",
+                env: "a story setting",
+              },
+            },
+          ],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "inspect_request",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    headers: { type: "string" },
+                    "x-api-key": { type: "string" },
+                  },
+                },
+              },
+            },
+          ],
+          modelVisibleContext: {
+            apiKey: "fictional contextual key",
+            authentication: "fictional contextual oath",
+          },
+        },
+      },
+    };
+
+    const result = await dispatchInvoke(
+      "ai_audit_append_batch",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/novel",
+        events: [event],
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(aiAuditAppendBatch).toHaveBeenCalledWith("/workspaces/novel", "p1", [
+      event,
+    ]);
+
+    const diagnosticResult = await dispatchInvoke(
+      "ai_audit_append_batch",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/novel",
+        events: [
+          {
+            ...event,
+            eventId: "event-runtime-diagnostic",
+            eventType: "response.partial",
+            payload: {
+              captureState: "complete",
+              response: {
+                runtimeDiagnostic: {
+                  content: { authentication: "must not persist" },
+                },
+              },
+            },
+          },
+        ],
+      },
+      { backend, shell: noShell },
+    );
+    expect(diagnosticResult.ok).toBe(false);
+  });
+
+  it("ai_audit_append_batch: redaction record schemaを固定する", async () => {
+    const aiAuditAppendBatch = vi
+      .fn()
+      .mockResolvedValue('{"insertedCount":1,"tailSequence":1,"tailHash":"h"}');
+    const { backend } = fakeBackend({
+      aiAuditAppendBatch: aiAuditAppendBatch as never,
+    });
+    const base = {
+      eventId: "event-redacted",
+      executionId: "execution-1",
+      operationId: "operation-1",
+      parentExecutionId: null,
+      pathId: "chat.direct",
+      eventType: "execution.failed",
+      timestamp: 1_700_000_000_000,
+    };
+    const validRedaction = {
+      path: "error.message",
+      category: "credential",
+      ruleId: "transport-bearer-v1",
+      originalSha256: "a".repeat(64),
+      originalByteLength: 19,
+      placeholder: "[REDACTED:credential]",
+      reversible: false,
+    };
+
+    const valid = await dispatchInvoke(
+      "ai_audit_append_batch",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/novel",
+        events: [
+          {
+            ...base,
+            payload: {
+              captureState: "redacted",
+              error: { message: "[REDACTED:credential]" },
+              redactions: [validRedaction],
+            },
+          },
+        ],
+      },
+      { backend, shell: noShell },
+    );
+    expect(valid.ok).toBe(true);
+
+    for (const invalidRedaction of [
+      { ...validRedaction, originalByteLength: -1 },
+      { ...validRedaction, originalSha256: "A".repeat(64) },
+      { ...validRedaction, reversible: true },
+      { ...validRedaction, originalLength: 19 },
+    ]) {
+      const result = await dispatchInvoke(
+        "ai_audit_append_batch",
+        {
+          projectId: "p1",
+          expectedWorkspacePath: "/workspaces/novel",
+          events: [
+            {
+              ...base,
+              eventId: crypto.randomUUID(),
+              payload: {
+                captureState: "redacted",
+                redactions: [invalidRedaction],
+              },
+            },
+          ],
+        },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+  });
+
   it("ime_export_refresh: workspace identityを含む引数を位置引数へ写像し Status DTO を parse する", async () => {
     const { backend, calls } = fakeBackend();
     const options = {
@@ -2097,6 +2709,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "agent_scene_event_unlink",
       "agent_snippet_create",
       "agent_write_bundle",
+      "ai_audit_append_batch",
+      "ai_audit_read_snapshot",
+      "ai_audit_verify",
       "authorship_replace_lane",
       "chat_index_message",
       "chat_index_status",
@@ -2233,6 +2848,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   describe("Semantic reranker shadow score command", () => {
     const args = {
       requestId: "request-1",
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      auditPathId: "semantic_reranker_shadow",
       language: "ja",
       userMessage: "灯台の約束",
       sceneTail: "海霧の向こうで鐘が鳴った。",
@@ -2272,6 +2890,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
 
     it.each([
       { ...args, language: "fr" },
+      { ...args, auditPathId: "semantic_unknown" },
       { ...args, userMessage: "", sceneTail: "" },
       { ...args, candidates: [] },
       {
@@ -4098,6 +4717,15 @@ describe("clampZoomFactor", () => {
 // AI チャット（Phase 3 バッチ3a — キー注入 + secrets 経由の解決）
 // ─────────────────────────────────────────────────────────────────────────────
 
+const nativeAiAuditContext = {
+  expectedWorkspacePath: "/workspaces/novel",
+  projectId: "project-1",
+  operationId: "operation-1",
+  executionId: "execution-1",
+  parentExecutionId: null,
+  pathId: "chat",
+};
+
 describe("AI チャットコマンド", () => {
   const fakeSecrets = (key = "sk-resolved") => ({
     resolveApiKeyForRequest: vi.fn().mockReturnValue(key),
@@ -4124,6 +4752,7 @@ describe("AI チャットコマンド", () => {
       messages: [{ role: "user", content: "hi" }],
       provider: "openai",
       expectedOllamaEndpoint: null,
+      auditContext: nativeAiAuditContext,
     };
     const env = await dispatchInvoke("send_chat_message", args, {
       backend,
@@ -4158,6 +4787,8 @@ describe("AI チャットコマンド", () => {
       endpointId: "ep2",
       requestMaxOutputTokens: 32_000,
       expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      streamId: nativeAiAuditContext.executionId,
+      auditContext: nativeAiAuditContext,
     };
     const env = await dispatchInvoke("send_chat_message_stream", args, {
       backend,
@@ -4196,22 +4827,57 @@ describe("AI チャットコマンド", () => {
     );
   });
 
-  it("abort_chat_stream は backend.abortChatStream を呼び null を返す（secrets 不要）", async () => {
+  it.each([
+    undefined,
+    { ...nativeAiAuditContext, projectId: undefined },
+    { ...nativeAiAuditContext, apiKey: "must-not-cross" },
+    { ...nativeAiAuditContext, executionId: "  " },
+  ])(
+    "native AI送信は欠落・余剰・空のauditContextをmain境界で拒否する: %j",
+    async (auditContext) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "send_chat_message",
+        {
+          messages: [{ role: "user", content: "hi" }],
+          auditContext,
+        },
+        { backend, shell: noShell, secrets: fakeSecrets() },
+      );
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) expect(env.error).toContain("auditContext");
+      expect(calls.some((call) => call.method === "sendChatMessage")).toBe(
+        false,
+      );
+    },
+  );
+
+  it("abort_chat_stream は streamId をbackendへ渡しquiescence receiptを返す", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
       "abort_chat_stream",
-      {},
+      { streamId: "execution-1" },
       { backend, shell: noShell },
     );
-    expect(env).toEqual({ ok: true, value: null });
-    expect(calls).toContainEqual({ method: "abortChatStream", args: [] });
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved: true,
+      },
+    });
+    expect(calls).toContainEqual({
+      method: "abortChatStream",
+      args: ["execution-1"],
+    });
   });
 
   it("secrets 未注入のチャット送信は IPC_SECRETS_UNAVAILABLE で reject する", async () => {
     const { backend } = fakeBackend();
     const env = await dispatchInvoke(
       "send_chat_message",
-      { messages: [] },
+      { messages: [], auditContext: nativeAiAuditContext },
       { backend, shell: noShell }, // secrets 無し
     );
     expect(env).toMatchObject({
@@ -4229,7 +4895,11 @@ describe("AI チャットコマンド", () => {
     };
     const env = await dispatchInvoke(
       "send_chat_message",
-      { messages: [], provider: "anthropic" },
+      {
+        messages: [],
+        provider: "anthropic",
+        auditContext: nativeAiAuditContext,
+      },
       { backend, shell: noShell, secrets },
     );
     expect(env).toEqual({
@@ -4291,7 +4961,7 @@ describe("AI Phase 3b コマンド", () => {
     const methods = {
       saveAiSettings: vi.fn().mockResolvedValue(undefined),
       sendInlineAiStream: vi.fn().mockResolvedValue(undefined),
-      abortInlineAiStream: vi.fn(),
+      abortInlineAiStream: vi.fn().mockResolvedValue(true),
       sendAgentMessage: vi
         .fn()
         .mockResolvedValue(
@@ -4348,6 +5018,8 @@ describe("AI Phase 3b コマンド", () => {
       messages: [{ role: "user", content: "continue" }],
       provider: "openai-compatible",
       endpointId: "ep2",
+      streamId: nativeAiAuditContext.executionId,
+      auditContext: nativeAiAuditContext,
     };
     const env = await dispatchInvoke("send_inline_ai_stream", args, {
       backend,
@@ -4373,11 +5045,19 @@ describe("AI Phase 3b コマンド", () => {
     const { backend, methods } = makeBackend();
     const env = await dispatchInvoke(
       "abort_inline_ai_stream",
-      {},
+      { streamId: "execution-1" },
       { backend, shell: noShell },
     );
-    expect(env).toEqual({ ok: true, value: null });
-    expect(methods.abortInlineAiStream).toHaveBeenCalledOnce();
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved: true,
+      },
+    });
+    expect(methods.abortInlineAiStream).toHaveBeenCalledExactlyOnceWith(
+      "execution-1",
+    );
   });
 
   it("send_agent_message はtool payloadを保ち、応答JSONをparseする", async () => {
@@ -4395,6 +5075,7 @@ describe("AI Phase 3b コマンド", () => {
       webSearch: { enabled: true, agentic: true },
       resolvedToolProtocol: "hermes",
       expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      auditContext: nativeAiAuditContext,
     };
     const env = await dispatchInvoke("send_agent_message", args, {
       backend,
@@ -4512,6 +5193,7 @@ describe("AI Phase 3b コマンド", () => {
       model: "model-x",
       apiVariant: "v1",
       endpointId: "ep2",
+      auditContext: nativeAiAuditContext,
     };
     const env = await dispatchInvoke("test_ai_connection", args, {
       backend,
@@ -4535,7 +5217,14 @@ describe("AI Phase 3b コマンド", () => {
     const { backend } = makeBackend();
     const env = await dispatchInvoke(
       cmd,
-      { provider: "openai", messages: [], tools: [], model: "m" },
+      {
+        provider: "openai",
+        messages: [],
+        tools: [],
+        model: "m",
+        streamId: nativeAiAuditContext.executionId,
+        auditContext: nativeAiAuditContext,
+      },
       { backend, shell: noShell },
     );
     expect(env).toMatchObject({
@@ -4550,6 +5239,16 @@ describe("AI Phase 3b コマンド", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Post-effect Phase 3d コマンド", () => {
+  const expectedWorkspacePath = "/workspaces/novel";
+
+  function startArgs<T extends Record<string, unknown>>(args: T) {
+    return { expectedWorkspacePath, args };
+  }
+
+  function scopedNativeArgs<T extends Record<string, unknown>>(args: T) {
+    return { ...args, expectedWorkspacePath };
+  }
+
   const singleArgs = {
     project_id: "p1",
     effect_type: "review",
@@ -4629,7 +5328,7 @@ describe("Post-effect Phase 3d コマンド", () => {
 
     const env = await dispatchInvoke(
       "start_post_effect_run",
-      { args: singleArgs },
+      startArgs(singleArgs),
       { backend, shell: noShell, secrets: keyStore },
     );
 
@@ -4645,7 +5344,7 @@ describe("Post-effect Phase 3d コマンド", () => {
     );
     expect(keyStore.resolveApiKeyForRequest).not.toHaveBeenCalled();
     expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
-      singleArgs,
+      scopedNativeArgs(singleArgs),
       settings,
       "sk-review",
       null,
@@ -4661,7 +5360,7 @@ describe("Post-effect Phase 3d コマンド", () => {
 
     const env = await dispatchInvoke(
       "start_post_effect_run_multi",
-      { args: multiArgs },
+      startArgs(multiArgs),
       { backend, shell: noShell, secrets: keyStore },
     );
 
@@ -4676,7 +5375,7 @@ describe("Post-effect Phase 3d コマンド", () => {
       null,
     );
     expect(methods.startPostEffectRunMulti).toHaveBeenCalledExactlyOnceWith(
-      multiArgs,
+      scopedNativeArgs(multiArgs),
       settings,
       null,
       null,
@@ -4701,13 +5400,13 @@ describe("Post-effect Phase 3d コマンド", () => {
 
     const env = await dispatchInvoke(
       "start_post_effect_run_multi",
-      { args: guardedArgs },
+      startArgs(guardedArgs),
       { backend, shell: noShell, secrets: secrets(null) },
     );
 
     expect(env.ok).toBe(true);
     expect(methods.startPostEffectRunMulti).toHaveBeenCalledWith(
-      guardedArgs,
+      scopedNativeArgs(guardedArgs),
       expect.any(Object),
       null,
       null,
@@ -4797,6 +5496,7 @@ describe("Post-effect Phase 3d コマンド", () => {
       const env = await dispatchInvoke(
         "start_post_effect_run_multi",
         {
+          expectedWorkspacePath,
           args: {
             ...multiArgs,
             effect_type: effectType,
@@ -4827,7 +5527,7 @@ describe("Post-effect Phase 3d コマンド", () => {
 
     const env = await dispatchInvoke(
       "start_post_effect_run",
-      { args: singleArgs },
+      startArgs(singleArgs),
       { backend, shell: noShell, secrets: keyStore },
     );
 
@@ -4836,7 +5536,7 @@ describe("Post-effect Phase 3d コマンド", () => {
       value: { run_id: "r-single", from_cache: false },
     });
     expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
-      singleArgs,
+      scopedNativeArgs(singleArgs),
       { provider: "openai", model: "gpt-x" },
       null,
       lookupError,
@@ -4867,7 +5567,7 @@ describe("Post-effect Phase 3d コマンド", () => {
 
       const env = await dispatchInvoke(
         cmd,
-        { args },
+        startArgs(args),
         { backend, shell: noShell, secrets: keyStore },
       );
 
@@ -4881,7 +5581,7 @@ describe("Post-effect Phase 3d コマンド", () => {
         ? methods.startPostEffectRunMulti
         : methods.startPostEffectRun;
       expect(method).toHaveBeenCalledExactlyOnceWith(
-        args,
+        scopedNativeArgs(args),
         { provider: "openai", model: "gpt-x" },
         "sk-role",
         null,
@@ -4896,6 +5596,7 @@ describe("Post-effect Phase 3d コマンド", () => {
     const env = await dispatchInvoke(
       "start_post_effect_run",
       {
+        expectedWorkspacePath,
         args: {
           ...singleArgs,
           effect_type: "impact_review",
@@ -4927,7 +5628,7 @@ describe("Post-effect Phase 3d コマンド", () => {
 
       const env = await dispatchInvoke(
         "start_post_effect_run",
-        { args },
+        startArgs(args),
         { backend, shell: noShell, secrets: keyStore },
       );
 
@@ -4938,7 +5639,7 @@ describe("Post-effect Phase 3d コマンド", () => {
         undefined,
       );
       expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
-        args,
+        scopedNativeArgs(args),
         { provider: "openai", model: "gpt-x" },
         "sk-default",
         null,
@@ -4990,6 +5691,39 @@ describe("Post-effect Phase 3d コマンド", () => {
     },
   );
 
+  it.each(["start_post_effect_run", "start_post_effect_run_multi"])(
+    "%s は workspace path の欠落・不正値を設定/secret/native参照前に拒否する",
+    async (cmd) => {
+      for (const invokeArgs of [
+        { args: singleArgs },
+        { expectedWorkspacePath: null, args: singleArgs },
+        { expectedWorkspacePath: "", args: singleArgs },
+        { expectedWorkspacePath: 42, args: singleArgs },
+      ]) {
+        const { backend, methods, calls } = makeBackend();
+        const keyStore = secrets(null);
+        const env = await dispatchInvoke(cmd, invokeArgs, {
+          backend,
+          shell: noShell,
+          secrets: keyStore,
+        });
+
+        expect(env.ok).toBe(false);
+        if (!env.ok) {
+          expect(env.error).toContain(
+            `invalid args \`expectedWorkspacePath\` for command \`${cmd}\``,
+          );
+        }
+        expect(
+          calls.filter((call) => call.method === "getAiSettings"),
+        ).toHaveLength(0);
+        expect(keyStore.getApiKeyForRequest).not.toHaveBeenCalled();
+        expect(methods.startPostEffectRun).not.toHaveBeenCalled();
+        expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each([
     [{ projectId: "p1" }, "runId"],
     [{ runId: "r1" }, "projectId"],
@@ -5015,10 +5749,10 @@ describe("Post-effect Phase 3d コマンド", () => {
   );
 
   it.each([
-    ["start_post_effect_run", { args: singleArgs }, "startPostEffectRun"],
+    ["start_post_effect_run", startArgs(singleArgs), "startPostEffectRun"],
     [
       "start_post_effect_run_multi",
-      { args: multiArgs },
+      startArgs(multiArgs),
       "startPostEffectRunMulti",
     ],
     [
@@ -5050,7 +5784,7 @@ describe("Post-effect Phase 3d コマンド", () => {
       const invokeArgs = cmd.endsWith("_multi") ? multiArgs : singleArgs;
       const env = await dispatchInvoke(
         cmd,
-        { args: invokeArgs },
+        startArgs(invokeArgs),
         { backend, shell: noShell },
       );
 

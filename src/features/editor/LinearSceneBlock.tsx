@@ -6,6 +6,8 @@ import {
   useCallback,
   useMemo,
   memo,
+  lazy,
+  Suspense,
 } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
@@ -87,7 +89,6 @@ import { useLinearEditorStore } from "./linearEditorStore";
 import { useLinearInlineAi } from "./useLinearInlineAi";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
-import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import {
   isInlineAiSaveBlocked,
@@ -121,6 +122,11 @@ import {
   handleSceneEditorTransaction,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
+
+const InlineAIPalette = lazy(async () => {
+  const module = await import("@/features/editor/inlineAi/InlineAIPalette");
+  return { default: module.InlineAIPalette };
+});
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -1158,13 +1164,15 @@ function MountedSceneBlock({
           するのは、モーダル表示中のスクロールで active が切り替わっても
           入力中のパレットが消えないようにするため。 */}
       {editor && inlineAi.paletteOpen && (
-        <InlineAIPalette
-          editor={editor}
-          open={inlineAi.paletteOpen}
-          preselectedCommand={inlineAi.paletteCommand}
-          onClose={inlineAi.closePalette}
-          onSubmit={inlineAi.submitPalette}
-        />
+        <Suspense fallback={null}>
+          <InlineAIPalette
+            editor={editor}
+            open
+            preselectedCommand={inlineAi.paletteCommand}
+            onClose={inlineAi.closePalette}
+            onSubmit={inlineAi.submitPalette}
+          />
+        </Suspense>
       )}
       {/* diff の Accept/Reject/Retry ツールバー。owner ブロックだけがマウント
           する (画面に 1 個・keydown も 1 本)。可視性は status で自前にゲートする。 */}

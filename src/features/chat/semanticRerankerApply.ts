@@ -96,6 +96,9 @@ class SemanticRerankerApplyCoordinator {
     const scorePromise = Promise.resolve().then(() =>
       this.deps.score({
         requestId: snapshot.requestId,
+        expectedWorkspacePath: snapshot.scope.workspaceKey,
+        projectId: snapshot.scope.projectId,
+        auditPathId: "semantic_reranker",
         language: snapshot.language,
         userMessage: snapshot.query.userMessage,
         sceneTail: snapshot.query.sceneTail,

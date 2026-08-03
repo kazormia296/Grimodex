@@ -122,8 +122,19 @@ describe("能力ガード — structured/review ロールは構造化JSON対応�
   it("isModelCapableForRole の structured/review 契約", () => {
     expect(isModelCapableForRole("deepseek-r1", "structured")).toBe(false);
     expect(isModelCapableForRole("deepseek-r1", "review")).toBe(false);
+    expect(isModelCapableForRole("deepseek-r1", "reader")).toBe(false);
     expect(isModelCapableForRole("gpt-4o", "structured")).toBe(true);
     expect(isModelCapableForRole("claude-opus-4-8", "review")).toBe(true);
+  });
+
+  it("擬似コメントは校閲レビューと別の reader ロールへ解決される", () => {
+    const getter = getterFor({
+      [roleSettingKey("reader")]: "reader-model",
+    });
+    expect(PATH_TO_ROLE.post_effect_pseudo_comment).toBe("reader");
+    expect(resolveModelForPath("post_effect_pseudo_comment", getter)).toBe(
+      "reader-model",
+    );
   });
 });
 

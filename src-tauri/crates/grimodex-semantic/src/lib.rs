@@ -4,6 +4,7 @@
 //! crate owns deterministic chunking, embedding, database indexing, caches,
 //! search, preview slicing, and model specifications.
 
+pub mod audit;
 pub mod chat_index;
 pub mod chat_search;
 pub mod chunker;
@@ -25,3 +26,6 @@ pub mod download;
 pub mod embedding;
 #[cfg(feature = "semantic-embedding")]
 pub mod reranker;
+
+#[cfg(test)]
+mod audit_tests;

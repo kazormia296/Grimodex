@@ -107,3 +107,7 @@ export async function fetchRequiredProjectContext(
   }
   return project;
 }
+export {
+  ChatTurnPersistenceError,
+  createRetryableCompletedTurnPersistence,
+} from "./chatTurnPersistence";

@@ -8,6 +8,14 @@ export function WorkspaceTrustDialog() {
   const pendingTrustPath = useWorkspaceStore((s) => s.pendingTrustPath);
   const trustAndOpen = useWorkspaceStore((s) => s.trustAndOpen);
   const cancelTrust = useWorkspaceStore((s) => s.cancelTrust);
+  const workspaceOpenRequestInProgress = useWorkspaceStore(
+    (s) => s.workspaceOpenRequestInProgress,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
+  );
+  const workspaceBusy =
+    workspaceOpenRequestInProgress || workspaceSwitchInProgress;
 
   return (
     <AnimatedOverlay
@@ -42,6 +50,7 @@ export function WorkspaceTrustDialog() {
         <button
           type="button"
           onClick={cancelTrust}
+          disabled={workspaceBusy}
           className="rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
         >
           {t("workspace.trustCancel")}
@@ -49,6 +58,7 @@ export function WorkspaceTrustDialog() {
         <button
           type="button"
           onClick={() => void trustAndOpen()}
+          disabled={workspaceBusy}
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           {t("workspace.trustAndOpen")}

@@ -2,8 +2,8 @@
  * AI モデルのロール解決層 — 各 AI 経路がどのモデルで動くかを 1 箇所で決める正本。
  *
  * 設計（docs/AIモデル経路別設定.md 参照）:
- *   - 粒度は「意味ロール」(6)。経路ごとの個別ピッカー(25)は UX 過剰として採らない。
- *     ロールは aiPrompt.custom.* の 6 バケット前例と同じ意味分類で揃える。
+ *   - 粒度は「意味ロール」(7)。経路ごとの個別ピッカー(25)は UX 過剰として採らない。
+ *     ロールは aiPrompt.custom.* の意味分類を拡張して揃える。
  *   - 空 = 既定フォールバック。ロールキーが未設定なら undefined を返し、呼び出し側は
  *     Tauri command の model 引数へ undefined/null を渡す → Rust が settings.model に
  *     フォールバックする（model.filter(非空).unwrap_or(settings.model)）。未設定時は
@@ -13,7 +13,7 @@
  *
  * Phase 2 で全ロール経路を配線し、ロール UI（AiCategory）と旧キー
  * (ai.inlineModel / ai.sessionTitleModel) の吸収シム(migrateModelRoleKeys)、
- * structured/review の構造化 JSON ゲートを追加した。空ロール時は wire 差分ゼロ。
+ * structured/review/reader の構造化 JSON ゲートを追加した。空ロール時は wire 差分ゼロ。
  *
  * 全配線状況（呼び出し側で resolveModelForPath を model 引数へ渡す）:
  *   - conversation: chat_stream_non_agent
@@ -23,7 +23,8 @@
  *   - cheap: session_title, beat_role, summarization
  *       … summarization は chatStore の injected callback 経由で model を注入
  *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, codex_judgment, codex_yomi
- *   - review: post_effect_*(6)
+ *   - review: post_effect_*（校閲）
+ *   - reader: post_effect_pseudo_comment（本文を読む最中の反応）
  *       … start_post_effect_run(_multi) に model_override を渡し、各 process_*_scene が
  *         read_ai_settings 後に override（既存 model=input_hash/記録用とは独立軸）
  */
@@ -41,7 +42,8 @@ export type ModelRole =
   | "inline"
   | "cheap"
   | "structured"
-  | "review";
+  | "review"
+  | "reader";
 
 export const MODEL_ROLES: readonly ModelRole[] = [
   "conversation",
@@ -50,6 +52,7 @@ export const MODEL_ROLES: readonly ModelRole[] = [
   "cheap",
   "structured",
   "review",
+  "reader",
 ];
 
 /** ロール設定キー（global スコープ。settings/types.ts に登録）。 */
@@ -128,12 +131,18 @@ export function parseRoleProviders(
 export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   // conversation — 本文チャット（非 agent ストリーミング）
   chat_stream_non_agent: "conversation",
+  codex_app_server: "conversation",
+  codex_app_cli_fallback: "conversation",
   // agent — ツール対応必須
   chat_agent_main: "agent",
   agent_research_subagent: "agent",
   context_creator: "agent",
   // inline — 本文への直接生成
   inline_ai_stream: "inline",
+  beat_generation: "inline",
+  beat_alternative: "inline",
+  beats_from_synopsis: "inline",
+  synopsis_from_beats: "inline",
   // cheap — 短い・高頻度・低品質要求（安価モデル誘導）
   session_title: "cheap",
   summarization: "cheap",
@@ -144,6 +153,7 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   foreshadow_propose_past_setups: "structured",
   foreshadow_evaluate_setup_strength: "structured",
   plot_thread_propose: "structured",
+  chronicle_extract: "structured",
   map_branch: "structured",
   tree_scaffold: "structured",
   codex_judgment: "structured",
@@ -152,9 +162,14 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   post_effect_intent_drift: "review",
   post_effect_review: "review",
   post_effect_consistency: "review",
+  post_effect_intra_scene_consistency: "review",
+  post_effect_typo_detection: "review",
+  post_effect_meta_structure: "review",
   post_effect_timeline_consistency: "review",
-  post_effect_pseudo_comment: "review",
   post_effect_impact_review: "review",
+  // reader — 本文を読む最中の反応コメント（校閲とは別ロール）
+  post_effect_pseudo_comment: "reader",
+  post_effect_live_pseudo_comment: "reader",
 };
 
 /**
@@ -169,6 +184,9 @@ export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   "semantic_search",
   "fts_search",
   "cli_chat_stream",
+  "ab_chat",
+  "ab_inline",
+  "ai_connection_test",
   "relation_injection",
   "agent_call_limit",
 ];
@@ -210,7 +228,7 @@ export function resolveRoleModel(
 /**
  * ロールが要求する能力をモデルが満たすか。満たさなければ override は無視される。
  *   - agent: tool 対応必須。
- *   - structured / review: 構造化 JSON 出力の信頼性（supportsStructuredJson）。
+ *   - structured / review / reader: 構造化 JSON 出力の信頼性（supportsStructuredJson）。
  *     absent ⇒ 対応扱い（既定 true）なので、明示的に false の curated モデル
  *     （deepseek-r1 等）だけがゲートで弾かれる。
  *   - conversation / inline / cheap: 制約なし。
@@ -224,7 +242,7 @@ export function isModelCapableForRole(
     ? resolveModelCapabilities(model, { provider })
     : getModelCapabilities(model);
   if (role === "agent") return caps.supportsTools;
-  if (role === "structured" || role === "review")
+  if (role === "structured" || role === "review" || role === "reader")
     return caps.supportsStructuredJson !== false;
   return true;
 }

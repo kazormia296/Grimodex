@@ -8,8 +8,10 @@ import {
 } from "@/application/lifecycle/quiescenceLease";
 
 import { semanticCancelBackground } from "./api";
+import { cancelAllScheduledSemanticIndexes } from "./scheduler";
 
 export async function cancelSemanticBackgroundForLifecycle(): Promise<void> {
+  cancelAllScheduledSemanticIndexes();
   try {
     await semanticCancelBackground();
   } catch (error) {

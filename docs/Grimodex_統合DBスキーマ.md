@@ -12,7 +12,7 @@
 
 データベース: SQLite（WALモード有効）
 ORM: Drizzle ORM（sqlite-proxy）
-ファイル: `project.db`
+ファイル: `grimodex.db`
 
 ---
 
@@ -1132,11 +1132,11 @@ CREATE TABLE project_snapshot_entries (
 コンテンツは全てDBに格納。ファイルシステムにはバックアップとマイグレーションのみ保存。
 
 ```
-{project_name}.novel/
-├── project.db                          ← SQLiteデータベース（全コンテンツ含む）
+{workspace}/
+├── grimodex.db                         ← SQLiteデータベース（全コンテンツ含む）
 ├── .grimodex/
 │   └── workspace.json                  ← ワークスペースID + 作成日時
-├── backups/                            ← 自動バックアップ（ZIP）
+├── backups/                            ← 自動バックアップ（.db / .db.gz）
 │   └── ...
 └── migrations/                         ← DBマイグレーションファイル
 ```
@@ -2240,13 +2240,13 @@ CREATE INDEX IF NOT EXISTS idx_codex_chunks_model ON codex_chunks(model_id);
 
 ### chat_message_chunks
 
-チャット履歴のエピソード記憶（過去の対話）を scene/codex と同じ意味検索経路で recall するための埋め込み表。チャットメッセージは短いためチャンク分割せず **「1 メッセージ = 1 埋め込み行」**（`PRIMARY KEY = message_id`・`INSERT OR REPLACE`）。`chat_messages` には `project_id` が無いので、検索スコープ（project.db 単位）を効かせるため `project_id` / `session_id` を index 時に**非正規化**して持つ（`chat_sessions` JOIN を読み出し時に省く）。`inserted_to_editor` / `extracted_count` は「実際に効いた発話」を recall で重み付けするための信号（`chat_messages.metadata` から非正規化）で、signal が変わると `content_hash` も変わるよう upsert 側で hash 入力に含め、再 index で列が更新される。**Rust 専用テーブル**（`codex_chunks` 等と同じく Drizzle には定義されない）。hybrid 検索（dense + sparse）は新規 FTS 表を作らず既存の [`chat_messages_fts`](#chat_messages_fts) を再利用する（PR #135 / `c37e6212`, 2026-06-20）。
+チャット履歴のエピソード記憶（過去の対話）を scene/codex と同じ意味検索経路で recall するための埋め込み表。チャットメッセージは短いためチャンク分割せず **「1 メッセージ = 1 埋め込み行」**（`PRIMARY KEY = message_id`・`INSERT OR REPLACE`）。`chat_messages` には `project_id` が無いので、検索スコープ（grimodex.db 単位）を効かせるため `project_id` / `session_id` を index 時に**非正規化**して持つ（`chat_sessions` JOIN を読み出し時に省く）。`inserted_to_editor` / `extracted_count` は「実際に効いた発話」を recall で重み付けするための信号（`chat_messages.metadata` から非正規化）で、signal が変わると `content_hash` も変わるよう upsert 側で hash 入力に含め、再 index で列が更新される。**Rust 専用テーブル**（`codex_chunks` 等と同じく Drizzle には定義されない）。hybrid 検索（dense + sparse）は新規 FTS 表を作らず既存の [`chat_messages_fts`](#chat_messages_fts) を再利用する（PR #135 / `c37e6212`, 2026-06-20）。
 
 ```sql
 CREATE TABLE IF NOT EXISTS chat_message_chunks (
   message_id         TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
   session_id         TEXT NOT NULL,           -- index 時に非正規化（読み出しで chat_sessions JOIN を省く）
-  project_id         TEXT NOT NULL,           -- 検索スコープ（project.db 単位）。XPROJ 防止のため非正規化保持
+  project_id         TEXT NOT NULL,           -- 検索スコープ（grimodex.db 単位）。XPROJ 防止のため非正規化保持
   role               TEXT NOT NULL,           -- user / assistant 等（recall の順序・表示用）
   text               TEXT NOT NULL,           -- 埋め込み生成に使ったソース発話
   inserted_to_editor INTEGER NOT NULL DEFAULT 0, -- 「実際に効いた発話」信号（metadata から非正規化）

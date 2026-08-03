@@ -24,7 +24,7 @@ const COPY = {
     "Chat with AI. Codex extracts the world. The next prompt knows more. The flywheel of long-form fiction.",
   cta_primary_ja: "ダウンロード",
   cta_primary_en: "Download",
-  cta_sub: "macOS · Windows · Linux  ·  Free  ·  Local-first",
+  cta_sub: "macOS · Windows · Linux  ·  Local-first  ·  BYOK",
 
   features: [
     {
@@ -67,9 +67,9 @@ const COPY = {
       title_ja: ["全部、", "あなたの machine の中。"],
       title_en: "All on your machine.",
       body_ja:
-        "原稿は SQLite にローカル保存。アカウントは要らない。通信が起きるのは、あなたが押した AI 呼び出しと、ライセンス確認の小さな ping だけ。",
+        "原稿は SQLite にローカル保存。AIへ送るのは、接続先を確認して自分で実行した処理のコンテキストだけ。Electron版では、ライセンス検証、更新確認、意味検索モデル取得の通信も発生する場合がある。",
       body_en:
-        "Manuscripts live in local SQLite. No account. The network only sees the AI calls you trigger yourself.",
+        "Manuscripts live in local SQLite. Context leaves the device when you explicitly send it to a configured AI. Electron may also contact services for license validation, update checks, and semantic-model downloads.",
     },
   ],
 
@@ -116,20 +116,20 @@ const COPY = {
     {
       q_ja: "AI モデルは何が使える？",
       q_en: "Which AI models?",
-      a_ja: "OpenRouter 経由で任意。GPT, Claude, Gemini, ローカル LLM まで。鍵はあなたの。",
-      a_en: "Any model via OpenRouter — GPT, Claude, Gemini, even local LLMs. Your key, your call.",
+      a_ja: "OpenRouter、OpenAI、Anthropic、OpenAI互換、Ollamaなどに対応。選んだ接続先のモデルとAPIキーを使います。",
+      a_en: "Use supported cloud APIs, OpenAI-compatible endpoints, Ollama, or other configured routes. Models and keys come from the connection you choose.",
     },
     {
       q_ja: "オフラインで動く？",
       q_en: "Does it work offline?",
-      a_ja: "編集は完全オフライン。ネットに出るのは AI 呼び出しとライセンス確認だけ。",
-      a_en: "Editing is fully offline. The network is only touched when you fire an AI call.",
+      a_ja: "本文編集はローカルで行えます。AI呼び出しのほか、Electron版ではライセンス検証、更新確認、意味検索モデル取得の通信が発生する場合があります。",
+      a_en: "Editing is local. AI calls can send selected context, and Electron may also contact services for license validation, update checks, and semantic-model downloads.",
     },
     {
       q_ja: "値段は？",
       q_en: "How much?",
-      a_ja: "本体は無料。AI を使うなら OpenRouter の従量課金だけ。",
-      a_en: "Free. AI usage is your OpenRouter pay-as-you-go.",
+      a_ja: "本体の価格とライセンスは公式購入ページを確認してください。AIの料金と保持条件は、選んだ接続先に依存します。",
+      a_en: "Check the official purchase page for the product license. AI costs and retention depend on the connection you choose.",
     },
   ],
 };
@@ -1280,7 +1280,7 @@ function LPVariantA() {
           <span style={{ background: HOT, color: "#fff", padding: "5px 10px" }}>WRITING</span>
           <span style={{ background: CYAN, color: INK, padding: "5px 10px" }}>FIDGET</span>
           <span style={{ background: MARI, color: INK, padding: "5px 10px" }}>IDE</span>
-          <span style={{ marginLeft: "auto", color: INK, opacity: 0.6 }}>v0.7.0 · Tauri · Local-first</span>
+              <span style={{ marginLeft: "auto", color: INK, opacity: 0.6 }}>v2.0.10 · Electron · Local-first</span>
         </div>
 
         <Reveal>
@@ -1329,7 +1329,7 @@ function LPVariantA() {
               ↓ ダウンロード <span style={{ opacity: 0.5 }}>/ Download</span>
             </button>
             <span style={{ fontSize: 13, color: INK, opacity: 0.7, fontFamily: "ui-monospace, monospace" }}>
-              macOS · Windows · Linux  ·  Free
+              macOS · Windows · Linux  ·  Local-first · BYOK
             </span>
           </div>
         </Reveal>
@@ -1351,7 +1351,7 @@ function LPVariantA() {
         <div style={{ display: "flex", alignItems: "flex-end", marginBottom: 28, gap: 24 }}>
           <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 2 }}>§ 01 — THE WORKSPACE</div>
           <div style={{ flex: 1, height: 2, background: INK }} />
-          <div style={{ fontSize: 12, fontFamily: "ui-monospace, monospace", opacity: 0.6 }}>shot:001 · 12 panels</div>
+          <div style={{ fontSize: 12, fontFamily: "ui-monospace, monospace", opacity: 0.6 }}>shot:001 · workspace layout</div>
         </div>
         <Reveal>
           <h2 style={{ fontSize: 88, fontWeight: 900, lineHeight: 0.92, letterSpacing: -3, margin: "0 0 16px" }}>
@@ -1555,7 +1555,7 @@ function LPVariantA() {
           </span>
         </h2>
         <p style={{ fontSize: 18, opacity: 0.7, marginTop: 32, marginBottom: 36 }}>
-          Free. Local-first. Bring your own AI key.
+          Local-first. Bring your own AI key.
         </p>
         <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
           {["macOS .dmg", "Windows .msi", "Linux .AppImage"].map((p, i) => (
@@ -1574,7 +1574,7 @@ function LPVariantA() {
           ))}
         </div>
         <div style={{ marginTop: 60, fontSize: 11, opacity: 0.4, fontFamily: "ui-monospace, monospace", letterSpacing: 1 }}>
-          GRIMODEX · TAURI v2 · ELASTIC LICENSE 2.0 · MADE FOR PEOPLE WHO MAKE WORLDS
+          GRIMODEX · ELECTRON · LOCAL-FIRST · BYOK · MADE FOR PEOPLE WHO MAKE WORLDS
         </div>
       </section>
     </LPFrame>

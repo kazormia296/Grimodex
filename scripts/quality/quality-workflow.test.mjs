@@ -183,6 +183,7 @@ test("the Iron Laws carry stable IDs used by the machine-readable manifest", asy
   const manifest = await read("evals/quality-manifest.yaml");
   const requirementIds = [
     "GDX-ROUTE-001",
+    "GDX-AI-AUDIT-001",
     "GDX-PRECHECK-001",
     "GDX-TOOL-001",
     "GDX-POLICY-001",
@@ -196,6 +197,66 @@ test("the Iron Laws carry stable IDs used by the machine-readable manifest", asy
     assert.match(policy, new RegExp(requirementId));
     assert.match(manifest, new RegExp(requirementId));
   }
+});
+
+test("the AI audit privacy law excludes transport credentials without rewriting model-visible evidence", async () => {
+  const policy = await read("policies/quality/iron-laws.md");
+
+  assert.match(
+    policy,
+    /Transport\s+credentials supplied outside the model-visible request body[\s\S]*excluded and never become audit payloads/,
+  );
+  assert.match(
+    policy,
+    /Credential-shaped text intentionally included in model-visible prompt, context, tool content, or\s+output is preserved exactly/,
+  );
+  assert.match(policy, /export bundle warns/);
+  assert.doesNotMatch(
+    policy,
+    /API keys,\s*authorization headers, credential-bearing environment values, and other secrets are never audit\s+payloads/,
+  );
+});
+
+test("the AI audit requirement traces streaming durability and legacy evidence into the light suite", async () => {
+  const manifest = yaml.load(await read("evals/quality-manifest.yaml"));
+  const auditRequirement = manifest.requirements.find(
+    (requirement) => requirement.id === "GDX-AI-AUDIT-001",
+  );
+  const impactRunner = await read("scripts/quality/impact-map.mjs");
+
+  assert.ok(auditRequirement);
+  assert.ok(
+    auditRequirement.implementedBy.includes(
+      "src/features/ai-audit/orderedStreamAudit.ts",
+    ),
+  );
+  assert.ok(
+    auditRequirement.implementedBy.includes(
+      "src/features/ai-audit/legacyEvidence.ts",
+    ),
+  );
+  assert.ok(
+    auditRequirement.implementedBy.includes(
+      "src/features/chat/chatStreamTransport.ts",
+    ),
+  );
+  assert.ok(
+    auditRequirement.implementedBy.includes(
+      "src/features/attribution/AttributionProjectView.tsx",
+    ),
+  );
+  assert.ok(
+    auditRequirement.lightTests.includes(
+      "src/features/ai-audit/orderedStreamAudit.test.ts",
+    ),
+  );
+  assert.ok(
+    auditRequirement.lightTests.includes(
+      "src/features/ai-audit/legacyEvidence.test.ts",
+    ),
+  );
+  assert.match(impactRunner, /ai-audit\/orderedStreamAudit\.test\.ts/);
+  assert.match(impactRunner, /ai-audit\/legacyEvidence\.test\.ts/);
 });
 
 test("the Heavy runner never selects a Windows command shell from the environment", async () => {

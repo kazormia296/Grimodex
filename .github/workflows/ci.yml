@@ -393,7 +393,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: electron-runtime-performance-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .artifacts/electron-runtime-performance/runtime-metrics.json
+          path: .artifacts/electron-runtime-performance/
           if-no-files-found: error
           retention-days: 14
 
@@ -557,6 +557,16 @@ jobs:
         run: >-
           cargo test --locked --manifest-path src-tauri/Cargo.toml
           -p grimodex-db --lib windows_atomic_write
+
+      - name: Test workspace restore maintenance barrier on Windows
+        run: >-
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          -p grimodex-db --lib restore_waits_for_detached_workspace_maintenance_before_detaching_live_db
+
+      - name: Test same-path workspace reopen during maintenance on Windows
+        run: >-
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          -p grimodex-db --lib same_path_reopen_does_not_retain_the_previous_active_database
 
       - name: Parse the migration E2E PowerShell script
         shell: pwsh

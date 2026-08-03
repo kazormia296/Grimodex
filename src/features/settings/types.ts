@@ -196,6 +196,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
   "ai.modelWhitelist": "global",
+  "ai.liveReaderComments": "global",
+  "ai.liveReaderThreshold": "global",
+  "ai.liveReaderTriggerMode": "global",
   // AI — 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック (global)。
   // 解決は src/features/chat/modelRouting.ts の resolveModelForPath が正本。
   "aiModel.role.conversation": "global",
@@ -204,6 +207,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "aiModel.role.cheap": "global",
   "aiModel.role.structured": "global",
   "aiModel.role.review": "global",
+  "aiModel.role.reader": "global",
   // 機能別モデルのプロバイダ横断: 各ロールに別プロバイダ/別エンドポイントを
   // 割り当てる JSON マップ Record<role,{provider?,endpointId?}>。空 {} なら全ロール
   // アクティブ provider 据え置き(後方互換)。解決は resolveRolePathConfig が正本 (global)。
@@ -493,6 +497,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
   "ai.modelWhitelist": "[]",
+  "ai.liveReaderComments": "false",
+  "ai.liveReaderThreshold": "80",
+  "ai.liveReaderTriggerMode": "characters",
   // 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック。
   "aiModel.role.conversation": "",
   "aiModel.role.agent": "",
@@ -500,6 +507,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "aiModel.role.cheap": "",
   "aiModel.role.structured": "",
   "aiModel.role.review": "",
+  "aiModel.role.reader": "",
   // 機能別モデルのプロバイダ横断マップ。既定は空 {} = 全ロール アクティブ provider。
   "aiModel.roleProviders": "{}",
   "ai.webSearch.domainMode": "off",

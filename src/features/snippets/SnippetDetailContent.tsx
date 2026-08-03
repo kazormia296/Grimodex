@@ -485,6 +485,18 @@ export function SnippetDetailContent({
     }
   }
 
+  async function handleCopy() {
+    try {
+      await copyWithAttribution(
+        editor?.getText() ?? snippet.content,
+        (snippet.contentSource as AuthorshipSource) ?? "human",
+      );
+      toast.success(t("snippets.copied"));
+    } catch {
+      toast.error(t("snippets.copyFailed"));
+    }
+  }
+
   const tagsFit = useFitsInline();
 
   const sourceKey: keyof typeof SOURCE_ICON =
@@ -534,12 +546,7 @@ export function SnippetDetailContent({
             <button
               type="button"
               data-testid="snippet-copy-button"
-              onClick={() =>
-                copyWithAttribution(
-                  editor?.getText() ?? snippet.content,
-                  (snippet.contentSource as AuthorshipSource) ?? "human",
-                )
-              }
+              onClick={handleCopy}
               className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
               title={t("snippets.contextMenu.copy")}
             >

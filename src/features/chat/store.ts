@@ -1,7 +1,10 @@
 import { create } from "zustand";
 import * as api from "./api";
-import * as cliApi from "./cliApi";
-import * as codexAppApi from "./codexAppApi";
+import {
+  detectCliBinary,
+  listCliModels,
+  listCodexAppModels,
+} from "./lazyRuntimeApi";
 import { resolveModelApiVariant } from "./aiNovelist";
 import type {
   AiProvider,
@@ -419,7 +422,7 @@ async function resolveCliBinaryAvailability(
   settings: AiSettings,
 ): Promise<boolean> {
   if (settings.cli?.binaryPath?.trim()) return true;
-  const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
+  const path = await detectCliBinary(settings.cli?.kind ?? "claude");
   return path !== null;
 }
 
@@ -996,11 +999,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         const useCodexAppServer =
           requestedCliKind === "codex" && requestedCliTransport !== "exec";
         const models = useCodexAppServer
-          ? await codexAppApi.listCodexAppModels()
-          : await cliApi.listCliModels(
-              requestedCliKind,
-              requestedCliBinaryPath,
-            );
+          ? await listCodexAppModels()
+          : await listCliModels(requestedCliKind, requestedCliBinaryPath);
         if (!isCurrentRequest()) return;
         set({ models, isLoadingModels: false, modelLoadError: null });
         return;

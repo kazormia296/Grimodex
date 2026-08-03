@@ -61,4 +61,51 @@ describe("invoke wrapper", () => {
     vi.clearAllTimers();
     vi.useRealTimers();
   });
+
+  it("applies the frozen audit safe-query allowlist to BrowserMock invokes", async () => {
+    const ipcQueue = await import("./ipcQueue");
+    const tauri = await import("./tauri");
+    const mockInvoke = vi.fn(async (command: string) => ({ command }));
+    tauri.installBrowserMock({
+      invoke: mockInvoke,
+    } as unknown as import("./browser-mock").BrowserMock);
+    const releaseRead = ipcQueue.acquireIpcReadAdmissionBarrier();
+    const releaseDerived = ipcQueue.acquireIpcDerivedAdmissionBarrier();
+    const releaseMutation = ipcQueue.acquireIpcMutationAdmissionBarrier();
+    const releaseSafeReads = ipcQueue.acquireAuditExportSafeReadAllowance();
+
+    try {
+      await expect(
+        tauri.invoke("db_execute", { sql: "SELECT 1", method: "all" }),
+      ).resolves.toEqual({ command: "db_execute" });
+      await expect(tauri.invoke("ai_audit_read_snapshot")).resolves.toEqual({
+        command: "ai_audit_read_snapshot",
+      });
+      await expect(tauri.invoke("ai_audit_verify")).resolves.toEqual({
+        command: "ai_audit_verify",
+      });
+      await expect(tauri.invoke("semantic_search")).rejects.toThrow(
+        "IPC_READ_CANCELLED",
+      );
+      await expect(tauri.invoke("semantic_index_scene")).rejects.toThrow(
+        "IPC_DERIVED_CANCELLED",
+      );
+      await expect(
+        tauri.invoke("db_execute", {
+          sql: "UPDATE projects SET title = 'changed'",
+          method: "run",
+        }),
+      ).rejects.toThrow("IPC_MUTATION_CANCELLED");
+      await expect(tauri.invoke("save_scene")).rejects.toThrow(
+        "IPC_MUTATION_CANCELLED",
+      );
+      expect(mockInvoke).toHaveBeenCalledTimes(3);
+    } finally {
+      releaseSafeReads();
+      releaseMutation();
+      releaseDerived();
+      releaseRead();
+      ipcQueue.resetIpcQueueForTests();
+    }
+  });
 });

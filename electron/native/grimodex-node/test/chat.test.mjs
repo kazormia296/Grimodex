@@ -12,7 +12,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,6 +108,72 @@ async function waitForEvent(events, channel, timeoutMs = 5000) {
 }
 
 const CHAT_ARGS = { messages: [{ role: "user", content: "hi" }] };
+let auditExecutionCounter = 0;
+
+async function auditedArgs(backend, args, pathId, { stream = false } = {}) {
+  const workspace = join(root, "workspace");
+  await backend.openWorkspace(workspace);
+  const expectedWorkspacePath = realpathSync(workspace);
+  auditExecutionCounter += 1;
+  const executionId = `chat-fixture-execution-${auditExecutionCounter}`;
+  const operationId = `chat-fixture-operation-${auditExecutionCounter}`;
+  const projectId = null;
+  const auditContext = {
+    expectedWorkspacePath,
+    projectId,
+    operationId,
+    executionId,
+    parentExecutionId: null,
+    pathId,
+  };
+  await backend.aiAuditAppendBatch(expectedWorkspacePath, projectId, [
+    {
+      eventId: `chat-fixture-start-${auditExecutionCounter}`,
+      executionId,
+      operationId,
+      parentExecutionId: null,
+      pathId,
+      eventType: "execution.started",
+      timestamp: Date.now(),
+      payload: {
+        captureState: "complete",
+        appVersion: "2.0.10",
+      },
+    },
+    {
+      eventId: `chat-fixture-prepared-${auditExecutionCounter}`,
+      executionId,
+      operationId,
+      parentExecutionId: null,
+      pathId,
+      eventType: "request.prepared",
+      timestamp: Date.now(),
+      payload: {
+        captureState: "complete",
+        credentialsExcluded: true,
+        request: { messages: args.messages ?? [] },
+      },
+    },
+    {
+      eventId: `chat-fixture-dispatched-${auditExecutionCounter}`,
+      executionId,
+      operationId,
+      parentExecutionId: null,
+      pathId,
+      eventType: "request.dispatched",
+      timestamp: Date.now(),
+      payload: {
+        captureState: "complete",
+        dispatchBoundary: "before_electron_native_ipc_invoke",
+      },
+    },
+  ]);
+  return {
+    ...args,
+    ...(stream ? { streamId: executionId } : {}),
+    auditContext,
+  };
+}
 
 test("getAiSettings がディスクの ai-settings.json を camelCase で返す", async () => {
   writeAiSettings("http://127.0.0.1:1");
@@ -112,6 +184,55 @@ test("getAiSettings がディスクの ai-settings.json を camelCase で返す"
   assert.equal(settings.activeOpenaiCompatibleEndpointId, "test");
   // キー系フィールドは含まない（renderer に返して安全）。
   assert.equal(settings.apiKey, undefined);
+});
+
+test("native AI dispatchはdurable lifecycleの欠落・identity偽装をHTTP前に拒否する", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(500).end();
+  });
+  try {
+    writeAiSettings(baseUrl);
+    const { backend } = makeBackend();
+    const workspace = join(root, "workspace");
+    await backend.openWorkspace(workspace);
+    const expectedWorkspacePath = realpathSync(workspace);
+    const settings = JSON.parse(await backend.getAiSettings());
+    const bypassArgs = {
+      ...CHAT_ARGS,
+      auditContext: {
+        expectedWorkspacePath,
+        projectId: null,
+        operationId: "bypass-operation",
+        executionId: "bypass-execution",
+        parentExecutionId: null,
+        pathId: "napi_direct_bypass",
+      },
+    };
+
+    await assert.rejects(
+      backend.sendChatMessage(bypassArgs, settings, "sk-injected"),
+      /AI_AUDIT_DISPATCH_PRECONDITION_FAILED/,
+    );
+
+    const correlated = await auditedArgs(
+      backend,
+      CHAT_ARGS,
+      "napi_identity_original",
+    );
+    correlated.auditContext = {
+      ...correlated.auditContext,
+      pathId: "napi_identity_forged",
+    };
+    await assert.rejects(
+      backend.sendChatMessage(correlated, settings, "sk-injected"),
+      /AI_AUDIT_DISPATCH_PRECONDITION_FAILED/,
+    );
+    assert.equal(requestCount, 0, "precondition failure must precede HTTP send");
+  } finally {
+    server.close();
+  }
 });
 
 test("sendChatMessage がキー注入 + provider/endpoint/model override を保つ", async () => {
@@ -142,18 +263,19 @@ test("sendChatMessage がキー注入 + provider/endpoint/model override を保�
     writeOverrideAiSettings("http://127.0.0.1:1", baseUrl);
     const { backend } = makeBackend();
     const settings = JSON.parse(await backend.getAiSettings());
+    const args = await auditedArgs(
+      backend,
+      {
+        ...CHAT_ARGS,
+        provider: "openai-compatible",
+        endpointId: "other",
+        model: "override-model",
+        requestMaxOutputTokens: 1234,
+      },
+      "napi_chat_message",
+    );
     const result = JSON.parse(
-      await backend.sendChatMessage(
-        {
-          ...CHAT_ARGS,
-          provider: "openai-compatible",
-          endpointId: "other",
-          model: "override-model",
-          requestMaxOutputTokens: 1234,
-        },
-        settings,
-        "sk-injected",
-      ),
+      await backend.sendChatMessage(args, settings, "sk-injected"),
     );
 
     assert.equal(received.url, "/chat/completions");
@@ -181,7 +303,13 @@ test("sendChatMessageStream が SSE を chat:stream-chunk/done へ橋渡しす�
     const { backend, events } = makeBackend();
     // dispatchInvoke と同じく settings を1回読んで送信へ渡す（原子性）。
     const settings = JSON.parse(await backend.getAiSettings());
-    await backend.sendChatMessageStream(CHAT_ARGS, settings, "sk-injected");
+    const args = await auditedArgs(
+      backend,
+      CHAT_ARGS,
+      "napi_chat_stream",
+      { stream: true },
+    );
+    await backend.sendChatMessageStream(args, settings, "sk-injected");
 
     const chunks = events.filter((e) => e.channel === "chat:stream-chunk");
     const text = chunks
@@ -210,8 +338,14 @@ test("HTTP エラーは chat:stream-error を emit し reject する", async () 
     writeAiSettings(baseUrl);
     const { backend, events } = makeBackend();
     const settings = JSON.parse(await backend.getAiSettings());
+    const args = await auditedArgs(
+      backend,
+      CHAT_ARGS,
+      "napi_chat_stream_error",
+      { stream: true },
+    );
     await assert.rejects(
-      backend.sendChatMessageStream(CHAT_ARGS, settings, "sk-injected"),
+      backend.sendChatMessageStream(args, settings, "sk-injected"),
       (err) => {
         assert.ok(String(err.message).length > 0);
         return true;
@@ -243,15 +377,21 @@ test("abortChatStream が進行中 SSE を止め stopped done を emit する", 
     writeAiSettings(baseUrl);
     const { backend, events } = makeBackend();
     const settings = JSON.parse(await backend.getAiSettings());
-    const stream = backend.sendChatMessageStream(
+    const args = await auditedArgs(
+      backend,
       CHAT_ARGS,
+      "napi_chat_stream_abort",
+      { stream: true },
+    );
+    const stream = backend.sendChatMessageStream(
+      args,
       settings,
       "sk-injected",
     );
 
     await started;
     await waitForEvent(events, "chat:stream-chunk");
-    backend.abortChatStream();
+    assert.equal(await backend.abortChatStream(args.streamId), true);
     // bytes_stream.next() を起こす。abort 判定はこの第2チャンクを処理する前に走る。
     response.write(
       `data: ${JSON.stringify({
@@ -274,8 +414,8 @@ test("abortChatStream が進行中 SSE を止め stopped done を emit する", 
   }
 });
 
-test("abortChatStream は同期で呼べ、開始前でも例外を投げない", async () => {
+test("abortChatStream は未知IDをfuture tombstoneとして受理しfalseを返す", async () => {
   writeAiSettings("http://127.0.0.1:1");
   const { backend } = makeBackend();
-  assert.equal(backend.abortChatStream(), undefined);
+  assert.equal(await backend.abortChatStream("future-chat-stream"), false);
 });

@@ -27,6 +27,10 @@ use ort::session::Session;
 use ort::value::TensorRef;
 use tokenizers::{Tokenizer, TruncationParams};
 
+use crate::audit::{
+    load_tokenizer_with_identity, load_verified_model_artifact_identity, ModelArtifactIdentity,
+    TokenizerIdentity,
+};
 use crate::spec::{EmbeddingModelSpec, Pooling};
 
 /// ruri-v3 の検索クエリ用 prefix。検索時の入力に付与する。
@@ -58,6 +62,8 @@ const SEMANTIC_SESSION_MEMORY_POLICY: SessionMemoryPolicy = SessionMemoryPolicy 
 /// `load()` して以後使い回す前提 (Session の再構築はコストが大きい)。
 pub struct Embedder {
     tokenizer: Tokenizer,
+    tokenizer_identity: TokenizerIdentity,
+    model_artifact_identity: ModelArtifactIdentity,
     session: Session,
     spec: &'static EmbeddingModelSpec,
 }
@@ -70,8 +76,9 @@ impl Embedder {
         tokenizer_path: &Path,
         spec: &'static EmbeddingModelSpec,
     ) -> Result<Self> {
-        let mut tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map_err(|e| anyhow!("failed to load tokenizer at {:?}: {e}", tokenizer_path))?;
+        let model_artifact_identity =
+            load_verified_model_artifact_identity(model_path, spec.artifact_sha256)?;
+        let (mut tokenizer, tokenizer_identity) = load_tokenizer_with_identity(tokenizer_path)?;
         // The Rust `tokenizers` crate does NOT honour `model_max_length` from
         // tokenizer_config.json, so by default every input is tokenized in full.
         // Plain BERT models (bge) have a fixed 512-entry position table; a longer
@@ -101,9 +108,22 @@ impl Embedder {
             .with_context(|| format!("failed to load ONNX model at {:?}", model_path))?;
         Ok(Self {
             tokenizer,
+            tokenizer_identity,
+            model_artifact_identity,
             session,
             spec,
         })
+    }
+
+    /// Audit identity of the exact tokenizer source bytes parsed by `load()`.
+    pub fn tokenizer_identity(&self) -> &TokenizerIdentity {
+        &self.tokenizer_identity
+    }
+
+    /// Audit identity calculated from the exact ONNX bytes verified immediately
+    /// before this embedder's ORT session was created.
+    pub fn model_artifact_identity(&self) -> &ModelArtifactIdentity {
+        &self.model_artifact_identity
     }
 
     /// 検索クエリを spec の query prefix 込みで埋め込み、L2 正規化済み f32 を返す。

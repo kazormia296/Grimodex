@@ -415,8 +415,8 @@ cd experiments/lfm25-encoder-phase0
 # Phase 0 CPU baseline and CI
 uv sync --frozen --extra cpu
 
-# NVIDIA CUDA 12.8
-uv sync --frozen --extra cu128
+# NVIDIA CUDA 13.0
+uv sync --frozen --extra cu130
 
 # AMD ROCm 7.2 on Linux
 uv sync --frozen --extra rocm72
@@ -474,11 +474,11 @@ An accelerator backend must use a separate environment so the CPU baseline is
 not replaced. For example, CUDA smoke is:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv-cu128 uv sync --frozen --extra cu128
+UV_PROJECT_ENVIRONMENT=.venv-cu130 uv sync --frozen --extra cu130
 
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-  UV_PROJECT_ENVIRONMENT=.venv-cu128 \
-  uv run --frozen --extra cu128 \
+  UV_PROJECT_ENVIRONMENT=.venv-cu130 \
+  uv run --frozen --extra cu130 \
   python -m grimodex_lfm_eval.train \
   --config configs/relevance-1024.yaml \
   --smoke

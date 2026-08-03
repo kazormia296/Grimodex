@@ -11,6 +11,13 @@ import {
   scheduleEditorAnalysisTask,
 } from "@/lib/editorAnalysisScheduler";
 import { markEnd, markStart, recordCounter } from "@/lib/perfLog";
+import {
+  getCurrentWorkspaceIdentity,
+  isCurrentWorkspaceIdentity,
+  type WorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import { getLoadedProjectId } from "@/application/project/currentProjectAuthority";
+import type { SemanticIndexAuthority } from "./api";
 
 /**
  * シーン保存後にデバウンス付きでセマンティックインデックスを走らせるスケジューラ。
@@ -33,12 +40,47 @@ const codexTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const eventTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+interface ScheduledSemanticAuthority extends SemanticIndexAuthority {
+  readonly workspaceIdentity: WorkspaceIdentity;
+}
+
+function captureScheduledSemanticAuthority(): ScheduledSemanticAuthority | null {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  const projectId = getLoadedProjectId();
+  if (!workspaceIdentity || !projectId) return null;
+  return {
+    expectedWorkspacePath: workspaceIdentity.path,
+    projectId,
+    workspaceIdentity,
+  };
+}
+
+function isCurrentScheduledSemanticAuthority(
+  authority: ScheduledSemanticAuthority,
+): boolean {
+  return (
+    isCurrentWorkspaceIdentity(authority.workspaceIdentity) &&
+    getLoadedProjectId() === authority.projectId
+  );
+}
+
+function apiAuthority(
+  authority: ScheduledSemanticAuthority,
+): SemanticIndexAuthority {
+  return {
+    expectedWorkspacePath: authority.expectedWorkspacePath,
+    projectId: authority.projectId,
+  };
+}
+
 function sceneTaskKey(sceneId: string): string {
   return `semantic-scene:${sceneId}`;
 }
 
 export function scheduleSceneIndex(sceneId: string): void {
   if (!sceneId) return;
+  const authority = captureScheduledSemanticAuthority();
+  if (!authority) return;
   sceneTaskIds.add(sceneId);
   recordCounter("editor.postSave.semantic.scheduled");
   scheduleEditorAnalysisTask({
@@ -47,9 +89,10 @@ export function scheduleSceneIndex(sceneId: string): void {
     delayMs: INDEX_DEBOUNCE_MS,
     run: () => {
       sceneTaskIds.delete(sceneId);
+      if (!isCurrentScheduledSemanticAuthority(authority)) return;
       recordCounter("editor.postSave.semantic.started");
       markStart("editor.postSave.semantic.launch");
-      const indexing = semanticIndexScene(sceneId);
+      const indexing = semanticIndexScene(sceneId, apiAuthority(authority));
       markEnd("editor.postSave.semantic.launch");
       return indexing
         .then(() => undefined)
@@ -81,11 +124,14 @@ export function cancelSceneIndex(sceneId: string): void {
  */
 export function scheduleCodexIndex(entryId: string): void {
   if (!entryId) return;
+  const authority = captureScheduledSemanticAuthority();
+  if (!authority) return;
   const existing = codexTimers.get(entryId);
   if (existing !== undefined) clearTimeout(existing);
   const t = setTimeout(() => {
     codexTimers.delete(entryId);
-    codexIndexEntry(entryId).catch((e) => {
+    if (!isCurrentScheduledSemanticAuthority(authority)) return;
+    codexIndexEntry(entryId, apiAuthority(authority)).catch((e) => {
       debugLog.warn(
         "semantic-search",
         `codex_index_entry failed: ${entryId}`,
@@ -112,11 +158,14 @@ export function cancelCodexIndex(entryId: string): void {
  */
 export function scheduleEventIndex(eventId: string): void {
   if (!eventId) return;
+  const authority = captureScheduledSemanticAuthority();
+  if (!authority) return;
   const existing = eventTimers.get(eventId);
   if (existing !== undefined) clearTimeout(existing);
   const t = setTimeout(() => {
     eventTimers.delete(eventId);
-    eventsIndexEntry(eventId).catch((e) => {
+    if (!isCurrentScheduledSemanticAuthority(authority)) return;
+    eventsIndexEntry(eventId, apiAuthority(authority)).catch((e) => {
       debugLog.warn(
         "semantic-search",
         `events_index_entry failed: ${eventId}`,
@@ -145,11 +194,14 @@ export function cancelEventIndex(eventId: string): void {
  */
 export function scheduleChatIndex(messageId: string): void {
   if (!messageId) return;
+  const authority = captureScheduledSemanticAuthority();
+  if (!authority) return;
   const existing = chatTimers.get(messageId);
   if (existing !== undefined) clearTimeout(existing);
   const t = setTimeout(() => {
     chatTimers.delete(messageId);
-    chatIndexMessage(messageId).catch((e) => {
+    if (!isCurrentScheduledSemanticAuthority(authority)) return;
+    chatIndexMessage(messageId, apiAuthority(authority)).catch((e) => {
       debugLog.warn(
         "semantic-search",
         `chat_index_message failed: ${messageId}`,
@@ -168,18 +220,23 @@ export function cancelChatIndex(messageId: string): void {
   }
 }
 
-/** テスト用: 全タイマーを破棄してマップを空に戻す。 */
-export function _resetSchedulerForTests(): void {
+/** Drop every delayed old-scope task before a Workspace/Project transition. */
+export function cancelAllScheduledSemanticIndexes(): void {
   for (const sceneId of sceneTaskIds) {
     cancelEditorAnalysisTask(sceneTaskKey(sceneId));
   }
   sceneTaskIds.clear();
-  for (const t of codexTimers.values()) clearTimeout(t);
+  for (const timer of codexTimers.values()) clearTimeout(timer);
   codexTimers.clear();
-  for (const t of eventTimers.values()) clearTimeout(t);
+  for (const timer of eventTimers.values()) clearTimeout(timer);
   eventTimers.clear();
-  for (const t of chatTimers.values()) clearTimeout(t);
+  for (const timer of chatTimers.values()) clearTimeout(timer);
   chatTimers.clear();
+}
+
+/** テスト用: 全タイマーを破棄してマップを空に戻す。 */
+export function _resetSchedulerForTests(): void {
+  cancelAllScheduledSemanticIndexes();
 }
 
 /** テスト用: 現在保持しているタイマー件数 (scene + codex + event + chat)。 */

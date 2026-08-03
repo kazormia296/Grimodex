@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   DEVELOPMENT_APP_NAME,
+  LINUX_DESKTOP_NAME,
   PRODUCTION_APP_NAME,
   configureAppUserData,
   resolveUserDataConfiguration,
@@ -127,6 +128,7 @@ describe("configureAppUserData", () => {
     let configuredPath = "";
     const app = {
       isPackaged: true,
+      setDesktopName: vi.fn((name: string) => calls.push(`desktop:${name}`)),
       setName: vi.fn((name: string) => calls.push(`name:${name}`)),
       setPath: vi.fn((name: string, value: string) => {
         configuredPath = value;
@@ -151,6 +153,7 @@ describe("configureAppUserData", () => {
       }),
     ).toBe("/mnt/data/com.miyakey.grimodex");
     expect(calls).toEqual([
+      `desktop:${LINUX_DESKTOP_NAME}`,
       `name:${PRODUCTION_APP_NAME}`,
       "path:userData:/mnt/data/com.miyakey.grimodex",
       "mkdir:/mnt/data/com.miyakey.grimodex",

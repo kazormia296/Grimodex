@@ -140,6 +140,9 @@ export interface SemanticRerankerShadowRecord {
 
 export interface SemanticRerankerScoreRequest extends Record<string, unknown> {
   requestId: string;
+  expectedWorkspacePath: string;
+  projectId: string;
+  auditPathId: "semantic_reranker" | "semantic_reranker_shadow";
   language: SemanticRerankerShadowLanguage;
   userMessage: string;
   sceneTail: string;
@@ -586,6 +589,9 @@ class SemanticRerankerShadowCoordinator {
     try {
       result = await this.deps.score({
         requestId: job.input.requestId,
+        expectedWorkspacePath: job.input.scope.workspaceKey,
+        projectId: job.input.scope.projectId,
+        auditPathId: "semantic_reranker_shadow",
         language: job.input.language,
         userMessage: job.input.query.userMessage,
         sceneTail: job.input.query.sceneTail,

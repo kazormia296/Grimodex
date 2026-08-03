@@ -19,6 +19,7 @@ import { parseAliases } from "./codexMatcher";
 import { candidateKey } from "./codexCandidates";
 import type { CodexCandidate } from "./candidateExtractor";
 import i18next from "@/lib/i18n";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export type SuggestedType = "character" | "location" | "item" | "lore";
 
@@ -99,6 +100,10 @@ export async function judgeCandidates(
   const ov = resolveRoleSendOverride("codex_judgment");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "codex_judgment",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ov.apiVariant, // apiVariant（横断割り当て時のみ）

@@ -199,3 +199,41 @@ cases:
       freshness: stable
       requiredEvidence: [manifest-miss]
       outputValidators: [failure-class]
+
+  - id: eval-ai-audit-pre-dispatch
+    suiteId: ai-routing
+    requirementIds: [GDX-AI-AUDIT-001]
+    fixture:
+      runId: ai-audit-pre-dispatch
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-03T10:00:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        {
+          conversationId: ai-audit-pre-dispatch-conversation,
+          workspaceId: ai-audit-pre-dispatch-workspace,
+          artifactRoot: ai-audit-pre-dispatch-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "監査ログの開始書き込みが失敗した状態で要約を生成して",
+        auditStartAvailable: false,
+        providerCalls: 0,
+        attemptedTools: [],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: audit-unavailable
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: precheck
+      freshness: current-project
+      requiredEvidence: [audit-start-failure, provider-not-dispatched]
+      outputValidators: [failure-class, no-side-effect]

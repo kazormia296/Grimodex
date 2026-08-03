@@ -35,8 +35,30 @@ export interface ProjectLifecycleRegistry {
       beforeCommit?: () => boolean | void;
       /** Runs after every synchronous critical publish, before async hydrates. */
       afterCommit?: () => void;
+      /** Best-effort timing events for async participant phases. */
+      lifecycleTiming?: ProjectLifecycleTimingObserver;
     },
   ): Promise<ProjectLifecycleReloadResult>;
+}
+
+export type ProjectLifecycleTimingPhase =
+  | "prepareCritical"
+  | "hydrateCritical"
+  | "hydrateOptional"
+  | "activate";
+
+export interface ProjectLifecycleTimingEvent {
+  phase: ProjectLifecycleTimingPhase;
+  status: "start" | "finish" | "fail";
+  participantId: string;
+  at: number;
+  durationMs?: number;
+}
+
+export interface ProjectLifecycleTimingObserver {
+  /** Defaults to the platform monotonic clock. */
+  now?: () => number;
+  onEvent: (event: ProjectLifecycleTimingEvent) => void;
 }
 
 export interface ProjectLifecycleFailure {
@@ -71,18 +93,106 @@ function assertUniqueParticipantIds(
   }
 }
 
+function monotonicNow(): number {
+  return globalThis.performance.now();
+}
+
+function readObserverTime(observer: ProjectLifecycleTimingObserver): number {
+  try {
+    return observer.now?.() ?? monotonicNow();
+  } catch {
+    return monotonicNow();
+  }
+}
+
+function emitTimingEvent(
+  observer: ProjectLifecycleTimingObserver,
+  event: ProjectLifecycleTimingEvent,
+): void {
+  try {
+    observer.onEvent(event);
+  } catch {
+    // Diagnostics must never change lifecycle behavior.
+  }
+}
+
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as PromiseLike<T>).then === "function"
+  );
+}
+
+function observeParticipantCall<T>(
+  observer: ProjectLifecycleTimingObserver | undefined,
+  phase: ProjectLifecycleTimingPhase,
+  participantId: string,
+  run: () => T | PromiseLike<T>,
+): T | PromiseLike<T> {
+  if (!observer) return run();
+
+  const startedAt = readObserverTime(observer);
+  emitTimingEvent(observer, {
+    phase,
+    status: "start",
+    participantId,
+    at: startedAt,
+  });
+
+  const emitTerminal = (status: "finish" | "fail"): void => {
+    const at = readObserverTime(observer);
+    emitTimingEvent(observer, {
+      phase,
+      status,
+      participantId,
+      at,
+      durationMs: at - startedAt,
+    });
+  };
+
+  try {
+    const result = run();
+    if (!isPromiseLike(result)) {
+      emitTerminal("finish");
+      return result;
+    }
+    return Promise.resolve(result).then(
+      (value) => {
+        emitTerminal("finish");
+        return value;
+      },
+      (error: unknown) => {
+        emitTerminal("fail");
+        throw error;
+      },
+    );
+  } catch (error) {
+    emitTerminal("fail");
+    throw error;
+  }
+}
+
 async function runInBatches(
   participants: readonly ProjectLifecycleParticipant[],
   context: ProjectLifecycleContext,
   concurrency: number,
   onFailure: ProjectLifecycleRegistryOptions["onOptionalFailure"],
+  timingObserver: ProjectLifecycleTimingObserver | undefined,
 ): Promise<ProjectLifecycleFailure[]> {
   const failures: ProjectLifecycleFailure[] = [];
   const batchSize = Math.max(1, Math.floor(concurrency));
   for (let i = 0; i < participants.length; i += batchSize) {
     const batch = participants.slice(i, i + batchSize);
     const results = await Promise.allSettled(
-      batch.map((participant) => participant.hydrateOptional?.(context)),
+      batch.map((participant) =>
+        observeParticipantCall(
+          timingObserver,
+          "hydrateOptional",
+          participant.id,
+          () => participant.hydrateOptional!(context),
+        ),
+      ),
     );
     results.forEach((result, index) => {
       if (result.status === "rejected") {
@@ -131,7 +241,12 @@ export function createProjectLifecycleRegistry(
       // Phase A: no externally visible state is mutated. A failure leaves the
       // old Project fully operational.
       for (const participant of prepareParticipants) {
-        const commit = await participant.prepareCritical!(context);
+        const commit = await observeParticipantCall(
+          reloadOptions?.lifecycleTiming,
+          "prepareCritical",
+          participant.id,
+          () => participant.prepareCritical!(context),
+        );
         if (commit) preparedCommits.push(commit);
       }
 
@@ -153,7 +268,12 @@ export function createProjectLifecycleRegistry(
       });
 
       for (const participant of criticalParticipants) {
-        await participant.hydrateCritical!(context);
+        await observeParticipantCall(
+          reloadOptions?.lifecycleTiming,
+          "hydrateCritical",
+          participant.id,
+          () => participant.hydrateCritical!(context),
+        );
       }
 
       const degraded = await runInBatches(
@@ -161,11 +281,17 @@ export function createProjectLifecycleRegistry(
         context,
         options.optionalConcurrency ?? 3,
         options.onOptionalFailure,
+        reloadOptions?.lifecycleTiming,
       );
 
       const activationResults = await Promise.allSettled(
         activationParticipants.map((participant) =>
-          participant.activate!(context),
+          observeParticipantCall(
+            reloadOptions?.lifecycleTiming,
+            "activate",
+            participant.id,
+            () => participant.activate!(context),
+          ),
         ),
       );
       activationResults.forEach((result, index) => {

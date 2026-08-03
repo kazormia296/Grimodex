@@ -86,11 +86,16 @@ export function SnippetContextMenu({
     onClose();
   }
 
-  function handleCopy() {
+  async function handleCopy() {
     const source = (snippet.contentSource as AuthorshipSource) ?? "human";
-    copyWithAttribution(snippet.content, source);
-    toast.success(t("snippets.copied"));
-    onClose();
+    try {
+      await copyWithAttribution(snippet.content, source);
+      toast.success(t("snippets.copied"));
+    } catch {
+      toast.error(t("snippets.copyFailed"));
+    } finally {
+      onClose();
+    }
   }
 
   function handleEdit() {

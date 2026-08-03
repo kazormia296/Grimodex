@@ -2,10 +2,11 @@
 
 #![cfg(feature = "semantic-embedding")]
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use grimodex_db::events::EventSink;
-use grimodex_db::state::active_database;
+use grimodex_db::state::{active_database, active_workspace_snapshot};
 use grimodex_semantic::chat_index::ChatIndexStatus;
 use grimodex_semantic::chat_search::ChatSearchHit;
 use grimodex_semantic::codex_index::CodexIndexStatus;
@@ -45,6 +46,34 @@ fn runtime_and_request(
     Ok((runtime, request))
 }
 
+fn scoped_runtime_and_request(
+    app: &tauri::AppHandle,
+    expected_workspace_path: &str,
+) -> Result<(Arc<SemanticRuntime>, SemanticRequest), AppError> {
+    let runtime_state = app.state::<Arc<SemanticRuntime>>();
+    let runtime = Arc::clone(runtime_state.inner());
+    let workspace_state = app.state::<WorkspaceState>();
+    let expected = PathBuf::from(expected_workspace_path)
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    let request = runtime.pin_request(|| {
+        let workspace = active_workspace_snapshot(&workspace_state)?;
+        let active = workspace
+            .path
+            .canonicalize()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+        if active != expected {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "SEMANTIC_INDEX_WORKSPACE_CHANGED: expected {}, active {}",
+                expected.display(),
+                active.display()
+            )));
+        }
+        Ok(workspace.db)
+    })?;
+    Ok((runtime, request))
+}
+
 async fn run_blocking<T: Send + 'static>(
     operation: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, AppError> {
@@ -80,10 +109,12 @@ pub(crate) async fn semantic_download_model(
 #[tauri::command]
 pub(crate) async fn semantic_index_scene(
     app: tauri::AppHandle,
+    expected_workspace_path: String,
+    project_id: String,
     scene_id: String,
 ) -> Result<usize, AppError> {
-    let (runtime, request) = runtime_and_request(&app)?;
-    run_blocking(move || runtime.semantic_index_scene(&request, &scene_id)).await
+    let (runtime, request) = scoped_runtime_and_request(&app, &expected_workspace_path)?;
+    run_blocking(move || runtime.semantic_index_scene(&request, &project_id, &scene_id)).await
 }
 
 #[tauri::command]
@@ -112,10 +143,12 @@ pub(crate) async fn semantic_search(
 #[tauri::command]
 pub(crate) async fn codex_index_entry(
     app: tauri::AppHandle,
+    expected_workspace_path: String,
+    project_id: String,
     entry_id: String,
 ) -> Result<usize, AppError> {
-    let (runtime, request) = runtime_and_request(&app)?;
-    run_blocking(move || runtime.codex_index_entry(&request, &entry_id)).await
+    let (runtime, request) = scoped_runtime_and_request(&app, &expected_workspace_path)?;
+    run_blocking(move || runtime.codex_index_entry(&request, &project_id, &entry_id)).await
 }
 
 #[tauri::command]
@@ -150,10 +183,12 @@ pub(crate) async fn codex_reindex_all(
 #[tauri::command]
 pub(crate) async fn events_index_entry(
     app: tauri::AppHandle,
+    expected_workspace_path: String,
+    project_id: String,
     event_id: String,
 ) -> Result<usize, AppError> {
-    let (runtime, request) = runtime_and_request(&app)?;
-    run_blocking(move || runtime.events_index_entry(&request, &event_id)).await
+    let (runtime, request) = scoped_runtime_and_request(&app, &expected_workspace_path)?;
+    run_blocking(move || runtime.events_index_entry(&request, &project_id, &event_id)).await
 }
 
 #[tauri::command]
@@ -188,10 +223,12 @@ pub(crate) async fn events_reindex_all(
 #[tauri::command]
 pub(crate) async fn chat_index_message(
     app: tauri::AppHandle,
+    expected_workspace_path: String,
+    project_id: String,
     message_id: String,
 ) -> Result<usize, AppError> {
-    let (runtime, request) = runtime_and_request(&app)?;
-    run_blocking(move || runtime.chat_index_message(&request, &message_id)).await
+    let (runtime, request) = scoped_runtime_and_request(&app, &expected_workspace_path)?;
+    run_blocking(move || runtime.chat_index_message(&request, &project_id, &message_id)).await
 }
 
 #[tauri::command]

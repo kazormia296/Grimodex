@@ -29,6 +29,7 @@ export type IpcInvokeErrorCode =
   | "IPC_SECRETS_UNAVAILABLE"
   | "IPC_READ_CANCELLED"
   | "IPC_DERIVED_CANCELLED"
+  | "IPC_MUTATION_CANCELLED"
   | "IPC_TIMEOUT"
   | "UNKNOWN";
 
@@ -92,7 +93,11 @@ export function isIpcLifecycleCancellation(error: unknown): boolean {
       "code" in current
         ? (current as { readonly code?: unknown }).code
         : undefined;
-    if (code === "IPC_READ_CANCELLED" || code === "IPC_DERIVED_CANCELLED") {
+    if (
+      code === "IPC_READ_CANCELLED" ||
+      code === "IPC_DERIVED_CANCELLED" ||
+      code === "IPC_MUTATION_CANCELLED"
+    ) {
       return true;
     }
     current =
@@ -128,6 +133,9 @@ function classifyLegacyIpcError(message: string): IpcInvokeFailureInfo {
   }
   if (message.includes("IPC_DERIVED_CANCELLED:")) {
     return { ...base, code: "IPC_DERIVED_CANCELLED", retryable: true };
+  }
+  if (message.includes("IPC_MUTATION_CANCELLED:")) {
+    return { ...base, code: "IPC_MUTATION_CANCELLED", retryable: true };
   }
   return { ...base, code: "UNKNOWN", retryable: false };
 }
@@ -208,6 +216,11 @@ const DERIVED_INDEX_COMMANDS = new Set([
   "events_reindex_all",
   "chat_index_message",
   "chat_reindex_all",
+]);
+
+const AUDIT_EXPORT_READ_COMMANDS = new Set([
+  "ai_audit_read_snapshot",
+  "ai_audit_verify",
 ]);
 
 function sqlCodeOnly(sql: string): string | null {
@@ -300,6 +313,7 @@ function ipcCategoryForCommand(
   args?: Record<string, unknown>,
 ): "mutation" | "read" | "derived" {
   if (DERIVED_INDEX_COMMANDS.has(command)) return "derived";
+  if (AUDIT_EXPORT_READ_COMMANDS.has(command)) return "read";
   return callerTimeoutForCommand(command, args) === null ? "mutation" : "read";
 }
 
@@ -431,9 +445,17 @@ export async function invoke<T = unknown>(
       throw normalizeIpcFailure(cmd, error);
     }
   }
-  const mock = await getBrowserMock();
+  const ms = callerTimeoutForCommand(cmd, args);
   try {
-    return await mock.invoke<T>(cmd, args);
+    return await enqueueIpc(
+      cmd,
+      async () => {
+        const mock = await getBrowserMock();
+        return mock.invoke<T>(cmd, args);
+      },
+      ms,
+      ipcCategoryForCommand(cmd, args),
+    );
   } catch (error) {
     throw normalizeIpcFailure(cmd, error);
   }

@@ -33,3 +33,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 dirs = "6"
 chrono = "0.4"
+
+[dev-dependencies]
+grimodex-db = { path = "../grimodex-db" }

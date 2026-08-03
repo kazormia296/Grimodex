@@ -23,6 +23,9 @@ import { AboutCategory } from "./categories/AboutCategory";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
+import { ensureLiveReaderTranslations } from "@/locales/liveReader";
+
+ensureLiveReaderTranslations();
 
 interface SettingsDialogProps {
   open: boolean;

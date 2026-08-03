@@ -10,7 +10,8 @@ use grimodex_semantic::runtime::SemanticRuntime;
 
 use super::{AppError, GlobalSettingsPath, WorkspaceState};
 
-// open_workspace の本体 (backup → migrate → swap → SwitchingGuard) と
+// open_workspace の本体 (migrate → swap → SwitchingGuard、重い maintenance は
+// authority commit 後の worker) と
 // reject_unsafe_workspace_path (PIO-1 ガード) は grimodex-db::open へ抽出した
 // (Electron 移行 Phase 2 S1)。reject_unsafe_workspace_path は
 // external_mount.rs が `crate::commands::workspace::` 経由で再利用するため
@@ -93,7 +94,8 @@ pub(crate) async fn open_workspace(
             #[cfg(feature = "semantic-embedding")]
             let semantic_runtime = app.state::<Arc<SemanticRuntime>>();
 
-            // 本体 (open_lock 直列化 → backup → migrate → swap → SwitchingGuard →
+            // 本体 (open_lock 直列化 → migrate → swap → SwitchingGuard →
+            // authority commit 後の maintenance worker →
             // recent-workspaces 更新) は grimodex_db::open::open_workspace_sync。
             // Tauri 側にしか無い後処理 = semantic cache epoch の rotation を
             // on_swapped フックで注入する (DB swap 直後・switching=true のまま)。

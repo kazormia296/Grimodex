@@ -30,8 +30,10 @@ import {
 import { maybeRunSummarization } from "./chatSummarization";
 import { isCapturedWorkspaceCurrent } from "./chatSessionAuthority";
 import {
+  ChatTurnPersistenceError,
   MAX_RATE_LIMIT_RETRIES,
   classifyError,
+  createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
 } from "./chatStoreSupport";
@@ -84,8 +86,6 @@ import {
   findUnbackedUrls,
 } from "@/features/chat/citationVerify";
 import { stripToolProtocol } from "@/features/chat/toolProtocol";
-import * as cliApi from "@/features/chat/cliApi";
-import * as codexAppApi from "@/features/chat/codexAppApi";
 import {
   buildCodexBootstrapHistory,
   computeChatHistoryRevision,
@@ -120,6 +120,7 @@ import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecy
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
 import { tryAcquireChatTurnAdmissionLease } from "@/lib/chatNavigationGuard";
+import { cliApi, codexAppApi } from "@/features/chat/lazyRuntimeApi";
 
 interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;
@@ -156,53 +157,6 @@ interface ChatTurnStoreActionDependencies {
   errorDetail: typeof errorDetail;
   toast: typeof toast;
   i18next: typeof i18next;
-}
-
-class ChatTurnPersistenceError extends Error {
-  constructor(cause: unknown) {
-    super(
-      cause instanceof Error
-        ? cause.message
-        : "Failed to persist the completed chat turn",
-      { cause },
-    );
-    this.name = "ChatTurnPersistenceError";
-  }
-}
-
-interface CompletedTurnPersistenceSteps {
-  persistUser: () => Promise<void>;
-  persistAssistant?: () => Promise<void>;
-  finalize?: () => Promise<void>;
-}
-
-/**
- * Preserves per-row progress across lifecycle retries. Message IDs are stable,
- * but a user insert can succeed before the assistant insert fails; retrying
- * only the unfinished step avoids turning that partial success into a primary
- * key conflict.
- */
-function createRetryableCompletedTurnPersistence(
-  steps: CompletedTurnPersistenceSteps,
-): () => Promise<void> {
-  let userPersisted = false;
-  let assistantPersisted = steps.persistAssistant === undefined;
-  let finalized = steps.finalize === undefined;
-
-  return async () => {
-    if (!userPersisted) {
-      await steps.persistUser();
-      userPersisted = true;
-    }
-    if (!assistantPersisted && steps.persistAssistant) {
-      await steps.persistAssistant();
-      assistantPersisted = true;
-    }
-    if (!finalized && steps.finalize) {
-      await steps.finalize();
-      finalized = true;
-    }
-  };
 }
 
 function createChatTurnStoreActions(
@@ -846,6 +800,8 @@ function createChatTurnStoreActions(
             });
             agentMessages = await maybeRunSummarization(
               sessionIdForPersist,
+              turnProjectId,
+              sendTurnId,
               prevMessages,
               budgets.l5,
               projectCtxLang,
@@ -975,6 +931,7 @@ function createChatTurnStoreActions(
           // 厳しめに絞る。各呼び出しは parentMaxToolCalls も 1 消費する。
           const MAX_SUBAGENT_CALLS = 4;
           let subAgentCallCount = 0;
+          let parentAuditExecutionId: string | null = null;
           const agentThinkingParams =
             turnRoute?.thinking ??
             buildThinkingParams(
@@ -1081,6 +1038,7 @@ function createChatTurnStoreActions(
               ];
 
               let researchInputTokenDrift = createInputTokenDriftTotals();
+              let researchAuditExecutionId = parentAuditExecutionId;
               let childResult;
               try {
                 childResult = await runAgentLoop({
@@ -1108,9 +1066,17 @@ function createChatTurnStoreActions(
                           tools,
                         })
                       : null;
+                    const executionId = crypto.randomUUID();
                     const response = await chatApi.sendAgentMessage(
                       msgs,
                       tools,
+                      {
+                        projectId: turnProjectId,
+                        pathId: "agent_research_subagent",
+                        operationId: sendTurnId,
+                        executionId,
+                        parentExecutionId: researchAuditExecutionId,
+                      },
                       agentThinkingParams,
                       // 子は親の cacheSegments / volatileTail を使わず、専用の
                       // system prompt を持つ。Web 検索も無効（null）。
@@ -1139,6 +1105,7 @@ function createChatTurnStoreActions(
                       turnRoute?.toolProtocol ?? null,
                       turnRoute?.resolvedOllamaEndpoint ?? null,
                     );
+                    researchAuditExecutionId = executionId;
                     researchInputTokenDrift = accumulateInputTokenDrift(
                       researchInputTokenDrift,
                       currentProvider,
@@ -1311,9 +1278,17 @@ function createChatTurnStoreActions(
                 turnCoordinator.transition(sendControl, "agent-running");
                 transportStarted = true;
                 sendControl.transportStarted = true;
+                const executionId = crypto.randomUUID();
                 const response = await chatApi.sendAgentMessage(
                   msgs,
                   tools,
+                  {
+                    projectId: turnProjectId,
+                    pathId: "chat_agent_main",
+                    operationId: sendTurnId,
+                    executionId,
+                    parentExecutionId: parentAuditExecutionId,
+                  },
                   agentThinkingParams,
                   finalized
                     ? finalized.transport.systemCacheSegments
@@ -1339,6 +1314,7 @@ function createChatTurnStoreActions(
                   turnRoute?.toolProtocol ?? null,
                   turnRoute?.resolvedOllamaEndpoint ?? null,
                 );
+                parentAuditExecutionId = executionId;
                 parentInputTokenDrift = accumulateInputTokenDrift(
                   parentInputTokenDrift,
                   currentProvider,
@@ -1562,7 +1538,6 @@ function createChatTurnStoreActions(
                   : null,
               });
 
-              // セッションタイトル自動生成 (P1-2) — fire-and-forget
               const isFirstAgentResponse =
                 prevMessages.filter((m) => m.role === "assistant").length === 0;
               const currentSession = get().sessions.find(
@@ -1571,12 +1546,13 @@ function createChatTurnStoreActions(
               if (isFirstAgentResponse && currentSession?.titleManual === 0) {
                 const titleModel =
                   useAiSettingsStore.getState().settings?.model ?? "";
-                chatApi
+                const titleGeneration = chatApi
                   .generateSessionTitle(
                     content,
                     lastMsg.content,
                     titleModel,
                     projectCtx?.language ?? "ja",
+                    turnProjectId,
                   )
                   .then(async (title) => {
                     if (!title) {
@@ -1599,6 +1575,7 @@ function createChatTurnStoreActions(
                       errorDetail(e),
                     );
                   });
+                void turnRuntime.trackTurn(titleGeneration);
               }
             },
           });
@@ -1748,6 +1725,8 @@ function createChatTurnStoreActions(
         if (sessionIdForPersist) {
           currentMessages = await maybeRunSummarization(
             sessionIdForPersist,
+            turnProjectId,
+            sendTurnId,
             prevMessages,
             budgets.l5,
             projectCtx?.language ?? "ja",
@@ -2275,7 +2254,6 @@ function createChatTurnStoreActions(
                     }
                   }
 
-                  // セッションタイトル自動生成 (P1-2) — fire-and-forget
                   const currentSession = get().sessions.find(
                     (s) => s.id === sessionIdForPersist,
                   );
@@ -2286,12 +2264,13 @@ function createChatTurnStoreActions(
                     lastMsg?.role === "assistant" &&
                     lastMsg.content
                   ) {
-                    chatApi
+                    const titleGeneration = chatApi
                       .generateSessionTitle(
                         content,
                         lastMsg.content,
                         chatModel,
                         projectCtx?.language ?? "ja",
+                        turnProjectId,
                       )
                       .then(async (title) => {
                         if (!title) {
@@ -2335,6 +2314,7 @@ function createChatTurnStoreActions(
                           errorDetail(e),
                         );
                       });
+                    void turnRuntime.trackTurn(titleGeneration);
                   }
                 },
               });
@@ -2480,12 +2460,22 @@ function createChatTurnStoreActions(
                         : cliConfig.model) || undefined,
                     prompt: flattenMessagesForCli(apiPayload),
                   },
+                  {
+                    projectId: turnProjectId,
+                    pathId: "cli_chat_stream",
+                    operationId: sendTurnId,
+                  },
                   callbacks,
                 )
               : chatApi.sendChatMessageStream(
                   apiPayload,
                   chatThinkingParams,
                   callbacks,
+                  {
+                    projectId: turnProjectId,
+                    pathId: "chat_stream_non_agent",
+                    operationId: sendTurnId,
+                  },
                   systemCacheSegments,
                   chatApiVariant,
                   systemVolatileTail,
@@ -2692,10 +2682,6 @@ function createChatTurnStoreActions(
             grimodexTurnId: stoppedTurnId,
           })
           .catch(() => {});
-      } else if (stoppedTransport === "cli-exec") {
-        void cliApi.abortCliChatStream().catch(() => {});
-      } else {
-        void chatApi.abortChatStream().catch(() => {});
       }
       if (!agentTransportWillFinalize) {
         turnRuntime.runStreamCleanup();

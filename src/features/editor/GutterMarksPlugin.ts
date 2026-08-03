@@ -83,6 +83,7 @@ function collectChannels(
 
   let hasComment = false;
   let hasReader = false;
+  let hasLiveReader = false;
   let hasForeshadow = false;
   let hasReview = false;
 
@@ -100,8 +101,10 @@ function collectChannels(
         case "peAnnotation":
           // pseudo_comment (読者コメント) は指摘ではなくコメント族の別チャネル
           if (m.attrs.status !== "dismissed") {
-            if (m.attrs.category === "pseudo_comment") hasReader = true;
-            else hasReview = true;
+            if (m.attrs.category === "pseudo_comment") {
+              hasReader = true;
+              hasLiveReader ||= m.attrs.live === true;
+            } else hasReview = true;
           }
           break;
       }
@@ -111,7 +114,8 @@ function collectChannels(
 
   const channels: GutterChannel[] = [];
   if (hasComment && cursor.showComments) channels.push("comment");
-  if (hasReader && showReaderComments) channels.push("reader");
+  if (hasReader && (showReaderComments || hasLiveReader))
+    channels.push("reader");
   if (hasForeshadow && cursor.showForeshadowMarks) channels.push("foreshadow");
   // 校閲の指摘 = 校閲アノテーション(showAnnotations) ∨ Lint(showLint)。
   // Lint 側は showLint OFF 時 decoration set が空なので hasLint も false に

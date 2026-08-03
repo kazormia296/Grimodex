@@ -339,7 +339,9 @@ function ChatMessageImpl({
                   // (isAssistant && selectionInfo)。素の writeText だと "ai"
                   // provenance が乗らず paste で "unknown" 化するため、
                   // フルメッセージコピー (handleCopy) と同じ経路に揃える。
-                  void copyChatMessageWithAttribution(text, msg.id, msg.model);
+                  void copyChatMessageWithAttribution(text, msg.id, msg.model)
+                    .then(() => toast.success(t("chat.copied")))
+                    .catch(() => toast.error(t("chat.copyFailed")));
                 }}
               />
             )}

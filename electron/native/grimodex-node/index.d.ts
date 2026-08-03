@@ -110,7 +110,8 @@ export declare class Backend {
    */
   vacuumDatabase(): Promise<void>
   /**
-   * workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
+   * workspace を開く: migrate → swap → RAII SwitchingGuard →
+   * authority commit 後の低優先度 maintenance worker →
    * recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
    * Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
    * Codex matcher破棄 + semantic 4cache epoch rotateを行う。
@@ -190,6 +191,29 @@ export declare class Backend {
    * の JSON 文字列。
    */
   timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
+  /**
+   * Append a durable batch to the complete AI-use audit ledger. The
+   * renderer snapshots `expected_workspace_path` before dispatch; every
+   * subsequent event must still target that exact workspace. A workspace
+   * switch therefore leaves a visible non-terminal execution instead of
+   * writing its terminal event into the newly active project database.
+   */
+  aiAuditAppendBatch(expectedWorkspacePath: string, projectId: string | undefined | null, events: any): Promise<string>
+  /**
+   * Validate the durable CLI lifecycle and atomically append the
+   * main-owned one-shot dispatch claim before the shell manager can spawn.
+   */
+  aiAuditClaimCliDispatch(expectedWorkspacePath: string, projectId: string | undefined | null, executionId: string, operationId: string, parentExecutionId: string | undefined | null, pathId: string, expectedRequestSha256: string): Promise<string>
+  /**
+   * Read one immutable high-water snapshot. Rows appended after the
+   * selected high-water sequence are deliberately excluded from export.
+   */
+  aiAuditReadSnapshot(expectedWorkspacePath: string, projectId?: string | undefined | null, afterSequence?: number | undefined | null, highWaterSequence?: number | undefined | null, limit?: number | undefined | null): Promise<string>
+  /**
+   * Verify payload digests, event hashes, sequence continuity, and the
+   * project-global previous-hash chain through an optional high-water mark.
+   */
+  aiAuditVerify(expectedWorkspacePath: string, projectId?: string | undefined | null, highWaterSequence?: number | undefined | null): Promise<string>
   /**
    * 現在の Codex 読みを `<userData>/ime/projects/<projectId>.json` へ再出力する。
    * options は typed IPC と同じ camelCase `ImeExportOptions`。DB 読み取りと
@@ -324,28 +348,28 @@ export declare class Backend {
    * installed/unavailable/downloading または明示エラーとして扱う。
    */
   semanticDownloadModel(language: string): Promise<string>
-  semanticIndexScene(sceneId: string): Promise<string>
-  semanticSearch(projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
+  semanticIndexScene(expectedWorkspacePath: string, projectId: string, sceneId: string): Promise<string>
+  semanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
   /**
    * Score a frozen Semantic Recall candidate set for diagnostic shadow or
    * opt-in apply. This command neither reads the active workspace nor owns
    * admission; it only returns logits, hashes, and truncation counters.
    */
   semanticRerankerShadowScore(request: any): Promise<string>
-  codexIndexEntry(entryId: string): Promise<string>
-  codexSemanticSearch(projectId: string, query: string, limit: number): Promise<string>
+  codexIndexEntry(expectedWorkspacePath: string, projectId: string, entryId: string): Promise<string>
+  codexSemanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number): Promise<string>
   codexIndexStatus(projectId: string): Promise<string>
-  codexReindexAll(projectId: string): Promise<string>
-  eventsIndexEntry(eventId: string): Promise<string>
-  eventsSemanticSearch(projectId: string, query: string, limit: number): Promise<string>
+  codexReindexAll(expectedWorkspacePath: string, projectId: string): Promise<string>
+  eventsIndexEntry(expectedWorkspacePath: string, projectId: string, eventId: string): Promise<string>
+  eventsSemanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number): Promise<string>
   eventsIndexStatus(projectId: string): Promise<string>
-  eventsReindexAll(projectId: string): Promise<string>
-  chatIndexMessage(messageId: string): Promise<string>
-  chatMessageSearch(projectId: string, query: string, limit: number): Promise<string>
+  eventsReindexAll(expectedWorkspacePath: string, projectId: string): Promise<string>
+  chatIndexMessage(expectedWorkspacePath: string, projectId: string, messageId: string): Promise<string>
+  chatMessageSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number): Promise<string>
   chatIndexStatus(projectId: string): Promise<string>
-  chatReindexAll(projectId: string): Promise<string>
+  chatReindexAll(expectedWorkspacePath: string, projectId: string): Promise<string>
   semanticIndexStatus(projectId: string): Promise<string>
-  semanticReindexAll(projectId: string, runId?: string | undefined | null): Promise<string>
+  semanticReindexAll(expectedWorkspacePath: string, projectId: string, runId?: string | undefined | null): Promise<string>
   semanticChunkContext(sceneId: string, charStart: number, charEnd: number, padding: number): Promise<string>
   semanticDebugDump(projectId: string, sceneId?: string | undefined | null, limit?: number | undefined | null): Promise<string>
   /**
@@ -563,21 +587,26 @@ export declare class Backend {
    * チャンクは `chat:stream-chunk` / 完了は `chat:stream-done` を EventQueue へ emit。
    * 失敗時は `chat:stream-error` を emit してから reject する (Tauri と同一契約 —
    * FE の fire-and-forget .catch と listen error の両経路を保つ)。
-   * **abort は self.state.chat_abort を共有** — abort_chat_stream と同一インスタンス。
+   * `streamId` は audit execution ID と一致必須。ストリームごとの cancellation
+   * registry へ登録し、他の同時ストリームとは隔離する。全 emit に同じ ID を付ける。
    */
   sendChatMessageStream(args: any, settings: any, apiKey: string): Promise<void>
   /**
-   * 実行中のチャットストリームを中止する (Tauri の abort_chat_stream と同一 —
-   * 純メモリの atomic store)。send_chat_message_stream と同一の chat_abort を立てる。
+   * 指定 `streamId` のチャットだけを中止し、そのローカル処理が quiesce するまで待つ。
+   * 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
    */
-  abortChatStream(): void
+  abortChatStream(streamId: string): Promise<boolean>
   /**
    * インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
-   * AI のべりすとでは Completion mode を使う。チャットとは独立した abort flag。
+   * AI のべりすとでは Completion mode を使う。チャットとは別の per-stream
+   * cancellation registry を使い、全 emit に audit execution ID を付ける。
    */
   sendInlineAiStream(args: any, settings: any, apiKey: string): Promise<void>
-  /** 実行中のインライン AI ストリームを中止する。chat_abort とは独立。 */
-  abortInlineAiStream(): void
+  /**
+   * 指定 `streamId` のインライン AI だけを中止し、ローカル quiescence まで待つ。
+   * 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
+   */
+  abortInlineAiStream(streamId: string): Promise<boolean>
   /**
    * Tool Use 対応の Agent 送信。tool protocol 解決・Hermes/native の安全ゲートを
    * 含む `grimodex_ai::send_chat_with_tools` をTauriと共用する。

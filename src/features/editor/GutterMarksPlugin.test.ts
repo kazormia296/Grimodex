@@ -45,6 +45,7 @@ const schema = new Schema({
         annotationId: { default: "" },
         status: { default: "open" },
         category: { default: "review" },
+        live: { default: false },
       },
     },
   },
@@ -237,6 +238,17 @@ describe("GutterMarksPlugin", () => {
       },
     ]);
     expect(widgetKeys(hidden)).toHaveLength(0);
+  });
+
+  it("live pseudo_comment は showReaderComments OFF でも reader チャネルを維持する", () => {
+    useAnnotationStore.setState({ showReaderComments: false });
+    const state = makeState([
+      {
+        text: "ライブ読者コメント",
+        marks: [["peAnnotation", { category: "pseudo_comment", live: true }]],
+      },
+    ]);
+    expect(widgetKeys(state)).toEqual(["gutter-0-reader"]);
   });
 
   it("nests: コンテナと内側段落で二重描画しない (blockquote)", () => {

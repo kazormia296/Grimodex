@@ -4,14 +4,16 @@
 //! 1 invokeにつき1回取得したsnapshotを使う。rendererへ平文キーを返さない。
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use grimodex_db::events::EventSink;
+use grimodex_db::state::active_workspace_snapshot;
 use grimodex_db::{with_db_state, AppError, Database};
 use grimodex_post_effect::{
-    apply_model_override, PostEffectAiClient, PostEffectAiOutput, PostEffectAiRequest,
-    PostEffectRuntime,
+    apply_model_override, PostEffectAiClient, PostEffectAiDispatch, PostEffectAiOutput,
+    PostEffectAiRequest, PostEffectAiResolvedRoute, PostEffectRuntime,
 };
 
 use crate::state::AppState;
@@ -27,10 +29,38 @@ impl NodePostEffectRuntime {
     pub(crate) fn new(state: Arc<AppState>) -> Self {
         Self { state, db: None }
     }
+
+    pub(crate) fn new_scoped(
+        state: Arc<AppState>,
+        expected_workspace_path: &str,
+    ) -> Result<Self, AppError> {
+        let workspace = active_workspace_snapshot(&state.ws)?;
+        let active = workspace
+            .path
+            .canonicalize()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+        let expected = PathBuf::from(expected_workspace_path)
+            .canonicalize()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+        if active != expected {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "POST_EFFECT_WORKSPACE_CHANGED: expected {}, active {}",
+                expected.display(),
+                active.display()
+            )));
+        }
+        Ok(Self {
+            state,
+            db: Some(workspace.db),
+        })
+    }
 }
 
 impl PostEffectRuntime for NodePostEffectRuntime {
     fn pin_database(&self) -> Result<Self, AppError> {
+        if self.db.is_some() {
+            return Ok(self.clone());
+        }
         let db = grimodex_db::state::active_database(&self.state.ws)?;
         Ok(Self {
             state: Arc::clone(&self.state),
@@ -106,6 +136,51 @@ impl NodePostEffectAiClient {
 }
 
 impl PostEffectAiClient for NodePostEffectAiClient {
+    fn resolve_audit_route(
+        &self,
+        request: &PostEffectAiRequest<'_>,
+    ) -> grimodex_post_effect::PostEffectAiResolvedRoute {
+        let settings = apply_model_override(
+            self.settings.clone(),
+            request.model_override,
+            request.role_override,
+        );
+        grimodex_post_effect::PostEffectAiResolvedRoute::from_settings(&settings)
+    }
+
+    fn prepare_call<'a>(
+        &'a self,
+        request: PostEffectAiRequest<'a>,
+    ) -> anyhow::Result<(PostEffectAiResolvedRoute, PostEffectAiDispatch<'a>)> {
+        let settings = apply_model_override(
+            self.settings.clone(),
+            request.model_override,
+            request.role_override,
+        );
+        let prepared = grimodex_ai::prepare_post_effect_request(
+            &settings,
+            request.system_prompt,
+            request.codex_content,
+            request.scene_content,
+        )?;
+        let route =
+            PostEffectAiResolvedRoute::from_settings_and_prepared(&settings, prepared.clone());
+        let dispatch: PostEffectAiDispatch<'a> = Box::new(move || {
+            Box::pin(async move {
+                let api_key = self.resolve_api_key(&settings)?;
+                let detected_model = settings.model.clone();
+                let raw_response =
+                    grimodex_ai::call_post_effect_api_prepared(&settings, &api_key, &prepared)
+                        .await?;
+                Ok(PostEffectAiOutput {
+                    raw_response,
+                    detected_model,
+                })
+            })
+        });
+        Ok((route, dispatch))
+    }
+
     fn call<'a>(
         &'a self,
         request: PostEffectAiRequest<'a>,
