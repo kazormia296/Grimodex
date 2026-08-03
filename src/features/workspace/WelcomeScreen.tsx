@@ -75,7 +75,7 @@ function ReturningUserScreen() {
     if (!selectedPath || workspaceBusy) return;
     setOpening(true);
     try {
-      await requestOpenWorkspace(selectedPath);
+      await requestOpenWorkspace(selectedPath, "folder-picker");
     } finally {
       setOpening(false);
     }

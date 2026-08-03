@@ -3,6 +3,7 @@ import {
   useProjectStore,
 } from "@/features/project/projectStore";
 import type { ProjectLoadContext } from "@/features/project/projectLoadGate";
+import type { ProjectLifecycleTimingObserver } from "./ProjectLifecycleRegistry";
 import { getCurrentProjectId } from "./currentProjectAuthority";
 
 /** Invalidate Project reads before replacing the Workspace database binding. */
@@ -21,12 +22,14 @@ export function hydrateWorkspaceProject(
   projectId: string,
   context: ProjectLoadContext,
   workspaceOpenRevision: number,
+  lifecycleTiming?: ProjectLifecycleTimingObserver,
 ): Promise<void> {
   return useProjectStore
     .getState()
     .loadProjectWithinLifecycle(projectId, context, {
       skipStrictQuiescence: true,
       workspaceOpenRevision,
+      lifecycleTiming,
     });
 }
 
