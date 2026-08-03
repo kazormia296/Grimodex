@@ -7,10 +7,16 @@ import { SnippetPanel } from "./SnippetPanel";
 import { useSnippetStore } from "./snippetStore";
 import type { Snippet } from "./api";
 import { axe } from "@/test-utils/axe";
+import { toast } from "sonner";
+import { copyWithAttribution } from "@/lib/clipboardAttribution";
 
 vi.mock("@/lib/clipboardAttribution", () => ({
-  copyWithAttribution: vi.fn(),
+  copyWithAttribution: vi.fn(() => Promise.resolve()),
   handleCopyWithAttribution: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 // Mock ResizeObserver for react-resizable-panels
@@ -113,6 +119,7 @@ const fakeSnippet = (overrides: Partial<Snippet> = {}): Snippet => ({
 describe("SnippetPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(copyWithAttribution).mockResolvedValue(undefined);
     useSnippetStore.setState({
       entries: [],
       searchQuery: "",
@@ -449,6 +456,19 @@ describe("SnippetPanel", () => {
     await userEvent.click(screen.getByTestId("snippet-copy-s1"));
 
     expect(copyWithAttribution).toHaveBeenCalledWith("AI内容", "ai");
+  });
+
+  it("カードコピー拒否時は失敗 toast を出し、成功表示を出さない", async () => {
+    vi.mocked(copyWithAttribution).mockRejectedValueOnce(new Error("denied"));
+    useSnippetStore.setState({ entries: [fakeSnippet({ id: "s1" })] });
+    render(<SnippetPanel />);
+
+    await userEvent.click(screen.getByTestId("snippet-copy-s1"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("コピーに失敗しました"),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it("AI snippet カードの onCopy は source='ai' を注入する", async () => {

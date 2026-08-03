@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { ExportDialog } from "./ExportDialog";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
@@ -77,6 +78,7 @@ vi.mock("@/features/editor/sceneContentStore", () => ({
 }));
 
 const settingsData = new Map<string, string>();
+const clipboardWriteText = vi.fn();
 const fakeSettingsStore = {
   get: (key: string, fallback = "") => settingsData.get(key) ?? fallback,
   getBoolean: (_key: string, fallback = false) => fallback,
@@ -137,6 +139,12 @@ vi.mock("@/features/vivliostyle/VivliostyleExportSection", () => ({
 
 beforeEach(() => {
   settingsData.clear();
+  clipboardWriteText.mockReset();
+  clipboardWriteText.mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: clipboardWriteText },
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -144,6 +152,27 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("ExportDialog", () => {
+  it("コピー成功後だけコピー済み表示へ切り替える", async () => {
+    render(<ExportDialog open onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByText("export.dialog.copy"));
+
+    await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("export.dialog.copied")).toBeInTheDocument();
+  });
+
+  it("clipboard 拒否時は失敗 toast を出し、コピー済み表示にしない", async () => {
+    clipboardWriteText.mockRejectedValueOnce(new Error("denied"));
+    render(<ExportDialog open onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByText("export.dialog.copy"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("export.dialog.clipboardFailed"),
+    );
+    expect(screen.queryByText("export.dialog.copied")).toBeNull();
+  });
+
   it("phone profile uses a bounded, stacked text-export layout", () => {
     render(
       <WorkspaceViewportProvider profile="phone">
