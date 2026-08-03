@@ -5,11 +5,11 @@
 //! `OpenDeps::on_swapped` フックで注入する (napi 側は no-op)。
 
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::state::{ActiveWorkspace, GlobalSettingsPath, WorkspaceState};
 use crate::workspace;
@@ -251,37 +251,143 @@ fn auto_backup_config(settings: &workspace::GlobalSettings, db: &Database) -> Au
     }
 }
 
-/// Prevent two rapid reopens of the same workspace from starting duplicate
-/// maintenance workers before the first worker has materialized its backup.
-static AUTO_BACKUP_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-
-fn auto_backup_in_flight() -> &'static Mutex<HashSet<PathBuf>> {
-    AUTO_BACKUP_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+#[derive(Default)]
+struct WorkspaceMaintenanceRegistry {
+    active: HashSet<PathBuf>,
+    exclusive_waiters: HashMap<PathBuf, usize>,
 }
 
-fn auto_backup_claim(path: &Path) -> Option<AutoBackupClaim> {
-    let lock = auto_backup_in_flight();
-    let mut paths = match lock.lock() {
-        Ok(paths) => paths,
+/// Path-scoped lifecycle barrier for detached maintenance connections.
+///
+/// Open uses a non-blocking claim so backup work never delays authority
+/// publication. Restore registers as an exclusive waiter and holds the same
+/// claim across sidecar removal, replacement, and reopen. This makes a worker's
+/// independent SQLite handle visible to restore without putting the slow
+/// worker behind `WorkspaceState::open_lock`.
+static WORKSPACE_MAINTENANCE: OnceLock<(Mutex<WorkspaceMaintenanceRegistry>, Condvar)> =
+    OnceLock::new();
+
+fn workspace_maintenance_registry() -> &'static (Mutex<WorkspaceMaintenanceRegistry>, Condvar) {
+    WORKSPACE_MAINTENANCE.get_or_init(|| {
+        (
+            Mutex::new(WorkspaceMaintenanceRegistry::default()),
+            Condvar::new(),
+        )
+    })
+}
+
+fn workspace_maintenance_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub(crate) fn try_claim_workspace_maintenance(path: &Path) -> Option<WorkspaceMaintenanceClaim> {
+    let key = workspace_maintenance_key(path);
+    let (lock, _) = workspace_maintenance_registry();
+    let mut registry = match lock.lock() {
+        Ok(registry) => registry,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if !paths.insert(path.to_path_buf()) {
+    if registry.active.contains(&key)
+        || registry
+            .exclusive_waiters
+            .get(&key)
+            .copied()
+            .unwrap_or_default()
+            > 0
+    {
         return None;
     }
-    Some(AutoBackupClaim(path.to_path_buf()))
+    registry.active.insert(key.clone());
+    Some(WorkspaceMaintenanceClaim(key))
 }
 
-struct AutoBackupClaim(PathBuf);
+pub(crate) fn claim_workspace_maintenance_exclusive(
+    path: &Path,
+) -> Result<WorkspaceMaintenanceClaim, AppError> {
+    claim_workspace_maintenance_exclusive_with_timeout(path, Duration::from_secs(10))
+}
 
-impl Drop for AutoBackupClaim {
-    fn drop(&mut self) {
-        let lock = auto_backup_in_flight();
-        let mut paths = match lock.lock() {
-            Ok(paths) => paths,
+fn claim_workspace_maintenance_exclusive_with_timeout(
+    path: &Path,
+    timeout: Duration,
+) -> Result<WorkspaceMaintenanceClaim, AppError> {
+    let key = workspace_maintenance_key(path);
+    let (lock, idle) = workspace_maintenance_registry();
+    let mut registry = match lock.lock() {
+        Ok(registry) => registry,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *registry.exclusive_waiters.entry(key.clone()).or_default() += 1;
+
+    let started = Instant::now();
+    while registry.active.contains(&key) {
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            remove_workspace_maintenance_waiter(&mut registry, &key);
+            return Err(anyhow::anyhow!(
+                "ワークスペース保守処理が完了せず復元を中止しました。少し待って再試行してください。"
+            )
+            .into());
+        }
+        let (next_registry, wait_result) = match idle.wait_timeout(registry, remaining) {
+            Ok(waited) => waited,
             Err(poisoned) => poisoned.into_inner(),
         };
-        paths.remove(&self.0);
+        registry = next_registry;
+        if wait_result.timed_out() && registry.active.contains(&key) {
+            remove_workspace_maintenance_waiter(&mut registry, &key);
+            return Err(anyhow::anyhow!(
+                "ワークスペース保守処理が完了せず復元を中止しました。少し待って再試行してください。"
+            )
+            .into());
+        }
     }
+
+    remove_workspace_maintenance_waiter(&mut registry, &key);
+    registry.active.insert(key.clone());
+    Ok(WorkspaceMaintenanceClaim(key))
+}
+
+fn remove_workspace_maintenance_waiter(registry: &mut WorkspaceMaintenanceRegistry, key: &Path) {
+    let remove_waiter = if let Some(waiters) = registry.exclusive_waiters.get_mut(key) {
+        *waiters = waiters.saturating_sub(1);
+        *waiters == 0
+    } else {
+        false
+    };
+    if remove_waiter {
+        registry.exclusive_waiters.remove(key);
+    }
+}
+
+pub(crate) struct WorkspaceMaintenanceClaim(PathBuf);
+
+impl Drop for WorkspaceMaintenanceClaim {
+    fn drop(&mut self) {
+        let (lock, idle) = workspace_maintenance_registry();
+        let mut registry = match lock.lock() {
+            Ok(registry) => registry,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        registry.active.remove(&self.0);
+        drop(registry);
+        idle.notify_all();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn workspace_maintenance_exclusive_waiters(path: &Path) -> usize {
+    let key = workspace_maintenance_key(path);
+    let (lock, _) = workspace_maintenance_registry();
+    let registry = match lock.lock() {
+        Ok(registry) => registry,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    registry
+        .exclusive_waiters
+        .get(&key)
+        .copied()
+        .unwrap_or_default()
 }
 
 /// `<ws>/backups/` のバックアップファイル名か（無圧縮 `.db` と gzip `.db.gz` の両方）。
@@ -378,45 +484,53 @@ fn maybe_auto_backup(ws_path: &Path, db: &Database, config: AutoBackupConfig) {
 }
 
 /// Run backup and log pruning after the workspace authority has been swapped.
-/// A separate SQLite connection keeps these writes from holding the active
-/// renderer connection's mutex during open.
-/// `with_background_connection_priority` also yields between maintenance
-/// statements whenever a foreground DB call is waiting.
+/// Backup keeps a detached, zero-wait SQLite connection so its long copy never
+/// holds the renderer mutex. Pruning on that same connection is zero-wait and
+/// bounded to direct primary-key deletes, so it cannot inherit the normal
+/// five-second foreground busy timeout or retain a stale active DB after a
+/// same-path reopen.
 fn schedule_workspace_maintenance(ws_path: &Path, global_settings_path: &Path) {
-    let Some(claim) = auto_backup_claim(ws_path) else {
-        return;
+    if let Err(error) = spawn_workspace_maintenance_worker(ws_path, global_settings_path, || {}) {
+        tracing::warn!("workspace maintenance: cannot spawn worker: {error}");
+    }
+}
+
+pub(crate) fn spawn_workspace_maintenance_worker(
+    ws_path: &Path,
+    global_settings_path: &Path,
+    on_started: impl FnOnce() + Send + 'static,
+) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
+    let Some(claim) = try_claim_workspace_maintenance(ws_path) else {
+        return Ok(None);
     };
     let workspace_path = ws_path.to_path_buf();
     let db_path = workspace_path.join("grimodex.db");
     let global_settings_path = global_settings_path.to_path_buf();
-    let result = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("grimodex-workspace-maintenance".to_string())
         .spawn(move || {
             let _claim = claim;
-            let database = match Database::new(&db_path) {
-                Ok(database) => database,
-                Err(error) => {
-                    tracing::warn!(
-                        "workspace maintenance: cannot open background connection: {error}"
-                    );
-                    return;
-                }
-            };
             // Atomic tmp+rename writes make an unlocked read safe here: the
-            // worker sees either the previous complete settings file or the
-            // next complete file, never a torn JSON document.
+            // worker sees either complete version of the settings file.
             let settings = workspace::read_global_settings(&global_settings_path);
-            let config = auto_backup_config(&settings, &database);
-            database.with_background_connection_priority(|| {
-                maybe_auto_backup(&workspace_path, &database, config);
-                if let Err(error) = database.prune_old_logs(90) {
-                    tracing::warn!("prune_old_logs in workspace maintenance failed: {error}");
+            match Database::new_for_workspace_maintenance(&db_path) {
+                Ok(maintenance_database) => {
+                    let config = auto_backup_config(&settings, &maintenance_database);
+                    on_started();
+
+                    if let Err(error) =
+                        maintenance_database.prune_old_logs_for_workspace_maintenance(90)
+                    {
+                        tracing::warn!("prune_old_logs in workspace maintenance failed: {error}");
+                    }
+                    maybe_auto_backup(&workspace_path, &maintenance_database, config);
                 }
-            });
-        });
-    if let Err(error) = result {
-        tracing::warn!("workspace maintenance: cannot spawn worker: {error}");
-    }
+                Err(error) => tracing::warn!(
+                    "workspace maintenance: cannot open background connection: {error}"
+                ),
+            }
+        })
+        .map(Some)
 }
 
 #[derive(Serialize)]
@@ -617,6 +731,7 @@ fn open_workspace_sync_impl(
     }) {
         tracing::warn!("rebuild_fts_if_stale on workspace open failed: {e}");
     }
+    let database = Arc::new(database);
 
     // swap 直前で switching を立てる (Fix I3)。ここまでの migrate /
     // VACUUM / prune の数秒間は旧 DB への正当な読み書き (切替中も
@@ -641,7 +756,7 @@ fn open_workspace_sync_impl(
         }
     };
     *inner = Some(ActiveWorkspace {
-        db: std::sync::Arc::new(database),
+        db: database,
         path: ws_path,
     });
     // Shell swap hooks may wait for other subsystem writers (IME snapshot
@@ -970,6 +1085,155 @@ mod tests {
                 max_backups: 4,
             }
         );
+    }
+
+    #[test]
+    fn exclusive_maintenance_claim_times_out_without_leaking_waiter_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-maintenance-timeout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create maintenance timeout fixture");
+        let active_claim = try_claim_workspace_maintenance(&dir).expect("claim active maintenance");
+
+        let started = Instant::now();
+        let error = match claim_workspace_maintenance_exclusive_with_timeout(
+            &dir,
+            Duration::from_millis(20),
+        ) {
+            Ok(_) => panic!("exclusive claim must time out"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("再試行"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(workspace_maintenance_exclusive_waiters(&dir), 0);
+        assert!(
+            try_claim_workspace_maintenance(&dir).is_none(),
+            "timed-out waiter must not release active maintenance"
+        );
+
+        drop(active_claim);
+        let retry_claim =
+            try_claim_workspace_maintenance(&dir).expect("claim after active release");
+        drop(retry_claim);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_path_reopen_does_not_retain_the_previous_active_database() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-maintenance-reopen-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws_dir = dir.join("ws");
+        let gs_file = dir.join("global-settings.json");
+        std::fs::create_dir_all(&ws_dir).expect("create reopen fixture");
+
+        let previous_database = Arc::new(
+            Database::new(&ws_dir.join("grimodex.db")).expect("open previous active database"),
+        );
+        previous_database.migrate().expect("migrate fixture");
+        previous_database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO app_settings (key, value)
+                     VALUES ('data.autoBackup', 'false')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO undo_journal (
+                        id, project_id, surface, entity_kind, entity_id, op_kind,
+                        base_version, result_version, created_at
+                     ) VALUES (
+                        'reopen-old', 'default-project', 'test', 'scene',
+                        'scene-old', 'update', 0, 1, datetime('now', '-120 days')
+                     )",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("seed maintenance fixture");
+        let previous_weak = Arc::downgrade(&previous_database);
+
+        let ws_state = Arc::new(WorkspaceState {
+            inner: Mutex::new(Some(ActiveWorkspace {
+                db: previous_database,
+                path: ws_dir.clone(),
+            })),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        });
+        let gs_path = Arc::new(GlobalSettingsPath {
+            path: gs_file.clone(),
+            write_lock: Mutex::new(()),
+        });
+
+        // Stop the real worker after its detached connection and path claim
+        // exist. Reopening must neither wait for this gate nor keep the old
+        // active Arc alive through the worker.
+        let (maintenance_started_tx, maintenance_started_rx) = std::sync::mpsc::channel();
+        let (release_maintenance_tx, release_maintenance_rx) = std::sync::mpsc::channel();
+        let maintenance = spawn_workspace_maintenance_worker(&ws_dir, &gs_file, move || {
+            let _ = maintenance_started_tx.send(());
+            let _ = release_maintenance_rx.recv();
+        })
+        .expect("spawn production maintenance worker")
+        .expect("maintenance claim");
+        maintenance_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("maintenance owns detached connection");
+
+        let reopen_state = Arc::clone(&ws_state);
+        let reopen_settings = Arc::clone(&gs_path);
+        let reopen_path = ws_dir.to_string_lossy().into_owned();
+        let (reopened_tx, reopened_rx) = std::sync::mpsc::channel();
+        let reopen = std::thread::spawn(move || {
+            let mut on_swapped = || {};
+            let mut deps = OpenDeps {
+                gs_path: &reopen_settings,
+                on_swapped: &mut on_swapped,
+            };
+            let result = open_workspace_sync(&reopen_state, &mut deps, &reopen_path);
+            let _ = reopened_tx.send(result);
+        });
+
+        let reopened = match reopened_rx.recv_timeout(Duration::from_secs(3)) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = release_maintenance_tx.send(());
+                let _ = maintenance.join();
+                let _ = reopen.join();
+                panic!("same-path reopen waited for detached maintenance: {error}");
+            }
+        };
+        reopened.expect("same-path reopen");
+        reopen.join().expect("reopen thread");
+        assert!(
+            previous_weak.upgrade().is_none(),
+            "maintenance worker must not retain the previous active Database"
+        );
+
+        release_maintenance_tx
+            .send(())
+            .expect("release production maintenance worker");
+        maintenance.join().expect("maintenance worker");
+        with_db_state(&ws_state, |db| {
+            let remaining: i64 = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM undo_journal WHERE id = 'reopen-old'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })?;
+            assert_eq!(
+                remaining, 0,
+                "detached maintenance must prune the live file"
+            );
+            Ok(())
+        })
+        .expect("query reopened database");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
