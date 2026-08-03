@@ -10,6 +10,7 @@ import {
 } from "@/lib/clipboardAttribution";
 import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
 import { createEditorInstanceId } from "@/features/editor/document/documentKey";
+import { toast } from "sonner";
 
 // ----- TipTap mocks -----
 let editorHtml = "";
@@ -139,8 +140,12 @@ vi.mock("@/features/codex/components/TagsChip", () => ({
 }));
 
 vi.mock("@/lib/clipboardAttribution", () => ({
-  copyWithAttribution: vi.fn(),
+  copyWithAttribution: vi.fn(() => Promise.resolve()),
   handleCopyWithAttribution: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock("@/hooks/useFitsInline", () => ({
@@ -322,6 +327,7 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
 describe("SnippetDetailContent — コピー時の source 伝搬", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(copyWithAttribution).mockResolvedValue(undefined);
     editorHtml = "";
   });
 
@@ -366,5 +372,17 @@ describe("SnippetDetailContent — コピー時の source 伝搬", () => {
       expect.anything(),
       "human",
     );
+  });
+
+  it("コピー拒否時は失敗 toast を出し、成功表示を出さない", async () => {
+    vi.mocked(copyWithAttribution).mockRejectedValueOnce(new Error("denied"));
+    const { getByTestId } = renderDetail({});
+
+    fireEvent.click(getByTestId("snippet-copy-button"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("コピーに失敗しました"),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

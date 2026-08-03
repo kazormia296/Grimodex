@@ -3519,6 +3519,7 @@
     "selectPrompt": "Select a snippet",
     "deleteConfirmDesc": "Delete \"{{name}}\"? This cannot be undone.",
     "copied": "Copied",
+    "copyFailed": "Copy failed",
     "inserted": "Inserted",
     "extraction": {
       "title": "Save as Snippet",
@@ -4527,7 +4528,8 @@
   },
   "debugLog": {
     "logCopied": "Logs copied",
-    "lineCopied": "Line copied"
+    "lineCopied": "Line copied",
+    "copyFailed": "Couldn’t copy logs"
   },
   "dialog": {
     "workspacePathPrompt": "Enter workspace path:"

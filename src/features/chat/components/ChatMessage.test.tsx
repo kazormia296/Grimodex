@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { ChatMessage } from "./ChatMessage";
 import type { ChatMessage as ChatMessageType } from "../chatTypes";
 import {
@@ -12,6 +13,9 @@ import {
 vi.mock("@/lib/clipboardAttribution", () => ({
   handleCopyWithAttribution: vi.fn(),
   copyChatMessageWithAttribution: vi.fn(() => Promise.resolve()),
+}));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 // --- strip heavy / irrelevant rendering deps ---
@@ -127,7 +131,10 @@ const LEAKED_CONTENT =
   "検索結果をお伝えします。";
 
 describe("ChatMessage — コピー時の Authorship 伝搬", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(copyChatMessageWithAttribution).mockResolvedValue(undefined);
+  });
 
   it("assistant メッセージのネイティブ copy は source='ai' を注入する", () => {
     renderMsg({ id: "m1", role: "assistant" });
@@ -155,6 +162,20 @@ describe("ChatMessage — コピー時の Authorship 伝搬", () => {
       "m3",
       "claude-x",
     );
+  });
+
+  it("SelectionToolbar のコピー拒否を処理し、成功表示を出さない", async () => {
+    vi.mocked(copyChatMessageWithAttribution).mockRejectedValueOnce(
+      new Error("denied"),
+    );
+    renderMsg({ id: "m3", role: "assistant", model: "claude-x" });
+
+    fireEvent.click(screen.getByTestId("selection-copy"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("chat.copyFailed"),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
 
