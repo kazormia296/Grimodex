@@ -409,15 +409,18 @@ fn copy_path_into(src: &Path, output: &mut File) -> io::Result<()> {
 }
 
 fn preflight_candidate(path: &Path) -> AppResult<()> {
-    match open_active(path) {
-        Ok(database) => drop(database),
-        Err(error) => {
-            cleanup_path_best_effort(&sidecar(path, "-wal"));
-            cleanup_path_best_effort(&sidecar(path, "-shm"));
-            return Err(
-                anyhow::anyhow!("このバックアップは現在のアプリで開けません: {error}").into(),
-            );
+    let result = (|| -> anyhow::Result<()> {
+        let database = Database::new(path)?;
+        database.migrate_for_restore_preflight()?;
+        if let Err(error) = database.optimize() {
+            tracing::warn!("PRAGMA optimize during restore preflight failed: {error}");
         }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        cleanup_path_best_effort(&sidecar(path, "-wal"));
+        cleanup_path_best_effort(&sidecar(path, "-shm"));
+        return Err(anyhow::anyhow!("このバックアップは現在のアプリで開けません: {error}").into());
     }
     verify_sqlite_ok(path)?;
     remove_db_sidecars(path)

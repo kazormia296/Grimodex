@@ -1962,6 +1962,11 @@ fn test_migrate_replaces_legacy_cv_triggers() {
         "run",
     )
     .expect("legacy trigger");
+    db.with_conn(|conn| {
+        conn.pragma_update(None, "user_version", 2)?;
+        Ok(())
+    })
+    .expect("mark legacy schema version");
 
     // Re-run migrate(); the helper should replace the legacy trigger.
     db.migrate().expect("re-migrate");
@@ -3357,6 +3362,8 @@ fn test_migrate_map_stickies_ai_derived_backfill() {
                 VALUES ('s-plain', 'b1', NULL);",
         )
         .expect("create legacy map_stickies with data");
+        conn.pragma_update(None, "user_version", 2)
+            .expect("mark legacy schema version");
     }
 
     db.migrate().expect("migrate");

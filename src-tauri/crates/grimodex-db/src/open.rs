@@ -6,12 +6,188 @@
 
 use serde::Serialize;
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use crate::state::{ActiveWorkspace, GlobalSettingsPath, WorkspaceState};
 use crate::workspace;
 use crate::{AppError, Database};
+
+/// Fixed, non-sensitive stage names for the development-only native
+/// workspace-open trace. Keeping this as an enum prevents paths, identifiers,
+/// SQL, or exception text from becoming span names by accident.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeWorkspaceOpenSpanName {
+    BlockingPoolWait,
+    OpenLockWait,
+    PathMeta,
+    DatabaseOpen,
+    Migrate,
+    Optimize,
+    FtsCheck,
+    WorkspaceSwapLock,
+    HookTotal,
+    ImeLockWait,
+    MatcherLockWait,
+    SemanticRotate,
+    SettingsLockWait,
+    SettingsUpdate,
+    MaintenanceSchedule,
+    SerializeEvent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeWorkspaceOpenSpanStatus {
+    Running,
+    Finished,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeWorkspaceOpenResult {
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWorkspaceOpenSpan {
+    name: NativeWorkspaceOpenSpanName,
+    status: NativeWorkspaceOpenSpanStatus,
+    start_offset_ms: f64,
+    duration_ms: f64,
+    #[serde(skip)]
+    started_at: Instant,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWorkspaceOpenSummary<'a> {
+    version: u8,
+    result: NativeWorkspaceOpenResult,
+    total_duration_ms: f64,
+    spans: &'a [NativeWorkspaceOpenSpan],
+}
+
+/// Monotonic, allowlisted native timing collector. The N-API boundary decides
+/// whether it is enabled; Tauri/MCP callers use a disabled instance through
+/// the existing `open_workspace_sync` API.
+pub struct NativeWorkspaceOpenTrace {
+    started_at: Instant,
+    enabled: bool,
+    terminal_emitted: bool,
+    spans: Vec<NativeWorkspaceOpenSpan>,
+}
+
+impl NativeWorkspaceOpenTrace {
+    pub fn new(enabled: bool) -> Self {
+        Self::with_start(Instant::now(), enabled)
+    }
+
+    pub fn with_start(started_at: Instant, enabled: bool) -> Self {
+        Self {
+            started_at,
+            enabled,
+            terminal_emitted: false,
+            spans: Vec::new(),
+        }
+    }
+
+    pub fn started_at(&self) -> Instant {
+        self.started_at
+    }
+
+    pub fn begin_span(&mut self, name: NativeWorkspaceOpenSpanName) -> Option<usize> {
+        if !self.enabled {
+            return None;
+        }
+        let started_at = Instant::now();
+        let index = self.spans.len();
+        self.spans.push(NativeWorkspaceOpenSpan {
+            name,
+            status: NativeWorkspaceOpenSpanStatus::Running,
+            start_offset_ms: rounded_ms(started_at.duration_since(self.started_at)),
+            duration_ms: 0.0,
+            started_at,
+        });
+        Some(index)
+    }
+
+    pub fn finish_span(&mut self, span: Option<usize>) {
+        self.close_span(span, NativeWorkspaceOpenSpanStatus::Finished);
+    }
+
+    pub fn fail_span(&mut self, span: Option<usize>) {
+        self.close_span(span, NativeWorkspaceOpenSpanStatus::Failed);
+    }
+
+    pub fn record_result<T, E>(
+        &mut self,
+        name: NativeWorkspaceOpenSpanName,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let span = self.begin_span(name);
+        let result = operation();
+        if result.is_ok() {
+            self.finish_span(span);
+        } else {
+            self.fail_span(span);
+        }
+        result
+    }
+
+    /// Serialize and mark the terminal once. The schema intentionally contains
+    /// only a fixed result, fixed span names, and monotonic numeric timings.
+    pub fn terminal_json(&mut self, result: NativeWorkspaceOpenResult) -> Option<String> {
+        if !self.enabled || self.terminal_emitted {
+            return None;
+        }
+        self.terminal_emitted = true;
+        let summary = NativeWorkspaceOpenSummary {
+            version: 1,
+            result,
+            total_duration_ms: rounded_ms(self.started_at.elapsed()),
+            spans: &self.spans,
+        };
+        serde_json::to_string(&summary).ok()
+    }
+
+    pub fn emit_terminal(&mut self, result: NativeWorkspaceOpenResult) {
+        if let Some(json) = self.terminal_json(result) {
+            let stderr = std::io::stderr();
+            write_workspace_open_trace(&mut stderr.lock(), &json);
+        }
+    }
+
+    fn close_span(&mut self, span: Option<usize>, status: NativeWorkspaceOpenSpanStatus) {
+        let Some(span) = span else {
+            return;
+        };
+        let Some(entry) = self.spans.get_mut(span) else {
+            return;
+        };
+        if entry.status != NativeWorkspaceOpenSpanStatus::Running {
+            return;
+        }
+        entry.duration_ms = rounded_ms(entry.started_at.elapsed());
+        entry.status = status;
+    }
+}
+
+fn write_workspace_open_trace(writer: &mut dyn Write, json: &str) {
+    // A diagnostic sink may disappear while Electron is shutting down. Trace
+    // output must never turn a successful authority swap into a native error.
+    let _ = writeln!(writer, "[workspace-open-native] {json}");
+}
+
+fn rounded_ms(duration: std::time::Duration) -> f64 {
+    (duration.as_secs_f64() * 10_000.0).round() / 10.0
+}
 
 /// Read a legacy global-scoped setting from the workspace `app_settings` table.
 ///
@@ -201,11 +377,11 @@ fn maybe_auto_backup(ws_path: &Path, db: &Database, config: AutoBackupConfig) {
     rotate_backups(&dir, config.max_backups);
 }
 
-/// Run open-time maintenance after the workspace authority has been swapped.
-/// A separate SQLite connection keeps a long `VACUUM INTO` from holding the
-/// active renderer connection's mutex. `with_background_connection_priority`
-/// also yields between maintenance statements whenever a foreground DB call
-/// is waiting.
+/// Run backup and log pruning after the workspace authority has been swapped.
+/// A separate SQLite connection keeps these writes from holding the active
+/// renderer connection's mutex during open.
+/// `with_background_connection_priority` also yields between maintenance
+/// statements whenever a foreground DB call is waiting.
 fn schedule_workspace_maintenance(ws_path: &Path, global_settings_path: &Path) {
     let Some(claim) = auto_backup_claim(ws_path) else {
         return;
@@ -370,40 +546,75 @@ pub fn open_workspace_sync(
     deps: &mut OpenDeps<'_>,
     path: &str,
 ) -> Result<OpenWorkspaceResult, AppError> {
+    let mut trace = NativeWorkspaceOpenTrace::new(false);
+    let gs_path = deps.gs_path;
+    let on_swapped = &mut *deps.on_swapped;
+    let mut traced_hook = move |_: &mut NativeWorkspaceOpenTrace| on_swapped();
+    open_workspace_sync_impl(ws_state, gs_path, path, &mut trace, &mut traced_hook)
+}
+
+/// Traced N-API entrypoint. Its data contract remains internal to the native
+/// backend; the renderer-facing `open_workspace` result is unchanged.
+pub fn open_workspace_sync_traced(
+    ws_state: &WorkspaceState,
+    gs_path: &GlobalSettingsPath,
+    path: &str,
+    trace: &mut NativeWorkspaceOpenTrace,
+    on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
+) -> Result<OpenWorkspaceResult, AppError> {
+    open_workspace_sync_impl(ws_state, gs_path, path, trace, on_swapped)
+}
+
+fn open_workspace_sync_impl(
+    ws_state: &WorkspaceState,
+    gs_path: &GlobalSettingsPath,
+    path: &str,
+    trace: &mut NativeWorkspaceOpenTrace,
+    on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
+) -> Result<OpenWorkspaceResult, AppError> {
     // open 自体を直列化 (併走 migrate の check-then-act / 二重
     // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
     // の一方向のみ (with_db は inner のみ取るので循環しない)。
-    let _open_guard = ws_state
-        .open_lock
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let _open_guard = trace.record_result(NativeWorkspaceOpenSpanName::OpenLockWait, || {
+        ws_state
+            .open_lock
+            .lock()
+            .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))
+    })?;
 
-    let ws_path = PathBuf::from(path);
-    reject_unsafe_workspace_path(&ws_path)?;
-    std::fs::create_dir_all(&ws_path).map_err(|e| anyhow::anyhow!(e))?;
-
-    let is_existing = workspace::is_existing_workspace(&ws_path);
-
-    // Initialize workspace metadata
-    let uuid_str = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let workspace_meta = workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
+    let (ws_path, is_existing, workspace_meta) =
+        trace.record_result(NativeWorkspaceOpenSpanName::PathMeta, || {
+            let ws_path = PathBuf::from(path);
+            reject_unsafe_workspace_path(&ws_path)?;
+            std::fs::create_dir_all(&ws_path).map_err(anyhow::Error::from)?;
+            let is_existing = workspace::is_existing_workspace(&ws_path);
+            let uuid_str = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            let workspace_meta = workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
+            Ok::<_, AppError>((ws_path, is_existing, workspace_meta))
+        })?;
 
     // Open database
     let db_path = ws_path.join("grimodex.db");
-    let database = Database::new(&db_path)?;
+    let database = trace.record_result(NativeWorkspaceOpenSpanName::DatabaseOpen, || {
+        Database::new(&db_path).map_err(AppError::from)
+    })?;
     let maintenance_workspace_path = ws_path.clone();
-    let maintenance_settings_path = deps.gs_path.path.clone();
-    database.migrate()?;
-    // Refresh planner stats on open (cheap: analysis_limit is set). Non-fatal —
-    // a stats refresh failure must not block opening the workspace.
-    if let Err(e) = database.optimize() {
-        tracing::warn!("PRAGMA optimize on workspace open failed: {e}");
+    let maintenance_settings_path = gs_path.path.clone();
+    trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
+        database.migrate().map_err(AppError::from)
+    })?;
+    if let Err(error) = trace.record_result(NativeWorkspaceOpenSpanName::Optimize, || {
+        database.optimize_without_wait()
+    }) {
+        tracing::warn!("non-blocking PRAGMA optimize on workspace open skipped: {error}");
     }
     // slim バックアップ復元後などで FTS 索引が空なら content から再構築（自己修復。
     // restore の happy path 以外＝再オープン失敗経由の reload や手動昇格でも検索が
     // 無音故障しないようにする。通常 DB では count だけで no-op）。
-    if let Err(e) = database.rebuild_fts_if_stale() {
+    if let Err(e) = trace.record_result(NativeWorkspaceOpenSpanName::FtsCheck, || {
+        database.rebuild_fts_if_stale()
+    }) {
         tracing::warn!("rebuild_fts_if_stale on workspace open failed: {e}");
     }
 
@@ -415,13 +626,20 @@ pub fn open_workspace_sync(
     // 同等。ガードの Drop 復帰 (正常・エラー・panic) は維持。
     // _open_guard より後に宣言 = 先に drop されるので、open_lock
     // 解放時には必ずフラグは戻っている。
+    let swap_span = trace.begin_span(NativeWorkspaceOpenSpanName::WorkspaceSwapLock);
     ws_state
         .switching
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let _switching_guard = SwitchingGuard(&ws_state.switching);
 
     // Set as active workspace
-    let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut inner = match ws_state.inner.lock() {
+        Ok(inner) => inner,
+        Err(error) => {
+            trace.fail_span(swap_span);
+            return Err(AppError::Anyhow(anyhow::anyhow!("{error}")));
+        }
+    };
     *inner = Some(ActiveWorkspace {
         db: std::sync::Arc::new(database),
         path: ws_path,
@@ -430,6 +648,7 @@ pub fn open_workspace_sync(
     // barrier, semantic epoch rotation). Do not retain the workspace mutex
     // across those waits; `switching=true` already rejects fresh DB pins.
     drop(inner);
+    trace.finish_span(swap_span);
 
     // =================================================================
     // 不変条件: swap (上の *inner = Some(...)) 以降は絶対に Err を
@@ -447,30 +666,42 @@ pub fn open_workspace_sync(
     // swap 直後のシェル固有後処理 (Tauri: semantic 系 in-memory cache の
     // クリア。前 workspace の scene_id を握っているので切替時に必ず捨てる)。
     // フック内の失敗はフック側で握る契約 (上の不変条件)。
-    (deps.on_swapped)();
+    let hook_span = trace.begin_span(NativeWorkspaceOpenSpanName::HookTotal);
+    on_swapped(trace);
+    trace.finish_span(hook_span);
 
     // Update global settings (write_lock で read-modify-write を
     // 原子化。save_global_settings / seed_sample_workspace と並行
     // しても lost update しない)。失敗 (ENOSPC / EACCES / AV による
     // rename ロック / 毒化) は recent-workspaces が更新されないだけ
     // なので warn で続行 (上の不変条件)。
-    match deps.gs_path.write_lock.lock() {
+    let settings_lock_span = trace.begin_span(NativeWorkspaceOpenSpanName::SettingsLockWait);
+    match gs_path.write_lock.lock() {
         Ok(_gs_guard) => {
-            let mut settings = workspace::read_global_settings(&deps.gs_path.path);
+            trace.finish_span(settings_lock_span);
+            let settings_update_span =
+                trace.begin_span(NativeWorkspaceOpenSpanName::SettingsUpdate);
+            let mut settings = workspace::read_global_settings(&gs_path.path);
             let now = chrono::Utc::now().to_rfc3339();
             workspace::touch_recent_workspace(&mut settings, path, &now);
-            if let Err(e) = workspace::write_global_settings(&deps.gs_path.path, &settings) {
+            if let Err(e) = workspace::write_global_settings(&gs_path.path, &settings) {
+                trace.fail_span(settings_update_span);
                 tracing::warn!("global settings update on workspace open failed: {e}");
+            } else {
+                trace.finish_span(settings_update_span);
             }
         }
         Err(e) => {
+            trace.fail_span(settings_lock_span);
             tracing::warn!("global settings lock on workspace open failed: {e}");
         }
     }
 
     // Backup and log pruning are deliberately after the authority swap and
     // recent-workspace commit. They must not delay the renderer's open invoke.
+    let maintenance_span = trace.begin_span(NativeWorkspaceOpenSpanName::MaintenanceSchedule);
     schedule_workspace_maintenance(&maintenance_workspace_path, &maintenance_settings_path);
+    trace.finish_span(maintenance_span);
 
     let name = workspace::workspace_name(path);
     Ok(OpenWorkspaceResult {
@@ -484,6 +715,7 @@ pub fn open_workspace_sync(
 mod tests {
     use super::*;
     use crate::with_db_state;
+    use std::io;
     use std::sync::Mutex;
 
     #[test]
@@ -516,6 +748,150 @@ mod tests {
         // 一時領域 (テスト/正規利用) は誤検知で弾かない。存在しない leaf でも祖先で判定。
         let base = std::env::temp_dir().join(format!("grimodex-ws-{}", uuid::Uuid::new_v4()));
         assert!(reject_unsafe_workspace_path(&base).is_ok());
+    }
+
+    #[test]
+    fn native_trace_uses_monotonic_allowlisted_spans_and_one_terminal() {
+        let mut trace = NativeWorkspaceOpenTrace::new(true);
+        let names = [
+            NativeWorkspaceOpenSpanName::BlockingPoolWait,
+            NativeWorkspaceOpenSpanName::OpenLockWait,
+            NativeWorkspaceOpenSpanName::PathMeta,
+            NativeWorkspaceOpenSpanName::DatabaseOpen,
+            NativeWorkspaceOpenSpanName::Migrate,
+            NativeWorkspaceOpenSpanName::Optimize,
+            NativeWorkspaceOpenSpanName::FtsCheck,
+            NativeWorkspaceOpenSpanName::WorkspaceSwapLock,
+            NativeWorkspaceOpenSpanName::HookTotal,
+            NativeWorkspaceOpenSpanName::ImeLockWait,
+            NativeWorkspaceOpenSpanName::MatcherLockWait,
+            NativeWorkspaceOpenSpanName::SemanticRotate,
+            NativeWorkspaceOpenSpanName::SettingsLockWait,
+            NativeWorkspaceOpenSpanName::SettingsUpdate,
+            NativeWorkspaceOpenSpanName::MaintenanceSchedule,
+            NativeWorkspaceOpenSpanName::SerializeEvent,
+        ];
+        for name in names {
+            let span = trace.begin_span(name);
+            trace.finish_span(span);
+        }
+
+        let json = trace
+            .terminal_json(NativeWorkspaceOpenResult::Ready)
+            .expect("first terminal");
+        assert!(
+            trace
+                .terminal_json(NativeWorkspaceOpenResult::Failed)
+                .is_none(),
+            "terminal summary must be emitted at most once"
+        );
+        let summary: serde_json::Value = serde_json::from_str(&json).expect("trace json");
+        let spans = summary["spans"].as_array().expect("spans");
+        assert_eq!(spans.len(), names.len());
+        let mut previous_offset = 0.0;
+        for span in spans {
+            let offset = span["startOffsetMs"].as_f64().expect("offset");
+            let duration = span["durationMs"].as_f64().expect("duration");
+            assert!(offset >= previous_offset, "offsets must be monotonic");
+            assert!(duration >= 0.0, "duration must not be negative");
+            assert_eq!(span["status"], "finished");
+            previous_offset = offset;
+        }
+    }
+
+    #[test]
+    fn native_trace_ignores_terminal_writer_failures() {
+        struct FailingWriter;
+
+        impl io::Write for FailingWriter {
+            fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed stderr"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed stderr"))
+            }
+        }
+
+        write_workspace_open_trace(&mut FailingWriter, "{\"result\":\"ready\"}");
+    }
+
+    #[test]
+    fn native_trace_failure_closes_the_active_stage_without_sensitive_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-native-open-trace-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws_state = WorkspaceState {
+            inner: Mutex::new(None),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let gs_path = GlobalSettingsPath {
+            path: dir.join("global-settings.json"),
+            write_lock: Mutex::new(()),
+        };
+        let mut trace = NativeWorkspaceOpenTrace::new(true);
+        let mut on_swapped = |_: &mut NativeWorkspaceOpenTrace| {};
+        let result = open_workspace_sync_traced(
+            &ws_state,
+            &gs_path,
+            "relative/private-workspace-name",
+            &mut trace,
+            &mut on_swapped,
+        );
+        let error = match result {
+            Ok(_) => panic!("relative path must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("absolute"));
+
+        let json = trace
+            .terminal_json(NativeWorkspaceOpenResult::Failed)
+            .expect("failure terminal");
+        let summary: serde_json::Value = serde_json::from_str(&json).expect("trace json");
+        assert_eq!(summary["result"], "failed");
+        let spans = summary["spans"].as_array().expect("spans");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0]["name"], "open-lock-wait");
+        assert_eq!(spans[0]["status"], "finished");
+        assert_eq!(spans[1]["name"], "path-meta");
+        assert_eq!(spans[1]["status"], "failed");
+
+        let top_level_keys: std::collections::BTreeSet<_> = summary
+            .as_object()
+            .expect("summary object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            top_level_keys,
+            std::collections::BTreeSet::from(["result", "spans", "totalDurationMs", "version",])
+        );
+        for span in spans {
+            let keys: std::collections::BTreeSet<_> = span
+                .as_object()
+                .expect("span object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                std::collections::BTreeSet::from(
+                    ["durationMs", "name", "startOffsetMs", "status",]
+                )
+            );
+        }
+        for forbidden in [
+            "workspaceId",
+            "projectId",
+            "documentId",
+            "sql",
+            "error",
+            "relative/private-workspace-name",
+        ] {
+            assert!(!json.contains(forbidden), "trace leaked {forbidden}");
+        }
     }
 
     #[test]

@@ -4,7 +4,34 @@ use super::Database;
 
 impl Database {
     pub fn migrate(&self) -> anyhow::Result<()> {
+        self.migrate_impl(false)
+    }
+
+    /// Restore preflight operates on a disposable copy and must retain the
+    /// historical full idempotent migration as its schema-compatibility probe.
+    /// Normal workspace open uses `migrate()` so current schemas stay on the
+    /// read-only fast path.
+    pub(crate) fn migrate_for_restore_preflight(&self) -> anyhow::Result<()> {
+        self.migrate_impl(true)
+    }
+
+    fn migrate_impl(&self, force_full: bool) -> anyhow::Result<()> {
         let conn = self.lock_conn()?;
+        const SCHEMA_VERSION: i32 = grimodex_core::SCHEMA_VERSION;
+        let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        anyhow::ensure!(
+            current <= SCHEMA_VERSION,
+            "workspace schema version {current} is newer than supported version {SCHEMA_VERSION}"
+        );
+        if current == SCHEMA_VERSION && !force_full {
+            // Crash recovery is an open-time operational invariant, not a
+            // schema revision. The helper first performs a read-only EXISTS
+            // check, so the healthy current-version path never takes a write
+            // lock (and cannot sit behind an unrelated SQLite writer).
+            Self::recover_interrupted_post_effect_runs(&conn)?;
+            return Ok(());
+        }
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS projects (
                 id                     TEXT PRIMARY KEY,
@@ -1332,14 +1359,7 @@ impl Database {
         // PostEffect クラッシュリカバリ: プロセス強制終了等で running のまま残った run を
         // 起動時に failed へ落とす。idx_runs_running_scope の UNIQUE が次回起動を
         // ブロックするのを防ぐ目的も兼ねる。設計書 §run のステータス遷移 を参照。
-        conn.execute(
-            "UPDATE post_effect_runs
-                SET status = 'failed',
-                    error_message = COALESCE(error_message, 'Process terminated unexpectedly'),
-                    completed_at = datetime('now')
-              WHERE status = 'running'",
-            [],
-        )?;
+        Self::recover_interrupted_post_effect_runs(&conn)?;
 
         // Trash bin (削除物の物理ゴミ箱) — Phase 1 では文字屑のみ書き込む。
         // payload / preview_meta は素の TEXT で JSON.stringify を保持。
@@ -2069,12 +2089,32 @@ impl Database {
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
         // crash or later migration failure.
-        const SCHEMA_VERSION: i32 = grimodex_core::SCHEMA_VERSION;
-        let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        }
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
+        Ok(())
+    }
+
+    /// Recover runs left active by a terminated process without turning every
+    /// healthy workspace open into a SQLite write. The read probe is also what
+    /// lets a current-schema open proceed while another connection owns a
+    /// `BEGIN IMMEDIATE` reservation.
+    fn recover_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<()> {
+        let has_running: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM post_effect_runs WHERE status = 'running' LIMIT 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_running {
+            return Ok(());
+        }
+        conn.execute(
+            "UPDATE post_effect_runs
+                SET status = 'failed',
+                    error_message = COALESCE(error_message, 'Process terminated unexpectedly'),
+                    completed_at = datetime('now')
+              WHERE status = 'running'",
+            [],
+        )?;
         Ok(())
     }
 
@@ -3480,6 +3520,135 @@ impl Database {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::time::{Duration, Instant};
+
+    fn temp_database_path(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("grimodex-migrate-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create migration test directory");
+        dir.join("grimodex.db")
+    }
+
+    #[test]
+    fn current_schema_migrate_is_read_only_while_another_connection_writes() {
+        let path = temp_database_path("current-version-lock");
+        let initializer = Database::new(&path).expect("open database");
+        initializer.migrate().expect("create current schema");
+        drop(initializer);
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .busy_timeout(Duration::from_millis(50))
+            .expect("set competing busy timeout");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        // `Database::new` is part of the native workspace-open path. Its
+        // connection PRAGMAs must also remain compatible with an unrelated WAL
+        // writer before migrate reaches the current-version read fast path.
+        let db = Database::new(&path).expect("open current database while writer is active");
+        db.migrate()
+            .expect("current-version open migration must remain read-only");
+        let optimize_started = Instant::now();
+        let optimize_result = db.optimize_without_wait();
+        assert!(
+            optimize_started.elapsed() < Duration::from_secs(1),
+            "non-blocking optimize waited behind the writer"
+        );
+        if let Err(error) = optimize_result {
+            assert!(
+                error.to_string().contains("database is locked"),
+                "unexpected optimize error: {error:#}"
+            );
+        }
+        let restored_timeout_ms: i64 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read restored busy timeout");
+        assert_eq!(restored_timeout_ms, 5_000);
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn migrate_rejects_a_newer_schema_version() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        let future_version = grimodex_core::SCHEMA_VERSION + 1;
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "user_version", future_version)?;
+            Ok(())
+        })
+        .expect("stamp future schema version");
+
+        let error = db
+            .migrate()
+            .expect_err("newer workspace schema must not be opened by an older binary");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "workspace schema version {future_version} is newer than supported version {}",
+                grimodex_core::SCHEMA_VERSION
+            )
+        );
+    }
+
+    #[test]
+    fn previous_schema_migrate_waits_for_writes_and_stamps_only_after_retry() {
+        let path = temp_database_path("previous-version-lock");
+        let db = Database::new(&path).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "user_version", 2)?;
+            conn.busy_timeout(Duration::from_millis(50))?;
+            Ok(())
+        })
+        .expect("mark database as schema version 2");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .busy_timeout(Duration::from_millis(50))
+            .expect("set competing busy timeout");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let error = db
+            .migrate()
+            .expect_err("version 2 must run migrations instead of taking the fast path");
+        assert!(
+            error.to_string().contains("database is locked"),
+            "expected SQLITE_BUSY from the migration write, got {error:#}"
+        );
+        let version_while_locked: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read version after failed migration");
+        assert_eq!(version_while_locked, 2);
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        db.migrate().expect("retry migration after lock release");
+        let migrated_version: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read migrated version");
+        assert_eq!(migrated_version, grimodex_core::SCHEMA_VERSION);
+
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
 
     #[test]
     fn migrate_decouples_legacy_ai_audit_project_fk_without_changing_rows() {
@@ -3566,6 +3735,7 @@ mod tests {
             )?;
             conn.pragma_update(None, "foreign_keys", true)?;
             conn.execute("DELETE FROM projects WHERE id = 'doomed-project'", [])?;
+            conn.pragma_update(None, "user_version", 2)?;
             let legacy_fk_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM pragma_foreign_key_list('ai_audit_events')
                   WHERE \"table\" = 'projects' AND \"from\" = 'project_id'",
@@ -4655,6 +4825,7 @@ mod tests {
                  VALUES ('manual-ann', 'p1', 'manual-run', 'pseudo_comment', '通常', '{}')",
                 [],
             )?;
+            conn.pragma_update(None, "user_version", 2)?;
             Ok(())
         })
         .expect("insert fixtures");

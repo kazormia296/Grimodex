@@ -214,7 +214,7 @@ impl Database {
              -- so it can't grow without bound during a long session.
              PRAGMA wal_autocheckpoint=1000;
              PRAGMA journal_size_limit=67108864;
-             -- Cap the work `PRAGMA optimize` (run post-migrate / on close) does.
+             -- Cap the work `PRAGMA optimize` (restore / non-blocking open maintenance) does.
              PRAGMA analysis_limit=400;",
         )?;
         // TEMP metadata is deliberately connection-local: open/restore creates
@@ -300,13 +300,37 @@ impl Database {
     }
 
     /// Update the query planner's statistics (`sqlite_stat1`). Cheap because
-    /// `analysis_limit` is set at open; safe to call any time. Run after
-    /// migrate and periodically — without it SQLite never gathers stats and the
-    /// planner can pick poor plans as tables grow (DB health audit 2026-07).
+    /// `analysis_limit` is set at open; safe to call after a bulk replacement
+    /// such as restore. Normal workspace open uses the non-blocking variant
+    /// below because even a no-op `PRAGMA optimize` can request SQLite's writer
+    /// lock (DB health audit 2026-07).
     pub fn optimize(&self) -> anyhow::Result<()> {
         let conn = self.lock_conn()?;
         conn.execute_batch("PRAGMA optimize;")?;
         Ok(())
+    }
+
+    /// Refresh planner statistics without ever waiting behind another SQLite
+    /// writer. Workspace open uses this before publishing authority: success
+    /// preserves the previous maintenance behavior, while SQLITE_BUSY is a
+    /// fail-soft signal and cannot reintroduce the five-second open stall.
+    pub fn optimize_without_wait(&self) -> anyhow::Result<()> {
+        let conn = self.lock_conn()?;
+        let original_timeout_ms: i64 =
+            conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        anyhow::ensure!(
+            original_timeout_ms >= 0,
+            "SQLite returned a negative busy_timeout"
+        );
+        conn.busy_timeout(Duration::ZERO)?;
+        let optimize_result = conn.execute_batch("PRAGMA optimize;");
+        let restore_result = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
+
+        match (optimize_result, restore_result) {
+            (Err(error), _) => Err(error.into()),
+            (Ok(()), Err(error)) => Err(error.into()),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 
     /// Compact the active workspace in place. This trusted, argument-free API

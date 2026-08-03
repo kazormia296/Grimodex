@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Envelope } from "../shared/ipcContract.js";
+import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
 
 const mocks = vi.hoisted(() => ({
@@ -59,6 +59,12 @@ function invokeHandler(): (
 beforeEach(() => {
   mocks.handlers.clear();
   vi.clearAllMocks();
+  delete process.env.GRIMODEX_WORKSPACE_OPEN_TRACE;
+});
+
+afterEach(() => {
+  delete process.env.GRIMODEX_WORKSPACE_OPEN_TRACE;
+  vi.restoreAllMocks();
 });
 
 describe("registerIpcRouter fail-soft logging", () => {
@@ -99,5 +105,147 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(warn.mock.calls.flat().join(" ")).not.toContain("db_execute");
     expect(warn.mock.calls.flat().join(" ")).not.toContain("SECRET SQL");
     warn.mockRestore();
+  });
+});
+
+describe("registerIpcRouter workspace-open main trace", () => {
+  function backendWithOpenWorkspace(
+    openWorkspace: (path: string) => Promise<string>,
+  ): NapiBackendLike {
+    return { openWorkspace } as unknown as NapiBackendLike;
+  }
+
+  it("emits one safe success summary when the dev trace is enabled", async () => {
+    process.env.GRIMODEX_WORKSPACE_OPEN_TRACE = "1";
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    registerIpcRouter(
+      backendWithOpenWorkspace(async () =>
+        JSON.stringify({
+          name: "SECRET_WORKSPACE_NAME",
+          isExisting: true,
+          workspaceId: "SECRET_WORKSPACE_ID",
+        }),
+      ),
+    );
+
+    const envelope = await invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/secret/workspace/path",
+    });
+
+    expect(envelope.ok).toBe(true);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0]?.[0]).toBe("[workspace-open-main]");
+    const summary = info.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(summary).sort()).toEqual([
+      "durationMs",
+      "result",
+      "version",
+    ]);
+    expect(summary).toMatchObject({ version: 1, result: "success" });
+    expect(summary.durationMs).toEqual(expect.any(Number));
+    expect(Number.isFinite(summary.durationMs)).toBe(true);
+    expect(summary.durationMs).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(
+      /SECRET|\/secret\/workspace\/path/,
+    );
+  });
+
+  it("emits one safe failure summary without copying the native error", async () => {
+    process.env.GRIMODEX_WORKSPACE_OPEN_TRACE = "1";
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    registerIpcRouter(
+      backendWithOpenWorkspace(async () => {
+        throw new Error("SECRET_NATIVE_ERROR at /secret/workspace/path");
+      }),
+    );
+
+    const envelope = await invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/secret/workspace/path",
+    });
+
+    expect(envelope.ok).toBe(false);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      "[workspace-open-main]",
+      expect.objectContaining({
+        version: 1,
+        result: "failure",
+        durationMs: expect.any(Number),
+      }),
+    );
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(
+      /SECRET|\/secret\/workspace\/path/,
+    );
+  });
+
+  it("does not emit a summary when the dev trace is disabled", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    registerIpcRouter(
+      backendWithOpenWorkspace(async () =>
+        JSON.stringify({
+          name: "workspace",
+          isExisting: true,
+          workspaceId: "workspace-id",
+        }),
+      ),
+    );
+
+    await invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/secret/workspace/path",
+    });
+
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("emits one failure terminal when synchronous handler construction throws", async () => {
+    process.env.GRIMODEX_WORKSPACE_OPEN_TRACE = "1";
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const constructionError = new Error("handler construction failed");
+    registerIpcRouter(
+      backendWithOpenWorkspace(async () => {
+        throw new Error("backend must not be reached");
+      }),
+      () => {
+        throw constructionError;
+      },
+    );
+
+    await expect(
+      invokeHandler()({ sender: {} }, "open_workspace", {
+        path: "/secret/workspace/path",
+      }),
+    ).rejects.toBe(constructionError);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      "[workspace-open-main]",
+      expect.objectContaining({
+        version: 1,
+        result: "failure",
+        durationMs: expect.any(Number),
+      }),
+    );
+  });
+
+  it("preserves the successful envelope when the trace logger throws", async () => {
+    process.env.GRIMODEX_WORKSPACE_OPEN_TRACE = "1";
+    const info = vi.spyOn(console, "info").mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    registerIpcRouter(
+      backendWithOpenWorkspace(async () =>
+        JSON.stringify({
+          name: "workspace",
+          isExisting: true,
+          workspaceId: "workspace-id",
+        }),
+      ),
+    );
+
+    const envelope = await invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/secret/workspace/path",
+    });
+
+    expect(envelope.ok).toBe(true);
+    expect(info).toHaveBeenCalledTimes(1);
   });
 });
