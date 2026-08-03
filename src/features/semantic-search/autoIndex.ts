@@ -5,6 +5,11 @@ import {
 } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { hasRuntimePerformanceCapability } from "@/lib/perfLog";
+import {
+  isQuiescenceLeaseActive,
+  isRendererTeardownStarted,
+} from "@/application/lifecycle/quiescenceLease";
 import {
   chatIndexStatus,
   chatReindexAll,
@@ -47,6 +52,8 @@ export function captureCurrentSemanticScope(
   expectedWorkspaceKey?: string,
 ): SemanticIndexScope | null {
   if (
+    isQuiescenceLeaseActive() ||
+    isRendererTeardownStarted() ||
     useWorkspaceStore.getState().workspaceSwitchInProgress ||
     !useWorkspaceStore.getState().workspaceHydrated
   ) {
@@ -78,6 +85,8 @@ export function captureCurrentSemanticScope(
 /** Re-check a captured scope after every await before starting the next stage. */
 export function isSemanticScopeCurrent(scope: SemanticIndexScope): boolean {
   return (
+    !isQuiescenceLeaseActive() &&
+    !isRendererTeardownStarted() &&
     useWorkspaceStore.getState().workspaceHydrated &&
     !useWorkspaceStore.getState().workspaceSwitchInProgress &&
     useWorkspaceStore.getState().activeWorkspacePath === scope.workspaceKey &&
@@ -157,6 +166,13 @@ export async function ensureSemanticModelForProject(
   projectId: string,
   workspaceKey?: string,
 ): Promise<void> {
+  // The renderer performance fixture measures deterministic scheduling and
+  // main-thread work. Downloading a 37 MB model during the run makes the
+  // result depend on network timing and can inject machine-specific ONNX work
+  // into later, unrelated interaction gates. Incremental indexing is still
+  // scheduled and launched; with the fixture's isolated user-data directory it
+  // fails fast at the normal "model unavailable" boundary.
+  if (hasRuntimePerformanceCapability()) return;
   const scope = captureScope(projectId, workspaceKey);
   if (!scope || modelAttempted.has(scope.guardKey)) return;
   modelAttempted.add(scope.guardKey);

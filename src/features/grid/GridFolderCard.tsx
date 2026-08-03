@@ -13,6 +13,9 @@ import { recordMark } from "@/lib/perfLog";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { GridFolderCardContextMenu } from "./GridFolderCardContextMenu";
 import { GridFolderMenu } from "./GridFolderMenu";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import { useLatestValueDraftController } from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 interface Props {
   folder: TreeNodeData;
@@ -51,24 +54,69 @@ export function GridFolderCard({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const editingTitleRef = useRef(false);
+  const mountedRef = useRef(true);
+  const titleController = useLatestValueDraftController(
+    `grid-folder-title:${folder.id}`,
+    folder.title,
+    async (next) => {
+      const trimmed = next.trim();
+      if (trimmed && trimmed !== folder.title) {
+        await updateNodeTitle(folder.id, trimmed);
+      }
+    },
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   function startTitleEdit() {
+    if (editingTitleRef.current) return;
+    editingTitleRef.current = true;
+    titleController.reset(folder.title);
     setTitleDraft(folder.title);
     setEditingTitle(true);
     setTimeout(() => titleInputRef.current?.select(), 0);
   }
 
-  function commitTitleEdit() {
-    const trimmed = titleDraft.trim();
-    if (trimmed && trimmed !== folder.title) {
-      void updateNodeTitle(folder.id, trimmed);
+  async function commitTitleEdit(
+    options?: QuiescenceParticipantFlushOptions,
+  ): Promise<void> {
+    if (!editingTitleRef.current) return;
+    if (!titleController.latestValue.trim()) {
+      titleController.reset(folder.title);
+    } else {
+      await titleController.save(options);
     }
-    setEditingTitle(false);
+    editingTitleRef.current = false;
+    if (mountedRef.current) setEditingTitle(false);
   }
 
   function cancelTitleEdit() {
-    setEditingTitle(false);
+    editingTitleRef.current = false;
+    titleController.reset(folder.title);
+    if (mountedRef.current) setEditingTitle(false);
   }
+
+  useQuiescentDraftParticipant({
+    id: `grid-folder-title:${folder.id}`,
+    enabled: editingTitle,
+    isDirty: () => editingTitleRef.current && titleController.dirty,
+    flush: commitTitleEdit,
+    discard: cancelTitleEdit,
+    recovery: () =>
+      editingTitleRef.current
+        ? {
+            kind: "grid-folder-title",
+            nodeId: folder.id,
+            title: titleController.latestValue,
+          }
+        : null,
+  });
 
   // Enter edit mode when something external requests rename via the global
   // pendingRenameId flag (context menu, newly-created node, future shortcut).
@@ -247,12 +295,18 @@ export function GridFolderCard({
                 autoFocus
                 className="flex-1 min-w-0 rounded bg-accent px-1 py-0.5 text-sm font-semibold outline-none"
                 value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onBlur={commitTitleEdit}
+                onChange={(e) => {
+                  titleController.markDirty(
+                    e.target.value.trim() ? e.target.value : folder.title,
+                  );
+                  setTitleDraft(e.target.value);
+                }}
+                onBlur={() => void commitTitleEdit().catch(() => {})}
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
                   if (e.key === "Enter") {
                     e.preventDefault();
-                    commitTitleEdit();
+                    void commitTitleEdit().catch(() => {});
                   } else if (e.key === "Escape") {
                     e.preventDefault();
                     cancelTitleEdit();

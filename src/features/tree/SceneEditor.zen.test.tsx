@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, render } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/features/editor/Breadcrumb", () => ({
@@ -26,7 +26,7 @@ vi.mock("@/features/editor/LinearEditorView", () => ({
   LinearEditorView: () => <div data-linear-editor />,
 }));
 vi.mock("@/features/revision/RevisionHistoryModal", () => ({
-  RevisionHistoryModal: () => null,
+  RevisionHistoryModal: () => <div data-revision-history-modal />,
 }));
 vi.mock("@/features/editor/AsciiSplash", () => ({
   AsciiSplash: () => <div data-ascii-splash />,
@@ -43,9 +43,11 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { SceneEditor } from "./SceneEditor";
 import { useSceneStore } from "./store";
 import { useTreeStore } from "./treeStore";
+import { useRevisionStore } from "@/features/revision/revisionStore";
 
 describe("SceneEditor Zen projection", () => {
   beforeEach(() => {
+    useRevisionStore.setState({ isOpen: false });
     useCursorSettingsStore.setState({ zenMode: true });
     useSceneStore.setState({ activeSceneId: "scene-2" } as never);
     useTreeStore.setState({
@@ -67,6 +69,7 @@ describe("SceneEditor Zen projection", () => {
       splitDirection: "right",
       isLinearMode: false,
       isDraggingTab: false,
+      tabStateHydrated: true,
     } as never);
   });
 
@@ -94,5 +97,46 @@ describe("SceneEditor Zen projection", () => {
     );
     expect(primaryGroup).not.toHaveAttribute("aria-hidden");
     expect(container.querySelectorAll("[data-tab-bar]")).toHaveLength(2);
+  });
+
+  it("loads the linear editor on first mode entry and restores the normal editor on exit", async () => {
+    useCursorSettingsStore.setState({ zenMode: false });
+    useTabStore.setState({ isLinearMode: false });
+    const { container } = render(<SceneEditor />);
+
+    expect(container.querySelector("[data-linear-editor]")).toBeNull();
+    expect(container.querySelector("[data-editor-pane]")).not.toBeNull();
+
+    act(() => useTabStore.setState({ isLinearMode: true }));
+    await waitFor(() =>
+      expect(container.querySelector("[data-linear-editor]")).not.toBeNull(),
+    );
+    expect(container.querySelector("[data-editor-pane]")).toBeNull();
+
+    act(() => useTabStore.setState({ isLinearMode: false }));
+    await waitFor(() =>
+      expect(container.querySelector("[data-editor-pane]")).not.toBeNull(),
+    );
+    expect(container.querySelector("[data-linear-editor]")).toBeNull();
+  });
+
+  it("mounts revision history only for its first open and removes it on close", async () => {
+    useCursorSettingsStore.setState({ zenMode: false });
+    const { container } = render(<SceneEditor />);
+
+    expect(container.querySelector("[data-revision-history-modal]")).toBeNull();
+    act(() => useRevisionStore.setState({ isOpen: true }));
+    await waitFor(() =>
+      expect(
+        container.querySelector("[data-revision-history-modal]"),
+      ).not.toBeNull(),
+    );
+
+    act(() => useRevisionStore.getState().closeHistory());
+    await waitFor(() =>
+      expect(
+        container.querySelector("[data-revision-history-modal]"),
+      ).toBeNull(),
+    );
   });
 });

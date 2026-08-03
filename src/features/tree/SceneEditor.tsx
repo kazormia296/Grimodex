@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useSceneStore } from "./store";
 import { useTreeStore } from "./treeStore";
 import { TabBar } from "@/features/editor/TabBar";
@@ -6,8 +6,7 @@ import { Breadcrumb } from "@/features/editor/Breadcrumb";
 import { SceneMetaChipRow } from "@/features/editor/SceneMetaChipRow";
 import { EditorPane } from "@/features/editor/EditorPane";
 import { useTabStore } from "@/features/editor/tabStore";
-import { LinearEditorView } from "@/features/editor/LinearEditorView";
-import { RevisionHistoryModal } from "@/features/revision/RevisionHistoryModal";
+import { useRevisionStore } from "@/features/revision/revisionStore";
 import { AsciiSplash } from "@/features/editor/AsciiSplash";
 import { cn } from "@/lib/utils";
 import { DRAG_DATA_KEY, DRAG_GROUP_KEY } from "@/features/editor/TabBar";
@@ -17,8 +16,21 @@ import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigation
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
+import { createEditorInputScopeKey } from "@/features/editor/editorInputReady";
+import { useProjectStore } from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { PhoneEmptySceneBootstrap } from "./PhoneEmptySceneBootstrap";
+
+const LinearEditorView = lazy(async () => {
+  const module = await import("@/features/editor/LinearEditorView");
+  return { default: module.LinearEditorView };
+});
+
+const RevisionHistoryModal = lazy(async () => {
+  const module = await import("@/features/revision/RevisionHistoryModal");
+  return { default: module.RevisionHistoryModal };
+});
 
 interface DragPayload {
   nodeId: string;
@@ -153,6 +165,16 @@ function EdgeDropZones() {
 export function SceneEditor() {
   const zenMode = useCursorSettingsStore((state) => state.zenMode);
   const viewportProfile = useWorkspaceViewportProfile();
+  const projectId = useProjectStore((state) => state.currentProjectId);
+  const workspacePath = useWorkspaceStore((state) => state.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (state) => state.workspaceOpenRevision,
+  );
+  const inputScopeKey = createEditorInputScopeKey({
+    projectId,
+    workspacePath,
+    workspaceOpenRevision,
+  });
   const rawPhoneProjection = viewportProfile === "phone";
   const inlineAiStatus = useInlineAiStore((state) => state.status);
   const inlineAiOwnerGroup = useInlineAiStore(
@@ -181,6 +203,8 @@ export function SceneEditor() {
     ),
   );
   const isLinearMode = useTabStore((s) => s.isLinearMode);
+  const tabStateHydrated = useTabStore((s) => s.tabStateHydrated);
+  const revisionHistoryOpen = useRevisionStore((s) => s.isOpen);
 
   const primaryActiveTabId = useTabStore((s) => s.activeTabId);
   const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
@@ -193,6 +217,10 @@ export function SceneEditor() {
   const secondaryTab = useTabStore((s) =>
     s.secondaryTabs.find((t) => t.nodeId === s.secondaryActiveTabId),
   );
+  const focusedTab =
+    activeGroupIndex === 1 && secondaryGroupOpen ? secondaryTab : primaryTab;
+  const restoredNonSceneTabHasFocus =
+    focusedTab !== undefined && focusedTab.contentType !== "scene";
   const hasDesktopDocumentProjection =
     primaryActiveTabId != null ||
     (secondaryGroupOpen && secondaryActiveTabId != null);
@@ -229,7 +257,14 @@ export function SceneEditor() {
 
   // Ensure the active scene always has a tab (handles external changes like node creation).
   useEffect(() => {
-    if (phoneProjection || restoringDesktopProjection || !activeSceneId) return;
+    if (
+      !tabStateHydrated ||
+      phoneProjection ||
+      restoringDesktopProjection ||
+      restoredNonSceneTabHasFocus ||
+      !activeSceneId
+    )
+      return;
     const node = useTreeStore
       .getState()
       .nodes.find((n) => n.id === activeSceneId);
@@ -251,7 +286,13 @@ export function SceneEditor() {
         defaultEditorNavigationPorts,
       );
     }
-  }, [activeSceneId, phoneProjection, restoringDesktopProjection]);
+  }, [
+    activeSceneId,
+    phoneProjection,
+    restoredNonSceneTabHasFocus,
+    restoringDesktopProjection,
+    tabStateHydrated,
+  ]);
 
   // Sync activeGroupIndex → treeStore.activeSceneId (skip for codex/snippet tabs)
   useEffect(() => {
@@ -291,10 +332,16 @@ export function SceneEditor() {
           {/* メタチップ行はタブバー直下 (タブ=どのシーンか、チップ=その中身) */}
           {!zenMode && !phoneProjection && <SceneMetaChipRow />}
           <div className="relative flex flex-1 flex-col overflow-hidden">
-            <LinearEditorView />
+            <Suspense fallback={null}>
+              <LinearEditorView />
+            </Suspense>
           </div>
         </div>
-        <RevisionHistoryModal />
+        {revisionHistoryOpen && (
+          <Suspense fallback={null}>
+            <RevisionHistoryModal />
+          </Suspense>
+        )}
       </div>
     );
   }
@@ -377,6 +424,9 @@ export function SceneEditor() {
                     : (primaryTab?.contentType ?? "scene")
                 }
                 groupIndex={0}
+                inputProjectionAuthority="workspace"
+                inputProjectionScopeKey={inputScopeKey}
+                isForegroundInputProjection={projectedActiveGroup === 0}
                 onFocus={() => {
                   if (!phoneProjection) {
                     useTabStore.getState().setActiveGroup(0);
@@ -438,6 +488,9 @@ export function SceneEditor() {
                       : (secondaryTab?.contentType ?? "scene")
                   }
                   groupIndex={1}
+                  inputProjectionAuthority="workspace"
+                  inputProjectionScopeKey={inputScopeKey}
+                  isForegroundInputProjection={projectedActiveGroup === 1}
                   onFocus={() => {
                     if (!phoneProjection) {
                       useTabStore.getState().setActiveGroup(1);
@@ -465,7 +518,11 @@ export function SceneEditor() {
         )}
       </div>
 
-      <RevisionHistoryModal />
+      {revisionHistoryOpen && (
+        <Suspense fallback={null}>
+          <RevisionHistoryModal />
+        </Suspense>
+      )}
     </div>
   );
 }

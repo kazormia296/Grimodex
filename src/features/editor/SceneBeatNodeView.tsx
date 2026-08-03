@@ -24,8 +24,7 @@ import {
   type CatalogModel,
 } from "@/features/chat/chatModelCatalog";
 import type { AiProvider } from "@/features/chat/types";
-import type { BeatType } from "./SceneBeatNode";
-import { BEAT_TYPES } from "./SceneBeatNode";
+import { BEAT_TYPES, type BeatType } from "./beat/beatTypes";
 import { useSceneBeatEditorContext } from "./beat/SceneBeatEditorContext";
 import { useBeatGeneration } from "./beat/useBeatGeneration";
 import {

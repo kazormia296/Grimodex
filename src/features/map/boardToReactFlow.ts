@@ -271,6 +271,14 @@ export function buildMapNodesFromData(input: BoardToReactFlowInput): Node[] {
     colorBy = "none",
     visualTheme = "default",
   } = input;
+  const stickyCountByBranchId = new Map<string, number>();
+  for (const sticky of stickies) {
+    if (!sticky.aiBranchId) continue;
+    stickyCountByBranchId.set(
+      sticky.aiBranchId,
+      (stickyCountByBranchId.get(sticky.aiBranchId) ?? 0) + 1,
+    );
+  }
 
   const positionedTreeNodeIds = new Set(
     positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
@@ -466,9 +474,6 @@ export function buildMapNodesFromData(input: BoardToReactFlowInput): Node[] {
   const aiBranchNodes: Node[] = show.aiBranch
     ? aiBranches.map((ab, idx) => {
         const key = `ai_branch:${ab.id}`;
-        const derivedStickyCount = stickies.filter(
-          (s) => s.aiBranchId === ab.id,
-        ).length;
         return {
           id: key,
           type: "ai_branch",
@@ -481,7 +486,7 @@ export function buildMapNodesFromData(input: BoardToReactFlowInput): Node[] {
           data: {
             prompt: ab.prompt,
             sessionId: ab.sessionId,
-            derivedStickyCount,
+            derivedStickyCount: stickyCountByBranchId.get(ab.id) ?? 0,
           },
         };
       })

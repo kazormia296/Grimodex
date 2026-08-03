@@ -5,7 +5,7 @@ use super::Database;
 
 impl Database {
     pub fn fts_optimize(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         conn.execute_batch(
             "INSERT INTO codex_fts(codex_fts) VALUES('optimize');
              INSERT INTO snippets_fts(snippets_fts) VALUES('optimize');
@@ -22,7 +22,7 @@ impl Database {
     }
 
     /// Full-text search across scenes, codex, and snippets.
-    /// `scope`: "all" | "scenes" | "codex" | "snippets" | "chat"
+    /// `scope`: "all" | "scenes" | "codex" | "snippets" | "chat" | "chat_history"
     /// "chat" は episodic recall (chat hybrid) の sparse 腕専用で "all" には含めない
     /// (コマンドセンター検索の挙動を変えない)。`id` は message_id。
     /// Returns up to `limit` results (capped at 50).
@@ -33,7 +33,7 @@ impl Database {
         scope: &str,
         limit: u32,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let mut results: Vec<serde_json::Value> = Vec::new();
         let lim = limit.min(50) as i64;
 
@@ -120,7 +120,7 @@ impl Database {
                     "SELECT id, name, COALESCE(summary, '')
                      FROM codex_entries
                      WHERE project_id = ?1
-                       AND (name LIKE ?2 ESCAPE '\\' OR aliases LIKE ?2 ESCAPE '\\' OR summary LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\')
+                       AND (name LIKE ?2 ESCAPE '\\' OR aliases LIKE ?2 ESCAPE '\\' OR summary LIKE ?2 ESCAPE '\\' OR tags_cache LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\')
                      LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
@@ -169,7 +169,7 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT id, title, COALESCE(tags_cache, '')
                      FROM snippets
-                     WHERE project_id = ?1 AND (title LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\')
+                     WHERE project_id = ?1 AND (title LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\' OR tags_cache LIKE ?2 ESCAPE '\\')
                      LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
@@ -214,6 +214,62 @@ impl Database {
                 for r in rows {
                     results.push(r?);
                 }
+            }
+        }
+
+        // Chat history panel search. Unlike episodic recall's compact `chat`
+        // rows, this read model carries session metadata and an FTS-highlighted
+        // excerpt so the renderer never needs the generic SQL bridge.
+        if scope == "chat_history" {
+            let fts = if is_en {
+                "chat_messages_fts_en"
+            } else {
+                "chat_messages_fts"
+            };
+            let sql = format!(
+                "SELECT
+                    m.id AS msg_id,
+                    m.session_id,
+                    s.title AS session_title,
+                    s.node_id,
+                    s.codex_anchor_id,
+                    s.snippet_anchor_id,
+                    m.role,
+                    m.content,
+                    snippet({fts}, 0, char(1), char(2), '...', 20)
+                        AS highlighted_content,
+                    m.created_at,
+                    s.updated_at AS session_updated_at
+                 FROM {fts}
+                 JOIN chat_messages m ON m.rowid = {fts}.rowid
+                 JOIN chat_sessions s ON m.session_id = s.id
+                 WHERE {fts} MATCH ?1
+                   AND s.project_id = ?2
+                   AND m.role != 'system'
+                 ORDER BY rank
+                 LIMIT ?3"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(
+                params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
+                |row| {
+                    Ok(serde_json::json!({
+                        "msg_id": row.get::<_, String>(0)?,
+                        "session_id": row.get::<_, String>(1)?,
+                        "session_title": row.get::<_, String>(2)?,
+                        "node_id": row.get::<_, Option<String>>(3)?,
+                        "codex_anchor_id": row.get::<_, Option<String>>(4)?,
+                        "snippet_anchor_id": row.get::<_, Option<String>>(5)?,
+                        "role": row.get::<_, String>(6)?,
+                        "content": row.get::<_, String>(7)?,
+                        "highlighted_content": row.get::<_, String>(8)?,
+                        "created_at": row.get::<_, String>(9)?,
+                        "session_updated_at": row.get::<_, String>(10)?,
+                    }))
+                },
+            )?;
+            for row in rows {
+                results.push(row?);
             }
         }
 
@@ -282,7 +338,7 @@ impl Database {
     }
 
     pub fn fts_rebuild(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         conn.execute_batch(
             "INSERT INTO codex_fts(codex_fts) VALUES('rebuild');
              INSERT INTO snippets_fts(snippets_fts) VALUES('rebuild');
@@ -324,7 +380,7 @@ impl Database {
     /// Rebuild all `_en` FTS tables from English-project content. Used on a
     /// project language change and as a manual repair.
     pub fn rebuild_en_fts(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         rebuild_en_fts_sql(&conn)?;
         Ok(())
     }
@@ -390,7 +446,9 @@ pub fn rebuild_en_fts_sql(conn: &Connection) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::to_fts_match;
+    use std::path::Path;
+
+    use super::{to_fts_match, Database};
 
     #[test]
     fn quotes_tokens_and_joins_with_or() {
@@ -420,5 +478,83 @@ mod tests {
     #[test]
     fn escapes_embedded_double_quotes() {
         assert_eq!(to_fts_match("say \"hi\""), "\"say\" OR \"\"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn chat_history_search_is_project_scoped_and_excludes_system_messages() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title, language, created_at, updated_at)
+                   VALUES ('other-project', 'Other', 'ja', '2025-01-01', '2025-01-01');
+                 INSERT INTO chat_sessions
+                   (id, project_id, title, created_at, updated_at)
+                   VALUES
+                   ('session-local', 'default-project', 'Local chat', '2025-01-01', '2025-01-02'),
+                   ('session-other', 'other-project', 'Other chat', '2025-01-01', '2025-01-02');
+                 INSERT INTO chat_messages
+                   (id, session_id, role, content, created_at)
+                   VALUES
+                   ('message-local', 'session-local', 'user', 'The moonstone opened the gate.', '2025-01-01'),
+                   ('message-system', 'session-local', 'system', 'moonstone system prompt', '2025-01-01'),
+                   ('message-other', 'session-other', 'assistant', 'moonstone from another project', '2025-01-01');",
+            )?;
+            Ok(())
+        })
+        .expect("seed chat history");
+
+        let rows = db
+            .search_fts("default-project", "moonstone", "chat_history", 50)
+            .expect("search chat history");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["msg_id"], "message-local");
+        assert_eq!(rows[0]["session_id"], "session-local");
+        assert_eq!(rows[0]["session_title"], "Local chat");
+        assert_eq!(rows[0]["role"], "user");
+        assert_eq!(rows[0]["content"], "The moonstone opened the gate.");
+        assert_eq!(rows[0]["session_updated_at"], "2025-01-02");
+        assert_eq!(rows[0]["node_id"], serde_json::Value::Null);
+        assert_eq!(rows[0]["codex_anchor_id"], serde_json::Value::Null);
+        assert_eq!(rows[0]["snippet_anchor_id"], serde_json::Value::Null);
+        assert!(
+            rows[0]["highlighted_content"]
+                .as_str()
+                .is_some_and(|content| content.contains('\u{1}') && content.contains('\u{2}')),
+            "the read model should preserve FTS highlight markers",
+        );
+    }
+
+    #[test]
+    fn short_codex_and_snippet_search_preserves_tags_cache_matches() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO codex_entries
+                   (id, project_id, type, name, tags_cache)
+                   VALUES
+                   ('tagged-codex', 'default-project', 'character', 'Name', '[{\"name\":\"狐\"}]');
+                 INSERT INTO snippets
+                   (id, project_id, title, content, tags_cache)
+                   VALUES
+                   ('tagged-snippet', 'default-project', 'Title', '{}', '[{\"name\":\"星\"}]');",
+            )?;
+            Ok(())
+        })
+        .expect("seed tagged rows");
+
+        let codex = db
+            .search_fts("default-project", "狐", "codex", 50)
+            .expect("search codex tag");
+        let snippets = db
+            .search_fts("default-project", "星", "snippets", 50)
+            .expect("search snippet tag");
+
+        assert_eq!(codex.len(), 1);
+        assert_eq!(codex[0]["id"], "tagged-codex");
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0]["id"], "tagged-snippet");
     }
 }

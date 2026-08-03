@@ -1,9 +1,12 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import type { TreeNodeData } from "@/features/tree/treeStore";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import type { TreeNodeData } from "@/features/tree/types";
 import type { CodexEntry } from "./api";
 import * as phaseApi from "./phaseApi";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "./phaseApi";
+import { PhaseVersionConflictError } from "./phaseOcc";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
   resolveCodexState,
@@ -15,6 +18,7 @@ import {
   linearizeSceneTimeIndex,
   type SceneTimeIndex,
 } from "./context/sceneTimeIndex";
+import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
 
 export interface PhaseState {
   /** Project-bound async work is allowed to publish only within this epoch. */
@@ -50,7 +54,8 @@ export interface PhaseState {
         | "contextModeOverride"
       >
     >,
-  ): Promise<void>;
+    opts?: { baseVersion?: number },
+  ): Promise<CodexEntryPhase | null>;
   deletePhase(id: string): Promise<void>;
   upsertDetailOverride(
     phaseId: string,
@@ -69,6 +74,7 @@ export interface PhaseState {
 }
 
 const phaseEntryGenerations = new Map<string, number>();
+const phaseHistoryVersionAliases = new Map<string, Map<number, number>>();
 
 function phaseEntryGeneration(entryId: string): number {
   return phaseEntryGenerations.get(entryId) ?? 0;
@@ -89,6 +95,43 @@ function findEntryIdForPhase(
   return undefined;
 }
 
+function resolvePhaseHistoryVersion(
+  phaseId: string,
+  originalVersion: number,
+): number {
+  const aliases = phaseHistoryVersionAliases.get(phaseId);
+  if (!aliases) return originalVersion;
+  let version = originalVersion;
+  const visited = new Set<number>();
+  while (!visited.has(version)) {
+    visited.add(version);
+    const next = aliases.get(version);
+    if (next === undefined || next === version) break;
+    version = next;
+  }
+  return version;
+}
+
+function advancePhaseHistoryVersion(
+  phaseId: string,
+  logicalVersion: number,
+  persistedVersion: number,
+): void {
+  const aliases = phaseHistoryVersionAliases.get(phaseId) ?? new Map();
+  aliases.set(logicalVersion, persistedVersion);
+  phaseHistoryVersionAliases.set(phaseId, aliases);
+}
+
+function notifyPhaseDocumentWrite(
+  phase: Pick<CodexEntryPhase, "id" | "entryId">,
+  opType: string,
+): void {
+  notifySameRendererDocumentWrite(
+    { kind: "codex", id: phase.entryId, phaseId: phase.id },
+    { domain: "codex", opType, entityId: phase.id },
+  );
+}
+
 export const usePhaseStore = create<PhaseState>()((set, get) => ({
   projectEpoch: 0,
   phasesByEntry: {},
@@ -101,6 +144,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
 
   resetForProject() {
     phaseEntryGenerations.clear();
+    phaseHistoryVersionAliases.clear();
     set((state) => ({
       projectEpoch: state.projectEpoch + 1,
       phasesByEntry: {},
@@ -185,16 +229,35 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         },
       };
     });
+    notifyPhaseDocumentWrite(phase, "phase.create");
 
     if (!useGlobalHistoryStore.getState().isReplaying) {
-      const cap = { phase: { ...phase }, projectEpoch: epoch };
+      const cap = {
+        phase: { ...phase },
+        projectEpoch: epoch,
+        deleteVersion: phase.version,
+        logicalVersion: phase.version,
+      };
       useGlobalHistoryStore.getState().push({
         kind: "phase",
         label: i18next.t("phase.history.created"),
+        entityId: cap.phase.id,
+        documentKey: {
+          kind: "codex",
+          id: cap.phase.entryId,
+          phaseId: cap.phase.id,
+        },
+        retainOnVersionConflict: true,
         async undo() {
           if (get().projectEpoch !== cap.projectEpoch) return;
           invalidatePhaseEntryLoads(cap.phase.entryId);
-          await phaseApi.deletePhase(cap.phase.id);
+          cap.deleteVersion = resolvePhaseHistoryVersion(
+            cap.phase.id,
+            cap.logicalVersion,
+          );
+          await phaseApi.deletePhase(cap.phase.id, {
+            expectedVersion: cap.deleteVersion,
+          });
           if (get().projectEpoch !== cap.projectEpoch) return;
           invalidatePhaseEntryLoads(cap.phase.entryId);
           set((state) => {
@@ -208,11 +271,12 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
               },
             };
           });
+          notifyPhaseDocumentWrite(cap.phase, "phase.create.undo");
         },
         async redo() {
           if (get().projectEpoch !== cap.projectEpoch) return;
           invalidatePhaseEntryLoads(cap.phase.entryId);
-          await phaseApi.createPhase({
+          const restored = await phaseApi.createPhase({
             id: cap.phase.id,
             entryId: cap.phase.entryId,
             anchorNodeId: cap.phase.anchorNodeId ?? null,
@@ -220,9 +284,19 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
             summaryOverride: cap.phase.summaryOverride ?? null,
             contentOverride: cap.phase.contentOverride ?? null,
             contextModeOverride: cap.phase.contextModeOverride ?? null,
+            // Re-creation must never reuse the pre-delete OCC token. A stale
+            // editor that loaded the Phase before undo would otherwise pass
+            // CAS after redo (ABA).
+            version: cap.deleteVersion + 1,
             createdAt: cap.phase.createdAt,
             updatedAt: cap.phase.updatedAt,
           });
+          cap.deleteVersion = restored.version;
+          advancePhaseHistoryVersion(
+            cap.phase.id,
+            cap.logicalVersion,
+            restored.version,
+          );
           if (get().projectEpoch !== cap.projectEpoch) return;
           invalidatePhaseEntryLoads(cap.phase.entryId);
           set((state) => {
@@ -234,11 +308,12 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
                   ...(state.phasesByEntry[cap.phase.entryId] ?? []).filter(
                     (p) => p.id !== cap.phase.id,
                   ),
-                  cap.phase,
+                  restored,
                 ],
               },
             };
           });
+          notifyPhaseDocumentWrite(restored, "phase.create.redo");
         },
       });
     }
@@ -246,7 +321,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     return phase;
   },
 
-  async updatePhase(id, data) {
+  async updatePhase(id, data, opts) {
     const epoch = get().projectEpoch;
     // Capture before-state of patched fields for undo
     let before: CodexEntryPhase | undefined;
@@ -257,11 +332,40 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         break;
       }
     }
+    if (!before && opts?.baseVersion === undefined) {
+      try {
+        before = await phaseApi.getPhase(id);
+      } catch (error) {
+        toast.error(i18next.t("phase.updateFailed"));
+        debugLog.error("PhaseStore", "getPhaseForUpdate", errorDetail(error));
+        return null;
+      }
+    }
+    if (!before && opts?.baseVersion === undefined) {
+      toast.error(i18next.t("phase.updateMissing"));
+      return null;
+    }
     invalidatePhaseEntryLoads(before?.entryId);
 
-    const updated = await phaseApi.updatePhase(id, data);
-    if (get().projectEpoch !== epoch) return;
-    if (!updated) return;
+    let updated: CodexEntryPhase | undefined;
+    try {
+      updated = await phaseApi.updatePhase(id, data, {
+        baseVersion: opts?.baseVersion ?? before?.version ?? 0,
+      });
+    } catch (error) {
+      if (error instanceof PhaseVersionConflictError) {
+        toast.error(i18next.t("phase.editConflict"));
+      } else {
+        toast.error(i18next.t("phase.updateFailed"));
+        debugLog.error("PhaseStore", "updatePhase", errorDetail(error));
+      }
+      return null;
+    }
+    if (get().projectEpoch !== epoch) return null;
+    if (!updated) {
+      toast.error(i18next.t("phase.updateMissing"));
+      return null;
+    }
     invalidatePhaseEntryLoads(updated.entryId);
     set((state) => {
       if (state.projectEpoch !== epoch) return state;
@@ -273,9 +377,16 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         phasesByEntry: { ...state.phasesByEntry, [entryId]: phases },
       };
     });
+    // Calls that supply an explicit baseVersion originate from a mounted
+    // editor and announce their returned binding themselves. Dialog/metadata
+    // updates have no editor origin, so feed them back through the same
+    // clean-reload / dirty-conflict coordinator.
+    if (opts?.baseVersion === undefined) {
+      notifyPhaseDocumentWrite(updated, "phase.update");
+    }
 
-    if (!before) return;
-    if (useGlobalHistoryStore.getState().isReplaying) return;
+    if (!before) return updated;
+    if (useGlobalHistoryStore.getState().isReplaying) return updated;
 
     const undoPatch: Parameters<typeof phaseApi.updatePhase>[1] = {};
     for (const key of Object.keys(data) as (keyof typeof data)[]) {
@@ -289,17 +400,36 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       undoPatch,
       redoPatch: { ...data },
       projectEpoch: epoch,
+      logicalBaseVersion: before.version,
+      logicalResultVersion: updated.version,
     };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
       label: i18next.t("phase.history.updated"),
+      entityId: cap.id,
+      documentKey: {
+        kind: "codex",
+        id: cap.before.entryId,
+        phaseId: cap.id,
+      },
+      retainOnVersionConflict: true,
       async undo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.before.entryId);
-        const restored = await phaseApi.updatePhase(cap.id, cap.undoPatch);
+        const restored = await phaseApi.updatePhase(cap.id, cap.undoPatch, {
+          baseVersion: resolvePhaseHistoryVersion(
+            cap.id,
+            cap.logicalResultVersion,
+          ),
+        });
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.before.entryId);
         if (restored) {
+          advancePhaseHistoryVersion(
+            cap.id,
+            cap.logicalBaseVersion,
+            restored.version,
+          );
           set((state) => {
             if (state.projectEpoch !== cap.projectEpoch) return state;
             const entryId = restored.entryId;
@@ -310,15 +440,26 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
               phasesByEntry: { ...state.phasesByEntry, [entryId]: phases },
             };
           });
+          notifyPhaseDocumentWrite(restored, "phase.undo");
         }
       },
       async redo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.before.entryId);
-        const reapplied = await phaseApi.updatePhase(cap.id, cap.redoPatch);
+        const reapplied = await phaseApi.updatePhase(cap.id, cap.redoPatch, {
+          baseVersion: resolvePhaseHistoryVersion(
+            cap.id,
+            cap.logicalBaseVersion,
+          ),
+        });
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.before.entryId);
         if (reapplied) {
+          advancePhaseHistoryVersion(
+            cap.id,
+            cap.logicalResultVersion,
+            reapplied.version,
+          );
           set((state) => {
             if (state.projectEpoch !== cap.projectEpoch) return state;
             const entryId = reapplied.entryId;
@@ -329,9 +470,11 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
               phasesByEntry: { ...state.phasesByEntry, [entryId]: phases },
             };
           });
+          notifyPhaseDocumentWrite(reapplied, "phase.redo");
         }
       },
     });
+    return updated;
   },
 
   async deletePhase(id) {
@@ -350,7 +493,22 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     const beforeOverrides = [...(get().detailOverrides[id] ?? [])];
     invalidatePhaseEntryLoads(entryId);
 
-    await phaseApi.deletePhase(id);
+    let deleted: boolean;
+    try {
+      deleted = await phaseApi.deletePhase(
+        id,
+        beforePhase ? { expectedVersion: beforePhase.version } : undefined,
+      );
+    } catch (error) {
+      if (error instanceof PhaseVersionConflictError) {
+        toast.error(i18next.t("phase.editConflict"));
+      } else {
+        toast.error(i18next.t("phase.deleteFailed"));
+        debugLog.error("PhaseStore", "deletePhase", errorDetail(error));
+      }
+      return;
+    }
+    if (!deleted) return;
     if (get().projectEpoch !== epoch) return;
     invalidatePhaseEntryLoads(entryId);
 
@@ -369,6 +527,9 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       delete nextOverrides[id];
       return { phasesByEntry: next, detailOverrides: nextOverrides };
     });
+    if (beforePhase) {
+      notifyPhaseDocumentWrite(beforePhase, "phase.delete");
+    }
 
     if (!beforePhase) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
@@ -377,14 +538,23 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       phase: { ...beforePhase },
       overrides: beforeOverrides.map((ov) => ({ ...ov })),
       projectEpoch: epoch,
+      redoDeleteVersion: null as number | null,
+      logicalVersion: beforePhase.version,
     };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
       label: i18next.t("phase.history.deleted"),
+      entityId: cap.phase.id,
+      documentKey: {
+        kind: "codex",
+        id: cap.phase.entryId,
+        phaseId: cap.phase.id,
+      },
+      retainOnVersionConflict: true,
       async undo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.phase.entryId);
-        await phaseApi.createPhase({
+        const restored = await phaseApi.createPhase({
           id: cap.phase.id,
           entryId: cap.phase.entryId,
           anchorNodeId: cap.phase.anchorNodeId ?? null,
@@ -392,9 +562,21 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
           summaryOverride: cap.phase.summaryOverride ?? null,
           contentOverride: cap.phase.contentOverride ?? null,
           contextModeOverride: cap.phase.contextModeOverride ?? null,
+          // Use the most recently deleted token, not the original snapshot.
+          // Every delete→restore cycle advances monotonically and rejects
+          // editors whose session predates the deletion.
+          version:
+            (cap.redoDeleteVersion ??
+              resolvePhaseHistoryVersion(cap.phase.id, cap.logicalVersion)) + 1,
           createdAt: cap.phase.createdAt,
           updatedAt: cap.phase.updatedAt,
         });
+        cap.redoDeleteVersion = restored.version;
+        advancePhaseHistoryVersion(
+          cap.phase.id,
+          cap.logicalVersion,
+          restored.version,
+        );
         if (get().projectEpoch !== cap.projectEpoch) return;
         // Restore detail overrides
         for (const ov of cap.overrides) {
@@ -414,7 +596,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
               ...state.phasesByEntry,
               [cap.phase.entryId]: [
                 ...(state.phasesByEntry[cap.phase.entryId] ?? []),
-                cap.phase,
+                restored,
               ],
             },
             detailOverrides: {
@@ -423,11 +605,18 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
             },
           };
         });
+        notifyPhaseDocumentWrite(restored, "phase.delete.undo");
       },
       async redo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.phase.entryId);
-        await phaseApi.deletePhase(cap.phase.id);
+        cap.redoDeleteVersion = resolvePhaseHistoryVersion(
+          cap.phase.id,
+          cap.logicalVersion,
+        );
+        await phaseApi.deletePhase(cap.phase.id, {
+          expectedVersion: cap.redoDeleteVersion,
+        });
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.phase.entryId);
         set((state) => {
@@ -442,6 +631,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
           delete nextOverrides[cap.phase.id];
           return { phasesByEntry: next, detailOverrides: nextOverrides };
         });
+        notifyPhaseDocumentWrite(cap.phase, "phase.delete.redo");
       },
     });
   },

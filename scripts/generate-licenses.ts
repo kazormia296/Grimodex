@@ -655,6 +655,28 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`;
 
+const HOTCHPOTCH_MIT_LICENSE_TEXT = `MIT License
+
+Copyright (c) hotchpotch
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`;
+
 const TOARU_EKI_SIGN_LICENSE_TEXT = `「とある駅の案内板っぽい？フォント」 (修正版)
 作者: 栃木那須・ユズノカ
 
@@ -785,6 +807,27 @@ function gatherAssetLicenses(): LicenseEntry[] {
       license: "MIT",
       repository: "https://huggingface.co/BAAI/bge-small-en-v1.5",
       licenseText: BGE_MIT_LICENSE_TEXT,
+    },
+    {
+      // Experimental Semantic Recall apply mode用の日本語cross-encoder。
+      // release workflowで固定revisionのqint8 AVX2 ONNXを取得し、packaged resources
+      // へ同梱するため、モデルのMITライセンスを収録する。
+      name: "Japanese reranker xsmall v2 (hotchpotch/japanese-reranker-xsmall-v2, local Semantic Recall cross-encoder)",
+      version: "de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a",
+      license: "MIT",
+      repository:
+        "https://huggingface.co/hotchpotch/japanese-reranker-xsmall-v2",
+      licenseText: HOTCHPOTCH_MIT_LICENSE_TEXT,
+    },
+    {
+      // Experimental Semantic Recall apply mode用の英語cross-encoder。
+      // release workflowで固定revisionのquint8 AVX2 ONNXを取得し、packaged resources
+      // へ同梱するため、Apache-2.0ライセンスを収録する。
+      name: "MS MARCO MiniLM L4 v2 (cross-encoder/ms-marco-MiniLM-L4-v2, local Semantic Recall cross-encoder)",
+      version: "777b2f369bc1c2f850df8bd367ed1654bda4497b",
+      license: "Apache-2.0",
+      repository: "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L4-v2",
+      licenseText: APACHE_2_0_LICENSE_TEXT,
     },
   ];
 }

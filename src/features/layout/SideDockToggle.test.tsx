@@ -26,7 +26,9 @@ describe("SideDockToggle", () => {
 
   it("is not pressed while the side region is collapsed", () => {
     render(<SideDockToggle region="left" />);
-    expect(screen.getByRole("button", { pressed: false })).toBeDefined();
+    const button = screen.getByRole("button", { pressed: false });
+    expect(button.className).toContain("text-muted-foreground");
+    expect(button.className).not.toMatch(/text-muted-foreground\/\d+/);
   });
 
   it("collapses the left region when clicked while open", async () => {
@@ -42,6 +44,19 @@ describe("SideDockToggle", () => {
     await userEvent.setup().click(screen.getByRole("button"));
     const left = useLayoutStore.getState().layout.regions.left.slots;
     expect(left.some((s) => s.activePanel !== null)).toBe(true);
+  });
+
+  it("restores a mixed left-region state across hide and show", async () => {
+    useLayoutStore.getState().showPanel("scenes");
+    render(<SideDockToggle region="left" />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button"));
+    await user.click(screen.getByRole("button"));
+
+    const left = useLayoutStore.getState().layout.regions.left.slots;
+    expect(left.find((slot) => slot.id === "l0")?.activePanel).toBe("scenes");
+    expect(left.find((slot) => slot.id === "l1")?.activePanel).toBeNull();
   });
 
   it("controls the right region when region is 'right'", async () => {

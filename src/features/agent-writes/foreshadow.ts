@@ -18,6 +18,10 @@ import type { ForeshadowRow } from "@/features/foreshadow/types";
 export type AgentForeshadowLoadBearing = "critical" | "supporting" | "optional";
 
 export interface AgentForeshadowCreateInput {
+  /** Stable identity of the logical request; distinct from the created entity. */
+  requestId?: string;
+  /** Reuse this domain ID when retrying the same logical create. */
+  foreshadowId?: string;
   title: string;
   intent?: string;
   notes?: string;
@@ -78,6 +82,7 @@ function pushUndo(label: string, projectId: string, result: AgentWriteResult) {
   useGlobalHistoryStore.getState().push({
     kind: "foreshadow",
     label,
+    operationId: journalId,
     entityId: result.entityId,
     async undo() {
       await applyUndoJournal(journalId, "undo");
@@ -99,8 +104,11 @@ export async function agentCreateForeshadow(
   assertLoadBearing(input.loadBearing);
 
   const projectId = getCurrentProjectId();
+  const foreshadowId = input.foreshadowId ?? crypto.randomUUID();
   const result = await invoke<AgentWriteResult>("agent_foreshadow_create", {
     payload: {
+      requestId: input.requestId ?? null,
+      foreshadowId,
       projectId,
       sessionId: getRecorderSessionId(),
       title: input.title,

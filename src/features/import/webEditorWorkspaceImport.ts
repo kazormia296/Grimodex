@@ -2,7 +2,7 @@ import {
   parseWebEditorWorkspaceHandoff,
   type WebEditorWorkspaceHandoffV1,
   type WebEditorWorkspaceHandoffValidationResult,
-} from "@grimodex/scan-contract";
+} from "@grimodex/scan-contract/web-editor-handoff";
 import {
   openWebEditorHandoffFile,
   type OpenTextResult,

@@ -25,21 +25,6 @@ export type AuthorshipOwnerLane =
   | { kind: "detail"; detailValueId: string; codexEntryId: string }
   | { kind: "phase"; phaseId: string; codexEntryId: string };
 
-function ownerLaneWhere(lane: AuthorshipOwnerLane) {
-  switch (lane.kind) {
-    case "node":
-      return eq(authorshipSpans.nodeId, lane.nodeId);
-    case "codex":
-      return eq(authorshipSpans.codexEntryId, lane.codexEntryId);
-    case "snippet":
-      return eq(authorshipSpans.snippetId, lane.snippetId);
-    case "detail":
-      return eq(authorshipSpans.detailValueId, lane.detailValueId);
-    case "phase":
-      return eq(authorshipSpans.phaseId, lane.phaseId);
-  }
-}
-
 function spanWithOwnerLane(
   lane: AuthorshipOwnerLane,
   span: Omit<
@@ -74,15 +59,21 @@ async function replaceAuthorshipSpansForLaneAtomic(
   lane: AuthorshipOwnerLane,
   spans: NewAuthorshipSpan[],
 ): Promise<void> {
-  const del = db.delete(authorshipSpans).where(ownerLaneWhere(lane)).toSQL();
-  const statements: { sql: string; params: unknown[]; method: string }[] = [
-    { sql: del.sql, params: del.params, method: "run" },
-  ];
-  if (spans.length > 0) {
-    const ins = db.insert(authorshipSpans).values(spans).toSQL();
-    statements.push({ sql: ins.sql, params: ins.params, method: "run" });
-  }
-  await invoke("db_execute_batch", { statements });
+  await invoke("authorship_replace_lane", {
+    payload: {
+      lane,
+      spans: spans.map((span) => ({
+        id: span.id ?? crypto.randomUUID(),
+        fromPos: span.fromPos,
+        toPos: span.toPos,
+        source: span.source,
+        model: span.model ?? null,
+        timestamp: span.timestamp ?? null,
+        chatMsgId: span.chatMsgId ?? null,
+        traceId: span.traceId ?? null,
+      })),
+    },
+  });
 }
 
 async function replaceAuthorshipSpansAtomic(

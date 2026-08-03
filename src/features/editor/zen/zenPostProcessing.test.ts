@@ -39,6 +39,10 @@ describe("Zen shader post-processing", () => {
     expect(combined).toContain("uniform float u_zenUiSurfaceCount");
     expect(combined).toContain("uniform vec4 u_zenUiSurfaceRects[32]");
     expect(combined).toContain("uniform vec4 u_zenUiSurfaceParams[32]");
+    expect(combined).toContain(
+      "if (u_zenUiSurfaceParams[index].y < 0.5) continue;",
+    );
+    expect(combined).toContain("candidateMask * editorMask");
     expect(combined).toContain("uniform vec3 u_zenUiContrastTextColor");
     expect(combined).toContain("uniform float u_zenUiContrastMix");
     expect(combined).toContain("applyZenDither");
@@ -52,12 +56,25 @@ describe("Zen shader post-processing", () => {
     );
     expect(combined).toContain("zenGlassOffsetPixels");
     expect(combined).toContain("zenRoundedRectSignedDistance");
+    expect(combined).toContain("vec2 zenRoundedRectOutwardNormal(");
+    expect(combined).toContain(
+      "max(abs(outwardNormal.x) + abs(outwardNormal.y), 0.75)",
+    );
+    expect(combined).not.toContain("fwidth(normalizedSignedDistance)");
+    expect(combined).not.toContain("dFdx(normalizedSignedDistance)");
+    expect(combined).not.toContain("dFdy(normalizedSignedDistance)");
     expect(combined).toContain("max(u_pixelRatio, 0.0001)");
     expect(combined).toContain("any(lessThan(gl_FragCoord.xy, glassMinPx))");
     expect(combined).toContain("any(greaterThan(gl_FragCoord.xy, glassMaxPx))");
     expect(combined).toContain(
-      "if (-signedDistance >= refractionDepthPx) return vec2(0.0);",
+      "if (insideDistanceRatio >= refractionDepthRatio) return vec2(0.0);",
     );
+    expect(combined).toContain("float sdfScale =");
+    expect(combined).toContain("float surfaceSizePx =");
+    expect(combined).toContain("float boundaryFade = smoothstep(");
+    expect(combined).toContain("float boundaryFeatherPx =");
+    expect(combined).toContain("float cornerWeight = 0.0;");
+    expect(combined).toContain("float cornerTransition = min(");
     expect(combined).toContain("smoothstep(edge - feather, edge, value)");
     expect(combined).toContain("smoothstep(edge, edge + feather, value)");
     expect(combined.match(/void main\s*\(\s*\)/g)).toHaveLength(1);
@@ -96,6 +113,7 @@ describe("Zen shader post-processing", () => {
     expect(finalMain.indexOf("zenGlassOffsetPixels()")).toBeLessThan(
       finalMain.indexOf("paperShaderMain();"),
     );
+    expect(finalMain.match(/paperShaderMain\(\);/g)).toHaveLength(1);
   });
 
   it("reuses Paper's resolution uniform without redeclaring it", () => {
@@ -176,14 +194,12 @@ describe("Zen shader post-processing", () => {
       u_zenUiContrastTextColor: [0.8, 0.82, 0.85],
       u_zenUiContrastMix: 0.68,
     });
-    expect(uniforms["u_zenUiSurfaceRects[0]"]).toHaveLength(32);
-    expect(uniforms["u_zenUiSurfaceRects[0]"].slice(0, 2)).toEqual([
-      [0, 0.2, 0.15, 0.8],
-      [0.85, 0.2, 1, 0.8],
-    ]);
-    expect(uniforms["u_zenUiSurfaceParams[0]"].slice(0, 2)).toEqual([
-      [12, 0, 0, 0],
-      [12, 0, 0, 0],
+    expect(uniforms["u_zenUiSurfaceRects[0]"]).toHaveLength(32 * 4);
+    expect([...uniforms["u_zenUiSurfaceRects[0]"].slice(0, 8)]).toEqual(
+      [0, 0.2, 0.15, 0.8, 0.85, 0.2, 1, 0.8].map(Math.fround),
+    );
+    expect([...uniforms["u_zenUiSurfaceParams[0]"].slice(0, 8)]).toEqual([
+      12, 1, 0, 0, 12, 1, 0, 0,
     ]);
 
     const disabled = parseZenShaderConfig({

@@ -234,7 +234,10 @@ export function MatrixTable({
   return (
     <div className="relative flex-1 overflow-hidden">
       {/* Column headers — sticky top */}
-      <div className="sticky top-0 z-20 flex border-b bg-background">
+      <div
+        data-matrix-sticky-surface="column-header"
+        className="sticky top-0 z-20 flex border-b bg-background"
+      >
         {/* Corner placeholder aligned with row headers */}
         <div
           className="shrink-0 border-r border-border/30"
@@ -323,6 +326,7 @@ export function MatrixTable({
               >
                 {/* Row header (sticky left) */}
                 <div
+                  data-matrix-sticky-surface="row-header"
                   className={`sticky left-0 z-10 flex shrink-0 cursor-pointer select-none items-center overflow-hidden border-b border-r border-border/30 bg-background px-2 text-xs ${
                     row.isFolder
                       ? "font-semibold text-foreground"

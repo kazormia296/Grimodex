@@ -1,7 +1,6 @@
-import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
 import { sceneCodexMentions, treeNodes } from "@/db/schema";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { listCodexMatchTargets } from "./api";
 import type { CodexMatchRow } from "./api";
@@ -15,10 +14,6 @@ import {
   extractCodexSemanticLinks,
   type CodexSemanticLink,
 } from "./semanticLinks";
-
-interface QueryResult {
-  rows: Array<{ id: string; title: string; parent_id: string | null }>;
-}
 
 export interface SceneMention {
   sceneId: string;
@@ -42,6 +37,13 @@ export interface SceneCodexMentionRow {
   sceneId: string;
   sceneTitle: string;
   source?: string;
+}
+
+export async function loadCrossReferenceSceneContents(
+  sceneIds: readonly string[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
+): Promise<Map<string, string>> {
+  return loadContents([...sceneIds]).catch(() => new Map<string, string>());
 }
 
 /** Build the Galaxy cross-reference shape from the incremental mention index. */
@@ -107,12 +109,16 @@ export async function buildCrossReferenceReportForProject(
   const entries = await listCodexMatchTargets(projectId);
   if (entries.length === 0) return [];
 
-  const scenesResult = await invoke<QueryResult>("db_execute", {
-    sql: "SELECT id, title, parent_id FROM tree_nodes WHERE node_type = 'scene' AND project_id = ? ORDER BY sort_order",
-    params: [projectId],
-    method: "all",
-  });
-  const scenes = scenesResult.rows;
+  const scenes = await db
+    .select({
+      id: treeNodes.id,
+      title: treeNodes.title,
+    })
+    .from(treeNodes)
+    .where(
+      and(eq(treeNodes.nodeType, "scene"), eq(treeNodes.projectId, projectId)),
+    )
+    .orderBy(treeNodes.sortOrder);
   if (scenes.length === 0) return [];
 
   const targets = entries.map((e: CodexMatchRow) => ({
@@ -129,17 +135,15 @@ export async function buildCrossReferenceReportForProject(
     { entry: CodexMatchRow; scenes: Map<string, SceneMention> }
   >();
   const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  const sceneContents = await loadCrossReferenceSceneContents(
+    scenes.map((scene) => scene.id),
+  );
 
   for (const scene of scenes) {
-    let content: string;
-    let semanticLinks: CodexSemanticLink[];
-    try {
-      const rawContent = await loadSceneContent(scene.id);
-      content = prosemirrorToText(rawContent);
-      semanticLinks = extractCodexSemanticLinks(rawContent);
-    } catch {
-      continue;
-    }
+    const rawContent = sceneContents.get(scene.id) ?? "";
+    const content = prosemirrorToText(rawContent);
+    const semanticLinks: CodexSemanticLink[] =
+      extractCodexSemanticLinks(rawContent);
 
     const matches = content ? await matchText(content, targets) : [];
     const automaticCounts = new Map<string, number>();

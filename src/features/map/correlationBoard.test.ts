@@ -4,15 +4,15 @@ import type { CodexEntry } from "@/features/codex/api";
 import type { CrossReferenceEntry } from "@/features/codex/crossReference";
 import type { CodexRelationRow } from "@/features/codex/codexRelationApi";
 
-// invoke: db_execute_batch の statements を捕捉、それ以外(listBoards の db_execute)は空 rows。
+// map aggregate payload を捕捉、それ以外(listBoards)は空 rows。
 const { mockInvoke, captured } = vi.hoisted(() => {
-  const captured: {
-    statements: Array<{ sql: string; params: unknown[]; method: string }>;
-  } = { statements: [] };
+  const captured: { payload: Record<string, unknown> | null } = {
+    payload: null,
+  };
   const mockInvoke = vi.fn(
-    async (cmd: string, args: { statements?: typeof captured.statements }) => {
-      if (cmd === "db_execute_batch") {
-        captured.statements = args.statements ?? [];
+    async (cmd: string, args: { payload?: Record<string, unknown> }) => {
+      if (cmd === "map_write_bundle") {
+        captured.payload = args.payload ?? null;
         return [];
       }
       return { rows: [] };
@@ -81,25 +81,15 @@ function refEntry(entryId: string, sceneIds: string[]): CrossReferenceEntry {
   };
 }
 
-function byTable(table: string) {
-  return captured.statements.filter((s) => s.sql.includes(table));
-}
-
 beforeEach(() => {
-  captured.statements = [];
+  captured.payload = null;
   mockInvoke.mockClear();
   listRelationsMock.mockResolvedValue([] as CodexRelationRow[]);
 });
 
-const COLS = {
-  positions: 14,
-  edges: 12,
-  frames: 12,
-};
-
 describe("generateCorrelationBoard", () => {
-  it("writes a board/positions/edges snapshot in one batch with method:'run'", async () => {
-    // 120 characters → positions chunking を踏む。c0,c1 だけ 2 シーン共起。
+  it("writes a board/positions/edges snapshot as one typed aggregate", async () => {
+    // 120 characters。c0,c1 だけ 2 シーン共起。
     const chars = Array.from({ length: 120 }, (_, i) => character(`c${i}`));
     listCodexEntriesMock.mockResolvedValue(chars);
     buildReportMock.mockResolvedValue([
@@ -129,46 +119,42 @@ describe("generateCorrelationBoard", () => {
 
     expect(result.boardId).toMatch(/[0-9a-f-]{36}/);
     expect(mockInvoke).toHaveBeenCalledWith(
-      "db_execute_batch",
+      "map_write_bundle",
       expect.anything(),
     );
-
-    // 全 statement は method:"run"
-    expect(captured.statements.length).toBeGreaterThan(0);
-    for (const s of captured.statements) expect(s.method).toBe("run");
-
-    // board statement: 1 件、mode:"free" と derivedEdges:false
-    const boardStmts = byTable("map_boards");
-    expect(boardStmts).toHaveLength(1);
-    const boardParams = boardStmts[0].params as string[];
-    expect(boardParams).toContain("free");
-    const showCfg = boardParams.find(
-      (p) => typeof p === "string" && p.includes("derivedEdges"),
-    );
+    expect(captured.payload).toMatchObject({
+      kind: "create-board",
+      projectId: "p1",
+      stickies: [],
+      frames: [],
+    });
+    const board = captured.payload?.board as {
+      mode: string;
+      showConfig: string;
+    };
+    expect(board.mode).toBe("free");
+    const showCfg = board.showConfig;
     expect(showCfg).toContain('"derivedEdges":false');
     expect(showCfg).toContain('"codex":true');
     expect(showCfg).toContain('"userEdges":true');
 
-    // positions: 50 行ごと chunk → 50/50/20、各 statement の変数は 999 以下
-    const posStmts = byTable("map_node_positions");
-    expect(posStmts).toHaveLength(3);
-    const posRows = posStmts.map((s) => s.params.length / COLS.positions);
-    expect(posRows).toEqual([50, 50, 20]);
-    for (const s of posStmts) expect(s.params.length).toBeLessThanOrEqual(999);
+    const positions = captured.payload?.positions as unknown[];
+    expect(positions).toHaveLength(120);
 
-    // edges: 共起 1 + relation 1 = 2 行(同一 statement = 同一キー集合)
-    const edgeStmts = byTable("map_edges");
-    expect(edgeStmts).toHaveLength(1);
-    expect(edgeStmts[0].params.length / COLS.edges).toBe(2);
-    // forward_label 列が存在(全行同一キー集合の証拠)
-    expect(edgeStmts[0].sql).toContain("forward_label");
-    const edgeParams = edgeStmts[0].params as unknown[];
-    expect(edgeParams).toContain("親友"); // relation ラベル
-    expect(edgeParams).toContain("#7c3aed"); // relation 色
-    expect(edgeParams).toContain(null); // 共起エッジの forwardLabel:null
-
-    // frames はオフ → statement 無し(empty insert skip)
-    expect(byTable("map_frames")).toHaveLength(0);
+    const edges = captured.payload?.edges as Array<{
+      forwardLabel: string | null;
+      color: string;
+    }>;
+    expect(edges).toHaveLength(2);
+    expect(edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          forwardLabel: "親友",
+          color: "#7c3aed",
+        }),
+        expect.objectContaining({ forwardLabel: null }),
+      ]),
+    );
   });
 
   it("skips empty edge inserts and emits parent frames with title column", async () => {
@@ -183,19 +169,11 @@ describe("generateCorrelationBoard", () => {
       engine: new SyncForceLayoutEngine(),
     });
 
-    // 共起も relation も無いので edges statement は作らない
-    expect(byTable("map_edges")).toHaveLength(0);
-
-    // positions は 1 statement(2 行)
-    const posStmts = byTable("map_node_positions");
-    expect(posStmts).toHaveLength(1);
-    expect(posStmts[0].params.length / COLS.positions).toBe(2);
-
-    // frames: 親グループ 1 件、title カラムに親名
-    const frameStmts = byTable("map_frames");
-    expect(frameStmts).toHaveLength(1);
-    expect(frameStmts[0].params.length / COLS.frames).toBe(1);
-    expect(frameStmts[0].params).toContain("組織A");
+    expect(captured.payload?.edges).toEqual([]);
+    expect(captured.payload?.positions).toHaveLength(2);
+    expect(captured.payload?.frames).toEqual([
+      expect.objectContaining({ title: "組織A" }),
+    ]);
   });
 
   it("throws when there are no target characters", async () => {

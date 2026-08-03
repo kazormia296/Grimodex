@@ -16,6 +16,7 @@ import {
   applyAdjacentSlotPixelSizes,
   buildDefaultLayoutState,
   buildRegionSizeClampContext,
+  clearCollapsedActivePanelReferences,
   collectPanelsInLayoutRegion,
   cloneLayoutState,
   clampLayoutStateForViewport,
@@ -41,6 +42,7 @@ import {
   updateCenterToolSegment,
   updateRegion,
   validateLayoutState,
+  withoutCollapsedActivePanels,
 } from "./layoutStateUtils";
 import { clampRegionSize, MIN_SLOT_SIZE } from "./layoutConstants";
 import {
@@ -165,15 +167,21 @@ function removePanelFromSource(
     }));
   }
 
-  return updateRegion(layout, source.region, (region) => ({
-    ...region,
-    slots: removePanelFromSlot(
-      region.slots,
-      source.slotIndex,
-      panel,
-      isVisibleInStripe,
-    ).slots,
-  }));
+  return updateRegion(layout, source.region, (region) => {
+    const regionWithoutSourceMemory = clearCollapsedActivePanelReferences(
+      region,
+      new Set([panel]),
+    );
+    return {
+      ...regionWithoutSourceMemory,
+      slots: removePanelFromSlot(
+        region.slots,
+        source.slotIndex,
+        panel,
+        isVisibleInStripe,
+      ).slots,
+    };
+  });
 }
 
 function addPanelToCenterSegmentById(
@@ -302,7 +310,7 @@ function movePanelInLayout(
   next = updateRegion(next, targetRegion, (region) => {
     if (targetSlotId) {
       return {
-        ...region,
+        ...withoutCollapsedActivePanels(region),
         slots: region.slots.map((slot) =>
           slot.id === targetSlotId ? addPanelToSlot(slot, panel) : slot,
         ),
@@ -325,7 +333,7 @@ function movePanelInLayout(
 
     const openSlots = getOpenSlots(slots);
     return {
-      ...region,
+      ...withoutCollapsedActivePanels(region),
       slots: openSlots.length > 1 ? normalizeSlotRatios(slots) : slots,
     };
   });
@@ -744,8 +752,8 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       hidden.add(toolPanel);
 
       let layout = state.layout;
-      if (location.slot.activePanel === toolPanel) {
-        if (location.region === "center") {
+      if (location.region === "center") {
+        if (location.slot.activePanel === toolPanel) {
           layout = applyValidatedLayout(
             updateCenterToolSegment(layout, location.slot.id, (segment) => ({
               ...segment,
@@ -753,19 +761,23 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
             })),
             state.layout,
           );
-        } else {
-          layout = applyValidatedLayout(
-            updateRegion(layout, location.region, (region) => ({
-              ...region,
+        }
+      } else {
+        layout = applyValidatedLayout(
+          updateRegion(layout, location.region, (region) => {
+            const regionWithoutPanelMemory =
+              clearCollapsedActivePanelReferences(region, new Set([toolPanel]));
+            return {
+              ...regionWithoutPanelMemory,
               slots: region.slots.map((slot) =>
-                slot.id === location.slot.id
+                slot.id === location.slot.id && slot.activePanel === toolPanel
                   ? { ...slot, activePanel: null }
                   : slot,
               ),
-            })),
-            state.layout,
-          );
-        }
+            };
+          }),
+          state.layout,
+        );
       }
 
       return { layout, hiddenStripePanels: hidden };
@@ -798,31 +810,61 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
     set((state) => ({
       layout: applyValidatedLayout(
-        updateRegion(state.layout, region, (r) => ({
-          ...r,
-          slots: r.slots.map((slot) => ({ ...slot, activePanel: null })),
-        })),
+        updateRegion(state.layout, region, (r) => {
+          if (r.slots.every((slot) => slot.activePanel === null)) return r;
+          return {
+            ...r,
+            collapsedActivePanels: Object.fromEntries(
+              r.slots.map((slot) => [slot.id, slot.activePanel]),
+            ),
+            slots: r.slots.map((slot) => ({
+              ...slot,
+              activePanel: null,
+            })),
+          };
+        }),
         state.layout,
       ),
     }));
     scheduleSave(get);
   },
 
-  // collapseLayoutRegion の逆操作。collapse は activePanel を null 化する
-  // だけで panels 配列は保持するため、各 slot を先頭 panel で開き直す。
-  // collapse 前に開いていた panel は記憶しない（multi-panel slot では
-  // 先頭 panel に戻る）。既に開いている slot は上書きしない。
+  // collapseLayoutRegion で保存した slot ごとの activePanel を正確に復元する。
+  // snapshot の無い旧保存データだけは、従来どおり各 slot の先頭 panel を開く。
+  // snapshot と現在の slot 構成が食い違う場合は、安全側の null に倒す。
   expandLayoutRegion: (region) => {
     set((state) => ({
       layout: applyValidatedLayout(
-        updateRegion(state.layout, region, (r) => ({
-          ...r,
-          slots: r.slots.map((slot) =>
-            slot.activePanel === null && slot.panels.length > 0
-              ? { ...slot, activePanel: slot.panels[0] }
-              : slot,
-          ),
-        })),
+        updateRegion(state.layout, region, (r) => {
+          const snapshot = r.collapsedActivePanels;
+          const regionWithoutSnapshot = withoutCollapsedActivePanels(r);
+          if (snapshot === undefined) {
+            return {
+              ...regionWithoutSnapshot,
+              slots: r.slots.map((slot) =>
+                slot.activePanel === null && slot.panels.length > 0
+                  ? { ...slot, activePanel: slot.panels[0] }
+                  : slot,
+              ),
+            };
+          }
+
+          return {
+            ...regionWithoutSnapshot,
+            slots: r.slots.map((slot) => {
+              if (slot.activePanel !== null) return slot;
+              const savedPanel = Object.prototype.hasOwnProperty.call(
+                snapshot,
+                slot.id,
+              )
+                ? snapshot[slot.id]
+                : null;
+              return savedPanel !== null && slot.panels.includes(savedPanel)
+                ? { ...slot, activePanel: savedPanel }
+                : slot;
+            }),
+          };
+        }),
         state.layout,
       ),
     }));
@@ -857,16 +899,20 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           }),
         }));
       } else {
-        layout = updateRegion(layout, region, (r) => ({
-          ...r,
-          slots: r.slots.map((slot) => ({
-            ...slot,
-            activePanel:
-              slot.activePanel != null && panelSet.has(slot.activePanel)
-                ? null
-                : slot.activePanel,
-          })),
-        }));
+        layout = updateRegion(layout, region, (r) => {
+          const regionWithoutPanelMemories =
+            clearCollapsedActivePanelReferences(r, panelSet);
+          return {
+            ...regionWithoutPanelMemories,
+            slots: r.slots.map((slot) => ({
+              ...slot,
+              activePanel:
+                slot.activePanel != null && panelSet.has(slot.activePanel)
+                  ? null
+                  : slot.activePanel,
+            })),
+          };
+        });
       }
 
       return {

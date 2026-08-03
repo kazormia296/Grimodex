@@ -58,6 +58,16 @@ export type AbRunResult =
   | { ok: true; text: string }
   | { ok: false; error: string };
 
+export interface AbDispatchContext {
+  readonly operationId: string;
+  /** Project authority captured with the workspace before any slot runs. */
+  readonly projectId: string | null;
+  /** One immutable ledger authority shared by every fresh A/B slot. */
+  readonly expectedWorkspacePath: string;
+  readonly slotIndex: number;
+  readonly configFingerprint: string;
+}
+
 /**
  * surface 別の実行アダプタ。messages と config を受け取り 1 構成を走らせる。
  * - chat  : 非ストリーミング send_chat_message を 1 回 (provider / model override 付き)
@@ -67,6 +77,7 @@ export type AbRunResult =
 export type AbDispatcher = (
   messages: AbMessage[],
   config: AbConfig,
+  context: AbDispatchContext,
 ) => Promise<AbRunResult>;
 
 /** 1 スロットの実行結果 (構成・最終 messages・結果)。 */
@@ -75,6 +86,14 @@ export interface AbSlotResult {
   result: AbRunResult;
   /** この構成に実際に渡した最終 messages (promptVariant 合成後)。表示/記録用。 */
   messages: AbMessage[];
+  /** Exact cache authority for this project/workspace/request/config tuple. */
+  reuseIdentity: string | null;
+}
+
+export interface AbReuseEntry {
+  readonly result: AbRunResult;
+  readonly identity: string;
+  readonly sourceExecutionId?: string | null;
 }
 
 /**
@@ -105,7 +124,80 @@ export interface RunAbOptions {
    * null / 失敗結果 / 未指定の index は従来どおり実行する。
    * 構成が変わっていないスロット (基準枠や未編集枠) の無駄な生成/課金を避ける。
    */
-  reuse?: (AbRunResult | null | undefined)[];
+  reuse?: (AbReuseEntry | null | undefined)[];
+  /** Project-scoped audit identity shared by every slot in this comparison. */
+  audit: {
+    /** null is an intentional workspace-scoped A/B execution. */
+    projectId: string | null;
+    pathId: "ab_chat" | "ab_inline";
+    operationId?: string;
+    /** Immutable workspace authority captured before evaluating reuse. */
+    expectedWorkspacePath: string;
+    /** Exact canonical non-secret AI settings snapshot; null disables reuse. */
+    settingsAuthority: string | null;
+  };
+}
+
+function configFingerprint(config: AbConfig): string {
+  const canonical = JSON.stringify([
+    config.provider ?? null,
+    config.model ?? null,
+    config.endpointId ?? null,
+    config.promptVariant ?? null,
+  ]);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+export function buildAbReuseIdentity(input: {
+  readonly projectId: string | null;
+  readonly expectedWorkspacePath: string;
+  readonly pathId: "ab_chat" | "ab_inline";
+  readonly settingsAuthority: string;
+  readonly messages: readonly AbMessage[];
+  readonly config: AbConfig;
+}): string {
+  return JSON.stringify({
+    version: 1,
+    projectId: input.projectId,
+    expectedWorkspacePath: input.expectedWorkspacePath,
+    pathId: input.pathId,
+    settingsAuthority: input.settingsAuthority,
+    messages: input.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    })),
+    config: {
+      provider: input.config.provider ?? null,
+      model: input.config.model ?? null,
+      endpointId: input.config.endpointId ?? null,
+      promptVariant: input.config.promptVariant ?? null,
+    },
+  });
+}
+
+function canonicalizeSettingsValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeSettingsValue);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalizeSettingsValue(entry)]),
+    );
+  }
+  return value;
+}
+
+/** Exact, collision-free authority used only in renderer memory. */
+export function buildAbSettingsAuthority(settings: unknown): string {
+  return JSON.stringify(canonicalizeSettingsValue(settings));
 }
 
 /**
@@ -118,19 +210,112 @@ export async function runAbComparison(
   request: AbRequest,
   configs: AbConfig[],
   dispatch: AbDispatcher,
-  options?: RunAbOptions,
+  options: RunAbOptions,
 ): Promise<AbSlotResult[]> {
-  const parallel = options?.parallel ?? true;
-  const reuse = options?.reuse ?? [];
-  const slots = configs.map((config) => ({
-    config,
-    messages: applyPromptVariant(request.messages, config.promptVariant),
-  }));
+  const { beginAiAuditExecutionInWorkspace, cacheHitAiAuditExecution } =
+    await import("@/features/ai-audit/api");
+  const parallel = options.parallel ?? true;
+  const reuse = options.reuse ?? [];
+  const operationId = options.audit.operationId ?? crypto.randomUUID();
+  const slots = configs.map((config) => {
+    const messages = applyPromptVariant(request.messages, config.promptVariant);
+    return {
+      config,
+      messages,
+      configFingerprint: configFingerprint(config),
+      reuseIdentity:
+        options.audit.settingsAuthority === null
+          ? null
+          : buildAbReuseIdentity({
+              projectId: options.audit.projectId,
+              expectedWorkspacePath: options.audit.expectedWorkspacePath,
+              pathId: options.audit.pathId,
+              settingsAuthority: options.audit.settingsAuthority,
+              messages,
+              config,
+            }),
+    };
+  });
 
   const runOne = async (i: number): Promise<AbRunResult> => {
-    const reused = reuse[i]?.ok ? reuse[i]! : null;
-    if (reused) return reused;
-    return safeDispatch(dispatch, slots[i].messages, slots[i].config);
+    const candidateReuse = reuse[i];
+    const reuseEntry =
+      candidateReuse?.result.ok === true &&
+      slots[i].reuseIdentity !== null &&
+      candidateReuse.identity === slots[i].reuseIdentity
+        ? candidateReuse
+        : null;
+    if (reuseEntry?.result.ok === true) {
+      const reused = reuseEntry.result;
+      try {
+        const slot = slots[i];
+        const handle = await beginAiAuditExecutionInWorkspace(
+          {
+            projectId: options.audit.projectId,
+            pathId: options.audit.pathId,
+            operationId,
+            request: {
+              messages: slot.messages.map((message) => ({
+                role: message.role,
+                content: message.content,
+              })),
+              ...(typeof slot.config.provider === "string"
+                ? { provider: slot.config.provider }
+                : {}),
+              ...(typeof slot.config.model === "string"
+                ? { model: slot.config.model }
+                : {}),
+              options: {
+                endpointId: slot.config.endpointId ?? null,
+                promptVariant: slot.config.promptVariant ?? null,
+              },
+              auditMetadata: {
+                ab: {
+                  slotIndex: i,
+                  configFingerprint: slot.configFingerprint,
+                },
+              },
+            },
+            metadata: {
+              slotIndex: i,
+              configFingerprint: slot.configFingerprint,
+              reused: true,
+              sourceExecutionId: reuseEntry.sourceExecutionId ?? null,
+              modelDispatched: false,
+            },
+            captureState:
+              reuseEntry.sourceExecutionId == null ? "partial" : "complete",
+            limitations:
+              reuseEntry.sourceExecutionId == null
+                ? ["cache-source-execution-unavailable"]
+                : undefined,
+          },
+          options.audit.expectedWorkspacePath,
+        );
+        await cacheHitAiAuditExecution(handle, {
+          response: reused.ok ? { text: reused.text } : undefined,
+          metadata: {
+            slotIndex: i,
+            configFingerprint: slot.configFingerprint,
+            modelDispatched: false,
+            sourceExecutionId: reuseEntry.sourceExecutionId ?? null,
+          },
+        });
+        return reused;
+      } catch (error) {
+        return {
+          ok: false,
+          error: `AI audit persistence failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    return safeDispatch(dispatch, slots[i].messages, slots[i].config, {
+      operationId,
+      projectId: options.audit.projectId,
+      expectedWorkspacePath: options.audit.expectedWorkspacePath,
+      slotIndex: i,
+      configFingerprint: slots[i].configFingerprint,
+    });
   };
 
   let results: AbRunResult[];
@@ -148,6 +333,7 @@ export async function runAbComparison(
     config: slot.config,
     messages: slot.messages,
     result: results[i],
+    reuseIdentity: slot.reuseIdentity,
   }));
 }
 
@@ -156,9 +342,10 @@ async function safeDispatch(
   dispatch: AbDispatcher,
   messages: AbMessage[],
   config: AbConfig,
+  context: AbDispatchContext,
 ): Promise<AbRunResult> {
   try {
-    return await dispatch(messages, config);
+    return await dispatch(messages, config, context);
   } catch (err) {
     return {
       ok: false,

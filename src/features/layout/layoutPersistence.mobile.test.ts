@@ -61,3 +61,57 @@ describe("layout persistence on a phone", () => {
     expect(patchGlobalSettings).not.toHaveBeenCalled();
   });
 });
+
+describe("layout persistence on desktop", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    patchGlobalSettings.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("persists a collapsed region restore snapshot", async () => {
+    const current = snapshot();
+    current.layout.regions.left.collapsedActivePanels = {
+      l0: "scenes",
+      l1: null,
+    };
+
+    scheduleSave(
+      () => current,
+      () => ({ width: 1440, height: 900 }),
+    );
+    await vi.advanceTimersByTimeAsync(501);
+
+    expect(recordLayoutSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        layout: expect.objectContaining({
+          regions: expect.objectContaining({
+            left: expect.objectContaining({
+              collapsedActivePanels: { l0: "scenes", l1: null },
+            }),
+          }),
+        }),
+      }),
+    );
+    const patch = patchGlobalSettings.mock.calls[0]?.[0] as (
+      settings: Record<string, unknown>,
+    ) => {
+      layout: {
+        state: {
+          regions: {
+            left: { collapsedActivePanels?: Record<string, unknown> };
+          };
+        };
+      };
+    };
+    expect(patch({}).layout.state.regions.left.collapsedActivePanels).toEqual({
+      l0: "scenes",
+      l1: null,
+    });
+  });
+});

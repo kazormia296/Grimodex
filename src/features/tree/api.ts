@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq, and, isNull, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, inArray, lt, sql } from "drizzle-orm";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import {
@@ -9,6 +9,29 @@ import {
   serializeSceneWrite,
 } from "@/features/tree/pendingSceneWrites";
 import { debugLog } from "@/lib/debugLog";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  nextTreeNodeMutationTimestamp,
+  publishTreeNodeMutation,
+} from "@/lib/treeNodeMutationRegistry";
+import type { WorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+function publishPersistedTreeNodeMutation(
+  persisted:
+    | { id: string; projectId: string; updatedAt: string }
+    | null
+    | undefined,
+  workspaceIdentity: WorkspaceIdentity | null,
+): void {
+  if (!persisted) return;
+  publishTreeNodeMutation({
+    workspacePath: workspaceIdentity?.path ?? null,
+    workspaceOpenRevision: workspaceIdentity?.openRevision ?? null,
+    projectId: persisted.projectId,
+    nodeId: persisted.id,
+    updatedAt: persisted.updatedAt,
+  });
+}
 
 /**
  * Derive `unplaced_beat_preview` from a serialized `unplacedBeatsDoc` JSON
@@ -130,6 +153,28 @@ export async function listAllNodes(projectId: string): Promise<TreeNodeLite[]> {
 }
 
 /**
+ * Select only expired archived row IDs without transferring every live Tree
+ * row to the renderer. `archivedAt` is always written as an ISO-8601 instant,
+ * so lexical ordering is chronological and remains index-friendly.
+ */
+export async function listExpiredArchivedNodeIds(
+  projectId: string,
+  archivedBefore: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: treeNodes.id })
+    .from(treeNodes)
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        isNotNull(treeNodes.archivedAt),
+        lt(treeNodes.archivedAt, archivedBefore),
+      ),
+    );
+  return rows.map((row) => row.id);
+}
+
+/**
  * note ノードの本文だけを id → content の Map で返す。
  * listNodes が content を引かなくなった (H4) ため、tree ロード時はこれを
  * ペアで呼んで note にだけ本文をマージする (scene 本文は store に載せない
@@ -147,6 +192,21 @@ export async function listNoteContents(
   const out = new Map<string, string>();
   for (const r of rows) out.set(r.id, r.content ?? "");
   return out;
+}
+
+export async function listProjectSceneDocuments(
+  projectId: string,
+): Promise<Array<{ id: string; title: string; content: string | null }>> {
+  return db
+    .select({
+      id: treeNodes.id,
+      title: treeNodes.title,
+      content: treeNodes.content,
+    })
+    .from(treeNodes)
+    .where(
+      and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
+    );
 }
 
 export async function getNode(id: string): Promise<TreeNode | undefined> {
@@ -171,7 +231,7 @@ export async function createNode(
       >
     >,
 ): Promise<TreeNode> {
-  const now = new Date().toISOString();
+  const now = nextTreeNodeMutationTimestamp();
   const rows = await db
     .insert(treeNodes)
     .values({ ...data, createdAt: now, updatedAt: now })
@@ -179,7 +239,7 @@ export async function createNode(
   return rows[0];
 }
 
-export async function updateNode(
+export function updateNode(
   id: string,
   data: Partial<
     Pick<
@@ -211,12 +271,22 @@ export async function updateNode(
     >
   >,
 ): Promise<TreeNode | undefined> {
-  const rows = await db
-    .update(treeNodes)
-    .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(eq(treeNodes.id, id))
-    .returning();
-  return rows[0];
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  // Metadata, Chronicle, preview, and content all share one tree_nodes row.
+  // Keep generic metadata writes on the same per-scene issue-order chain as
+  // content writes so their returned updatedAt token cannot arrive out of
+  // order and poison a later Chronicle bulk OCC request.
+  return serializeSceneWrite(id, async () => {
+    const updatedAt = nextTreeNodeMutationTimestamp();
+    const rows = await db
+      .update(treeNodes)
+      .set({ ...data, updatedAt })
+      .where(eq(treeNodes.id, id))
+      .returning();
+    const persisted = rows[0];
+    publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
+    return persisted;
+  });
 }
 
 export async function deleteNode(id: string): Promise<void> {
@@ -229,6 +299,17 @@ export interface SaveScenePayload {
   content: string;
   unplacedBeatsDoc?: string;
   charCount?: number;
+  /** Loaded scene version for editor OCC. Omit for authoritative headless writers. */
+  baseVersion?: number;
+  /** Renderer-wide monotonic tree token shared with the native bundle. */
+  updatedAt?: string;
+}
+
+export class SceneContentConflictError extends Error {
+  constructor(sceneId: string) {
+    super(`Scene content conflict or missing scene: ${sceneId}`);
+    this.name = "SceneContentConflictError";
+  }
 }
 
 export interface DerivedPreviews {
@@ -280,6 +361,7 @@ export async function saveSceneContentInner(
   sceneId: string,
   payloadOrContent: string | SaveScenePayload,
 ): Promise<DerivedPreviews> {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
   const payload: SaveScenePayload =
     typeof payloadOrContent === "string"
       ? { content: payloadOrContent }
@@ -299,7 +381,7 @@ export async function saveSceneContentInner(
     JSON.stringify({ contentLen: payload.content.length }),
   );
 
-  const contentUpdatedAt = new Date().toISOString();
+  const contentUpdatedAt = payload.updatedAt ?? nextTreeNodeMutationTimestamp();
 
   // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
   // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
@@ -316,22 +398,43 @@ export async function saveSceneContentInner(
           charCount: payload.charCount,
         }),
         placedBeatPreview,
-        // OCC 在庫: 本文を書くたび無条件で version を +1 する。WHERE への
-        // version 条件 (OCC 検査) は付けない — 保存 hot path を絶対に落とさない。
-        // 読み手は prose_staging.base_version との突き合わせ (autoApplyProse の
-        // stale 検知)。human-human 競合は change_events ベースの
-        // externalWriteFeed ガードが従来通り担当する。
+        // Editor saves provide the version observed at load time. Headless
+        // authoritative writers omit it and intentionally retain the legacy
+        // unconditional write contract.
         version: sql`${treeNodes.version} + 1`,
         updatedAt: contentUpdatedAt,
       })
-      .where(eq(treeNodes.id, sceneId))
+      .where(
+        payload.baseVersion === undefined
+          ? eq(treeNodes.id, sceneId)
+          : and(
+              eq(treeNodes.id, sceneId),
+              eq(treeNodes.version, payload.baseVersion),
+            ),
+      )
       .returning({
+        id: treeNodes.id,
+        projectId: treeNodes.projectId,
         contentVersion: treeNodes.version,
         contentUpdatedAt: treeNodes.updatedAt,
       }),
   );
   trackSceneContentWrite(sceneId, write);
   const rows = await write;
+  const persisted = rows[0];
+  if (!persisted && payload.baseVersion !== undefined) {
+    throw new SceneContentConflictError(sceneId);
+  }
+  publishPersistedTreeNodeMutation(
+    persisted
+      ? {
+          id: persisted.id,
+          projectId: persisted.projectId,
+          updatedAt: persisted.contentUpdatedAt,
+        }
+      : null,
+    workspaceIdentity,
+  );
 
   return {
     placedBeatPreview,
@@ -370,76 +473,161 @@ export async function loadSceneContent(sceneId: string): Promise<string> {
 }
 
 /**
- * Save unplaced beats doc + preview without touching content.
- * Used by Grid "Add unplaced beat" to avoid overwriting in-Editor unsaved changes.
- */
-/**
- * Save unplaced beats doc only (no `content` write). The cached preview is
- * derived internally so callers can't forget. Returns the new preview value.
+ * Save unplaced beats doc + preview without touching `content`.
+ *
+ * This still mutates the same tree_nodes aggregate as a full scene save, so it
+ * participates in the same OCC version stream. A Grid writer must provide the
+ * project identity and version it observed when loading the aggregate; without
+ * that predicate a stale Grid edit could be followed by a full-editor save and
+ * silently restore the old unplaced-beats document.
  *
  * Does NOT touch `placed_beat_preview` — that cache is derived from `content`,
  * which this function never modifies.
  */
 export async function saveSceneBeatsOnly(
   sceneId: string,
-  payload: { unplacedBeatsDoc: string },
-): Promise<{ unplacedBeatPreview: string | null }> {
+  payload: {
+    unplacedBeatsDoc: string;
+    projectId: string;
+    baseVersion: number;
+  },
+): Promise<{
+  unplacedBeatPreview: string | null;
+  contentVersion: number;
+  contentUpdatedAt: string;
+}> {
   const unplacedBeatPreview = deriveUnplacedPreview(payload.unplacedBeatsDoc);
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  await serializeSceneWrite(sceneId, () =>
+  const rows = await serializeSceneWrite(sceneId, () =>
     Promise.resolve(
       db
         .update(treeNodes)
         .set({
           unplacedBeatsDoc: payload.unplacedBeatsDoc,
           unplacedBeatPreview,
-          updatedAt: new Date().toISOString(),
+          version: sql`${treeNodes.version} + 1`,
+          updatedAt: nextTreeNodeMutationTimestamp(),
         })
-        .where(eq(treeNodes.id, sceneId)),
+        .where(
+          and(
+            eq(treeNodes.id, sceneId),
+            eq(treeNodes.projectId, payload.projectId),
+            eq(treeNodes.version, payload.baseVersion),
+          ),
+        )
+        .returning({
+          id: treeNodes.id,
+          projectId: treeNodes.projectId,
+          contentVersion: treeNodes.version,
+          contentUpdatedAt: treeNodes.updatedAt,
+        }),
     ),
   );
-  return { unplacedBeatPreview };
+  const persisted = rows[0];
+  if (!persisted) {
+    throw new SceneContentConflictError(sceneId);
+  }
+  publishPersistedTreeNodeMutation(
+    {
+      id: persisted.id,
+      projectId: persisted.projectId,
+      updatedAt: persisted.contentUpdatedAt,
+    },
+    workspaceIdentity,
+  );
+  return {
+    unplacedBeatPreview,
+    contentVersion: persisted.contentVersion,
+    contentUpdatedAt: persisted.contentUpdatedAt,
+  };
 }
 
 /**
  * Persist only the cached `placed_beat_preview` column. Used by the lazy
  * backfill path when a legacy scene is loaded that has placed sceneBeat
- * nodes but no cached preview yet.
+ * nodes but no cached preview yet. The cache lives on the same tree_nodes
+ * aggregate as content, so the write uses the loaded project/version token
+ * and advances that version exactly like other aggregate mutations.
  */
 export async function savePlacedBeatPreviewOnly(
   sceneId: string,
-  placedBeatPreview: string | null,
-): Promise<void> {
+  payload: {
+    placedBeatPreview: string | null;
+    projectId: string;
+    baseVersion: number;
+  },
+): Promise<{
+  contentVersion: number;
+  contentUpdatedAt: string;
+}> {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  await serializeSceneWrite(sceneId, () =>
+  const rows = await serializeSceneWrite(sceneId, () =>
     Promise.resolve(
       db
         .update(treeNodes)
         .set({
-          placedBeatPreview,
-          updatedAt: new Date().toISOString(),
+          placedBeatPreview: payload.placedBeatPreview,
+          version: sql`${treeNodes.version} + 1`,
+          updatedAt: nextTreeNodeMutationTimestamp(),
         })
-        .where(eq(treeNodes.id, sceneId)),
+        .where(
+          and(
+            eq(treeNodes.id, sceneId),
+            eq(treeNodes.projectId, payload.projectId),
+            eq(treeNodes.version, payload.baseVersion),
+          ),
+        )
+        .returning({
+          id: treeNodes.id,
+          projectId: treeNodes.projectId,
+          contentVersion: treeNodes.version,
+          contentUpdatedAt: treeNodes.updatedAt,
+        }),
     ),
   );
+  const persisted = rows[0];
+  if (!persisted) {
+    throw new SceneContentConflictError(sceneId);
+  }
+  publishPersistedTreeNodeMutation(
+    {
+      id: persisted.id,
+      projectId: persisted.projectId,
+      updatedAt: persisted.contentUpdatedAt,
+    },
+    workspaceIdentity,
+  );
+  return {
+    contentVersion: persisted.contentVersion,
+    contentUpdatedAt: persisted.contentUpdatedAt,
+  };
 }
 
 /** Load scene content + unplaced beats doc in one query. */
-export async function loadSceneFull(
-  sceneId: string,
-): Promise<{ content: string; unplacedBeatsDoc: string }> {
+export async function loadSceneFull(sceneId: string): Promise<{
+  content: string;
+  unplacedBeatsDoc: string;
+  projectId: string;
+  version: number;
+}> {
   // loadSceneContent と同じ read-after-write バリア (pendingSceneWrites 参照)。
   await awaitPendingSceneContentWrite(sceneId);
   const rows = await db
     .select({
       content: treeNodes.content,
       unplacedBeatsDoc: treeNodes.unplacedBeatsDoc,
+      projectId: treeNodes.projectId,
+      version: treeNodes.version,
     })
     .from(treeNodes)
     .where(eq(treeNodes.id, sceneId));
   return {
     content: rows[0]?.content ?? "",
     unplacedBeatsDoc: rows[0]?.unplacedBeatsDoc ?? "[]",
+    projectId: rows[0]?.projectId ?? "",
+    version: rows[0]?.version ?? 0,
   };
 }
 

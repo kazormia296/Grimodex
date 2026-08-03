@@ -1,10 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, Loader2, Save, XCircle } from "lucide-react";
+import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 import type { VivliostyleBuildPhase } from "./runStore";
 
 // ────────────────────────────────────────────────────────────────────
 // ビルド進捗表示。indeterminate spinner + ログ末尾数行 + 中止ボタン。
-// done で保存ボタン、error でメッセージ表示。
+// done で完了表示（成果物の保存は完了イベントから自動実行）、error でメッセージ表示。
 // ────────────────────────────────────────────────────────────────────
 
 /** 表示するログの末尾行数。 */
@@ -14,17 +14,9 @@ interface Props {
   status: VivliostyleBuildPhase;
   logs: string[];
   onAbort: () => void;
-  onSave: () => void;
-  isSaving: boolean;
 }
 
-export function BuildProgress({
-  status,
-  logs,
-  onAbort,
-  onSave,
-  isSaving,
-}: Props) {
+export function BuildProgress({ status, logs, onAbort }: Props) {
   const { t } = useTranslation();
 
   if (status.phase === "idle") return null;
@@ -66,19 +58,6 @@ export function BuildProgress({
             aria-hidden
           />
           <span aria-live="polite">{t("vivliostyle.build.done")}</span>
-          <div className="flex-1" />
-          <button
-            type="button"
-            data-testid="vivliostyle-save"
-            onClick={onSave}
-            disabled={isSaving}
-            className="flex shrink-0 items-center gap-1.5 rounded bg-primary px-2.5 py-1 text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Save className="h-3 w-3" aria-hidden />
-            {isSaving
-              ? t("vivliostyle.build.saving")
-              : t("vivliostyle.build.save")}
-          </button>
         </div>
       )}
 

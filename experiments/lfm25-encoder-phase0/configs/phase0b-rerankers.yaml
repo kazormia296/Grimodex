@@ -1,0 +1,98 @@
+schema_version: 1
+
+benchmark:
+  max_pair_tokens: 512
+  batch_sizes: [4, 8, 16]
+  thread_counts: [4, physical, 8]
+  warmup_count: 3
+  repetitions: 30
+  cold_repetitions: 5
+  bootstrap_iterations: 1000
+
+session:
+  enable_memory_pattern: false
+  enable_cpu_arena: false
+  inter_op_threads: 1
+
+offline_environment:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_HUB_DISABLE_PROGRESS_BARS: "1"
+  TOKENIZERS_PARALLELISM: "false"
+
+models:
+  - key: ja_tiny
+    language: ja
+    id: hotchpotch/japanese-reranker-tiny-v2
+    revision: ba95175a4d53058816b971f31929f10c5cad8560
+    license: MIT
+    quantization: qint8-avx2
+    artifact: onnx/model_qint8_avx2.onnx
+    artifact_sha256: 649a18583e21ad532e420a4ded4c9c4ff7ce882aa84af2bf2180ec4d4f679e38
+    local_snapshot: local/phase0b/ja_tiny/ba95175a4d53058816b971f31929f10c5cad8560/snapshot
+    manifest: local/phase0b/ja_tiny/ba95175a4d53058816b971f31929f10c5cad8560/manifest.json
+    files:
+      - README.md
+      - config.json
+      - onnx/model_qint8_avx2.onnx
+      - special_tokens_map.json
+      - tokenizer.json
+      - tokenizer_config.json
+    reference:
+      artifact: onnx/model.onnx
+      artifact_sha256: 5cd86065ea62391b97474b0d05e21887fd585cfaa1956bd4c217e15ecb703db0
+      local_snapshot: local/phase0b-reference/ja_tiny/ba95175a4d53058816b971f31929f10c5cad8560/snapshot
+      manifest: local/phase0b-reference/ja_tiny/ba95175a4d53058816b971f31929f10c5cad8560/manifest.json
+      files:
+        - onnx/model.onnx
+
+  - key: ja_xsmall
+    language: ja
+    id: hotchpotch/japanese-reranker-xsmall-v2
+    revision: de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a
+    license: MIT
+    quantization: qint8-avx2
+    artifact: onnx/model_qint8_avx2.onnx
+    artifact_sha256: 34d4657df53c875f970dbf87e584a21d59e6cfcd9368f9828d69a09ed152168f
+    local_snapshot: local/phase0b/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/snapshot
+    manifest: local/phase0b/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/manifest.json
+    files:
+      - README.md
+      - config.json
+      - onnx/model_qint8_avx2.onnx
+      - special_tokens_map.json
+      - tokenizer.json
+      - tokenizer_config.json
+    reference:
+      artifact: onnx/model.onnx
+      artifact_sha256: 4d668ba88cd62107b6d8c0365313ac4d76030873a0ed99dcbfd5c1636f26ada8
+      local_snapshot: local/phase0b-reference/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/snapshot
+      manifest: local/phase0b-reference/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/manifest.json
+      files:
+        - onnx/model.onnx
+
+  - key: en_minilm_l4
+    language: en
+    id: cross-encoder/ms-marco-MiniLM-L4-v2
+    revision: 777b2f369bc1c2f850df8bd367ed1654bda4497b
+    license: Apache-2.0
+    quantization: quint8-avx2
+    artifact: onnx/model_quint8_avx2.onnx
+    artifact_sha256: 74118ad9ab2b17990c40f03085a91f131339bb3a6d629e96507a6dbf063dae3d
+    local_snapshot: local/phase0b/en_minilm_l4/777b2f369bc1c2f850df8bd367ed1654bda4497b/snapshot
+    manifest: local/phase0b/en_minilm_l4/777b2f369bc1c2f850df8bd367ed1654bda4497b/manifest.json
+    files:
+      - README.md
+      - config.json
+      - onnx/model_quint8_avx2.onnx
+      - special_tokens_map.json
+      - tokenizer.json
+      - tokenizer_config.json
+      - vocab.txt
+    reference:
+      artifact: onnx/model.onnx
+      artifact_sha256: be236c7578579650f5eb69e6c7c79dc8a5af985dc585d98aafd9c0d3c0abcd20
+      local_snapshot: local/phase0b-reference/en_minilm_l4/777b2f369bc1c2f850df8bd367ed1654bda4497b/snapshot
+      manifest: local/phase0b-reference/en_minilm_l4/777b2f369bc1c2f850df8bd367ed1654bda4497b/manifest.json
+      files:
+        - onnx/model.onnx

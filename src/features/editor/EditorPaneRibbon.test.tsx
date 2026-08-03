@@ -2,6 +2,7 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
+import { createEditorInstanceId } from "./document/documentKey";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -36,6 +37,8 @@ function renderRibbon() {
       activeSnippetEntry={{ title: "断片" }}
       loadedPhaseLabel="第二幕"
       chronicleEventTitle="事件"
+      documentKey={{ kind: "tree", id: "scene-1", storage: "database" }}
+      editorInstanceId={createEditorInstanceId("ribbon-test")}
     />,
   );
 }

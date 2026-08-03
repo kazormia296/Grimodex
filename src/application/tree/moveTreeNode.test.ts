@@ -62,6 +62,10 @@ describe("moveTreeNode", () => {
       ),
     ).toBe(-1);
     expect(ports.history).toHaveLength(1);
+    expect(ports.history[0]).toMatchObject({
+      kind: "scenes",
+      entityId: "b",
+    });
     await ports.history[0]!.undo();
     expect(
       ports.currentNodes.find((entry) => entry.id === "b")?.sortOrder,

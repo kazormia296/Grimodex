@@ -1,5 +1,8 @@
 import { create } from "zustand";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import {
+  readRuntimeSetting,
+  writeRuntimeSetting,
+} from "@/features/settings/runtimeSettings";
 import type { LintLanguage, RuleConfig } from "./types";
 
 /**
@@ -164,7 +167,7 @@ function migrate(cfg: Partial<LintFullConfig>): Partial<LintFullConfig> {
 
 function persist(userLayer: Partial<LintFullConfig>) {
   const stripped = { ...userLayer, schemaVersion: LINT_CONFIG_SCHEMA_VERSION };
-  useSettingsStore.getState().set(SETTINGS_KEY, JSON.stringify(stripped));
+  writeRuntimeSetting(SETTINGS_KEY, JSON.stringify(stripped));
 }
 
 /**
@@ -205,7 +208,7 @@ export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
 
   load: () => {
     // Defer until settingsStore has loaded (call this after loadAll).
-    const raw = useSettingsStore.getState().get(SETTINGS_KEY, "");
+    const raw = readRuntimeSetting(SETTINGS_KEY, "");
     set({ userLayer: parseUserLayer(raw), isLoaded: true });
   },
 

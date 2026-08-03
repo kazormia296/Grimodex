@@ -69,6 +69,38 @@ describe("mutationAffectsZenShaderLayout", () => {
     expect(mutationAffectsZenShaderLayout(unmounted)).toBe(true);
   });
 
+  it("remeasures when an Editor tool contrast surface mounts or unmounts", () => {
+    const root = document.createElement("main");
+    const surface = document.createElement("header");
+    surface.dataset.editorToolSurface = "";
+
+    const mounted = mutationRecords(root, () => {
+      root.append(surface);
+    });
+    const unmounted = mutationRecords(root, () => {
+      surface.remove();
+    });
+
+    expect(mutationAffectsZenShaderLayout(mounted)).toBe(true);
+    expect(mutationAffectsZenShaderLayout(unmounted)).toBe(true);
+  });
+
+  it("remeasures when removing a sibling moves a surviving layout target", () => {
+    const root = document.createElement("main");
+    const dock = document.createElement("section");
+    const exitingPanel = document.createElement("div");
+    const stripe = document.createElement("nav");
+    stripe.dataset.ambientGlassSurface = "stripe";
+    dock.append(exitingPanel, stripe);
+    root.append(dock);
+
+    const records = mutationRecords(dock, () => {
+      exitingPanel.remove();
+    });
+
+    expect(mutationAffectsZenShaderLayout(records)).toBe(true);
+  });
+
   it("remeasures observed layout attributes", () => {
     const editor = document.createElement("section");
     const records = mutationRecords(

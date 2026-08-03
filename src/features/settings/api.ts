@@ -10,7 +10,7 @@ import { recordChangeEvent } from "@/features/timelapse/recorder";
  * scope entirely — only project_settings are recorded.
  */
 function isRecordableProjectSettingKey(key: string): boolean {
-  return !key.startsWith("timelapse.");
+  return key !== "editor.tabState" && !key.startsWith("timelapse.");
 }
 
 function shortSettingValue(value: string): string {

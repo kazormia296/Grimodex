@@ -5,6 +5,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { useSceneBeatPovStore } from "@/features/editor/beat/sceneBeatPovStore";
+import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
@@ -24,24 +25,32 @@ import { useResultsPanelStore } from "@/features/commandCenter/store/resultsPane
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import {
+  applyTreeHydration,
+  prepareTreeHydration,
+  useTreeStore,
+} from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
   createProjectLifecycleRegistry,
   type ProjectLifecycleParticipant,
 } from "./ProjectLifecycleRegistry";
+import { debugLog } from "@/lib/debugLog";
 
-/**
- * Project 境界を跨いで参照してはいけない Chat の turn/session/context 状態を破棄する。
- * streaming 中は resetForProject が旧 turn を先に中断する。
- */
+/** Abort and clear project-scoped chat state before a Project boundary commit. */
 export function resetChatForProject(projectId: string): void {
   useChatStore.getState().resetForProject(projectId);
 }
 
-/** Codex Phase の project-owned cache を破棄し、resolution mode は保持する。 */
+/** Clear Phase caches while retaining the user's resolution mode. */
 export function resetPhaseStateForProject(): void {
   usePhaseStore.getState().resetForProject();
+}
+
+/** Clear scene-keyed beat caches so same-id scenes cannot leak across Projects. */
+export function resetUnplacedBeatsForProject(): void {
+  useUnplacedBeatsStore.getState().resetForProject();
 }
 
 const participants: readonly ProjectLifecycleParticipant[] = [
@@ -63,6 +72,16 @@ const participants: readonly ProjectLifecycleParticipant[] = [
     reset: () => useForeshadowStore.getState().resetForProject(),
   },
   {
+    id: "plot-threads",
+    reset: ({ projectId }) =>
+      usePlotThreadStore.getState().resetForProject(projectId),
+  },
+  {
+    id: "trash",
+    reset: ({ projectId }) =>
+      useTrashBinStore.getState().resetForProject(projectId),
+  },
+  {
     id: "scene-codex-pins",
     reset: () => useSceneCodexPinsStore.getState().resetForProject(),
   },
@@ -70,10 +89,15 @@ const participants: readonly ProjectLifecycleParticipant[] = [
     id: "scene-beat-pov",
     reset: () => useSceneBeatPovStore.getState().resetForProject(),
   },
+  {
+    id: "unplaced-beats",
+    reset: () => resetUnplacedBeatsForProject(),
+  },
   { id: "labels", reset: () => useLabelStore.getState().resetForProject() },
   {
     id: "grid-selection",
-    reset: () => useGridStore.getState().clearSelection(),
+    reset: ({ projectId }) =>
+      useGridStore.getState().resetForProject(projectId),
   },
   {
     id: "timeline-selection",
@@ -107,17 +131,27 @@ const participants: readonly ProjectLifecycleParticipant[] = [
   },
 
   {
-    id: "tree",
-    hydrateCritical: async ({ projectId }) => {
-      await useTreeStore
+    id: "settings",
+    prepareCritical: async ({ projectId }) => {
+      const snapshot = await useSettingsStore
         .getState()
-        .loadTree(projectId)
-        .catch(() => {});
+        .prepareHydration(projectId);
+      return () => useSettingsStore.getState().applyHydration(snapshot);
+    },
+  },
+  {
+    id: "tree",
+    prepareCritical: async ({ projectId, workspaceOpenRevision }) => {
+      const snapshot = await prepareTreeHydration(
+        projectId,
+        workspaceOpenRevision,
+      );
+      return () => applyTreeHydration(snapshot);
     },
   },
   {
     id: "chat-active-scene",
-    hydrateCritical: () => {
+    commitCritical: () => {
       useChatStore
         .getState()
         .setActiveSceneId(useTreeStore.getState().activeSceneId);
@@ -126,21 +160,25 @@ const participants: readonly ProjectLifecycleParticipant[] = [
 
   {
     id: "codex-load",
-    hydrateOptional: () => useCodexStore.getState().loadEntries(),
+    hydrateOptional: () =>
+      useCodexStore.getState().loadEntries({ propagateError: true }),
   },
   {
     id: "snippets-load",
-    hydrateOptional: () => useSnippetStore.getState().loadEntries(),
+    hydrateOptional: () =>
+      useSnippetStore.getState().loadEntries({ propagateError: true }),
   },
   {
     id: "chat-history-load",
     hydrateOptional: ({ projectId }) =>
-      useChatHistoryStore.getState().loadSessions(projectId),
+      useChatHistoryStore
+        .getState()
+        .loadSessions(projectId, { propagateError: true }),
   },
   {
     id: "foreshadow-load",
     hydrateOptional: ({ projectId }) =>
-      useForeshadowStore.getState().load(projectId),
+      useForeshadowStore.getState().load(projectId, { propagateError: true }),
   },
   {
     id: "labels-load",
@@ -175,9 +213,8 @@ const participants: readonly ProjectLifecycleParticipant[] = [
 
   {
     id: "external-mounts",
-    activate: async () => {
-      await initializeExternalMounts().catch(() => {});
-    },
+    activate: ({ projectId, workspaceOpenRevision }) =>
+      initializeExternalMounts({ projectId, workspaceOpenRevision }),
   },
 ];
 
@@ -185,11 +222,15 @@ export const projectLifecycleRegistry = createProjectLifecycleRegistry(
   participants,
   {
     optionalConcurrency: 3,
-    onOptionalFailure: (participant, error) => {
-      console.warn(
-        `[project-lifecycle] ${participant.id} hydration failed`,
-        error,
-      );
+    onOptionalFailure: (participant, _error) => {
+      debugLog.warn("project-lifecycle", "optional hydration failed", {
+        sensitivity: "safe",
+        fields: {
+          participantId: participant.id,
+          operation: "hydrateOptional",
+          outcome: "failed",
+        },
+      });
     },
   },
 );

@@ -2,6 +2,12 @@ import { db } from "@/db/client";
 import { snippets } from "@/db/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { SnippetVersionConflictError } from "./occ";
+import { chatPersistenceDeletionGuard } from "@/lib/chatPersistenceDeletionGuard";
+import {
+  ChatAnchorDeletionBlockedError,
+  tryAcquireChatAnchorDeletionLease,
+} from "@/lib/chatNavigationGuard";
+import { notifySnippetDeleted } from "./anchorNotify";
 
 export type Snippet = Omit<typeof snippets.$inferSelect, "contentSource"> & {
   contentSource?: string | null;
@@ -104,9 +110,17 @@ export async function deleteSnippet(
   projectId: string,
   id: string,
 ): Promise<void> {
-  await db
-    .delete(snippets)
-    .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)));
+  const deletionAuthority = tryAcquireChatAnchorDeletionLease();
+  if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
+  try {
+    chatPersistenceDeletionGuard.assertDeletionAllowed();
+    await db
+      .delete(snippets)
+      .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)));
+    notifySnippetDeleted(id);
+  } finally {
+    deletionAuthority.release();
+  }
 }
 
 export async function listSnippetsByMessageId(

@@ -8,11 +8,17 @@ import type { Snippet, NewSnippet } from "./api";
 import { SnippetVersionConflictError } from "./occ";
 import { searchSnippets } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
-import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
-import { getCurrentProjectId } from "@/features/project/projectStore";
-import { notifySnippetDeleted } from "./anchorNotify";
+import {
+  cancelPendingTrash,
+  captureSnippetDeletion,
+} from "@/features/trash-bin/captureHooks";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
+import {
+  SAVE_NOT_PERSISTED,
+  persistedVersion,
+  type VersionedSaveOutcome,
+} from "@/lib/saveOutcome";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
 import {
@@ -63,7 +69,7 @@ interface SnippetState {
     next: Snippet | null | ((prev: Snippet | null) => Snippet | null),
   ) => void;
 
-  loadEntries: () => Promise<void>;
+  loadEntries: (options?: { propagateError?: boolean }) => Promise<void>;
   /** mount 用の dedup 付きロード。同一 projectId のロードが進行中なら
    *  それに相乗りする。settle 後は毎回ロードする (remount での再フェッチ =
    *  外部書き込み追従は維持)。 */
@@ -97,13 +103,23 @@ interface SnippetState {
     data: Partial<
       Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
     >,
-  ) => Promise<boolean>;
+    options?: { baseVersion?: number },
+  ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   incrementUsageCount: (id: string) => Promise<void>;
 }
 
 // mount eager load の in-flight dedup (詳細は ensureEntriesLoaded の docs)
 const entriesLoadTracker = createInFlightTracker();
+let entriesLoadGeneration = 0;
+
+function entriesLoadKey(projectId: string): string {
+  return projectId;
+}
+
+function swallowEntriesLoadFailure(promise: Promise<void>): Promise<void> {
+  return promise.catch(() => undefined);
+}
 
 export const useSnippetStore = create<SnippetState>()((set, get) => ({
   entries: [],
@@ -123,35 +139,54 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   setSortOrder: (order) => set({ sortOrder: order }),
   requestSelectEntry: (id) => set({ pendingEntryId: id }),
   clearPendingEntry: () => set({ pendingEntryId: null }),
-  resetForProject: () =>
+  resetForProject: () => {
+    entriesLoadGeneration++;
+    entriesLoadTracker.clear();
     set({
       entries: [],
       searchQuery: "",
       pendingEntryId: null,
       selectedSnippet: null,
-    }),
+      isLoading: false,
+    });
+  },
 
-  loadEntries: async () => {
+  loadEntries: (options) => {
+    const projectId = getCurrentProjectId();
+    const key = entriesLoadKey(projectId);
+    const inFlight = entriesLoadTracker.peek(key);
+    if (inFlight) {
+      return options?.propagateError
+        ? inFlight
+        : swallowEntriesLoadFailure(inFlight);
+    }
+    const generation = ++entriesLoadGeneration;
     const run = (async () => {
       set({ isLoading: true });
       try {
-        const entries = await snippetApi.listSnippets(getCurrentProjectId());
+        const entries = await snippetApi.listSnippets(projectId);
+        if (generation !== entriesLoadGeneration) return;
         set({ entries, isLoading: false });
       } catch (e) {
-        set({ isLoading: false });
-        toast.error(i18next.t("snippets.store.loadFailed"));
-        debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
+        if (generation === entriesLoadGeneration) {
+          set({ isLoading: false });
+          toast.error(i18next.t("snippets.store.loadFailed"));
+          debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
+        }
+        throw e;
       }
     })();
-    // mutation 後の直接 loadEntries も in-flight として記録し、直後に
-    // mount する ensureEntriesLoaded がこの (最新の) ロードに相乗りする
-    entriesLoadTracker.track(getCurrentProjectId(), run);
-    return run;
+    // canonical promise は rejection を保持する。lifecycle はその rejection
+    // を degraded state へ伝播し、通常 UI caller は従来どおり吸収する。
+    entriesLoadTracker.track(key, run);
+    return options?.propagateError ? run : swallowEntriesLoadFailure(run);
   },
 
   ensureEntriesLoaded: () => {
-    const inFlight = entriesLoadTracker.peek(getCurrentProjectId());
-    if (inFlight) return inFlight;
+    const inFlight = entriesLoadTracker.peek(
+      entriesLoadKey(getCurrentProjectId()),
+    );
+    if (inFlight) return swallowEntriesLoadFailure(inFlight);
     return get().loadEntries();
   },
 
@@ -210,7 +245,6 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
             }));
-            notifySnippetDeleted(captured.id);
           },
           async redo() {
             await snippetApi.createSnippet({
@@ -250,42 +284,44 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     }
   },
 
-  update: async (id, data) => {
+  update: async (id, data, options) => {
     const before = get().entries.find((e) => e.id === id);
+    let updated: Snippet | undefined;
 
     try {
       // OCC: 読み込み時点の version を baseVersion として渡す。別窓 / 別プロセスが
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
       // 成功時は .returning() の行 (version = base + 1) で entries を置き換える
       // ので、in-memory の version が DB に追従し、連続保存でも自己衝突しない。
-      const updated = await snippetApi.updateSnippet(
+      const saved = await snippetApi.updateSnippet(
         getCurrentProjectId(),
         id,
         data,
-        { baseVersion: before?.version ?? 0 },
+        { baseVersion: options?.baseVersion ?? before?.version ?? 0 },
       );
       // 行なし (スコープ miss / 削除済み) = 保存されていない。
       // false の全経路はここで必ず通知する契約 (衝突=conflict handler /
       // 失敗・行なし=toast)。EditorPane は false を「通知済み」marker
       // (AlreadyNotifiedSaveError) で throw し autoSave.failed を重ねない
       // ため、無通知の false 経路を作ると保存失敗が完全無音になる。
-      if (!updated) {
+      if (!saved) {
         toast.error(i18next.t("snippets.store.updateMissing"));
         debugLog.warn("SnippetStore", `update target missing: ${id}`);
-        return false;
+        return SAVE_NOT_PERSISTED;
       }
+      updated = saved;
       set((state) => ({
-        entries: state.entries.map((e) => (e.id === id ? updated : e)),
+        entries: state.entries.map((e) => (e.id === id ? saved : e)),
       }));
     } catch (e) {
       if (e instanceof SnippetVersionConflictError) {
         // 非破壊: store も timelapse も触らず、呼び出し側に再読み込みを促す。
         snippetEditConflictHandler(id);
-        return false;
+        return SAVE_NOT_PERSISTED;
       }
       toast.error(i18next.t("snippets.store.updateFailed"));
       debugLog.error("SnippetStore", "update", errorDetail(e));
-      return false;
+      return SAVE_NOT_PERSISTED;
     }
 
     // 本文 (content, ProseMirror JSON) の変更差分を timelapse に記録する。
@@ -307,8 +343,10 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     });
 
     // ここから先は保存成功 (undo 履歴の登録可否は成否と無関係)
-    if (!before) return true;
-    if (useGlobalHistoryStore.getState().isReplaying) return true;
+    if (!before) return persistedVersion(updated.version);
+    if (useGlobalHistoryStore.getState().isReplaying) {
+      return persistedVersion(updated.version);
+    }
 
     const undoPatch: Record<string, unknown> = {};
     for (const key of Object.keys(data)) {
@@ -348,7 +386,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         }
       },
     });
-    return true;
+    return persistedVersion(updated.version);
   },
 
   remove: async (id) => {
@@ -358,7 +396,6 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       set((state) => ({
         entries: state.entries.filter((e) => e.id !== id),
       }));
-      notifySnippetDeleted(id);
     } catch (e) {
       toast.error(i18next.t("snippets.store.deleteFailed"));
       debugLog.error("SnippetStore", "remove", errorDetail(e));
@@ -388,7 +425,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       label: i18next.t("history.snippets.deleted"),
       entityId: captured.id,
       async undo() {
-        useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
+        cancelPendingTrash(trashTempId);
         await snippetApi.createSnippet({
           id: captured.id,
           projectId: captured.projectId,
@@ -406,7 +443,6 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         set((state) => ({
           entries: state.entries.filter((e) => e.id !== captured.id),
         }));
-        notifySnippetDeleted(captured.id);
       },
     });
   },

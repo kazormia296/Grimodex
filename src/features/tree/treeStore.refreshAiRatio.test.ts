@@ -14,12 +14,20 @@ vi.mock("@/lib/tauri", () => ({
   listen: vi.fn(),
 }));
 
+vi.mock("@/application/project/currentProjectAuthority", () => ({
+  getCurrentProjectId: () => "p1",
+}));
+
 import { useTreeStore } from "./treeStore";
 
 describe("treeStore.refreshAiRatio", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useTreeStore.setState({ aiRatios: {} });
+    useTreeStore.setState({
+      aiRatios: {},
+      hydratedProjectId: "p1",
+      hydratedWorkspaceOpenRevision: null,
+    });
   });
 
   it("merges refreshed ratio for the node", async () => {
@@ -29,6 +37,24 @@ describe("treeStore.refreshAiRatio", () => {
     await useTreeStore.getState().refreshAiRatio("s1");
 
     expect(useTreeStore.getState().aiRatios).toEqual({ s1: 25, s2: 40 });
+  });
+
+  it("applies a precomputed ratio without a database read", () => {
+    useTreeStore.setState({ aiRatios: { s1: 10, s2: 40 } });
+
+    useTreeStore.getState().setAiRatio("s1", 25);
+
+    expect(useTreeStore.getState().aiRatios).toEqual({ s1: 25, s2: 40 });
+    expect(loadBatchAiRatioMock).not.toHaveBeenCalled();
+  });
+
+  it("removes an empty scene's precomputed ratio", () => {
+    useTreeStore.setState({ aiRatios: { s1: 50, s2: 40 } });
+
+    useTreeStore.getState().setAiRatio("s1", undefined);
+
+    expect(useTreeStore.getState().aiRatios).toEqual({ s2: 40 });
+    expect(loadBatchAiRatioMock).not.toHaveBeenCalled();
   });
 
   it("clears stale ratio when the node is absent from the result", async () => {
@@ -51,5 +77,24 @@ describe("treeStore.refreshAiRatio", () => {
     await useTreeStore.getState().refreshAiRatio("s1");
 
     expect(useTreeStore.getState().aiRatios.s1).toBe(50);
+  });
+
+  it("does not publish a result after Tree hydration authority changes", async () => {
+    let resolve!: (ratios: Record<string, number>) => void;
+    loadBatchAiRatioMock.mockReturnValue(
+      new Promise<Record<string, number>>((done) => {
+        resolve = done;
+      }),
+    );
+
+    const refresh = useTreeStore.getState().refreshAiRatio("s1");
+    useTreeStore.setState({
+      hydratedProjectId: "p2",
+      aiRatios: { "p2-scene": 80 },
+    });
+    resolve({ s1: 25 });
+    await refresh;
+
+    expect(useTreeStore.getState().aiRatios).toEqual({ "p2-scene": 80 });
   });
 });

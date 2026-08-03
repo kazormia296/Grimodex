@@ -8,6 +8,42 @@
 
 use crate::{AiNovelistMode, AiProvider, AiSettings, ChatParams, ThinkingConfig, WebSearchConfig};
 
+fn normalize_ollama_endpoint_for_comparison(endpoint: &str) -> &str {
+    endpoint.trim().trim_end_matches('/')
+}
+
+/// Verify that the renderer's turn-start Ollama endpoint still matches the
+/// endpoint in the main-process settings snapshot.
+///
+/// The expected value is an authority check only: callers must continue using
+/// `settings.ollama_endpoint` after this succeeds. This prevents a compromised
+/// renderer from turning the snapshot field into an arbitrary network target.
+pub fn validate_expected_ollama_endpoint(
+    provider: &AiProvider,
+    configured_endpoint: &str,
+    expected_endpoint: Option<&str>,
+) -> anyhow::Result<()> {
+    if !matches!(provider, AiProvider::Ollama) {
+        return Ok(());
+    }
+    let Some(expected_endpoint) = expected_endpoint else {
+        // Backward compatibility for non-turn callers and version-skewed
+        // renderers. Resolved chat/agent turns always provide the snapshot.
+        return Ok(());
+    };
+    let expected = normalize_ollama_endpoint_for_comparison(expected_endpoint);
+    let configured = normalize_ollama_endpoint_for_comparison(configured_endpoint);
+    if expected.is_empty() {
+        anyhow::bail!("expected Ollama endpoint snapshot must not be empty");
+    }
+    if expected != configured {
+        anyhow::bail!(
+            "Ollama endpoint changed before request; expected {expected}, configured {configured}"
+        );
+    }
+    Ok(())
+}
+
 /// provider/model/endpoint override を AiSettings へ適用する（chat / inline / agent
 /// 共通）。send_chat_message / send_inline_ai_stream / send_agent_message の本体に
 /// inline していた変換と byte-identical:
@@ -148,6 +184,7 @@ pub fn build_chat_params<'a>(
         reasoning_effort,
         extra_body,
         retry_429,
+        http_retry_observer: None,
         ai_novelist_mode,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments,
@@ -303,6 +340,34 @@ mod tests {
         };
         let out = apply_provider_override(input, Some(""), None, None);
         assert_eq!(out.model, "settings-model");
+    }
+
+    #[test]
+    fn expected_ollama_endpoint_accepts_only_the_configured_snapshot() {
+        assert!(validate_expected_ollama_endpoint(
+            &AiProvider::Ollama,
+            " http://127.0.0.1:11434/ ",
+            Some("http://127.0.0.1:11434"),
+        )
+        .is_ok());
+
+        let error = validate_expected_ollama_endpoint(
+            &AiProvider::Ollama,
+            "http://127.0.0.1:21434",
+            Some("http://127.0.0.1:11434"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("changed before request"));
+    }
+
+    #[test]
+    fn expected_ollama_endpoint_does_not_retarget_other_providers() {
+        assert!(validate_expected_ollama_endpoint(
+            &AiProvider::OpenaiCompatible,
+            "http://configured.example/v1",
+            Some("http://renderer-controlled.example"),
+        )
+        .is_ok());
     }
 
     // inline_effective_variant: openai-compatible は per-call variant 無しなら

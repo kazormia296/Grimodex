@@ -223,6 +223,8 @@ describe("LinearSceneBlock: 未 accept 生成テキストの unmount 焼き込�
     unmount();
 
     // activeEditor !== このエディタなのでゲートされず、通常どおり保存される。
-    expect(persistedAnyDocContaining("人間の追記")).toBe(true);
+    await waitFor(() =>
+      expect(persistedAnyDocContaining("人間の追記")).toBe(true),
+    );
   });
 });

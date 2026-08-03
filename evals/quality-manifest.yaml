@@ -21,6 +21,8 @@ requirements:
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/chatStore.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerMode.ts
       - src/lib/browser-ai.ts
       - src/lib/browser-mock.ts
     lightTests:
@@ -30,6 +32,8 @@ requirements:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/chatApi.test.ts
       - src/features/chat/chatStore.test.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerMode.test.ts
       - src/lib/browser-ai.test.ts
       - src/lib/browser-mock.ai-runtime.test.ts
     heavyTests:
@@ -41,16 +45,85 @@ requirements:
       - eval-route-search-scenes
       - eval-route-list-chapters
       - eval-route-character-timeline
+  - id: GDX-AI-AUDIT-001
+    title: Every observable generative and inference execution is durably audited before dispatch.
+    definedIn: policies/quality/iron-laws.md#GDX-AI-AUDIT-001
+    implementedBy:
+      - src/features/ai-audit/api.ts
+      - src/features/ai-audit/orderedStreamAudit.ts
+      - src/features/ai-audit/reportCoverage.ts
+      - src/features/ai-audit/exportBundle.ts
+      - src/features/ai-audit/legacyEvidence.ts
+      - src/features/ai-verification/aiPathRegistry.ts
+      - src-tauri/crates/grimodex-db/src/ai_audit.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - electron/shared/ipcContract.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - src-tauri/crates/grimodex-post-effect/src/lib.rs
+      - src-tauri/crates/grimodex-post-effect/src/audit.rs
+      - src-tauri/crates/grimodex-semantic/src/audit.rs
+      - src-tauri/crates/grimodex-semantic/src/embedding.rs
+      - src-tauri/crates/grimodex-semantic/src/reranker.rs
+      - src-tauri/crates/grimodex-semantic/src/runtime.rs
+      - src/features/chat/singleShotTransport.ts
+      - src/features/chat/chatApi.ts
+      - src/features/chat/chatStreamTransport.ts
+      - src/features/editor/inlineAi/inlineAiStreaming.ts
+      - src/features/chat/cliApi.ts
+      - src/features/chat/codexAppApi.ts
+      - src/features/semantic-search/api.ts
+      - src/features/attribution/AttributionProjectView.tsx
+      - src/lib/browser-ai.ts
+      - src/lib/browser-mock.ts
+      - src/lib/browserRuntime.ts
+      - src/lib/browser-db/persistenceController.ts
+      - src/lib/browser-db/indexedDbStore.ts
+    lightTests:
+      - src/features/ai-audit/api.test.ts
+      - src/features/ai-audit/orderedStreamAudit.test.ts
+      - src/features/ai-audit/transportContext.test.ts
+      - src/features/ai-audit/legacyEvidence.test.ts
+      - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/chat/singleShotTransport.audit.test.ts
+      - src/features/chat/chatApi.audit.test.ts
+      - src/features/editor/inlineAi/inlineAiStreaming.audit.test.ts
+      - src/features/ab-test/abHarness.test.ts
+      - src/features/chat/externalRuntimeAudit.test.ts
+      - src-tauri/crates/grimodex-semantic/src/audit_tests.rs
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ai-audit.test.ts
+      - src/lib/browserRuntime.test.ts
+      - src/lib/browser-db/persistenceController.test.ts
+      - src/lib/browser-db/indexedDbStore.test.ts
+      - src/lib/browser-db/indexedDbStore.browser.test.ts
+      - src-tauri/crates/grimodex-db/tests/ai_audit.rs
+      - electron/shared/ipcContract.test.ts
+      - electron/native/grimodex-node/test/ai-audit.test.mjs
+      - src-tauri/crates/grimodex-post-effect/src/audit_tests.rs
+      - src/features/ai-audit/reportCoverage.test.ts
+      - src/features/ai-audit/exportBundle.test.ts
+      - src/features/attribution/AttributionProjectView.ai-audit.test.tsx
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-ai-audit-pre-dispatch
   - id: GDX-PRECHECK-001
     title: Missing inputs, policies, confirmation, or tools stop before mutation.
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
     implementedBy:
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/context/chatContextPlanner.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerMode.ts
+      - src/features/settings/categories/AiProjectSettings.tsx
       - src/features/ai-policy/policyGuard.ts
     lightTests:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerMode.test.ts
+      - src/features/settings/categories/AiProjectSettings.test.tsx
       - src/features/ai-policy/policyGuard.test.ts
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
@@ -143,15 +216,42 @@ requirements:
       - src/features/chat/citationVerify.ts
       - src/features/chat/chatRecall.ts
       - src/features/chat/context/chatContextPlanner.ts
+      - src/features/chat/hybridRecallSelection.ts
+      - src/features/chat/semanticRecall.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerShadow.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - experiments/lfm25-encoder-phase0/data/public/gate2/chunk-qrels.json
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/reranker_gate2.py
+      - src/features/impact-review/narrowingCore.ts
+      - experiments/lfm25-encoder-phase0/data/public/gate31/impact-scenes-ja.json
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate31.py
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
+      - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_RESULTS.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
+      - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - src/features/chat/citationVerify.test.ts
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
+      - src/features/chat/semanticRecall.test.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerShadow.test.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - experiments/lfm25-encoder-phase0/tests/test_reranker_gate2.py
+      - src/features/impact-review/narrowing.test.ts
+      - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
       - scripts/quality/run-related-scenes-heavy.mjs
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/reranker_gate2_runner.py
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py
     evaluatedBy:
       - eval-ground-search-events
       - eval-ground-get-scene
@@ -165,15 +265,31 @@ requirements:
       - src/features/chat/agent/chronicleWriteTools.ts
       - src/features/post-effect/api.ts
       - src/features/post-effect/canonicalize.ts
+      - experiments/lfm25-encoder-phase0/configs/phase0b-impact-gate31.yaml
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate31.py
+      - experiments/lfm25-encoder-phase0/tools/freeze_impact_gate31_scenes.ts
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
+      - experiments/lfm25-encoder-phase0/configs/phase0b-impact-gate4.yaml
+      - experiments/lfm25-encoder-phase0/tools/build_impact_gate4_corpus.py
+      - experiments/lfm25-encoder-phase0/data/public/gate4/provenance.json
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
+      - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
       - src/features/post-effect/api.test.ts
       - src/features/post-effect/canonicalize.test.ts
+      - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src-tauri/src/commands/post_effect.rs
       - src/features/codex/candidateJudgment.live.test.ts
       - src/features/codex/codexYomi.live.test.ts
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py
     evaluatedBy:
       - eval-artifact-create-event
       - eval-artifact-update-codex
@@ -186,10 +302,17 @@ requirements:
     implementedBy:
       - scripts/quality/eval-fixtures.mjs
       - evals/fixtures/routing.yaml
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
+      - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
     lightTests:
       - scripts/quality/eval-fixtures.test.mjs
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py
     evaluatedBy:
       - eval-ground-search-events
       - eval-route-search-codex
@@ -201,12 +324,30 @@ requirements:
       - scripts/quality/impact-map.mjs
       - evals/impact-map.yaml
       - src/features/ai-verification/aiPathRegistry.ts
+      - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE2_RESULTS.md
+      - experiments/lfm25-encoder-phase0/README.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE31_RESULTS.md
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate31_benchmark.py
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/SHADOW_CORPUS_PROTOCOL.md
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
+      - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_RESULTS.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
+      - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+      - scripts/semantic-reranker-release.test.mjs
+      - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py
     evaluatedBy:
       - eval-ground-foreshadow
       - eval-artifact-create-event
@@ -225,6 +366,14 @@ heavyEvaluations:
     suiteId: retrieval-grounding
     command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
     reason: Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.
+  - id: heavy-semantic-reranker-fixed-fixture
+    suiteId: retrieval-grounding
+    command: cd experiments/lfm25-encoder-phase0 && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-ja.jsonl --chunk-qrels data/public/gate2/chunk-qrels.json --model ja_xsmall --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-ja-xsmall.json && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-en.jsonl --chunk-qrels data/public/gate2/chunk-qrels.json --model en_minilm_l4 --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-en-minilm-l4.json
+    reason: Product opt-in depends on the pinned Gate 2 quality, admission-safety, and top-30 CPU latency gates; requires verified local model snapshots and a comparable CPU host.
+  - id: heavy-impact-gate31
+    suiteId: retrieval-grounding
+    command: make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=ja_xsmall IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=8 IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed && make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=modernbert_ja_30m IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=physical IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed
+    reason: Requires both pinned local FP32 model snapshots and several minutes of isolated CPU time to measure every window from 30 complete scenes plus the saturated 30-window stress.
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
@@ -234,6 +383,10 @@ heavyEvaluations:
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
     reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
 blockedEvaluations:
+  - id: blocked-impact-gate4-fresh-holdout
+    suiteId: retrieval-grounding
+    reason: The current synthetic test fingerprint is consumed and Gate 3.1 full-scene latency is Hold, so changing the run output cannot authorize another locked-test evaluation.
+    requiredAction: First pass the same Gate 3.1 full-scene workload, then freeze a new work-isolated holdout and intentionally update the selection protocol identity before registering a new runnable Heavy command.
   - id: blocked-web-ai-consent-live
     suiteId: tool-policy
     reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, and teardown against a real user-selected HTTP Local LLM or BYOK provider.

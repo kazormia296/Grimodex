@@ -62,4 +62,32 @@ describe("insertFromPaste — authorship mark の model/chatMessageId", () => {
     expect(attrs!.chatMessageId ?? null).toBeNull();
     editor.destroy();
   });
+
+  it("貼り付けの帰属保護を維持しつつ paste metadata を付ける", () => {
+    const editor = makeRealEditor();
+    const transactions: Array<{
+      programmaticInsert: unknown;
+      paste: unknown;
+      uiEvent: unknown;
+    }> = [];
+    editor.on("transaction", ({ transaction }) => {
+      if (!transaction.docChanged) return;
+      transactions.push({
+        programmaticInsert: transaction.getMeta("programmaticInsert"),
+        paste: transaction.getMeta("paste"),
+        uiEvent: transaction.getMeta("uiEvent"),
+      });
+    });
+    useEditorStore.getState().setEditor(editor);
+    useEditorStore
+      .getState()
+      .insertFromPaste([{ text: "貼り付け本文", source: "unknown" }]);
+
+    expect(transactions).toContainEqual({
+      programmaticInsert: true,
+      paste: true,
+      uiEvent: "paste",
+    });
+    editor.destroy();
+  });
 });

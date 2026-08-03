@@ -8,6 +8,7 @@
  */
 import path from "node:path";
 import { realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 import { app, dialog, safeStorage } from "electron";
 
@@ -29,6 +30,8 @@ import { registerImeShutdown } from "./imeShutdown.js";
 import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
+import { configureLinuxGraphics } from "./linuxGraphics.js";
+import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
   buildMcpConfigShellHandlers,
   prepareMcpSidecarForStartup,
@@ -52,6 +55,10 @@ import {
   registerSecurityHandlers,
 } from "./security.js";
 import { parseWebEditorHandoffProtocolRequest } from "./webEditorHandoffProtocol.js";
+import {
+  shouldUseProductJourneyAi,
+  wrapBackendForProductJourneyAi,
+} from "./productJourneyAi.js";
 
 const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
 const WEB_EDITOR_HANDOFF_PAYLOAD = {
@@ -86,6 +93,9 @@ function acceptWebEditorHandoffProtocolRequest(
   flushPendingWebEditorHandoff();
   return true;
 }
+
+// Chromium の GPU process 初期化より前に Linux 固有の graphics policy を確定する。
+configureLinuxGraphics(app);
 
 // Phase 4: packaged版は既存Tauriのdata_dirをそのまま正本にし、dev版は
 // GrimodexElectronDevへ隔離する。スモークの絶対overrideもここで処理する。
@@ -137,7 +147,10 @@ if (!gotSingleInstanceLock) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
     // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
-    const backend = initBackend();
+    const backend = wrapBackendForProductJourneyAi(
+      initBackend(),
+      shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
+    );
     // Phase 4: final Tauri releaseのOS keyringかsafeStorageへ、1回だけ
     // copyする。旧keyringはrollback用に残し、plaintextはmainから出さない。
     // 全キーの暗号化・復号検証が成功するまでmarker/暗号文を確定しない。
@@ -285,6 +298,57 @@ if (!gotSingleInstanceLock) {
           env: {},
         };
       },
+      appendAuditObservations: async (auditContext, observations) => {
+        if (!backend?.aiAuditAppendBatch) {
+          throw new Error("Native AI audit backend is unavailable");
+        }
+        const appVersion = app.getVersion();
+        const events = observations.map((observation) => ({
+          eventId: randomUUID(),
+          executionId: auditContext.executionId,
+          operationId: auditContext.operationId,
+          parentExecutionId: auditContext.parentExecutionId,
+          pathId: auditContext.pathId,
+          eventType: "request.prepared",
+          timestamp: Date.now(),
+          payload: {
+            captureState: observation.captureState,
+            credentialsExcluded: true,
+            effectiveRequestReceipt: true,
+            request: {
+              provider: observation.provider,
+              ...(observation.model === null
+                ? {}
+                : { model: observation.model }),
+              messages: observation.modelVisibleMessages,
+              options: {
+                runtime: "codex-app-server",
+                rpcMethod: observation.rpcMethod,
+                effort: observation.effort,
+              },
+              auditMetadata: {
+                approvalPolicy: observation.approvalPolicy,
+                sandboxMode: observation.sandboxMode,
+                networkAccess: observation.networkAccess,
+                retryWithoutMcp: observation.retryWithoutMcp,
+                mcpObservation: observation.mcpObservation,
+              },
+            },
+            limitations: observation.limitations,
+            metadata: {
+              source: "electron-main-before-codex-rpc",
+              rpcMethod: observation.rpcMethod,
+              effectiveRequestConfirmedByMain: true,
+            },
+            appVersion,
+          },
+        }));
+        await backend.aiAuditAppendBatch(
+          auditContext.expectedWorkspacePath,
+          auditContext.projectId,
+          events,
+        );
+      },
     });
     // Vivliostyle（バッチ5）: build/preview child、成果物token、tempをmain lifetime
     // で共有する。custom pathはnative確認を通したvivliostyle名だけを許可し、
@@ -318,6 +382,7 @@ if (!gotSingleInstanceLock) {
     const updater = createElectronUpdaterManager(broadcastMainEvent, {
       availability: updaterAvailability,
     });
+    const mozkeyInstaller = createMozkeyInstallerManager();
     const licenseValidation = createLicenseValidationScheduler(
       backend,
       broadcastBackendEvent,
@@ -341,6 +406,7 @@ if (!gotSingleInstanceLock) {
       ...cliAi.handlers,
       ...vivliostyle.handlers,
       ...updater.handlers,
+      ...mozkeyInstaller.handlers,
       ...mcpConfigHandlers,
     };
     const codexOwnerLifecycleBound = new Set<number>();

@@ -34,12 +34,16 @@ const inFlight = new Set<string>();
  * already in flight) so the caller skips the human-review enqueue; false if it
  * should fall back to manual review (unsupported mode, file-backed, error).
  */
-async function applyOne(proposal: PendingProseProposal): Promise<boolean> {
+async function applyOne(
+  proposal: PendingProseProposal,
+  isAuthoritative: () => boolean = () => true,
+): Promise<boolean> {
   if (!isHeadlessAppliable(proposal)) return false;
+  if (!isAuthoritative()) return false;
   if (inFlight.has(proposal.stagingId)) return true;
   inFlight.add(proposal.stagingId);
   try {
-    const outcome = await autoApplyProseProposal(proposal);
+    const outcome = await autoApplyProseProposal(proposal, isAuthoritative);
     if (outcome.applied) return true;
     debugLog.info(
       "autoAcceptProse",
@@ -60,15 +64,24 @@ let registered = false;
 export function setupAutoAcceptProseConsumer(): void {
   if (registered) return;
   registered = true;
-  setProseProposalHandler(async (proposal, projectId) => {
-    if (!(await isAutoAcceptEnabled(projectId))) return false;
-    return applyOne(proposal);
-  });
+  setProseProposalHandler(
+    async (proposal, projectId, isAuthoritative = () => true) => {
+      if (!isAuthoritative()) return false;
+      if (!(await isAutoAcceptEnabled(projectId))) return false;
+      if (!isAuthoritative()) return false;
+      return applyOne(proposal, isAuthoritative);
+    },
+  );
 }
 
 /** Sweep the proposed-prose backlog for a project (call on project open). */
-export async function drainProposedProse(projectId: string): Promise<void> {
+export async function drainProposedProse(
+  projectId: string,
+  isAuthoritative: () => boolean = () => true,
+): Promise<void> {
+  if (!isAuthoritative()) return;
   if (!(await isAutoAcceptEnabled(projectId))) return;
+  if (!isAuthoritative()) return;
   let proposals: PendingProseProposal[];
   try {
     proposals = await loadAllProposedProse(projectId);
@@ -79,9 +92,11 @@ export async function drainProposedProse(projectId: string): Promise<void> {
   if (proposals.length === 0) return;
   let applied = 0;
   for (const proposal of proposals) {
-    if (await applyOne(proposal)) {
+    if (!isAuthoritative()) return;
+    if (await applyOne(proposal, isAuthoritative)) {
       applied += 1;
     } else {
+      if (!isAuthoritative()) return;
       // live poller (externalWriteFeed) と同じ not-applied フォールバック:
       // 適用できなかった行 (stale-base-version / unsupported-mode / エラー等)
       // は diff レビュー導線 (proseStagingStore) へ enqueue する。これが無いと、

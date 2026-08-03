@@ -350,9 +350,11 @@ export function SnippetPanel() {
   );
 
   const handleSave = useCallback(
-    async (id: string, data: { title: string; content: string }) => {
-      await update(id, data);
-    },
+    (
+      id: string,
+      data: Partial<{ title: string; content: string }>,
+      options: { baseVersion: number },
+    ) => update(id, data, options),
     [update],
   );
 

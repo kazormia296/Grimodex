@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { GridDisplaySettings } from "../gridStore";
 
@@ -11,6 +17,14 @@ const { mockOpenPreview, mockOpenPinned, mockSetActiveScene } = vi.hoisted(
     mockSetActiveScene: vi.fn(),
   }),
 );
+const { mockEditUnplacedBeat, mockLoadBeatTextByIndex } = vi.hoisted(() => ({
+  mockEditUnplacedBeat: vi.fn(),
+  mockLoadBeatTextByIndex: vi.fn(),
+}));
+const { mockAddUnplacedBeat, mockPrepareUnplacedBeats } = vi.hoisted(() => ({
+  mockAddUnplacedBeat: vi.fn(),
+  mockPrepareUnplacedBeats: vi.fn(),
+}));
 
 // --- dnd-kit stubs ---
 vi.mock("@dnd-kit/core", () => ({
@@ -54,6 +68,15 @@ vi.mock("@/features/codex/codexStore", () => ({
     sel({ entries: [] }),
   ),
 }));
+vi.mock("@/features/editor/beat/editUnplacedBeatFromGrid", () => ({
+  editUnplacedBeatFromGrid: mockEditUnplacedBeat,
+  loadBeatTextByIndex: mockLoadBeatTextByIndex,
+}));
+vi.mock("@/features/editor/beat/addUnplacedBeatFromGrid", () => ({
+  addUnplacedBeatFromGrid: mockAddUnplacedBeat,
+  saveUnplacedBeatDraftFromGrid: mockAddUnplacedBeat,
+  prepareUnplacedBeatsForGrid: mockPrepareUnplacedBeats,
+}));
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: Object.assign(
     vi.fn(
@@ -95,6 +118,15 @@ const mockUseNodeBeatPreview = vi.mocked(useNodeBeatPreview);
 // --- component under test (imported after mocks) ---
 import { GridSceneCard } from "../GridSceneCard";
 import { useGridStore } from "../gridStore";
+import {
+  resetGridVirtualEditingForTests,
+  useGridVirtualEditingStore,
+} from "../gridVirtualEditingStore";
+import {
+  _resetQuiescenceParticipantsForTests,
+  collectQuiescenceParticipantRecovery,
+  flushQuiescenceParticipants,
+} from "@/application/lifecycle/quiescenceParticipants";
 
 const DEFAULT_DISPLAY: GridDisplaySettings = {
   showSynopsis: true,
@@ -131,7 +163,14 @@ function makeScene(overrides: Partial<TreeNodeData> = {}): TreeNodeData {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetQuiescenceParticipantsForTests();
+  resetGridVirtualEditingForTests();
   useGridStore.getState().clearSelection();
+  mockLoadBeatTextByIndex.mockResolvedValue({
+    id: "beat-1",
+    text: "Beat one",
+  });
+  mockPrepareUnplacedBeats.mockResolvedValue(undefined);
   mockUseNodeBeatPreview.mockReturnValue({ placed: null, unplaced: null });
   mockUseDraggable.mockReturnValue({
     attributes: {},
@@ -146,6 +185,11 @@ beforeEach(() => {
     activatorEvent: null,
     activeNodeRect: null,
   } as unknown as ReturnType<typeof useDraggable>);
+});
+
+afterEach(() => {
+  _resetQuiescenceParticipantsForTests();
+  resetGridVirtualEditingForTests();
 });
 
 describe("GridSceneCard", () => {
@@ -248,6 +292,123 @@ describe("GridSceneCard", () => {
     const calls = mockUseDraggable.mock.calls;
     const lastCall = calls[calls.length - 1][0];
     expect(lastCall.disabled).toBe(true);
+  });
+
+  it("pins a title draft until explicit cancel", () => {
+    render(<GridSceneCard scene={makeScene()} display={DEFAULT_DISPLAY} />);
+
+    fireEvent.doubleClick(screen.getByText("Test Scene"));
+    expect(
+      useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+    ).toBe(true);
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+    expect(
+      useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+    ).toBe(false);
+  });
+
+  it("pins an existing Beat draft and balances registration on unmount", async () => {
+    mockUseNodeBeatPreview.mockReturnValue({
+      placed: null,
+      unplaced: JSON.stringify(["Beat one"]),
+    });
+    const { unmount } = render(
+      <GridSceneCard scene={makeScene()} display={DEFAULT_DISPLAY} />,
+    );
+
+    fireEvent.doubleClick(screen.getByText("Beat one"));
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toBeDefined();
+      expect(
+        useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+      ).toBe(true);
+    });
+
+    unmount();
+    expect(
+      useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+    ).toBe(false);
+  });
+
+  it("pins the add-Beat textarea until explicit cancel", async () => {
+    render(
+      <GridSceneCard
+        scene={makeScene()}
+        display={{ ...DEFAULT_DISPLAY, showSynopsis: false }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("＋ Beat を追加"));
+    await screen.findByRole("textbox");
+    expect(
+      useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+    ).toBe(true);
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+    expect(
+      useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+    ).toBe(false);
+  });
+
+  it("strict quiescence persists an active add-Beat draft", async () => {
+    mockAddUnplacedBeat.mockResolvedValue(undefined);
+    render(
+      <GridSceneCard
+        scene={makeScene()}
+        display={{ ...DEFAULT_DISPLAY, showSynopsis: false }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("＋ Beat を追加"));
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, {
+      target: { value: "Lifecycle beat" },
+    });
+    expect(collectQuiescenceParticipantRecovery()).toEqual([
+      {
+        kind: "grid-add-beat",
+        beatId: expect.any(String),
+        sceneId: "scene-1",
+        text: "Lifecycle beat",
+      },
+    ]);
+
+    await flushQuiescenceParticipants();
+
+    expect(mockAddUnplacedBeat).toHaveBeenCalledWith(
+      "scene-1",
+      expect.any(String),
+      "Lifecycle beat",
+    );
+    await waitFor(() =>
+      expect(
+        useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+      ).toBe(false),
+    );
+  });
+
+  it("IME composition Enter/Escape does not commit or cancel add-Beat", async () => {
+    render(
+      <GridSceneCard
+        scene={makeScene()}
+        display={{ ...DEFAULT_DISPLAY, showSynopsis: false }}
+      />,
+    );
+    fireEvent.click(screen.getByText("＋ Beat を追加"));
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "変換中Beat" } });
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+
+    expect(mockAddUnplacedBeat).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveValue("変換中Beat");
+    expect(
+      useGridVirtualEditingStore.getState().editingRowIds.has("scene-1"),
+    ).toBe(true);
+
+    fireEvent.keyDown(input, { key: "Escape" });
   });
 
   it("drag handle is present when not editing", () => {

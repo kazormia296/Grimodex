@@ -6,6 +6,19 @@ import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { CodexVersionConflictError } from "./occ";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { markImpactBaselinePhasesRestricted } from "./impactBaselineVisibility";
+import type { CodexEntryType } from "./codexMatchTargets";
+import { chatPersistenceDeletionGuard } from "@/lib/chatPersistenceDeletionGuard";
+import {
+  ChatAnchorDeletionBlockedError,
+  tryAcquireChatAnchorDeletionLease,
+} from "@/lib/chatNavigationGuard";
+import { notifyCodexAnchorDeletedIfRegistered } from "@/application/codex/codexAnchorLifecycle";
+
+export {
+  listCodexMatchTargets,
+  type CodexEntryType,
+  type CodexMatchRow,
+} from "./codexMatchTargets";
 
 const IME_EXPORT_FIELDS = new Set([
   "type",
@@ -57,7 +70,6 @@ export const BUILTIN_CODEX_TYPES = [
   "lore",
 ] as const;
 export type BuiltinCodexEntryType = (typeof BUILTIN_CODEX_TYPES)[number];
-export type CodexEntryType = string;
 
 export async function listCodexEntries(
   projectId: string,
@@ -78,18 +90,6 @@ export async function listCodexEntries(
 // 必要列が固定なので、列を絞った専用 API に分ける。
 // codexStore（一覧/編集面/undo が全列に依存）は従来通り listCodexEntries を使う。
 // ---------------------------------------------------------------------------
-
-/**
- * renderer のローカル照合に必要な軽量行。
- *
- * name / aliases は mention・入力補完、readings は選択表記への自動ルビ付与で
- * 使う。本文・画像・ノートは全件キャッシュへ載せない。
- */
-export type CodexMatchRow = Pick<
-  CodexEntry,
-  "id" | "name" | "type" | "aliases" | "excludedAliases"
-> &
-  Partial<Pick<CodexEntry, "readings">>;
 
 /**
  * AI 文脈構築用: icon / notes / readings の 3 列を除いた行。content は L4 注入・
@@ -125,28 +125,6 @@ function codexContextEntrySelection() {
     ...codexContextMetadataSelection(),
     content: codexEntries.content,
   };
-}
-
-/**
- * mention・入力補完・自動ルビ付与用の軽量 projection。
- * content / icon / notes を転送しない。
- */
-export async function listCodexMatchTargets(
-  projectId: string,
-  type?: CodexEntryType,
-): Promise<CodexMatchRow[]> {
-  const scope = eq(codexEntries.projectId, projectId);
-  return db
-    .select({
-      id: codexEntries.id,
-      name: codexEntries.name,
-      type: codexEntries.type,
-      aliases: codexEntries.aliases,
-      excludedAliases: codexEntries.excludedAliases,
-      readings: codexEntries.readings,
-    })
-    .from(codexEntries)
-    .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
 }
 
 /**
@@ -405,10 +383,20 @@ export async function deleteCodexEntry(
   projectId: string,
   id: string,
 ): Promise<void> {
-  await db
-    .delete(codexEntries)
-    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  scheduleImeExportRefresh(projectId);
+  const deletionAuthority = tryAcquireChatAnchorDeletionLease();
+  if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
+  try {
+    chatPersistenceDeletionGuard.assertDeletionAllowed();
+    await db
+      .delete(codexEntries)
+      .where(
+        and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
+      );
+    notifyCodexAnchorDeletedIfRegistered(id);
+    scheduleImeExportRefresh(projectId);
+  } finally {
+    deletionAuthority.release();
+  }
 }
 
 export async function listCodexEntriesByMessageId(

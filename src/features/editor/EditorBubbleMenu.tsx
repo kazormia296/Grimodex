@@ -9,20 +9,15 @@ import {
   Bold,
   BookOpen,
   Flag,
-  Heading1,
-  Heading2,
-  Heading3,
   Italic,
-  Link2,
+  Link as LinkIcon,
   List,
   ListOrdered,
   MessageSquarePlus,
-  Quote,
   Strikethrough,
-  Type,
+  TextQuote,
   Underline,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
@@ -33,12 +28,14 @@ import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext"
 import type { ToolbarActions } from "./Toolbar";
 import type { InlineAiCommand } from "./inlineAi/inlineAiTypes";
 import { BubbleAiMenu } from "./BubbleAiMenu";
+import { BubbleButton, Sep } from "./bubbleMenuPrimitives";
+import { RubyToolbarGlyph } from "./RubyToolbarGlyph";
 
 const GAP = 8;
 const EDGE = 8;
-const EST_HEIGHT = 44;
+const EST_HEIGHT = 32;
 // 実測前の保守的な見積もり (実幅以上にしておけば初回フレームも画面外に出ない)。
-const EST_WIDTH = 560;
+const EST_WIDTH = 520;
 
 interface EditorBubbleMenuProps {
   editor: Editor | null;
@@ -103,50 +100,6 @@ export function computeBubblePosition(
   const max = vw - halfW - EDGE;
   const left = max < min ? vw / 2 : Math.min(Math.max(centerX, min), max);
   return { top, left, placeBelow };
-}
-
-export function BubbleButton({
-  testId,
-  label,
-  active,
-  onClick,
-  children,
-  phone = false,
-  disabled = false,
-}: {
-  testId: string;
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-  phone?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      data-testid={testId}
-      aria-label={label}
-      title={label}
-      {...(active !== undefined ? { "aria-pressed": active } : {})}
-      // 押下でエディタの選択が外れない (= 直後のコマンドが選択へ効く) よう preventDefault。
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className={cn(
-        "flex items-center justify-center rounded text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-        phone ? "min-h-11 min-w-11 px-2" : "h-7 min-w-[28px] px-1",
-        active && "bg-accent text-foreground",
-        disabled && "cursor-not-allowed opacity-50",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-export function Sep() {
-  return <div aria-hidden className="mx-0.5 h-4 w-px bg-border" />;
 }
 
 /**
@@ -293,7 +246,7 @@ export function EditorBubbleMenu({
         initial={reduced ? false : VARIANTS.scaleIn.initial}
         animate={reduced ? undefined : VARIANTS.scaleIn.animate}
         transition={{ duration: reduced ? 0 : DURATIONS.fast }}
-        className="flex items-center gap-0.5 rounded-md border border-border bg-popover p-1 shadow-lg"
+        className="flex items-center gap-0.5 rounded-md border border-border bg-popover p-0.5 shadow-lg"
       >
         {phoneWorkspace ? (
           <>
@@ -304,7 +257,7 @@ export function EditorBubbleMenu({
               active={state.ruby}
               onClick={() => toolbarActionsRef.current?.openRuby()}
             >
-              <Type className="h-4 w-4" />
+              <RubyToolbarGlyph />
             </BubbleButton>
             <BubbleButton
               phone
@@ -383,7 +336,7 @@ export function EditorBubbleMenu({
               active={state.h1}
               onClick={() => chain().toggleHeading({ level: 1 }).run()}
             >
-              <Heading1 className="h-3.5 w-3.5" />
+              H1
             </BubbleButton>
             <BubbleButton
               testId="bubble-h2"
@@ -391,7 +344,7 @@ export function EditorBubbleMenu({
               active={state.h2}
               onClick={() => chain().toggleHeading({ level: 2 }).run()}
             >
-              <Heading2 className="h-3.5 w-3.5" />
+              H2
             </BubbleButton>
             <BubbleButton
               testId="bubble-h3"
@@ -399,7 +352,7 @@ export function EditorBubbleMenu({
               active={state.h3}
               onClick={() => chain().toggleHeading({ level: 3 }).run()}
             >
-              <Heading3 className="h-3.5 w-3.5" />
+              H3
             </BubbleButton>
 
             <Sep />
@@ -425,7 +378,7 @@ export function EditorBubbleMenu({
               active={state.quote}
               onClick={() => chain().toggleBlockquote().run()}
             >
-              <Quote className="h-3.5 w-3.5" />
+              <TextQuote className="h-3.5 w-3.5" />
             </BubbleButton>
 
             <Sep />
@@ -435,7 +388,7 @@ export function EditorBubbleMenu({
               active={state.ruby}
               onClick={() => toolbarActionsRef.current?.openRuby()}
             >
-              <Type className="h-3.5 w-3.5" />
+              <RubyToolbarGlyph />
             </BubbleButton>
             <BubbleButton
               testId="bubble-link"
@@ -443,7 +396,7 @@ export function EditorBubbleMenu({
               active={state.link}
               onClick={() => toolbarActionsRef.current?.openLink()}
             >
-              <Link2 className="h-3.5 w-3.5" />
+              <LinkIcon size={13} />
             </BubbleButton>
             {canEditCodexSemanticLink && (
               <BubbleButton
@@ -458,7 +411,7 @@ export function EditorBubbleMenu({
                     .setSemanticLinkPickerOpen(true, editor)
                 }
               >
-                <Link2 className="h-3.5 w-3.5 text-primary" />
+                <BookOpen className="h-3.5 w-3.5 text-primary" />
               </BubbleButton>
             )}
 

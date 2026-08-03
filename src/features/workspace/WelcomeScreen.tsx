@@ -51,10 +51,19 @@ function ReturningUserScreen() {
     (s) => s.globalSettings?.uiLanguage ?? "ja",
   );
   const updateGlobalSettings = useWorkspaceStore((s) => s.updateGlobalSettings);
+  const workspaceOpenRequestInProgress = useWorkspaceStore(
+    (s) => s.workspaceOpenRequestInProgress,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
+  );
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
+  const workspaceBusy =
+    opening || workspaceOpenRequestInProgress || workspaceSwitchInProgress;
 
   async function handleSelectFolder() {
+    if (workspaceBusy) return;
     clearError();
     const path = await openFolderDialog();
     if (path) {
@@ -63,10 +72,13 @@ function ReturningUserScreen() {
   }
 
   async function handleStart() {
-    if (!selectedPath) return;
+    if (!selectedPath || workspaceBusy) return;
     setOpening(true);
-    await requestOpenWorkspace(selectedPath);
-    setOpening(false);
+    try {
+      await requestOpenWorkspace(selectedPath, "folder-picker");
+    } finally {
+      setOpening(false);
+    }
   }
 
   return (
@@ -83,6 +95,7 @@ function ReturningUserScreen() {
         <button
           type="button"
           onClick={handleSelectFolder}
+          disabled={workspaceBusy}
           className="rounded-md border border-input bg-background px-6 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
         >
           {t("welcome.selectFolder")}
@@ -109,7 +122,7 @@ function ReturningUserScreen() {
         <button
           type="button"
           onClick={handleStart}
-          disabled={!selectedPath || opening}
+          disabled={!selectedPath || workspaceBusy}
           className="rounded-md bg-primary px-8 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           {opening ? t("welcome.preparing") : t("welcome.start")}

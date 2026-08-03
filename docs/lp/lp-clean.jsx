@@ -48,7 +48,7 @@ function LPVariantD() {
             <span>Features</span><span>Loop</span><span>Cases</span><span>FAQ</span>
           </div>
           <div style={{ justifySelf: "end", fontSize: 12 }}>
-            <span style={{ marginRight: 14, opacity: 0.6 }}>v0.7.0</span>
+            <span style={{ marginRight: 14, opacity: 0.6 }}>v2.0.10</span>
             <button style={{ background: INK, color: BG, border: 0, padding: "10px 18px", fontSize: 12, fontWeight: 600, cursor: "pointer", letterSpacing: 0.2 }}>
               Download ↓
             </button>
@@ -63,7 +63,7 @@ function LPVariantD() {
             <div style={{ fontWeight: 700, marginBottom: 14, color: ACC }}>01 / Hero</div>
             <div>A Writing</div>
             <div>Fidget IDE</div>
-            <div style={{ marginTop: 10, opacity: 0.6 }}>Tauri · Local-first</div>
+            <div style={{ marginTop: 10, opacity: 0.6 }}>Electron · Local-first</div>
           </div>
           <div>
             <_Rev2>
@@ -107,7 +107,7 @@ function LPVariantD() {
                 <button style={{ background: BG, color: INK, border: `1px solid ${INK}`, padding: "20px 32px", fontSize: 16, fontWeight: 500, cursor: "pointer" }}>
                   See the loop →
                 </button>
-                <span style={{ fontSize: 12, opacity: 0.5, marginLeft: 8 }}>macOS · Windows · Linux · Free</span>
+                <span style={{ fontSize: 12, opacity: 0.5, marginLeft: 8 }}>macOS · Windows · Linux · Local-first · BYOK</span>
               </div>
             </_Rev2>
           </div>
@@ -115,7 +115,7 @@ function LPVariantD() {
 
         {/* Hairline metrics */}
         <div style={{ position: "absolute", left: 0, right: 0, bottom: 24, display: "flex", justifyContent: "space-between", padding: "0 48px", fontSize: 10, opacity: 0.4, letterSpacing: 1, textTransform: "uppercase" }}>
-          <span>v0.7.0 — May 2026</span>
+          <span>v2.0.10 — 2026</span>
           <span>1280 × ∞</span>
           <span>Section 01 / 06</span>
         </div>
@@ -128,7 +128,7 @@ function LPVariantD() {
           <div>
             <_Rev2>
               <h2 style={{ fontSize: 112, lineHeight: 0.92, fontWeight: 700, letterSpacing: -4, margin: "0 0 24px" }}>
-                Twelve panels. <span style={{ opacity: 0.4 }}>One brain.</span>
+                A workspace. <span style={{ opacity: 0.4 }}>One brain.</span>
               </h2>
             </_Rev2>
             <p style={{ fontSize: 16, lineHeight: 1.6, opacity: 0.75, maxWidth: 600, marginBottom: 48 }}>
@@ -242,7 +242,7 @@ function LPVariantD() {
         <h2 style={{ fontSize: 220, lineHeight: 0.86, fontWeight: 700, letterSpacing: -8, margin: 0 }}>
           Write<br /><span style={{ color: ACC }}>differently.</span>
         </h2>
-        <p style={{ fontSize: 16, opacity: 0.65, marginTop: 28 }}>Free · Local-first · Bring your own AI key.</p>
+        <p style={{ fontSize: 16, opacity: 0.65, marginTop: 28 }}>Local-first · Bring your own AI key.</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 36, flexWrap: "wrap" }}>
           {["macOS .dmg", "Windows .msi", "Linux .AppImage"].map((p) => (
             <button key={p} style={{ background: INK, color: BG, border: 0, padding: "20px 28px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
@@ -251,7 +251,7 @@ function LPVariantD() {
           ))}
         </div>
         <div style={{ marginTop: 80, fontSize: 11, opacity: 0.4, letterSpacing: 1, textTransform: "uppercase" }}>
-          Grimodex · Tauri v2 · Elastic License 2.0
+          Grimodex · Electron · Local-first · BYOK
         </div>
       </section>
     </LPFrame>
@@ -327,7 +327,7 @@ function LPVariantE() {
                 <button style={{ background: INK, color: BG, border: 0, padding: "18px 28px", fontSize: 15, fontWeight: 600, cursor: "pointer", borderRadius: 99 }}>
                   Download ↓
                 </button>
-                <span style={{ fontSize: 12, opacity: 0.55 }}>v0.7.0 · macOS · Windows · Linux · Free</span>
+                <span style={{ fontSize: 12, opacity: 0.55 }}>v2.0.10 · macOS · Windows · Linux · Local-first · BYOK</span>
               </div>
             </_Rev2>
           </div>
@@ -359,7 +359,7 @@ function LPVariantE() {
         </div>
         <_Rev2>
           <h2 style={{ fontSize: 96, lineHeight: 0.92, fontWeight: 700, letterSpacing: -3.5, margin: "0 0 32px" }}>
-            Twelve panels.<br />
+            A workspace.<br />
             <span style={{ fontFamily: "'Instrument Serif', serif", fontStyle: "italic", fontWeight: 400 }}>Your</span> arrangement.
           </h2>
         </_Rev2>
@@ -444,7 +444,7 @@ function LPVariantE() {
         <h2 style={{ fontSize: 200, lineHeight: 0.86, fontWeight: 700, letterSpacing: -7, margin: "8px 0 28px" }}>
           Write <span style={{ fontFamily: "'Instrument Serif', serif", fontStyle: "italic", fontWeight: 400, color: ACC }}>differently.</span>
         </h2>
-        <p style={{ fontSize: 16, opacity: 0.7, marginBottom: 36 }}>Free · Local-first · Bring your own AI key.</p>
+        <p style={{ fontSize: 16, opacity: 0.7, marginBottom: 36 }}>Local-first · Bring your own AI key.</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           {["macOS .dmg", "Windows .msi", "Linux .AppImage"].map((p) => (
             <button key={p} style={{ background: INK, color: BG, border: 0, padding: "18px 26px", fontSize: 14, fontWeight: 600, cursor: "pointer", borderRadius: 99 }}>
@@ -497,7 +497,7 @@ function LPVariantF() {
         <_Rev2>
           <div style={{ display: "inline-block", padding: "6px 14px", border: `1px solid ${RULE}`, borderRadius: 99, fontSize: 12, color: INK, opacity: 0.7, marginBottom: 36, background: BG }}>
             <span style={{ display: "inline-block", width: 6, height: 6, background: "#27c08e", borderRadius: "50%", marginRight: 8, transform: "translateY(-1px)" }} />
-            v0.7.0 · A Writing Fidget IDE / ライティング・フィジェット・IDE
+            v2.0.10 · A Writing Fidget IDE / ライティング・フィジェット・IDE
           </div>
         </_Rev2>
         <_Rev2 delay={80}>
@@ -532,7 +532,7 @@ function LPVariantF() {
             <button style={{ background: "transparent", color: INK, border: `1px solid ${RULE}`, padding: "16px 24px", fontSize: 15, fontWeight: 500, cursor: "pointer", borderRadius: 12 }}>
               See the loop →
             </button>
-            <span style={{ fontSize: 13, opacity: 0.55, marginLeft: 6 }}>macOS · Windows · Linux · Free · BYOK</span>
+            <span style={{ fontSize: 13, opacity: 0.55, marginLeft: 6 }}>macOS · Windows · Linux · Local-first · BYOK</span>
           </div>
         </_Rev2>
 
@@ -548,7 +548,7 @@ function LPVariantF() {
         <div style={{ fontSize: 12, opacity: 0.55, letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 14 }}>02 / Workspace</div>
         <_Rev2>
           <h2 style={{ fontSize: 80, lineHeight: 0.95, fontWeight: 700, letterSpacing: -2.5, margin: "0 0 16px" }}>
-            12 panels. <span style={{ color: ACC }}>Your arrangement.</span>
+            A workspace. <span style={{ color: ACC }}>Your arrangement.</span>
           </h2>
         </_Rev2>
         <p style={{ fontSize: 16, opacity: 0.7, maxWidth: 640, lineHeight: 1.6, marginBottom: 32 }}>
@@ -660,7 +660,7 @@ function LPVariantF() {
             Write <span style={{ background: `linear-gradient(120deg, ${ACC}, #ff6e3c)`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>differently.</span>
           </h2>
         </_Rev2>
-        <p style={{ fontSize: 17, opacity: 0.7, marginTop: 28, marginBottom: 36 }}>Free · Local-first · Bring your own AI key.</p>
+        <p style={{ fontSize: 17, opacity: 0.7, marginTop: 28, marginBottom: 36 }}>Local-first · Bring your own AI key.</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           {["macOS .dmg", "Windows .msi", "Linux .AppImage"].map((p) => (
             <button key={p} style={{ background: INK, color: BG, border: 0, padding: "18px 28px", fontSize: 15, fontWeight: 600, cursor: "pointer", borderRadius: 12 }}>

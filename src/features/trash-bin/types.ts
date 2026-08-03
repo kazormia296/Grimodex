@@ -120,7 +120,11 @@ export interface ForeshadowPayload {
   payoffToPos: number | null;
   payoffConfirmed: boolean;
   abandoned: boolean;
+  /** Optional only for persisted Trash rows captured before this field existed. */
+  secret?: boolean;
   loadBearing: string | null;
+  /** Epoch milliseconds; optional for backward-compatible persisted payloads. */
+  codexLinkDirtyAt?: number | null;
 }
 
 // 設計書 §16.8: Grid Chapter 実体は treeNodes(nodeType="folder")。
@@ -164,7 +168,7 @@ export interface TrashItemData {
 }
 
 /**
- * `addItem` の入力。`id` / `charCount` / `isInteresting` は store/DB 側で計算。
+ * `addItem` の入力。永続 ID / `charCount` / `isInteresting` は store/API 側で計算。
  */
 export interface TrashItemInput {
   projectId: string;

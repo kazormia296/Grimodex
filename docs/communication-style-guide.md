@@ -383,7 +383,41 @@ DISTRIBUTION: PUBLIC
 
 ## 11. 標準テンプレート
 
-### 11.1 日本語リリースノート
+### 11.1 デスクトップ GitHub Release リリースノートの必須節
+
+デスクトップ版の GitHub Release 本文では、変更一覧より前に次の節を必ず置く。
+
+| 目的                   | 日本語の必須見出し                         | 英語の必須見出し                      |
+| ---------------------- | ------------------------------------------ | ------------------------------------- |
+| 対象環境と配布物を選ぶ | `## 配備要領`                              | `## DEPLOYMENT PROCEDURE`             |
+| 導入前の判断材料を示す | `## ⚠️ インストール前に必ずお読みください` | `## ⚠️ Please read before installing` |
+
+`配備要領` / `DEPLOYMENT PROCEDURE` には、現行 Assets と一致する対象 OS、CPU
+architecture、release channel、配布形式、公式 Release ページへのリンクを記載する。
+ブラウザ版 Editor の提供が継続している場合は、そのリンクも併記する。
+手動導入用の配布物と、自動更新、署名、検証だけに使用する Assets を区別する。OS や
+runtime library の下限がある場合は明記し、AUR など Release 公開後の別工程で更新される
+配布経路は、利用可能になる条件を記載する。
+
+導入前の注意には、少なくとも次の事項を平易な通常文で記載する。
+
+1. プラットフォーム別の配備区分
+2. 直前の公開版および移行対象となる旧版からの更新方法
+3. コード署名と OS が表示しうるセキュリティ警告
+4. データ保管、バックアップ、および AI 利用時の外部接続
+5. Draft、公開済み Release、外部 package registry の現在状態に応じた利用可能時期
+
+直近の公開済み GitHub Release は節構成と情報粒度の基準として参照する。ただし、version、
+公開状態、channel、Assets、署名状態、更新経路をコピーしてはならない。対象 Revision の
+workflow、配布物、検証結果から再確認する。Draft 用の文面は公開可能な完成度まで作成するが、
+公開済みと断定せず、`DISTRIBUTION: PUBLIC` など未確定の metadata を記載しない。
+
+以下の日本語／英語テンプレートは、公開済み Release の例である。Draft を作成する場合は
+`STATUS`、`CHANNEL`、`DISTRIBUTION` を検証済みの lifecycle 状態へ置き換えるか、未確定なら
+省略する。「リリースしました」「is now available」などの公開済み表現は使用せず、
+公開前であることが分かる中立な表現へ置き換える。
+
+### 11.2 日本語リリースノート
 
 ```md
 # 端末更新通達 // GRIMODEX REVISION vX.Y.Z
@@ -397,6 +431,36 @@ DISTRIBUTION: PUBLIC
 大規模言語モデル統合型物語編纂端末《GRIMODEX》、Revision vX.Y.Zをリリースしました。
 
 本改訂では、[最も重要な変更]、[二番目の変更]、[必要なら三番目の変更]を実施しています。
+
+## 配備要領
+
+下記 Assets から、対象環境に対応するインストーラーまたはパッケージを選定し、取得してください。
+
+| 対象環境            | 公開区分             | 手動導入用の配布形式  |
+| ------------------- | -------------------- | --------------------- |
+| [OS / architecture] | [Stable / Open Beta] | [現行 Assets の形式]  |
+
+- [Revision vX.Y.Z の公式配布ページ]
+- [提供中の場合はブラウザ版 Editor]
+
+## ⚠️ インストール前に必ずお読みください
+
+### プラットフォーム別配備区分
+
+- [各 OS の配備区分と、試験運用の場合の注意]
+
+### 更新方法
+
+- [直前の公開版からの更新方法]
+- [移行対象となる旧版からの更新方法]
+
+### コード署名およびセキュリティ警告
+
+- [各 OS の署名、公証、警告表示、および公式配布元の確認方法]
+
+### データ保管および AI 利用
+
+- [データの保存先、backup、AI 利用時の外部接続]
 
 ## 機能系統増設
 
@@ -437,7 +501,7 @@ DISTRIBUTION: PUBLIC
 
 存在しない節は削除する。空の節を残さない。
 
-### 11.2 English release notes
+### 11.3 English release notes
 
 ```md
 # GRIMODEX // TERMINAL REVISION vX.Y.Z
@@ -451,6 +515,36 @@ DISTRIBUTION: PUBLIC
 Revision vX.Y.Z of the GRIMODEX LLM-integrated narrative authoring terminal is now available.
 
 This revision [summarize the most important change and its effect in plain English].
+
+## DEPLOYMENT PROCEDURE
+
+Select and obtain the installer or package for your environment from the Assets below.
+
+| Target environment  | Release channel      | Manual installation formats             |
+| ------------------- | -------------------- | --------------------------------------- |
+| [OS / architecture] | [Stable / Open Beta] | [Formats present in the current Assets] |
+
+- [Official Revision vX.Y.Z release page]
+- [Browser Editor, when currently available]
+
+## ⚠️ Please read before installing
+
+### Platform release classification
+
+- [Release classification for each OS and any trial-use notice.]
+
+### Update procedure
+
+- [Update procedure from the immediately preceding public release.]
+- [Update procedure from any supported migration source.]
+
+### Code signing and security notices
+
+- [Signing, notarization, possible OS warnings, and official source verification for each OS.]
+
+### Data storage and AI use
+
+- [Data location, backup guidance, and external connections used by configured AI.]
 
 ## NEW CAPABILITIES
 
@@ -486,7 +580,7 @@ This revision [summarize the most important change and its effect in plain Engli
 - [Deadline or affected versions.]
 ```
 
-### 11.3 日本語の短いリリース告知
+### 11.4 日本語の短いリリース告知
 
 ```text
 運用者《オペレーター》各位。
@@ -498,7 +592,7 @@ This revision [summarize the most important change and its effect in plain Engli
 更新記録：[URL]
 ```
 
-### 11.4 English short release announcement
+### 11.5 English short release announcement
 
 ```text
 OPERATOR NOTICE
@@ -510,7 +604,7 @@ This revision adds [major capability], improves [area], and resolves [major issu
 Full revision record: [URL]
 ```
 
-### 11.5 配備延期通達
+### 11.6 配備延期通達
 
 日本語：
 
@@ -540,7 +634,7 @@ The delay is due to [specific reason]. The current development build is [current
 The revised release date is [date / not yet determined]. A new deployment bulletin will be issued when the schedule is confirmed.
 ```
 
-### 11.6 緊急修正
+### 11.7 緊急修正
 
 日本語：
 
@@ -680,6 +774,10 @@ Grimodex is a local-first desktop novel-writing editor with AI chat, Codex, AI a
 - [ ] 見出しを除く本文は普通に読める
 - [ ] 日本語版と英語版で事実と深刻度が一致している
 - [ ] `STATUS`、`CHANNEL`、`DISTRIBUTION` が事実と一致している
+- [ ] デスクトップ GitHub Release の日英版に、必須の配備要領と導入前注意の節がある
+- [ ] 配備表の OS、architecture、channel、形式が現行 Assets と一致している
+- [ ] 手動導入用 Assets、動作要件、自動更新用 Assets、公開後に更新される外部配布経路を区別している
+- [ ] 更新方法、署名、backup、データ保管、AI 利用の説明に古い Revision の事実が残っていない
 - [ ] リリース、bug fix、known issueなど一般的な検索語が本文にも含まれている
 - [ ] リンク先、バージョン番号、日付が正しい
 

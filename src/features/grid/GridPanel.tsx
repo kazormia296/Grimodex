@@ -1,8 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
-  MeasuringStrategy,
   PointerSensor,
   KeyboardSensor,
   useSensor,
@@ -16,7 +15,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
 import { useGridStore } from "./gridStore";
-import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
+import { useGridDerivedData } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
 import { GridHeader } from "./GridHeader";
 import { GridContainerOutline } from "./GridContainerOutline";
@@ -32,6 +31,7 @@ import { moveScenesToChapter } from "./bulkSceneOps";
 import { recordMark } from "@/lib/perfLog";
 import { useGridPanelLifecycle } from "./useGridPanelLifecycle";
 import { useGridDragController } from "./useGridDragController";
+import { GRID_DND_MEASURING } from "./gridDndMeasuring";
 
 /**
  * Pin the DragOverlay's center to the pointer. The actual draggable element
@@ -93,26 +93,18 @@ export function GridPanel() {
 
   const pinsByScene = useSceneCodexPinsStore((s) => s.pinsByScene);
 
-  const { chapters, looseScenes, orderedColumns, totalChapters, totalScenes } =
-    useGridDerivedData(containerId);
-  const flatOrder = useGridFlatSceneOrder(containerId);
-  const orderedScenes = useMemo(
-    () => [
-      ...chapters.flatMap((chapter) =>
-        chapter.descendants
-          .filter((descendant) => descendant.node.nodeType === "scene")
-          .map((descendant) => ({
-            id: descendant.node.id,
-            parentId: descendant.node.parentId,
-          })),
-      ),
-      ...looseScenes.map((scene) => ({
-        id: scene.id,
-        parentId: scene.parentId,
-      })),
-    ],
-    [chapters, looseScenes],
-  );
+  const {
+    nodeById,
+    chapters,
+    looseScenes,
+    orderedColumns,
+    totalChapters,
+    totalScenes,
+    flatOrder,
+    nestedFolderIds,
+    orderedScenes,
+    allDisplayedScenes,
+  } = useGridDerivedData(containerId);
 
   const toolbarOpen = useGridStore((s) => s.toolbarOpen);
   const setToolbarOpen = useGridStore((s) => s.setToolbarOpen);
@@ -172,7 +164,7 @@ export function GridPanel() {
     (ids: string[]) => {
       const charCounts = useTreeStore.getState().charCounts;
       const anyHasContent = ids.some((id) => {
-        const n = nodes.find((node) => node.id === id);
+        const n = nodeById.get(id);
         return n && ((charCounts[id] ?? n.charCount ?? 0) > 0 || !!n.synopsis);
       });
       if (anyHasContent) {
@@ -182,37 +174,12 @@ export function GridPanel() {
         for (const id of ids) void deleteNode(id);
       }
     },
-    [nodes, clearSelection, deleteNode],
+    [nodeById, clearSelection, deleteNode],
   );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor),
-  );
-
-  const nestedFolderIds = useMemo(() => {
-    const ids: string[] = [];
-    const walk = (parentId: string) => {
-      for (const n of nodes) {
-        if (n.parentId !== parentId || n.nodeType !== "folder") continue;
-        ids.push(n.id);
-        walk(n.id);
-      }
-    };
-    for (const ch of chapters) walk(ch.folder.id);
-    return ids;
-  }, [nodes, chapters]);
-
-  const allDisplayedScenes = useMemo(
-    () => [
-      ...chapters.flatMap((ch) =>
-        ch.descendants
-          .filter((d) => d.node.nodeType === "scene")
-          .map((d) => d.node),
-      ),
-      ...looseScenes,
-    ],
-    [chapters, looseScenes],
   );
 
   const visibility = useGridCardVisibility({
@@ -227,13 +194,10 @@ export function GridPanel() {
       sensors={sensors}
       collisionDetection={gridCollisionDetection}
       modifiers={[snapOverlayCenterToCursor]}
-      // dnd-kit デフォルトの "Optimized" 戦略は translate.x/y 変化で droppable
-      // を全件 getBoundingClientRect する。Grid は ~27 droppable + 16 cards で
-      // pointer move 毎に 15-25ms の layout thrashing になっていた。
-      // axis-lock 中は GridPanel が自前 siblingRects を保持しており、drag 中に
-      // 列やカードの実 rect が動く局面でも dnd-kit の measure 結果は使われない
-      // ため、BeforeDragging に切替えて drag 開始時のみ measure する。
-      measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
+      // Virtual rows mount after drag start when the user scrolls. The live
+      // registry must be remeasured or an initially off-screen row can never
+      // become a drop target.
+      measuring={GRID_DND_MEASURING}
       onDragStart={dragController.handleDragStart}
       onDragOver={dragController.handleDragOver}
       onDragEnd={dragController.handleDragEnd}
@@ -282,6 +246,7 @@ export function GridPanel() {
                   )}
                   onRequestDeleteConfirm={handleDeleteScenes}
                   flatOrder={flatOrder}
+                  pinnedItemId={activeDragNode?.id}
                 />
               );
             }
@@ -299,6 +264,7 @@ export function GridPanel() {
                   axisLockOffsets={axisLockOffsets}
                   onRequestDeleteConfirm={handleDeleteScenes}
                   flatOrder={flatOrder}
+                  pinnedItemId={activeDragNode?.id}
                 />
               );
             }
@@ -315,6 +281,7 @@ export function GridPanel() {
                 axisLockOffsets={axisLockOffsets}
                 onRequestDeleteConfirm={handleDeleteScenes}
                 flatOrder={flatOrder}
+                pinnedItemId={activeDragNode?.id}
               />
             );
           })}

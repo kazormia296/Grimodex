@@ -4,7 +4,9 @@ import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDi
 import { SessionsPanel } from "./SessionsPanel";
 import { ChatMessageContextMenu } from "./ChatMessageContextMenu";
 import { PromptPreviewModal } from "./PromptPreviewModal";
-import { getModelCapabilities } from "../agent/modelLimits";
+import { resolveModelCapabilities } from "../agent/modelLimits";
+import { useAiSettingsStore } from "../store";
+import type { AiProvider } from "../types";
 import type {
   ChatExtractionDialogState,
   ChatSnippetDialogState,
@@ -48,6 +50,8 @@ interface ChatDialogsProps {
   >;
   promptViewOpen: boolean;
   promptViewSnapshot: MessagePromptSnapshot | null;
+  /** Best available provider namespace for legacy snapshots without provider. */
+  promptProvider?: AiProvider | null;
   onClosePrompt: () => void;
 }
 
@@ -68,8 +72,26 @@ export function ChatDialogs({
   contextActions,
   promptViewOpen,
   promptViewSnapshot,
+  promptProvider = null,
   onClosePrompt,
 }: ChatDialogsProps) {
+  const aiSettings = useAiSettingsStore((state) => state.settings);
+  useAiSettingsStore((state) => state.modelCapsRevision);
+  const resolvedPromptProvider = promptViewSnapshot?.provider ?? promptProvider;
+  const promptContextWindow = promptViewSnapshot?.model
+    ? (promptViewSnapshot.contextWindow ??
+      resolveModelCapabilities(
+        promptViewSnapshot.model,
+        aiSettings && resolvedPromptProvider
+          ? {
+              ...aiSettings,
+              provider: resolvedPromptProvider,
+              model: promptViewSnapshot.model,
+            }
+          : aiSettings,
+      ).contextWindow)
+    : 0;
+
   return (
     <>
       <CodexExtractionDialog
@@ -110,20 +132,11 @@ export function ChatDialogs({
           layers={promptViewSnapshot.layers}
           totalTokens={promptViewSnapshot.totalTokens ?? 0}
           model={promptViewSnapshot.model ?? undefined}
-          contextWindow={
-            promptViewSnapshot.model
-              ? getModelContextWindow(promptViewSnapshot.model)
-              : 0
-          }
+          provider={resolvedPromptProvider}
+          contextWindow={promptContextWindow}
           onClose={onClosePrompt}
         />
       )}
     </>
   );
-}
-
-function getModelContextWindow(model: string): number {
-  // Kept local to the dialog boundary so ChatPanel does not know prompt modal
-  // capability details.
-  return getModelCapabilities(model).contextWindow;
 }

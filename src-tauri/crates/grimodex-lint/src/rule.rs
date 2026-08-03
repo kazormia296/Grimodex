@@ -20,6 +20,27 @@ pub enum Language {
     English,
 }
 
+/// The minimum block context required to recompute one rule's diagnostics.
+///
+/// The renderer uses the maximum scope of all enabled rules to decide which
+/// cached block diagnostics remain valid after an edit:
+///
+/// - [`Block`](IncrementalScope::Block): the block is self-contained.
+/// - [`NextBlock`](IncrementalScope::NextBlock): a block may depend on its
+///   immediate successor, so that successor must accompany a cache miss.
+/// - [`Scene`](IncrementalScope::Scene): any scene edit invalidates every
+///   block diagnostic.
+///
+/// Keep this contract engine-owned. A cross-block rule must opt in here rather
+/// than relying on renderer-side knowledge of individual rule IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IncrementalScope {
+    Block,
+    NextBlock,
+    Scene,
+}
+
 /// Block kind carried on the input side.
 ///
 /// `codeBlock` / `image` / `horizontalRule` are excluded from LintBlock
@@ -281,6 +302,12 @@ pub trait LintRule: Send + Sync {
     /// Default: `false` (regex-only rules).
     fn requires_morphology(&self) -> bool {
         false
+    }
+
+    /// Minimum neighbouring context needed to recompute this rule for a
+    /// target block. Default: diagnostics depend only on that block.
+    fn incremental_scope(&self) -> IncrementalScope {
+        IncrementalScope::Block
     }
 
     /// Where this rule's diagnostics may land relative to dialogue. The

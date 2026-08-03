@@ -7,8 +7,17 @@ import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 
+const { requestOpenInCodexMock } = vi.hoisted(() => ({
+  requestOpenInCodexMock: vi.fn(),
+}));
+
+vi.mock("@/features/codex/multiwindow/codexSelectionRouting", () => ({
+  requestOpenInCodex: requestOpenInCodexMock,
+}));
+
 afterEach(() => {
   useCodexStore.setState({ entries: [] });
+  requestOpenInCodexMock.mockReset();
 });
 
 function makeEntry(id: string, name: string, type = "character"): CodexEntry {
@@ -66,6 +75,117 @@ const defaultProps = {
 };
 
 describe("ContextPillGroup", () => {
+  it.each([
+    {
+      route: "pinned",
+      entryId: "1",
+      entryName: "Elara",
+      pinnedEntries: [makePinnedEntry("1", "Elara")],
+      viaEntries: [],
+      autoEntries: [],
+    },
+    {
+      route: "via",
+      entryId: "2",
+      entryName: "Taro",
+      pinnedEntries: [],
+      viaEntries: [{ child: makeEntry("2", "Taro"), parentName: "Elara" }],
+      autoEntries: [],
+    },
+    {
+      route: "auto",
+      entryId: "3",
+      entryName: "Lira",
+      pinnedEntries: [],
+      viaEntries: [],
+      autoEntries: [makeEntry("3", "Lira")],
+    },
+  ])(
+    "$route 項目名クリックで対象エントリを Codex で開く",
+    async ({ entryId, entryName, pinnedEntries, viaEntries, autoEntries }) => {
+      const user = userEvent.setup();
+      render(
+        <ContextPillGroup
+          {...defaultProps}
+          pinnedEntries={pinnedEntries}
+          viaEntries={viaEntries}
+          autoEntries={autoEntries}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+      await user.click(screen.getByRole("button", { name: entryName }));
+
+      expect(requestOpenInCodexMock).toHaveBeenCalledTimes(1);
+      expect(requestOpenInCodexMock).toHaveBeenCalledWith(entryId);
+    },
+  );
+
+  it("Undo・Spotlight・削除ボタンでは Codex navigation を発火しない", async () => {
+    const user = userEvent.setup();
+    const onReturnToAuto = vi.fn();
+    const onRemove = vi.fn();
+    const onRemoveAuto = vi.fn();
+    const onPin = vi.fn();
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={[makePinnedEntry("1", "Elara", "manual")]}
+        autoEntries={[makeEntry("3", "Lira")]}
+        onReturnToAuto={onReturnToAuto}
+        onRemove={onRemove}
+        onRemoveAuto={onRemoveAuto}
+        onPin={onPin}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Elara を auto に戻す" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Elara の Spotlight 解除" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Lira を Spotlight" }));
+    await user.click(
+      screen.getByRole("button", { name: "Lira の Spotlight 解除" }),
+    );
+
+    expect(onReturnToAuto).toHaveBeenCalledWith("1");
+    expect(onRemove).toHaveBeenCalledWith("1");
+    expect(onPin).toHaveBeenCalledWith("3");
+    expect(onRemoveAuto).toHaveBeenCalledWith("3");
+    expect(requestOpenInCodexMock).not.toHaveBeenCalled();
+  });
+
+  it("セッション遷移中は項目名の navigation だけを残して context 操作を無効化する", async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={[makePinnedEntry("1", "Elara", "manual")]}
+        autoEntries={[makeEntry("3", "Lira")]}
+        actionsDisabled
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+
+    expect(screen.getByRole("button", { name: "Elara" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Elara を auto に戻す" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Elara の Spotlight 解除" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Lira を Spotlight" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Lira の Spotlight 解除" }),
+    ).toBeDisabled();
+  });
+
   it("閉じているときはラベルと合計件数を表示し、個別ピルは非表示", () => {
     render(
       <ContextPillGroup
@@ -177,14 +297,12 @@ describe("ContextPillGroup", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
-    // ポップオーバー内のボタン: グループヘッダー + ↩ + × = 3つ
-    // Elara行には ↩ と × の2ボタンがあるはず
-    const allBtns = screen.getAllByRole("button");
-    // グループヘッダーを除いたボタンが2つ（↩ と ×）
-    const popoverBtns = allBtns.filter(
-      (b) => !b.getAttribute("aria-label")?.includes("キャラクター"),
-    );
-    expect(popoverBtns).toHaveLength(2);
+    // 項目名の navigation ボタンを除き、Elara 行には ↩ と × の2操作がある。
+    const actionButtons = screen.getAllByRole("button").filter((button) => {
+      const label = button.getAttribute("aria-label");
+      return label?.includes("Elara") && label !== "Elara";
+    });
+    expect(actionButtons).toHaveLength(2);
   });
 
   it("pinSource=chat_mention のエントリは × ボタンのみ表示する", async () => {
@@ -197,9 +315,10 @@ describe("ContextPillGroup", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
-    const taroButtons = screen
-      .getAllByRole("button")
-      .filter((b) => b.getAttribute("aria-label")?.includes("Taro"));
+    const taroButtons = screen.getAllByRole("button").filter((button) => {
+      const label = button.getAttribute("aria-label");
+      return label?.includes("Taro") && label !== "Taro";
+    });
     expect(taroButtons).toHaveLength(1);
   });
 

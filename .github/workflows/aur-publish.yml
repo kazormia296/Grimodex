@@ -1,7 +1,6 @@
-# リリース公開時に AUR の grimodex-bin を更新する。
-# draft のうちは発火せず、GitHub 上で「Publish release」した時点で走る
-# (.deb アセットが公開 URL になってから updpkgsums が checksum を取れるため)。
-# 必要なシークレットと初回セットアップは packaging/arch/README.md を参照。
+# 公開済みの Electron リリースから AUR の grimodex-bin を登録・更新する。
+# Mozkey IbG と同じ aur environment / AUR_SSH_PRIVATE_KEY 契約を使い、
+# AUR の SSH host key と既存 package version を検証してから直接 push する。
 name: AUR Publish
 
 on:
@@ -10,14 +9,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "公開対象の Electron リリースタグ (例: v2.0.0)"
+        description: "公開済みの Electron リリースタグ (例: v2.0.7)"
         required: true
         type: string
 
 permissions:
   contents: read
 
-# AUR リポジトリへの push が競合しないよう直列化
 concurrency:
   group: aur-publish
   cancel-in-progress: false
@@ -25,55 +23,245 @@ concurrency:
 jobs:
   publish:
     name: Publish grimodex-bin to AUR
+    if: ${{ github.repository == 'kazormia296/Grimodex' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # prerelease (v2.1.0-beta 等) はハイフンが pkgver に使えないため対象外
-    if: >-
-      (github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false) &&
-      startsWith(github.event.release.tag_name || inputs.tag, 'v2.')
+    environment: aur
     steps:
-      # シークレット未設定のリポジトリ (fork 等) でリリース公開しても
-      # 赤い CI にならないよう、明示的にスキップする
-      - name: AUR シークレットの確認
-        id: creds
-        env:
-          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-        run: |
-          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
-            echo "::warning::AUR_SSH_PRIVATE_KEY が未設定のため AUR 公開をスキップします (packaging/arch/README.md 参照)。"
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          fi
+      # AUR 定義は release tag ではなく、レビュー済みの既定ブランチを正本とする。
+      # これにより workflow 追加前の公開済み release も手動で初回登録できる。
+      - name: Checkout reviewed AUR packaging definition
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        if: steps.creds.outputs.ok == 'true'
-
-      - name: バージョン確定と PKGBUILD 生成
-        if: steps.creds.outputs.ok == 'true'
-        id: ver
+      - name: Resolve and verify the published release
+        id: release
         env:
-          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+          MANUAL_TAG: ${{ inputs.tag }}
+        shell: bash
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::タグ ${TAG} から有効な pkgver を得られません (x.y.z のみ対応)。" >&2
+          tag="${EVENT_TAG:-${MANUAL_TAG:-}}"
+          if [[ ! "$tag" =~ ^v([2-9]|[1-9][0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::AUR publication requires an exact v2-or-later X.Y.Z tag." >&2
             exit 1
           fi
-          sed "s/@PKGVER@/${VERSION}/" packaging/arch/PKGBUILD > PKGBUILD.aur
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          version="${tag#v}"
 
-      # Arch コンテナ内で updpkgsums (公開済みアセットの checksum 計算) と
-      # .SRCINFO 生成を行い、ssh://aur@aur.archlinux.org/grimodex-bin.git へ push する
-      - name: AUR へ公開
-        if: steps.creds.outputs.ok == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
-        with:
-          pkgname: grimodex-bin
-          pkgbuild: ./PKGBUILD.aur
-          updpkgsums: true
-          commit_username: ${{ secrets.AUR_USERNAME }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to v${{ steps.ver.outputs.version }}"
+          release_json="$RUNNER_TEMP/release.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+            > "$release_json"
+          if [[ "$(jq -r '.draft' "$release_json")" != false ]] ||
+             [[ "$(jq -r '.published_at // empty' "$release_json")" == "" ]]; then
+            echo "::error::AUR publication requires an existing public release." >&2
+            exit 1
+          fi
+          if [[ "$(jq -r '.tag_name' "$release_json")" != "$tag" ]]; then
+            echo "::error::Resolved release tag does not match ${tag}." >&2
+            exit 1
+          fi
+
+          deb="Grimodex-${version}-linux-amd64.deb"
+          deb_count="$(jq --arg name "$deb" \
+            '[.assets[] | select(.name == $name)] | length' "$release_json")"
+          if [[ "$deb_count" != 1 ]]; then
+            echo "::error::Published release has a missing or duplicate Linux deb asset." >&2
+            exit 1
+          fi
+          deb_digest="$(jq -r --arg name "$deb" \
+            '.assets[] | select(.name == $name) | .digest // empty' \
+            "$release_json")"
+          if [[ ! "$deb_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Linux deb asset has no valid GitHub SHA-256 digest." >&2
+            exit 1
+          fi
+
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'deb_digest=%s\n' "${deb_digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Render PKGBUILD for the published release
+        env:
+          DEB_DIGEST: ${{ steps.release.outputs.deb_digest }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$DEB_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+          license_path="$RUNNER_TEMP/LICENSE-v${RELEASE_VERSION}"
+          gh api \
+            --header "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/LICENSE?ref=${RELEASE_TAG}" \
+            > "$license_path"
+          test -s "$license_path"
+          license_digest="$(sha256sum "$license_path" | awk '{print $1}')"
+          [[ "$license_digest" =~ ^[0-9a-f]{64}$ ]]
+
+          mkdir -p "$RUNNER_TEMP/aur-package"
+          install -m 755 packaging/arch/grimodex-launcher \
+            "$RUNNER_TEMP/aur-package/grimodex-launcher"
+          install -m 644 packaging/arch/grimodex-ime-identity.c \
+            "$RUNNER_TEMP/aur-package/grimodex-ime-identity.c"
+          launcher_digest="$(sha256sum packaging/arch/grimodex-launcher | awk '{print $1}')"
+          identity_digest="$(sha256sum packaging/arch/grimodex-ime-identity.c | awk '{print $1}')"
+          [[ "$launcher_digest" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$identity_digest" =~ ^[0-9a-f]{64}$ ]]
+          sed \
+            -e "s/^pkgver=.*/pkgver=${RELEASE_VERSION}/" \
+            -e "s/^sha256sums=.*/sha256sums=('${license_digest}' '${launcher_digest}' '${identity_digest}')/" \
+            -e "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('${DEB_DIGEST}')/" \
+            packaging/arch/PKGBUILD \
+            > "$RUNNER_TEMP/aur-package/PKGBUILD"
+          grep -Fqx "pkgver=${RELEASE_VERSION}" \
+            "$RUNNER_TEMP/aur-package/PKGBUILD"
+          grep -Fqx "sha256sums=('${license_digest}' '${launcher_digest}' '${identity_digest}')" \
+            "$RUNNER_TEMP/aur-package/PKGBUILD"
+          grep -Fqx "sha256sums_x86_64=('${DEB_DIGEST}')" \
+            "$RUNNER_TEMP/aur-package/PKGBUILD"
+
+      - name: Generate and verify .SRCINFO with Arch makepkg
+        env:
+          DEB_DIGEST: ${{ steps.release.outputs.deb_digest }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$RUNNER_TEMP/aur-package:/pkg" \
+            --workdir /pkg \
+            archlinux/archlinux@sha256:0cd360b9243ce17125ef37dee01e99d115e96321fd46d4b212b6a6247a5d6cea \
+            sh -c 'makepkg --printsrcinfo > .SRCINFO'
+          test -s "$RUNNER_TEMP/aur-package/.SRCINFO"
+          grep -Fqx $'pkgbase = grimodex-bin' \
+            "$RUNNER_TEMP/aur-package/.SRCINFO"
+          grep -Fqx $'\tpkgver = '"$RELEASE_VERSION" \
+            "$RUNNER_TEMP/aur-package/.SRCINFO"
+          grep -Fqx $'\tsha256sums_x86_64 = '"$DEB_DIGEST" \
+            "$RUNNER_TEMP/aur-package/.SRCINFO"
+          grep -Fqx $'\tsource = grimodex-launcher' \
+            "$RUNNER_TEMP/aur-package/.SRCINFO"
+          grep -Fqx $'\tsource = grimodex-ime-identity.c' \
+            "$RUNNER_TEMP/aur-package/.SRCINFO"
+
+      - name: Publish PKGBUILD and .SRCINFO to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
+            echo "::error::AUR_SSH_PRIVATE_KEY is required in the aur environment." >&2
+            exit 1
+          fi
+
+          ssh_dir="$RUNNER_TEMP/aur-ssh"
+          install -d -m 700 "$ssh_dir"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
+          chmod 600 "$ssh_dir/id_ed25519"
+          ssh-keygen -y -P '' -f "$ssh_dir/id_ed25519" > /dev/null
+
+          known_hosts="$ssh_dir/known_hosts"
+          ssh-keyscan -T 10 -t ed25519 aur.archlinux.org > "$known_hosts"
+          fingerprints="$(ssh-keygen -lf "$known_hosts" -E sha256 \
+            | awk '{print $2}' | LC_ALL=C sort -u)"
+          expected_fingerprint='SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
+          if [[ "$fingerprints" != "$expected_fingerprint" ]]; then
+            echo "::error::AUR SSH host fingerprint verification failed." >&2
+            exit 1
+          fi
+
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts"
+          aur_repository="$RUNNER_TEMP/grimodex-bin"
+          git -c init.defaultBranch=master clone \
+            ssh://aur@aur.archlinux.org/grimodex-bin.git \
+            "$aur_repository"
+          for package_file in PKGBUILD .SRCINFO grimodex-launcher grimodex-ime-identity.c; do
+            if [[ -L "$aur_repository/$package_file" ]]; then
+              echo "::error::AUR package metadata must not be a symlink." >&2
+              exit 1
+            fi
+          done
+
+          current_version="$(sed -n \
+            's/^[[:space:]]*pkgver = \([0-9][0-9.]*\)$/\1/p' \
+            "$aur_repository/.SRCINFO" 2>/dev/null || true)"
+          if [[ -f "$aur_repository/.SRCINFO" ]]; then
+            if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Existing AUR pkgver is missing or invalid." >&2
+              exit 1
+            fi
+            current_pkgrel="$(sed -n \
+              's/^[[:space:]]*pkgrel = \([1-9][0-9]*\)$/\1/p' \
+              "$aur_repository/.SRCINFO")"
+            next_pkgrel="$(sed -n \
+              's/^[[:space:]]*pkgrel = \([1-9][0-9]*\)$/\1/p' \
+              "$RUNNER_TEMP/aur-package/.SRCINFO")"
+            if [[ ! "$current_pkgrel" =~ ^[1-9][0-9]*$ ]] ||
+               [[ ! "$next_pkgrel" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::AUR pkgrel is missing or invalid." >&2
+              exit 1
+            fi
+            version_order="$(docker run --rm \
+              archlinux/archlinux@sha256:0cd360b9243ce17125ef37dee01e99d115e96321fd46d4b212b6a6247a5d6cea \
+              vercmp "$RELEASE_VERSION" "$current_version")"
+            case "$version_order" in
+              -1)
+                echo "::error::Refusing AUR package downgrade from ${current_version} to ${RELEASE_VERSION}." >&2
+                exit 1
+                ;;
+              0)
+                if (( next_pkgrel < current_pkgrel )); then
+                  echo "::error::Refusing AUR pkgrel downgrade." >&2
+                  exit 1
+                fi
+                if (( next_pkgrel == current_pkgrel )); then
+                  if cmp -s "$RUNNER_TEMP/aur-package/PKGBUILD" \
+                       "$aur_repository/PKGBUILD" &&
+                     cmp -s "$RUNNER_TEMP/aur-package/.SRCINFO" \
+                       "$aur_repository/.SRCINFO" &&
+                     cmp -s "$RUNNER_TEMP/aur-package/grimodex-launcher" \
+                       "$aur_repository/grimodex-launcher" &&
+                     cmp -s "$RUNNER_TEMP/aur-package/grimodex-ime-identity.c" \
+                       "$aur_repository/grimodex-ime-identity.c"; then
+                    echo "AUR already contains Grimodex ${RELEASE_VERSION}."
+                    exit 0
+                  fi
+                  echo "::error::AUR metadata changed without a pkgrel increase." >&2
+                  exit 1
+                fi
+                ;;
+              1) ;;
+              *)
+                echo "::error::Arch vercmp returned an invalid result." >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          install -m 644 "$RUNNER_TEMP/aur-package/PKGBUILD" \
+            "$aur_repository/PKGBUILD"
+          install -m 644 "$RUNNER_TEMP/aur-package/.SRCINFO" \
+            "$aur_repository/.SRCINFO"
+          install -m 755 "$RUNNER_TEMP/aur-package/grimodex-launcher" \
+            "$aur_repository/grimodex-launcher"
+          install -m 644 "$RUNNER_TEMP/aur-package/grimodex-ime-identity.c" \
+            "$aur_repository/grimodex-ime-identity.c"
+          git -C "$aur_repository" config user.name kazormia296
+          git -C "$aur_repository" config user.email \
+            kazormia296@users.noreply.github.com
+          git -C "$aur_repository" add \
+            PKGBUILD .SRCINFO grimodex-launcher grimodex-ime-identity.c
+          git -C "$aur_repository" diff --cached --check
+          git -C "$aur_repository" commit \
+            -m "Update to ${RELEASE_VERSION}"
+          git -C "$aur_repository" push origin HEAD:master

@@ -1,0 +1,28 @@
+{
+  "consumed": true,
+  "corpusSha256": "4b65691569dc917d5060836fc23b765f07fb859cbb8ead20fe23e3962b2d021d",
+  "fingerprintSha256": "d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7",
+  "modelSet": [
+    {
+      "key": "ja_xsmall",
+      "revision": "de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a",
+      "trainingModes": ["frozen_head", "full_finetune"]
+    },
+    {
+      "key": "modernbert_ja_30m",
+      "revision": "8cb03f54cb9e30e72459e5f1cedc6d89c7d8dcb5",
+      "trainingModes": ["frozen_head", "full_finetune"]
+    }
+  ],
+  "openedAt": "2026-07-30T11:25:52.967697+00:00",
+  "openedAtCommit": "1101d583c95dfe5fc36ffebd42b4b8f5f2c62f10",
+  "schemaVersion": 1,
+  "selectionProtocolSha256": "98c01672ef1a550f4209598f8708d577ea4a70313af54aac76f4159715f3c33b",
+  "selectionProtocolVersion": "phase0b-impact-gate4-selection-v2",
+  "testStoryIds": [
+    "gate4-story-19",
+    "gate4-story-20",
+    "gate4-story-21",
+    "gate4-story-22"
+  ]
+}

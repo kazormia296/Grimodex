@@ -30,6 +30,11 @@ extraResources:
     to: resources/semantic
     filter:
       - "**/tokenizer.json"
+  - from: experiments/lfm25-encoder-phase0/local
+    to: resources/reranker
+    filter:
+      - phase0b/ja_xsmall/**
+      - phase0b/en_minilm_l4/**
 
 win:
   target:

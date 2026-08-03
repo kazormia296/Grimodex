@@ -51,6 +51,15 @@ describe("updaterStore", () => {
     expect(useUpdaterStore.getState().phase).toBe("ready");
   });
 
+  it("setDownloading caps transferred bytes at a known total", () => {
+    useUpdaterStore.getState().setDownloading(150, 100);
+
+    const s = useUpdaterStore.getState();
+    expect(s.phase).toBe("downloading");
+    expect(s.downloaded).toBe(100);
+    expect(s.total).toBe(100);
+  });
+
   it("setUpToDate auto-clears to idle after AUTO_CLEAR_MS", () => {
     useUpdaterStore.getState().setUpToDate();
     expect(useUpdaterStore.getState().phase).toBe("upToDate");

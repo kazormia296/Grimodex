@@ -1,9 +1,11 @@
 import type { InlineAiCommand, InlineAiContext } from "./inlineAiTypes";
-import { sendInlineAiStream, abortInlineAiStream } from "./inlineAiStreaming";
+import { sendInlineAiStream } from "./inlineAiStreamLoader";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { serializePromptMessages } from "@/features/attribution/generationLogApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export function buildSystemPrompt(
   command: InlineAiCommand,
@@ -53,6 +55,7 @@ export async function generateInlineAi(
 
   let accumulated = "";
   const cleanupRef: { fn: (() => void) | null } = { fn: null };
+  let abortRequested = false;
 
   const result = await new Promise<{
     stopReason: string;
@@ -60,8 +63,34 @@ export async function generateInlineAi(
     outputTokens: number | null;
     cost: number | null;
   }>((resolve, reject) => {
+    let settled = false;
+    const resolveOnce = (value: {
+      stopReason: string;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      cost: number | null;
+    }): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const rejectOnce = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
     const onAbort = () => {
-      abortInlineAiStream().catch(() => {});
+      abortRequested = true;
+      cleanupRef.fn?.();
+      signal?.removeEventListener("abort", onAbort);
+      // UI/caller settles immediately; the transport cleanup keeps its own
+      // correlated audit listeners until the real done/error outcome arrives.
+      resolveOnce({
+        stopReason: "stopped",
+        inputTokens: null,
+        outputTokens: null,
+        cost: null,
+      });
     };
     if (signal) {
       if (signal.aborted) {
@@ -74,13 +103,17 @@ export async function generateInlineAi(
     sendInlineAiStream(
       messages,
       {
+        projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+        pathId: "inline_ai_stream",
+      },
+      {
         onTextDelta: (delta) => {
           accumulated += delta;
           onChunk(delta);
         },
         onDone: (info) => {
           signal?.removeEventListener("abort", onAbort);
-          resolve({
+          resolveOnce({
             stopReason: info.stopReason,
             inputTokens: info.inputTokens,
             outputTokens: info.outputTokens,
@@ -89,7 +122,7 @@ export async function generateInlineAi(
         },
         onError: (message) => {
           signal?.removeEventListener("abort", onAbort);
-          reject(new Error(message));
+          rejectOnce(new Error(message));
         },
       },
       {
@@ -101,9 +134,10 @@ export async function generateInlineAi(
     )
       .then((c) => {
         cleanupRef.fn = c;
+        if (abortRequested) c();
       })
       .catch((e: unknown) => {
-        reject(e instanceof Error ? e : new Error(String(e)));
+        rejectOnce(e instanceof Error ? e : new Error(String(e)));
       });
   });
 

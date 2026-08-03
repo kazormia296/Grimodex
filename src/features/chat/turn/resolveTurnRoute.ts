@@ -11,6 +11,7 @@ import {
   resolveModelCapabilities,
   type EffortLevel,
   type ModelCapabilities,
+  type ModelContextWindowSource,
   type ThinkingDisplay,
   type ThinkingParams,
 } from "../agent/modelLimits";
@@ -23,6 +24,20 @@ import {
   type AiProvider,
   type AiSettings,
 } from "../types";
+
+export {
+  createTurnControl,
+  createTurnCoordinator,
+  createTurnRequest,
+} from "./turnCoordinator";
+export type {
+  TurnControl,
+  TurnPhase,
+  TurnRequest,
+  TurnSurface,
+  TurnTransport,
+  TurnWorkspaceAuthority,
+} from "./turnCoordinator";
 
 export interface TurnRouteCandidate {
   model?: string | null;
@@ -50,11 +65,110 @@ export interface ResolvedChatTurnRoute extends ResolvedTurnRoute {
   providerOverride: AiProvider | null;
   /** Effective endpoint pinned at route resolution time. */
   resolvedEndpointId: string | null;
+  /** Ollama endpoint expected to remain configured through transport start. */
+  resolvedOllamaEndpoint: string | null;
   endpointId: string | null;
+  modelContextWindow: number;
+  contextWindowIsEffective: boolean;
+  contextWindowSource: ModelContextWindowSource;
   capabilities: ModelCapabilities;
   thinking: ThinkingParams;
   outputBudget: OutputBudgetPlan;
   effectiveSettings: AiSettings;
+}
+
+/**
+ * Identity of every setting that can change the effective destination or the
+ * local payload budget for a resolved turn. Provider/model alone is
+ * insufficient: two OpenAI-compatible endpoints may expose the same bare
+ * model id, and the same Ollama tag may be observed through different
+ * endpoints or runner allocations.
+ */
+export function resolvedChatTurnRouteAuthorityKey(
+  route: ResolvedChatTurnRoute | null | undefined,
+): string | null {
+  if (!route) return null;
+  return JSON.stringify([
+    route.surface,
+    route.source,
+    route.provider,
+    route.providerOverride,
+    route.model,
+    route.transport,
+    route.apiVariant,
+    route.endpointId,
+    route.resolvedEndpointId,
+    route.resolvedOllamaEndpoint,
+    route.toolProtocol,
+    route.contextWindow,
+    route.modelContextWindow,
+    route.contextWindowIsEffective,
+    route.contextWindowSource,
+    route.capabilities,
+    route.outputBudget,
+    route.effectiveSettings,
+  ]);
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (
+    parts.length !== 4 ||
+    parts.some(
+      (part) =>
+        !/^\d{1,3}$/.test(part) || Number(part) < 0 || Number(part) > 255,
+    )
+  ) {
+    return false;
+  }
+  const [first, second] = parts.map(Number);
+  return (
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
+}
+
+function isPrivateIpv6(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!normalized.includes(":")) return false;
+  return (
+    normalized === "::1" ||
+    normalized === "::" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    /^fe[89ab]/.test(normalized)
+  );
+}
+
+/** Whether the frozen route executes inference on this device or its LAN. */
+export function isLocalInferenceRoute(
+  route: ResolvedChatTurnRoute | null | undefined,
+): boolean {
+  if (!route) return false;
+  if (route.provider === "ollama") return true;
+  if (route.provider !== "openai-compatible") return false;
+  const endpoint = resolveActiveOpenaiCompatibleEndpoint(
+    route.effectiveSettings,
+    route.resolvedEndpointId,
+  );
+  if (!endpoint?.baseUrl?.trim()) return false;
+  try {
+    const hostname = new URL(endpoint.baseUrl).hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      hostname.endsWith(".local") ||
+      isPrivateIpv4(hostname) ||
+      isPrivateIpv6(hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function nonEmpty(value: string | null | undefined): string | null {
@@ -167,6 +281,10 @@ export function resolveChatTurnRoute(
     source,
     providerOverride: selected?.provider ?? null,
     resolvedEndpointId: resolvedEndpoint?.id ?? null,
+    resolvedOllamaEndpoint:
+      provider === "ollama"
+        ? nonEmpty(input.activeSettings.ollamaEndpoint)
+        : null,
     surface: input.surface,
     provider,
     model,
@@ -185,6 +303,9 @@ export function resolveChatTurnRoute(
           effectiveSettings.toolProtocolMode ?? "auto",
         ),
     contextWindow: capabilities.contextWindow,
+    modelContextWindow: capabilities.modelContextWindow,
+    contextWindowIsEffective: capabilities.contextWindowIsEffective,
+    contextWindowSource: capabilities.contextWindowSource,
     // CLI has no wire max. The conservative policy reservation is still used
     // by the final input guard and is explicitly marked non-exact in outputBudget.
     wireOutputTokens:

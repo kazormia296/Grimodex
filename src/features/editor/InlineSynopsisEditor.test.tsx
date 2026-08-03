@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   render,
   screen,
@@ -13,6 +13,8 @@ import {
   type InlineSynopsisEditorHandle,
 } from "./InlineSynopsisEditor";
 import { createRef } from "react";
+import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
+import { _resetPendingSynopsisSavesForTests } from "./pendingSynopsisSaves";
 
 const updateSynopsis = vi.fn().mockResolvedValue(undefined);
 
@@ -36,9 +38,29 @@ vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
-describe("InlineSynopsisEditor — click-to-edit mode", () => {
-  beforeEach(() => vi.clearAllMocks());
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  updateSynopsis.mockReset();
+  updateSynopsis.mockResolvedValue(undefined);
+  _resetPendingSynopsisSavesForTests();
+});
+
+afterEach(() => {
+  _resetPendingSynopsisSavesForTests();
+});
+
+describe("InlineSynopsisEditor — click-to-edit mode", () => {
   it("displays synopsis text when provided", () => {
     render(<InlineSynopsisEditor nodeId="s1" synopsis="A hero departs." />);
     expect(screen.getByText("A hero departs.")).toBeInTheDocument();
@@ -139,6 +161,55 @@ describe("InlineSynopsisEditor — click-to-edit mode", () => {
     act(() => ref.current?.startEditing());
     expect(screen.getByRole("textbox")).toHaveValue("Original");
   });
+
+  it("flushes a virtualized unmount and strict quiescence waits for it", async () => {
+    const write = deferred<void>();
+    updateSynopsis.mockReturnValueOnce(write.promise);
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <InlineSynopsisEditor nodeId="s1" synopsis="Original" />,
+    );
+    await user.click(screen.getByText("Original"));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Draft before scroll" },
+    });
+
+    unmount();
+    expect(updateSynopsis).toHaveBeenCalledTimes(1);
+    expect(updateSynopsis).toHaveBeenCalledWith("s1", "Draft before scroll");
+
+    let settled = false;
+    const flush = flushQuiescenceProviderStage("scoped-mutations").then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    write.resolve();
+    await flush;
+    expect(settled).toBe(true);
+  });
+
+  it("does not double-save when blur is immediately followed by unmount", async () => {
+    const write = deferred<void>();
+    updateSynopsis.mockReturnValueOnce(write.promise);
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <InlineSynopsisEditor nodeId="s1" synopsis="Original" />,
+    );
+    await user.click(screen.getByText("Original"));
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "Latest value" } });
+
+    fireEvent.blur(textarea);
+    expect(updateSynopsis).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(updateSynopsis).toHaveBeenCalledTimes(1);
+
+    write.resolve();
+    await flushQuiescenceProviderStage("scoped-mutations");
+    expect(updateSynopsis).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("InlineSynopsisEditor — doubleClick trigger", () => {
@@ -207,5 +278,54 @@ describe("InlineSynopsisEditor — alwaysEditing mode", () => {
     );
     // textarea still rendered (alwaysEditing)
     expect(screen.getByRole("textbox")).toBeInTheDocument();
+  });
+
+  it("flushes its pending edit on unmount", async () => {
+    const { unmount } = render(
+      <InlineSynopsisEditor nodeId="s1" synopsis="Original" alwaysEditing />,
+    );
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Updated before unmount" },
+    });
+    expect(updateSynopsis).not.toHaveBeenCalled();
+
+    unmount();
+
+    await waitFor(() =>
+      expect(updateSynopsis).toHaveBeenCalledWith(
+        "s1",
+        "Updated before unmount",
+      ),
+    );
+    expect(updateSynopsis).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a newer local edit when an older save updates the prop", async () => {
+    const firstWrite = deferred<void>();
+    updateSynopsis
+      .mockReturnValueOnce(firstWrite.promise)
+      .mockResolvedValueOnce(undefined);
+    const { rerender } = render(
+      <InlineSynopsisEditor nodeId="s1" synopsis="Original" alwaysEditing />,
+    );
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "First value" } });
+    fireEvent.blur(textarea);
+    expect(updateSynopsis).toHaveBeenCalledWith("s1", "First value");
+
+    fireEvent.change(textarea, { target: { value: "Latest value" } });
+    rerender(
+      <InlineSynopsisEditor nodeId="s1" synopsis="First value" alwaysEditing />,
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("Latest value");
+
+    const flush = flushQuiescenceProviderStage("scoped-mutations");
+    firstWrite.resolve();
+    await flush;
+
+    expect(updateSynopsis.mock.calls).toEqual([
+      ["s1", "First value"],
+      ["s1", "Latest value"],
+    ]);
   });
 });

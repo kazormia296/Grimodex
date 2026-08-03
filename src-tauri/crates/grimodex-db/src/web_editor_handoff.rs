@@ -19,8 +19,7 @@ use crate::{
 
 pub const WEB_EDITOR_HANDOFF_SCHEMA_VERSION: &str = "grimodex/web-editor-workspace-handoff/1";
 pub const MAX_WEB_EDITOR_DATABASE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_HANDOFF_JSON_BYTES: usize =
-    MAX_WEB_EDITOR_DATABASE_BYTES.div_ceil(3) * 4 + 16 * 1024;
+const MAX_HANDOFF_JSON_BYTES: usize = MAX_WEB_EDITOR_DATABASE_BYTES.div_ceil(3) * 4 + 16 * 1024;
 const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
 const MAX_PROJECT_ID_LENGTH: usize = 96;
 const MAX_TITLE_UTF16_LENGTH: usize = 200;

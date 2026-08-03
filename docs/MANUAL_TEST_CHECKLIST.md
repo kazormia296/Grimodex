@@ -350,12 +350,12 @@ DevTools の Console / Network / Performance タブと Electron main process の
 
 ## 32. Tauri v1 → Electron 移行（legacy 互換）
 
-- [ ] disposable Windows VM / CI user profile で、署名済み release candidate に対し
+- [ ] disposable Windows VM / CI user profile で、未署名 release candidate に対し
       `pwsh scripts/verify-windows-tauri-migration.ps1 -InstallerPath <Electron installer>` が完走する
 - [ ] スクリプトが pinned Tauri v1 installer の SHA-256 を検証してからインストールする
 - [ ] v1 の roaming / local user-data に置いた sentinel の存在と SHA-256 が移行後も変わらない
 - [ ] v1 の `/P /R /UPDATE /ARGS` 呼び出しが Electron installer の silent install + restart に
-      変換され、新 Electron executable の Authenticode 署名が有効
+      変換され、新 Electron executable が意図どおり `NotSigned`
 - [ ] v1 executable / uninstaller / registry 登録は除去され、Electron の uninstall 登録と
       Start Menu shortcut が各 1 件だけ残る
 - [ ] Electron installer を再実行しても同じ状態を保ち、ユーザーデータを変更しない（idempotent）

@@ -13,6 +13,7 @@ import {
   markImpactBaselinePhaseVisible,
   markImpactBaselinePhaseVisibleDeleted,
 } from "./impactBaselineVisibility";
+import { PhaseVersionConflictError } from "./phaseOcc";
 
 export type { CodexEntryPhase, CodexPhaseDetailOverride };
 
@@ -79,6 +80,7 @@ type CreatePhaseData = {
   summaryOverride?: string | null;
   contentOverride?: string | null;
   contextModeOverride?: string | null;
+  version?: number;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -94,21 +96,34 @@ export async function createPhase(
   }
   const now = new Date().toISOString();
   const createdAt = data.createdAt ?? now;
-  const rows = await db
-    .insert(codexEntryPhases)
-    .values({
-      id: data.id,
-      entryId: data.entryId,
-      anchorNodeId: data.anchorNodeId ?? null,
-      label: data.label,
-      summaryOverride: data.summaryOverride ?? null,
-      contentOverride: data.contentOverride ?? null,
-      contextModeOverride: data.contextModeOverride ?? null,
-      createdAt,
-      updatedAt: data.updatedAt ?? createdAt,
-    })
-    .returning();
+  let rows: CodexEntryPhase[];
+  try {
+    rows = await db
+      .insert(codexEntryPhases)
+      .values({
+        id: data.id,
+        entryId: data.entryId,
+        anchorNodeId: data.anchorNodeId ?? null,
+        label: data.label,
+        summaryOverride: data.summaryOverride ?? null,
+        contentOverride: data.contentOverride ?? null,
+        contextModeOverride: data.contextModeOverride ?? null,
+        version: data.version ?? 0,
+        createdAt,
+        updatedAt: data.updatedAt ?? createdAt,
+      })
+      .returning();
+  } catch (error) {
+    // History resurrection must never overwrite/reuse an id that appeared
+    // after the original row was deleted. Preserve unrelated DB errors.
+    const existing = await getPhase(data.id).catch(() => undefined);
+    if (existing) throw new PhaseVersionConflictError(data.id);
+    throw error;
+  }
   const created = rows[0];
+  if (!created) {
+    throw new Error(`Failed to create Phase '${data.id}'`);
+  }
   if (created) {
     if (isAiVisibleMode(contextMode)) {
       // Failure only leaves a conservative stale restriction marker.
@@ -136,6 +151,7 @@ export async function updatePhase(
       | "contextModeOverride"
     >
   >,
+  opts: { baseVersion: number },
 ): Promise<CodexEntryPhase | undefined> {
   const changesContextMode = Object.prototype.hasOwnProperty.call(
     data,
@@ -150,10 +166,28 @@ export async function updatePhase(
   }
   const rows = await db
     .update(codexEntryPhases)
-    .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(eq(codexEntryPhases.id, id))
+    .set({
+      ...data,
+      version: opts.baseVersion + 1,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(
+      and(
+        eq(codexEntryPhases.id, id),
+        eq(codexEntryPhases.version, opts.baseVersion),
+      ),
+    )
     .returning();
   const updated = rows[0];
+  if (!updated) {
+    const exists = await db
+      .select({ id: codexEntryPhases.id })
+      .from(codexEntryPhases)
+      .where(eq(codexEntryPhases.id, id))
+      .limit(1);
+    if (exists[0]) throw new PhaseVersionConflictError(id);
+    return undefined;
+  }
   if (updated && changesContextMode && isAiVisibleMode(nextContextMode)) {
     // Post-write failure remains fail-closed: Impact will keep redacting.
     await markImpactBaselinePhaseVisible(updated.entryId, id).catch(() => {});
@@ -161,9 +195,23 @@ export async function updatePhase(
   return updated;
 }
 
-export async function deletePhase(id: string): Promise<void> {
+export async function deletePhase(
+  id: string,
+  opts?: { expectedVersion?: number },
+): Promise<boolean> {
   const phase = await getPhase(id);
-  if (!phase) return;
+  if (!phase) {
+    if (opts?.expectedVersion !== undefined) {
+      throw new PhaseVersionConflictError(id);
+    }
+    return false;
+  }
+  if (
+    opts?.expectedVersion !== undefined &&
+    phase.version !== opts.expectedVersion
+  ) {
+    throw new PhaseVersionConflictError(id);
+  }
   const provablyVisible =
     (phase.contextModeOverride === null ||
       isAiVisibleMode(phase.contextModeOverride)) &&
@@ -173,7 +221,23 @@ export async function deletePhase(id: string): Promise<void> {
     // failed DELETE only causes an extra redaction and cannot expose content.
     await markImpactBaselinePhasesRestricted(phase.entryId);
   }
-  await db.delete(codexEntryPhases).where(eq(codexEntryPhases.id, id));
+  const deleted = await db
+    .delete(codexEntryPhases)
+    .where(
+      opts?.expectedVersion === undefined
+        ? eq(codexEntryPhases.id, id)
+        : and(
+            eq(codexEntryPhases.id, id),
+            eq(codexEntryPhases.version, opts.expectedVersion),
+          ),
+    )
+    .returning({ id: codexEntryPhases.id });
+  if (!deleted[0]) {
+    if (opts?.expectedVersion !== undefined) {
+      throw new PhaseVersionConflictError(id);
+    }
+    return false;
+  }
   if (provablyVisible) {
     // The row is already gone. If this best-effort marker fails, missing
     // provenance makes runImpactReview redact the deletion fail-closed.
@@ -183,6 +247,7 @@ export async function deletePhase(id: string): Promise<void> {
       true,
     ).catch(() => {});
   }
+  return true;
 }
 
 export async function listDetailOverridesByPhase(

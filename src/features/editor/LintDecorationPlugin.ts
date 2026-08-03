@@ -2,6 +2,7 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { ReplaceStep } from "@tiptap/pm/transform";
 
 import type { Diagnostic, Severity } from "@/features/lint/types";
 import { buildOffsetMap, strOffsetToPmPos } from "./offsetMap";
@@ -94,6 +95,56 @@ function isWholeDocReplacement(
   return false;
 }
 
+/**
+ * A diagnostic intersecting an edited textblock is stale until the debounced
+ * lint pass returns. Drop only those inline decorations for a simple edit and
+ * keep mapping every untouched block.
+ *
+ * Removing the active inline decoration also avoids making ProseMirror
+ * recreate the text DOM around the caret on every keystroke. Composition,
+ * multi-step, and structural transactions deliberately retain the established
+ * mapping behavior because changing their DOM mid-operation can break IME or
+ * lose decorations across complex transforms.
+ */
+function mapDecorationsAfterDocChange(
+  tr: Transaction,
+  old: LintDecorationState,
+  oldState: EditorState,
+): DecorationSet {
+  const compositionMeta = tr.getMeta("composition");
+  if (
+    tr.steps.length !== 1 ||
+    (compositionMeta !== undefined && compositionMeta !== null)
+  ) {
+    return old.decos.map(tr.mapping, tr.doc);
+  }
+
+  const step = tr.steps[0];
+  if (!(step instanceof ReplaceStep)) {
+    return old.decos.map(tr.mapping, tr.doc);
+  }
+
+  const $from = oldState.doc.resolve(step.from);
+  const $to = oldState.doc.resolve(step.to);
+  if (!$from.sameParent($to) || !$from.parent.inlineContent) {
+    return old.decos.map(tr.mapping, tr.doc);
+  }
+
+  let inlineOnly = true;
+  step.slice.content.forEach((node) => {
+    if (!node.isInline) inlineOnly = false;
+  });
+  if (!inlineOnly) {
+    return old.decos.map(tr.mapping, tr.doc);
+  }
+
+  const stale = old.decos.find($from.start(), $from.end());
+  if (stale.length === 0) {
+    return old.decos.map(tr.mapping, tr.doc);
+  }
+  return old.decos.remove(stale).map(tr.mapping, tr.doc);
+}
+
 function severityRank(s: Severity): number {
   switch (s) {
     case "error":
@@ -159,11 +210,12 @@ export function createLintDecorationPlugin(): Plugin {
             return { diagnostics: [], decos: DecorationSet.empty };
           }
           // Small edits (typing, paste): map decorations through the
-          // transaction so they stay put until the next lint debounce
-          // refreshes them.
+          // transaction so untouched blocks stay put until the next lint
+          // debounce refreshes them. The edited block's stale inline
+          // decorations are removed by the safe single-step fast path.
           return {
             diagnostics: old.diagnostics,
-            decos: old.decos.map(tr.mapping, tr.doc),
+            decos: mapDecorationsAfterDocChange(tr, old, oldState),
           };
         }
         return old;

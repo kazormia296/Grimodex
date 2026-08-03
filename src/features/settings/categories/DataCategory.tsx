@@ -3,9 +3,6 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@/lib/tauri";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { db } from "@/db/client";
-import { treeNodes, chatSessions, chatMessages } from "@/db/schema";
-import { eq } from "drizzle-orm";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
@@ -21,47 +18,9 @@ import {
 } from "@/features/codex/mentionRescanQueue";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { CapabilityGate } from "@/runtime/runtimeCapabilitiesContext";
-
-interface ProjectStats {
-  sceneCount: number;
-  totalChars: number;
-}
-
-async function getProjectStats(): Promise<ProjectStats> {
-  const scenes = await db
-    .select({ content: treeNodes.content })
-    .from(treeNodes)
-    .where(eq(treeNodes.projectId, getCurrentProjectId()));
-
-  const sceneCount = scenes.filter(
-    (n) =>
-      // count only actual scenes (content nodes)
-      n.content && n.content !== "{}",
-  ).length;
-
-  const totalChars = scenes.reduce((sum, n) => {
-    try {
-      const doc = JSON.parse(n.content);
-      return sum + extractCharCount(doc);
-    } catch {
-      return sum;
-    }
-  }, 0);
-
-  return { sceneCount, totalChars };
-}
-
-function extractCharCount(node: {
-  text?: string;
-  content?: unknown[];
-}): number {
-  if (node.text) return node.text.length;
-  if (!node.content) return 0;
-  return node.content.reduce(
-    (s: number, c) => s + extractCharCount(c as typeof node),
-    0,
-  );
-}
+import { useChatStore } from "@/features/chat/chatStore";
+import { getProjectDataStats, type ProjectDataStats } from "../dataApi";
+import { useQuiescenceLeaseActive } from "@/application/lifecycle/useQuiescenceLeaseActive";
 
 async function triggerDownload(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -76,7 +35,7 @@ async function triggerDownload(filename: string, content: string) {
 export function DataCategory() {
   const { t } = useTranslation();
   const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
-  const [stats, setStats] = useState<ProjectStats | null>(null);
+  const [stats, setStats] = useState<ProjectDataStats | null>(null);
   const [isExportingCodex, setIsExportingCodex] = useState(false);
   // FTS 再構築 / VACUUM / チャット履歴削除 の実行中フラグ。連打で重い操作を多重発火
   // させないため、ボタンを disabled にし、ハンドラ先頭でも早期 return する。
@@ -89,13 +48,17 @@ export function DataCategory() {
   const rescanRunning = useRescanStore((s) => s.isRunning);
   const rescanProgress = useRescanStore((s) => s.progress);
   const rescanTotal = useRescanStore((s) => s.total);
+  const clearProjectChatHistory = useChatStore(
+    (state) => state.clearProjectChatHistory,
+  );
+  const lifecycleLocked = useQuiescenceLeaseActive();
 
   function handleRebuildMentionCache() {
     void enqueueRescan(null);
   }
 
   useEffect(() => {
-    getProjectStats()
+    getProjectDataStats(getCurrentProjectId())
       .then(setStats)
       .catch(() => setStats(null));
   }, []);
@@ -144,6 +107,7 @@ export function DataCategory() {
   }
 
   async function handleClearChatHistory() {
+    if (lifecycleLocked) return;
     if (!confirmClear) {
       setConfirmClear(true);
       setTimeout(() => setConfirmClear(false), 5000);
@@ -152,16 +116,7 @@ export function DataCategory() {
     if (isClearingChat) return;
     setIsClearingChat(true);
     try {
-      const sessions = await db
-        .select({ id: chatSessions.id })
-        .from(chatSessions)
-        .where(eq(chatSessions.projectId, getCurrentProjectId()));
-      for (const s of sessions) {
-        await db.delete(chatMessages).where(eq(chatMessages.sessionId, s.id));
-      }
-      await db
-        .delete(chatSessions)
-        .where(eq(chatSessions.projectId, getCurrentProjectId()));
+      await clearProjectChatHistory(getCurrentProjectId());
       toast.success(t("settings.data.clearChatSuccess"));
       setConfirmClear(false);
     } catch {
@@ -329,8 +284,9 @@ export function DataCategory() {
             </div>
             <button
               type="button"
+              data-testid="clear-chat-history-button"
               onClick={handleClearChatHistory}
-              disabled={isClearingChat}
+              disabled={isClearingChat || lifecycleLocked}
               className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-50 ${
                 confirmClear
                   ? "border-destructive bg-destructive/10 text-destructive"

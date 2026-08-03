@@ -28,7 +28,8 @@ export type AutoApplySkipReason =
   | "content-unparseable"
   | "anchor-not-found"
   | "anchor-ambiguous"
-  | "stale-base-version";
+  | "stale-base-version"
+  | "authority-changed";
 
 export interface AutoApplyOutcome {
   applied: boolean;
@@ -129,6 +130,7 @@ function buildDoc(schema: Schema, raw: string): ProseMirrorNode | null {
  */
 export async function autoApplyProseProposal(
   proposal: PendingProseProposal,
+  isAuthoritative: () => boolean = () => true,
 ): Promise<AutoApplyOutcome> {
   const { stagingId, sceneId, text, mode, anchorText } = proposal;
 
@@ -145,13 +147,24 @@ export async function autoApplyProseProposal(
   if (isFileBackedNode(node.sourceUri)) {
     return { applied: false, reason: "file-backed" };
   }
+  const documentKey = {
+    kind: "tree" as const,
+    id: sceneId,
+    storage: "database" as const,
+  };
 
   const schema = getDocSchema();
   // Flush any pending debounced autosave BEFORE reading the DB: if the scene is
   // open with unsaved live edits, appending to the stale DB body and resyncing
   // (below) would silently drop the user's latest typing. saveScene is a no-op
   // when no editor is mounted (the scene cannot be dirty then).
+  if (!isAuthoritative()) {
+    return { applied: false, reason: "authority-changed" };
+  }
   await saveScene(sceneId);
+  if (!isAuthoritative()) {
+    return { applied: false, reason: "authority-changed" };
+  }
   const raw = await loadSceneContent(sceneId);
 
   // Stale 検知: propose 時点の tree_nodes.version (prose_staging.base_version)
@@ -177,6 +190,9 @@ export async function autoApplyProseProposal(
   // 不能なので従来動作を維持する。
   if (proposal.baseVersion !== undefined) {
     const currentVersion = await getSceneVersion(sceneId);
+    if (!isAuthoritative()) {
+      return { applied: false, reason: "authority-changed" };
+    }
     if (currentVersion !== proposal.baseVersion) {
       console.warn(
         `[autoApplyProse] stale base_version for scene ${sceneId}: ` +
@@ -184,6 +200,7 @@ export async function autoApplyProseProposal(
           "leaving proposal for manual review",
       );
       useExternalWriteStore.getState().pushConflict({
+        documentKey,
         sceneId,
         domain: "prose",
         opType: "prose.stale",
@@ -239,14 +256,23 @@ export async function autoApplyProseProposal(
   const nextDoc = state.apply(tr).doc;
 
   // Finalize first (cross-poll dedup guard — see ordering note above).
+  if (!isAuthoritative()) {
+    return { applied: false, reason: "authority-changed" };
+  }
   await agentAcceptProseStage(stagingId);
 
+  if (!isAuthoritative()) {
+    return { applied: false, reason: "authority-changed" };
+  }
   await persistSceneBody(sceneId, nextDoc);
 
   // Timelapse: record the append as a doc.step so the writing-replay chain stays
   // consistent. A live editor emits this via onTransaction; a headless write
   // must record it explicitly or an unrecorded content jump desyncs replay at
   // the next human edit (the cursor halts on the first unapplicable step).
+  if (!isAuthoritative()) {
+    return { applied: false, reason: "authority-changed" };
+  }
   recordChangeEvent({
     domain: "editor",
     opType: "doc.step",
@@ -260,10 +286,10 @@ export async function autoApplyProseProposal(
   // mirror the persisted doc into it so its next autosave does not clobber
   // this write (lost-update guard). Subscriber check, NOT a tab-list check:
   // linear-mode editors have no tab.
-  if (hasLiveContentSubscriber(sceneId)) {
+  if (hasLiveContentSubscriber(documentKey)) {
     useSceneContentStore
       .getState()
-      .setLiveContent(sceneId, nextDoc.toJSON(), RESYNC_GROUP);
+      .setLiveContent(documentKey, nextDoc.toJSON(), RESYNC_GROUP);
   }
 
   return { applied: true };

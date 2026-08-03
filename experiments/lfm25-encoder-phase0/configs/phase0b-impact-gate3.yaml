@@ -1,0 +1,76 @@
+schema_version: 1
+
+benchmark:
+  max_pair_tokens: 512
+  query_token_budget: 128
+  scene_token_budget: 384
+  candidate_count: 30
+  batch_sizes: [1, 2, 4, 8]
+  thread_counts: [1, 2, 4, physical, 8]
+  warmup_count: 3
+  repetitions: 30
+  cold_repetitions: 5
+  bootstrap_iterations: 1000
+  target_seconds: 5.0
+  conditional_seconds: 10.0
+  hold_seconds: 20.0
+
+offline_environment:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_HUB_DISABLE_PROGRESS_BARS: "1"
+  TOKENIZERS_PARALLELISM: "false"
+
+workload:
+  source_candidates: data/public/gate2/candidates-ja.jsonl
+  source_sha256: cd1dbf5fbf18c9d28a5f924f0771bcb169c635279300670eb39c2bc053bd0234
+  source_query_id: ja-r01
+  diff_payload:
+    change_id: gate3-impact-speed-ja-001
+    entry_id: char-akane
+    entry_name: 朱音
+    entry_type: character
+    change_summary: 朱音の年齢を17歳から19歳へ変更
+    changes:
+      - field: detail
+        name: 年齢
+        old: 17歳
+        new: 19歳
+
+models:
+  - key: ja_xsmall
+    id: hotchpotch/japanese-reranker-xsmall-v2
+    revision: de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a
+    license: MIT
+    dtype: float32
+    weight: model.safetensors
+    weight_sha256: 93a48c41e3deeb772a024057ed163f803dfe550052b9e2155cbe2b9631602961
+    local_snapshot: local/phase0b-impact/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/snapshot
+    manifest: local/phase0b-impact/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/manifest.json
+    files:
+      - README.md
+      - config.json
+      - model.safetensors
+      - special_tokens_map.json
+      - tokenizer.json
+      - tokenizer.model
+      - tokenizer_config.json
+
+  - key: modernbert_ja_30m
+    id: sbintuitions/modernbert-ja-30m
+    revision: 8cb03f54cb9e30e72459e5f1cedc6d89c7d8dcb5
+    license: MIT
+    dtype: float32
+    weight: model.safetensors
+    weight_sha256: de292c27183e6b158bafbe91e61afd4c107aeed702b94394ac643f2f6aa62065
+    local_snapshot: local/phase0b-impact/modernbert_ja_30m/8cb03f54cb9e30e72459e5f1cedc6d89c7d8dcb5/snapshot
+    manifest: local/phase0b-impact/modernbert_ja_30m/8cb03f54cb9e30e72459e5f1cedc6d89c7d8dcb5/manifest.json
+    files:
+      - LICENSE
+      - README.md
+      - config.json
+      - model.safetensors
+      - special_tokens_map.json
+      - tokenizer.json
+      - tokenizer.model
+      - tokenizer_config.json

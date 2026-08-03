@@ -36,6 +36,8 @@ interface ContextPillGroupProps {
   onPin: (entryId: string) => Promise<void>;
   /** via子エントリを一時的に非表示にする */
   onDismissVia?: (childId: string) => void;
+  /** Session/message transitions and streaming freeze context mutations. */
+  actionsDisabled?: boolean;
   resolvedColor?: ResolvedCodexColor;
 }
 
@@ -50,6 +52,7 @@ export function ContextPillGroup({
   onRemoveAuto,
   onPin,
   onDismissVia,
+  actionsDisabled = false,
   resolvedColor,
 }: ContextPillGroupProps) {
   const { t } = useTranslation();
@@ -176,18 +179,25 @@ export function ContextPillGroup({
                     onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
                     onMouseLeave={handleEntryMouseLeave}
                   >
-                    <span
-                      className="truncate font-medium"
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenInCodex(entry.id);
+                      }}
+                      aria-label={entry.name}
+                      className="truncate text-left font-medium"
                       style={pillStyle ? { color: pillStyle.color } : undefined}
                     >
                       {entry.name}
-                    </span>
+                    </button>
                     <div className="flex shrink-0 items-center gap-0.5">
                       {isManual && (
                         <button
                           type="button"
                           onClick={() => onReturnToAuto(entry.id)}
-                          className="hover:text-foreground text-muted-foreground/70"
+                          disabled={actionsDisabled}
+                          className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                           aria-label={t("chat.context.returnToAuto", {
                             name: entry.name,
                           })}
@@ -198,7 +208,8 @@ export function ContextPillGroup({
                       <button
                         type="button"
                         onClick={() => onRemove(entry.id)}
-                        className="hover:text-destructive text-muted-foreground"
+                        disabled={actionsDisabled}
+                        className="hover:text-destructive text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={t("chat.context.unpinEntry", {
                           name: entry.name,
                         })}
@@ -216,20 +227,27 @@ export function ContextPillGroup({
                   onMouseEnter={(e) => handleEntryMouseEnter(child, e)}
                   onMouseLeave={handleEntryMouseLeave}
                 >
-                  <span
-                    className="truncate"
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenInCodex(child.id);
+                    }}
+                    aria-label={child.name}
+                    className="truncate text-left"
                     style={pillStyle ? { color: pillStyle.color } : undefined}
                   >
                     {child.name}
                     <span className="ml-1 text-muted-foreground/70">
                       {t("chat.context.via", { name: parentName })}
                     </span>
-                  </span>
+                  </button>
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
                       onClick={() => onPin(child.id)}
-                      className="hover:text-foreground text-muted-foreground/70"
+                      disabled={actionsDisabled}
+                      className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label={t("chat.context.pinEntry", {
                         name: child.name,
                       })}
@@ -240,7 +258,8 @@ export function ContextPillGroup({
                       <button
                         type="button"
                         onClick={() => onDismissVia(child.id)}
-                        className="hover:text-destructive text-muted-foreground"
+                        disabled={actionsDisabled}
+                        className="hover:text-destructive text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={t("chat.context.unpinEntry", {
                           name: child.name,
                         })}
@@ -261,8 +280,14 @@ export function ContextPillGroup({
                     onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
                     onMouseLeave={handleEntryMouseLeave}
                   >
-                    <span
-                      className="truncate"
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenInCodex(entry.id);
+                      }}
+                      aria-label={entry.name}
+                      className="truncate text-left"
                       style={pillStyle ? { color: pillStyle.color } : undefined}
                     >
                       {entry.name}
@@ -276,12 +301,13 @@ export function ContextPillGroup({
                           {t("chat.context.autoLabel")}
                         </span>
                       )}
-                    </span>
+                    </button>
                     <div className="flex shrink-0 items-center gap-0.5">
                       <button
                         type="button"
                         onClick={() => onPin(entry.id)}
-                        className="hover:text-foreground text-muted-foreground/70"
+                        disabled={actionsDisabled}
+                        className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={t("chat.context.pinEntry", {
                           name: entry.name,
                         })}
@@ -291,7 +317,8 @@ export function ContextPillGroup({
                       <button
                         type="button"
                         onClick={() => onRemoveAuto(entry.id)}
-                        className="hover:text-destructive text-muted-foreground/70"
+                        disabled={actionsDisabled}
+                        className="hover:text-destructive text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={t("chat.context.unpinEntry", {
                           name: entry.name,
                         })}

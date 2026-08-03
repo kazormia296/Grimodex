@@ -97,7 +97,7 @@ describe("Electron release packaging contract", () => {
     ]);
   });
 
-  it("places the MCP executable and semantic tokenizers at runtime paths", () => {
+  it("places MCP, semantic tokenizers, and selected rerankers at runtime paths", () => {
     const config = readBuilderConfig();
 
     expect(config.extraResources).toEqual([
@@ -110,6 +110,11 @@ describe("Electron release packaging contract", () => {
         from: "src-tauri/resources/semantic",
         to: "resources/semantic",
         filter: ["**/tokenizer.json"],
+      },
+      {
+        from: "experiments/lfm25-encoder-phase0/local",
+        to: "resources/reranker",
+        filter: ["phase0b/ja_xsmall/**", "phase0b/en_minilm_l4/**"],
       },
     ]);
   });

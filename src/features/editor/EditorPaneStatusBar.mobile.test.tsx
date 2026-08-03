@@ -72,11 +72,11 @@ describe("EditorPaneStatusBar phone status control", () => {
     );
 
     expect(screen.queryByRole("combobox")).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: i18next.t("editor.status.draft"),
-      }),
-    );
+    const statusButton = screen.getByRole("button", {
+      name: i18next.t("editor.status.draft"),
+    });
+    expect(statusButton).toHaveClass("shrink-0", "whitespace-nowrap");
+    fireEvent.click(statusButton);
     expect(
       screen.getByRole("button", {
         name: i18next.t("editor.status.complete"),

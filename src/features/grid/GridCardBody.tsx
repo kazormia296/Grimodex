@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { ChevronDown, ChevronUp, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -9,6 +15,10 @@ import {
   loadBeatTextByIndex,
 } from "@/features/editor/beat/editUnplacedBeatFromGrid";
 import { useGridStore } from "./gridStore";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import { useLatestValueDraftController } from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
+import { toast } from "sonner";
 
 type Tab = "beat" | "synopsis";
 
@@ -28,6 +38,7 @@ interface Props {
   showBeats: boolean;
   compact?: boolean;
   onEditingChange?: (editing: boolean) => void;
+  beatEditingDisabled?: boolean;
   /** Called when the empty Beat tab's "+ Beat を追加" prompt is clicked. */
   onRequestAddBeat?: () => void;
 }
@@ -49,6 +60,7 @@ export function GridCardBody({
   compact,
   onEditingChange,
   onRequestAddBeat,
+  beatEditingDisabled = false,
 }: Props) {
   const { t } = useTranslation();
 
@@ -82,6 +94,28 @@ export function GridCardBody({
   const toggleSynopsisExpanded = useGridStore((s) => s.toggleSynopsisExpanded);
 
   const [beatsExpanded, setBeatsExpanded] = useState(false);
+  const editingSourceCountRef = useRef(0);
+  const onEditingChangeRef = useRef(onEditingChange);
+  onEditingChangeRef.current = onEditingChange;
+  const handleChildEditingChange = useCallback((editing: boolean) => {
+    const previousCount = editingSourceCountRef.current;
+    const nextCount = editing
+      ? previousCount + 1
+      : Math.max(0, previousCount - 1);
+    editingSourceCountRef.current = nextCount;
+    if (previousCount === 0 && nextCount > 0) {
+      onEditingChangeRef.current?.(true);
+    } else if (previousCount > 0 && nextCount === 0) {
+      onEditingChangeRef.current?.(false);
+    }
+  }, []);
+  const endAllChildEditing = useCallback(() => {
+    if (editingSourceCountRef.current === 0) return;
+    editingSourceCountRef.current = 0;
+    onEditingChangeRef.current?.(false);
+  }, []);
+
+  useEffect(() => () => endAllChildEditing(), [endAllChildEditing]);
 
   // Per-card default (used when global mode === "auto").
   const localDefault: Tab | null =
@@ -118,6 +152,15 @@ export function GridCardBody({
 
   const tab: Tab | null =
     cardTabMode === "auto" ? localTab : resolveForced(cardTabMode);
+  const previousTabRef = useRef(tab);
+  useEffect(() => {
+    if (previousTabRef.current !== tab) {
+      // Inline editors report state transitions but do not own the card body
+      // lifetime. A tab/display switch is an explicit teardown boundary.
+      endAllChildEditing();
+      previousTabRef.current = tab;
+    }
+  }, [endAllChildEditing, tab]);
 
   function handleTabClick(next: Tab) {
     if (cardTabMode === "auto") {
@@ -159,16 +202,18 @@ export function GridCardBody({
                 previewText={b.text}
                 compact={compact}
                 clamp={!beatsExpanded}
-                onEditingChange={onEditingChange}
+                disabled={beatEditingDisabled}
+                onEditingChange={handleChildEditingChange}
               />
             ))}
           </ol>
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
+              disabled={beatEditingDisabled}
               aria-label={t("grid.card.addBeatPrompt", "＋ Beat を追加")}
               title={t("grid.card.addBeatPrompt", "＋ Beat を追加")}
-              className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+              className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:pointer-events-none disabled:opacity-40"
               onClick={(e) => {
                 e.stopPropagation();
                 onRequestAddBeat?.();
@@ -208,7 +253,8 @@ export function GridCardBody({
     return (
       <button
         type="button"
-        className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+        disabled={beatEditingDisabled}
+        className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors disabled:pointer-events-none disabled:opacity-40"
         onClick={(e) => {
           e.stopPropagation();
           onRequestAddBeat?.();
@@ -237,7 +283,7 @@ export function GridCardBody({
               "シノプシスを追加…",
             )}
             triggerOn="doubleClick"
-            onEditingChange={onEditingChange}
+            onEditingChange={handleChildEditingChange}
           />
           {isLong && (
             <button
@@ -271,7 +317,7 @@ export function GridCardBody({
         className="cursor-text rounded text-[10px] text-muted-foreground/60 hover:bg-accent/30"
         placeholder={t("grid.card.addSynopsisPrompt", "＋ シノプシスを追加")}
         triggerOn="doubleClick"
-        onEditingChange={onEditingChange}
+        onEditingChange={handleChildEditingChange}
       />
     );
   }
@@ -327,6 +373,7 @@ interface BeatListItemProps {
   compact?: boolean;
   /** When true, line-clamp the text to 1 (compact) or 2 lines. */
   clamp: boolean;
+  disabled?: boolean;
   onEditingChange?: (editing: boolean) => void;
 }
 
@@ -337,6 +384,7 @@ function BeatListItem({
   previewText,
   compact,
   clamp,
+  disabled = false,
   onEditingChange,
 }: BeatListItemProps) {
   const { t } = useTranslation();
@@ -345,54 +393,113 @@ function BeatListItem({
   const [savedDraft, setSavedDraft] = useState<string | null>(null);
   const beatIdRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const committedRef = useRef(false);
+  const editingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const onEditingChangeRef = useRef(onEditingChange);
+  onEditingChangeRef.current = onEditingChange;
 
-  const editable = kind === "unplaced" && unplacedIndex !== undefined;
+  const editable =
+    !disabled && kind === "unplaced" && unplacedIndex !== undefined;
+  const draftController = useLatestValueDraftController(
+    `grid-beat:${sceneId}:${beatIdRef.current ?? unplacedIndex ?? "load"}`,
+    savedDraft ?? previewText,
+    async (next) => {
+      const beatId = beatIdRef.current;
+      if (!beatId) {
+        throw new Error(`Grid Beat edit target is unavailable: ${sceneId}`);
+      }
+      await editUnplacedBeatFromGrid(sceneId, beatId, next);
+    },
+  );
 
-  async function startEdit() {
-    if (editing || !editable || unplacedIndex === undefined) return;
-    const loaded = await loadBeatTextByIndex(sceneId, unplacedIndex);
-    if (!loaded) return;
-    beatIdRef.current = loaded.id;
-    setDraft(loaded.text);
-    setSavedDraft(loaded.text);
-    committedRef.current = false;
-    setEditing(true);
-    onEditingChange?.(true);
-    setTimeout(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }, 0);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (!editingRef.current) return;
+      onEditingChangeRef.current?.(false);
+    };
+  }, []);
+
+  function endEditingSession(): void {
+    if (!editingRef.current) return;
+    editingRef.current = false;
+    if (mountedRef.current) onEditingChangeRef.current?.(false);
   }
 
-  async function commit() {
-    if (committedRef.current) return;
-    committedRef.current = true;
-    const beatId = beatIdRef.current;
-    setEditing(false);
-    onEditingChange?.(false);
-    if (!beatId) return;
-    const next = draft.trim();
-    const prev = (savedDraft ?? "").trim();
-    if (next === prev) return;
+  async function startEdit() {
+    if (editingRef.current || !editable || unplacedIndex === undefined) return;
+    editingRef.current = true;
+    onEditingChangeRef.current?.(true);
+    let opened = false;
     try {
-      await editUnplacedBeatFromGrid(sceneId, beatId, next);
+      const loaded = await loadBeatTextByIndex(sceneId, unplacedIndex);
+      if (!mountedRef.current) return;
+      if (!loaded) return;
+      beatIdRef.current = loaded.id;
+      draftController.reset(loaded.text);
+      setDraft(loaded.text);
+      setSavedDraft(loaded.text);
+      setEditing(true);
+      opened = true;
+      setTimeout(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }, 0);
     } catch {
-      // swallow — store rolled back inside helper
+      if (mountedRef.current) {
+        toast.error(
+          t("grid.card.beatLoadFailed", "Beat を読み込めませんでした"),
+        );
+      }
+    } finally {
+      if (!opened) {
+        beatIdRef.current = null;
+        draftController.reset(previewText);
+        if (mountedRef.current) setSavedDraft(null);
+        endEditingSession();
+      }
     }
   }
 
-  function cancel() {
-    if (committedRef.current) return;
-    committedRef.current = true;
-    setEditing(false);
-    onEditingChange?.(false);
+  async function commit(
+    options?: QuiescenceParticipantFlushOptions,
+  ): Promise<void> {
+    if (!editingRef.current) return;
+    await draftController.save(options);
+    endEditingSession();
+    if (mountedRef.current) setEditing(false);
   }
 
+  function cancel() {
+    if (!editingRef.current) return;
+    draftController.reset(savedDraft ?? previewText);
+    endEditingSession();
+    if (mountedRef.current) setEditing(false);
+  }
+
+  useQuiescentDraftParticipant({
+    id: draftController.identity,
+    enabled: editing,
+    isDirty: () => editingRef.current && draftController.dirty,
+    flush: commit,
+    discard: cancel,
+    recovery: () =>
+      editingRef.current
+        ? {
+            kind: "grid-beat",
+            sceneId,
+            beatId: beatIdRef.current,
+            text: draftController.latestValue,
+          }
+        : null,
+  });
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      void commit();
+      void commit().catch(() => {});
     } else if (e.key === "Escape") {
       e.preventDefault();
       cancel();
@@ -429,8 +536,11 @@ function BeatListItem({
           rows={1}
           className="flex-1 min-w-0 resize-none overflow-hidden rounded bg-accent px-1 py-0.5 text-[11px] leading-snug outline-none focus:ring-1 focus:ring-ring"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => void commit()}
+          onChange={(e) => {
+            draftController.markDirty(e.target.value);
+            setDraft(e.target.value);
+          }}
+          onBlur={() => void commit().catch(() => {})}
           onKeyDown={handleKeyDown}
           onClick={(e) => e.stopPropagation()}
           title={t(

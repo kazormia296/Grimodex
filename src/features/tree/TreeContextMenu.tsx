@@ -232,6 +232,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
             onSelect={() => {
               createNode({ nodeType: "scene", parentId: node.id })
                 .then((n) => {
+                  if (!n) return;
                   openInEditor(n.id);
                 })
                 .catch(() => {});
@@ -244,6 +245,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
             onSelect={() => {
               createNode({ nodeType: "note", parentId: node.id })
                 .then((n) => {
+                  if (!n) return;
                   openInEditor(n.id);
                 })
                 .catch(() => {});
@@ -308,6 +310,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
                 afterId: node.id,
               })
                 .then((n) => {
+                  if (!n) return;
                   openInEditor(n.id);
                 })
                 .catch(() => {});
@@ -324,6 +327,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
                 afterId: node.id,
               })
                 .then((n) => {
+                  if (!n) return;
                   openInEditor(n.id);
                 })
                 .catch(() => {});

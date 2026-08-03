@@ -1,6 +1,10 @@
 import {
+  AI_AUDIT_JOURNAL_FORMAT_VERSION,
+  assertAiAuditJournalBatchIntegrity,
   BrowserWorkspaceError,
   createIndexedDbWorkspaceStore,
+  type AiAuditJournalEntry,
+  type AiAuditJournalMaterializedBatch,
   type BrowserWorkspaceStore,
 } from "./browser-db/indexedDbStore";
 import {
@@ -60,6 +64,7 @@ interface BrowserWorkspaceLockLease {
 
 /** The runtime only needs the persistent surface of BrowserMock. */
 export interface BrowserRuntimeDatabase {
+  invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
   exportDatabase(): Uint8Array;
   close(): void;
 }
@@ -309,6 +314,33 @@ export function browserPersistenceFailureMessage(error: unknown): string {
   return "ブラウザーへの自動保存に失敗しました。未保存の内容を保護するため、このタブでは編集を続けず、ページを再読み込みしてください。";
 }
 
+function parseAiAuditReplayArgs(
+  entry: AiAuditJournalEntry,
+): AiAuditJournalMaterializedBatch {
+  try {
+    const parsed = JSON.parse(entry.appendArgsJson) as unknown;
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      throw new Error("append arguments must be an object");
+    }
+    const record = parsed as Record<string, unknown>;
+    if (record.journalVersion !== AI_AUDIT_JOURNAL_FORMAT_VERSION) {
+      throw new Error(
+        "legacy raw AI audit journal cannot be replayed safely; materialized batch required",
+      );
+    }
+    return record as unknown as AiAuditJournalMaterializedBatch;
+  } catch {
+    throw new BrowserWorkspaceError(
+      "storage-failed",
+      `AI audit journal entry ${entry.sequence} is invalid`,
+    );
+  }
+}
+
 /**
  * Restores and installs the real Web Editor database before React mounts.
  * This path has no upload, hosted session, provider credential, or network
@@ -358,13 +390,37 @@ export async function initializeBrowserRuntime(
       ((error) => console.error("[browser-runtime] persistence failed", error)),
   });
   let detachLifecycle: () => void = () => undefined;
+  let replayingAuditJournal = false;
 
   try {
     const restored = await persistence.restore();
+    const auditJournal = await persistence.loadAiAuditJournal();
     database = await dependencies.createBrowserMock({
       databaseBytes: restored?.bytes,
       onDatabaseDirty: () => persistence.markDirty(),
+      onAiAuditDurabilityRequired: (batch) =>
+        replayingAuditJournal
+          ? Promise.resolve()
+          : persistence.acknowledgeAiAuditBatch(batch),
     });
+    replayingAuditJournal = true;
+    try {
+      for (const entry of auditJournal) {
+        await assertAiAuditJournalBatchIntegrity(entry);
+        await database.invoke(
+          "ai_audit_restore_batch",
+          parseAiAuditReplayArgs(entry) as unknown as Record<string, unknown>,
+        );
+      }
+    } finally {
+      replayingAuditJournal = false;
+    }
+    if (auditJournal.length > 0) {
+      // Replay may be entirely idempotent against the restored snapshot, so
+      // it need not mark SQLite dirty. Still publish one durable post-replay
+      // snapshot and compact exactly the prefix captured before its export.
+      await persistence.flushStrict();
+    }
     dependencies.installBrowserMock(database);
 
     const target =

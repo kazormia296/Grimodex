@@ -150,6 +150,25 @@ function stripUnknownPanels(state: LayoutState): LayoutState {
   for (const regionId of ALL_REGIONS) {
     const region = state.regions[regionId];
     if (!region) continue;
+    const rawCollapsedActivePanels = region.collapsedActivePanels as unknown;
+    if (rawCollapsedActivePanels !== undefined) {
+      region.collapsedActivePanels =
+        rawCollapsedActivePanels !== null &&
+        typeof rawCollapsedActivePanels === "object" &&
+        !Array.isArray(rawCollapsedActivePanels)
+          ? Object.fromEntries(
+              Object.entries(rawCollapsedActivePanels).map(
+                ([slotId, panel]) => [
+                  slotId,
+                  panel === null ||
+                  (typeof panel === "string" && known.has(panel))
+                    ? (panel as ToolWindowPanelId | null)
+                    : null,
+                ],
+              ),
+            )
+          : {};
+    }
     for (const slot of region.slots) {
       slot.panels = slot.panels.filter((p) => known.has(p));
       if (slot.activePanel && !slot.panels.includes(slot.activePanel)) {
@@ -398,6 +417,33 @@ export function validateLayoutState(
     }
 
     const slotIds = new Set<string>();
+    const collapsedActivePanels = region.collapsedActivePanels as unknown;
+    if (
+      collapsedActivePanels !== undefined &&
+      (collapsedActivePanels === null ||
+        typeof collapsedActivePanels !== "object" ||
+        Array.isArray(collapsedActivePanels))
+    ) {
+      return {
+        valid: false,
+        reason: `invalid collapsedActivePanels in ${regionId}`,
+      };
+    }
+    if (collapsedActivePanels !== undefined) {
+      for (const panel of Object.values(collapsedActivePanels)) {
+        if (
+          panel !== null &&
+          (typeof panel !== "string" ||
+            !TOOL_WINDOW_PANEL_IDS.includes(panel as ToolWindowPanelId))
+        ) {
+          return {
+            valid: false,
+            reason: `invalid collapsed panel ${String(panel)} in ${regionId}`,
+          };
+        }
+      }
+    }
+
     for (const slot of region.slots) {
       if (slotIds.has(slot.id)) {
         return {
@@ -962,6 +1008,32 @@ export function updateRegion(
       [regionId]: updater(state.regions[regionId]),
     },
   };
+}
+
+export function withoutCollapsedActivePanels(region: RegionState): RegionState {
+  if (region.collapsedActivePanels === undefined) return region;
+  const { collapsedActivePanels: _collapsedActivePanels, ...rest } = region;
+  return rest;
+}
+
+export function clearCollapsedActivePanelReferences(
+  region: RegionState,
+  panels: ReadonlySet<ToolWindowPanelId>,
+): RegionState {
+  const snapshot = region.collapsedActivePanels;
+  if (snapshot === undefined) return region;
+
+  let changed = false;
+  const collapsedActivePanels = Object.fromEntries(
+    Object.entries(snapshot).map(([slotId, panel]) => {
+      if (panel !== null && panels.has(panel)) {
+        changed = true;
+        return [slotId, null];
+      }
+      return [slotId, panel];
+    }),
+  );
+  return changed ? { ...region, collapsedActivePanels } : region;
 }
 
 export function updateCenter(

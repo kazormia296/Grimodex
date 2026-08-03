@@ -1,6 +1,14 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const { mockEditUnplacedBeat, mockLoadBeatTextByIndex } = vi.hoisted(() => ({
+  mockEditUnplacedBeat: vi.fn(),
+  mockLoadBeatTextByIndex: vi.fn(),
+}));
+const { mockToastError } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+}));
 
 vi.mock("@/features/editor/InlineSynopsisEditor", () => ({
   InlineSynopsisEditor: ({
@@ -11,13 +19,35 @@ vi.mock("@/features/editor/InlineSynopsisEditor", () => ({
     placeholder: string;
   }) => <div data-testid="synopsis-editor">{synopsis ?? placeholder}</div>,
 }));
+vi.mock("@/features/editor/beat/editUnplacedBeatFromGrid", () => ({
+  editUnplacedBeatFromGrid: mockEditUnplacedBeat,
+  loadBeatTextByIndex: mockLoadBeatTextByIndex,
+}));
+vi.mock("sonner", () => ({
+  toast: { error: mockToastError },
+}));
 
 import { GridCardBody } from "../GridCardBody";
 import { useGridStore } from "../gridStore";
+import {
+  _resetQuiescenceParticipantsForTests,
+  collectQuiescenceParticipantRecovery,
+  flushQuiescenceParticipants,
+} from "@/application/lifecycle/quiescenceParticipants";
 
 beforeEach(() => {
+  _resetQuiescenceParticipantsForTests();
+  vi.clearAllMocks();
+  mockLoadBeatTextByIndex.mockResolvedValue({
+    id: "beat-1",
+    text: "Beat A",
+  });
   // Reset global card tab mode between tests.
   useGridStore.getState().setCardTabMode("auto");
+});
+
+afterEach(() => {
+  _resetQuiescenceParticipantsForTests();
 });
 
 describe("GridCardBody", () => {
@@ -330,5 +360,93 @@ describe("GridCardBody", () => {
       />,
     );
     expect(container.querySelector(".line-clamp-2")).not.toBeNull();
+  });
+
+  it("既存 Beat 編集は unmount 時にも onEditingChange を均衡させる", async () => {
+    const onEditingChange = vi.fn();
+    const { unmount } = render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={JSON.stringify(["Beat A"])}
+        showSynopsis={false}
+        showBeats={true}
+        onEditingChange={onEditingChange}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByText("Beat A"));
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toBeDefined();
+    });
+    expect(onEditingChange).toHaveBeenLastCalledWith(true);
+
+    unmount();
+
+    expect(onEditingChange.mock.calls).toEqual([[true], [false]]);
+    expect(mockEditUnplacedBeat).not.toHaveBeenCalled();
+  });
+
+  it("既存 Beat の hydrate 失敗を通知し、編集 pin を必ず解除する", async () => {
+    const onEditingChange = vi.fn();
+    mockLoadBeatTextByIndex.mockRejectedValueOnce(new Error("read failed"));
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={JSON.stringify(["Beat A"])}
+        showSynopsis={false}
+        showBeats={true}
+        onEditingChange={onEditingChange}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByText("Beat A"));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        "Beat を読み込めませんでした",
+      );
+    });
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(onEditingChange.mock.calls).toEqual([[true], [false]]);
+    expect(mockEditUnplacedBeat).not.toHaveBeenCalled();
+  });
+
+  it("保存失敗した既存 Beat draft をstrict retryまで保持する", async () => {
+    mockEditUnplacedBeat
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={JSON.stringify(["Beat A"])}
+        showSynopsis={false}
+        showBeats={true}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByText("Beat A"));
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Recoverable Beat" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => expect(mockEditUnplacedBeat).toHaveBeenCalledOnce());
+    expect(screen.getByRole("textbox")).toHaveValue("Recoverable Beat");
+    expect(collectQuiescenceParticipantRecovery()).toEqual([
+      {
+        kind: "grid-beat",
+        sceneId: "n1",
+        beatId: "beat-1",
+        text: "Recoverable Beat",
+      },
+    ]);
+
+    await flushQuiescenceParticipants();
+    expect(mockEditUnplacedBeat).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument(),
+    );
   });
 });

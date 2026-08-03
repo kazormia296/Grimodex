@@ -144,11 +144,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         },
         content: {
           type: "string",
-          description: "Optional ProseMirror JSON body string",
+          description:
+            "Optional Markdown body. The app converts and validates it before saving.",
         },
         aliases: {
-          type: "string",
-          description: "Optional JSON string array of aliases",
+          type: "array",
+          items: { type: "string" },
+          description: "Optional array of alternate names",
         },
         parentId: {
           type: "string",
@@ -168,8 +170,16 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         id: { type: "string", description: "Entry UUID" },
         name: { type: "string" },
         summary: { type: "string" },
-        content: { type: "string", description: "ProseMirror JSON body" },
-        aliases: { type: "string", description: "JSON string array" },
+        content: {
+          type: "string",
+          description:
+            "Markdown body. The app converts and validates it before saving.",
+        },
+        aliases: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of alternate names",
+        },
       },
       required: ["id"],
     },
@@ -241,7 +251,8 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         title: { type: "string", description: "Snippet title" },
         content: {
           type: "string",
-          description: "Optional ProseMirror JSON body",
+          description:
+            "Optional Markdown body. The app converts and validates it before saving.",
         },
         sceneId: {
           type: "string",

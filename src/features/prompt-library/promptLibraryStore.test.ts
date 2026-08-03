@@ -9,7 +9,7 @@ vi.mock("./api", () => ({
   incrementPromptTemplateUsage: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("@/features/project/projectStore", () => ({
+vi.mock("@/application/project/currentProjectAuthority", () => ({
   getCurrentProjectId: vi.fn(() => "default-project"),
 }));
 
@@ -22,7 +22,7 @@ vi.mock("i18next", () => ({
 }));
 
 import { usePromptLibraryStore } from "./promptLibraryStore";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import * as api from "./api";
 import type { PromptTemplate } from "./api";
 

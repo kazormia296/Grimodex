@@ -1,14 +1,28 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
-import { spawn } from "node:child_process";
 import yaml from "js-yaml";
 
-const execFileAsync = promisify(execFile);
+import {
+  classifyChangedPaths,
+  collectChangedPaths,
+  compileGlob,
+  formatImpactMarkdown,
+  resolveSafeAll,
+} from "../impact/core.mjs";
+
+export {
+  classifyChangedPaths,
+  collectChangedPaths,
+  compileGlob,
+  formatImpactMarkdown,
+  resolveSafeAll,
+};
+export { compilePathRules } from "../impact/core.mjs";
+
 const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "../..");
 
 export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
@@ -25,6 +39,19 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--run",
         "src/features/ai-verification/aiPathRegistry.test.ts",
         "src/features/ai-verification/aiPathRegistry.webEditor.test.ts",
+        "src/features/ai-audit/api.test.ts",
+        "src/features/ai-audit/orderedStreamAudit.test.ts",
+        "src/features/ai-audit/transportContext.test.ts",
+        "src/features/ai-audit/legacyEvidence.test.ts",
+        "src/features/ai-audit/reportCoverage.test.ts",
+        "src/features/ai-audit/exportBundle.test.ts",
+        "src/features/attribution/AttributionProjectView.ai-audit.test.tsx",
+        "src/features/chat/singleShotTransport.audit.test.ts",
+        "src/features/chat/chatApi.audit.test.ts",
+        "src/features/chat/externalRuntimeAudit.test.ts",
+        "src/features/editor/inlineAi/inlineAiStreaming.audit.test.ts",
+        "src/features/ab-test/abHarness.test.ts",
+        "src/lib/browser-mock.ai-audit.test.ts",
         "src/lib/browser-ai.test.ts",
         "src/lib/browser-mock.ai-runtime.test.ts",
         "src/lib/browserRuntime.test.ts",
@@ -109,57 +136,11 @@ function unique(values) {
   return [...new Set(values)];
 }
 
-function normalizedPath(value) {
-  return value.replaceAll("\\", "/").replace(/^\.\//, "");
-}
-
 function assertString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value.trim();
-}
-
-function compileGlob(pattern) {
-  assertString(pattern, "path pattern");
-  if (
-    ["?", "[", "]", "{", "}", "!"].some((token) => pattern.includes(token)) ||
-    pattern.includes("***")
-  ) {
-    throw new Error(`Unsupported glob syntax: ${pattern}`);
-  }
-  const segments = normalizedPath(pattern).split("/");
-  if (segments.some((segment) => segment.includes("**") && segment !== "**")) {
-    throw new Error(`Unsupported glob syntax: ${pattern}`);
-  }
-  if (
-    segments.some(
-      (segment, index) => segment === "**" && segments[index - 1] === "**",
-    )
-  ) {
-    throw new Error(`Unsupported glob syntax: ${pattern}`);
-  }
-
-  let source = "^";
-  for (let index = 0; index < segments.length; index += 1) {
-    const segment = segments[index];
-    if (segment === "**") {
-      if (segments.length === 1) {
-        source += ".*";
-      } else if (index === segments.length - 1) {
-        source += index === 0 ? ".*" : "(?:/.*)?";
-      } else {
-        source += index === 0 ? "(?:[^/]+/)*" : "(?:/[^/]+)*";
-      }
-      continue;
-    }
-    if (index > 0 && !(index === 1 && segments[0] === "**")) source += "/";
-    source += segment
-      .split("*")
-      .map((part) => part.replace(/[\\^$.*+()|]/g, "\\$&"))
-      .join("[^/]*");
-  }
-  return new RegExp(`${source}$`);
 }
 
 export function parseImpactMap(source, options = {}) {
@@ -278,28 +259,25 @@ function isInvariantAllPath(candidate) {
 }
 
 export function selectImpact(map, changedPaths, options = {}) {
-  const paths = unique(changedPaths.map(normalizedPath).filter(Boolean)).sort();
+  const {
+    changedPaths: paths,
+    matchedRules,
+    matchedRuleIds,
+    unmatchedPaths,
+  } = classifyChangedPaths(map.rules, changedPaths);
   const allRequirementIds = unique(
     map.rules.flatMap((rule) => rule.requirements),
   );
-  const matchedRules = map.rules.filter((rule) =>
-    paths.some((candidate) =>
-      rule.matchers.some((matcher) => matcher.test(candidate)),
-    ),
-  );
-  const unmatchedPaths = paths.filter(
-    (candidate) =>
-      !map.rules.some((rule) =>
-        rule.matchers.some((matcher) => matcher.test(candidate)),
-      ),
-  );
   const explicitAll = matchedRules.some((rule) => rule.suites.includes("all"));
   const invariantAllPaths = paths.filter(isInvariantAllPath);
-  const invariantAll = invariantAllPaths.length > 0;
   const forcedReason = options.forceAllReason?.trim();
-  const fallback =
-    Boolean(forcedReason) || paths.length === 0 || unmatchedPaths.length > 0;
-  const allSelected = fallback || explicitAll || invariantAll;
+  const { fallback, allSelected } = resolveSafeAll({
+    changedPaths: paths,
+    unmatchedPaths,
+    incompleteReason: forcedReason,
+    policyAllPaths: invariantAllPaths,
+    explicitAll,
+  });
   const suiteIds = allSelected
     ? [...map.allSuites]
     : unique(
@@ -316,7 +294,7 @@ export function selectImpact(map, changedPaths, options = {}) {
       ? "Empty diff; selected all suites by default."
       : unmatchedPaths.length > 0
         ? `Unclassified paths require all suites: ${unmatchedPaths.join(", ")}`
-        : invariantAll
+        : invariantAllPaths.length > 0
           ? `Critical workflow paths require all suites: ${invariantAllPaths.join(", ")}`
           : explicitAll
             ? "A matched global rule selected all suites."
@@ -324,7 +302,7 @@ export function selectImpact(map, changedPaths, options = {}) {
 
   return {
     changedPaths: paths,
-    matchedRuleIds: matchedRules.map((rule) => rule.id),
+    matchedRuleIds,
     matchedReasons: matchedRules.map((rule) => ({
       id: rule.id,
       reason: rule.reason,
@@ -359,160 +337,27 @@ export function formatImpactSummary(selection, execution = []) {
     })();
     return `${entry.suiteId}: ${entry.status}${timing}${classification}`;
   });
-  return [
-    "## Grimodex quality impact gate",
-    "",
-    "### Changed files",
-    markdownList(selection.changedPaths),
-    "",
-    "### Matched rules",
-    markdownList(selection.matchedRuleIds),
-    "",
-    "### Affected requirements",
-    markdownList(selection.requirementIds),
-    "",
-    "### Selected light suites",
-    markdownList(selection.suiteIds),
-    "",
-    `### Fallback: ${selection.fallback ? "yes" : "no"}`,
-    selection.reason,
-    ...(executionLines.length > 0
-      ? ["", "### Execution", markdownList(executionLines)]
-      : []),
-  ].join("\n");
-}
-
-function parseNameStatus(output) {
-  const tokens = output.split("\0").filter(Boolean);
-  const paths = [];
-  for (let index = 0; index < tokens.length; ) {
-    const status = tokens[index++];
-    const pathCount = /^[RC]/.test(status) ? 2 : 1;
-    for (
-      let count = 0;
-      count < pathCount && index < tokens.length;
-      count += 1
-    ) {
-      paths.push(normalizedPath(tokens[index++]));
-    }
-  }
-  return paths;
-}
-
-async function gitOutput(repoRoot, args) {
-  const result = await execFileAsync("git", args, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
+  return formatImpactMarkdown({
+    title: "Grimodex quality impact gate",
+    changedPaths: selection.changedPaths,
+    matchedRuleIds: selection.matchedRuleIds,
+    sections: [
+      {
+        heading: "Affected requirements",
+        values: selection.requirementIds,
+      },
+      {
+        heading: "Selected light suites",
+        values: selection.suiteIds,
+      },
+    ],
+    trailingSections:
+      executionLines.length > 0
+        ? [{ heading: "Execution", values: executionLines }]
+        : [],
+    fallback: selection.fallback,
+    reason: selection.reason,
   });
-  return result.stdout;
-}
-
-async function resolveGitCommit(repoRoot, reference) {
-  return (
-    await gitOutput(repoRoot, [
-      "rev-parse",
-      "--verify",
-      `${reference}^{commit}`,
-    ])
-  ).trim();
-}
-
-export async function collectChangedPaths({
-  repoRoot = DEFAULT_REPO_ROOT,
-  base,
-  head = "HEAD",
-}) {
-  const paths = [];
-  const errors = [];
-  const comparison = {
-    source: "git",
-    requested: { base: base ?? null, head },
-    resolved: { base: null, head: null, mergeBase: null },
-    includesWorkingTree: true,
-  };
-  if (base) {
-    try {
-      comparison.resolved.base = await resolveGitCommit(repoRoot, base);
-    } catch (error) {
-      errors.push(`Base ref unavailable: ${error.message}`);
-    }
-  }
-  try {
-    comparison.resolved.head = await resolveGitCommit(repoRoot, head);
-  } catch (error) {
-    errors.push(`Head ref unavailable: ${error.message}`);
-  }
-  if (comparison.resolved.base && comparison.resolved.head) {
-    try {
-      comparison.resolved.mergeBase = (
-        await gitOutput(repoRoot, [
-          "merge-base",
-          comparison.resolved.base,
-          comparison.resolved.head,
-        ])
-      ).trim();
-    } catch (error) {
-      errors.push(`Merge base unavailable: ${error.message}`);
-    }
-  }
-  if (base) {
-    if (comparison.resolved.base && comparison.resolved.head) {
-      try {
-        paths.push(
-          ...parseNameStatus(
-            await gitOutput(repoRoot, [
-              "diff",
-              "--name-status",
-              "-z",
-              "--find-renames",
-              `${comparison.resolved.base}...${comparison.resolved.head}`,
-            ]),
-          ),
-        );
-      } catch (error) {
-        errors.push(`Committed diff unavailable: ${error.message}`);
-      }
-    } else {
-      errors.push("Committed diff unavailable: unresolved comparison ref");
-    }
-  }
-  for (const args of [
-    ["diff", "--name-status", "-z", "--find-renames"],
-    ["diff", "--cached", "--name-status", "-z", "--find-renames"],
-  ]) {
-    try {
-      paths.push(...parseNameStatus(await gitOutput(repoRoot, args)));
-    } catch (error) {
-      errors.push(`Working-tree diff unavailable: ${error.message}`);
-    }
-  }
-  try {
-    paths.push(
-      ...(
-        await gitOutput(repoRoot, [
-          "ls-files",
-          "--others",
-          "--exclude-standard",
-          "-z",
-        ])
-      )
-        .split("\0")
-        .filter(Boolean)
-        .map(normalizedPath),
-    );
-  } catch (error) {
-    errors.push(`Untracked-file scan unavailable: ${error.message}`);
-  }
-  return {
-    paths: unique(paths).sort(),
-    complete: errors.length === 0,
-    reason:
-      errors.length === 0
-        ? "Complete Git diff."
-        : `Git diff incomplete: ${errors.join("; ")}`,
-    comparison,
-  };
 }
 
 function deferredHeavy(selection, heavyEvaluations) {

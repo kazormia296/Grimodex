@@ -39,6 +39,7 @@ import {
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
+import { isLocalInferenceRoute } from "@/features/chat/turn/resolveTurnRoute";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
 import type {
@@ -55,8 +56,13 @@ import type {
 import type { ChatSummary } from "../../chatTypes";
 import {
   buildSemanticRecallQuery,
+  buildSemanticRecallQueryParts,
   type SemanticRecallChunk,
 } from "../../semanticRecall";
+import {
+  resolveSemanticRerankerLanguage,
+  type SemanticRerankerLanguage,
+} from "../../semanticRerankerMode";
 import type { ChatRecallMessage } from "../../chatRecall";
 import {
   allocateLayerBudgets,
@@ -143,6 +149,20 @@ export interface SceneContextSourceDeps {
     query: string;
     excludeSceneIds: string[];
     hybrid: boolean;
+    reranker?: {
+      mode: "shadow" | "apply";
+      requestId: string;
+      sessionId?: string | null;
+      scope: {
+        workspaceKey: string;
+        workspaceOpenRevision: number;
+        projectId: string;
+      };
+      userMessage: string;
+      sceneTail: string;
+      language: SemanticRerankerLanguage;
+      localInferenceExpected: boolean;
+    };
   }) => Promise<SemanticRecallChunk[]>;
   fetchChatRecall: (input: {
     projectId: string;
@@ -1199,13 +1219,17 @@ export async function collectSceneContext(
     }
   }
 
-  const semanticQuery =
+  const semanticQueryParts =
     request.settings.semanticRecallEnabled && request.outgoingUserMessage
-      ? buildSemanticRecallQuery({
+      ? buildSemanticRecallQueryParts({
           userMessage: request.outgoingUserMessage,
           sceneBody: scene.content,
         })
-      : "";
+      : null;
+  const semanticQuery = semanticQueryParts?.query ?? "";
+  const rerankerLanguage = resolveSemanticRerankerLanguage(
+    request.sourceSnapshot.project?.language,
+  );
   const episodicQuery =
     request.settings.episodicRecallEnabled && request.outgoingUserMessage
       ? buildSemanticRecallQuery({
@@ -1261,6 +1285,31 @@ export async function collectSceneContext(
               query: semanticQuery,
               excludeSceneIds: [scene.id, ...request.mentionedSceneIds],
               hybrid: request.settings.hybridRecallEnabled,
+              ...(request.purpose === "send" &&
+              semanticQueryParts &&
+              request.workspaceIdentity &&
+              rerankerLanguage &&
+              request.settings.semanticRerankerMode !== "off"
+                ? {
+                    reranker: {
+                      mode: request.settings.semanticRerankerMode,
+                      requestId: request.requestId,
+                      sessionId: request.sessionId,
+                      scope: {
+                        workspaceKey: request.workspaceIdentity.workspaceKey,
+                        workspaceOpenRevision:
+                          request.workspaceIdentity.workspaceOpenRevision,
+                        projectId: request.projectId,
+                      },
+                      userMessage: semanticQueryParts.userMessage,
+                      sceneTail: semanticQueryParts.sceneTail,
+                      language: rerankerLanguage,
+                      localInferenceExpected: isLocalInferenceRoute(
+                        request.route,
+                      ),
+                    },
+                  }
+                : {}),
             }),
           [],
         )

@@ -9,9 +9,25 @@ vi.mock("./api", () => ({
   createAbRun: (...args: unknown[]) => createAbRun(...args),
   setAbRunChosen: (...args: unknown[]) => setAbRunChosen(...args),
 }));
+vi.mock("@/features/ai-audit/api", () => ({
+  snapshotAiAuditWorkspacePath: vi.fn(() => "/workspace"),
+  beginAiAuditExecutionInWorkspace: vi.fn(
+    async (input: Record<string, unknown>) => ({
+      ...input,
+      expectedWorkspacePath: "/workspace",
+      operationId: input.operationId ?? "operation-test",
+      executionId: crypto.randomUUID(),
+      parentExecutionId: null,
+      startedAt: 1,
+    }),
+  ),
+  cacheHitAiAuditExecution: vi.fn(async () => undefined),
+}));
 
 import { useAbComparison } from "./useAbComparison";
 import type { AbDispatcher } from "./abHarness";
+import { useAiSettingsStore } from "@/features/chat/store";
+import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
 
 const okDispatch: AbDispatcher = async (_messages, config) => ({
   ok: true,
@@ -26,6 +42,7 @@ describe("useAbComparison", () => {
     setAbRunChosen.mockReset();
     createAbRun.mockResolvedValue({ id: "rec-1" });
     setAbRunChosen.mockResolvedValue(undefined);
+    useAiSettingsStore.setState({ settings: { ...DEFAULT_AI_SETTINGS } });
   });
 
   it("runs all slots and stores results by id + record id", async () => {
@@ -242,6 +259,55 @@ describe("useAbComparison", () => {
     expect(calls.filter((c) => c === "default")).toHaveLength(1);
     expect(calls).toEqual(["default", "b1", "b2"]);
     expect(createAbRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("regenerates unchanged slots when effective AI settings change", async () => {
+    const calls: string[] = [];
+    const dispatch: AbDispatcher = async (_messages, config) => {
+      calls.push(config.model ?? "default");
+      return { ok: true, text: `out:${config.model ?? "default"}` };
+    };
+    const { result } = renderHook(() =>
+      useAbComparison({ surface: "chat", projectId: "p1", dispatch }),
+    );
+    const slots = [{ id: "baseline", config: {} }];
+
+    await act(async () => result.current.run(BASE, slots));
+    useAiSettingsStore.setState({
+      settings: { ...DEFAULT_AI_SETTINGS, model: "new-default-model" },
+    });
+    await act(async () => result.current.run(BASE, slots));
+
+    expect(calls).toEqual(["default", "default"]);
+  });
+
+  it("does not retain reuse authority when AI settings drift during a run", async () => {
+    let calls = 0;
+    const dispatch: AbDispatcher = async () => {
+      calls += 1;
+      if (calls === 1) {
+        useAiSettingsStore.setState({
+          settings: { ...DEFAULT_AI_SETTINGS, model: "mid-run-drift" },
+        });
+        useAiSettingsStore.setState({ settings: { ...DEFAULT_AI_SETTINGS } });
+      }
+      return { ok: true, text: `result-${calls}` };
+    };
+    const { result } = renderHook(() =>
+      useAbComparison({ surface: "chat", projectId: "p1", dispatch }),
+    );
+    const slots = [{ id: "baseline", config: {} }];
+
+    await act(async () => result.current.run(BASE, slots));
+    // The settings returned to the exact start authority before completion.
+    // A final-snapshot-only check would falsely authorize reuse here.
+    await act(async () => result.current.run(BASE, slots));
+
+    expect(calls).toBe(2);
+    expect(result.current.state.results.baseline).toEqual({
+      ok: true,
+      text: "result-2",
+    });
   });
 
   it("invalidate drops a slot result, keeps others, and makes it unadoptable", async () => {

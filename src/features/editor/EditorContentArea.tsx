@@ -16,6 +16,7 @@ import { LintHoverPopover } from "@/features/lint/LintHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
 import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
+import { FindScrollbarMarkers } from "@/features/editor/FindScrollbarMarkers";
 import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
 import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
@@ -48,7 +49,7 @@ export interface EditorContentAreaProps {
   titleEditing: boolean;
   titleDraft: string;
   setTitleDraft: (value: string) => void;
-  handleTitleSave: () => void;
+  handleTitleSave: () => Promise<void>;
   handleTitleCancel: () => void;
   handleTitleEditStart: () => void;
   isSceneContentLoading: boolean;
@@ -121,152 +122,163 @@ export function EditorContentArea({
           ? `${t("attribution.filtering")} ${t(`attribution.${filterSource}`)}`
           : ""}
       </div>
-      <EditorDropDiv
-        outerRef={editorContainerRef}
-        data-editor-layer-projection={phoneWorkspace ? "codex-only" : undefined}
-        data-show-foreshadow-marks={
-          !phoneWorkspace && showForeshadowMarks ? "true" : "false"
-        }
-        data-focus-hide-beats={
-          focusModeHideBeats && focusMode ? "true" : undefined
-        }
-        className={cn(
-          "glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary",
-          phoneWorkspace ? "px-2 py-4" : "p-4",
-          editorSettings.verticalMode && "editor-vertical",
-          typewriterMode && "typewriter-padding",
-          filterSource && `attribution-filter-${filterSource}`,
-        )}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) {
-            // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
-            // 既定の scrollIntoView:true は selection が文書先頭のとき
-            // （シーンを開いてクリックせず読み進めた場合）先頭へ飛ぶ。
-            editor?.commands.focus(null, { scrollIntoView: false });
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <EditorDropDiv
+          outerRef={editorContainerRef}
+          data-editor-layer-projection={
+            phoneWorkspace ? "codex-only" : undefined
           }
-        }}
-      >
-        <div
-          data-zen-editor-column={zenMode ? "true" : undefined}
+          data-show-foreshadow-marks={
+            !phoneWorkspace && showForeshadowMarks ? "true" : "false"
+          }
+          data-focus-hide-beats={
+            focusModeHideBeats && focusMode ? "true" : undefined
+          }
           className={cn(
-            "zen-editor-paper",
-            !phoneWorkspace &&
-              editorSettings.showLineNumbers &&
-              "editor-line-numbers",
-            editorSettings.showInvisibles && "editor-show-invisibles",
-            !phoneWorkspace && gutterReserve && "editor-gutter-reserve",
-            isEnglish && "editor-en-typography",
+            "glass-editor-body relative isolate h-full overflow-auto bg-transparent text-content-foreground-secondary",
+            phoneWorkspace ? "px-2 py-4" : "p-4",
+            editorSettings.verticalMode && "editor-vertical",
+            typewriterMode && "typewriter-padding",
+            filterSource && `attribution-filter-${filterSource}`,
           )}
-          style={{
-            ...buildEditorContentStyle(editorSettings),
-            ...buildEditorPaperStyle({
-              enabled: backgroundEnabled,
-            }),
-            ...(!phoneWorkspace && gutterReserve
-              ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
-              : {}),
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
+              // 既定の scrollIntoView:true は selection が文書先頭のとき
+              // （シーンを開いてクリックせず読み進めた場合）先頭へ飛ぶ。
+              editor?.commands.focus(null, { scrollIntoView: false });
+            }
           }}
-          // contenteditable は spellcheck 属性を祖先から継承する
-          spellCheck={editorSettings.spellCheck}
         >
-          {editorTitle && (
-            <div
-              className="mb-6 border-b border-border/40 pb-4"
-              style={{
-                fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
-              }}
-            >
-              {titleEditing ? (
-                <input
-                  // eslint-disable-next-line jsx-a11y/no-autofocus
-                  autoFocus
-                  type="text"
-                  value={titleDraft}
-                  onChange={(e) => setTitleDraft(e.target.value)}
-                  onBlur={handleTitleSave}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleTitleSave();
-                    } else if (e.key === "Escape") {
-                      e.preventDefault();
-                      handleTitleCancel();
-                    }
-                  }}
-                  className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
-                  style={{ fontFamily: "inherit", fontSize: "inherit" }}
-                />
-              ) : (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={handleTitleEditStart}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "F2")
-                      handleTitleEditStart();
-                  }}
-                  className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
-                >
-                  {editorTitle}
-                </div>
-              )}
-              {loadedPhaseLabel && (
-                <div
-                  className="mt-1 text-sm font-normal text-purple-500/70"
-                  style={{ fontSize: `${editorSettings.fontSize}px` }}
-                >
-                  [{loadedPhaseLabel}]
-                </div>
-              )}
-            </div>
-          )}
-          <EditorBodyWithLoading isLoading={isSceneContentLoading}>
-            <SceneBeatEditorContextProvider value={{ sceneId: sceneId }}>
-              <EditorContent editor={editor} />
-            </SceneBeatEditorContextProvider>
-            <CodexPopover editor={editor} />
-            <EditorBubbleMenu
-              editor={editor}
-              toolbarActionsRef={toolbarActionsRef}
-              canEditCodexSemanticLink={canEditCodexSemanticLink}
-              onInlineAiCommand={onInlineAiCommand}
-            />
-            {canEditCodexSemanticLink && (
-              <CodexSemanticLinkPopover editor={editor} />
+          <div
+            data-zen-editor-column={zenMode ? "true" : undefined}
+            className={cn(
+              "zen-editor-paper",
+              !phoneWorkspace &&
+                editorSettings.showLineNumbers &&
+                "editor-line-numbers",
+              editorSettings.showInvisibles && "editor-show-invisibles",
+              !phoneWorkspace && gutterReserve && "editor-gutter-reserve",
+              isEnglish && "editor-en-typography",
             )}
-            {!phoneWorkspace && (
-              <>
-                <CommentAddPopover editor={editor} />
-                <ForeshadowMarkPopover editor={editor} />
-                <ForeshadowMarkHoverPopover
-                  editor={editor}
-                  containerRef={editorContainerRef}
-                />
-                <CommentHoverPopover
-                  editor={editor}
-                  containerRef={editorContainerRef}
-                />
-                <PseudoCommentBubble
-                  editor={editor}
-                  containerRef={editorContainerRef}
-                />
-                <AnnotationHoverPopover containerRef={editorContainerRef} />
-                <LintHoverPopover
-                  editor={editor}
-                  containerRef={editorContainerRef}
-                  sceneId={sceneId}
-                />
-                <EditorContextMenu
-                  editor={editor}
-                  containerRef={editorContainerRef}
-                  toolbarActionsRef={toolbarActionsRef}
-                  canEditCodexSemanticLink={canEditCodexSemanticLink}
-                />
-              </>
+            style={{
+              ...buildEditorContentStyle(editorSettings),
+              ...buildEditorPaperStyle({
+                enabled: backgroundEnabled,
+              }),
+              ...(!phoneWorkspace && gutterReserve
+                ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
+                : {}),
+            }}
+            // contenteditable は spellcheck 属性を祖先から継承する
+            spellCheck={editorSettings.spellCheck}
+          >
+            {editorTitle && (
+              <div
+                className="mb-6 border-b border-border/40 pb-4"
+                style={{
+                  fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
+                }}
+              >
+                {titleEditing ? (
+                  <input
+                    // eslint-disable-next-line jsx-a11y/no-autofocus
+                    autoFocus
+                    type="text"
+                    value={titleDraft}
+                    onChange={(e) => setTitleDraft(e.target.value)}
+                    onBlur={() => void handleTitleSave().catch(() => {})}
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing) return;
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void handleTitleSave().catch(() => {});
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        handleTitleCancel();
+                      }
+                    }}
+                    className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
+                    style={{ fontFamily: "inherit", fontSize: "inherit" }}
+                  />
+                ) : (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={handleTitleEditStart}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === "F2")
+                        handleTitleEditStart();
+                    }}
+                    className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
+                  >
+                    {editorTitle}
+                  </div>
+                )}
+                {loadedPhaseLabel && (
+                  <div
+                    className="mt-1 text-sm font-normal text-purple-500/70"
+                    style={{ fontSize: `${editorSettings.fontSize}px` }}
+                  >
+                    [{loadedPhaseLabel}]
+                  </div>
+                )}
+              </div>
             )}
-          </EditorBodyWithLoading>
-        </div>
-      </EditorDropDiv>
+            <EditorBodyWithLoading isLoading={isSceneContentLoading}>
+              <SceneBeatEditorContextProvider value={{ sceneId: sceneId }}>
+                <EditorContent editor={editor} />
+              </SceneBeatEditorContextProvider>
+              <CodexPopover editor={editor} />
+              <EditorBubbleMenu
+                editor={editor}
+                toolbarActionsRef={toolbarActionsRef}
+                canEditCodexSemanticLink={canEditCodexSemanticLink}
+                onInlineAiCommand={onInlineAiCommand}
+              />
+              {canEditCodexSemanticLink && (
+                <CodexSemanticLinkPopover editor={editor} />
+              )}
+              {!phoneWorkspace && (
+                <>
+                  <CommentAddPopover editor={editor} />
+                  <ForeshadowMarkPopover editor={editor} />
+                  <ForeshadowMarkHoverPopover
+                    editor={editor}
+                    containerRef={editorContainerRef}
+                  />
+                  <CommentHoverPopover
+                    editor={editor}
+                    containerRef={editorContainerRef}
+                  />
+                  <PseudoCommentBubble
+                    editor={editor}
+                    containerRef={editorContainerRef}
+                  />
+                  <AnnotationHoverPopover containerRef={editorContainerRef} />
+                  <LintHoverPopover
+                    editor={editor}
+                    containerRef={editorContainerRef}
+                    sceneId={sceneId}
+                  />
+                  <EditorContextMenu
+                    editor={editor}
+                    containerRef={editorContainerRef}
+                    toolbarActionsRef={toolbarActionsRef}
+                    canEditCodexSemanticLink={canEditCodexSemanticLink}
+                  />
+                </>
+              )}
+            </EditorBodyWithLoading>
+          </div>
+        </EditorDropDiv>
+        <FindScrollbarMarkers
+          editor={editor}
+          scrollContainerRef={editorContainerRef}
+          enabled={findOpen && !isSceneContentLoading}
+          verticalMode={editorSettings.verticalMode}
+        />
+      </div>
     </>
   );
 }

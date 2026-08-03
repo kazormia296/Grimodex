@@ -45,6 +45,7 @@ const schema = new Schema({
         annotationId: { default: "" },
         status: { default: "open" },
         category: { default: "review" },
+        live: { default: false },
       },
     },
   },
@@ -239,6 +240,17 @@ describe("GutterMarksPlugin", () => {
     expect(widgetKeys(hidden)).toHaveLength(0);
   });
 
+  it("live pseudo_comment は showReaderComments OFF でも reader チャネルを維持する", () => {
+    useAnnotationStore.setState({ showReaderComments: false });
+    const state = makeState([
+      {
+        text: "ライブ読者コメント",
+        marks: [["peAnnotation", { category: "pseudo_comment", live: true }]],
+      },
+    ]);
+    expect(widgetKeys(state)).toEqual(["gutter-0-reader"]);
+  });
+
   it("nests: コンテナと内側段落で二重描画しない (blockquote)", () => {
     const para = schema.nodes.paragraph.create({}, [
       schema.text("引用内コメント", [schema.marks.comment.create()]),
@@ -293,6 +305,41 @@ describe("GutterMarksPlugin", () => {
     const tr = state.tr.addMark(1, 2, comment);
     state = state.apply(tr);
     expect(widgetKeys(state)).toHaveLength(1);
+  });
+
+  it("maps stable widgets across ordinary text input instead of recreating them", () => {
+    let state = makeState([
+      { text: "先頭" },
+      { text: "コメント段落", marks: [["comment"]] },
+    ]);
+    const before = gutterMarksKey.getState(state)?.find()[0];
+    expect(before).toBeDefined();
+
+    state = state.apply(state.tr.insertText("追記", 2));
+
+    const after = gutterMarksKey.getState(state)?.find()[0];
+    expect(after?.spec.key).toBe(before?.spec.key);
+    expect(after?.from).toBe((before?.from ?? 0) + 2);
+  });
+
+  it("rebuilds when a marked range is removed by a replace step", () => {
+    let state = makeState([
+      { text: "コメント", marks: [["comment"]] },
+      { text: "本文" },
+    ]);
+    expect(widgetKeys(state)).toHaveLength(1);
+
+    state = state.apply(state.tr.delete(1, 6));
+
+    expect(widgetKeys(state)).toHaveLength(0);
+  });
+
+  it("rebuilds for structural edits that split a marked textblock", () => {
+    let state = makeState([{ text: "コメント", marks: [["comment"]] }]);
+
+    state = state.apply(state.tr.split(4));
+
+    expect(widgetKeys(state)).toHaveLength(2);
   });
 
   // ── 校閲+Lint 統合: Lint 指摘のみの段落にも review ガター記号を出す ──

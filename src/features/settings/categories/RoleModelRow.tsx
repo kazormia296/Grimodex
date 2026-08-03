@@ -15,6 +15,8 @@ import { useSettingsStore } from "../settingsStore";
 
 interface RoleModelRowProps {
   role: ModelRole;
+  /** 「チャットと同じ」選択時に activeModels が属する provider。 */
+  activeProvider: AiProvider;
   /** アクティブプロバイダの whitelist 済みモデル（「チャットと同じ」選択時に使う）。 */
   activeModels: AiModel[];
   /** プロバイダ横断カタログ（鍵が設定済みのプロバイダ/エンドポイントのみ）。 */
@@ -49,6 +51,7 @@ function sectionValue(provider: string, endpointId?: string): string {
  */
 export function RoleModelRow({
   role,
+  activeProvider,
   activeModels,
   sections,
   isLoadingModels,
@@ -91,7 +94,7 @@ export function RoleModelRow({
       ? []
       : activeModels;
   const roleModels = sourceModels.filter((m) =>
-    isModelCapableForRole(m.id, role),
+    isModelCapableForRole(m.id, role, section?.provider ?? activeProvider),
   );
 
   // 保存済みモデルが現在の一覧に無い（プロバイダ切替前の遺物・一覧からの消滅など）。

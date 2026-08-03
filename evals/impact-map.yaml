@@ -11,11 +11,13 @@ rules:
     paths:
       - AGENTS.md
       - .agents/skills/**
+      - docs/communication-style-guide.md
       - policies/quality/**
       - evals/**
       - scripts/quality/**
     requirements:
       - GDX-ROUTE-001
+      - GDX-AI-AUDIT-001
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
       - GDX-TOOL-001
@@ -47,10 +49,53 @@ rules:
       - src/features/chat/types.ts
     requirements:
       - GDX-ROUTE-001
+      - GDX-AI-AUDIT-001
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
       - GDX-TRACE-001
     suites:
+      - ai-routing
+  - id: ai-audit-runtime
+    reason: AI audit event ownership, pre-dispatch durability, and terminal capture must remain complete across every transport.
+    paths:
+      - src/features/ai-audit/**
+      - src/features/chat/singleShotTransport.ts
+      - src/features/chat/chatApi.ts
+      - src/features/chat/chatStreamTransport.ts
+      - src/features/chat/semanticRecall.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerShadow.ts
+      - src/features/chat/cliApi.ts
+      - src/features/chat/codexAppApi.ts
+      - src/features/chat/*.audit.test.ts
+      - src/features/editor/inlineAi/**
+      - src/features/editor/beat/**
+      - src/features/ab-test/**
+      - src/features/post-effect/api.ts
+      - src/features/semantic-search/**
+      - src/features/attribution/AttributionReport.tsx
+      - src/features/attribution/AttributionProjectView.tsx
+      - src/features/attribution/exportReport.ts
+      - src/features/attribution/generationLogApi.ts
+      - src/lib/browser-ai.ts
+      - src/lib/browser-mock.ts
+      - src/lib/browser-mock.ai-audit.test.ts
+      - src/lib/browserRuntime*.ts
+      - src/lib/browser-db/**
+      - electron/shared/ipcContract.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - electron/main/cliAi.ts
+      - electron/main/codexAppServer/**
+      - src-tauri/crates/grimodex-db/src/ai_audit.rs
+      - src-tauri/crates/grimodex-db/tests/ai_audit.rs
+      - src-tauri/crates/grimodex-post-effect/**
+      - src-tauri/crates/grimodex-semantic/**
+    requirements:
+      - GDX-AI-AUDIT-001
+      - GDX-ROUTE-001
+      - GDX-TRACE-001
+    suites:
+      - quality-workflow
       - ai-routing
   - id: tool-policy
     reason: Tool schemas, policy gates, privacy, and execution adapters share one safety contract.
@@ -88,22 +133,48 @@ rules:
     suites:
       - prompt-contract
   - id: retrieval-grounding
-    reason: Recall, context planning, citation, and related-scene changes affect grounding.
+    reason: Recall, reranker admission authority, context planning, citation, and related-scene changes affect grounding.
     paths:
+      - src/application/composition/chatContextPreparationComposition.ts
       - src/features/chat/chatRecall.ts
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/chatRecallPromote.ts
       - src/features/chat/chatRecallPromote.test.ts
       - src/features/chat/citationVerify.ts
       - src/features/chat/citationVerify.test.ts
+      - src/features/chat/hybridRecallSelection.ts
+      - src/features/chat/semanticRecall.ts
+      - src/features/chat/semanticRecall.test.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerMode.ts
+      - src/features/chat/semanticRerankerMode.test.ts
+      - src/features/chat/semanticRerankerShadow.ts
+      - src/features/chat/semanticRerankerShadow.test.ts
       - src/features/chat/context/**
       - src/features/chat/contextBuilder.chatRecall.test.ts
       - src/features/related-scenes/**
+      - src/features/settings/types.ts
+      - src/features/settings/categories/AiProjectSettings.tsx
+      - src/features/settings/categories/AiProjectSettings.test.tsx
       - scripts/fixtures/**
     requirements:
       - GDX-GROUND-001
       - GDX-ISOLATION-001
     suites:
+      - retrieval-grounding
+  - id: semantic-retrieval-experiments
+    reason: Offline retrieval fixtures, private-label contracts, and shadow evidence must preserve grounding, isolation, artifact validation, and traceability.
+    paths:
+      - experiments/lfm25-encoder-phase0/**
+      - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
+    requirements:
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+    suites:
+      - quality-workflow
       - retrieval-grounding
   - id: web-editor-ai
     reason: Web Editor must expose every user-selected HTTP provider through explicit Local LLM or BYOK routes with no application-owned credential or managed provider.
@@ -122,6 +193,7 @@ rules:
       - src/features/chat/browserProviderPolicy.ts
       - src/features/chat/browserProviderPolicy.test.ts
       - src/features/chat/chatApi.ts
+      - src/features/chat/chatStreamTransport.ts
       - src/features/chat/chatApi.test.ts
       - src/features/chat/chatStore.ts
       - src/features/chat/chatStore.test.ts

@@ -7,8 +7,13 @@ export interface LayoutFingerprintInput {
   boardId: string;
   scenes: SceneLayoutInput[];
   codexEntries: CodexEntry[];
-  positions: MapNodePositionRecord[];
+  positions: readonly MapNodePositionRecord[];
   userEdges?: LayoutUserEdge[];
+  positionProjection?: {
+    positionById: ReadonlyMap<string, MapNodePositionRecord>;
+    /** Pre-sorted stable IDs for pinned Scene/Codex nodes. */
+    pinnedLayoutNodeIds: readonly string[];
+  };
 }
 
 /** Stable fingerprint for theme layout recompute triggers (excludes x/y). */
@@ -16,17 +21,21 @@ export function layoutFingerprint(input: LayoutFingerprintInput): string {
   const sceneIds = input.scenes.map((s) => s.id).sort();
   const codexIds = input.codexEntries.map((e) => e.id).sort();
 
-  const pinned = input.positions
-    .filter(
-      (p) =>
-        (p.nodeRefType === "scene" || p.nodeRefType === "codex") &&
-        p.pinned === 1,
-    )
-    .map((p) => p.treeNodeId ?? p.codexEntryId)
-    .filter(Boolean)
-    .sort();
+  const pinned = input.positionProjection
+    ? input.positionProjection.pinnedLayoutNodeIds
+    : input.positions
+        .filter(
+          (p) =>
+            (p.nodeRefType === "scene" || p.nodeRefType === "codex") &&
+            p.pinned === 1,
+        )
+        .map((p) => p.treeNodeId ?? p.codexEntryId)
+        .filter(Boolean)
+        .sort();
 
-  const posById = new Map(input.positions.map((p) => [p.id, p]));
+  const posById =
+    input.positionProjection?.positionById ??
+    new Map(input.positions.map((p) => [p.id, p]));
   const userEdgePairs = (input.userEdges ?? [])
     .map((edge) => {
       const fromKey = posToNodeKey(posById.get(edge.fromPositionId));

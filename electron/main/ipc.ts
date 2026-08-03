@@ -5,7 +5,7 @@
  * 純関数 `dispatchInvoke`（electron/shared/ipcContract.ts — node 環境で
  * 単体テスト済み）へ委譲する。ここは electron グルーのみ:
  * - 送信元窓の解決（保存ダイアログなど窓単位コマンドへの束縛）
- * - IPC_UNIMPLEMENTED の main 側ログ（A6 fail-soft 監査の集計ポイント）
+ * - fail-soft outcome の main 側ログ（A6 監査の集計ポイント）
  */
 import { BrowserWindow, ipcMain } from "electron";
 
@@ -32,6 +32,29 @@ export type ExtraShellHandlers =
   | ShellCommandHandlers
   | ((win: BrowserWindow | null) => ShellCommandHandlers);
 
+const WORKSPACE_OPEN_TRACE_ENV = "GRIMODEX_WORKSPACE_OPEN_TRACE";
+
+function workspaceOpenTraceEnabled(cmd: unknown): boolean {
+  return (
+    cmd === "open_workspace" && process.env[WORKSPACE_OPEN_TRACE_ENV] === "1"
+  );
+}
+
+function logWorkspaceOpenMainTrace(
+  startedAt: number,
+  result: "success" | "failure",
+): void {
+  try {
+    console.info("[workspace-open-main]", {
+      version: 1,
+      result,
+      durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+    });
+  } catch {
+    // Development diagnostics must never replace the existing IPC outcome.
+  }
+}
+
 function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -54,31 +77,47 @@ export function registerIpcRouter(
   ipcMain.handle(
     IPC.invoke,
     async (event, cmd: unknown, args: unknown): Promise<Envelope> => {
-      if (typeof cmd !== "string") {
-        return {
-          ok: false,
-          error: "IPC_INVALID_REQUEST: command name must be a string",
-        };
+      const workspaceOpenStartedAt = workspaceOpenTraceEnabled(cmd)
+        ? performance.now()
+        : null;
+      let workspaceOpenResult: "success" | "failure" = "failure";
+      try {
+        if (typeof cmd !== "string") {
+          return {
+            ok: false,
+            error: "IPC_INVALID_REQUEST: command name must be a string",
+          };
+        }
+        const win = BrowserWindow.fromWebContents(event.sender);
+        const injectedHandlers =
+          typeof extraShellHandlers === "function"
+            ? extraShellHandlers(win)
+            : extraShellHandlers;
+        const envelope = await dispatchInvoke(cmd, isRecord(args) ? args : {}, {
+          backend,
+          shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+          secrets,
+          broadcast,
+        });
+        workspaceOpenResult = envelope.ok ? "success" : "failure";
+        if (!envelope.ok) {
+          if (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER)) {
+            console.warn("[grim:invoke] IPC_UNIMPLEMENTED");
+          } else if (
+            envelope.error.startsWith(IPC_BACKEND_UNAVAILABLE_MARKER)
+          ) {
+            console.warn("[grim:invoke] IPC_BACKEND_UNAVAILABLE");
+          }
+        }
+        return envelope;
+      } finally {
+        if (workspaceOpenStartedAt !== null) {
+          logWorkspaceOpenMainTrace(
+            workspaceOpenStartedAt,
+            workspaceOpenResult,
+          );
+        }
       }
-      const win = BrowserWindow.fromWebContents(event.sender);
-      const injectedHandlers =
-        typeof extraShellHandlers === "function"
-          ? extraShellHandlers(win)
-          : extraShellHandlers;
-      const envelope = await dispatchInvoke(cmd, isRecord(args) ? args : {}, {
-        backend,
-        shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
-        secrets,
-        broadcast,
-      });
-      if (
-        !envelope.ok &&
-        (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER) ||
-          envelope.error.startsWith(IPC_BACKEND_UNAVAILABLE_MARKER))
-      ) {
-        console.warn(`[grim:invoke] ${envelope.error}`);
-      }
-      return envelope;
     },
   );
 

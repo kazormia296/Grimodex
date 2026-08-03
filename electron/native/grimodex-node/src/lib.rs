@@ -23,7 +23,8 @@ mod state;
 mod test_link_stubs;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::Instant;
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadSafeCallContext;
@@ -32,8 +33,14 @@ use napi_derive::napi;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
+use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
+use grimodex_db::chronicle::{self, SetParticipantsPayload};
+use grimodex_db::domain_writes::{
+    self, CodexRenameUndoPayload, CreateScanStagingProjectPayload, ReplaceAuthorshipLanePayload,
+    SetEntityTagsPayload, UndoTreePlanPayload,
+};
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
@@ -45,24 +52,89 @@ use grimodex_db::ime_export::{
     resolve_options_from_preferences, set_active_project, ImeExportOptions, ImeExportRequestGate,
     ImeExportRequestToken, ImeIntegrationMode,
 };
-use grimodex_db::open::{open_workspace_sync, OpenDeps};
+use grimodex_db::lint_ignores::{self, CopyPayload, CreatePayload, MovePayload};
+use grimodex_db::lint_terms::{
+    self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
+};
+use grimodex_db::map_writes::{self, MapWritePayload};
+use grimodex_db::open::{
+    open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
+    NativeWorkspaceOpenTrace,
+};
 use grimodex_db::plot_threads::{
-    self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
-    PlotThreadPatch,
+    self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
+    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
+    PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
+use grimodex_db::project_snapshots::{
+    self, ApplyProjectSnapshotRestorePayload, CreateProjectSnapshotPayload, RestoreScope,
+};
 use grimodex_db::sample_seed;
+use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
 };
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
-use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
+use grimodex_db::{with_db_state, AppError, BatchStatement, Database, QueryResult};
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
-use state::{AppState, EventTsfn};
+use state::{AppState, EventQueue, EventTsfn};
+
+#[derive(Clone)]
+struct CorrelatedStreamEmitter {
+    events: EventQueue,
+    stream_id: String,
+}
+
+impl CorrelatedStreamEmitter {
+    fn new(events: EventQueue, stream_id: String) -> Self {
+        Self { events, stream_id }
+    }
+}
+
+impl grimodex_ai::emit::StreamEmitter for CorrelatedStreamEmitter {
+    fn emit(&self, channel: &str, mut payload: serde_json::Value) {
+        match &mut payload {
+            serde_json::Value::Object(object) => {
+                object.insert(
+                    "streamId".to_string(),
+                    serde_json::Value::String(self.stream_id.clone()),
+                );
+            }
+            other => {
+                payload = serde_json::json!({
+                    "streamId": self.stream_id,
+                    "payload": other,
+                });
+            }
+        }
+        EventSink::emit(&self.events, channel, payload);
+    }
+}
+
+const SEMANTIC_RERANKER_BUSY_MARKER: &str = "RERANKER_BUSY:";
+
+fn try_with_semantic_reranker_lane<T, R>(
+    lane: &Mutex<T>,
+    operation: impl FnOnce(&mut T) -> anyhow::Result<R>,
+) -> anyhow::Result<R> {
+    let mut runtime = match lane.try_lock() {
+        Ok(runtime) => runtime,
+        Err(TryLockError::WouldBlock) => {
+            return Err(anyhow::anyhow!(
+                "{SEMANTIC_RERANKER_BUSY_MARKER} semantic reranker lane is occupied"
+            ));
+        }
+        Err(TryLockError::Poisoned(error)) => {
+            return Err(anyhow::anyhow!("semantic reranker lock poisoned: {error}"));
+        }
+    };
+    operation(&mut runtime)
+}
 
 /// spawn_blocking + `AppError` → `napi::Error` 写像の定形。Tauri 側 M3 方針
 /// (「db コマンドは async、長時間系は spawn_blocking」) の写像 (§4.2)。
@@ -75,6 +147,12 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+fn native_workspace_open_trace_enabled() -> bool {
+    std::env::var("GRIMODEX_WORKSPACE_OPEN_TRACE")
+        .as_deref()
+        .is_ok_and(|value| value == "1")
 }
 
 /// Semantic commandの共通境界。blocking poolへ投入する**前**にruntimeの
@@ -103,6 +181,58 @@ where
     .await
     .map_err(join_err_to_napi)?
     .map_err(|error| Error::from_reason(format!("{error:#}")))
+}
+
+async fn run_scoped_semantic_wire<T, F>(
+    state: Arc<AppState>,
+    expected_workspace_path: String,
+    operation: F,
+) -> Result<String>
+where
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(
+            &grimodex_semantic::runtime::SemanticRuntime,
+            &grimodex_semantic::runtime::SemanticRequest,
+        ) -> anyhow::Result<T>
+        + Send
+        + 'static,
+{
+    let request = pin_scoped_semantic_request(&state, &expected_workspace_path)?;
+    let runtime = Arc::clone(&state.semantic);
+    napi::tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let value = operation(&runtime, &request)?;
+        Ok(serde_json::to_string(&value)?)
+    })
+    .await
+    .map_err(join_err_to_napi)?
+    .map_err(|error| Error::from_reason(format!("{error:#}")))
+}
+
+fn pin_scoped_semantic_request(
+    state: &Arc<AppState>,
+    expected_workspace_path: &str,
+) -> Result<grimodex_semantic::runtime::SemanticRequest> {
+    state
+        .semantic
+        .pin_request(|| {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            let active = workspace
+                .path
+                .canonicalize()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+            let expected = PathBuf::from(expected_workspace_path)
+                .canonicalize()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+            if active != expected {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "SEMANTIC_INDEX_WORKSPACE_CHANGED: expected {}, active {}",
+                    expected.display(),
+                    active.display()
+                )));
+            }
+            Ok(workspace.db)
+        })
+        .map_err(app_err_to_napi)
 }
 
 fn authoritative_ime_options(
@@ -141,10 +271,20 @@ fn authoritative_ime_mode(
 /// waits for an old snapshot writer to finish, rotates the request generation,
 /// and deactivates the shared pointer before any new writer can enter.
 fn rotate_ime_workspace(state: &AppState) {
+    rotate_ime_workspace_traced(state, None);
+}
+
+fn rotate_ime_workspace_traced(state: &AppState, mut trace: Option<&mut NativeWorkspaceOpenTrace>) {
+    let lock_span = trace
+        .as_deref_mut()
+        .and_then(|trace| trace.begin_span(NativeWorkspaceOpenSpanName::ImeLockWait));
     let _writer = match state.ime_write_lock.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
+    if let Some(trace) = trace {
+        trace.finish_span(lock_span);
+    }
     state.ime_request_gate.rotate_workspace();
     if let Err(error) = set_active_project(&state.ime_root, None, ImeIntegrationMode::On) {
         eprintln!("failed to deactivate IME pointer during workspace swap: {error}");
@@ -191,6 +331,27 @@ fn validate_codex_workspace(
     Ok(())
 }
 
+fn validate_ai_audit_workspace(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_workspace_path: &str,
+) -> std::result::Result<(), AppError> {
+    let active = workspace
+        .path
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    let expected = PathBuf::from(expected_workspace_path)
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    if active != expected {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "AI_AUDIT_WORKSPACE_CHANGED: expected {}, active {}",
+            expected.display(),
+            active.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Optimistically bind one request token to the exact DB/path snapshot seen at
 /// IPC arrival. A concurrent swap either makes `active_workspace_snapshot`
 /// fail closed or changes the gate generation so registration retries.
@@ -209,7 +370,7 @@ fn pin_ime_workspace_request(
     }
 }
 
-/// agent_writes 18 コマンドの定形写像。FE の `{ payload }` を DTO へ
+/// agent_writes 19 コマンドの定形写像。FE の `{ payload }` を DTO へ
 /// deserialize し、共有 impl を with_db_state 上で呼んで結果 Value を JSON 文字列
 /// で返す (Tauri の `with_db(&ws, |db| agent_xxx_impl(db, payload))` の写像)。
 /// 各 impl 内で BEGIN IMMEDIATE → tracked write → commit_or_rollback が閉じる。
@@ -237,6 +398,592 @@ struct ChatMsgDto {
     content: String,
 }
 
+/// Renderer が request.prepared を durable append した実行との相関だけを渡す。
+/// request content / transport header / credential はこの DTO に存在しない。
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeAiAuditContext {
+    expected_workspace_path: String,
+    project_id: Option<String>,
+    operation_id: String,
+    execution_id: String,
+    parent_execution_id: Option<String>,
+    path_id: String,
+}
+
+impl NativeAiAuditContext {
+    fn validate(&self) -> anyhow::Result<()> {
+        for (name, value) in [
+            (
+                "expectedWorkspacePath",
+                self.expected_workspace_path.as_str(),
+            ),
+            ("operationId", self.operation_id.as_str()),
+            ("executionId", self.execution_id.as_str()),
+            ("pathId", self.path_id.as_str()),
+        ] {
+            anyhow::ensure!(!value.trim().is_empty(), "auditContext.{name} is required");
+            anyhow::ensure!(
+                value == value.trim(),
+                "auditContext.{name} must not contain surrounding whitespace"
+            );
+        }
+        if let Some(project_id) = self.project_id.as_deref() {
+            anyhow::ensure!(
+                !project_id.trim().is_empty(),
+                "auditContext.projectId must be non-empty or null"
+            );
+            anyhow::ensure!(
+                project_id == project_id.trim(),
+                "auditContext.projectId must not contain surrounding whitespace"
+            );
+        }
+        if let Some(parent_execution_id) = self.parent_execution_id.as_deref() {
+            anyhow::ensure!(
+                !parent_execution_id.trim().is_empty(),
+                "auditContext.parentExecutionId must be non-empty or null"
+            );
+            anyhow::ensure!(
+                parent_execution_id == parent_execution_id.trim(),
+                "auditContext.parentExecutionId must not contain surrounding whitespace"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeAiHttpAuditRoute {
+    provider: String,
+    model: String,
+    api_variant: Option<String>,
+    endpoint_id: Option<String>,
+}
+
+impl NativeAiHttpAuditRoute {
+    /// Route fields are copied from the exact ChatParams/settings snapshot later used
+    /// to build the provider request. No renderer route claim is trusted here.
+    fn from_params(
+        settings: &grimodex_ai::AiSettings,
+        params: &grimodex_ai::ChatParams<'_>,
+    ) -> Self {
+        let endpoint_id = matches!(params.provider, grimodex_ai::AiProvider::OpenaiCompatible)
+            .then(|| settings.active_openai_compatible_endpoint_id.clone())
+            .flatten();
+        Self {
+            provider: params.provider.to_string(),
+            model: params.model.to_string(),
+            api_variant: params.api_variant.clone(),
+            endpoint_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeAiFusionAuditConfiguration {
+    enabled: bool,
+    custom_configuration_applied: bool,
+    configuration_complete: bool,
+    analysis_models: Vec<String>,
+    judge_model: Option<String>,
+    provider_selected_fusion_panel_observed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NativeAiEffectiveRequestConfiguration {
+    ai_novelist_mode: &'static str,
+    request_max_output_tokens: u32,
+    resolved_tool_protocol: &'static str,
+    retry_429: bool,
+    extra_body: Option<serde_json::Value>,
+    openrouter_provider_pin: Option<String>,
+    fusion: Option<NativeAiFusionAuditConfiguration>,
+}
+
+fn ai_novelist_extra_body_for_audit(
+    params: &grimodex_ai::ChatParams<'_>,
+) -> Option<serde_json::Value> {
+    if !matches!(params.provider, grimodex_ai::AiProvider::AiNovelist) {
+        return None;
+    }
+    let source = params.extra_body.as_ref()?.as_object()?;
+    let mut projected = serde_json::Map::new();
+    for key in grimodex_ai::ai_novelist::EXTRA_SAMPLING_KEYS
+        .iter()
+        .copied()
+        .chain(["multilingualmode", "multilingual_mode"])
+    {
+        if let Some(value) = source.get(key) {
+            projected.insert(key.to_string(), value.clone());
+        }
+    }
+    (!projected.is_empty()).then_some(serde_json::Value::Object(projected))
+}
+
+impl NativeAiEffectiveRequestConfiguration {
+    fn from_params(params: &grimodex_ai::ChatParams<'_>) -> Self {
+        let ai_novelist_mode = match params.ai_novelist_mode {
+            grimodex_ai::AiNovelistMode::Chat => "chat",
+            grimodex_ai::AiNovelistMode::Completion => "completion",
+        };
+        let request_max_output_tokens = grimodex_ai::effective_request_max_output_tokens(params);
+        let resolved_tool_protocol = match params.resolved_tool_protocol {
+            grimodex_ai::ResolvedToolProtocol::Native => "native",
+            grimodex_ai::ResolvedToolProtocol::Hermes => "hermes",
+        };
+        let openrouter_provider_pin =
+            matches!(params.provider, grimodex_ai::AiProvider::OpenRouter)
+                .then(|| params.openrouter_provider_pin.map(str::trim))
+                .flatten()
+                .filter(|pin| !pin.is_empty())
+                .map(str::to_string);
+        let fusion = if matches!(params.provider, grimodex_ai::AiProvider::OpenRouter)
+            && params.model == "openrouter/fusion"
+        {
+            let enabled = params.fusion.is_some_and(|fusion| fusion.enabled);
+            let analysis_models = if enabled {
+                params
+                    .fusion
+                    .into_iter()
+                    .flat_map(|fusion| fusion.analysis_models.iter())
+                    .map(|model| model.trim().to_string())
+                    .filter(|model| !model.is_empty())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let judge_model = if enabled {
+                params
+                    .fusion
+                    .and_then(|fusion| fusion.judge_model.as_deref())
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_string)
+            } else {
+                None
+            };
+            let custom_configuration_applied =
+                enabled && (!analysis_models.is_empty() || judge_model.is_some());
+            let configuration_complete = custom_configuration_applied
+                && !analysis_models.is_empty()
+                && judge_model.is_some();
+            Some(NativeAiFusionAuditConfiguration {
+                enabled,
+                custom_configuration_applied,
+                configuration_complete,
+                analysis_models,
+                judge_model,
+                // The app records its own explicit config. It never claims to observe a
+                // provider-selected default panel.
+                provider_selected_fusion_panel_observed: false,
+            })
+        } else {
+            None
+        };
+        Self {
+            ai_novelist_mode,
+            request_max_output_tokens,
+            resolved_tool_protocol,
+            retry_429: params.retry_429,
+            extra_body: ai_novelist_extra_body_for_audit(params),
+            openrouter_provider_pin,
+            fusion,
+        }
+    }
+}
+
+trait NativeAiAuditAppender: Send + Sync + 'static {
+    fn append(&self, project_id: Option<&str>, events: &[AppendAiAuditEvent])
+        -> anyhow::Result<()>;
+}
+
+impl NativeAiAuditAppender for Database {
+    fn append(
+        &self,
+        project_id: Option<&str>,
+        events: &[AppendAiAuditEvent],
+    ) -> anyhow::Result<()> {
+        self.append_ai_audit_events_for_scope(project_id, events)
+            .map(|_| ())
+    }
+}
+
+struct NativeAiHttpAuditObserver {
+    appender: Arc<dyn NativeAiAuditAppender>,
+    context: NativeAiAuditContext,
+    route: NativeAiHttpAuditRoute,
+    effective_request_configuration: NativeAiEffectiveRequestConfiguration,
+}
+
+fn native_ai_audit_timestamp_ms() -> anyhow::Result<i64> {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| anyhow::anyhow!("system clock is before Unix epoch: {error}"))?
+        .as_millis();
+    i64::try_from(millis).map_err(|_| anyhow::anyhow!("AI audit timestamp exceeds i64"))
+}
+
+fn native_ai_transport_event_id(
+    context: &NativeAiAuditContext,
+    attempt_number: u32,
+    kind: &str,
+) -> String {
+    // Length-prefixing makes this deterministic ID injective even if a caller supplies
+    // delimiter characters inside executionId. Exact IDs are reused after reply loss.
+    format!(
+        "native-http:{}:{}:{attempt_number}:{kind}",
+        context.execution_id.len(),
+        context.execution_id
+    )
+}
+
+fn native_ai_effective_request_event_id(context: &NativeAiAuditContext) -> String {
+    format!(
+        "native-effective-request:{}:{}",
+        context.execution_id.len(),
+        context.execution_id
+    )
+}
+
+fn native_ai_transport_event(
+    context: &NativeAiAuditContext,
+    attempt_number: u32,
+    kind: &str,
+    event_type: &str,
+    timestamp: i64,
+    payload: serde_json::Value,
+) -> AppendAiAuditEvent {
+    AppendAiAuditEvent {
+        event_id: native_ai_transport_event_id(context, attempt_number, kind),
+        execution_id: context.execution_id.clone(),
+        operation_id: context.operation_id.clone(),
+        parent_execution_id: context.parent_execution_id.clone(),
+        path_id: context.path_id.clone(),
+        event_type: event_type.to_string(),
+        timestamp,
+        payload,
+    }
+}
+
+fn append_native_ai_audit_exact(
+    appender: &dyn NativeAiAuditAppender,
+    project_id: Option<&str>,
+    events: &[AppendAiAuditEvent],
+    description: &str,
+) -> anyhow::Result<()> {
+    match appender.append(project_id, events) {
+        Ok(()) => Ok(()),
+        Err(first_error) => {
+            appender
+                .append(project_id, events)
+                .map_err(|second_error| {
+                    anyhow::anyhow!(
+                        "{description} failed after bounded retry; first append: {first_error:#}; second append: {second_error:#}"
+                    )
+                })
+        }
+    }
+}
+
+fn native_retry_delay_source(
+    source: Option<grimodex_ai::HttpRetryDelaySource>,
+) -> Option<&'static str> {
+    source.map(|source| match source {
+        grimodex_ai::HttpRetryDelaySource::RetryAfter => "retry-after",
+        grimodex_ai::HttpRetryDelaySource::ExponentialBackoff => "exponential-backoff",
+    })
+}
+
+impl grimodex_ai::HttpRetryObserver for NativeAiHttpAuditObserver {
+    fn request_prepared(&self, request: &grimodex_ai::HttpPreparedRequest) -> anyhow::Result<()> {
+        let timestamp = native_ai_audit_timestamp_ms()?;
+        let mut limitations = Vec::new();
+        if request.body.is_none() {
+            limitations.push("native-effective-request-body-unavailable");
+        }
+        if let Some(fusion) = self.effective_request_configuration.fusion.as_ref() {
+            if fusion.analysis_models.is_empty() {
+                limitations.push("openrouter-fusion-provider-selected-panel-unobservable");
+            }
+            if fusion.judge_model.is_none() {
+                limitations.push("openrouter-fusion-provider-selected-judge-unobservable");
+            }
+        }
+        let capture_state = if limitations.is_empty() {
+            "complete"
+        } else {
+            "partial"
+        };
+        let fusion = self
+            .effective_request_configuration
+            .fusion
+            .as_ref()
+            .map(|fusion| {
+                serde_json::json!({
+                    "enabled": fusion.enabled,
+                    "customConfigurationApplied": fusion.custom_configuration_applied,
+                    "configurationComplete": fusion.configuration_complete,
+                    "analysisModels": fusion.analysis_models,
+                    "judgeModel": fusion.judge_model,
+                    "providerSelectedFusionPanelObserved": fusion.provider_selected_fusion_panel_observed,
+                })
+            });
+        let event = AppendAiAuditEvent {
+            event_id: native_ai_effective_request_event_id(&self.context),
+            execution_id: self.context.execution_id.clone(),
+            operation_id: self.context.operation_id.clone(),
+            parent_execution_id: self.context.parent_execution_id.clone(),
+            path_id: self.context.path_id.clone(),
+            event_type: "request.prepared".to_string(),
+            timestamp,
+            payload: serde_json::json!({
+                "captureState": capture_state,
+                "credentialsExcluded": true,
+                "effectiveRequestReceipt": true,
+                "request": {
+                    "body": request.body,
+                },
+                "route": {
+                    "provider": self.route.provider,
+                    "model": self.route.model,
+                    "apiVariant": self.route.api_variant,
+                    "endpointId": self.route.endpoint_id,
+                    "source": "native-effective-request",
+                },
+                "effectiveRequestConfiguration": {
+                    "source": "finalized-reqwest-json-value",
+                    "serializationFidelity": "json-value",
+                    "serializationWhitespaceAndKeyOrderPreserved": false,
+                    "credentialsExcluded": true,
+                    "aiNovelistMode": self.effective_request_configuration.ai_novelist_mode,
+                    "requestMaxOutputTokens": self.effective_request_configuration.request_max_output_tokens,
+                    "resolvedToolProtocol": self.effective_request_configuration.resolved_tool_protocol,
+                    "retry429": self.effective_request_configuration.retry_429,
+                    "extraBody": self.effective_request_configuration.extra_body,
+                    "openrouterProviderPin": self.effective_request_configuration.openrouter_provider_pin,
+                    "fusion": fusion,
+                },
+                "workspacePinned": true,
+                "limitations": limitations,
+            }),
+        };
+        append_native_ai_audit_exact(
+            self.appender.as_ref(),
+            self.context.project_id.as_deref(),
+            &[event],
+            "append native effective request.prepared",
+        )
+    }
+
+    fn attempt_started(&self, attempt: &grimodex_ai::HttpAttemptStarted) -> anyhow::Result<()> {
+        let timestamp = native_ai_audit_timestamp_ms()?;
+        let mut limitations = Vec::new();
+        let (endpoint_origin, endpoint_host) = match attempt.endpoint.as_ref() {
+            Some(endpoint) => (Some(endpoint.origin.as_str()), Some(endpoint.host.as_str())),
+            None => {
+                limitations.push("native-request-endpoint-unavailable");
+                (None, None)
+            }
+        };
+        if let Some(fusion) = self.effective_request_configuration.fusion.as_ref() {
+            if fusion.analysis_models.is_empty() {
+                limitations.push("openrouter-fusion-provider-selected-panel-unobservable");
+            }
+            if fusion.judge_model.is_none() {
+                limitations.push("openrouter-fusion-provider-selected-judge-unobservable");
+            }
+        }
+        let capture_state = if limitations.is_empty() {
+            "complete"
+        } else {
+            "partial"
+        };
+        let fusion = self
+            .effective_request_configuration
+            .fusion
+            .as_ref()
+            .map(|fusion| {
+                serde_json::json!({
+                    "enabled": fusion.enabled,
+                    "customConfigurationApplied": fusion.custom_configuration_applied,
+                    "configurationComplete": fusion.configuration_complete,
+                    "analysisModels": fusion.analysis_models,
+                    "judgeModel": fusion.judge_model,
+                    "providerSelectedFusionPanelObserved": fusion.provider_selected_fusion_panel_observed,
+                })
+            });
+        let event = native_ai_transport_event(
+            &self.context,
+            attempt.attempt_number,
+            "started",
+            "transport.attempt.started",
+            timestamp,
+            serde_json::json!({
+                "captureState": capture_state,
+                "credentialsExcluded": true,
+                "attemptNumber": attempt.attempt_number,
+                "sendOrdinal": attempt.send_ordinal,
+                "sendPhase": "pre-send",
+                "isRetry": attempt.is_retry,
+                "reusesInitialPayload": attempt.reuses_initial_payload,
+                "requestContentReference": {
+                    "executionId": self.context.execution_id,
+                    "eventType": "request.prepared",
+                    "eventId": native_ai_effective_request_event_id(&self.context),
+                },
+                "route": {
+                    "provider": self.route.provider,
+                    "model": self.route.model,
+                    "apiVariant": self.route.api_variant,
+                    "endpointId": self.route.endpoint_id,
+                    "endpointOrigin": endpoint_origin,
+                    "endpointHost": endpoint_host,
+                    "source": "native-effective-request",
+                },
+                "effectiveRequestConfiguration": {
+                    "source": "native-chat-params",
+                    "credentialsExcluded": true,
+                    "providerBodyDuplicated": false,
+                    "aiNovelistMode": self.effective_request_configuration.ai_novelist_mode,
+                    "requestMaxOutputTokens": self.effective_request_configuration.request_max_output_tokens,
+                    "resolvedToolProtocol": self.effective_request_configuration.resolved_tool_protocol,
+                    "retry429": self.effective_request_configuration.retry_429,
+                    "extraBody": self.effective_request_configuration.extra_body,
+                    "openrouterProviderPin": self.effective_request_configuration.openrouter_provider_pin,
+                    "fusion": fusion,
+                },
+                "workspacePinned": true,
+                "limitations": limitations,
+            }),
+        );
+        append_native_ai_audit_exact(
+            self.appender.as_ref(),
+            self.context.project_id.as_deref(),
+            &[event],
+            "append transport.attempt.started",
+        )
+    }
+
+    fn attempt_finished(&self, attempt: &grimodex_ai::HttpAttemptFinished) -> anyhow::Result<()> {
+        let timestamp = native_ai_audit_timestamp_ms()?;
+        let delay_source = native_retry_delay_source(attempt.retry_delay_source);
+        let finished = native_ai_transport_event(
+            &self.context,
+            attempt.attempt_number,
+            "finished",
+            "transport.attempt.finished",
+            timestamp,
+            serde_json::json!({
+                "captureState": "complete",
+                "credentialsExcluded": true,
+                "attemptNumber": attempt.attempt_number,
+                "actualHttpSendCount": attempt.actual_send_count,
+                "sendPhase": if attempt.local_abort_observed
+                    && attempt.actual_send_count.is_some()
+                {
+                    "pre-send-cancelled"
+                } else {
+                    "send-invoked"
+                },
+                "status": attempt.status,
+                "finalStatus": if attempt.is_final { attempt.status } else { None },
+                "outcome": if attempt.local_abort_observed {
+                    "local-abort"
+                } else if attempt.status.is_some() {
+                    "http-response"
+                } else {
+                    "transport-error"
+                },
+                "retryEnabled": attempt.retry_enabled,
+                "retryAfterObservedMs": attempt.retry_after_observed_ms,
+                "retryDelayMs": attempt.retry_delay_ms,
+                "retryDelaySource": delay_source,
+                "willRetry": attempt.will_retry,
+                "retryExhausted": attempt.retry_exhausted,
+                "retryPayloadCloneUnavailable": attempt.retry_payload_clone_unavailable,
+                "localAbortObserved": attempt.local_abort_observed,
+                "providerAbortReceiptObserved": attempt.provider_abort_receipt_observed,
+                "isFinal": attempt.is_final,
+                "responseBodyCaptured": false,
+            }),
+        );
+        let mut events = vec![finished];
+        if attempt.will_retry {
+            events.push(native_ai_transport_event(
+                &self.context,
+                attempt.attempt_number,
+                "retrying",
+                "execution.retrying",
+                timestamp,
+                serde_json::json!({
+                    "captureState": "complete",
+                    "credentialsExcluded": true,
+                    "reason": "http-429",
+                    "completedAttemptNumber": attempt.attempt_number,
+                    "nextAttemptNumber": attempt.attempt_number.saturating_add(1),
+                    "actualHttpSendCount": attempt.actual_send_count,
+                    "sendPhase": "send-invoked",
+                    "status": attempt.status,
+                    "retryDelayMs": attempt.retry_delay_ms,
+                    "retryDelaySource": delay_source,
+                }),
+            ));
+        }
+        append_native_ai_audit_exact(
+            self.appender.as_ref(),
+            self.context.project_id.as_deref(),
+            &events,
+            "append transport.attempt.finished",
+        )
+    }
+}
+
+fn pin_native_ai_audit_workspace(
+    state: &AppState,
+    context: &NativeAiAuditContext,
+) -> std::result::Result<ActiveWorkspaceSnapshot, AppError> {
+    context.validate().map_err(AppError::Anyhow)?;
+    let workspace = active_workspace_snapshot(&state.ws)?;
+    validate_ai_audit_workspace(&workspace, &context.expected_workspace_path)?;
+    workspace
+        .db
+        .validate_ai_audit_dispatch_precondition(
+            context.project_id.as_deref(),
+            &context.execution_id,
+            &context.operation_id,
+            context.parent_execution_id.as_deref(),
+            &context.path_id,
+        )
+        .map_err(AppError::Anyhow)?;
+    Ok(workspace)
+}
+
+fn attach_native_ai_http_observer(
+    params: &mut grimodex_ai::ChatParams<'_>,
+    settings: &grimodex_ai::AiSettings,
+    workspace: &ActiveWorkspaceSnapshot,
+    context: NativeAiAuditContext,
+) {
+    let route = NativeAiHttpAuditRoute::from_params(settings, params);
+    let effective_request_configuration =
+        NativeAiEffectiveRequestConfiguration::from_params(params);
+    let appender: Arc<dyn NativeAiAuditAppender> = workspace.db.clone();
+    params.http_retry_observer = Some(Arc::new(NativeAiHttpAuditObserver {
+        appender,
+        context,
+        route,
+        effective_request_configuration,
+    }));
+}
+
+fn sanitize_native_ai_diagnostic(error: &anyhow::Error) -> String {
+    sanitize_diagnostic_credentials(&format!("{error:#}"))
+}
+
+fn native_ai_error_to_napi(error: anyhow::Error) -> Error {
+    Error::from_reason(sanitize_native_ai_diagnostic(&error))
+}
+
 /// `send_chat_message` / `send_chat_message_stream` の FE 引数 (camelCase)。
 /// Tauri コマンドの引数群と 1:1。**API キーは含まない** — キーは main プロセスの
 /// safeStorage で解決した平文を別引数 `api_key` で注入する (Phase 3 バッチ3a)。
@@ -244,6 +991,7 @@ struct ChatMsgDto {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatRequest {
+    stream_id: Option<String>,
     messages: Vec<ChatMsgDto>,
     thinking: Option<grimodex_ai::ThinkingConfig>,
     effort: Option<String>,
@@ -255,7 +1003,9 @@ struct ChatRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
     request_max_output_tokens: Option<u32>,
+    audit_context: NativeAiAuditContext,
 }
 
 /// `send_inline_ai_stream` の FE 引数 (camelCase)。チャットと同じ message / reasoning
@@ -263,6 +1013,7 @@ struct ChatRequest {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InlineAiRequest {
+    stream_id: String,
     messages: Vec<ChatMsgDto>,
     thinking: Option<grimodex_ai::ThinkingConfig>,
     effort: Option<String>,
@@ -272,6 +1023,7 @@ struct InlineAiRequest {
     api_variant: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    audit_context: NativeAiAuditContext,
 }
 
 /// `send_agent_message` の FE 引数 (camelCase)。AgentMessage / AgentToolDef の
@@ -292,8 +1044,10 @@ struct AgentRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
     request_max_output_tokens: Option<u32>,
     resolved_tool_protocol: Option<grimodex_ai::ResolvedToolProtocol>,
+    audit_context: NativeAiAuditContext,
 }
 
 /// `list_ai_models` の FE 引数。API キーは一覧取得では任意なので main が
@@ -303,6 +1057,8 @@ struct AgentRequest {
 struct ListAiModelsRequest {
     provider: grimodex_ai::AiProvider,
     endpoint_id: Option<String>,
+    selected_model_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
 }
 
 /// `test_ai_connection` の FE 引数。接続先 provider/model は必須、variant / endpoint
@@ -314,6 +1070,7 @@ struct TestAiConnectionRequest {
     model: String,
     api_variant: Option<String>,
     endpoint_id: Option<String>,
+    audit_context: NativeAiAuditContext,
 }
 
 #[napi]
@@ -327,7 +1084,11 @@ impl Backend {
     /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
     /// com.miyakey.grimodex には触らない)。
     #[napi(constructor)]
-    pub fn new(app_data_dir: String, semantic_resource_root: Option<String>) -> Result<Backend> {
+    pub fn new(
+        app_data_dir: String,
+        semantic_resource_root: Option<String>,
+        reranker_resource_root: Option<String>,
+    ) -> Result<Backend> {
         // 旧 .node E2E / 外部callerとのconstructor互換を維持する。省略時はcwdや
         // build-time manifestへfallbackせず、必ず存在しないappData配下sentinelを使い、
         // Backend全体ではなくsemantic invokeだけをmodel missingで失敗させる。
@@ -337,8 +1098,12 @@ impl Backend {
                 .to_string_lossy()
                 .into_owned()
         });
-        let state = AppState::new(&app_data_dir, &semantic_resource_root)
-            .map_err(|e| Error::from_reason(format!("{e:#}")))?;
+        let state = AppState::new_with_reranker_root(
+            &app_data_dir,
+            &semantic_resource_root,
+            reranker_resource_root.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(format!("{e:#}")))?;
         // §7.1 の end-to-end 実証チャネルその 1。onEvent 登録前なので
         // EventQueue にバッファされ、登録時に flush される。schemaVersion は
         // スモークテストが PRAGMA user_version との一致検証に使う。
@@ -484,6 +1249,307 @@ impl Backend {
         .await
     }
 
+    /// Project-scoped lint diagnostic ignore-list commands. The renderer
+    /// receives a domain DTO instead of owning SQL strings or generic DB
+    /// parameters; all scene ownership checks happen in grimodex-db.
+    #[napi]
+    pub async fn lint_ignore_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::list_for_project(db, project_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_list_scene(
+        &self,
+        project_id: String,
+        scene_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::list_for_scene(db, project_id, scene_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::create(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_delete(&self, project_id: String, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| lint_ignores::delete(db, project_id, id))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_copy(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CopyPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::copy(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_move(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: MovePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::move_to_scene(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    /// Project-scoped term-dictionary commands. SQL and project ownership stay
+    /// in grimodex-db; the renderer only sends domain DTOs.
+    #[napi]
+    pub async fn lint_term_dictionary_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::list(db, project_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_insert(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: LintTermInsertPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::insert(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_update(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: LintTermUpdatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::update(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_set_enabled(
+        &self,
+        project_id: String,
+        id: String,
+        enabled: bool,
+        updated_at: i64,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::set_enabled(
+                    db, project_id, id, enabled, updated_at,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_delete(&self, project_id: String, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| lint_terms::delete(db, project_id, id)))
+            .await
+    }
+
+    /// Chronicle aggregate OCC reads and participant replacement. The latter
+    /// advances the event version and replaces participants in one DB tx.
+    #[napi]
+    pub async fn event_get_version(&self, project_id: String, event_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::get_event_version(
+                    db, project_id, event_id,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn event_set_participants(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SetParticipantsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::set_event_participants(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    /// Renderer domain aggregates that previously crossed the preload
+    /// boundary as renderer-authored SQL batches.
+    #[napi]
+    pub async fn authorship_replace_lane(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ReplaceAuthorshipLanePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::replace_authorship_lane(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn entity_tags_set(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SetEntityTagsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::set_entity_tags(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_rename_undo(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CodexRenameUndoPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::undo_codex_rename(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn scan_staging_project_create(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreateScanStagingProjectPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::create_scan_staging_project(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn tree_plan_undo(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: UndoTreePlanPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::undo_tree_plan(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn map_write_bundle(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: MapWritePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| map_writes::apply_map_write(db, payload))
+        })
+        .await
+    }
+
+    /// Project snapshots are a typed aggregate: renderer computes the
+    /// dependency-safe row plan while shared Rust owns all SQL, project
+    /// ownership checks, and transaction boundaries.
+    #[napi]
+    pub async fn project_snapshot_create(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreateProjectSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                project_snapshots::create_project_snapshot(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn project_snapshot_restore_context(
+        &self,
+        project_id: String,
+        snapshot_id: String,
+        scopes: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let scopes: Vec<RestoreScope> = from_wire("scopes", scopes)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &project_snapshots::project_snapshot_restore_context(
+                        db,
+                        project_id,
+                        snapshot_id,
+                        scopes,
+                    )?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn project_snapshot_apply_restore(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ApplyProjectSnapshotRestorePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                project_snapshots::apply_project_snapshot_restore(db, payload)
+            })
+        })
+        .await
+    }
+
+    /// Scene content and every document-derived sidecar are committed in one
+    /// SQLite transaction. The renderer performs one PM traversal and passes
+    /// the typed snapshot as camelCase JSON.
+    #[napi]
+    pub async fn save_scene_body_bundle(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SaveSceneBodyBundlePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = scene_body::save_scene_body_bundle(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
     /// Compact the active workspace in place. Unlike raw renderer SQL, this
     /// command accepts no destination path and cannot become `VACUUM INTO`.
     #[napi]
@@ -492,7 +1558,8 @@ impl Backend {
         run_blocking(move || with_db_state(&state.ws, |db| db.vacuum())).await
     }
 
-    /// workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
+    /// workspace を開く: migrate → swap → RAII SwitchingGuard →
+    /// authority commit 後の低優先度 maintenance worker →
     /// recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
     /// Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
     /// Codex matcher破棄 + semantic 4cache epoch rotateを行う。
@@ -502,28 +1569,75 @@ impl Backend {
     #[napi]
     pub async fn open_workspace(&self, path: String) -> Result<String> {
         let state = Arc::clone(&self.state);
-        run_blocking(move || {
+        let trace_enabled = native_workspace_open_trace_enabled();
+        let trace_started_at = Instant::now();
+        let mut trace = NativeWorkspaceOpenTrace::with_start(trace_started_at, trace_enabled);
+        let blocking_pool_span = trace.begin_span(NativeWorkspaceOpenSpanName::BlockingPoolWait);
+        let task = napi::tokio::task::spawn_blocking(move || {
+            trace.finish_span(blocking_pool_span);
             let state_for_hook = Arc::clone(&state);
-            let mut on_swapped = move || {
-                rotate_ime_workspace(&state_for_hook);
+            let mut on_swapped = move |trace: &mut NativeWorkspaceOpenTrace| {
+                rotate_ime_workspace_traced(&state_for_hook, Some(trace));
+
+                let matcher_span = trace.begin_span(NativeWorkspaceOpenSpanName::MatcherLockWait);
                 let mut matcher = match state_for_hook.codex_matcher.lock() {
                     Ok(matcher) => matcher,
                     Err(poisoned) => poisoned.into_inner(),
                 };
+                trace.finish_span(matcher_span);
                 *matcher = None;
+
+                let semantic_span = trace.begin_span(NativeWorkspaceOpenSpanName::SemanticRotate);
                 state_for_hook.semantic.rotate_workspace_epoch();
+                trace.finish_span(semantic_span);
             };
-            let mut deps = OpenDeps {
-                gs_path: &state.gs,
-                on_swapped: &mut on_swapped,
+            let result = match open_workspace_sync_traced(
+                &state.ws,
+                &state.gs,
+                &path,
+                &mut trace,
+                &mut on_swapped,
+            ) {
+                Ok(opened) => {
+                    let serialize_span =
+                        trace.begin_span(NativeWorkspaceOpenSpanName::SerializeEvent);
+                    state
+                        .events
+                        .emit("workspace:opened", serde_json::json!({ "path": path }));
+                    match serde_json::to_string(&opened) {
+                        Ok(json) => {
+                            trace.finish_span(serialize_span);
+                            Ok(json)
+                        }
+                        Err(error) => {
+                            trace.fail_span(serialize_span);
+                            Err(AppError::Anyhow(anyhow::Error::from(error)))
+                        }
+                    }
+                }
+                Err(error) => Err(error),
             };
-            let result = open_workspace_sync(&state.ws, &mut deps, &path)?;
-            state
-                .events
-                .emit("workspace:opened", serde_json::json!({ "path": path }));
-            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
+            (trace, result)
         })
-        .await
+        .await;
+
+        match task {
+            Ok((mut trace, result)) => {
+                let terminal = if result.is_ok() {
+                    NativeWorkspaceOpenResult::Ready
+                } else {
+                    NativeWorkspaceOpenResult::Failed
+                };
+                trace.emit_terminal(terminal);
+                result.map_err(app_err_to_napi)
+            }
+            Err(error) => {
+                let mut trace =
+                    NativeWorkspaceOpenTrace::with_start(trace_started_at, trace_enabled);
+                trace.emit_terminal(NativeWorkspaceOpenResult::Failed);
+                Err(join_err_to_napi(error))
+            }
+        }
     }
 
     /// 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
@@ -773,6 +1887,109 @@ impl Backend {
                 let result = db.append_change_events(&project_id, &session_id, &events)?;
                 Ok(serde_json::to_string(&result)?)
             })
+        })
+        .await
+    }
+
+    /// Append a durable batch to the complete AI-use audit ledger. The
+    /// renderer snapshots `expected_workspace_path` before dispatch; every
+    /// subsequent event must still target that exact workspace. A workspace
+    /// switch therefore leaves a visible non-terminal execution instead of
+    /// writing its terminal event into the newly active project database.
+    #[napi]
+    pub async fn ai_audit_append_batch(
+        &self,
+        expected_workspace_path: String,
+        project_id: Option<String>,
+        events: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let events: Vec<AppendAiAuditEvent> = from_wire("events", events)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
+            let result = workspace
+                .db
+                .append_ai_audit_events_for_scope(project_id.as_deref(), &events)?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Validate the durable CLI lifecycle and atomically append the
+    /// main-owned one-shot dispatch claim before the shell manager can spawn.
+    #[allow(clippy::too_many_arguments)]
+    #[napi]
+    pub async fn ai_audit_claim_cli_dispatch(
+        &self,
+        expected_workspace_path: String,
+        project_id: Option<String>,
+        execution_id: String,
+        operation_id: String,
+        parent_execution_id: Option<String>,
+        path_id: String,
+        expected_request_sha256: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
+            let result = workspace.db.claim_cli_ai_audit_dispatch(
+                project_id.as_deref(),
+                &execution_id,
+                &operation_id,
+                parent_execution_id.as_deref(),
+                &path_id,
+                &expected_request_sha256,
+            )?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Read one immutable high-water snapshot. Rows appended after the
+    /// selected high-water sequence are deliberately excluded from export.
+    #[napi]
+    pub async fn ai_audit_read_snapshot(
+        &self,
+        expected_workspace_path: String,
+        project_id: Option<String>,
+        after_sequence: Option<i64>,
+        high_water_sequence: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
+            let snapshot = workspace.db.read_ai_audit_snapshot_for_scope(
+                project_id.as_deref(),
+                after_sequence,
+                high_water_sequence,
+                limit,
+            )?;
+            Ok(serde_json::to_string(&snapshot).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Verify payload digests, event hashes, sequence continuity, and the
+    /// project-global previous-hash chain through an optional high-water mark.
+    #[napi]
+    pub async fn ai_audit_verify(
+        &self,
+        expected_workspace_path: String,
+        project_id: Option<String>,
+        high_water_sequence: Option<i64>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
+            let result = workspace
+                .db
+                .verify_ai_audit_chain_for_scope(project_id.as_deref(), high_water_sequence)?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -1268,6 +2485,20 @@ impl Backend {
     // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
     // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。
 
+    /// Rebuild可能なsemantic background indexingを協調停止する。
+    /// 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
+    /// `IPC_DERIVED_CANCELLED` を返す。途中生成したindex payloadはcommitしない。
+    /// 返り値は新generationのJSON数値。
+    #[napi]
+    pub async fn semantic_cancel_background(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let generation = state.semantic.semantic_cancel_background();
+            Ok(serde_json::to_string(&generation).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// モデルが無ければbackground downloadを開始し、状態文字列を即返す。
     /// resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
     /// installed/unavailable/downloading または明示エラーとして扱う。
@@ -1289,53 +2520,239 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn semantic_index_scene(&self, scene_id: String) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.semantic_index_scene(request, &scene_id)
-        })
+    pub async fn semantic_index_scene(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        scene_id: String,
+    ) -> Result<String> {
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| runtime.semantic_index_scene(request, &project_id, &scene_id),
+        )
         .await
     }
 
     #[napi]
     pub async fn semantic_search(
         &self,
+        expected_workspace_path: String,
         project_id: String,
         query: String,
         limit: u32,
         scene_scope: Option<String>,
         description_mode: Option<bool>,
     ) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.semantic_search(
-                request,
-                &project_id,
-                &query,
-                limit as usize,
-                scene_scope.as_deref(),
-                description_mode,
-            )
-        })
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| {
+                runtime.semantic_search(
+                    request,
+                    &project_id,
+                    &query,
+                    limit as usize,
+                    scene_scope.as_deref(),
+                    description_mode,
+                )
+            },
+        )
         .await
     }
 
+    /// Score a frozen Semantic Recall candidate set for diagnostic shadow or
+    /// opt-in apply. This command neither reads the active workspace nor owns
+    /// admission; it only returns logits, hashes, and truncation counters.
     #[napi]
-    pub async fn codex_index_entry(&self, entry_id: String) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.codex_index_entry(request, &entry_id)
+    pub async fn semantic_reranker_shadow_score(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct CandidateDto {
+            candidate_id: String,
+            text: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RequestDto {
+            request_id: String,
+            expected_workspace_path: String,
+            project_id: String,
+            audit_path_id: String,
+            language: String,
+            user_message: String,
+            scene_tail: String,
+            candidates: Vec<CandidateDto>,
+        }
+
+        let dto: RequestDto = serde_json::from_value(request)
+            .map_err(|error| Error::from_reason(format!("invalid reranker request: {error}")))?;
+        if dto.request_id.trim().is_empty() {
+            return Err(Error::from_reason(
+                "invalid reranker request: requestId must not be empty",
+            ));
+        }
+        if dto.project_id.trim().is_empty() {
+            return Err(Error::from_reason(
+                "invalid reranker request: projectId must not be empty",
+            ));
+        }
+        if !matches!(
+            dto.audit_path_id.as_str(),
+            "semantic_reranker" | "semantic_reranker_shadow"
+        ) {
+            return Err(Error::from_reason(
+                "invalid reranker request: auditPathId must be semantic_reranker or semantic_reranker_shadow",
+            ));
+        }
+        let state = Arc::clone(&self.state);
+        let pinned_request = pin_scoped_semantic_request(&state, &dto.expected_workspace_path)?;
+        let pinned_database = pinned_request.database();
+        napi::tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let request = grimodex_semantic::reranker::RerankerRequest {
+                language: dto.language,
+                user_message: dto.user_message,
+                scene_tail: dto.scene_tail,
+                candidates: dto
+                    .candidates
+                    .into_iter()
+                    .map(|candidate| grimodex_semantic::reranker::RerankerCandidate {
+                        candidate_id: candidate.candidate_id,
+                        text: candidate.text,
+                    })
+                    .collect(),
+            };
+            let spec = *request.validate()?;
+            let (normalized_query, _, _) = request.normalized_query();
+            let appender: Arc<dyn grimodex_semantic::audit::SemanticAuditAppender> =
+                pinned_database.clone();
+            let mut audit = grimodex_semantic::audit::SemanticAuditSession::start(
+                appender,
+                grimodex_semantic::audit::SemanticAuditContext {
+                    project_id: Some(dto.project_id.clone()),
+                    operation_id: dto.request_id.clone(),
+                    parent_execution_id: None,
+                    path_id: dto.audit_path_id.clone(),
+                    inference_kind: "reranker.cross-encoder".into(),
+                    model: serde_json::json!({
+                        "engine": "onnx-runtime",
+                        "executionProvider": "cpu",
+                        "identityCapture": "expected-before-local-artifact-load",
+                        "tokenizerIdentityStatus": "pending-effective-receipt",
+                        "modelId": spec.model_id,
+                        "modelRevision": spec.revision,
+                        "artifactSha256": spec.artifact_sha256,
+                        "manifestSha256": spec.manifest_sha256,
+                        "maxPairTokens": spec.max_pair_tokens,
+                        "batchSize": spec.batch_size,
+                        "threadCount": spec.thread_count,
+                        "needsTokenTypeIds": spec.needs_token_type_ids,
+                    }),
+                    input: serde_json::json!({
+                        "requestId": dto.request_id,
+                        "language": request.language,
+                        "userMessage": request.user_message,
+                        "sceneTail": request.scene_tail,
+                        "normalizedQuery": normalized_query,
+                        "candidates": request.candidates.iter().map(|candidate| serde_json::json!({
+                            "candidateId": candidate.candidate_id,
+                            "text": candidate.text,
+                        })).collect::<Vec<_>>(),
+                    }),
+                    metadata: serde_json::json!({
+                        "projectId": dto.project_id,
+                        "auditPathId": dto.audit_path_id,
+                        "candidateCount": request.candidates.len(),
+                    }),
+                },
+            )?;
+            let mut lane_entered = false;
+            let lane_result =
+                try_with_semantic_reranker_lane(&state.semantic_reranker, |runtime| {
+                    lane_entered = true;
+                    let prepared = match runtime.prepare_score(&request) {
+                        Ok(prepared) => prepared,
+                        Err(error) => return audit.fail_preparation(error),
+                    };
+                    let model_identity = prepared.model_identity();
+                    let effective_model = serde_json::json!({
+                        "engine": "onnx-runtime",
+                        "executionProvider": "cpu",
+                        "identityCapture": "actual-loaded-artifacts",
+                        "tokenizerIdentityStatus": "loaded-and-fingerprinted",
+                        "modelId": model_identity.model_id,
+                        "modelRevision": model_identity.model_revision,
+                        "artifactSha256": model_identity.artifact_sha256,
+                        "manifestSha256": model_identity.manifest_sha256,
+                        "tokenizerIdentity": model_identity.tokenizer_identity,
+                        "maxPairTokens": spec.max_pair_tokens,
+                        "batchSize": spec.batch_size,
+                        "threadCount": spec.thread_count,
+                        "needsTokenTypeIds": spec.needs_token_type_ids,
+                    });
+                    if let Err(error) =
+                        audit.record_effective_model_before_inference(effective_model)
+                    {
+                        return audit.fail_preparation(error);
+                    }
+                    audit.dispatch_and_run(
+                        || runtime.score_prepared(request, prepared),
+                        |result| {
+                            serde_json::to_value(result).unwrap_or_else(|error| {
+                                serde_json::json!({
+                                    "captureState": "partial",
+                                    "limitations": [format!("reranker-result-serialization: {error}")],
+                                })
+                            })
+                        },
+                    )
+                });
+            let result = match lane_result {
+                Ok(result) => result,
+                Err(error) if !lane_entered => return audit.fail_preparation(error),
+                Err(error) => return Err(error),
+            };
+            Ok(serde_json::to_string(&result)?)
         })
+        .await
+        .map_err(join_err_to_napi)?
+        .map_err(|error| Error::from_reason(format!("{error:#}")))
+    }
+
+    #[napi]
+    pub async fn codex_index_entry(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        entry_id: String,
+    ) -> Result<String> {
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| runtime.codex_index_entry(request, &project_id, &entry_id),
+        )
         .await
     }
 
     #[napi]
     pub async fn codex_semantic_search(
         &self,
+        expected_workspace_path: String,
         project_id: String,
         query: String,
         limit: u32,
     ) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.codex_semantic_search(request, &project_id, &query, limit as usize)
-        })
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| {
+                runtime.codex_semantic_search(request, &project_id, &query, limit as usize)
+            },
+        )
         .await
     }
 
@@ -1348,31 +2765,49 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn codex_reindex_all(&self, project_id: String) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.codex_reindex_all(request, &project_id)
-        })
+    pub async fn codex_reindex_all(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+    ) -> Result<String> {
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| runtime.codex_reindex_all(request, &project_id),
+        )
         .await
     }
 
     #[napi]
-    pub async fn events_index_entry(&self, event_id: String) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.events_index_entry(request, &event_id)
-        })
+    pub async fn events_index_entry(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        event_id: String,
+    ) -> Result<String> {
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| runtime.events_index_entry(request, &project_id, &event_id),
+        )
         .await
     }
 
     #[napi]
     pub async fn events_semantic_search(
         &self,
+        expected_workspace_path: String,
         project_id: String,
         query: String,
         limit: u32,
     ) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.events_semantic_search(request, &project_id, &query, limit as usize)
-        })
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| {
+                runtime.events_semantic_search(request, &project_id, &query, limit as usize)
+            },
+        )
         .await
     }
 
@@ -1385,31 +2820,49 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn events_reindex_all(&self, project_id: String) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.events_reindex_all(request, &project_id)
-        })
+    pub async fn events_reindex_all(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+    ) -> Result<String> {
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| runtime.events_reindex_all(request, &project_id),
+        )
         .await
     }
 
     #[napi]
-    pub async fn chat_index_message(&self, message_id: String) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.chat_index_message(request, &message_id)
-        })
+    pub async fn chat_index_message(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        message_id: String,
+    ) -> Result<String> {
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| runtime.chat_index_message(request, &project_id, &message_id),
+        )
         .await
     }
 
     #[napi]
     pub async fn chat_message_search(
         &self,
+        expected_workspace_path: String,
         project_id: String,
         query: String,
         limit: u32,
     ) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.chat_message_search(request, &project_id, &query, limit as usize)
-        })
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| {
+                runtime.chat_message_search(request, &project_id, &query, limit as usize)
+            },
+        )
         .await
     }
 
@@ -1422,10 +2875,16 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn chat_reindex_all(&self, project_id: String) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.chat_reindex_all(request, &project_id)
-        })
+    pub async fn chat_reindex_all(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+    ) -> Result<String> {
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| runtime.chat_reindex_all(request, &project_id),
+        )
         .await
     }
 
@@ -1440,12 +2899,17 @@ impl Backend {
     #[napi]
     pub async fn semantic_reindex_all(
         &self,
+        expected_workspace_path: String,
         project_id: String,
         run_id: Option<String>,
     ) -> Result<String> {
-        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
-            runtime.semantic_reindex_all(request, &project_id, run_id.as_deref())
-        })
+        run_scoped_semantic_wire(
+            Arc::clone(&self.state),
+            expected_workspace_path,
+            move |runtime, request| {
+                runtime.semantic_reindex_all(request, &project_id, run_id.as_deref())
+            },
+        )
         .await
     }
 
@@ -1560,6 +3024,68 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let row = plot_threads::link_create(db, payload)?;
                 Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド分岐/合流作成。request ledger・XPROJ 検証・entity
+    /// insert を共有 Rust の単一 transaction で実行する。
+    #[napi]
+    pub async fn plot_thread_branch_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadBranchCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::branch_create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// Marker move + branch create/update/delete. Full before/after snapshots,
+    /// durable replay identity, and all writes share one Rust transaction.
+    #[napi]
+    pub async fn plot_thread_move_marker_bundle(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadMoveMarkerBundlePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::move_marker_bundle(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
+    /// History snapshot restore. Parent/children and request ledger commit in
+    /// one shared-Rust transaction.
+    #[napi]
+    pub async fn plot_thread_restore_snapshot(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadRestoreSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::restore_snapshot(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
+    /// Atomic marker + dependent-branch delete with durable replay identity.
+    #[napi]
+    pub async fn plot_thread_delete_snapshot(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadDeleteSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::delete_snapshot(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
             })
         })
         .await
@@ -1911,7 +3437,7 @@ impl Backend {
     // commit_or_rollback が各 impl 内で閉じる。XPROJ ガード / 楽観ロック /
     // undo-redo はサーバサイド維持) ──────────────────────────────────────────
     //
-    // 18 コマンドはすべて FE が単一の `{ payload }` を送る。返り値は
+    // 19 コマンドはすべて FE が単一の `{ payload }` を送る。返り値は
     // AgentWriteResult / ProseStageResult (camelCase)。agent_write_cmd 定形で写像。
 
     #[napi]
@@ -2053,6 +3579,17 @@ impl Backend {
             "payload",
             payload,
             agent_writes::agent_event_delete_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_chronicle_bulk_mutate(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::chronicle_bulk::agent_chronicle_bulk_mutate_impl,
         )
         .await
     }
@@ -2260,16 +3797,26 @@ impl Backend {
     #[napi]
     pub async fn start_post_effect_run(
         &self,
-        args: serde_json::Value,
+        mut args: serde_json::Value,
         settings: serde_json::Value,
         api_key: Option<String>,
         api_key_error: Option<String>,
     ) -> Result<String> {
+        let expected_workspace_path = args
+            .as_object_mut()
+            .and_then(|object| object.remove("expectedWorkspacePath"))
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                Error::from_reason("invalid args: expectedWorkspacePath must be a non-empty string")
+            })?;
         let args: grimodex_post_effect::StartPostEffectRunArgs =
             from_wire("args", args).map_err(app_err_to_napi)?;
         let settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
-        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        let runtime =
+            NodePostEffectRuntime::new_scoped(Arc::clone(&self.state), &expected_workspace_path)
+                .map_err(app_err_to_napi)?;
         let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
         let result = grimodex_post_effect::start_post_effect_run(runtime, ai, args)
             .await
@@ -2282,16 +3829,26 @@ impl Backend {
     #[napi]
     pub async fn start_post_effect_run_multi(
         &self,
-        args: serde_json::Value,
+        mut args: serde_json::Value,
         settings: serde_json::Value,
         api_key: Option<String>,
         api_key_error: Option<String>,
     ) -> Result<String> {
+        let expected_workspace_path = args
+            .as_object_mut()
+            .and_then(|object| object.remove("expectedWorkspacePath"))
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                Error::from_reason("invalid args: expectedWorkspacePath must be a non-empty string")
+            })?;
         let args: grimodex_post_effect::StartPostEffectRunMultiArgs =
             from_wire("args", args).map_err(app_err_to_napi)?;
         let settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
-        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        let runtime =
+            NodePostEffectRuntime::new_scoped(Arc::clone(&self.state), &expected_workspace_path)
+                .map_err(app_err_to_napi)?;
         let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
         let result = grimodex_post_effect::start_post_effect_run_multi(runtime, ai, args)
             .await
@@ -2359,6 +3916,9 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let audit_context = req.audit_context.clone();
+        let audit_workspace =
+            pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
         let settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
         let settings_for_call = grimodex_ai::apply_provider_override(
@@ -2367,6 +3927,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(native_ai_error_to_napi)?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2388,6 +3954,12 @@ impl Backend {
             None,
         );
         params.request_max_output_tokens = req.request_max_output_tokens;
+        attach_native_ai_http_observer(
+            &mut params,
+            &settings_for_call,
+            &audit_workspace,
+            audit_context,
+        );
         let msgs: Vec<(&str, &str)> = req
             .messages
             .iter()
@@ -2395,7 +3967,7 @@ impl Backend {
             .collect();
         let result = grimodex_ai::send_chat(&params, &msgs)
             .await
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(native_ai_error_to_napi)?;
         serde_json::to_string(&result)
             .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
     }
@@ -2404,7 +3976,8 @@ impl Backend {
     /// チャンクは `chat:stream-chunk` / 完了は `chat:stream-done` を EventQueue へ emit。
     /// 失敗時は `chat:stream-error` を emit してから reject する (Tauri と同一契約 —
     /// FE の fire-and-forget .catch と listen error の両経路を保つ)。
-    /// **abort は self.state.chat_abort を共有** — abort_chat_stream と同一インスタンス。
+    /// `streamId` は audit execution ID と一致必須。ストリームごとの cancellation
+    /// registry へ登録し、他の同時ストリームとは隔離する。全 emit に同じ ID を付ける。
     #[napi]
     pub async fn send_chat_message_stream(
         &self,
@@ -2413,69 +3986,110 @@ impl Backend {
         api_key: String,
     ) -> Result<()> {
         let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        let settings: grimodex_ai::AiSettings =
-            from_wire("settings", settings).map_err(app_err_to_napi)?;
-        // 開始時に abort フラグをリセット (Tauri と同一 — 新ストリームは前回の中止要求を握り潰す)。
-        self.state
-            .chat_abort
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        let flag = Arc::clone(&self.state.chat_abort);
-        let settings_for_call = grimodex_ai::apply_provider_override(
-            settings,
-            req.model.as_deref(),
-            req.provider,
-            req.endpoint_id.as_deref(),
-        );
-        let variant = req.api_variant.as_deref();
-        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
-        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
-        let resolved_variant =
-            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
-        let mut params = grimodex_ai::build_chat_params(
-            &settings_for_call,
-            &api_key,
-            extra_body,
-            retry_429,
-            grimodex_ai::AiNovelistMode::Chat,
-            resolved_variant,
-            req.thinking,
-            req.effort,
-            req.reasoning_enabled,
-            req.reasoning_effort,
-            req.system_cache_segments,
-            req.system_volatile_tail,
-            None,
-        );
-        params.request_max_output_tokens = req.request_max_output_tokens;
-        let msgs: Vec<(&str, &str)> = req
-            .messages
-            .iter()
-            .map(|m| (m.role.as_str(), m.content.as_str()))
-            .collect();
-        let result =
-            grimodex_ai::send_chat_stream(&params, &msgs, flag, &self.state.events, "chat").await;
-        if let Err(e) = result {
-            EventSink::emit(
-                &self.state.events,
-                "chat:stream-error",
-                serde_json::json!({ "message": e.to_string() }),
-            );
-            return Err(Error::from_reason(e.to_string()));
+        let stream_id = req.stream_id.as_deref().unwrap_or_default();
+        if stream_id.trim().is_empty()
+            || stream_id != stream_id.trim()
+            || stream_id != req.audit_context.execution_id
+        {
+            return Err(Error::from_reason(
+                "streamId must be trimmed and equal auditContext.executionId".to_string(),
+            ));
         }
-        Ok(())
+        let stream_id = stream_id.to_string();
+        let cancellation = self
+            .state
+            .chat_streams
+            .register(&stream_id)
+            .map_err(native_ai_error_to_napi)?;
+        let outcome: Result<()> = async {
+            let audit_context = req.audit_context.clone();
+            let audit_workspace = pin_native_ai_audit_workspace(&self.state, &audit_context)
+                .map_err(app_err_to_napi)?;
+            let settings: grimodex_ai::AiSettings =
+                from_wire("settings", settings).map_err(app_err_to_napi)?;
+            let flag = cancellation.abort_flag();
+            let emitter =
+                CorrelatedStreamEmitter::new(self.state.events.clone(), stream_id.clone());
+            let settings_for_call = grimodex_ai::apply_provider_override(
+                settings,
+                req.model.as_deref(),
+                req.provider,
+                req.endpoint_id.as_deref(),
+            );
+            grimodex_ai::validate_expected_ollama_endpoint(
+                &settings_for_call.provider,
+                &settings_for_call.ollama_endpoint,
+                req.expected_ollama_endpoint.as_deref(),
+            )
+            .map_err(native_ai_error_to_napi)?;
+            let variant = req.api_variant.as_deref();
+            let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+            let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+            let resolved_variant = grimodex_ai::resolve_api_variant(
+                variant,
+                &settings_for_call,
+                &settings_for_call.model,
+            );
+            let mut params = grimodex_ai::build_chat_params(
+                &settings_for_call,
+                &api_key,
+                extra_body,
+                retry_429,
+                grimodex_ai::AiNovelistMode::Chat,
+                resolved_variant,
+                req.thinking,
+                req.effort,
+                req.reasoning_enabled,
+                req.reasoning_effort,
+                req.system_cache_segments,
+                req.system_volatile_tail,
+                None,
+            );
+            params.request_max_output_tokens = req.request_max_output_tokens;
+            attach_native_ai_http_observer(
+                &mut params,
+                &settings_for_call,
+                &audit_workspace,
+                audit_context,
+            );
+            let msgs: Vec<(&str, &str)> = req
+                .messages
+                .iter()
+                .map(|m| (m.role.as_str(), m.content.as_str()))
+                .collect();
+            let result =
+                grimodex_ai::send_chat_stream(&params, &msgs, flag, &emitter, "chat").await;
+            if let Err(e) = result {
+                let napi_error = native_ai_error_to_napi(e);
+                let sanitized_error = napi_error.reason.clone();
+                grimodex_ai::emit::StreamEmitter::emit(
+                    &emitter,
+                    "chat:stream-error",
+                    serde_json::json!({ "message": sanitized_error }),
+                );
+                return Err(napi_error);
+            }
+            Ok(())
+        }
+        .await;
+        self.state.chat_streams.complete(&stream_id, &cancellation);
+        outcome
     }
 
-    /// 実行中のチャットストリームを中止する (Tauri の abort_chat_stream と同一 —
-    /// 純メモリの atomic store)。send_chat_message_stream と同一の chat_abort を立てる。
+    /// 指定 `streamId` のチャットだけを中止し、そのローカル処理が quiesce するまで待つ。
+    /// 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
     #[napi]
-    pub fn abort_chat_stream(&self) {
+    pub async fn abort_chat_stream(&self, stream_id: String) -> Result<bool> {
         self.state
-            .chat_abort
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .chat_streams
+            .abort(&stream_id)
+            .await
+            .map_err(native_ai_error_to_napi)
     }
 
     /// インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
-    /// AI のべりすとでは Completion mode を使う。チャットとは独立した abort flag。
+    /// AI のべりすとでは Completion mode を使う。チャットとは別の per-stream
+    /// cancellation registry を使い、全 emit に audit execution ID を付ける。
     #[napi]
     pub async fn send_inline_ai_stream(
         &self,
@@ -2484,66 +4098,104 @@ impl Backend {
         api_key: String,
     ) -> Result<()> {
         let req: InlineAiRequest = from_wire("args", args).map_err(app_err_to_napi)?;
-        let settings: grimodex_ai::AiSettings =
-            from_wire("settings", settings).map_err(app_err_to_napi)?;
-
-        self.state
-            .inline_ai_abort
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        let flag = Arc::clone(&self.state.inline_ai_abort);
-        let settings_for_call = grimodex_ai::apply_provider_override(
-            settings,
-            req.model.as_deref(),
-            req.provider,
-            req.endpoint_id.as_deref(),
-        );
-        let effective_variant =
-            grimodex_ai::inline_effective_variant(&settings_for_call, req.api_variant.as_deref());
-        let variant = effective_variant.as_deref();
-        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
-        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
-        let resolved_variant =
-            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
-        let params = grimodex_ai::build_chat_params(
-            &settings_for_call,
-            &api_key,
-            extra_body,
-            retry_429,
-            grimodex_ai::AiNovelistMode::Completion,
-            resolved_variant,
-            req.thinking,
-            req.effort,
-            req.reasoning_enabled,
-            req.reasoning_effort,
-            None,
-            None,
-            None,
-        );
-        let msgs: Vec<(&str, &str)> = req
-            .messages
-            .iter()
-            .map(|m| (m.role.as_str(), m.content.as_str()))
-            .collect();
-        let result =
-            grimodex_ai::send_chat_stream(&params, &msgs, flag, &self.state.events, "inline-ai")
-                .await;
-        if let Err(e) = result {
-            EventSink::emit(
-                &self.state.events,
-                "inline-ai:stream-error",
-                serde_json::json!({ "message": e.to_string() }),
-            );
-            return Err(Error::from_reason(e.to_string()));
+        if req.stream_id.trim().is_empty()
+            || req.stream_id != req.stream_id.trim()
+            || req.stream_id != req.audit_context.execution_id
+        {
+            return Err(Error::from_reason(
+                "streamId must be trimmed and equal auditContext.executionId".to_string(),
+            ));
         }
-        Ok(())
+        let stream_id = req.stream_id.clone();
+        let cancellation = self
+            .state
+            .inline_ai_streams
+            .register(&stream_id)
+            .map_err(native_ai_error_to_napi)?;
+        let outcome: Result<()> = async {
+            let audit_context = req.audit_context.clone();
+            let audit_workspace = pin_native_ai_audit_workspace(&self.state, &audit_context)
+                .map_err(app_err_to_napi)?;
+            let settings: grimodex_ai::AiSettings =
+                from_wire("settings", settings).map_err(app_err_to_napi)?;
+
+            let flag = cancellation.abort_flag();
+            let emitter =
+                CorrelatedStreamEmitter::new(self.state.events.clone(), stream_id.clone());
+            let settings_for_call = grimodex_ai::apply_provider_override(
+                settings,
+                req.model.as_deref(),
+                req.provider,
+                req.endpoint_id.as_deref(),
+            );
+            let effective_variant = grimodex_ai::inline_effective_variant(
+                &settings_for_call,
+                req.api_variant.as_deref(),
+            );
+            let variant = effective_variant.as_deref();
+            let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+            let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+            let resolved_variant = grimodex_ai::resolve_api_variant(
+                variant,
+                &settings_for_call,
+                &settings_for_call.model,
+            );
+            let mut params = grimodex_ai::build_chat_params(
+                &settings_for_call,
+                &api_key,
+                extra_body,
+                retry_429,
+                grimodex_ai::AiNovelistMode::Completion,
+                resolved_variant,
+                req.thinking,
+                req.effort,
+                req.reasoning_enabled,
+                req.reasoning_effort,
+                None,
+                None,
+                None,
+            );
+            attach_native_ai_http_observer(
+                &mut params,
+                &settings_for_call,
+                &audit_workspace,
+                audit_context,
+            );
+            let msgs: Vec<(&str, &str)> = req
+                .messages
+                .iter()
+                .map(|m| (m.role.as_str(), m.content.as_str()))
+                .collect();
+            let result =
+                grimodex_ai::send_chat_stream(&params, &msgs, flag, &emitter, "inline-ai").await;
+            if let Err(e) = result {
+                let napi_error = native_ai_error_to_napi(e);
+                let sanitized_error = napi_error.reason.clone();
+                grimodex_ai::emit::StreamEmitter::emit(
+                    &emitter,
+                    "inline-ai:stream-error",
+                    serde_json::json!({ "message": sanitized_error }),
+                );
+                return Err(napi_error);
+            }
+            Ok(())
+        }
+        .await;
+        self.state
+            .inline_ai_streams
+            .complete(&stream_id, &cancellation);
+        outcome
     }
 
-    /// 実行中のインライン AI ストリームを中止する。chat_abort とは独立。
+    /// 指定 `streamId` のインライン AI だけを中止し、ローカル quiescence まで待つ。
+    /// 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
     #[napi]
-    pub fn abort_inline_ai_stream(&self) {
+    pub async fn abort_inline_ai_stream(&self, stream_id: String) -> Result<bool> {
         self.state
-            .inline_ai_abort
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .inline_ai_streams
+            .abort(&stream_id)
+            .await
+            .map_err(native_ai_error_to_napi)
     }
 
     /// Tool Use 対応の Agent 送信。tool protocol 解決・Hermes/native の安全ゲートを
@@ -2556,6 +4208,9 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: AgentRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let audit_context = req.audit_context.clone();
+        let audit_workspace =
+            pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
         let settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
         let settings_for_call = grimodex_ai::apply_provider_override(
@@ -2564,6 +4219,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(native_ai_error_to_napi)?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2588,9 +4249,15 @@ impl Backend {
         if let Some(resolved_tool_protocol) = req.resolved_tool_protocol {
             params.resolved_tool_protocol = resolved_tool_protocol;
         }
+        attach_native_ai_http_observer(
+            &mut params,
+            &settings_for_call,
+            &audit_workspace,
+            audit_context,
+        );
         let result = grimodex_ai::send_chat_with_tools(&params, &req.messages, &req.tools)
             .await
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(native_ai_error_to_napi)?;
         serde_json::to_string(&result)
             .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
     }
@@ -2612,9 +4279,22 @@ impl Backend {
                 settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
             }
         }
-        let models = grimodex_ai::fetch_models(&req.provider, &api_key, settings.endpoints())
-            .await
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &req.provider,
+            &settings.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(native_ai_error_to_napi)?;
+        let models = grimodex_ai::fetch_models_for(
+            &req.provider,
+            &api_key,
+            settings.endpoints(),
+            req.selected_model_id
+                .as_deref()
+                .filter(|model| !model.trim().is_empty()),
+        )
+        .await
+        .map_err(native_ai_error_to_napi)?;
         serde_json::to_string(&models)
             .map_err(|e| Error::from_reason(format!("failed to serialize AI models: {e}")))
     }
@@ -2629,9 +4309,13 @@ impl Backend {
         api_key: String,
     ) -> Result<String> {
         let req: TestAiConnectionRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let audit_context = req.audit_context.clone();
+        let audit_workspace =
+            pin_native_ai_audit_workspace(&self.state, &audit_context).map_err(app_err_to_napi)?;
         let mut settings: grimodex_ai::AiSettings =
             from_wire("settings", settings).map_err(app_err_to_napi)?;
         settings.provider = req.provider.clone();
+        settings.model = req.model.clone();
         if let Some(endpoint_id) = req.endpoint_id.as_deref().filter(|id| !id.is_empty()) {
             if settings.has_openai_compatible_endpoint(endpoint_id) {
                 settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
@@ -2639,15 +4323,47 @@ impl Backend {
         }
         let variant =
             grimodex_ai::resolve_api_variant(req.api_variant.as_deref(), &settings, &req.model);
-        grimodex_ai::test_connection(
+        let route = NativeAiHttpAuditRoute {
+            provider: req.provider.to_string(),
+            model: req.model.clone(),
+            api_variant: variant.clone(),
+            endpoint_id: matches!(req.provider, grimodex_ai::AiProvider::OpenaiCompatible)
+                .then(|| settings.active_openai_compatible_endpoint_id.clone())
+                .flatten(),
+        };
+        let effective_request_configuration = NativeAiEffectiveRequestConfiguration {
+            ai_novelist_mode: "chat",
+            request_max_output_tokens: if matches!(
+                req.provider,
+                grimodex_ai::AiProvider::OpenAI | grimodex_ai::AiProvider::Sakana
+            ) {
+                1_024
+            } else {
+                32
+            },
+            resolved_tool_protocol: "native",
+            retry_429: false,
+            extra_body: None,
+            openrouter_provider_pin: None,
+            fusion: None,
+        };
+        let appender: Arc<dyn NativeAiAuditAppender> = audit_workspace.db.clone();
+        let observer = NativeAiHttpAuditObserver {
+            appender,
+            context: audit_context,
+            route,
+            effective_request_configuration,
+        };
+        grimodex_ai::test_connection_with_observer(
             &req.provider,
             &req.model,
             &api_key,
             settings.endpoints(),
             variant.as_deref(),
+            Some(&observer),
         )
         .await
-        .map_err(|e| Error::from_reason(e.to_string()))
+        .map_err(native_ai_error_to_napi)
     }
 
     /// main 起動時に 1 回登録する (§7.1)。コールバックは
@@ -2668,6 +4384,771 @@ impl Backend {
         tsfn.unref(&env)?;
         self.state.events.register(tsfn);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod native_ai_http_audit_tests {
+    use super::*;
+    use grimodex_ai::HttpRetryObserver;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_context(workspace_path: &std::path::Path) -> NativeAiAuditContext {
+        NativeAiAuditContext {
+            expected_workspace_path: workspace_path.to_string_lossy().into_owned(),
+            project_id: Some("project-a".to_string()),
+            operation_id: "operation-a".to_string(),
+            execution_id: "execution-a".to_string(),
+            parent_execution_id: Some("parent-a".to_string()),
+            path_id: "chat_nonstream".to_string(),
+        }
+    }
+
+    fn test_route() -> NativeAiHttpAuditRoute {
+        NativeAiHttpAuditRoute {
+            provider: "openai-compatible".to_string(),
+            model: "model-a".to_string(),
+            api_variant: Some("responses".to_string()),
+            endpoint_id: Some("endpoint-a".to_string()),
+        }
+    }
+
+    fn test_effective_request_configuration() -> NativeAiEffectiveRequestConfiguration {
+        NativeAiEffectiveRequestConfiguration {
+            ai_novelist_mode: "chat",
+            request_max_output_tokens: 4_096,
+            resolved_tool_protocol: "native",
+            retry_429: true,
+            extra_body: None,
+            openrouter_provider_pin: None,
+            fusion: None,
+        }
+    }
+
+    #[test]
+    fn native_http_observer_persists_correlated_transport_attempt_sequence() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-node-http-audit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let database = Arc::new(Database::new(&dir.join("grimodex.db"))?);
+        database.migrate()?;
+        database.with_conn(|connection| {
+            connection.execute(
+                "INSERT INTO projects (id, title, language) VALUES (?1, 'Audit', 'ja')",
+                ["project-a"],
+            )?;
+            Ok(())
+        })?;
+        let context = test_context(&dir);
+        database.append_ai_audit_events(
+            "project-a",
+            &[
+                native_ai_transport_event(
+                    &context,
+                    0,
+                    "renderer-start",
+                    "execution.started",
+                    1,
+                    serde_json::json!({ "captureState": "complete" }),
+                ),
+                native_ai_transport_event(
+                    &context,
+                    0,
+                    "renderer-prepared",
+                    "request.prepared",
+                    2,
+                    serde_json::json!({
+                        "captureState": "complete",
+                        "credentialsExcluded": true,
+                        "request": { "body": { "prompt": "renderer-observed" } },
+                    }),
+                ),
+                native_ai_transport_event(
+                    &context,
+                    0,
+                    "renderer-dispatched",
+                    "request.dispatched",
+                    3,
+                    serde_json::json!({ "captureState": "complete" }),
+                ),
+            ],
+        )?;
+        let appender: Arc<dyn NativeAiAuditAppender> = database.clone();
+        let observer = NativeAiHttpAuditObserver {
+            appender,
+            context: context.clone(),
+            route: test_route(),
+            effective_request_configuration: test_effective_request_configuration(),
+        };
+
+        let effective_body = serde_json::json!({
+            "model": "model-a",
+            "max_output_tokens": 4_096,
+            "input": [{ "role": "user", "content": "exact prompt" }],
+        });
+        observer.request_prepared(&grimodex_ai::HttpPreparedRequest {
+            body: Some(effective_body.clone()),
+        })?;
+
+        observer.attempt_started(&grimodex_ai::HttpAttemptStarted {
+            attempt_number: 1,
+            send_ordinal: 1,
+            is_retry: false,
+            reuses_initial_payload: false,
+            endpoint: Some(grimodex_ai::HttpAttemptEndpoint {
+                origin: "https://api.example.test".to_string(),
+                host: "api.example.test".to_string(),
+            }),
+        })?;
+        observer.attempt_finished(&grimodex_ai::HttpAttemptFinished {
+            attempt_number: 1,
+            actual_send_count: Some(1),
+            status: Some(429),
+            retry_enabled: true,
+            retry_after_observed_ms: Some(2_000),
+            retry_delay_ms: Some(2_000),
+            retry_delay_source: Some(grimodex_ai::HttpRetryDelaySource::RetryAfter),
+            will_retry: true,
+            retry_exhausted: false,
+            retry_payload_clone_unavailable: false,
+            local_abort_observed: false,
+            provider_abort_receipt_observed: false,
+            is_final: false,
+        })?;
+        observer.attempt_started(&grimodex_ai::HttpAttemptStarted {
+            attempt_number: 2,
+            send_ordinal: 2,
+            is_retry: true,
+            reuses_initial_payload: true,
+            endpoint: Some(grimodex_ai::HttpAttemptEndpoint {
+                origin: "https://api.example.test".to_string(),
+                host: "api.example.test".to_string(),
+            }),
+        })?;
+        observer.attempt_finished(&grimodex_ai::HttpAttemptFinished {
+            attempt_number: 2,
+            actual_send_count: Some(2),
+            status: Some(200),
+            retry_enabled: true,
+            retry_after_observed_ms: None,
+            retry_delay_ms: None,
+            retry_delay_source: None,
+            will_retry: false,
+            retry_exhausted: false,
+            retry_payload_clone_unavailable: false,
+            local_abort_observed: false,
+            provider_abort_receipt_observed: false,
+            is_final: true,
+        })?;
+
+        let snapshot = database.read_ai_audit_snapshot_for_scope(
+            context.project_id.as_deref(),
+            Some(3),
+            None,
+            None,
+        )?;
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "request.prepared",
+                "transport.attempt.started",
+                "transport.attempt.finished",
+                "execution.retrying",
+                "transport.attempt.started",
+                "transport.attempt.finished",
+            ]
+        );
+        for event in &snapshot.events {
+            assert_eq!(event.execution_id, context.execution_id);
+            assert_eq!(event.operation_id, context.operation_id);
+            assert_eq!(event.parent_execution_id, context.parent_execution_id);
+            assert_eq!(event.path_id, context.path_id);
+        }
+        let effective_request = &snapshot.events[0];
+        assert_eq!(
+            effective_request.event_id,
+            native_ai_effective_request_event_id(&context)
+        );
+        assert_eq!(effective_request.payload["captureState"], "complete");
+        assert_eq!(effective_request.payload["effectiveRequestReceipt"], true);
+        assert_eq!(effective_request.payload["request"]["body"], effective_body);
+        assert_eq!(
+            effective_request.payload["effectiveRequestConfiguration"]["source"],
+            "finalized-reqwest-json-value"
+        );
+        assert_eq!(effective_request.payload["workspacePinned"], true);
+        assert_eq!(
+            effective_request.payload["limitations"],
+            serde_json::json!([])
+        );
+
+        let started = &snapshot.events[1].payload;
+        assert_eq!(started["attemptNumber"], 1);
+        assert_eq!(started["sendOrdinal"], 1);
+        assert_eq!(started["sendPhase"], "pre-send");
+        assert!(started.get("actualHttpSendCount").is_none());
+        assert_eq!(started["route"]["provider"], "openai-compatible");
+        assert_eq!(started["route"]["model"], "model-a");
+        assert_eq!(started["route"]["apiVariant"], "responses");
+        assert_eq!(started["route"]["endpointId"], "endpoint-a");
+        assert_eq!(
+            started["route"]["endpointOrigin"],
+            "https://api.example.test"
+        );
+        assert_eq!(
+            started["requestContentReference"]["eventType"],
+            "request.prepared"
+        );
+        assert_eq!(
+            started["requestContentReference"]["eventId"],
+            native_ai_effective_request_event_id(&context)
+        );
+        assert_eq!(started["captureState"], "complete");
+        assert_eq!(
+            started["effectiveRequestConfiguration"]["source"],
+            "native-chat-params"
+        );
+        assert_eq!(
+            started["effectiveRequestConfiguration"]["credentialsExcluded"],
+            true
+        );
+        assert_eq!(
+            started["effectiveRequestConfiguration"]["providerBodyDuplicated"],
+            false
+        );
+        assert_eq!(
+            started["effectiveRequestConfiguration"]["aiNovelistMode"],
+            "chat"
+        );
+        assert_eq!(
+            started["effectiveRequestConfiguration"]["resolvedToolProtocol"],
+            "native"
+        );
+        assert_eq!(started["effectiveRequestConfiguration"]["retry429"], true);
+        let first_finished = &snapshot.events[2].payload;
+        assert_eq!(first_finished["sendPhase"], "send-invoked");
+        assert_eq!(first_finished["status"], 429);
+        assert_eq!(first_finished["willRetry"], true);
+        assert_eq!(first_finished["retryAfterObservedMs"], 2_000);
+        assert_eq!(first_finished["retryDelayMs"], 2_000);
+        assert_eq!(first_finished["retryDelaySource"], "retry-after");
+        assert_eq!(snapshot.events[3].payload["reason"], "http-429");
+        assert_eq!(snapshot.events[3].payload["nextAttemptNumber"], 2);
+        assert_eq!(snapshot.events[4].payload["reusesInitialPayload"], true);
+        let final_finished = &snapshot.events[5].payload;
+        assert_eq!(final_finished["status"], 200);
+        assert_eq!(final_finished["finalStatus"], 200);
+        assert_eq!(final_finished["willRetry"], false);
+        assert_eq!(final_finished["retryExhausted"], false);
+        assert_eq!(final_finished["isFinal"], true);
+
+        let durable_json = serde_json::to_string(&snapshot)?;
+        for forbidden in ["authorization", "api_key", "password", "secret-value"] {
+            assert!(!durable_json.to_ascii_lowercase().contains(forbidden));
+        }
+
+        drop(observer);
+        drop(database);
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct CommitThenLoseReplyAppender {
+        calls: AtomicUsize,
+        committed: Mutex<Vec<AppendAiAuditEvent>>,
+    }
+
+    fn assert_same_event(left: &AppendAiAuditEvent, right: &AppendAiAuditEvent) {
+        assert_eq!(left.event_id, right.event_id);
+        assert_eq!(left.execution_id, right.execution_id);
+        assert_eq!(left.operation_id, right.operation_id);
+        assert_eq!(left.parent_execution_id, right.parent_execution_id);
+        assert_eq!(left.path_id, right.path_id);
+        assert_eq!(left.event_type, right.event_type);
+        assert_eq!(left.timestamp, right.timestamp);
+        assert_eq!(left.payload, right.payload);
+    }
+
+    impl NativeAiAuditAppender for CommitThenLoseReplyAppender {
+        fn append(
+            &self,
+            _project_id: Option<&str>,
+            events: &[AppendAiAuditEvent],
+        ) -> anyhow::Result<()> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut committed = self
+                .committed
+                .lock()
+                .map_err(|_| anyhow::anyhow!("committed event mutex poisoned"))?;
+            for event in events {
+                if let Some(existing) = committed
+                    .iter()
+                    .find(|existing| existing.event_id == event.event_id)
+                {
+                    assert_same_event(existing, event);
+                } else {
+                    committed.push(event.clone());
+                }
+            }
+            if call == 0 {
+                anyhow::bail!("injected reply loss after commit");
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn native_http_observer_retries_exact_event_after_commit_reply_loss() -> anyhow::Result<()> {
+        let appender = Arc::new(CommitThenLoseReplyAppender::default());
+        let context = test_context(std::path::Path::new("/workspace"));
+        let observer = NativeAiHttpAuditObserver {
+            appender: appender.clone(),
+            context,
+            route: test_route(),
+            effective_request_configuration: test_effective_request_configuration(),
+        };
+
+        observer.request_prepared(&grimodex_ai::HttpPreparedRequest {
+            body: Some(serde_json::json!({
+                "model": "model-a",
+                "messages": [{ "role": "user", "content": "exact prompt" }],
+            })),
+        })?;
+
+        assert_eq!(appender.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            appender
+                .committed
+                .lock()
+                .map_err(|_| anyhow::anyhow!("committed event mutex poisoned"))?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_route_is_derived_from_the_same_effective_params_snapshot() {
+        let settings = grimodex_ai::AiSettings {
+            provider: grimodex_ai::AiProvider::OpenaiCompatible,
+            model: "effective-model".to_string(),
+            active_openai_compatible_endpoint_id: Some("effective-endpoint".to_string()),
+            openai_compatible_endpoints: vec![grimodex_ai::OpenaiCompatibleEndpoint {
+                id: "effective-endpoint".to_string(),
+                base_url: "https://gateway.example.test/v1".to_string(),
+                api_variant: Some("responses".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let resolved_variant = grimodex_ai::resolve_api_variant(None, &settings, &settings.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings,
+            "secret-not-copied-to-route",
+            None,
+            false,
+            grimodex_ai::AiNovelistMode::Chat,
+            resolved_variant,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut params = params;
+        params.request_max_output_tokens = Some(2_048);
+        params.resolved_tool_protocol = grimodex_ai::ResolvedToolProtocol::Hermes;
+
+        let route = NativeAiHttpAuditRoute::from_params(&settings, &params);
+        let effective = NativeAiEffectiveRequestConfiguration::from_params(&params);
+        assert_eq!(route.provider, params.provider.to_string());
+        assert_eq!(route.model, params.model);
+        assert_eq!(route.api_variant.as_deref(), params.api_variant.as_deref());
+        assert_eq!(route.endpoint_id.as_deref(), Some("effective-endpoint"));
+        assert_eq!(
+            params.endpoints.openai_compat_custom,
+            "https://gateway.example.test/v1"
+        );
+        assert!(!format!("{route:?}").contains(params.api_key));
+        assert_eq!(effective.ai_novelist_mode, "chat");
+        assert_eq!(effective.request_max_output_tokens, 2_048);
+        assert_eq!(effective.resolved_tool_protocol, "hermes");
+        assert!(!effective.retry_429);
+        assert_eq!(effective.extra_body, None);
+        assert_eq!(effective.openrouter_provider_pin, None);
+        assert_eq!(effective.fusion, None);
+        assert!(!format!("{effective:?}").contains(params.api_key));
+    }
+
+    #[test]
+    fn native_effective_configuration_projects_ai_novelist_wire_settings_without_credentials() {
+        let settings = grimodex_ai::AiSettings {
+            provider: grimodex_ai::AiProvider::AiNovelist,
+            model: "derrida_03".to_string(),
+            ai_novelist: grimodex_ai::AiNovelistSettings {
+                sampling: Some(serde_json::json!({
+                    "top_a": 0.42,
+                    "tailfree": 0.91,
+                    "api_key": "settings-secret-must-not-be-captured",
+                })),
+                multilingual_mode: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings, Some("legacy"));
+        let mut params = grimodex_ai::build_chat_params(
+            &settings,
+            "transport-secret-must-not-be-captured",
+            extra_body,
+            true,
+            grimodex_ai::AiNovelistMode::Completion,
+            Some("legacy".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        params.request_max_output_tokens = Some(777);
+
+        let effective = NativeAiEffectiveRequestConfiguration::from_params(&params);
+        assert_eq!(effective.ai_novelist_mode, "completion");
+        assert_eq!(effective.request_max_output_tokens, 777);
+        assert_eq!(effective.resolved_tool_protocol, "native");
+        assert!(effective.retry_429);
+        assert_eq!(
+            effective.extra_body,
+            Some(serde_json::json!({
+                "top_a": 0.42,
+                "tailfree": 0.91,
+                "multilingualmode": true,
+            }))
+        );
+        let audit_debug = format!("{effective:?}");
+        assert!(!audit_debug.contains("settings-secret"));
+        assert!(!audit_debug.contains("transport-secret"));
+        assert!(!audit_debug.contains("api_key"));
+
+        let fallback_params = grimodex_ai::build_chat_params(
+            &settings,
+            "transport-secret-must-not-be-captured",
+            None,
+            true,
+            grimodex_ai::AiNovelistMode::Chat,
+            Some("legacy".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            NativeAiEffectiveRequestConfiguration::from_params(&fallback_params)
+                .request_max_output_tokens,
+            grimodex_ai::ai_novelist::length_for(&settings.model)
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingNativeAiAuditAppender {
+        events: Mutex<Vec<AppendAiAuditEvent>>,
+    }
+
+    impl NativeAiAuditAppender for RecordingNativeAiAuditAppender {
+        fn append(
+            &self,
+            _project_id: Option<&str>,
+            events: &[AppendAiAuditEvent],
+        ) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recorded event mutex poisoned"))?
+                .extend_from_slice(events);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn native_effective_receipt_persists_exact_anthropic_body() -> anyhow::Result<()> {
+        let appender = Arc::new(RecordingNativeAiAuditAppender::default());
+        let context = test_context(std::path::Path::new("/workspace"));
+        let observer = NativeAiHttpAuditObserver {
+            appender: appender.clone(),
+            context: context.clone(),
+            route: NativeAiHttpAuditRoute {
+                provider: "anthropic".to_string(),
+                model: "claude-opus-4-5".to_string(),
+                api_variant: None,
+                endpoint_id: None,
+            },
+            effective_request_configuration: test_effective_request_configuration(),
+        };
+        let body = serde_json::json!({
+            "model": "claude-opus-4-5",
+            "max_tokens": 12_345,
+            "system": [
+                {
+                    "type": "text",
+                    "text": "stable system",
+                    "cache_control": { "type": "ephemeral" },
+                },
+                { "type": "text", "text": "volatile scene" },
+            ],
+            "messages": [{ "role": "user", "content": "exact user prompt" }],
+            "tools": [{
+                "name": "search_codex",
+                "description": "search",
+                "input_schema": { "type": "object" },
+            }],
+            "thinking": { "type": "enabled", "budget_tokens": 4_096 },
+            "output_config": { "effort": "high" },
+            "stream": true,
+        });
+
+        observer.request_prepared(&grimodex_ai::HttpPreparedRequest {
+            body: Some(body.clone()),
+        })?;
+
+        let events = appender
+            .events
+            .lock()
+            .map_err(|_| anyhow::anyhow!("recorded event mutex poisoned"))?;
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.event_type, "request.prepared");
+        assert_eq!(
+            event.event_id,
+            native_ai_effective_request_event_id(&context)
+        );
+        assert_eq!(event.payload["captureState"], "complete");
+        assert_eq!(event.payload["request"]["body"], body);
+        assert_eq!(
+            event.payload["effectiveRequestConfiguration"]["serializationFidelity"],
+            "json-value"
+        );
+        assert_eq!(
+            event.payload["effectiveRequestConfiguration"]
+                ["serializationWhitespaceAndKeyOrderPreserved"],
+            false
+        );
+        assert_eq!(event.payload["route"]["provider"], "anthropic");
+        assert_eq!(event.payload["credentialsExcluded"], true);
+        assert_eq!(event.payload["limitations"], serde_json::json!([]));
+        let durable = serde_json::to_string(&event.payload)?;
+        for forbidden in ["x-api-key", "authorization", "transport-secret"] {
+            assert!(!durable.to_ascii_lowercase().contains(forbidden));
+        }
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct AlwaysFailNativeAiAuditAppender {
+        calls: AtomicUsize,
+    }
+
+    impl NativeAiAuditAppender for AlwaysFailNativeAiAuditAppender {
+        fn append(
+            &self,
+            _project_id: Option<&str>,
+            _events: &[AppendAiAuditEvent],
+        ) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("injected durable append failure")
+        }
+    }
+
+    #[test]
+    fn native_effective_receipt_failure_remains_fail_closed_after_bounded_retry() {
+        let appender = Arc::new(AlwaysFailNativeAiAuditAppender::default());
+        let observer = NativeAiHttpAuditObserver {
+            appender: appender.clone(),
+            context: test_context(std::path::Path::new("/workspace")),
+            route: test_route(),
+            effective_request_configuration: test_effective_request_configuration(),
+        };
+
+        let error = observer
+            .request_prepared(&grimodex_ai::HttpPreparedRequest {
+                body: Some(serde_json::json!({ "model": "model-a" })),
+            })
+            .expect_err("two durable append failures must reject dispatch");
+        assert!(error
+            .to_string()
+            .contains("append native effective request.prepared failed after bounded retry"));
+        assert_eq!(appender.calls.load(Ordering::SeqCst), 2);
+    }
+
+    fn fusion_started_payload(
+        fusion: grimodex_ai::FusionConfig,
+    ) -> anyhow::Result<serde_json::Value> {
+        let settings = grimodex_ai::AiSettings {
+            provider: grimodex_ai::AiProvider::OpenRouter,
+            model: "openrouter/fusion".to_string(),
+            openrouter_provider_pin: Some(" anthropic ".to_string()),
+            fusion,
+            ..Default::default()
+        };
+        let params = grimodex_ai::build_chat_params(
+            &settings,
+            "transport-secret-must-not-be-captured",
+            None,
+            false,
+            grimodex_ai::AiNovelistMode::Chat,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let appender = Arc::new(RecordingNativeAiAuditAppender::default());
+        let observer = NativeAiHttpAuditObserver {
+            appender: appender.clone(),
+            context: test_context(std::path::Path::new("/workspace")),
+            route: NativeAiHttpAuditRoute::from_params(&settings, &params),
+            effective_request_configuration: NativeAiEffectiveRequestConfiguration::from_params(
+                &params,
+            ),
+        };
+        observer.attempt_started(&grimodex_ai::HttpAttemptStarted {
+            attempt_number: 1,
+            send_ordinal: 1,
+            is_retry: false,
+            reuses_initial_payload: false,
+            endpoint: Some(grimodex_ai::HttpAttemptEndpoint {
+                origin: "https://openrouter.ai".to_string(),
+                host: "openrouter.ai".to_string(),
+            }),
+        })?;
+        let events = appender
+            .events
+            .lock()
+            .map_err(|_| anyhow::anyhow!("recorded event mutex poisoned"))?;
+        let payload = events
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing recorded started event"))?
+            .payload
+            .clone();
+        Ok(payload)
+    }
+
+    #[test]
+    fn native_fusion_configuration_is_complete_only_for_explicit_panel_and_judge(
+    ) -> anyhow::Result<()> {
+        let explicit = fusion_started_payload(grimodex_ai::FusionConfig {
+            enabled: true,
+            analysis_models: vec![
+                " openai/gpt-5.2 ".to_string(),
+                "".to_string(),
+                "anthropic/claude-opus-4.5".to_string(),
+            ],
+            judge_model: Some(" google/gemini-3-pro-preview ".to_string()),
+        })?;
+        assert_eq!(explicit["captureState"], "complete");
+        assert_eq!(explicit["limitations"], serde_json::json!([]));
+        assert_eq!(
+            explicit["effectiveRequestConfiguration"]["openrouterProviderPin"],
+            "anthropic"
+        );
+        assert_eq!(
+            explicit["effectiveRequestConfiguration"]["fusion"],
+            serde_json::json!({
+                "enabled": true,
+                "customConfigurationApplied": true,
+                "configurationComplete": true,
+                "analysisModels": [
+                    "openai/gpt-5.2",
+                    "anthropic/claude-opus-4.5",
+                ],
+                "judgeModel": "google/gemini-3-pro-preview",
+                "providerSelectedFusionPanelObserved": false,
+            })
+        );
+
+        let provider_default = fusion_started_payload(grimodex_ai::FusionConfig::default())?;
+        assert_eq!(provider_default["captureState"], "partial");
+        assert_eq!(
+            provider_default["effectiveRequestConfiguration"]["fusion"],
+            serde_json::json!({
+                "enabled": false,
+                "customConfigurationApplied": false,
+                "configurationComplete": false,
+                "analysisModels": [],
+                "judgeModel": null,
+                "providerSelectedFusionPanelObserved": false,
+            })
+        );
+        assert_eq!(
+            provider_default["limitations"],
+            serde_json::json!([
+                "openrouter-fusion-provider-selected-panel-unobservable",
+                "openrouter-fusion-provider-selected-judge-unobservable",
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_ai_diagnostic_redacts_url_assignment_json_and_header_credentials() {
+        let raw = concat!(
+            "HTTP attempt audit failed at ",
+            "https://url-user:url-pass@example.test/v1/chat?api_key=url-secret#fragment ",
+            "token=assignment-secret ",
+            "OPENAI_API_KEY = \"quoted-api-secret\" ",
+            "AWS_ACCESS_KEY_ID = 'access-id-secret' ",
+            "provider_private_key = \"private-key-secret\" ",
+            "openaiAuth = 'auth-alias-secret' ",
+            r#"{"api_key":"api-secret","cookie":"cookie-secret","AWS_SECRET_ACCESS_KEY":"access-key-secret","providerAuth":"json-auth-secret","message":"keep diagnostic"}"#,
+            "\nAuthorization: Bearer header-secret",
+            "\nX-Api-Key: provider-header-secret",
+            "\nkeep final diagnostic"
+        );
+        let error = anyhow::anyhow!("{}", raw);
+        let sanitized = native_ai_error_to_napi(error).reason;
+
+        for secret in [
+            "url-user",
+            "url-pass",
+            "url-secret",
+            "fragment",
+            "assignment-secret",
+            "quoted-api-secret",
+            "access-id-secret",
+            "private-key-secret",
+            "auth-alias-secret",
+            "api-secret",
+            "cookie-secret",
+            "access-key-secret",
+            "json-auth-secret",
+            "header-secret",
+            "provider-header-secret",
+        ] {
+            assert!(!sanitized.contains(secret), "leaked {secret}: {sanitized}");
+        }
+        assert!(sanitized.contains("https://example.test/v1/chat"));
+        assert!(sanitized.contains("keep diagnostic"));
+        assert!(sanitized.contains("keep final diagnostic"));
+        assert!(sanitized.contains("[REDACTED:credential]"));
     }
 }
 
@@ -2798,6 +5279,183 @@ mod ime_workspace_tests {
 
         drop(snapshot);
         drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod semantic_reranker_lane_tests {
+    use super::*;
+    use grimodex_db::state::ActiveWorkspace;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn occupied_lane_returns_busy_without_queuing_later_inference() {
+        let lane = Arc::new(Mutex::new(()));
+        let first_inference = lane.lock().expect("first inference owns lane");
+        let inference_starts = Arc::new(AtomicUsize::new(0));
+        let lane_for_second = Arc::clone(&lane);
+        let starts_for_second = Arc::clone(&inference_starts);
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let second = thread::spawn(move || {
+            let result = try_with_semantic_reranker_lane(&lane_for_second, |_| {
+                starts_for_second.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, anyhow::Error>(())
+            })
+            .map_err(|error| format!("{error:#}"));
+            result_tx.send(result).expect("send second result");
+        });
+
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("occupied lane must reject immediately")
+            .expect_err("second inference must be rejected as busy");
+        assert!(
+            error.starts_with("RERANKER_BUSY:"),
+            "stable marker must cross the N-API wire: {error}"
+        );
+        assert_eq!(
+            inference_starts.load(Ordering::SeqCst),
+            0,
+            "busy request must not enter inference"
+        );
+
+        drop(first_inference);
+        second.join().expect("second request thread");
+        assert_eq!(
+            inference_starts.load(Ordering::SeqCst),
+            0,
+            "releasing the first inference must not start rejected work later"
+        );
+    }
+
+    #[tokio::test]
+    async fn pinned_project_db_records_exact_reranker_input_before_model_load_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-node-reranker-audit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let workspace_path = dir.join("workspace");
+        std::fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let expected_workspace_path = workspace_path.to_string_lossy().into_owned();
+        let database = Arc::new(
+            grimodex_db::Database::new(&workspace_path.join("grimodex.db"))
+                .expect("open audit database"),
+        );
+        database.migrate().expect("migrate audit database");
+        database
+            .with_conn(|connection| {
+                connection.execute(
+                    "INSERT INTO projects (id, title, language) VALUES (?1, 'Audit', 'ja')",
+                    ["project-a"],
+                )?;
+                Ok(())
+            })
+            .expect("seed project");
+
+        let resources = dir.join("missing-semantic-resources");
+        let state =
+            AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
+            db: Arc::clone(&database),
+            path: workspace_path,
+        });
+        let backend = Backend {
+            state: Arc::new(state),
+        };
+
+        let error = backend
+            .semantic_reranker_shadow_score(serde_json::json!({
+                "requestId": "request-a",
+                "expectedWorkspacePath": expected_workspace_path,
+                "projectId": "project-a",
+                "auditPathId": "semantic_reranker_shadow",
+                "language": "ja",
+                "userMessage": "exact user message",
+                "sceneTail": "exact scene tail",
+                "candidates": [{
+                    "candidateId": "scene-a:0:10",
+                    "text": "exact candidate text",
+                }],
+            }))
+            .await
+            .expect_err("missing model resources fail after audit");
+        assert!(
+            error.to_string().contains("resources are not configured"),
+            "unexpected reranker preparation error: {error}"
+        );
+
+        let snapshot = database
+            .read_ai_audit_snapshot("project-a", None, None, None)
+            .expect("read native reranker audit");
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "execution.started",
+                "request.prepared",
+                "request.dispatched",
+                "execution.failed",
+            ]
+        );
+        let prepared = &snapshot.events[1];
+        assert_eq!(prepared.path_id, "semantic_reranker_shadow");
+        assert_eq!(
+            prepared.payload["input"]["userMessage"],
+            "exact user message"
+        );
+        assert_eq!(prepared.payload["input"]["sceneTail"], "exact scene tail");
+        assert_eq!(
+            prepared.payload["input"]["normalizedQuery"],
+            "exact user message\nexact scene tail"
+        );
+        assert_eq!(
+            prepared.payload["input"]["candidates"][0]["text"],
+            "exact candidate text"
+        );
+        assert_eq!(
+            prepared.payload["model"]["modelId"],
+            "hotchpotch/japanese-reranker-xsmall-v2"
+        );
+        assert_eq!(prepared.payload["captureState"], "partial");
+        assert_eq!(
+            prepared.payload["model"]["tokenizerIdentityStatus"],
+            "pending-effective-receipt"
+        );
+        assert_eq!(
+            prepared.payload["tokenizationCapture"]["realizedTokenIds"],
+            "not-retained"
+        );
+        assert_eq!(
+            prepared.payload["tokenizationCapture"]["specialTokenExpansion"],
+            "not-retained"
+        );
+        assert_eq!(
+            prepared.payload["tokenizationCapture"]["postTruncationTokenSequence"],
+            "not-retained"
+        );
+        let failed = &snapshot.events[3];
+        assert_eq!(failed.payload["captureState"], "complete");
+        assert_eq!(
+            failed.payload["phase"],
+            "local-inference-artifact-preparation"
+        );
+        assert_eq!(failed.payload["modelDispatched"], false);
+        assert_eq!(failed.payload["onnxSessionRunObserved"], false);
+
+        drop(backend);
+        drop(database);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

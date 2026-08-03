@@ -1,7 +1,10 @@
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::Path;
 use std::sync::{atomic::Ordering, Arc};
+use std::time::Duration;
 
 pub mod ai_novelist;
 pub mod ai_responses;
@@ -14,7 +17,7 @@ include!(concat!(env!("OUT_DIR"), "/agent_tool_manifest.rs"));
 // 再エクスポート（`grimodex_ai::build_chat_params` 等でアクセス可能にする）。
 pub use params::{
     apply_provider_override, build_ai_novelist_extra_body, build_chat_params,
-    inline_effective_variant, should_retry_429,
+    inline_effective_variant, should_retry_429, validate_expected_ollama_endpoint,
 };
 
 /// Supported AI providers.
@@ -346,6 +349,10 @@ pub struct AiSettings {
     pub provider: AiProvider,
     pub model: String,
     pub ollama_endpoint: String,
+    /// Ollama のモデルごとにユーザーが確認・宣言した実効 context 割り当て。
+    /// `/api/show` のモデル最大値とは別物で、runner 未ロード時の事前判定に使う。
+    #[serde(default)]
+    pub ollama_context_lengths: BTreeMap<String, u64>,
     #[serde(default = "default_thinking_enabled")]
     pub thinking_enabled: bool,
     #[serde(default)]
@@ -459,6 +466,7 @@ impl Default for AiSettings {
             provider: AiProvider::OpenRouter,
             model: String::new(),
             ollama_endpoint: "http://localhost:11434".to_string(),
+            ollama_context_lengths: BTreeMap::new(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
             openai_compatible_endpoints: Vec::new(),
@@ -485,7 +493,8 @@ pub struct AiModel {
         skip_serializing_if = "Option::is_none"
     )]
     pub api_variant: Option<String>,
-    /// OpenRouter: context window in tokens (context_length)
+    /// Provider-reported model maximum context window in tokens.
+    /// OpenRouter uses `context_length`; Ollama derives it from `/api/show` model_info.
     #[serde(
         default,
         rename = "contextLength",
@@ -499,13 +508,29 @@ pub struct AiModel {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_completion_tokens: Option<u64>,
-    /// OpenRouter: supported parameter names (supported_parameters[])
+    /// Provider-reported supported parameter names.
+    /// Ollama maps `tools` and `thinking` capabilities to `tools` and `reasoning`.
     #[serde(
         default,
         rename = "supportedParameters",
         skip_serializing_if = "Option::is_none"
     )]
     pub supported_parameters: Option<Vec<String>>,
+    /// Ollama: 現在ロード済み runner、または Modelfile の `num_ctx` が示す実効 context。
+    /// `/api/show` のモデル最大値 (`context_length`) とは混同しない。
+    #[serde(
+        default,
+        rename = "effectiveContextLength",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_context_length: Option<u64>,
+    /// Ollama の実効 context の取得元 (`runner` | `model-parameter`)。
+    #[serde(
+        default,
+        rename = "effectiveContextSource",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_context_source: Option<String>,
     /// OpenRouter: pricing.prompt (USD per token as string)
     #[serde(
         default,
@@ -542,9 +567,367 @@ fn parse_openrouter_model(m: &serde_json::Value) -> Option<AiModel> {
         context_length,
         max_completion_tokens,
         supported_parameters,
+        effective_context_length: None,
+        effective_context_source: None,
         pricing_prompt,
         pricing_completion,
     })
+}
+
+const OLLAMA_METADATA_CONCURRENCY: usize = 4;
+const OLLAMA_METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const OLLAMA_MODEL_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const OLLAMA_SELECTED_METADATA_TIMEOUT: Duration = Duration::from_secs(90);
+const OLLAMA_CATALOG_METADATA_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OllamaRunnerContext {
+    name: String,
+    model: String,
+    digest: Option<String>,
+    context_length: u64,
+}
+
+fn ollama_model_name(value: &serde_json::Value) -> Option<&str> {
+    value["name"].as_str().or_else(|| value["model"].as_str())
+}
+
+fn normalize_ollama_model_name(name: &str) -> String {
+    name.trim()
+        .strip_suffix(":latest")
+        .unwrap_or(name.trim())
+        .to_ascii_lowercase()
+}
+
+fn ollama_tag_matches_selected(tag: &serde_json::Value, selected: &str) -> bool {
+    let normalized_selected = normalize_ollama_model_name(selected);
+    ["name", "model"]
+        .into_iter()
+        .filter_map(|key| tag[key].as_str())
+        .any(|candidate| normalize_ollama_model_name(candidate) == normalized_selected)
+}
+
+/// `/api/show` の model_info は architecture ごとに
+/// `<architecture>.context_length` という可変キーを持つ。
+/// `general.architecture` を優先し、古い/独自モデルでは最も浅い suffix match に
+/// フォールバックする。vision/audio 等の下位 architecture を誤採用しないためである。
+fn parse_ollama_model_context_length(show: &serde_json::Value) -> Option<u64> {
+    let info = show["model_info"].as_object()?;
+    if let Some(architecture) = info
+        .get("general.architecture")
+        .and_then(serde_json::Value::as_str)
+    {
+        let key = format!("{architecture}.context_length");
+        if let Some(value) = info.get(&key).and_then(serde_json::Value::as_u64) {
+            return Some(value);
+        }
+    }
+
+    info.iter()
+        .filter_map(|(key, value)| {
+            key.ends_with(".context_length")
+                .then(|| value.as_u64().map(|length| (key, length)))
+                .flatten()
+        })
+        .min_by_key(|(key, _)| key.matches('.').count())
+        .map(|(_, length)| length)
+}
+
+/// `/api/show.parameters` は `key value` の行指向テキスト。
+/// 空白差と `num_ctx = 65536` 形式も許容し、正の整数だけ採用する。
+fn parse_ollama_model_parameter_num_ctx(show: &serde_json::Value) -> Option<u64> {
+    let parameters = show["parameters"].as_str()?;
+    parameters.lines().find_map(|line| {
+        let mut tokens = line.split_whitespace();
+        let key = tokens.next()?;
+        if key != "num_ctx" {
+            return None;
+        }
+        let candidate = tokens.find(|token| *token != "=")?;
+        candidate.parse::<u64>().ok().filter(|value| *value > 0)
+    })
+}
+
+fn parse_ollama_supported_parameters(
+    show: Option<&serde_json::Value>,
+    tag: &serde_json::Value,
+) -> Option<Vec<String>> {
+    let capabilities = show
+        .and_then(|value| value["capabilities"].as_array())
+        .or_else(|| tag["capabilities"].as_array());
+    let Some(capabilities) = capabilities else {
+        // A successful `/api/show` response with no capability list is still
+        // authoritative for Agent gating. Fail closed instead of inheriting
+        // the optimistic unknown-model default.
+        return show.map(|_| Vec::new());
+    };
+    let mut supported = Vec::new();
+    for capability in capabilities.iter().filter_map(|v| v.as_str()) {
+        let parameter = match capability {
+            "tools" => "tools",
+            "thinking" => "reasoning",
+            _ => continue,
+        };
+        if !supported.iter().any(|existing| existing == parameter) {
+            supported.push(parameter.to_string());
+        }
+    }
+    // Presence of an explicit capabilities array is authoritative. Preserve
+    // `Some([])` so callers do not inherit the optimistic unknown-model default.
+    Some(supported)
+}
+
+fn parse_ollama_runner_contexts(body: &serde_json::Value) -> Vec<OllamaRunnerContext> {
+    body["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let context_length = model["context_length"]
+                .as_u64()
+                .filter(|value| *value > 0)?;
+            Some(OllamaRunnerContext {
+                name: model["name"].as_str().unwrap_or_default().to_string(),
+                model: model["model"].as_str().unwrap_or_default().to_string(),
+                digest: model["digest"]
+                    .as_str()
+                    .filter(|digest| !digest.is_empty())
+                    .map(str::to_string),
+                context_length,
+            })
+        })
+        .collect()
+}
+
+fn find_ollama_runner_context(
+    tag: &serde_json::Value,
+    runners: &[OllamaRunnerContext],
+) -> Option<u64> {
+    if let Some(digest) = tag["digest"].as_str().filter(|digest| !digest.is_empty()) {
+        if let Some(runner) = runners
+            .iter()
+            .find(|runner| runner.digest.as_deref() == Some(digest))
+        {
+            return Some(runner.context_length);
+        }
+    }
+
+    let tag_names: Vec<String> = ["name", "model"]
+        .into_iter()
+        .filter_map(|key| tag[key].as_str())
+        .map(normalize_ollama_model_name)
+        .collect();
+    runners
+        .iter()
+        .find(|runner| {
+            [&runner.name, &runner.model]
+                .into_iter()
+                .filter(|name| !name.is_empty())
+                .map(|name| normalize_ollama_model_name(name))
+                .any(|runner_name| tag_names.iter().any(|tag_name| tag_name == &runner_name))
+        })
+        .map(|runner| runner.context_length)
+}
+
+fn build_ollama_model(
+    tag: &serde_json::Value,
+    show: Option<&serde_json::Value>,
+    runners: &[OllamaRunnerContext],
+) -> Option<AiModel> {
+    let name = ollama_model_name(tag)?;
+    let context_length = show.and_then(parse_ollama_model_context_length);
+    let model_parameter_context = show.and_then(parse_ollama_model_parameter_num_ctx);
+    let runner_context = find_ollama_runner_context(tag, runners);
+    let (raw_effective_context, effective_context_source) = if let Some(length) = runner_context {
+        (Some(length), Some("runner".to_string()))
+    } else if let Some(length) = model_parameter_context {
+        (Some(length), Some("model-parameter".to_string()))
+    } else {
+        (None, None)
+    };
+    let effective_context_length = raw_effective_context.map(|length| {
+        context_length
+            .map(|maximum| length.min(maximum))
+            .unwrap_or(length)
+    });
+
+    Some(AiModel {
+        id: name.to_string(),
+        name: name.to_string(),
+        api_variant: None,
+        context_length,
+        max_completion_tokens: None,
+        supported_parameters: parse_ollama_supported_parameters(show, tag),
+        effective_context_length,
+        effective_context_source,
+        pricing_prompt: None,
+        pricing_completion: None,
+    })
+}
+
+async fn fetch_ollama_runner_contexts(
+    client: &reqwest::Client,
+    endpoint: &str,
+) -> Vec<OllamaRunnerContext> {
+    let url = format!("{}/api/ps", endpoint.trim_end_matches('/'));
+    let result = async {
+        let response = client
+            .get(url)
+            .timeout(OLLAMA_METADATA_REQUEST_TIMEOUT)
+            .send()
+            .await?
+            .error_for_status()?;
+        response.json::<serde_json::Value>().await
+    }
+    .await;
+    match result {
+        Ok(body) => parse_ollama_runner_contexts(&body),
+        Err(error) => {
+            tracing::warn!("Ollama /api/ps metadata unavailable: {error}");
+            Vec::new()
+        }
+    }
+}
+
+async fn fetch_ollama_show(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model: &str,
+) -> Option<serde_json::Value> {
+    let url = format!("{}/api/show", endpoint.trim_end_matches('/'));
+    let result = async {
+        let response = client
+            .post(url)
+            .timeout(OLLAMA_METADATA_REQUEST_TIMEOUT)
+            .json(&serde_json::json!({ "model": model, "verbose": false }))
+            .send()
+            .await?
+            .error_for_status()?;
+        response.json::<serde_json::Value>().await
+    }
+    .await;
+    match result {
+        Ok(body) => Some(body),
+        Err(error) => {
+            tracing::warn!("Ollama /api/show metadata unavailable for model={model}: {error}");
+            None
+        }
+    }
+}
+
+/// 空の native generate を使って選択モデルだけを runner へロードする。
+///
+/// OpenAI 互換 route では `num_ctx` を指定できないため、Grimodex が値を推測して
+/// 上書きせず、Ollama が実際に確保した値を後続の `/api/ps` から観測する。
+async fn preload_ollama_model(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model: &str,
+) -> anyhow::Result<()> {
+    let url = format!("{}/api/generate", endpoint.trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .timeout(OLLAMA_MODEL_LOAD_TIMEOUT)
+        .json(&serde_json::json!({
+            "model": model,
+            "stream": false
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    // Empty generate returns a small terminal response after the runner is
+    // ready. Consume it before re-reading `/api/ps`.
+    let _ = response.bytes().await?;
+    Ok(())
+}
+
+async fn enrich_ollama_models(
+    client: &reqwest::Client,
+    endpoint: &str,
+    tags_body: &serde_json::Value,
+    selected_model: Option<&str>,
+) -> anyhow::Result<Vec<AiModel>> {
+    let tags = tags_body["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tag| {
+            let Some(selected) = selected_model else {
+                return true;
+            };
+            ollama_tag_matches_selected(tag, selected)
+        })
+        .collect::<Vec<_>>();
+    let mut runners = fetch_ollama_runner_contexts(client, endpoint).await;
+    let endpoint = endpoint.to_string();
+
+    if selected_model.is_some() {
+        let Some(tag) = tags.into_iter().next() else {
+            return Ok(Vec::new());
+        };
+        let Some(model) = ollama_model_name(&tag).map(str::to_string) else {
+            return Ok(Vec::new());
+        };
+        let show = fetch_ollama_show(client, &endpoint, &model).await;
+        if find_ollama_runner_context(&tag, &runners).is_none() {
+            match preload_ollama_model(client, &endpoint, &model).await {
+                Ok(()) => {
+                    runners = fetch_ollama_runner_contexts(client, &endpoint).await;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "Ollama selected-model preload unavailable for model={model}: {error}"
+                    );
+                }
+            }
+        }
+        return Ok(build_ollama_model(&tag, show.as_ref(), runners.as_slice())
+            .into_iter()
+            .collect());
+    }
+
+    let runners = Arc::new(runners);
+    let models = futures::stream::iter(tags.into_iter().filter_map(|tag| {
+        let model = ollama_model_name(&tag)?.to_string();
+        let client = client.clone();
+        let endpoint = endpoint.clone();
+        let runners = Arc::clone(&runners);
+        Some(async move {
+            let show = fetch_ollama_show(&client, &endpoint, &model).await;
+            build_ollama_model(&tag, show.as_ref(), runners.as_slice())
+        })
+    }))
+    .buffered(OLLAMA_METADATA_CONCURRENCY)
+    .filter_map(|model| async move { model })
+    .collect()
+    .await;
+    Ok(models)
+}
+
+async fn fetch_ollama_models(
+    client: &reqwest::Client,
+    endpoint: &str,
+    selected_model: Option<&str>,
+) -> anyhow::Result<Vec<AiModel>> {
+    let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+    let response = client
+        .get(url)
+        .timeout(OLLAMA_METADATA_REQUEST_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?;
+    let body = response.json::<serde_json::Value>().await?;
+    enrich_ollama_models(client, endpoint, &body, selected_model).await
+}
+
+async fn await_ollama_metadata_probe<F, T>(deadline: Duration, probe: F) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    tokio::time::timeout(deadline, probe)
+        .await
+        .map_err(|_| anyhow::anyhow!("Ollama model metadata probe timed out after {deadline:?}"))?
 }
 
 fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
@@ -555,6 +938,8 @@ fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
         context_length: None,
         max_completion_tokens: None,
         supported_parameters: None,
+        effective_context_length: None,
+        effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
     }
@@ -568,6 +953,8 @@ fn v1_ainoverist_model(id: &str, name: &str) -> AiModel {
         context_length: None,
         max_completion_tokens: None,
         supported_parameters: None,
+        effective_context_length: None,
+        effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
     }
@@ -699,9 +1086,7 @@ pub(crate) fn is_openrouter_reasoning_model(model: &str) -> bool {
 }
 
 fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
-    if let Some(tokens) = params.request_max_output_tokens {
-        tokens
-    } else if is_ainoverist_v1(params) {
+    if is_ainoverist_v1(params) {
         ai_novelist::length_for(params.model)
     } else if matches!(params.provider, AiProvider::OpenAI | AiProvider::Sakana)
         || is_openrouter_reasoning_model(params.model)
@@ -714,6 +1099,32 @@ fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
     } else {
         4096
     }
+}
+
+/// Resolve the exact output-token limit written to the provider request body.
+///
+/// Native audit calls this from the same [`ChatParams`] snapshot as the request
+/// builder, so a missing renderer override is never persisted as an ambiguous
+/// `null`. Keep every body builder below on this helper to prevent audit/wire
+/// drift when provider defaults change.
+pub fn effective_request_max_output_tokens(params: &ChatParams<'_>) -> u32 {
+    if let Some(tokens) = params.request_max_output_tokens {
+        return tokens;
+    }
+    if crate::ai_responses::uses_responses_api(params.provider, params.api_variant.as_deref()) {
+        return crate::ai_responses::max_output_tokens(
+            params.provider,
+            params.model,
+            params.reasoning_enabled,
+        );
+    }
+    if matches!(params.provider, AiProvider::AiNovelist) {
+        return ai_novelist::length_for(params.model);
+    }
+    if matches!(params.provider, AiProvider::Anthropic) {
+        return 4096;
+    }
+    openai_max_tokens(params)
 }
 
 /// OpenAI-compatible body にトークン上限を挿入する。
@@ -880,6 +1291,17 @@ pub async fn fetch_models(
     api_key: &str,
     endpoints: ProviderEndpoints<'_>,
 ) -> anyhow::Result<Vec<AiModel>> {
+    fetch_models_for(provider, api_key, endpoints, None).await
+}
+
+/// Fetch available models, optionally limiting Ollama metadata enrichment to
+/// one selected model. Other providers retain their existing catalog contract.
+pub async fn fetch_models_for(
+    provider: &AiProvider,
+    api_key: &str,
+    endpoints: ProviderEndpoints<'_>,
+    selected_model: Option<&str>,
+) -> anyhow::Result<Vec<AiModel>> {
     // 静的リストを持つプロバイダは HTTP を叩かずに返す
     match provider {
         AiProvider::Anthropic => {
@@ -891,6 +1313,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -901,6 +1325,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -911,6 +1337,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -921,6 +1349,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -931,6 +1361,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -941,6 +1373,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -962,6 +1396,19 @@ pub async fn fetch_models(
     }
 
     let client = reqwest::Client::new();
+    if matches!(provider, AiProvider::Ollama) {
+        let deadline = if selected_model.is_some() {
+            OLLAMA_SELECTED_METADATA_TIMEOUT
+        } else {
+            OLLAMA_CATALOG_METADATA_TIMEOUT
+        };
+        return await_ollama_metadata_probe(
+            deadline,
+            fetch_ollama_models(&client, endpoints.ollama, selected_model),
+        )
+        .await;
+    }
+
     let mut req = client.get(&url);
 
     match provider {
@@ -987,27 +1434,6 @@ pub async fn fetch_models(
     let body: serde_json::Value = resp.json().await?;
 
     let models = match provider {
-        AiProvider::Ollama => {
-            // Ollama returns { "models": [{ "name": "...", ... }] }
-            body["models"]
-                .as_array()
-                .unwrap_or(&vec![])
-                .iter()
-                .filter_map(|m| {
-                    let name = m["name"].as_str()?;
-                    Some(AiModel {
-                        id: name.to_string(),
-                        name: name.to_string(),
-                        api_variant: None,
-                        context_length: None,
-                        max_completion_tokens: None,
-                        supported_parameters: None,
-                        pricing_prompt: None,
-                        pricing_completion: None,
-                    })
-                })
-                .collect()
-        }
         AiProvider::OpenRouter => {
             // OpenRouter returns { "data": [{ "id", "name", "context_length",
             //   "top_provider": { "max_completion_tokens" }, "supported_parameters",
@@ -1038,6 +1464,8 @@ pub async fn fetch_models(
                         context_length: None,
                         max_completion_tokens: None,
                         supported_parameters: None,
+                        effective_context_length: None,
+                        effective_context_source: None,
                         pricing_prompt: None,
                         pricing_completion: None,
                     })
@@ -1057,6 +1485,21 @@ pub async fn test_connection(
     endpoints: ProviderEndpoints<'_>,
     api_variant: Option<&str>,
 ) -> anyhow::Result<String> {
+    test_connection_with_observer(provider, model, api_key, endpoints, api_variant, None).await
+}
+
+/// Auditable connection probe. Every HTTP provider uses the same finalized
+/// request observer as chat/Agent/stream so native callers can durably append
+/// the exact credential-free JSON before the transport attempt. The legacy
+/// Tauri wrapper above intentionally passes no observer.
+pub async fn test_connection_with_observer(
+    provider: &AiProvider,
+    model: &str,
+    api_key: &str,
+    endpoints: ProviderEndpoints<'_>,
+    api_variant: Option<&str>,
+    observer: Option<&dyn HttpRetryObserver>,
+) -> anyhow::Result<String> {
     let client = reqwest::Client::new();
 
     // AI のべりすと legacy: 独自エンドポイント (POST <base>) + text / length フィールド
@@ -1074,12 +1517,12 @@ pub async fn test_connection(
             // 接続確認用なので最小値で十分（length 必須）
             "length": 32,
         });
-        let resp = client
+        let request = client
             .post(&url)
             .header("content-type", "application/json")
             .header("Authorization", format!("Bearer {api_key}"))
-            .json(&body)
-            .send()
+            .json(&body);
+        let resp = send_with_429_retry(request, false, 0, observer)
             .await?
             .error_for_status()?;
         let result: serde_json::Value = resp.json().await?;
@@ -1111,13 +1554,13 @@ pub async fn test_connection(
                 ]
             });
 
-            let resp = client
+            let request = client
                 .post(&url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
-                .json(&body)
-                .send()
+                .json(&body);
+            let resp = send_with_429_retry(request, false, 0, observer)
                 .await?
                 .error_for_status()?;
 
@@ -1140,11 +1583,11 @@ pub async fn test_connection(
                 ]
             });
 
-            let resp = client
+            let request = client
                 .post(&url)
                 .header("content-type", "application/json")
-                .json(&body)
-                .send()
+                .json(&body);
+            let resp = send_with_429_retry(request, false, 0, observer)
                 .await?
                 .error_for_status()?;
 
@@ -1191,7 +1634,9 @@ pub async fn test_connection(
                     .header("X-Title", "Grimodex");
             }
 
-            let resp = req.json(&body).send().await?.error_for_status()?;
+            let resp = send_with_429_retry(req.json(&body), false, 0, observer)
+                .await?
+                .error_for_status()?;
 
             let result: serde_json::Value = resp.json().await?;
             let text = result["choices"][0]["message"]["content"]
@@ -1358,6 +1803,10 @@ pub struct ChatParams<'a> {
     pub extra_body: Option<serde_json::Value>,
     /// 429 (Too Many Requests) を受けたときに指数バックオフでリトライするか。
     pub retry_429: bool,
+    /// 実 HTTP 試行を観測する callback。Electron native はここへ pinned audit
+    /// writer を渡す。凍結した Tauri shell など監査 context を持たない呼出しは
+    /// None のまま従来動作を維持する。
+    pub http_retry_observer: Option<Arc<dyn HttpRetryObserver>>,
     /// AI のべりすと専用: Chat API / Completion API の選択。
     pub ai_novelist_mode: AiNovelistMode,
     /// OpenRouter で provider routing を固定する slug (例: "anthropic")。
@@ -1384,6 +1833,74 @@ pub struct ChatParams<'a> {
     /// 解決済みツールプロトコル（native | hermes）。
     /// Hermes のとき本文 `<tool_call>` を受信パースし、stop_reason を上書きする。
     pub resolved_tool_protocol: ResolvedToolProtocol,
+}
+
+/// Observer に公開する endpoint は origin/host のみに限定する。Header、
+/// userinfo、query は型として保持せず、監査境界へ渡せないようにする。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpAttemptEndpoint {
+    pub origin: String,
+    pub host: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpRetryDelaySource {
+    RetryAfter,
+    ExponentialBackoff,
+}
+
+/// Credential-free provider JSON value parsed from the finalized reqwest
+/// request body bytes. Headers are intentionally absent. Prompt/body values
+/// remain exact, while serialization whitespace and object-key order are not
+/// retained. `body=None` is an explicit partial-observation state and must
+/// never be reported as complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpPreparedRequest {
+    pub body: Option<serde_json::Value>,
+}
+
+/// 1-based の実 HTTP send 直前に通知される pre-send intent。callback 成功後と
+/// `RequestBuilder::send` invocation の間で process が停止し得るため、ここでは
+/// actual send count を主張せず、予定する `send_ordinal` のみ公開する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpAttemptStarted {
+    pub attempt_number: u32,
+    pub send_ordinal: u32,
+    pub is_retry: bool,
+    pub reuses_initial_payload: bool,
+    pub endpoint: Option<HttpAttemptEndpoint>,
+}
+
+/// HTTP 応答（または status を得る前の transport error）を受信した直後に通知される。
+/// `retry_delay_ms` は次の send 前に実際に選択された待機値で、待機しない最終応答は
+/// None。Retry-After の生 header 値は渡さない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpAttemptFinished {
+    pub attempt_number: u32,
+    pub actual_send_count: Option<u32>,
+    pub status: Option<u16>,
+    pub retry_enabled: bool,
+    pub retry_after_observed_ms: Option<u64>,
+    pub retry_delay_ms: Option<u64>,
+    pub retry_delay_source: Option<HttpRetryDelaySource>,
+    pub will_retry: bool,
+    pub retry_exhausted: bool,
+    pub retry_payload_clone_unavailable: bool,
+    /// Local cancellation won while an invoked send was still pending.
+    pub local_abort_observed: bool,
+    /// The provider does not expose an abort receipt on these HTTP transports.
+    pub provider_abort_receipt_observed: bool,
+    pub is_final: bool,
+}
+
+/// HTTP 試行の fail-closed observer。callback が失敗した場合、started では該当
+/// send を行わず、finished では次 retry と response delivery の双方を止める。
+pub trait HttpRetryObserver: Send + Sync {
+    fn request_prepared(&self, _request: &HttpPreparedRequest) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn attempt_started(&self, attempt: &HttpAttemptStarted) -> anyhow::Result<()>;
+    fn attempt_finished(&self, attempt: &HttpAttemptFinished) -> anyhow::Result<()>;
 }
 
 fn supports_prompt_cache(provider: &AiProvider, model: &str) -> bool {
@@ -1624,13 +2141,11 @@ async fn send_chat_ainoverist(
             build_ainoverist_body(params.model, messages, &params.extra_body)
         }
     };
-    if let Some(tokens) = params.request_max_output_tokens {
-        let key = match params.ai_novelist_mode {
-            AiNovelistMode::Chat => "max_tokens",
-            AiNovelistMode::Completion => "length",
-        };
-        body[key] = serde_json::json!(tokens);
-    }
+    let key = match params.ai_novelist_mode {
+        AiNovelistMode::Chat => "max_tokens",
+        AiNovelistMode::Completion => "length",
+    };
+    body[key] = serde_json::json!(effective_request_max_output_tokens(params));
 
     let req = client
         .post(&url)
@@ -1638,9 +2153,14 @@ async fn send_chat_ainoverist(
         .header("Authorization", format!("Bearer {}", params.api_key))
         .json(&body);
 
-    let resp = send_with_429_retry(req, params.retry_429, 3)
-        .await?
-        .error_for_status()?;
+    let resp = send_with_429_retry(
+        req,
+        params.retry_429,
+        3,
+        params.http_retry_observer.as_deref(),
+    )
+    .await?
+    .error_for_status()?;
     let result: serde_json::Value = resp.json().await?;
     parse_ainoverist_response(&result)
 }
@@ -1766,38 +2286,273 @@ fn parse_retry_after_ms(resp: &reqwest::Response) -> Option<u64> {
     Some(secs.saturating_mul(1000))
 }
 
+fn observe_http_endpoint(request: &reqwest::RequestBuilder) -> Option<HttpAttemptEndpoint> {
+    let request = request.try_clone()?.build().ok()?;
+    let url = request.url();
+    Some(HttpAttemptEndpoint {
+        // Origin excludes path, query, fragment, and userinfo by construction.
+        origin: url.origin().ascii_serialization(),
+        host: url.host_str()?.to_string(),
+    })
+}
+
+fn observe_http_prepared_request(request: &reqwest::RequestBuilder) -> HttpPreparedRequest {
+    let body = request
+        .try_clone()
+        .and_then(|builder| builder.build().ok())
+        .and_then(|request| {
+            request
+                .body()
+                .and_then(reqwest::Body::as_bytes)
+                .map(Vec::from)
+        })
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    HttpPreparedRequest { body }
+}
+
+fn exponential_retry_delay_ms(attempt_number: u32) -> u64 {
+    let shift = attempt_number.saturating_sub(1).min(63);
+    let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    1000u64.saturating_mul(multiplier)
+}
+
+fn notify_attempt_started(
+    observer: Option<&dyn HttpRetryObserver>,
+    attempt: &HttpAttemptStarted,
+) -> anyhow::Result<()> {
+    if let Some(observer) = observer {
+        observer.attempt_started(attempt).map_err(|error| {
+            anyhow::anyhow!(
+                "HTTP attempt audit failed before send {}: {error:#}",
+                attempt.attempt_number
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn notify_request_prepared(
+    observer: Option<&dyn HttpRetryObserver>,
+    request: &HttpPreparedRequest,
+) -> anyhow::Result<()> {
+    if let Some(observer) = observer {
+        observer.request_prepared(request).map_err(|error| {
+            anyhow::anyhow!("HTTP effective request audit failed before send: {error:#}")
+        })?;
+    }
+    Ok(())
+}
+
+fn notify_attempt_finished(
+    observer: Option<&dyn HttpRetryObserver>,
+    attempt: &HttpAttemptFinished,
+) -> anyhow::Result<()> {
+    if let Some(observer) = observer {
+        observer.attempt_finished(attempt).map_err(|error| {
+            anyhow::anyhow!(
+                "HTTP attempt audit failed after send {}: {error:#}",
+                attempt.attempt_number
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// 429 を受けたときに指数バックオフでリトライするヘルパ。
 /// `retry_enabled = false` のときはリトライせず初回応答を返す。
 pub(crate) async fn send_with_429_retry(
     initial: reqwest::RequestBuilder,
     retry_enabled: bool,
     max_retries: u32,
+    observer: Option<&dyn HttpRetryObserver>,
 ) -> anyhow::Result<reqwest::Response> {
+    send_with_429_retry_inner(initial, retry_enabled, max_retries, observer, None)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HTTP request cancelled without a cancellation flag"))
+}
+
+pub(crate) async fn wait_for_stream_abort(abort_flag: &std::sync::atomic::AtomicBool) {
+    while !abort_flag.load(Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+pub(crate) async fn send_with_429_retry_cancelable(
+    initial: reqwest::RequestBuilder,
+    retry_enabled: bool,
+    max_retries: u32,
+    observer: Option<&dyn HttpRetryObserver>,
+    abort_flag: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<Option<reqwest::Response>> {
+    send_with_429_retry_inner(
+        initial,
+        retry_enabled,
+        max_retries,
+        observer,
+        Some(abort_flag),
+    )
+    .await
+}
+
+async fn send_with_429_retry_inner(
+    initial: reqwest::RequestBuilder,
+    retry_enabled: bool,
+    max_retries: u32,
+    observer: Option<&dyn HttpRetryObserver>,
+    abort_flag: Option<&std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<Option<reqwest::Response>> {
     let mut current = initial;
-    let mut attempt: u32 = 0;
+    let mut attempt_number: u32 = 1;
+    if observer.is_some() {
+        let prepared = observe_http_prepared_request(&current);
+        notify_request_prepared(observer, &prepared)?;
+    }
     loop {
+        if abort_flag.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Ok(None);
+        }
         // try_clone は send 前にしかできないので、ループの先頭で次の試行用にクローン
-        let next = if retry_enabled && attempt < max_retries {
+        let retry_limit_allows_next = retry_enabled && attempt_number <= max_retries;
+        let next = if retry_limit_allows_next {
             current.try_clone()
         } else {
             None
         };
-        let resp = current.send().await?;
-        if !retry_enabled || resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Ok(resp);
-        }
-        let Some(c) = next else {
-            // 残り試行回数なし。最後の 429 応答をそのまま返し、呼び出し側で
-            // error_for_status などのハンドリングに任せる。
-            return Ok(resp);
+        let started = HttpAttemptStarted {
+            attempt_number,
+            send_ordinal: attempt_number,
+            is_retry: attempt_number > 1,
+            reuses_initial_payload: attempt_number > 1,
+            endpoint: observer.and_then(|_| observe_http_endpoint(&current)),
         };
-        let wait_ms = parse_retry_after_ms(&resp).unwrap_or_else(|| {
-            // 指数バックオフ: 1s, 2s, 4s
-            1000u64 * (1u64 << attempt)
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-        attempt += 1;
-        current = c;
+        // Fail closed: durable started observation must precede the actual send.
+        notify_attempt_started(observer, &started)?;
+
+        if abort_flag.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            let finished = HttpAttemptFinished {
+                attempt_number,
+                actual_send_count: Some(attempt_number.saturating_sub(1)),
+                status: None,
+                retry_enabled,
+                retry_after_observed_ms: None,
+                retry_delay_ms: None,
+                retry_delay_source: None,
+                will_retry: false,
+                retry_exhausted: false,
+                retry_payload_clone_unavailable: false,
+                local_abort_observed: true,
+                provider_abort_receipt_observed: false,
+                is_final: true,
+            };
+            notify_attempt_finished(observer, &finished)?;
+            return Ok(None);
+        }
+
+        let send_result = if let Some(flag) = abort_flag {
+            tokio::select! {
+                biased;
+                result = current.send() => result,
+                _ = wait_for_stream_abort(flag) => {
+                    let finished = HttpAttemptFinished {
+                        attempt_number,
+                        actual_send_count: None,
+                        status: None,
+                        retry_enabled,
+                        retry_after_observed_ms: None,
+                        retry_delay_ms: None,
+                        retry_delay_source: None,
+                        will_retry: false,
+                        retry_exhausted: false,
+                        retry_payload_clone_unavailable: false,
+                        local_abort_observed: true,
+                        provider_abort_receipt_observed: false,
+                        is_final: true,
+                    };
+                    notify_attempt_finished(observer, &finished)?;
+                    return Ok(None);
+                },
+            }
+        } else {
+            current.send().await
+        };
+        let resp = match send_result {
+            Ok(resp) => resp,
+            Err(error) => {
+                let finished = HttpAttemptFinished {
+                    attempt_number,
+                    actual_send_count: Some(attempt_number),
+                    status: None,
+                    retry_enabled,
+                    retry_after_observed_ms: None,
+                    retry_delay_ms: None,
+                    retry_delay_source: None,
+                    will_retry: false,
+                    retry_exhausted: false,
+                    retry_payload_clone_unavailable: false,
+                    local_abort_observed: false,
+                    provider_abort_receipt_observed: false,
+                    is_final: true,
+                };
+                // Do not deliver an unobserved transport failure to the caller.
+                notify_attempt_finished(observer, &finished)?;
+                return Err(error.into());
+            }
+        };
+
+        let status = resp.status();
+        let is_429 = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+        let retry_after_observed_ms = is_429.then(|| parse_retry_after_ms(&resp)).flatten();
+        let will_retry = is_429 && retry_enabled && next.is_some();
+        let (retry_delay_ms, retry_delay_source) = if will_retry {
+            match retry_after_observed_ms {
+                Some(delay) => (Some(delay), Some(HttpRetryDelaySource::RetryAfter)),
+                None => (
+                    Some(exponential_retry_delay_ms(attempt_number)),
+                    Some(HttpRetryDelaySource::ExponentialBackoff),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+        let finished = HttpAttemptFinished {
+            attempt_number,
+            actual_send_count: Some(attempt_number),
+            status: Some(status.as_u16()),
+            retry_enabled,
+            retry_after_observed_ms,
+            retry_delay_ms,
+            retry_delay_source,
+            will_retry,
+            retry_exhausted: is_429 && retry_enabled && attempt_number > max_retries,
+            retry_payload_clone_unavailable: is_429 && retry_limit_allows_next && next.is_none(),
+            local_abort_observed: false,
+            provider_abort_receipt_observed: false,
+            is_final: !will_retry,
+        };
+        // For a 429 this callback also durably records execution.retrying. A callback
+        // error stops the retry before its sleep/send and suppresses final delivery.
+        notify_attempt_finished(observer, &finished)?;
+
+        if !will_retry {
+            return Ok(Some(resp));
+        }
+        let wait_ms = retry_delay_ms.ok_or_else(|| {
+            anyhow::anyhow!("HTTP retry invariant failed: retry selected without a delay")
+        })?;
+        let cloned_request = next.ok_or_else(|| {
+            anyhow::anyhow!("HTTP retry invariant failed: retry selected without a cloned request")
+        })?;
+        if let Some(flag) = abort_flag {
+            tokio::select! {
+                biased;
+                _ = wait_for_stream_abort(flag) => return Ok(None),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {},
+            }
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+        }
+        attempt_number = attempt_number.saturating_add(1);
+        current = cloned_request;
     }
 }
 
@@ -1986,26 +2741,13 @@ pub async fn send_chat(
 
     match params.provider {
         AiProvider::Anthropic => {
-            let (system_content, chat_messages) = split_system_messages(messages);
+            let body = build_anthropic_chat_body(params, messages, false);
 
-            let mut body = serde_json::json!({
-                "model": params.model,
-                "max_tokens": params.request_max_output_tokens.unwrap_or(4096),
-                "messages": chat_messages,
-            });
-            let system_payload = build_system_payload(
-                params.provider,
-                params.model,
-                &system_content,
-                params.system_cache_segments.as_deref(),
-                params.system_volatile_tail.as_deref(),
-            );
-            if !system_content.is_empty() || params.system_cache_segments.is_some() {
-                body["system"] = system_payload;
-            }
-            apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
-
-            let resp = anthropic_send(anthropic_request(&client, params, &body)).await?;
+            let resp = anthropic_send(
+                anthropic_request(&client, params, &body),
+                params.http_retry_observer.as_deref(),
+            )
+            .await?;
             let result: serde_json::Value = resp.json().await?;
             parse_anthropic_response(&result)
         }
@@ -2026,7 +2768,7 @@ pub async fn send_chat(
             insert_chat_completion_token_limit(
                 &mut body,
                 params.provider,
-                openai_max_tokens(params),
+                effective_request_max_output_tokens(params),
             );
             apply_reasoning_to_body(
                 &mut body,
@@ -2050,9 +2792,14 @@ pub async fn send_chat(
             );
 
             let req = openai_compat_request(&client, params, &body);
-            let resp = send_with_429_retry(req, params.retry_429, 3)
-                .await?
-                .error_for_status()?;
+            let resp = send_with_429_retry(
+                req,
+                params.retry_429,
+                3,
+                params.http_retry_observer.as_deref(),
+            )
+            .await?
+            .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
             // 非 tools chat: ToolUse は生成しない (allowed 空)。Hermes 時のみ本文タグを strip。
             parse_openai_response(
@@ -2911,10 +3658,31 @@ fn parse_anthropic_http_error(status: reqwest::StatusCode, body_text: &str) -> a
     anyhow::anyhow!("AI request failed ({}): {}", status.as_u16(), detail.trim())
 }
 
-async fn anthropic_send(req: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
-    let resp = req.send().await?;
+async fn anthropic_send(
+    req: reqwest::RequestBuilder,
+    observer: Option<&dyn HttpRetryObserver>,
+) -> anyhow::Result<reqwest::Response> {
+    let resp = send_with_429_retry(req, false, 0, observer).await?;
     if resp.status().is_success() {
         Ok(resp)
+    } else {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        Err(parse_anthropic_http_error(status, &body_text))
+    }
+}
+
+async fn anthropic_send_cancelable(
+    req: reqwest::RequestBuilder,
+    observer: Option<&dyn HttpRetryObserver>,
+    abort_flag: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<Option<reqwest::Response>> {
+    let Some(resp) = send_with_429_retry_cancelable(req, false, 0, observer, abort_flag).await?
+    else {
+        return Ok(None);
+    };
+    if resp.status().is_success() {
+        Ok(Some(resp))
     } else {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
@@ -2940,6 +3708,36 @@ fn anthropic_request(
         req = req.header("anthropic-beta", betas);
     }
     req.json(body)
+}
+
+/// Build the exact Anthropic Messages API JSON used by both ordinary chat and
+/// streaming chat. Keeping this as a pure builder lets the audit observer and
+/// the transport prove equality against the same finalized value.
+fn build_anthropic_chat_body(
+    params: &ChatParams<'_>,
+    messages: &[(&str, &str)],
+    stream: bool,
+) -> serde_json::Value {
+    let (system_content, chat_messages) = split_system_messages(messages);
+    let mut body = serde_json::json!({
+        "model": params.model,
+        "max_tokens": effective_request_max_output_tokens(params),
+        "messages": chat_messages,
+    });
+    if stream {
+        body["stream"] = serde_json::Value::Bool(true);
+    }
+    if !system_content.is_empty() || params.system_cache_segments.is_some() {
+        body["system"] = build_system_payload(
+            params.provider,
+            params.model,
+            &system_content,
+            params.system_cache_segments.as_deref(),
+            params.system_volatile_tail.as_deref(),
+        );
+    }
+    apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
+    body
 }
 
 /// Build a POST request to an OpenAI-compatible `/chat/completions` endpoint
@@ -2995,6 +3793,129 @@ fn split_system_messages(messages: &[(&str, &str)]) -> (String, Vec<serde_json::
 /// 万一アカウントで未対応なら旧安定版 `web_search_20250305` に差し替える。
 const ANTHROPIC_WEB_SEARCH_TYPE: &str = "web_search_20260209";
 
+/// Build the exact Anthropic Messages API body for an Agent turn. Message and
+/// tool ordering, cache framing, thinking/effort and token limits are all
+/// finalized here before the request is handed to the auditable sender.
+fn build_anthropic_agent_body(
+    params: &ChatParams<'_>,
+    messages: &[AgentMessage],
+    tools: &[AgentToolDef],
+) -> serde_json::Value {
+    let system_content: String = messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::System { content } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut anthropic_messages: Vec<serde_json::Value> = Vec::new();
+    for message in messages {
+        match message {
+            AgentMessage::User { content } => {
+                anthropic_messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": content,
+                }));
+            }
+            AgentMessage::Assistant {
+                content,
+                tool_uses,
+                thinking_blocks,
+            } => {
+                let has_extra = !tool_uses.is_empty() || !thinking_blocks.is_empty();
+                if !has_extra {
+                    anthropic_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": content,
+                    }));
+                } else {
+                    let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                    for block in thinking_blocks {
+                        content_blocks.push(serde_json::json!({
+                            "type": "thinking",
+                            "thinking": block.thinking,
+                            "signature": block.signature,
+                        }));
+                    }
+                    if !content.is_empty() {
+                        content_blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": content,
+                        }));
+                    }
+                    for tool_use in tool_uses {
+                        content_blocks.push(serde_json::json!({
+                            "type": "tool_use",
+                            "id": tool_use.id,
+                            "name": tool_use.name,
+                            "input": tool_use.input,
+                        }));
+                    }
+                    anthropic_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": content_blocks,
+                    }));
+                }
+            }
+            AgentMessage::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                anthropic_messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content,
+                        "is_error": is_error,
+                    }],
+                }));
+            }
+            AgentMessage::System { .. } => {}
+        }
+    }
+
+    // Deterministic tool ordering preserves Anthropic prefix-cache identity.
+    let mut sorted_tools: Vec<_> = tools.iter().collect();
+    sorted_tools.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut anthropic_tools: Vec<serde_json::Value> = sorted_tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            })
+        })
+        .collect();
+    if let Some(web_search) = params.web_search.as_ref() {
+        if web_search.enabled {
+            anthropic_tools.push(build_anthropic_web_search_tool(web_search));
+        }
+    }
+
+    let mut body = serde_json::json!({
+        "model": params.model,
+        "max_tokens": effective_request_max_output_tokens(params),
+        "messages": anthropic_messages,
+        "tools": anthropic_tools,
+    });
+    if !system_content.is_empty() || params.system_cache_segments.is_some() {
+        body["system"] = build_system_payload(
+            params.provider,
+            params.model,
+            &system_content,
+            params.system_cache_segments.as_deref(),
+            params.system_volatile_tail.as_deref(),
+        );
+    }
+    apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
+    body
+}
+
 pub async fn send_chat_with_tools(
     params: &ChatParams<'_>,
     messages: &[AgentMessage],
@@ -3023,127 +3944,13 @@ pub async fn send_chat_with_tools(
 
     match params.provider {
         AiProvider::Anthropic => {
-            // Collect system content
-            let system_content: String = messages
-                .iter()
-                .filter_map(|m| {
-                    if let AgentMessage::System { content } = m {
-                        Some(content.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let body = build_anthropic_agent_body(params, messages, tools);
 
-            // Build Anthropic message array
-            let mut anthropic_messages: Vec<serde_json::Value> = Vec::new();
-            for msg in messages {
-                match msg {
-                    AgentMessage::User { content } => {
-                        anthropic_messages
-                            .push(serde_json::json!({ "role": "user", "content": content }));
-                    }
-                    AgentMessage::Assistant {
-                        content,
-                        tool_uses,
-                        thinking_blocks,
-                    } => {
-                        let has_extra = !tool_uses.is_empty() || !thinking_blocks.is_empty();
-                        if !has_extra {
-                            anthropic_messages.push(
-                                serde_json::json!({ "role": "assistant", "content": content }),
-                            );
-                        } else {
-                            let mut content_blocks: Vec<serde_json::Value> = Vec::new();
-                            // thinking ブロックを先に追加（API 要件: signature 付き）
-                            for tb in thinking_blocks {
-                                content_blocks.push(serde_json::json!({
-                                    "type": "thinking",
-                                    "thinking": tb.thinking,
-                                    "signature": tb.signature
-                                }));
-                            }
-                            if !content.is_empty() {
-                                content_blocks
-                                    .push(serde_json::json!({ "type": "text", "text": content }));
-                            }
-                            for tu in tool_uses {
-                                content_blocks.push(serde_json::json!({
-                                    "type": "tool_use",
-                                    "id": tu.id,
-                                    "name": tu.name,
-                                    "input": tu.input
-                                }));
-                            }
-                            anthropic_messages.push(serde_json::json!({
-                                "role": "assistant",
-                                "content": content_blocks
-                            }));
-                        }
-                    }
-                    AgentMessage::ToolResult {
-                        tool_use_id,
-                        content,
-                        is_error,
-                    } => {
-                        anthropic_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": [{
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": content,
-                                "is_error": is_error
-                            }]
-                        }));
-                    }
-                    AgentMessage::System { .. } => {}
-                }
-            }
-
-            // Build Anthropic tool definitions (deterministic name order for prefix cache)
-            let mut sorted_tools: Vec<_> = tools.iter().collect();
-            sorted_tools.sort_by(|a, b| a.name.cmp(&b.name));
-            let mut anthropic_tools: Vec<serde_json::Value> = sorted_tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "name": t.name,
-                        "description": t.description,
-                        "input_schema": t.input_schema
-                    })
-                })
-                .collect();
-
-            // RAG: native web_search サーバツールを追加 (max_uses でキャップ)。
-            // Anthropic がサーバ側で検索→引用付き最終回答を返すため stop_reason は
-            // end_turn。クライアント executeTool は介在しない。Phase 2: ドメイン制御
-            // (allowed/blocked) はツール定義に直接載る。
-            if let Some(ws) = params.web_search.as_ref() {
-                if ws.enabled {
-                    anthropic_tools.push(build_anthropic_web_search_tool(ws));
-                }
-            }
-
-            let mut body = serde_json::json!({
-                "model": params.model,
-                "max_tokens": params.request_max_output_tokens.unwrap_or(4096),
-                "messages": anthropic_messages,
-                "tools": anthropic_tools
-            });
-            if !system_content.is_empty() || params.system_cache_segments.is_some() {
-                body["system"] = build_system_payload(
-                    params.provider,
-                    params.model,
-                    &system_content,
-                    params.system_cache_segments.as_deref(),
-                    params.system_volatile_tail.as_deref(),
-                );
-            }
-            // thinking / effort パラメータを追加
-            apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
-
-            let resp = anthropic_send(anthropic_request(&client, params, &body)).await?;
+            let resp = anthropic_send(
+                anthropic_request(&client, params, &body),
+                params.http_retry_observer.as_deref(),
+            )
+            .await?;
             let result: serde_json::Value = resp.json().await?;
             parse_anthropic_response(&result)
         }
@@ -3276,7 +4083,7 @@ pub async fn send_chat_with_tools(
             insert_chat_completion_token_limit(
                 &mut body,
                 params.provider,
-                openai_max_tokens(params),
+                effective_request_max_output_tokens(params),
             );
             apply_reasoning_to_body(
                 &mut body,
@@ -3329,7 +4136,13 @@ pub async fn send_chat_with_tools(
                 );
             }
             let req = openai_compat_request(&client, params, &body);
-            let resp = send_with_429_retry(req, params.retry_429, 3).await?;
+            let resp = send_with_429_retry(
+                req,
+                params.retry_429,
+                3,
+                params.http_retry_observer.as_deref(),
+            )
+            .await?;
             let status = resp.status();
             let body_text = resp.text().await?;
             if ai_wire_log_enabled() {
@@ -3387,7 +4200,7 @@ pub async fn send_chat_with_tools(
 /// post_effect の user content ブロック列（Anthropic 形式）。Codex 前置きには
 /// cache_control を付け、チャンク呼び出し間でキャッシュを再利用させる。
 /// AUDIT POINT: cache_control must sit at the Codex/Scene boundary.
-fn post_effect_user_blocks(
+pub(crate) fn post_effect_user_blocks(
     codex_content: Option<&str>,
     scene_content: &str,
 ) -> Vec<serde_json::Value> {
@@ -3442,20 +4255,60 @@ async fn error_with_response_body(
     anyhow::bail!("HTTP {status} ({url}): {snippet}")
 }
 
-pub async fn call_post_effect_api(
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostEffectRequestRoute {
+    AnthropicMessages,
+    Responses,
+    ChatCompletions,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostEffectOutputTokenLimit {
+    pub field: Option<String>,
+    pub value: Option<u32>,
+    pub source: String,
+    pub omitted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedPostEffectRequest {
+    pub route: PostEffectRequestRoute,
+    pub body: serde_json::Value,
+    pub output_token_limit: PostEffectOutputTokenLimit,
+}
+
+fn explicit_post_effect_limit(field: &str, value: u32) -> PostEffectOutputTokenLimit {
+    PostEffectOutputTokenLimit {
+        field: Some(field.to_string()),
+        value: Some(value),
+        source: "request_body".to_string(),
+        omitted: false,
+    }
+}
+
+fn omitted_post_effect_limit() -> PostEffectOutputTokenLimit {
+    PostEffectOutputTokenLimit {
+        field: None,
+        value: None,
+        source: "provider_default".to_string(),
+        omitted: true,
+    }
+}
+
+/// Build the exact credential-free JSON body sent by [`call_post_effect_api`].
+/// Audit adapters persist this immutable snapshot before dispatch and pass the
+/// same value back to the sender, preventing provider/variant framing drift.
+pub fn prepare_post_effect_request(
     settings: &AiSettings,
-    api_key: &str,
     system_prompt: &str,
-    // Codex JSON text to attach with cache_control (None for intra_scene_consistency).
     codex_content: Option<&str>,
     scene_content: &str,
-) -> anyhow::Result<String> {
-    let client = reqwest::Client::new();
-    let endpoints = settings.endpoints();
-
+) -> anyhow::Result<PreparedPostEffectRequest> {
     match settings.provider {
         AiProvider::Anthropic => {
-            let url = format!("{}/messages", settings.provider.base_url(endpoints));
             let body = serde_json::json!({
                 "model": settings.model,
                 "max_tokens": 4096,
@@ -3465,57 +4318,35 @@ pub async fn call_post_effect_api(
                     "content": post_effect_user_blocks(codex_content, scene_content)
                 }]
             });
-            let resp = client
-                .post(url.as_str())
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("anthropic-beta", "prompt-caching-2024-07-31")
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await?;
-            let resp = error_with_response_body(resp, &url).await?;
-            let result: serde_json::Value = resp.json().await?;
-            extract_first_text_block_anthropic(&result)
+            Ok(PreparedPostEffectRequest {
+                route: PostEffectRequestRoute::AnthropicMessages,
+                body,
+                output_token_limit: explicit_post_effect_limit("max_tokens", 4096),
+            })
         }
         AiProvider::AiNovelist => {
             anyhow::bail!("AiNovelist プロバイダは PostEffects に対応していません")
         }
         _ => {
-            // OpenRouter / OpenAI compat: use /chat/completions.
-            // OpenRouter passes cache_control to Anthropic when using a Claude model.
             let api_variant = resolve_api_variant(None, settings, &settings.model);
-            tracing::info!(
-                "AI route: surface=post_effect route={} provider={:?} model={} variant={}",
-                if crate::ai_responses::uses_responses_api(
-                    &settings.provider,
-                    api_variant.as_deref()
-                ) {
-                    "responses"
-                } else {
-                    "chat_completions"
-                },
-                settings.provider,
-                settings.model,
-                api_variant.as_deref().unwrap_or("-")
-            );
-            // OpenAI Responses API 経路: /responses で単発 grader 呼び出し。
             if crate::ai_responses::uses_responses_api(&settings.provider, api_variant.as_deref()) {
-                return crate::ai_responses::post_effect(
+                let body = crate::ai_responses::post_effect_body(
                     settings,
-                    api_key,
                     system_prompt,
                     codex_content,
                     scene_content,
-                )
-                .await;
+                );
+                let limit = body["max_output_tokens"].as_u64().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "prepared post-effect Responses body is missing max_output_tokens"
+                    )
+                })? as u32;
+                return Ok(PreparedPostEffectRequest {
+                    route: PostEffectRequestRoute::Responses,
+                    body,
+                    output_token_limit: explicit_post_effect_limit("max_output_tokens", limit),
+                });
             }
-            let url = format!(
-                "{}/chat/completions",
-                settings
-                    .provider
-                    .openai_compat_base_url(endpoints, api_variant.as_deref())
-            );
             let user_content =
                 post_effect_openai_user_content(&settings.provider, codex_content, scene_content);
             let mut body = serde_json::json!({
@@ -3525,16 +4356,6 @@ pub async fn call_post_effect_api(
                     { "role": "user",   "content": user_content }
                 ]
             });
-            // OpenAI 直叩き / Sakana(fugu) は reasoning モデルが max_tokens を 400 拒否する
-            // ため max_completion_tokens に切替 + 予算を確保する(他の reasoning 予算サイトと整合)。
-            // OpenRouter は従量課金のため既知の reasoning モデルのみ 32k に広げる。
-            // Ollama / OpenaiCompatible は上限を送らない (None): ローカル・自己管理
-            // エンドポイントの reasoning 系モデル (deepseek-r1 / qwen3 / plamo 等) は
-            // hidden reasoning が max_tokens に課金され 4096 だと JSON 本文が途中で
-            // 切れる一方、32k 等の固定値は小コンテキストのサーバ (vLLM の
-            // max-model-len 8192 等) が「prompt + max_tokens > 上限」の 400 で全シーン
-            // 拒否する。省略すればサーバ既定 (モデル上限 / 残コンテキストへの自動丸め)
-            // に委ねられ、切断も 400 も避けられる。
             let post_effect_limit: Option<u32> =
                 if matches!(settings.provider, AiProvider::OpenAI | AiProvider::Sakana)
                     || (matches!(settings.provider, AiProvider::OpenRouter)
@@ -3549,13 +4370,78 @@ pub async fn call_post_effect_api(
                 } else {
                     Some(4096)
                 };
-            if let Some(limit) = post_effect_limit {
-                insert_chat_completion_token_limit(&mut body, &settings.provider, limit);
-            }
+            let output_token_limit = match post_effect_limit {
+                Some(limit) => {
+                    insert_chat_completion_token_limit(&mut body, &settings.provider, limit);
+                    let field =
+                        if matches!(settings.provider, AiProvider::OpenAI | AiProvider::Sakana) {
+                            "max_completion_tokens"
+                        } else {
+                            "max_tokens"
+                        };
+                    explicit_post_effect_limit(field, limit)
+                }
+                None => omitted_post_effect_limit(),
+            };
             apply_openrouter_provider_pin(
                 &mut body,
                 &settings.provider,
                 settings.openrouter_provider_pin.as_deref(),
+            );
+            Ok(PreparedPostEffectRequest {
+                route: PostEffectRequestRoute::ChatCompletions,
+                body,
+                output_token_limit,
+            })
+        }
+    }
+}
+
+/// Send one previously prepared post-effect request body unchanged.
+pub async fn call_post_effect_api_prepared(
+    settings: &AiSettings,
+    api_key: &str,
+    prepared: &PreparedPostEffectRequest,
+) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    let endpoints = settings.endpoints();
+
+    tracing::info!(
+        "AI route: surface=post_effect route={:?} provider={:?} model={} variant={}",
+        prepared.route,
+        settings.provider,
+        settings.model,
+        resolve_api_variant(None, settings, &settings.model)
+            .as_deref()
+            .unwrap_or("-")
+    );
+
+    match prepared.route {
+        PostEffectRequestRoute::AnthropicMessages => {
+            let url = format!("{}/messages", settings.provider.base_url(endpoints));
+            let resp = client
+                .post(url.as_str())
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-beta", "prompt-caching-2024-07-31")
+                .header("content-type", "application/json")
+                .json(&prepared.body)
+                .send()
+                .await?;
+            let resp = error_with_response_body(resp, &url).await?;
+            let result: serde_json::Value = resp.json().await?;
+            extract_first_text_block_anthropic(&result)
+        }
+        PostEffectRequestRoute::Responses => {
+            crate::ai_responses::post_effect_prepared(settings, api_key, &prepared.body).await
+        }
+        PostEffectRequestRoute::ChatCompletions => {
+            let api_variant = resolve_api_variant(None, settings, &settings.model);
+            let url = format!(
+                "{}/chat/completions",
+                settings
+                    .provider
+                    .openai_compat_base_url(endpoints, api_variant.as_deref())
             );
             let mut req = client
                 .post(url.as_str())
@@ -3573,7 +4459,7 @@ pub async fn call_post_effect_api(
                     .header("HTTP-Referer", "https://github.com/kazormia296/Grimodex")
                     .header("X-Title", "Grimodex");
             }
-            let resp = req.json(&body).send().await?;
+            let resp = req.json(&prepared.body).send().await?;
             let resp = error_with_response_body(resp, &url).await?;
             let result: serde_json::Value = resp.json().await?;
             // トークン上限による途中切断は後段の JSON パース失敗として現れ、
@@ -3581,13 +4467,26 @@ pub async fn call_post_effect_api(
             if result["choices"][0]["finish_reason"].as_str() == Some("length") {
                 tracing::warn!(
                     model = %settings.model,
-                    limit = ?post_effect_limit,
+                    limit = ?prepared.output_token_limit.value,
                     "post_effect: 応答がトークン上限で打ち切られた (finish_reason=length) — JSON パース失敗の可能性が高い"
                 );
             }
             extract_first_text_block_openai(&result)
         }
     }
+}
+
+pub async fn call_post_effect_api(
+    settings: &AiSettings,
+    api_key: &str,
+    system_prompt: &str,
+    // Codex JSON text to attach with cache_control (None for intra_scene_consistency).
+    codex_content: Option<&str>,
+    scene_content: &str,
+) -> anyhow::Result<String> {
+    let prepared =
+        prepare_post_effect_request(settings, system_prompt, codex_content, scene_content)?;
+    call_post_effect_api_prepared(settings, api_key, &prepared).await
 }
 
 fn extract_first_text_block_anthropic(result: &serde_json::Value) -> anyhow::Result<String> {
@@ -3699,6 +4598,70 @@ fn apply_stream_usage_optin(body: &mut serde_json::Value, provider: &AiProvider)
     }
 }
 
+/// Resolve one transport stream read without allowing a local cleanup race to
+/// overwrite an already-observed provider terminal. `None` represents EOF or
+/// the abort side of the caller's `select!`; a transport error after a provider
+/// terminal is likewise treated as quiescence because the first authoritative
+/// terminal wins.
+pub(crate) fn resolve_provider_stream_item<T, E: std::fmt::Display>(
+    item: Option<Result<T, E>>,
+    local_abort_observed: bool,
+    provider_terminal_observed: bool,
+    stop_reason: &mut String,
+) -> anyhow::Result<Option<T>> {
+    match item {
+        Some(Ok(value)) => Ok(Some(value)),
+        Some(Err(_)) if provider_terminal_observed => Ok(None),
+        Some(Err(error)) => Err(anyhow::anyhow!("stream error: {error}")),
+        None => {
+            if local_abort_observed && !provider_terminal_observed {
+                *stop_reason = "stopped".to_string();
+            }
+            Ok(None)
+        }
+    }
+}
+
+pub(crate) fn reject_provider_stream_failure_before_terminal(
+    provider_terminal_observed: bool,
+    message: String,
+) -> anyhow::Result<()> {
+    if provider_terminal_observed {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(message))
+    }
+}
+
+fn observe_anthropic_terminal_marker(event: &serde_json::Value, stop_reason: &mut String) -> bool {
+    match event["type"].as_str() {
+        Some("message_delta") => event["delta"]["stop_reason"]
+            .as_str()
+            .map(|reason| {
+                *stop_reason = reason.to_string();
+                true
+            })
+            .unwrap_or(false),
+        Some("message_stop") => true,
+        _ => false,
+    }
+}
+
+fn observe_openai_terminal_marker(event: &serde_json::Value, stop_reason: &mut String) -> bool {
+    let Some(reason) = event["choices"][0]["finish_reason"].as_str() else {
+        return false;
+    };
+    if reason == "null" {
+        return false;
+    }
+    *stop_reason = if reason == "stop" {
+        "end_turn".to_string()
+    } else {
+        reason.to_string()
+    };
+    true
+}
+
 pub async fn send_chat_stream(
     params: &ChatParams<'_>,
     messages: &[(&str, &str)],
@@ -3708,6 +4671,22 @@ pub async fn send_chat_stream(
 ) -> anyhow::Result<()> {
     let chunk_event = format!("{}:stream-chunk", event_prefix);
     let done_event = format!("{}:stream-done", event_prefix);
+
+    let emit_stopped = || {
+        emitter.emit(
+            &done_event,
+            serde_json::json!({
+                "stop_reason": "stopped",
+                "input_tokens": null,
+                "output_tokens": null,
+            }),
+        );
+    };
+
+    if abort_flag.load(Ordering::Acquire) {
+        emit_stopped();
+        return Ok(());
+    }
 
     let client = reqwest::Client::new();
     log_ai_route("send_chat_stream", params, 0);
@@ -3725,7 +4704,14 @@ pub async fn send_chat_stream(
             );
             return Ok(());
         }
-        let response = send_chat_ainoverist(&client, params, messages).await?;
+        let response = tokio::select! {
+            biased;
+            response = send_chat_ainoverist(&client, params, messages) => response?,
+            _ = wait_for_stream_abort(abort_flag.as_ref()) => {
+                emit_stopped();
+                return Ok(());
+            }
+        };
         for block in &response.blocks {
             if let ResponseBlock::Text { content } = block {
                 if !content.is_empty() {
@@ -3769,49 +4755,53 @@ pub async fn send_chat_stream(
             );
         }
         AiProvider::Anthropic => {
-            let (system_content, chat_messages) = split_system_messages(messages);
+            let body = build_anthropic_chat_body(params, messages, true);
 
-            let mut body = serde_json::json!({
-                "model": params.model,
-                "max_tokens": params.request_max_output_tokens.unwrap_or(4096),
-                "messages": chat_messages,
-                "stream": true,
-            });
-            let system_payload = build_system_payload(
-                params.provider,
-                params.model,
-                &system_content,
-                params.system_cache_segments.as_deref(),
-                params.system_volatile_tail.as_deref(),
-            );
-            if !system_content.is_empty() || params.system_cache_segments.is_some() {
-                body["system"] = system_payload;
-            }
-            apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
-
-            let resp = anthropic_send(anthropic_request(&client, params, &body)).await?;
+            let Some(resp) = anthropic_send_cancelable(
+                anthropic_request(&client, params, &body),
+                params.http_retry_observer.as_deref(),
+                abort_flag.as_ref(),
+            )
+            .await?
+            else {
+                emit_stopped();
+                return Ok(());
+            };
 
             let mut stream = resp.bytes_stream();
             let mut buf = String::new();
             let mut current_block_type = "text".to_string();
             let mut stop_reason = "end_turn".to_string();
+            let mut provider_terminal_observed = false;
             let mut input_tokens: Option<u64> = None;
             let mut output_tokens: Option<u64> = None;
             // N4: prompt cache 計測。Anthropic 直は message_start の usage に載る。
             let mut cache_read_tokens: Option<u64> = None;
             let mut cache_write_tokens: Option<u64> = None;
 
-            while let Some(chunk) = stream.next().await {
-                if abort_flag.load(Ordering::Relaxed) {
-                    stop_reason = "stopped".to_string();
+            'anthropic_stream: loop {
+                let next_chunk = tokio::select! {
+                    biased;
+                    chunk = stream.next() => chunk,
+                    _ = wait_for_stream_abort(abort_flag.as_ref()) => None,
+                };
+                let Some(bytes) = resolve_provider_stream_item(
+                    next_chunk,
+                    abort_flag.load(Ordering::Acquire),
+                    provider_terminal_observed,
+                    &mut stop_reason,
+                )?
+                else {
                     break;
-                }
-                let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
+                };
                 buf.push_str(&String::from_utf8_lossy(&bytes));
                 // separator を含まないまま buf が上限を超えたら中断 (RUST-DOS-02)。
                 // separator があれば下の while で drain されるため、ここに到達する
                 // のは「complete frame が一つも無いのに肥大化した」病的ケースのみ。
                 if buf.len() > MAX_SSE_BUFFER_BYTES && find_sse_frame_separator(&buf).is_none() {
+                    if provider_terminal_observed {
+                        break 'anthropic_stream;
+                    }
                     return Err(anyhow::anyhow!(
                         "SSE buffer exceeded {MAX_SSE_BUFFER_BYTES} bytes without a frame separator"
                     ));
@@ -3826,11 +4816,17 @@ pub async fn send_chat_stream(
                         if let Some(rest) = line.strip_prefix("data: ") {
                             let data = rest.trim_end_matches('\r');
                             if data == "[DONE]" {
+                                provider_terminal_observed = true;
                                 break;
                             }
                             let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
                                 continue;
                             };
+                            if !provider_terminal_observed
+                                && observe_anthropic_terminal_marker(&json, &mut stop_reason)
+                            {
+                                provider_terminal_observed = true;
+                            }
 
                             match json["type"].as_str() {
                                 Some("content_block_start") => {
@@ -3862,9 +4858,6 @@ pub async fn send_chat_stream(
                                     }
                                 }
                                 Some("message_delta") => {
-                                    if let Some(reason) = json["delta"]["stop_reason"].as_str() {
-                                        stop_reason = reason.to_string();
-                                    }
                                     if let Some(out) = json["usage"]["output_tokens"].as_u64() {
                                         output_tokens = Some(out);
                                     }
@@ -3882,6 +4875,7 @@ pub async fn send_chat_stream(
                                         cache_write_tokens = cw;
                                     }
                                 }
+                                Some("message_stop") => {}
                                 _ => {}
                             }
                         }
@@ -3920,7 +4914,7 @@ pub async fn send_chat_stream(
             insert_chat_completion_token_limit(
                 &mut body,
                 params.provider,
-                openai_max_tokens(params),
+                effective_request_max_output_tokens(params),
             );
             apply_reasoning_to_body(
                 &mut body,
@@ -3960,7 +4954,18 @@ pub async fn send_chat_stream(
             }
 
             let req = openai_compat_request(&client, params, &body);
-            let resp = send_with_429_retry(req, params.retry_429, 3).await?;
+            let Some(resp) = send_with_429_retry_cancelable(
+                req,
+                params.retry_429,
+                3,
+                params.http_retry_observer.as_deref(),
+                abort_flag.as_ref(),
+            )
+            .await?
+            else {
+                emit_stopped();
+                return Ok(());
+            };
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
@@ -3970,6 +4975,7 @@ pub async fn send_chat_stream(
             let mut stream = resp.bytes_stream();
             let mut buf = String::new();
             let mut stop_reason = "end_turn".to_string();
+            let mut provider_terminal_observed = false;
             let mut input_tokens: Option<u64> = None;
             let mut output_tokens: Option<u64> = None;
             // OpenRouter は usage.cost を返す (他プロバイダは None → FE が概算)。
@@ -3979,15 +4985,27 @@ pub async fn send_chat_stream(
             let mut cache_read_tokens: Option<u64> = None;
             let mut cache_write_tokens: Option<u64> = None;
 
-            while let Some(chunk) = stream.next().await {
-                if abort_flag.load(Ordering::Relaxed) {
-                    stop_reason = "stopped".to_string();
+            'openai_stream: loop {
+                let next_chunk = tokio::select! {
+                    biased;
+                    chunk = stream.next() => chunk,
+                    _ = wait_for_stream_abort(abort_flag.as_ref()) => None,
+                };
+                let Some(bytes) = resolve_provider_stream_item(
+                    next_chunk,
+                    abort_flag.load(Ordering::Acquire),
+                    provider_terminal_observed,
+                    &mut stop_reason,
+                )?
+                else {
                     break;
-                }
-                let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
+                };
                 buf.push_str(&String::from_utf8_lossy(&bytes));
                 // separator を含まないまま buf が上限を超えたら中断 (RUST-DOS-02)。
                 if buf.len() > MAX_SSE_BUFFER_BYTES && find_sse_frame_separator(&buf).is_none() {
+                    if provider_terminal_observed {
+                        break 'openai_stream;
+                    }
                     return Err(anyhow::anyhow!(
                         "SSE buffer exceeded {MAX_SSE_BUFFER_BYTES} bytes without a frame separator"
                     ));
@@ -4001,6 +5019,7 @@ pub async fn send_chat_stream(
                         if let Some(rest) = line.strip_prefix("data: ") {
                             let data = rest.trim_end_matches('\r');
                             if data.trim() == "[DONE]" {
+                                provider_terminal_observed = true;
                                 break;
                             }
                             let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
@@ -4027,15 +5046,12 @@ pub async fn send_chat_stream(
                                 cost = Some(c);
                             }
 
-                            // finish_reason
-                            if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
-                                if reason != "null" {
-                                    stop_reason = if reason == "stop" {
-                                        "end_turn".to_string()
-                                    } else {
-                                        reason.to_string()
-                                    };
-                                }
+                            // The first provider terminal is authoritative;
+                            // later usage/[DONE] may still enrich the result.
+                            if !provider_terminal_observed
+                                && observe_openai_terminal_marker(&json, &mut stop_reason)
+                            {
+                                provider_terminal_observed = true;
                             }
 
                             let delta = &json["choices"][0]["delta"];
@@ -4107,6 +5123,9 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     // ── 複数 OpenAI 互換エンドポイント (Approach B) ──────────────────────────
 
@@ -4796,6 +5815,183 @@ mod tests {
         assert!(blocks[1].get("cache_control").is_none());
     }
 
+    fn post_effect_settings(provider: AiProvider, model: &str) -> AiSettings {
+        AiSettings {
+            provider,
+            model: model.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prepared_post_effect_anthropic_body_is_exact_and_cache_aware() {
+        let prepared = prepare_post_effect_request(
+            &post_effect_settings(AiProvider::Anthropic, "claude-test"),
+            "system exact",
+            Some("codex exact"),
+            "scene exact",
+        )
+        .expect("prepare Anthropic request");
+
+        assert_eq!(prepared.route, PostEffectRequestRoute::AnthropicMessages);
+        assert_eq!(
+            prepared.body,
+            serde_json::json!({
+                "model": "claude-test",
+                "max_tokens": 4096,
+                "system": "system exact",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "[Codex]\ncodex exact",
+                            "cache_control": { "type": "ephemeral" }
+                        },
+                        { "type": "text", "text": "[Scene]\nscene exact" }
+                    ]
+                }]
+            })
+        );
+        assert_eq!(
+            prepared.output_token_limit,
+            explicit_post_effect_limit("max_tokens", 4096)
+        );
+    }
+
+    #[test]
+    fn prepared_post_effect_responses_body_is_exact_for_every_supported_provider() {
+        for (provider, expected_limit) in [
+            (AiProvider::OpenAI, 32_000),
+            (AiProvider::Sakana, 32_000),
+            (AiProvider::OpenRouter, 4096),
+            (AiProvider::OpenaiCompatible, 4096),
+        ] {
+            let mut settings = post_effect_settings(provider, "response-model");
+            match settings.provider {
+                AiProvider::OpenaiCompatible => {
+                    settings.openai_compatible_endpoints = vec![OpenaiCompatibleEndpoint {
+                        id: "responses-endpoint".into(),
+                        base_url: "http://127.0.0.1:1234".into(),
+                        api_variant: Some("responses".into()),
+                        ..Default::default()
+                    }];
+                    settings.active_openai_compatible_endpoint_id =
+                        Some("responses-endpoint".into());
+                }
+                _ => settings.model_api_variant = Some("responses".into()),
+            }
+
+            let prepared = prepare_post_effect_request(
+                &settings,
+                "system exact",
+                Some("codex exact"),
+                "scene exact",
+            )
+            .expect("prepare Responses request");
+
+            assert_eq!(prepared.route, PostEffectRequestRoute::Responses);
+            assert_eq!(prepared.body["model"], "response-model");
+            assert_eq!(prepared.body["instructions"], "system exact");
+            assert_eq!(prepared.body["max_output_tokens"], expected_limit);
+            assert_eq!(
+                prepared.body["input"][0]["content"],
+                serde_json::json!([
+                    { "type": "input_text", "text": "[Codex]\ncodex exact" },
+                    { "type": "input_text", "text": "[Scene]\nscene exact" }
+                ])
+            );
+            assert_eq!(
+                prepared.output_token_limit,
+                explicit_post_effect_limit("max_output_tokens", expected_limit)
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_post_effect_chat_bodies_cover_limits_framing_and_provider_pin() {
+        let cases = [
+            (
+                AiProvider::OpenAI,
+                "gpt-4.1",
+                Some(("max_completion_tokens", 32_000)),
+            ),
+            (
+                AiProvider::Sakana,
+                "fugu",
+                Some(("max_completion_tokens", 32_000)),
+            ),
+            (
+                AiProvider::OpenRouter,
+                "anthropic/claude",
+                Some(("max_tokens", 4096)),
+            ),
+            (
+                AiProvider::OpenRouter,
+                "openai/gpt-5",
+                Some(("max_tokens", 32_000)),
+            ),
+            (AiProvider::Ollama, "qwen", None),
+            (AiProvider::OpenaiCompatible, "local", None),
+            (AiProvider::Cli, "cli-model", Some(("max_tokens", 4096))),
+        ];
+
+        for (provider, model, expected_limit) in cases {
+            let is_openrouter = matches!(provider, AiProvider::OpenRouter);
+            let mut settings = post_effect_settings(provider, model);
+            if is_openrouter {
+                settings.openrouter_provider_pin = Some("anthropic".into());
+            }
+            let prepared = prepare_post_effect_request(
+                &settings,
+                "system exact",
+                Some("codex exact"),
+                "scene exact",
+            )
+            .expect("prepare chat-completions request");
+
+            assert_eq!(prepared.route, PostEffectRequestRoute::ChatCompletions);
+            assert_eq!(prepared.body["model"], model);
+            assert_eq!(prepared.body["messages"][0]["content"], "system exact");
+            if is_openrouter {
+                assert!(prepared.body["messages"][1]["content"].is_array());
+                assert_eq!(prepared.body["provider"]["order"][0], "anthropic");
+            } else {
+                assert_eq!(
+                    prepared.body["messages"][1]["content"],
+                    "[Codex]\ncodex exact\n\n[Scene]\nscene exact"
+                );
+                assert!(prepared.body.get("provider").is_none());
+            }
+            match expected_limit {
+                Some((field, value)) => {
+                    assert_eq!(prepared.body[field], value);
+                    assert_eq!(
+                        prepared.output_token_limit,
+                        explicit_post_effect_limit(field, value)
+                    );
+                }
+                None => {
+                    assert!(prepared.body.get("max_tokens").is_none());
+                    assert!(prepared.body.get("max_completion_tokens").is_none());
+                    assert_eq!(prepared.output_token_limit, omitted_post_effect_limit());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_post_effect_rejects_unsupported_ai_novelist_before_dispatch() {
+        let error = prepare_post_effect_request(
+            &post_effect_settings(AiProvider::AiNovelist, "novelist"),
+            "system",
+            None,
+            "scene",
+        )
+        .expect_err("AI Novelist is unsupported for post-effect");
+        assert!(error.to_string().contains("PostEffects"));
+    }
+
     #[test]
     fn apply_openrouter_web_search_agentic_pushes_server_tool() {
         // agentic: 既存 tools[] へ server tool を追加する。
@@ -4937,6 +6133,7 @@ mod tests {
             provider: AiProvider::OpenAI,
             model: "gpt-4o".to_string(),
             ollama_endpoint: "http://localhost:11434".to_string(),
+            ollama_context_lengths: BTreeMap::from([("novel-model:latest".to_string(), 65_536)]),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
             openai_compatible_endpoints: Vec::new(),
@@ -4955,6 +6152,13 @@ mod tests {
 
         assert_eq!(loaded.provider, AiProvider::OpenAI);
         assert_eq!(loaded.model, "gpt-4o");
+        assert_eq!(
+            loaded
+                .ollama_context_lengths
+                .get("novel-model:latest")
+                .copied(),
+            Some(65_536)
+        );
         // save 往復で override が消えないこと（SHIP-BREAKER B）。
         assert_eq!(loaded.reasoning_effort_override.as_deref(), Some("high"));
 
@@ -5333,43 +6537,99 @@ mod tests {
     }
 
     #[test]
-    fn test_openai_max_tokens_openrouter_reasoning_headroom() {
-        // OpenRouter provider で model 名だけ差し替えて openai_max_tokens を測る。
-        fn mt(settings: &AiSettings, model: &'static str, override_tokens: Option<u32>) -> u32 {
+    fn effective_request_max_output_tokens_tracks_wire_default_and_override() {
+        fn mt(
+            settings: &AiSettings,
+            provider: &AiProvider,
+            model: &'static str,
+            override_tokens: Option<u32>,
+            api_variant: Option<&str>,
+            reasoning_enabled: Option<bool>,
+        ) -> u32 {
             let params = ChatParams {
-                provider: &AiProvider::OpenRouter,
+                provider,
                 model,
                 api_key: "sk-test",
                 endpoints: settings.endpoints(),
                 thinking: None,
                 effort: None,
-                reasoning_enabled: None,
+                reasoning_enabled,
                 reasoning_effort: None,
                 extra_body: None,
                 retry_429: false,
+                http_retry_observer: None,
                 ai_novelist_mode: AiNovelistMode::Chat,
                 openrouter_provider_pin: None,
                 system_cache_segments: None,
                 system_volatile_tail: None,
                 request_max_output_tokens: override_tokens,
-                api_variant: None,
+                api_variant: api_variant.map(str::to_string),
                 web_search: None,
                 fusion: None,
                 resolved_tool_protocol: ResolvedToolProtocol::Native,
             };
-            openai_max_tokens(&params)
+            effective_request_max_output_tokens(&params)
         }
         let settings = AiSettings::default();
         // OpenRouter 経由の reasoning モデルは 32k へ(hidden reasoning 予算枯渇の回避)。
-        assert_eq!(mt(&settings, "openai/gpt-5", None), 32_000);
-        assert_eq!(mt(&settings, "openai/gpt-5-pro", None), 32_000);
-        assert_eq!(mt(&settings, "deepseek/deepseek-r1", None), 32_000);
+        assert_eq!(
+            mt(
+                &settings,
+                &AiProvider::OpenRouter,
+                "openai/gpt-5",
+                None,
+                None,
+                None
+            ),
+            32_000
+        );
+        assert_eq!(
+            mt(
+                &settings,
+                &AiProvider::OpenRouter,
+                "deepseek/deepseek-r1",
+                None,
+                None,
+                None
+            ),
+            32_000
+        );
         // 非 reasoning は従来どおり 4096。
-        assert_eq!(mt(&settings, "openai/gpt-4o-mini", None), 4096);
-        // gpt-5-chat は非 reasoning 扱いで 4096。
-        assert_eq!(mt(&settings, "openai/gpt-5-chat", None), 4096);
+        for (provider, model) in [
+            (AiProvider::OpenRouter, "openai/gpt-4o-mini"),
+            (AiProvider::Ollama, "llama3.2"),
+            (AiProvider::OpenaiCompatible, "gpt-4o-mini"),
+        ] {
+            assert_eq!(
+                mt(&settings, &provider, model, None, None, None),
+                4096,
+                "provider={provider:?} model={model}"
+            );
+        }
+        // Responses variant も body builder と同じ reasoning 解決を共有する。
+        assert_eq!(
+            mt(
+                &settings,
+                &AiProvider::OpenaiCompatible,
+                "gpt-5.1",
+                None,
+                Some("responses"),
+                Some(false)
+            ),
+            32_000
+        );
         // renderer で確定した予約値があれば、Rust は同じ値を wire へ写像する。
-        assert_eq!(mt(&settings, "openai/gpt-4o-mini", Some(12_345)), 12_345);
+        assert_eq!(
+            mt(
+                &settings,
+                &AiProvider::Ollama,
+                "llama3.2",
+                Some(12_345),
+                None,
+                None
+            ),
+            12_345
+        );
     }
 
     #[test]
@@ -6497,6 +7757,7 @@ mod tests {
             reasoning_effort: None,
             extra_body: None,
             retry_429: false,
+            http_retry_observer: None,
             ai_novelist_mode: AiNovelistMode::Chat,
             openrouter_provider_pin: None,
             system_cache_segments: Some(segments),
@@ -6529,6 +7790,7 @@ mod tests {
             reasoning_effort: None,
             extra_body: None,
             retry_429: false,
+            http_retry_observer: None,
             ai_novelist_mode: AiNovelistMode::Chat,
             openrouter_provider_pin: None,
             system_cache_segments: None,
@@ -6542,12 +7804,1269 @@ mod tests {
         assert!(super::anthropic_beta_headers(&params).is_none());
     }
 
+    fn anthropic_audit_test_params<'a>(settings: &'a AiSettings, model: &'a str) -> ChatParams<'a> {
+        ChatParams {
+            provider: &AiProvider::Anthropic,
+            model,
+            api_key: "transport-secret-not-in-body",
+            endpoints: settings.endpoints(),
+            thinking: None,
+            effort: None,
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            extra_body: None,
+            retry_429: false,
+            http_retry_observer: None,
+            ai_novelist_mode: AiNovelistMode::Chat,
+            openrouter_provider_pin: None,
+            system_cache_segments: None,
+            system_volatile_tail: None,
+            request_max_output_tokens: None,
+            api_variant: None,
+            web_search: None,
+            fusion: None,
+            resolved_tool_protocol: ResolvedToolProtocol::Native,
+        }
+    }
+
+    fn assert_anthropic_request_observes_exact_body(
+        params: &ChatParams<'_>,
+        body: &serde_json::Value,
+    ) {
+        let client = reqwest::Client::new();
+        let observed = observe_http_prepared_request(&anthropic_request(&client, params, body));
+        assert_eq!(observed.body.as_ref(), Some(body));
+        assert!(!format!("{observed:?}").contains(params.api_key));
+    }
+
+    #[test]
+    fn anthropic_chat_prepared_receipt_equals_final_body() {
+        let settings = AiSettings::default();
+        let mut params = anthropic_audit_test_params(&settings, "claude-opus-4-5");
+        params.system_cache_segments = Some(vec![
+            "stable-system".to_string(),
+            "stable-project".to_string(),
+        ]);
+        params.system_volatile_tail = Some("volatile-scene".to_string());
+        params.request_max_output_tokens = Some(7_777);
+        params.thinking = Some(ThinkingConfig::Enabled {
+            budget_tokens: 2_048,
+            display: Some("summarized".to_string()),
+        });
+        params.effort = Some("high".to_string());
+
+        let messages = [
+            ("system", "fallback-system"),
+            ("user", "write the next line"),
+        ];
+        let body = build_anthropic_chat_body(&params, &messages, false);
+
+        assert_anthropic_request_observes_exact_body(&params, &body);
+        assert_eq!(body["max_tokens"], 7_777);
+        assert_eq!(body["messages"][0]["content"], "write the next line");
+        assert_eq!(body["system"][0]["text"], "stable-system");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["system"][1]["text"], "stable-project");
+        assert_eq!(body["system"][2]["text"], "volatile-scene");
+        assert!(body["system"][2].get("cache_control").is_none());
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 2_048);
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn anthropic_agent_prepared_receipt_equals_final_body() {
+        let settings = AiSettings::default();
+        let mut params = anthropic_audit_test_params(&settings, "claude-sonnet-4-6");
+        params.system_cache_segments = Some(vec!["agent-system".to_string()]);
+        params.system_volatile_tail = Some("latest-agent-state".to_string());
+        params.request_max_output_tokens = Some(8_888);
+        params.thinking = Some(ThinkingConfig::Adaptive {
+            effort: "max".to_string(),
+            display: None,
+        });
+        let messages = vec![
+            AgentMessage::System {
+                content: "fallback-agent-system".to_string(),
+            },
+            AgentMessage::User {
+                content: "inspect the scene".to_string(),
+            },
+            AgentMessage::Assistant {
+                content: "checking".to_string(),
+                thinking_blocks: vec![ThinkingPayload {
+                    thinking: "internal trace".to_string(),
+                    signature: "provider-signature".to_string(),
+                }],
+                tool_uses: vec![ToolUsePayload {
+                    id: "tool-1".to_string(),
+                    name: "search_codex".to_string(),
+                    input: serde_json::json!({ "query": "scene" }),
+                }],
+            },
+            AgentMessage::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                content: "result".to_string(),
+                is_error: false,
+            },
+        ];
+        let tools = vec![
+            AgentToolDef {
+                name: "z_tool".to_string(),
+                description: "last after sorting".to_string(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            },
+            AgentToolDef {
+                name: "a_tool".to_string(),
+                description: "first after sorting".to_string(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            },
+        ];
+        let body = build_anthropic_agent_body(&params, &messages, &tools);
+
+        assert_anthropic_request_observes_exact_body(&params, &body);
+        assert_eq!(body["max_tokens"], 8_888);
+        assert_eq!(body["tools"][0]["name"], "a_tool");
+        assert_eq!(body["tools"][1]["name"], "z_tool");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "thinking");
+        assert_eq!(body["messages"][1]["content"][2]["type"], "tool_use");
+        assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+        assert_eq!(body["system"][0]["text"], "agent-system");
+        assert_eq!(body["system"][1]["text"], "latest-agent-state");
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "max");
+    }
+
+    #[test]
+    fn anthropic_stream_prepared_receipt_equals_final_body() {
+        let settings = AiSettings::default();
+        let mut params = anthropic_audit_test_params(&settings, "claude-sonnet-4-6");
+        params.request_max_output_tokens = Some(9_999);
+        params.effort = Some("medium".to_string());
+        let messages = [("system", "stream-system"), ("user", "continue")];
+        let body = build_anthropic_chat_body(&params, &messages, true);
+
+        assert_anthropic_request_observes_exact_body(&params, &body);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], 9_999);
+        assert_eq!(body["system"], "stream-system");
+        assert_eq!(body["output_config"]["effort"], "medium");
+    }
+
     #[test]
     fn parse_anthropic_http_error_extracts_message() {
         let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"effort: Extra inputs are not permitted"}}"#;
         let err = super::parse_anthropic_http_error(reqwest::StatusCode::BAD_REQUEST, body);
         assert!(err.to_string().contains("400"));
         assert!(err.to_string().contains("Extra inputs are not permitted"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Ollama model metadata
+    // -----------------------------------------------------------------------
+
+    async fn read_test_http_request(stream: &mut TcpStream) -> anyhow::Result<(String, String)> {
+        let mut request = Vec::new();
+        let mut body_start = None;
+        let mut content_length = 0usize;
+
+        loop {
+            let mut chunk = [0u8; 4096];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+
+            if body_start.is_none() {
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let start = position + 4;
+                    let headers = std::str::from_utf8(&request[..position])?;
+                    content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    body_start = Some(start);
+                }
+            }
+
+            if let Some(start) = body_start {
+                if request.len() >= start + content_length {
+                    break;
+                }
+            }
+        }
+
+        let start = body_start.ok_or_else(|| anyhow::anyhow!("missing HTTP header terminator"))?;
+        let headers = std::str::from_utf8(&request[..start - 4])?;
+        let path = headers
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .ok_or_else(|| anyhow::anyhow!("missing HTTP request path"))?
+            .to_string();
+        let body = String::from_utf8(request[start..].to_vec())?;
+        Ok((path, body))
+    }
+
+    async fn write_test_json_response(
+        stream: &mut TcpStream,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let body = serde_json::to_string(body)?;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await?;
+        stream.shutdown().await?;
+        Ok(())
+    }
+
+    async fn write_test_http_response(
+        stream: &mut TcpStream,
+        status: &str,
+        extra_headers: &[(&str, &str)],
+        body: &str,
+    ) -> anyhow::Result<()> {
+        let mut response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        for (name, value) in extra_headers {
+            response.push_str(name);
+            response.push_str(": ");
+            response.push_str(value);
+            response.push_str("\r\n");
+        }
+        response.push_str("\r\n");
+        response.push_str(body);
+        stream.write_all(response.as_bytes()).await?;
+        stream.shutdown().await?;
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct RecordingHttpRetryObserver {
+        prepared: Mutex<Vec<HttpPreparedRequest>>,
+        started: Mutex<Vec<HttpAttemptStarted>>,
+        finished: Mutex<Vec<HttpAttemptFinished>>,
+        fail_prepared: bool,
+        fail_started_at: Option<u32>,
+        fail_finished_at: Option<u32>,
+    }
+
+    impl RecordingHttpRetryObserver {
+        fn failing_prepared() -> Self {
+            Self {
+                fail_prepared: true,
+                ..Self::default()
+            }
+        }
+
+        fn failing_started(attempt_number: u32) -> Self {
+            Self {
+                fail_started_at: Some(attempt_number),
+                ..Self::default()
+            }
+        }
+
+        fn failing_finished(attempt_number: u32) -> Self {
+            Self {
+                fail_finished_at: Some(attempt_number),
+                ..Self::default()
+            }
+        }
+
+        fn started_snapshot(&self) -> anyhow::Result<Vec<HttpAttemptStarted>> {
+            self.started
+                .lock()
+                .map(|events| events.clone())
+                .map_err(|_| anyhow::anyhow!("started observer mutex poisoned"))
+        }
+
+        fn prepared_snapshot(&self) -> anyhow::Result<Vec<HttpPreparedRequest>> {
+            self.prepared
+                .lock()
+                .map(|events| events.clone())
+                .map_err(|_| anyhow::anyhow!("prepared observer mutex poisoned"))
+        }
+
+        fn finished_snapshot(&self) -> anyhow::Result<Vec<HttpAttemptFinished>> {
+            self.finished
+                .lock()
+                .map(|events| events.clone())
+                .map_err(|_| anyhow::anyhow!("finished observer mutex poisoned"))
+        }
+    }
+
+    impl HttpRetryObserver for RecordingHttpRetryObserver {
+        fn request_prepared(&self, request: &HttpPreparedRequest) -> anyhow::Result<()> {
+            if self.fail_prepared {
+                anyhow::bail!("injected prepared append failure");
+            }
+            self.prepared
+                .lock()
+                .map_err(|_| anyhow::anyhow!("prepared observer mutex poisoned"))?
+                .push(request.clone());
+            Ok(())
+        }
+
+        fn attempt_started(&self, attempt: &HttpAttemptStarted) -> anyhow::Result<()> {
+            if self.fail_started_at == Some(attempt.attempt_number) {
+                anyhow::bail!("injected started append failure");
+            }
+            self.started
+                .lock()
+                .map_err(|_| anyhow::anyhow!("started observer mutex poisoned"))?
+                .push(attempt.clone());
+            Ok(())
+        }
+
+        fn attempt_finished(&self, attempt: &HttpAttemptFinished) -> anyhow::Result<()> {
+            if self.fail_finished_at == Some(attempt.attempt_number) {
+                anyhow::bail!("injected finished append failure");
+            }
+            self.finished
+                .lock()
+                .map_err(|_| anyhow::anyhow!("finished observer mutex poisoned"))?
+                .push(attempt.clone());
+            Ok(())
+        }
+    }
+
+    struct AbortOnStartedObserver {
+        recording: RecordingHttpRetryObserver,
+        abort_flag: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl HttpRetryObserver for AbortOnStartedObserver {
+        fn request_prepared(&self, request: &HttpPreparedRequest) -> anyhow::Result<()> {
+            self.recording.request_prepared(request)
+        }
+
+        fn attempt_started(&self, attempt: &HttpAttemptStarted) -> anyhow::Result<()> {
+            self.recording.attempt_started(attempt)?;
+            self.abort_flag.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn attempt_finished(&self, attempt: &HttpAttemptFinished) -> anyhow::Result<()> {
+            self.recording.attempt_finished(attempt)
+        }
+    }
+
+    #[tokio::test]
+    async fn http_retry_observer_records_same_payload_attempts_and_final_status(
+    ) -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for attempt in 1..=3 {
+                let (mut stream, _) = listener.accept().await?;
+                let request = read_test_http_request(&mut stream).await?;
+                requests.push(request);
+                if attempt < 3 {
+                    write_test_http_response(
+                        &mut stream,
+                        "429 Too Many Requests",
+                        &[("Retry-After", "0")],
+                        r#"{"error":"busy"}"#,
+                    )
+                    .await?;
+                } else {
+                    write_test_http_response(&mut stream, "200 OK", &[], r#"{"ok":true}"#).await?;
+                }
+            }
+            Ok::<_, anyhow::Error>(requests)
+        });
+
+        let observer = RecordingHttpRetryObserver::default();
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let request_body = serde_json::json!({
+            "prompt": "same prepared prompt",
+            "context": "exact model-visible body"
+        });
+        let request = client
+            .post(format!(
+                "http://{address}/v1/chat/completions?api_key=url-secret"
+            ))
+            .header("Authorization", "Bearer header-secret")
+            .json(&request_body);
+        let response = send_with_429_retry(request, true, 3, Some(&observer)).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        let requests = server.await??;
+        assert_eq!(requests.len(), 3);
+        assert!(requests.windows(2).all(|pair| pair[0].1 == pair[1].1));
+        assert!(requests
+            .iter()
+            .all(|(path, _)| path == "/v1/chat/completions?api_key=url-secret"));
+        let prepared = observer.prepared_snapshot()?;
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0].body, Some(request_body));
+
+        let started = observer.started_snapshot()?;
+        assert_eq!(
+            started
+                .iter()
+                .map(|event| event.attempt_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            started
+                .iter()
+                .map(|event| event.send_ordinal)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(!started[0].is_retry);
+        assert!(!started[0].reuses_initial_payload);
+        assert!(started[1..]
+            .iter()
+            .all(|event| event.is_retry && event.reuses_initial_payload));
+        let endpoint = started[0]
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing sanitized endpoint"))?;
+        assert_eq!(endpoint.host, "127.0.0.1");
+        assert_eq!(endpoint.origin, format!("http://{address}"));
+        let observer_debug = format!("{started:?}");
+        for forbidden in ["url-secret", "header-secret"] {
+            assert!(!observer_debug.contains(forbidden));
+        }
+
+        let finished = observer.finished_snapshot()?;
+        assert_eq!(finished.len(), 3);
+        for event in &finished[..2] {
+            assert_eq!(event.status, Some(429));
+            assert_eq!(event.retry_after_observed_ms, Some(0));
+            assert_eq!(event.retry_delay_ms, Some(0));
+            assert_eq!(
+                event.retry_delay_source,
+                Some(HttpRetryDelaySource::RetryAfter)
+            );
+            assert!(event.will_retry);
+            assert!(!event.is_final);
+        }
+        assert_eq!(finished[2].status, Some(200));
+        assert_eq!(finished[2].actual_send_count, Some(3));
+        assert!(finished[2].is_final);
+        assert!(!finished[2].will_retry);
+        assert!(!finished[2].retry_exhausted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_retry_observer_records_one_attempt_for_normal_success() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            let request = read_test_http_request(&mut stream).await?;
+            write_test_http_response(&mut stream, "200 OK", &[], r#"{"ok":true}"#).await?;
+            Ok::<_, anyhow::Error>(request)
+        });
+
+        let observer = RecordingHttpRetryObserver::default();
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let response = send_with_429_retry(
+            client
+                .post(format!("http://{address}/normal-success"))
+                .json(&serde_json::json!({"prompt":"one send"})),
+            true,
+            3,
+            Some(&observer),
+        )
+        .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let _request = server.await??;
+
+        let started = observer.started_snapshot()?;
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].attempt_number, 1);
+        assert_eq!(started[0].send_ordinal, 1);
+        assert!(!started[0].is_retry);
+        assert!(!started[0].reuses_initial_payload);
+
+        let finished = observer.finished_snapshot()?;
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].attempt_number, 1);
+        assert_eq!(finished[0].actual_send_count, Some(1));
+        assert_eq!(finished[0].status, Some(200));
+        assert!(!finished[0].will_retry);
+        assert!(!finished[0].retry_exhausted);
+        assert!(finished[0].is_final);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abort_during_429_backoff_prevents_attempt_two() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            let request = read_test_http_request(&mut stream).await?;
+            write_test_http_response(
+                &mut stream,
+                "429 Too Many Requests",
+                &[("Retry-After", "60")],
+                r#"{"error":"busy"}"#,
+            )
+            .await?;
+            Ok::<_, anyhow::Error>(request)
+        });
+
+        let observer = Arc::new(RecordingHttpRetryObserver::default());
+        let abort_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_observer = Arc::clone(&observer);
+        let task_abort = Arc::clone(&abort_flag);
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let request = client.post(format!("http://{address}/cancel-backoff"));
+        let request_task = tokio::spawn(async move {
+            send_with_429_retry_cancelable(
+                request,
+                true,
+                3,
+                Some(task_observer.as_ref()),
+                task_abort.as_ref(),
+            )
+            .await
+        });
+
+        let _request = server.await??;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if observer
+                    .finished_snapshot()
+                    .is_ok_and(|events| events.len() == 1)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        abort_flag.store(true, Ordering::Release);
+
+        let response = tokio::time::timeout(Duration::from_millis(500), request_task)
+            .await
+            .map_err(|_| anyhow::anyhow!("cancelled retry did not quiesce"))???;
+        assert!(response.is_none());
+        assert_eq!(observer.started_snapshot()?.len(), 1);
+        assert_eq!(observer.finished_snapshot()?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abort_after_started_before_send_pairs_a_zero_count_finish() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let abort_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observer = AbortOnStartedObserver {
+            recording: RecordingHttpRetryObserver::default(),
+            abort_flag: Arc::clone(&abort_flag),
+        };
+        let client = reqwest::Client::builder().no_proxy().build()?;
+
+        let response = send_with_429_retry_cancelable(
+            client.post(format!("http://{address}/pre-send-cancel")),
+            true,
+            3,
+            Some(&observer),
+            abort_flag.as_ref(),
+        )
+        .await?;
+
+        assert!(response.is_none());
+        assert_eq!(observer.recording.started_snapshot()?.len(), 1);
+        let finished = observer.recording.finished_snapshot()?;
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].actual_send_count, Some(0));
+        assert!(finished[0].local_abort_observed);
+        assert!(!finished[0].provider_abort_receipt_observed);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abort_while_send_is_pending_pairs_an_unknown_count_finish() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let request_observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server_observed = Arc::clone(&request_observed);
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            let _request = read_test_http_request(&mut stream).await?;
+            server_observed.store(true, Ordering::Release);
+            futures::future::pending::<()>().await;
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let observer = Arc::new(RecordingHttpRetryObserver::default());
+        let abort_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_observer = Arc::clone(&observer);
+        let task_abort = Arc::clone(&abort_flag);
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let request_task = tokio::spawn(async move {
+            send_with_429_retry_cancelable(
+                client.post(format!("http://{address}/in-flight-cancel")),
+                true,
+                3,
+                Some(task_observer.as_ref()),
+                task_abort.as_ref(),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !request_observed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        abort_flag.store(true, Ordering::Release);
+
+        let response = tokio::time::timeout(Duration::from_millis(500), request_task)
+            .await
+            .map_err(|_| anyhow::anyhow!("in-flight cancel did not quiesce"))???;
+        server.abort();
+        assert!(response.is_none());
+        assert_eq!(observer.started_snapshot()?.len(), 1);
+        let finished = observer.finished_snapshot()?;
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].actual_send_count, None);
+        assert!(finished[0].local_abort_observed);
+        assert!(!finished[0].provider_abort_receipt_observed);
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_terminal_marker_wins_following_abort_and_stream_error() -> anyhow::Result<()> {
+        let mut stop_reason = "end_turn".to_string();
+        let marker = serde_json::json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": "max_tokens" },
+            "usage": { "output_tokens": 8 }
+        });
+        assert!(observe_anthropic_terminal_marker(&marker, &mut stop_reason));
+        assert_eq!(stop_reason, "max_tokens");
+
+        let aborted = resolve_provider_stream_item::<Vec<u8>, std::io::Error>(
+            None,
+            true,
+            true,
+            &mut stop_reason,
+        )?;
+        assert!(aborted.is_none());
+        assert_eq!(stop_reason, "max_tokens");
+
+        let transport_error = resolve_provider_stream_item(
+            Some(Err::<Vec<u8>, _>(std::io::Error::other(
+                "connection reset after message_delta",
+            ))),
+            false,
+            true,
+            &mut stop_reason,
+        )?;
+        assert!(transport_error.is_none());
+        assert_eq!(stop_reason, "max_tokens");
+        Ok(())
+    }
+
+    #[test]
+    fn openai_terminal_marker_wins_following_abort_and_stream_error() -> anyhow::Result<()> {
+        let mut stop_reason = "end_turn".to_string();
+        let marker = serde_json::json!({
+            "choices": [{ "finish_reason": "length", "delta": {} }]
+        });
+        assert!(observe_openai_terminal_marker(&marker, &mut stop_reason));
+        assert_eq!(stop_reason, "length");
+
+        let aborted = resolve_provider_stream_item::<Vec<u8>, std::io::Error>(
+            None,
+            true,
+            true,
+            &mut stop_reason,
+        )?;
+        assert!(aborted.is_none());
+        assert_eq!(stop_reason, "length");
+
+        let transport_error = resolve_provider_stream_item(
+            Some(Err::<Vec<u8>, _>(std::io::Error::other(
+                "connection reset after finish_reason",
+            ))),
+            false,
+            true,
+            &mut stop_reason,
+        )?;
+        assert!(transport_error.is_none());
+        assert_eq!(stop_reason, "length");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_retry_observer_marks_retry_exhaustion_without_extra_send() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await?;
+                let (_, body) = read_test_http_request(&mut stream).await?;
+                bodies.push(body);
+                write_test_http_response(
+                    &mut stream,
+                    "429 Too Many Requests",
+                    &[("Retry-After", "0")],
+                    r#"{"error":"still busy"}"#,
+                )
+                .await?;
+            }
+            Ok::<_, anyhow::Error>(bodies)
+        });
+
+        let observer = RecordingHttpRetryObserver::default();
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let response = send_with_429_retry(
+            client
+                .post(format!("http://{address}/retry"))
+                .json(&serde_json::json!({"prompt":"identical"})),
+            true,
+            3,
+            Some(&observer),
+        )
+        .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        let bodies = server.await??;
+        assert_eq!(bodies.len(), 4);
+        assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
+
+        let started = observer.started_snapshot()?;
+        assert_eq!(started.len(), 4);
+        let finished = observer.finished_snapshot()?;
+        assert_eq!(finished.len(), 4);
+        assert!(finished[..3].iter().all(|event| event.will_retry));
+        let final_attempt = &finished[3];
+        assert_eq!(final_attempt.attempt_number, 4);
+        assert_eq!(final_attempt.actual_send_count, Some(4));
+        assert_eq!(final_attempt.status, Some(429));
+        assert!(final_attempt.retry_exhausted);
+        assert!(final_attempt.is_final);
+        assert_eq!(final_attempt.retry_delay_ms, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_retry_observer_started_failure_prevents_initial_send() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let observer = RecordingHttpRetryObserver::failing_started(1);
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let error = send_with_429_retry(
+            client.post(format!("http://{address}/never-sent")),
+            true,
+            3,
+            Some(&observer),
+        )
+        .await
+        .expect_err("started audit failure must fail closed");
+        assert!(error
+            .to_string()
+            .contains("HTTP attempt audit failed before send 1"));
+        assert!(observer.started_snapshot()?.is_empty());
+        assert!(observer.finished_snapshot()?.is_empty());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_retry_observer_prepared_failure_prevents_initial_send() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let observer = RecordingHttpRetryObserver::failing_prepared();
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let error = send_with_429_retry(
+            client
+                .post(format!("http://{address}/never-sent"))
+                .json(&serde_json::json!({ "prompt": "must be durable first" })),
+            true,
+            3,
+            Some(&observer),
+        )
+        .await
+        .expect_err("effective request audit failure must fail closed");
+        assert!(error
+            .to_string()
+            .contains("HTTP effective request audit failed before send"));
+        assert!(observer.prepared_snapshot()?.is_empty());
+        assert!(observer.started_snapshot()?.is_empty());
+        assert!(observer.finished_snapshot()?.is_empty());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_retry_observer_finished_failure_prevents_next_retry_send() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            let request = read_test_http_request(&mut stream).await?;
+            write_test_http_response(
+                &mut stream,
+                "429 Too Many Requests",
+                &[("Retry-After", "0")],
+                r#"{"error":"busy"}"#,
+            )
+            .await?;
+            Ok::<_, anyhow::Error>(request)
+        });
+
+        let observer = RecordingHttpRetryObserver::failing_finished(1);
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let error = send_with_429_retry(
+            client
+                .post(format!("http://{address}/one-send"))
+                .json(&serde_json::json!({"prompt":"once"})),
+            true,
+            3,
+            Some(&observer),
+        )
+        .await
+        .expect_err("finished audit failure must stop retry");
+        assert!(error
+            .to_string()
+            .contains("HTTP attempt audit failed after send 1"));
+        let _request = server.await??;
+        assert_eq!(observer.started_snapshot()?.len(), 1);
+        assert!(observer.finished_snapshot()?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_retry_observer_final_failure_suppresses_success_delivery() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            let request = read_test_http_request(&mut stream).await?;
+            write_test_http_response(&mut stream, "200 OK", &[], r#"{"ok":true}"#).await?;
+            Ok::<_, anyhow::Error>(request)
+        });
+
+        let observer = RecordingHttpRetryObserver::failing_finished(1);
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let error = send_with_429_retry(
+            client.post(format!("http://{address}/unobserved-success")),
+            true,
+            3,
+            Some(&observer),
+        )
+        .await
+        .expect_err("final audit failure must suppress response delivery");
+        assert!(error
+            .to_string()
+            .contains("HTTP attempt audit failed after send 1"));
+        let _request = server.await??;
+        assert_eq!(observer.started_snapshot()?.len(), 1);
+        assert!(observer.finished_snapshot()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn ollama_metadata_deadlines_bound_selected_and_catalog_probes() {
+        assert!(super::OLLAMA_METADATA_REQUEST_TIMEOUT > Duration::ZERO);
+        assert!(super::OLLAMA_METADATA_REQUEST_TIMEOUT < super::OLLAMA_CATALOG_METADATA_TIMEOUT);
+        assert!(super::OLLAMA_MODEL_LOAD_TIMEOUT < super::OLLAMA_SELECTED_METADATA_TIMEOUT);
+        assert!(super::OLLAMA_CATALOG_METADATA_TIMEOUT < super::OLLAMA_SELECTED_METADATA_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn ollama_metadata_deadline_cancels_a_pending_probe() {
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe_drop = Arc::clone(&dropped);
+        let result = super::await_ollama_metadata_probe(Duration::from_millis(1), async move {
+            let _drop_flag = DropFlag(probe_drop);
+            futures::future::pending::<()>().await;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn selected_ollama_probe_preloads_cold_runner_and_uses_observed_context(
+    ) -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            let mut ps_calls = 0usize;
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().await?;
+                let (path, body) = read_test_http_request(&mut stream).await?;
+                let response = match path.as_str() {
+                    "/api/tags" => serde_json::json!({
+                        "models": [{
+                            "name": "gemma4:latest",
+                            "model": "gemma4:latest",
+                            "digest": "digest-gemma4"
+                        }]
+                    }),
+                    "/api/ps" => {
+                        ps_calls += 1;
+                        if ps_calls == 1 {
+                            serde_json::json!({ "models": [] })
+                        } else {
+                            serde_json::json!({
+                                "models": [{
+                                    "name": "gemma4:latest",
+                                    "model": "gemma4:latest",
+                                    "digest": "digest-gemma4",
+                                    "context_length": 16384
+                                }]
+                            })
+                        }
+                    }
+                    "/api/show" => serde_json::json!({
+                        "model_info": {
+                            "general.architecture": "gemma4",
+                            "gemma4.context_length": 131072
+                        },
+                        "parameters": "temperature 1",
+                        "capabilities": ["completion", "tools"]
+                    }),
+                    "/api/generate" => serde_json::json!({
+                        "done": true,
+                        "done_reason": "load"
+                    }),
+                    other => return Err(anyhow::anyhow!("unexpected test request: {other}")),
+                };
+                write_test_json_response(&mut stream, &response).await?;
+                requests.push((path, body));
+            }
+            Ok::<_, anyhow::Error>(requests)
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let models = super::fetch_ollama_models(&client, &endpoint, Some("gemma4:latest")).await?;
+        let requests = server.await??;
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].context_length, Some(131_072));
+        assert_eq!(models[0].effective_context_length, Some(16_384));
+        assert_eq!(
+            models[0].effective_context_source.as_deref(),
+            Some("runner")
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "/api/tags",
+                "/api/ps",
+                "/api/show",
+                "/api/generate",
+                "/api/ps"
+            ]
+        );
+        let generate = requests
+            .iter()
+            .find(|(path, _)| path == "/api/generate")
+            .ok_or_else(|| anyhow::anyhow!("missing preload request"))?;
+        let generate_body: serde_json::Value = serde_json::from_str(&generate.1)?;
+        assert_eq!(generate_body["model"], "gemma4:latest");
+        assert_eq!(generate_body["stream"], false);
+        assert!(generate_body.get("prompt").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ollama_catalog_probe_does_not_preload_models() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await?;
+                let (path, body) = read_test_http_request(&mut stream).await?;
+                let response = match path.as_str() {
+                    "/api/tags" => serde_json::json!({
+                        "models": [{
+                            "name": "gemma4:latest",
+                            "model": "gemma4:latest",
+                            "digest": "digest-gemma4"
+                        }]
+                    }),
+                    "/api/ps" => serde_json::json!({ "models": [] }),
+                    "/api/show" => serde_json::json!({
+                        "model_info": {
+                            "general.architecture": "gemma4",
+                            "gemma4.context_length": 131072
+                        },
+                        "capabilities": ["completion"]
+                    }),
+                    other => return Err(anyhow::anyhow!("unexpected test request: {other}")),
+                };
+                write_test_json_response(&mut stream, &response).await?;
+                requests.push((path, body));
+            }
+            Ok::<_, anyhow::Error>(requests)
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let models = super::fetch_ollama_models(&client, &endpoint, None).await?;
+        let requests = server.await??;
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/api/tags", "/api/ps", "/api/show"]
+        );
+        assert!(requests.iter().all(|(path, _)| path != "/api/generate"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_ollama_context_uses_reported_architecture_key() {
+        let show = serde_json::json!({
+            "model_info": {
+                "general.architecture": "novelarch",
+                "novelarch.context_length": 131072,
+                "novelarch.vision.context_length": 8192
+            }
+        });
+        assert_eq!(
+            super::parse_ollama_model_context_length(&show),
+            Some(131_072)
+        );
+    }
+
+    #[test]
+    fn parse_ollama_context_falls_back_to_shallow_suffix_match() {
+        let show = serde_json::json!({
+            "model_info": {
+                "general.architecture": "missing",
+                "custom.vision.context_length": 8192,
+                "custom.context_length": 65536
+            }
+        });
+        assert_eq!(
+            super::parse_ollama_model_context_length(&show),
+            Some(65_536)
+        );
+    }
+
+    #[test]
+    fn parse_ollama_num_ctx_accepts_spacing_and_equals() {
+        let show = serde_json::json!({
+            "parameters": "temperature 0.8\nnum_ctx = 65536\ntop_p 0.9"
+        });
+        assert_eq!(
+            super::parse_ollama_model_parameter_num_ctx(&show),
+            Some(65_536)
+        );
+    }
+
+    #[test]
+    fn parse_ollama_capabilities_maps_tools_and_thinking() {
+        let tag = serde_json::json!({
+            "capabilities": ["completion"]
+        });
+        let show = serde_json::json!({
+            "capabilities": ["completion", "tools", "thinking", "tools"]
+        });
+        assert_eq!(
+            super::parse_ollama_supported_parameters(Some(&show), &tag),
+            Some(vec!["tools".to_string(), "reasoning".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_ollama_capabilities_preserves_authoritative_no_tools() {
+        let tag = serde_json::json!({});
+        let show = serde_json::json!({
+            "capabilities": ["completion"]
+        });
+        assert_eq!(
+            super::parse_ollama_supported_parameters(Some(&show), &tag),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn selected_ollama_model_matches_bare_and_latest_names_only() {
+        let selected = serde_json::json!({
+            "name": "gemma4:latest",
+            "model": "gemma4:latest"
+        });
+        let unrelated = serde_json::json!({ "name": "qwen3:latest" });
+        assert!(super::ollama_tag_matches_selected(&selected, "gemma4"));
+        assert!(super::ollama_tag_matches_selected(
+            &selected,
+            "GEMMA4:latest"
+        ));
+        assert!(!super::ollama_tag_matches_selected(
+            &unrelated,
+            "gemma4:latest"
+        ));
+    }
+
+    #[test]
+    fn find_ollama_runner_prefers_digest_before_name() {
+        let tag = serde_json::json!({
+            "name": "selected:latest",
+            "digest": "digest-selected"
+        });
+        let runners = vec![
+            super::OllamaRunnerContext {
+                name: "different-name".to_string(),
+                model: "different-name".to_string(),
+                digest: Some("digest-selected".to_string()),
+                context_length: 65_536,
+            },
+            super::OllamaRunnerContext {
+                name: "selected:latest".to_string(),
+                model: "selected:latest".to_string(),
+                digest: Some("different-digest".to_string()),
+                context_length: 4_096,
+            },
+        ];
+        assert_eq!(
+            super::find_ollama_runner_context(&tag, &runners),
+            Some(65_536)
+        );
+    }
+
+    #[test]
+    fn find_ollama_runner_matches_bare_and_latest_names() {
+        let tag = serde_json::json!({ "name": "novel-model:latest" });
+        let runners = vec![super::OllamaRunnerContext {
+            name: "novel-model".to_string(),
+            model: "novel-model".to_string(),
+            digest: None,
+            context_length: 32_768,
+        }];
+        assert_eq!(
+            super::find_ollama_runner_context(&tag, &runners),
+            Some(32_768)
+        );
+    }
+
+    #[test]
+    fn build_ollama_model_runner_wins_over_model_parameter() {
+        let tag = serde_json::json!({
+            "name": "novel-model:latest",
+            "digest": "digest-1",
+            "capabilities": ["completion"]
+        });
+        let show = serde_json::json!({
+            "model_info": {
+                "general.architecture": "novelarch",
+                "novelarch.context_length": 131072
+            },
+            "parameters": "num_ctx 32768",
+            "capabilities": ["completion", "tools", "thinking"]
+        });
+        let runners = vec![super::OllamaRunnerContext {
+            name: "novel-model:latest".to_string(),
+            model: "novel-model:latest".to_string(),
+            digest: Some("digest-1".to_string()),
+            context_length: 65_536,
+        }];
+        let model = super::build_ollama_model(&tag, Some(&show), &runners).unwrap();
+        assert_eq!(model.context_length, Some(131_072));
+        assert_eq!(model.effective_context_length, Some(65_536));
+        assert_eq!(model.effective_context_source.as_deref(), Some("runner"));
+        assert_eq!(
+            model.supported_parameters,
+            Some(vec!["tools".to_string(), "reasoning".to_string()])
+        );
+        let json = serde_json::to_value(&model).unwrap();
+        assert_eq!(json["effectiveContextLength"], 65_536);
+        assert_eq!(json["effectiveContextSource"], "runner");
+    }
+
+    #[test]
+    fn build_ollama_model_uses_model_parameter_without_runner() {
+        let tag = serde_json::json!({ "name": "novel-model" });
+        let show = serde_json::json!({
+            "parameters": "num_ctx 32768"
+        });
+        let model = super::build_ollama_model(&tag, Some(&show), &[]).unwrap();
+        assert_eq!(model.effective_context_length, Some(32_768));
+        assert_eq!(
+            model.effective_context_source.as_deref(),
+            Some("model-parameter")
+        );
+    }
+
+    #[test]
+    fn build_ollama_model_keeps_tag_when_optional_metadata_is_unavailable() {
+        let tag = serde_json::json!({
+            "name": "novel-model:latest",
+            "capabilities": ["completion", "tools"]
+        });
+        let model = super::build_ollama_model(&tag, None, &[]).unwrap();
+        assert_eq!(model.id, "novel-model:latest");
+        assert_eq!(model.context_length, None);
+        assert_eq!(model.effective_context_length, None);
+        assert_eq!(model.supported_parameters, Some(vec!["tools".to_string()]));
+    }
+
+    #[test]
+    fn ollama_context_settings_serde_as_camel_case_and_default_empty() {
+        let mut settings = AiSettings::default();
+        settings
+            .ollama_context_lengths
+            .insert("novel-model:latest".to_string(), 65_536);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["ollamaContextLengths"]["novel-model:latest"], 65_536);
+
+        let legacy: AiSettings = serde_json::from_value(serde_json::json!({
+            "provider": "ollama",
+            "model": "novel-model:latest",
+            "ollamaEndpoint": "http://localhost:11434"
+        }))
+        .unwrap();
+        assert!(legacy.ollama_context_lengths.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -6637,6 +9156,8 @@ mod tests {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             supported_parameters: Some(vec!["reasoning".to_string()]),
+            effective_context_length: None,
+            effective_context_source: None,
             pricing_prompt: None,
             pricing_completion: None,
         };
@@ -6646,6 +9167,8 @@ mod tests {
         assert_eq!(json["maxCompletionTokens"], 128_000);
         // None フィールドは出力されない (skip_serializing_if)
         assert!(json.get("apiVariant").is_none());
+        assert!(json.get("effectiveContextLength").is_none());
+        assert!(json.get("effectiveContextSource").is_none());
         assert!(json.get("pricingPrompt").is_none());
     }
 }
@@ -6703,6 +9226,7 @@ mod ab_provider_live_tests {
             reasoning_effort: None,
             extra_body: None,
             retry_429: true,
+            http_retry_observer: None,
             ai_novelist_mode: AiNovelistMode::Chat,
             openrouter_provider_pin: None,
             system_cache_segments: None,
@@ -6858,6 +9382,7 @@ mod ab_provider_live_tests {
             reasoning_effort: None,
             extra_body: None,
             retry_429: true,
+            http_retry_observer: None,
             ai_novelist_mode: AiNovelistMode::Chat,
             openrouter_provider_pin: None,
             system_cache_segments: None,

@@ -208,7 +208,7 @@ describe("awaitAllPendingSceneWrites", () => {
     expect(done).toBe(true);
   });
 
-  it("失敗した write があっても解決する", async () => {
+  it("失敗した write を lifecycle caller へ伝播する", async () => {
     const d = deferred();
     const chained = serializeSceneWrite("q3", () => d.promise);
     chained.catch(() => {}); // unhandled rejection 抑止
@@ -216,6 +216,6 @@ describe("awaitAllPendingSceneWrites", () => {
     const waiter = awaitAllPendingSceneWrites();
     d.reject(new Error("ipc failed"));
 
-    await expect(waiter).resolves.toBeUndefined();
+    await expect(waiter).rejects.toThrow("scene writes failed");
   });
 });

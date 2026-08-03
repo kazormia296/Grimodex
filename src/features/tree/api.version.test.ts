@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { projects, treeNodes } from "@/db/schema";
@@ -10,12 +10,10 @@ import {
   getSceneVersion,
 } from "./api";
 
-// scene 本文 writer (saveSceneContent) の無条件 version bump を browser-mock の
-// 実 SQLite で検証する (M4: OCC version bump 配線)。
-// - bump は set への 1 キー追加のみで、WHERE への version 条件 (OCC 検査) は
-//   付けない — 保存 hot path を絶対に落とさない設計判断。
-// - 本文を書かない writer (beats のみ / preview のみ / 構造メタ updateNode) は
-//   bump しないことも同時に担保する。
+// scene 本文 writer (saveSceneContent) の version bump と、editor が渡す
+// baseVersion の OCC 検査を browser-mock の実 SQLite で検証する。
+// baseVersion を省略する headless writer は無条件保存を維持する。
+// - beats-only writer も tree_nodes aggregate の OCC version を進める。
 
 const PROJECT = "tree-version-project";
 const SCENE = "tree-version-scene";
@@ -58,6 +56,10 @@ beforeAll(async () => {
   ]);
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("saveSceneContent version bump", () => {
   it("保存のたびに version が +1 される (2回保存 → 2)", async () => {
     const first = await saveSceneContent(SCENE, DOC);
@@ -76,13 +78,76 @@ describe("saveSceneContent version bump", () => {
     await expect(getSceneVersion(SCENE)).resolves.toBe(2);
     await expect(getSceneVersion("no-such-scene")).resolves.toBe(0);
   });
+
+  it("stale baseVersion は本文と version を変更しない", async () => {
+    const currentVersion = await getSceneVersion(SCENE);
+    await expect(
+      saveSceneContent(SCENE, {
+        content: "first",
+        baseVersion: currentVersion,
+      }),
+    ).resolves.toMatchObject({ contentVersion: currentVersion + 1 });
+
+    await expect(
+      saveSceneContent(SCENE, {
+        content: "stale",
+        baseVersion: currentVersion,
+      }),
+    ).rejects.toThrow(/conflict/i);
+    await expect(versionOf(SCENE)).resolves.toBe(currentVersion + 1);
+  });
 });
 
-describe("本文を書かない writer は version を bump しない", () => {
-  it("saveSceneBeatsOnly / savePlacedBeatPreviewOnly / updateNode", async () => {
-    await saveSceneBeatsOnly(SCENE_NO_BUMP, { unplacedBeatsDoc: "[]" });
-    await savePlacedBeatPreviewOnly(SCENE_NO_BUMP, null);
+describe("本文を書かない writer の version 契約", () => {
+  it("beats-only と preview-only は同じ aggregate の OCC version を進める", async () => {
+    await saveSceneBeatsOnly(SCENE_NO_BUMP, {
+      unplacedBeatsDoc: "[]",
+      projectId: PROJECT,
+      baseVersion: 0,
+    });
+    await expect(
+      savePlacedBeatPreviewOnly(SCENE_NO_BUMP, {
+        placedBeatPreview: null,
+        projectId: PROJECT,
+        baseVersion: 1,
+      }),
+    ).resolves.toMatchObject({ contentVersion: 2 });
     await updateNode(SCENE_NO_BUMP, { title: "renamed", synopsis: "s" });
-    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(0);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(2);
+  });
+
+  it("saveSceneBeatsOnly は stale baseVersion を拒否する", async () => {
+    await expect(
+      saveSceneBeatsOnly(SCENE_NO_BUMP, {
+        unplacedBeatsDoc: "[1]",
+        projectId: PROJECT,
+        baseVersion: 0,
+      }),
+    ).rejects.toThrow(/conflict/i);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(2);
+  });
+
+  it("savePlacedBeatPreviewOnly は stale baseVersion を拒否する", async () => {
+    await expect(
+      savePlacedBeatPreviewOnly(SCENE_NO_BUMP, {
+        placedBeatPreview: "[]",
+        projectId: PROJECT,
+        baseVersion: 1,
+      }),
+    ).rejects.toThrow(/conflict/i);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(2);
+  });
+
+  it("同一millisecondの連続metadata writeにも単調増加するISO OCC tokenを付ける", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2100-01-01T00:00:00.000Z"));
+
+    const first = await updateNode(SCENE_NO_BUMP, { title: "first" });
+    const second = await updateNode(SCENE_NO_BUMP, { title: "second" });
+
+    expect(first?.updatedAt).toBe("2100-01-01T00:00:00.000Z");
+    expect(second?.updatedAt).toBe("2100-01-01T00:00:00.001Z");
+    expect(Number.isNaN(Date.parse(first?.updatedAt ?? ""))).toBe(false);
+    expect(Number.isNaN(Date.parse(second?.updatedAt ?? ""))).toBe(false);
   });
 });

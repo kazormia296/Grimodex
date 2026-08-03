@@ -1,52 +1,28 @@
 import { useEffect, useState, useCallback } from "react";
 import { Trash2 } from "lucide-react";
 import i18next from "@/lib/i18n";
-import { invoke } from "@/lib/tauri";
 import { useLintIgnoreStore, type LintIgnoreEntry } from "./lintIgnoreStore";
+import { listLintIgnores } from "./lintIgnoreApi";
 import { buildBlocksFromJson } from "./projectScan";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useTranslation } from "react-i18next";
 import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import { formatInstant } from "@/lib/time";
 
-interface EntryRow extends LintIgnoreEntry {
+export interface EntryRow extends LintIgnoreEntry {
   sceneTitle: string | null;
 }
 
-type StalenessStatus = "active" | "stale" | "orphan" | "unknown";
-
-interface QueryResult {
-  rows: Record<string, unknown>[];
-}
+export type StalenessStatus = "active" | "stale" | "orphan" | "unknown";
 
 async function fetchAllEntries(): Promise<EntryRow[]> {
-  const r = await invoke<QueryResult>("db_execute", {
-    sql: `SELECT l.id, l.rule_id, l.scene_id, l.text_snippet,
-                 l.context_before, l.context_after, l.note, l.created_at,
-                 t.title AS scene_title
-          FROM lint_ignored_diagnostics l
-          LEFT JOIN tree_nodes t ON l.scene_id = t.id
-          WHERE t.project_id = ? OR t.project_id IS NULL
-          ORDER BY t.title NULLS LAST, l.created_at DESC`,
-    params: [getCurrentProjectId()],
-    method: "all",
-  });
-  return r.rows.map((row) => ({
-    id: String(row.id),
-    rule_id: String(row.rule_id),
-    scene_id: String(row.scene_id),
-    text_snippet: String(row.text_snippet),
-    context_before: String(row.context_before),
-    context_after: String(row.context_after),
-    note: row.note == null ? null : String(row.note),
-    created_at: Number(row.created_at ?? 0),
-    sceneTitle: row.scene_title == null ? null : String(row.scene_title),
-  }));
+  return listLintIgnores(getCurrentProjectId());
 }
 
-async function computeStaleness(
+export async function computeStaleness(
   entries: EntryRow[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
 ): Promise<Map<string, StalenessStatus>> {
   const result = new Map<string, StalenessStatus>();
   const byScene = new Map<string, EntryRow[]>();
@@ -61,23 +37,26 @@ async function computeStaleness(
     byScene.set(e.scene_id, group);
   }
 
-  await Promise.all(
-    Array.from(byScene.entries()).map(async ([sceneId, sceneEntries]) => {
-      try {
-        const content = await loadSceneContent(sceneId);
-        const { sceneText } = buildBlocksFromJson(content);
-        for (const e of sceneEntries) {
-          const byBefore = sceneText.includes(
-            e.context_before + e.text_snippet,
-          );
-          const byAfter = sceneText.includes(e.text_snippet + e.context_after);
-          result.set(e.id, byBefore || byAfter ? "active" : "stale");
-        }
-      } catch {
-        for (const e of sceneEntries) result.set(e.id, "unknown");
-      }
-    }),
-  );
+  const sceneEntries = Array.from(byScene.entries());
+  const contents = await loadContents(
+    sceneEntries.map(([sceneId]) => sceneId),
+  ).catch(() => null);
+  for (const [sceneId, entriesForScene] of sceneEntries) {
+    if (!contents) {
+      for (const entry of entriesForScene) result.set(entry.id, "unknown");
+      continue;
+    }
+    const { sceneText } = buildBlocksFromJson(contents.get(sceneId) ?? "");
+    for (const entry of entriesForScene) {
+      const byBefore = sceneText.includes(
+        entry.context_before + entry.text_snippet,
+      );
+      const byAfter = sceneText.includes(
+        entry.text_snippet + entry.context_after,
+      );
+      result.set(entry.id, byBefore || byAfter ? "active" : "stale");
+    }
+  }
 
   return result;
 }
@@ -227,7 +206,7 @@ export function LinterIgnoreListTab() {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      await deleteIgnore(id);
+      await deleteIgnore(id, getCurrentProjectId());
       setEntries((prev) => prev.filter((e) => e.id !== id));
       setStaleness((prev) => {
         const next = new Map(prev);

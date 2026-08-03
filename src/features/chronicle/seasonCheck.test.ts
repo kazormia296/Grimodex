@@ -7,13 +7,13 @@ import {
 import type { ChronicleCalendar } from "./chronicleTime";
 
 // useSeasonConflicts は db/client につながる api モジュールを取り込むため、
-// 純関数 collectFulfilledSceneTexts だけを安全に import できるようにモックする。
-vi.mock("@/features/tree/api", () => ({ loadSceneContent: vi.fn() }));
+// 純関数 collectLoadedSceneTexts だけを安全に import できるようにモックする。
+vi.mock("@/features/tree/api", () => ({ loadSceneContents: vi.fn() }));
 vi.mock("./api", () => ({
   getProjectCalendar: vi.fn(),
   upsertProjectCalendar: vi.fn(),
 }));
-import { collectFulfilledSceneTexts } from "./useSeasonConflicts";
+import { collectLoadedSceneTexts } from "./useSeasonConflicts";
 
 const calendar: ChronicleCalendar = {
   daysPerYear: 360,
@@ -135,17 +135,30 @@ describe("findSeasonConflicts", () => {
   });
 });
 
-describe("collectFulfilledSceneTexts (allSettled degradation)", () => {
-  it("1 シーンのロード失敗でも成功分の警告は残る", () => {
-    const results: PromiseSettledResult<readonly [string, string]>[] = [
-      { status: "fulfilled", value: ["s1", "真夜中に蝉が鳴いていた"] },
-      { status: "rejected", reason: new Error("load failed") },
-    ];
-    const sceneTexts = collectFulfilledSceneTexts(results);
-    expect(sceneTexts.size).toBe(1);
+describe("collectLoadedSceneTexts (batch degradation)", () => {
+  it("欠損行があっても取得済みシーンの警告は残る", () => {
+    const sceneTexts = collectLoadedSceneTexts(
+      ["s1", "missing"],
+      new Map([
+        [
+          "s1",
+          JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "真夜中に蝉が鳴いていた" }],
+              },
+            ],
+          }),
+        ],
+      ]),
+    );
+    expect(sceneTexts.size).toBe(2);
     expect(sceneTexts.has("s1")).toBe(true);
+    expect(sceneTexts.get("missing")).toBe("");
 
-    // 失敗シーンを除いた本文で、残った s1 の矛盾は引き続き検出される。
+    // 欠損シーンを空扱いにしても、取得済み s1 の矛盾は引き続き検出される。
     const conflicts = findSeasonConflicts(
       input({
         events: [{ id: "e1", startTime: 300 }], // 冬

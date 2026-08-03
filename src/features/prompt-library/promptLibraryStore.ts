@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import * as api from "./api";
 import type { PromptTemplate } from "./api";
 

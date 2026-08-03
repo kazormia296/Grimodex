@@ -1,6 +1,11 @@
 import { useEffect } from "react";
+import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useMapStore } from "../mapStore";
-import { serializeShowConfig, updateMapBoardSettings } from "../mapApi";
+import { serializeShowConfig } from "../mapApi";
+import {
+  flushMapPersistenceWritesInBackground,
+  scheduleMapBoardSettingsWrite,
+} from "./mapPersistenceWriteQueue";
 
 export const isBoardHydratingRef = { current: false };
 
@@ -8,26 +13,22 @@ function snapshotBoardSettings(state: ReturnType<typeof useMapStore.getState>) {
   return {
     activeBoardId: state.activeBoardId,
     mode: state.mode,
-    viewport: state.viewport,
-    show: state.show,
+    viewport: { ...state.viewport },
+    show: { ...state.show },
     colorBy: state.colorBy,
   };
 }
 
-let prevBoardSnapshot = JSON.stringify(
-  snapshotBoardSettings(useMapStore.getState()),
-);
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let prevBoardSnapshot = snapshotBoardSettings(useMapStore.getState());
+let prevBoardSnapshotJson = JSON.stringify(prevBoardSnapshot);
 
-/** Reset debounce baseline after hydrate to avoid save loops. */
+/**
+ * Reset the observation baseline after hydrate without discarding a queued
+ * write that belongs to the previously active board.
+ */
 export function syncBoardPersistenceSnapshot() {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-  prevBoardSnapshot = JSON.stringify(
-    snapshotBoardSettings(useMapStore.getState()),
-  );
+  prevBoardSnapshot = snapshotBoardSettings(useMapStore.getState());
+  prevBoardSnapshotJson = JSON.stringify(prevBoardSnapshot);
 }
 
 export function markBoardHydrating() {
@@ -41,36 +42,42 @@ export function clearBoardHydrating() {
 }
 
 export function useMapBoardPersistence() {
+  const projectId = useCurrentProjectId();
+
   useEffect(() => {
     const unsubscribe = useMapStore.subscribe((state) => {
-      if (isBoardHydratingRef.current || !state.activeBoardId) return;
+      const boardId = state.activeBoardId;
+      if (isBoardHydratingRef.current || !boardId) return;
 
-      const next = JSON.stringify(snapshotBoardSettings(state));
-      if (next === prevBoardSnapshot) return;
-      prevBoardSnapshot = next;
+      const nextSnapshot = snapshotBoardSettings(state);
+      const nextJson = JSON.stringify(nextSnapshot);
+      if (nextJson === prevBoardSnapshotJson) return;
+      const previous = prevBoardSnapshot;
+      prevBoardSnapshot = nextSnapshot;
+      prevBoardSnapshotJson = nextJson;
 
-      if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(async () => {
-        const current = useMapStore.getState();
-        if (isBoardHydratingRef.current || !current.activeBoardId) return;
-        try {
-          await updateMapBoardSettings(current.activeBoardId, {
-            mode: current.mode,
-            viewportX: current.viewport.x,
-            viewportY: current.viewport.y,
-            viewportZoom: current.viewport.zoom,
-            showConfig: serializeShowConfig(current.show),
-            colorBy: current.colorBy,
-          });
-        } catch {
-          // persistence errors are non-fatal
-        }
-      }, 600);
+      // activeBoardId itself is stored in global settings, not on the board
+      // row. Do not persist the previous board's mode/viewport into a newly
+      // selected board before its hydrate completes.
+      if (previous.activeBoardId !== nextSnapshot.activeBoardId) return;
+
+      scheduleMapBoardSettingsWrite({
+        projectId,
+        boardId,
+        settings: {
+          mode: nextSnapshot.mode,
+          viewportX: nextSnapshot.viewport.x,
+          viewportY: nextSnapshot.viewport.y,
+          viewportZoom: nextSnapshot.viewport.zoom,
+          showConfig: serializeShowConfig(nextSnapshot.show),
+          colorBy: nextSnapshot.colorBy,
+        },
+      });
     });
 
     return () => {
       unsubscribe();
-      if (saveTimer) clearTimeout(saveTimer);
+      flushMapPersistenceWritesInBackground();
     };
-  }, []);
+  }, [projectId]);
 }

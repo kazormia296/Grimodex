@@ -388,6 +388,9 @@
       "fallback": "プロジェクト"
     },
     "switchFailed": "プロジェクトの切り替えに失敗しました",
+    "loadDegraded": "プロジェクトは開きましたが、一部のデータを読み込めませんでした",
+    "loadDegradedCount": "{{count}}件の機能を再読み込みする必要があります",
+    "recovering": "プロジェクトを復旧中です。",
     "import": {
       "action": "インポート…"
     },
@@ -648,6 +651,7 @@
   },
   "app": {
     "loading": "読み込み中…",
+    "lifecycleBusy": "変更を保存しています。切り替えまたは終了が完了するまでお待ちください…",
     "invalidLayout": "保存済みレイアウトが不正なため、デフォルトに戻しました。（{{reason}}）",
     "degenLayout": "レイアウトが退化しているため、デフォルトに戻しました。（{{reason}}）",
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
@@ -899,6 +903,16 @@
       "provider": "プロバイダー",
       "ollamaLocal": "Ollama (ローカル)",
       "endpoint": "エンドポイント",
+      "ollamaEffectiveContext": "Ollama 実効コンテキスト",
+      "ollamaEffectiveContextDesc": "Ollama runner に実際に割り当てたモデル別の値です。実行中は ollama ps の値を自動取得します。未ロード時だけ入力値を事前判定に使います。Grimodex は OpenAI 互換経路から割り当てを変更しないため、Modelfile の PARAMETER num_ctx または OLLAMA_CONTEXT_LENGTH と一致させてください。",
+      "ollamaEffectiveContextPlaceholder": "未設定（自動取得）",
+      "ollamaModelMaximumValue": "モデル最大値: {{value}} tokens",
+      "ollamaModelMaximumUnknown": "モデル最大値: 取得できませんでした",
+      "ollamaEffectiveContextValue": "実効値: {{value}} tokens（{{source}}）",
+      "ollamaEffectiveContextUnknown": "実効値: 未確認。Agent送信前にrunner情報を再取得します。",
+      "ollamaContextSourceRunner": "実行中runner",
+      "ollamaContextSourceModelParameter": "Modelfile num_ctx",
+      "ollamaContextSourceSettings": "Grimodex設定",
       "apiKey": "API キー",
       "keySet": "設定済み",
       "showKey": "表示",
@@ -916,7 +930,7 @@
       "sameChatModel": "チャットモデルと同じ",
       "roleModel": {
         "title": "機能別モデル（ロール単位）",
-        "intro": "AI 経路を 6 つの意味ロールに束ね、ロールごとにモデルを指定します。未設定のロールは既定のチャットモデルにフォールバックします。ロールごとに別プロバイダのモデルを割り当てることもできます（鍵が設定済みのプロバイダのみ選べます）。",
+        "intro": "AI 経路を 7 つの意味ロールに束ね、ロールごとにモデルを指定します。未設定のロールは既定のチャットモデルにフォールバックします。ロールごとに別プロバイダのモデルを割り当てることもできます（鍵が設定済みのプロバイダのみ選べます）。",
         "providerLabel": "プロバイダ",
         "sameProvider": "チャットと同じプロバイダ",
         "unavailableProvider": "選択中のプロバイダ/エンドポイントは利用できません（鍵削除・エンドポイント削除など）。送信は失敗するか別の宛先になります。",
@@ -925,6 +939,7 @@
         "staleModelOption": "{{model}}（一覧に無し）",
         "reset": "リセット",
         "cacheNote": "注意: あるロールに既定と別プロバイダのモデルを選ぶと、その経路のプロンプトキャッシュが分断され、課金・レイテンシが悪化することがあります。",
+        "cliSingleShotUnsupported": "Codex CLI（exec / App Server）はこの単発AI機能に未対応です。機能別モデルで対象ロールに OpenRouter などのHTTPプロバイダを割り当ててください。",
         "conversation": {
           "label": "会話（本文チャット）",
           "description": "本文チャット。最高品質。プロンプトキャッシュを最も使う。"
@@ -1224,6 +1239,9 @@
       "aiSemanticRecallDesc": "チャット送信時に、いま書いている内容と意味的に関連する過去シーンの抜粋を検索してAIの文脈に自動注入する。インデックス未作成のプロジェクトでは何も注入されない。",
       "aiHybridRecall": "固有名詞の語彙一致も併用（ハイブリッド検索）",
       "aiHybridRecallDesc": "意味検索に全文検索（FTS5/bm25）を順位融合（RRF）し、人名・地名など固有名詞の語彙一致を手がかりに関連シーンを拾いやすくする。関連シーンの自動注入がオフのときは無効。",
+      "aiSemanticReranker": "Semantic reranking（実験的）",
+      "aiSemanticRerankerDesc": "関連シーン候補をローカルモデルで再順位付けします。処理に時間がかかる場合は従来の検索結果を使用します。",
+      "aiSemanticRerankerUnavailableDesc": "現在は日本語・英語のデスクトップ版でのみ利用できます。",
       "aiChatRecall": "過去の対話の自動注入（エピソード記憶）",
       "aiChatRecallDesc": "チャット送信時に、いま書いている内容と意味的に関連する過去の対話（チャット履歴）を検索してAIの文脈に自動注入する。関連シーンの注入とは独立して切り替えられ、オフにするとシーンの注入は残したまま過去対話の注入だけを止められる。進行中のセッションは対象外。",
       "trashBin": "ゴミ箱",
@@ -1343,6 +1361,12 @@
       "imeLinuxInstallTitle": "対応する Linux IME が見つかりません",
       "imeLinuxInstallDescription": "IME は Grimodex と別にインストールしてください。対応する IME を Fcitx 5 または IBus で有効にすると、Grimodex が consumer を自動検出します。",
       "imeLinuxInstallDocs": "IME の配布元を開く",
+      "imeMozkeyInstallTitle": "Mozkey IbG をインストール",
+      "imeMozkeyInstallDescription": "公式 GitHub Release で公開された experimental / pre-release からこの端末向けのパッケージをダウンロードし、SHA-256 を検証してから OS のインストーラーを開きます。",
+      "imeMozkeyInstallAction": "ダウンロードしてインストール",
+      "imeMozkeyInstalling": "ダウンロード・検証中…",
+      "imeMozkeyInstallStarted": "Mozkey IbG {{version}} のインストーラーを開きました。OS の案内に従ってインストールしてください。",
+      "imeMozkeyInstallFailed": "Mozkey IbG をインストールできませんでした: {{error}}",
       "imeClear": "書き出し済み辞書をすべて削除",
       "imeClearDone": "IME 辞書を削除しました",
       "imeClearFailed": "IME 辞書の削除に失敗しました",
@@ -2065,11 +2089,15 @@
     "createSessionFailed": "セッションの作成に失敗しました",
     "deleteSessionFailed": "セッションの削除に失敗しました",
     "saveMessageFailed": "メッセージの保存に失敗しました",
+    "pendingCompletedTurnPersistence": "保存待ちの完了済みChatターンがあります。保存先の復旧後に再送信または再切替するか、recoveryデータを出力してから履歴を変更してください。",
     "invalidApiKey": "APIキーが無効です。設定を確認してください。",
     "networkError": "ネットワークエラーが発生しました。接続を確認してください。",
     "agentFailed": "エージェント実行に失敗しました: {{message}}",
     "rateLimited": "レート制限に達しました。10秒後に再試行します…",
     "sendFailed": "送信に失敗しました: {{message}}",
+    "ollamaMetadataUnavailable": "Ollamaモデル「{{model}}」のコンテキストとツール能力を /api/show で確認できませんでした。Ollamaの起動状態を確認し、モデルを再ロードしてから再試行してください。",
+    "ollamaModelUnavailable": "Ollamaモデル「{{model}}」は設定中のエンドポイントにインストールされていません。インストール済みモデルを選択して再試行してください。",
+    "sendCancelledScopeChanged": "送信先が変更されたため、下書きを保持したまま送信を中止しました。",
     "openSettings": "設定を開く",
     "deleteMessageFailed": "メッセージの削除に失敗しました",
     "linkedSessionReference": "前セッション「{{title}}」(ID: {{sessionId}}) を参照して新しいセッションを開始しました。",
@@ -2080,6 +2108,16 @@
     },
     "copied": "コピーしました",
     "noMessages": "メッセージはまだありません",
+    "transcript": {
+      "open": "会話全文を読む",
+      "title": "チャット会話全文",
+      "description": "読み込み済みの{{count}}件を会話順に表示します。",
+      "listLabel": "読み込み済みチャット会話全文",
+      "virtualListLabel": "チャットメッセージ",
+      "user": "あなた",
+      "assistant": "アシスタント",
+      "system": "システム"
+    },
     "actions": {
       "insertToEditor": "エディタに挿入",
       "extractCodexQuick": "Codexに即時抽出",
@@ -2119,10 +2157,12 @@
     "context": {
       "showPrompt": "プロンプト全文を表示",
       "tokensWithCostTitle": "プロンプト全文を表示（このメッセージで掛かる input 推定コスト: {{cost}}。output は含まない概算）",
+      "requestUsageTitle": "リクエスト合計 {{total}} tokens（プロンプト・会話 {{context}}、Agentツール {{tools}}、メッセージ形式 {{framing}}、応答予約 {{output}}、安全余白 {{safety}}）",
       "costRow": "推定 input コスト",
       "costNote": "output は含まない概算",
       "windowFill": "コンテキストウィンドウ使用率: {{pct}}%",
       "windowFillOfWindow": "コンテキストウィンドウ使用率: {{pct}}%（容量 {{window}}）",
+      "windowFillUnknown": "実効コンテキスト容量が不明なため、使用率を計算できません",
       "windowFillRow": "ウィンドウ使用率",
       "multiSummaryWarning": "{{count}} 回要約済み — 新セッション推奨",
       "cacheRebuilt": "cache rebuilt",
@@ -2140,6 +2180,8 @@
       "pinEntry": "{{name}} を Spotlight",
       "pinCodexSnippet": "Codex/Snippet を Spotlight",
       "pin": "Spotlight",
+      "spotlightUnavailable": "チャットセッションを準備できなかったため、Spotlight を変更できませんでした。もう一度お試しください。",
+      "spotlightUpdateFailed": "Spotlight の更新に失敗しました。もう一度お試しください。",
       "group": "{{label}} グループ",
       "noResults": "該当するエントリが見つかりませんでした。",
       "inputPlaceholder": "コンテキストに追加するものを指示...",
@@ -2165,6 +2207,12 @@
       "usedTokens": "使用 tokens",
       "usageRate": "使用率",
       "totalRow": "合計",
+      "contextInputRow": "プロンプト・会話",
+      "agentToolsRow": "Agentツール定義",
+      "messageFramingRow": "メッセージ形式",
+      "outputReserveRow": "応答予約",
+      "safetyMarginRow": "安全余白",
+      "requestTotalRow": "リクエスト合計",
       "fullPrompt": "プロンプト全文",
       "emptyPrompt": "（プロンプトなし）",
       "outgoingMessage": "送信メッセージ",
@@ -2183,6 +2231,7 @@
         "CONVERSATION": "会話履歴"
       },
       "promptPreviewLoading": "プロンプトを構築中…",
+      "promptPreviewUnavailable": "正確なプロンプトを構築できませんでした。現在のコンテキストを確認し、プレビューを開き直してください。",
       "promptSnapshotMissing": "このメッセージには送信プロンプトの記録がありません（この機能の追加より前に送信されたメッセージです）。",
       "promptSnapshotError": "プロンプト記録の読み込みに失敗しました",
       "projectLabel": "プロジェクト",
@@ -2259,6 +2308,7 @@
       "judge": "AI で評価",
       "judging": "評価中…",
       "judgeFailed": "AI 評価に失敗しました",
+      "judgeNoResult": "AIから有効な評価結果を取得できませんでした。モデル設定を確認して再試行してください。",
       "acceptAlias": "「{{name}}」の別名として登録",
       "acceptNew": "別名にせず新規エントリとして作成",
       "aliasHint": "「{{name}}」の別名?",
@@ -2441,8 +2491,13 @@
     },
     "readings": {
       "label": "読み（ふりがな）",
+      "placeholder": "ふりがな…",
       "estimate": "AIで推定",
+      "estimateFailed": "読みの推定に失敗しました",
+      "estimateNoResult": "AIから有効な読みを取得できませんでした。モデル設定を確認して再試行してください。",
       "manage": "読みを管理",
+      "heroLabel": "代表読み",
+      "heroPlaceholder": "読みを入力…",
       "auto": "自動: {{yomi}}",
       "noSurfaces": "名前や別名を設定すると読みを登録できます",
       "backfillTitle": "読みの一括推定",
@@ -3777,8 +3832,7 @@
       "codexReadingPromptDisable": "今後は確認しない",
       "urlPlaceholder": "https://...",
       "label": "エディタツールバー",
-      "zenMode": "Zenモード",
-      "fullscreenMode": "フルスクリーン"
+      "zenMode": "Zenモード"
     },
     "reorder": {
       "title": "推敲 — 段落内並べ替え",
@@ -3952,6 +4006,7 @@
       "autoFollowHint": "開いているパネルに合わせて表示を自動で切り替える",
       "attribution": "帰属ハイライト",
       "comments": "コメント",
+      "pseudoComments": "疑似コメント",
       "readerComments": "読者コメント",
       "foreshadow": "伏線マーク",
       "review": "校閲の指摘",
@@ -3979,7 +4034,17 @@
     "bodyPlaceholder": "思いついたことを書く…",
     "a11y": {
       "editorBody": "本文エディタ: {{title}}",
-      "editorBodyUntitled": "本文エディタ"
+      "editorBodyUntitled": "本文エディタ",
+      "openLinearReader": "全シーンを読む",
+      "linearReaderTitle": "全シーン読み上げビュー",
+      "linearReaderDescription": "原稿順の{{count}}シーンを静的に表示します。追加のエディタは起動しません。",
+      "linearReaderLoading": "全シーンを読み込み中…",
+      "linearReaderFailed": "全シーン読み上げビューを読み込めませんでした。",
+      "linearReaderRetry": "再試行",
+      "linearReaderListLabel": "原稿の全シーン",
+      "untitledScene": "無題のシーン",
+      "emptyScene": "本文なし",
+      "unsavedContent": "未保存の変更を含みます"
     }
   },
   "inlineAi": {
@@ -4179,6 +4244,12 @@
     "exportJson": "JSON",
     "exportHtml": "HTML",
     "exportProjectReportTitle": "プロジェクト全体の帰属レポートを書き出す",
+    "exportAiAuditBundle": "AI使用証拠監査ZIP",
+    "exportAiAuditBundleTitle": "現在本文の帰属、導入後のforward実行ledger、DBに残存する旧形式証拠のうちAI由来を構造的に確認できる選択済み証拠を書き出します。監査導入前の完全な履歴ではありません。完全なプロンプト・文脈・応答・他シーン本文や、モデルに渡した秘密情報を含み得るため、共有前に全ファイルを確認してください",
+    "aiAudit": {
+      "verificationFailed": "監査ZIPは書き出しましたが、ハッシュチェーンの整合性確認に失敗しました。ZIP内のREADMEとmanifestを確認してください。",
+      "exportFailed": "AI使用監査ZIPを書き出せませんでした。"
+    },
     "knowledgeAiChars": "Codex/Snippet AI: {{chars}}字",
     "aiUsageLocations": "AI 使用箇所",
     "provenanceChat": "チャット",
@@ -4333,6 +4404,10 @@
     "aiExposureHidden": "AI に一切見せない (hidden)",
     "aiExposureHint": "suppress は Spotlight / Codex スコープで明示選択した時だけ注入され、hidden はどの経路でも AI に渡りません。どちらも通常の自動注入からは除外されます。",
     "saving": "保存中...",
+    "updateFailed": "Phaseの更新に失敗しました",
+    "deleteFailed": "Phaseの削除に失敗しました",
+    "updateMissing": "保存できませんでした。このPhaseは削除済みか、見つかりません。",
+    "editConflict": "このPhaseは別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。",
     "history": {
       "created": "Phase作成",
       "updated": "Phase更新",
@@ -4427,7 +4502,16 @@
   "autoSave": {
     "failed": "自動保存に失敗しました: {{reason}}",
     "recovered": "自動保存が回復し、変更を保存しました",
-    "workspaceSwitching": "ワークスペース切替中のため保存できませんでした（変更は保持され、自動で再保存されます）"
+    "workspaceSwitching": "ワークスペース切替中のため保存できませんでした（変更は保持され、自動で再保存されます）",
+    "unresolvedChanges": "未保存または競合中の変更があるため、ワークスペースを切り替えませんでした"
+  },
+  "closeSaveFailure": {
+    "title": "変更を保存できないため、終了を中止しました",
+    "description": "再試行するか、復旧用ファイルを書き出してください。破棄して終了すると未保存の変更は失われます。",
+    "retry": "保存を再試行",
+    "export": "復旧用ファイルを書き出す",
+    "discard": "破棄して終了",
+    "exportFailed": "復旧用ファイルを書き出せませんでした"
   },
   "sceneLoad": {
     "failed": "本文の読み込みに失敗しました（このシーンの保存は停止中）: {{reason}}"
@@ -4504,8 +4588,6 @@
       "firstRunNote": "初回実行時は Chromium のダウンロードが行われるため、数分かかることがあります。",
       "abort": "中止",
       "done": "組版が完了しました",
-      "save": "保存",
-      "saving": "保存中…",
       "saved": "保存しました: {{path}}",
       "saveFailed": "保存に失敗しました: {{error}}",
       "failed": "書き出しに失敗しました"
@@ -5596,6 +5678,17 @@
       "analyze": "解析",
       "import": "取り込む",
       "imported": "{{n}}本のスレッドを取り込みました",
+      "importPartial": "{{created}}本を取り込み、{{skipped}}件をスキップ、{{failed}}件が失敗しました",
+      "importFailed": "取り込みを完了できませんでした",
+      "importResult": "作成 {{created}}本 / スキップ {{skipped}}件 / 失敗 {{failed}}件",
+      "importAborted": "プロジェクトまたはワークスペースが切り替わったため、取り込みを中断しました。",
+      "issue": {
+        "INVALID_PROPOSAL": "無効なスレッド候補",
+        "INVALID_PHASE": "無効な物語段階",
+        "MISSING_NODE": "シーンがありません",
+        "DUPLICATE": "重複したマーカー",
+        "CREATE_FAILED": "この項目を作成できませんでした"
+      },
       "failed": "抽出に失敗しました",
       "none": "抽出できるサブプロットが見つかりませんでした。"
     },
@@ -5646,6 +5739,8 @@
     "zoomOut": "縮小",
     "unassigned": "未割当",
     "viewportLabel": "作中年表",
+    "scrollbarLabel": "作中年表の水平スクロール",
+    "scrollbarValue": "表示開始: 作中日 {{day}}",
     "tieView": "読む順×作中時間",
     "readingOrder": "読む順",
     "storyTime": "作中時間",

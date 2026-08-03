@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   PointerSensor,
   pointerWithin,
@@ -28,6 +28,10 @@ interface UseBeatDragDropArgs {
   editorRef: React.MutableRefObject<Editor | null>;
   /** Scene id used when placing/unplacing beats inside the active document. */
   nodeId: string;
+  /** Synchronously rejects drops that finish after the editor projection changed. */
+  canMutate?: () => boolean;
+  /** Exact input projection token captured at drag start and checked at drop. */
+  projectionKeyRef?: React.MutableRefObject<string>;
 }
 
 /**
@@ -36,8 +40,19 @@ interface UseBeatDragDropArgs {
  *
  * Extracted from EditorPane verbatim — behaviour is unchanged.
  */
-export function useBeatDragDrop({ editorRef, nodeId }: UseBeatDragDropArgs) {
+export function useBeatDragDrop({
+  editorRef,
+  nodeId,
+  canMutate,
+  projectionKeyRef,
+}: UseBeatDragDropArgs) {
   const [draggingBeat, setDraggingBeat] = useState<UnplacedBeat | null>(null);
+  const dragContextRef = useRef<{
+    nodeId: string;
+    projectionKey: string | null;
+    unplacedSceneId: string;
+    unplacedBeatsFingerprint: string;
+  } | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -52,15 +67,54 @@ export function useBeatDragDrop({ editorRef, nodeId }: UseBeatDragDropArgs) {
     return rectIntersection(args);
   }, []);
 
-  const onDragStart = useCallback((event: DragStartEvent) => {
-    setDraggingBeat(
-      (event.active.data.current?.beat as UnplacedBeat | undefined) ?? null,
-    );
-  }, []);
+  const onDragStart = useCallback(
+    (event: DragStartEvent) => {
+      if (canMutate && !canMutate()) {
+        dragContextRef.current = null;
+        return;
+      }
+      const unplacedSceneId =
+        (event.active.data.current?.sceneId as string | undefined) ?? nodeId;
+      dragContextRef.current = {
+        nodeId,
+        projectionKey: projectionKeyRef?.current ?? null,
+        unplacedSceneId,
+        unplacedBeatsFingerprint: JSON.stringify(
+          useUnplacedBeatsStore.getState().getBeats(unplacedSceneId),
+        ),
+      };
+      setDraggingBeat(
+        (event.active.data.current?.beat as UnplacedBeat | undefined) ?? null,
+      );
+    },
+    [canMutate, nodeId, projectionKeyRef],
+  );
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
       setDraggingBeat(null);
+      const dragContext = dragContextRef.current;
+      dragContextRef.current = null;
+      if (canMutate && !canMutate()) return;
+      if (
+        (canMutate || projectionKeyRef) &&
+        (!dragContext ||
+          dragContext.nodeId !== nodeId ||
+          dragContext.projectionKey !== (projectionKeyRef?.current ?? null))
+      ) {
+        return;
+      }
+      if (
+        dragContext &&
+        dragContext.unplacedBeatsFingerprint !==
+          JSON.stringify(
+            useUnplacedBeatsStore
+              .getState()
+              .getBeats(dragContext.unplacedSceneId),
+          )
+      ) {
+        return;
+      }
       const { active, over } = event;
       const ed = editorRef.current;
 
@@ -132,7 +186,7 @@ export function useBeatDragDrop({ editorRef, nodeId }: UseBeatDragDropArgs) {
         }
       }
     },
-    [editorRef, nodeId],
+    [canMutate, editorRef, nodeId, projectionKeyRef],
   );
 
   return { sensors, collisionDetection, draggingBeat, onDragStart, onDragEnd };

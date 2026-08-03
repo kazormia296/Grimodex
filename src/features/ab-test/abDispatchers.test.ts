@@ -29,6 +29,13 @@ const MESSAGES: AbMessage[] = [
   { role: "user", content: "continue the scene" },
 ];
 const CONFIG: AbConfig = { model: "model-b" };
+const DISPATCH_CONTEXT = {
+  operationId: "operation-test",
+  projectId: "p1",
+  expectedWorkspacePath: "/workspace/original",
+  slotIndex: 0,
+  configFingerprint: "direct-dispatch",
+} as const;
 
 beforeEach(() => {
   h.sendChatMessageOnceAb.mockReset();
@@ -44,12 +51,22 @@ describe("createChatAbDispatcher", () => {
       outputTokens: 5,
     });
     const dispatch = createChatAbDispatcher("p1");
-    const res = await dispatch(MESSAGES, CONFIG);
+    const res = await dispatch(MESSAGES, CONFIG, DISPATCH_CONTEXT);
 
     expect(res).toEqual({ ok: true, text: "hello" });
     // provider 未指定 (基準枠相当) → provider/apiVariant/endpointId は undefined。
     expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
       MESSAGES,
+      expect.objectContaining({
+        projectId: "p1",
+        expectedWorkspacePath: "/workspace/original",
+        pathId: "ab_chat",
+        operationId: expect.any(String),
+        metadata: {
+          slotIndex: 0,
+          configFingerprint: "direct-dispatch",
+        },
+      }),
       "model-b",
       undefined,
       undefined,
@@ -75,10 +92,15 @@ describe("createChatAbDispatcher", () => {
       outputTokens: 1,
     });
     const dispatch = createChatAbDispatcher("p1");
-    await dispatch(MESSAGES, { provider: "sakana", model: "fugu" });
+    await dispatch(
+      MESSAGES,
+      { provider: "sakana", model: "fugu" },
+      DISPATCH_CONTEXT,
+    );
 
     expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
       MESSAGES,
+      expect.objectContaining({ projectId: "p1", pathId: "ab_chat" }),
       "fugu",
       "sakana",
       "responses",
@@ -94,10 +116,15 @@ describe("createChatAbDispatcher", () => {
   it("non-sakana provider override leaves variant to backend (undefined)", async () => {
     h.sendChatMessageOnceAb.mockResolvedValue({ text: "hi" });
     const dispatch = createChatAbDispatcher("p1");
-    await dispatch(MESSAGES, { provider: "openrouter", model: "x/y" });
+    await dispatch(
+      MESSAGES,
+      { provider: "openrouter", model: "x/y" },
+      DISPATCH_CONTEXT,
+    );
 
     expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
       MESSAGES,
+      expect.objectContaining({ projectId: "p1", pathId: "ab_chat" }),
       "x/y",
       "openrouter",
       undefined,
@@ -108,14 +135,19 @@ describe("createChatAbDispatcher", () => {
   it("forwards endpointId for an openai-compatible slot", async () => {
     h.sendChatMessageOnceAb.mockResolvedValue({ text: "hi" });
     const dispatch = createChatAbDispatcher("p1");
-    await dispatch(MESSAGES, {
-      provider: "openai-compatible",
-      model: "local-model",
-      endpointId: "ep-2",
-    });
+    await dispatch(
+      MESSAGES,
+      {
+        provider: "openai-compatible",
+        model: "local-model",
+        endpointId: "ep-2",
+      },
+      DISPATCH_CONTEXT,
+    );
 
     expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
       MESSAGES,
+      expect.objectContaining({ projectId: "p1", pathId: "ab_chat" }),
       "local-model",
       "openai-compatible",
       undefined,
@@ -127,14 +159,19 @@ describe("createChatAbDispatcher", () => {
     h.sendChatMessageOnceAb.mockResolvedValue({ text: "hi" });
     const dispatch = createChatAbDispatcher("p1");
     // endpointId on a non-compat provider must never leak to the backend.
-    await dispatch(MESSAGES, {
-      provider: "openrouter",
-      model: "x/y",
-      endpointId: "ep-2",
-    });
+    await dispatch(
+      MESSAGES,
+      {
+        provider: "openrouter",
+        model: "x/y",
+        endpointId: "ep-2",
+      },
+      DISPATCH_CONTEXT,
+    );
 
     expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
       MESSAGES,
+      expect.objectContaining({ projectId: "p1", pathId: "ab_chat" }),
       "x/y",
       "openrouter",
       undefined,
@@ -145,10 +182,25 @@ describe("createChatAbDispatcher", () => {
   it("normalizes a thrown error to ok:false", async () => {
     h.sendChatMessageOnceAb.mockRejectedValue(new Error("boom"));
     const dispatch = createChatAbDispatcher("p1");
-    const res = await dispatch(MESSAGES, CONFIG);
+    const res = await dispatch(MESSAGES, CONFIG, DISPATCH_CONTEXT);
 
     expect(res).toEqual({ ok: false, error: "boom" });
     expect(h.recordAiUsage).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before chat provider dispatch when factory and run project authorities differ", async () => {
+    const dispatch = createChatAbDispatcher("factory-project");
+    const res = await dispatch(MESSAGES, CONFIG, {
+      ...DISPATCH_CONTEXT,
+      projectId: "run-project",
+    });
+
+    expect(res).toEqual({
+      ok: false,
+      error:
+        "AI_AUDIT_PROJECT_CHANGED: expected factory-project, active run-project",
+    });
+    expect(h.sendChatMessageOnceAb).not.toHaveBeenCalled();
   });
 });
 
@@ -156,7 +208,7 @@ describe("createInlineAbDispatcher", () => {
   it("forwards projectId to streamInlineAiText and maps ok:true", async () => {
     h.streamInlineAiText.mockResolvedValue({ ok: true, text: "drafted" });
     const dispatch = createInlineAbDispatcher("p1");
-    const res = await dispatch(MESSAGES, CONFIG);
+    const res = await dispatch(MESSAGES, CONFIG, DISPATCH_CONTEXT);
 
     expect(res).toEqual({ ok: true, text: "drafted" });
     expect(h.streamInlineAiText).toHaveBeenCalledWith(
@@ -165,6 +217,7 @@ describe("createInlineAbDispatcher", () => {
         model: "model-b",
         usageSurface: "inline_ai",
         projectId: "p1",
+        auditExpectedWorkspacePath: "/workspace/original",
       }),
     );
   });
@@ -172,8 +225,21 @@ describe("createInlineAbDispatcher", () => {
   it("maps ok:false through verbatim", async () => {
     h.streamInlineAiText.mockResolvedValue({ ok: false, error: "nope" });
     const dispatch = createInlineAbDispatcher("p1");
-    const res = await dispatch(MESSAGES, CONFIG);
+    const res = await dispatch(MESSAGES, CONFIG, DISPATCH_CONTEXT);
 
     expect(res).toEqual({ ok: false, error: "nope" });
+  });
+
+  it("fails closed before inline provider dispatch when factory and run project authorities differ", async () => {
+    const dispatch = createInlineAbDispatcher("factory-project");
+    await expect(
+      dispatch(MESSAGES, CONFIG, {
+        ...DISPATCH_CONTEXT,
+        projectId: "run-project",
+      }),
+    ).rejects.toThrow(
+      "AI_AUDIT_PROJECT_CHANGED: expected factory-project, active run-project",
+    );
+    expect(h.streamInlineAiText).not.toHaveBeenCalled();
   });
 });

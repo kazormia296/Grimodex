@@ -43,6 +43,7 @@ function ports(nodes: TreeNodeData[]): DeleteTreeSubtreePorts & {
     },
     history,
     guardPending: () => false,
+    tryAcquireNavigationAuthority: () => ({ release: vi.fn() }),
     getNodes: () => state.nodes,
     getActiveSceneId: () => state.active,
     loadSceneContent: vi.fn().mockResolvedValue("content"),
@@ -78,6 +79,14 @@ describe("deleteTreeSubtree", () => {
     expect(testPorts.deletePersisted).toHaveBeenNthCalledWith(1, "scene");
     expect(testPorts.deletePersisted).toHaveBeenNthCalledWith(2, "folder");
     expect(testPorts.history).toHaveLength(1);
+    expect(testPorts.history[0]).toMatchObject({
+      kind: "scenes",
+      entityId: "folder",
+      affectedEntities: [
+        { kind: "scenes", entityId: "folder" },
+        { kind: "scenes", entityId: "scene" },
+      ],
+    });
     await testPorts.history[0]!.undo();
     expect(testPorts.restorePersisted).toHaveBeenNthCalledWith(
       1,

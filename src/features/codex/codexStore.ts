@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
 import { announce } from "@/lib/a11y/announcer";
-import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   listCodexEntries,
   listCodexMatchTargets,
@@ -21,10 +21,11 @@ import { CodexVersionConflictError } from "./occ";
 import { listCodexTypes, type CodexType } from "./typeApi";
 import { searchCodexEntries } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { captureCodexDeletion } from "@/features/trash-bin/captureHooks";
-import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
-import { getCurrentProjectId } from "@/features/project/projectStore";
-import { useChatStore } from "@/features/chat/chatStore";
+import {
+  cancelPendingTrash,
+  captureCodexDeletion,
+} from "@/features/trash-bin/captureHooks";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { _clearCodexCrossMentionCaches } from "./codexCrossMentions";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
@@ -42,7 +43,18 @@ import {
   resolveUnsetReadingTargetForSurface,
   serializeReadings,
 } from "./reading";
-import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+  runAuthoritativeMutation,
+} from "@/features/concurrency/mutationAuthority";
+import {
+  SAVE_NOT_PERSISTED,
+  persistedVersion,
+  type VersionedSaveOutcome,
+} from "@/lib/saveOutcome";
+import { hasExternalEditConflictForId } from "@/lib/externalEditConflictRegistry";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 
 export type CodexSortOrder =
   | "category"
@@ -67,31 +79,6 @@ export function setCodexEditConflictHandler(
   handler: (entryId: string) => void,
 ): void {
   codexEditConflictHandler = handler;
-}
-
-interface RendererAuthority {
-  projectId: string;
-  workspacePath: string | null;
-  workspaceOpenRevision: number | null;
-}
-
-function captureRendererAuthority(): RendererAuthority {
-  const workspaceIdentity = getCurrentWorkspaceIdentity();
-  return {
-    projectId: getCurrentProjectId(),
-    workspacePath: workspaceIdentity?.path ?? null,
-    workspaceOpenRevision: workspaceIdentity?.openRevision ?? null,
-  };
-}
-
-function isCurrentRendererAuthority(authority: RendererAuthority): boolean {
-  const workspaceIdentity = getCurrentWorkspaceIdentity();
-  return (
-    getCurrentProjectId() === authority.projectId &&
-    (workspaceIdentity?.path ?? null) === authority.workspacePath &&
-    (workspaceIdentity?.openRevision ?? null) ===
-      authority.workspaceOpenRevision
-  );
 }
 
 class CodexCreateAuthorityChangedError extends Error {
@@ -177,7 +164,7 @@ interface CodexState {
   previewPhaseByEntry: Record<string, string | null>;
   setPreviewPhase: (entryId: string, phaseId: string | null) => void;
 
-  loadEntries: () => Promise<void>;
+  loadEntries: (options?: { propagateError?: boolean }) => Promise<void>;
   /** mount 用の dedup 付きロード。同一キー (projectId|filterType) のロードが
    *  進行中ならそれに相乗りする。settle 後は毎回ロードする (remount での
    *  再フェッチ = MCP 等の外部書き込み追従は維持)。 */
@@ -201,7 +188,11 @@ interface CodexState {
   /**
    * Structural / deliberate user edits. Pushes a history entry.
    */
-  update: (id: string, data: StructuralPatch) => Promise<void>;
+  update: (
+    id: string,
+    data: StructuralPatch,
+    options?: { baseVersion?: number },
+  ) => Promise<VersionedSaveOutcome>;
   /**
    * Type + summary detail form save. Persists both fields in one OCC-protected
    * write and reports whether the complete save was committed.
@@ -223,7 +214,11 @@ interface CodexState {
    * Auto-save path for TipTap-driven text fields. Does NOT push history;
    * TipTap's built-in undo handles text-level reversal.
    */
-  updateText: (id: string, data: TextPatch) => Promise<void>;
+  updateText: (
+    id: string,
+    data: TextPatch,
+    options?: { baseVersion?: number },
+  ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
   requestSelectEntry: (id: string) => void;
@@ -234,8 +229,17 @@ interface CodexState {
 
 // mount eager load の in-flight dedup (詳細は ensureEntriesLoaded の docs)
 const entriesLoadTracker = createInFlightTracker();
-function entriesLoadKey(filterType: CodexEntryType | null): string {
-  return `${getCurrentProjectId()}|${filterType ?? ""}`;
+let entriesLoadGeneration = 0;
+
+function entriesLoadKey(
+  projectId: string,
+  filterType: CodexEntryType | null,
+): string {
+  return `${projectId}|${filterType ?? ""}`;
+}
+
+function swallowEntriesLoadFailure(promise: Promise<void>): Promise<void> {
+  return promise.catch(() => undefined);
 }
 
 function toCompletionTarget(entry: CodexEntry): CodexMatchRow {
@@ -291,11 +295,27 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   isLoading: false,
   pendingEntryId: null,
   selectedEntry: null,
-  setSelectedEntry: (entry) => set({ selectedEntry: entry }),
+  setSelectedEntry: (entry) => {
+    const current = get().selectedEntry;
+    if (
+      current &&
+      current.id !== entry?.id &&
+      hasExternalEditConflictForId(current.id)
+    ) {
+      return;
+    }
+    set({ selectedEntry: entry });
+  },
   previewPhaseByEntry: {},
 
   setPreviewPhase: (entryId, phaseId) => {
     set((s) => {
+      if (
+        s.previewPhaseByEntry[entryId] !== phaseId &&
+        hasExternalEditConflictForId(entryId)
+      ) {
+        return s;
+      }
       if (phaseId == null) {
         if (!(entryId in s.previewPhaseByEntry)) return s;
         const next = { ...s.previewPhaseByEntry };
@@ -309,37 +329,49 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     });
   },
 
-  loadEntries: async () => {
+  loadEntries: (options) => {
+    const projectId = getCurrentProjectId();
+    const filterType = get().filterType;
+    const key = entriesLoadKey(projectId, filterType);
+    const inFlight = entriesLoadTracker.peek(key);
+    if (inFlight) {
+      return options?.propagateError
+        ? inFlight
+        : swallowEntriesLoadFailure(inFlight);
+    }
+    const generation = ++entriesLoadGeneration;
     const run = (async () => {
       set({ isLoading: true });
       try {
-        const { filterType } = get();
-        const projectId = getCurrentProjectId();
         const [entries, types, completionTargets] = await Promise.all([
           listCodexEntries(projectId, filterType ?? undefined),
           listCodexTypes(projectId),
           listCodexMatchTargets(projectId),
         ]);
+        if (generation !== entriesLoadGeneration) return;
         set({ entries, types, completionTargets, isLoading: false });
       } catch (e) {
-        set({ isLoading: false });
-        toast.error(i18next.t("codex.store.loadFailed"));
-        debugLog.error(
-          "CodexStore",
-          `loadEntries: ${rootCause(e)}`,
-          errorDetail(e),
-        );
+        if (generation === entriesLoadGeneration) {
+          set({ isLoading: false });
+          if (!isIpcLifecycleCancellation(e)) {
+            toast.error(i18next.t("codex.store.loadFailed"));
+            debugLog.error("CodexStore", "loadEntries failed", errorDetail(e));
+          }
+        }
+        throw e;
       }
     })();
-    // mutation 後の直接 loadEntries も in-flight として記録し、直後に
-    // mount する ensureEntriesLoaded がこの (最新の) ロードに相乗りする
-    entriesLoadTracker.track(entriesLoadKey(get().filterType), run);
-    return run;
+    // canonical promise は rejection を保持する。lifecycle はその rejection
+    // を degraded state へ伝播し、通常 UI caller は従来どおり吸収する。
+    entriesLoadTracker.track(key, run);
+    return options?.propagateError ? run : swallowEntriesLoadFailure(run);
   },
 
   ensureEntriesLoaded: () => {
-    const inFlight = entriesLoadTracker.peek(entriesLoadKey(get().filterType));
-    if (inFlight) return inFlight;
+    const inFlight = entriesLoadTracker.peek(
+      entriesLoadKey(getCurrentProjectId(), get().filterType),
+    );
+    if (inFlight) return swallowEntriesLoadFailure(inFlight);
     return get().loadEntries();
   },
 
@@ -372,24 +404,30 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error(i18next.t("codex.store.searchFailed"));
-      debugLog.error("CodexStore", `search: ${rootCause(e)}`, errorDetail(e));
+      debugLog.error("CodexStore", "search failed", errorDetail(e));
     }
   },
 
   create: async (data) => {
     if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
-    const authority = captureRendererAuthority();
+    const authority = captureMutationAuthority(
+      getCurrentProjectId(),
+      getCurrentProjectId,
+    );
     const { projectId } = authority;
     try {
       const id = crypto.randomUUID();
-      const entry = await createCodexEntry({
-        id,
-        projectId,
-        ...data,
-      });
-      if (!isCurrentRendererAuthority(authority)) {
+      const outcome = await runAuthoritativeMutation(authority, () =>
+        createCodexEntry({
+          id,
+          projectId,
+          ...data,
+        }),
+      );
+      if (outcome.status === "stale" || !outcome.value) {
         throw new CodexCreateAuthorityChangedError();
       }
+      const entry = outcome.value;
       const { filterType } = get();
       set((state) => ({
         entries:
@@ -410,7 +448,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           entityId: captured.id,
           async undo() {
             await deleteCodexEntry(captured.projectId, captured.id);
-            if (!isCurrentRendererAuthority(authority)) return;
+            if (!isCurrentMutationAuthority(authority)) return;
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
               completionTargets: removeCompletionTarget(
@@ -441,7 +479,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               childrenBudget: captured.childrenBudget ?? undefined,
               notes: captured.notes ?? undefined,
             });
-            if (!isCurrentRendererAuthority(authority)) return;
+            if (!isCurrentMutationAuthority(authority)) return;
             const { filterType } = get();
             set((state) => ({
               entries:
@@ -472,41 +510,55 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       if (
         e instanceof CodexCreateAuthorityChangedError ||
-        !isCurrentRendererAuthority(authority)
+        !isCurrentMutationAuthority(authority)
       ) {
         throw e instanceof CodexCreateAuthorityChangedError
           ? e
           : new CodexCreateAuthorityChangedError();
       }
       toast.error(i18next.t("codex.store.createFailed"));
-      debugLog.error("CodexStore", `create: ${rootCause(e)}`, errorDetail(e));
+      debugLog.error("CodexStore", "create failed", errorDetail(e));
       throw e;
     }
   },
 
-  update: async (id, data) => {
+  update: async (id, data, options) => {
     const snapshot = get();
     const before =
       snapshot.entries.find((e) => e.id === id) ??
       (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
+    let updated: CodexEntry | undefined;
 
     try {
-      const updated = await updateCodexEntry(getCurrentProjectId(), id, data);
-      if (updated) {
-        set((state) => ({
-          entries: state.entries.map((e) => (e.id === id ? updated : e)),
-          completionTargets: upsertCompletionTarget(
-            state.completionTargets,
-            updated,
-          ),
-          selectedEntry:
-            state.selectedEntry?.id === id ? updated : state.selectedEntry,
-        }));
+      updated =
+        options?.baseVersion === undefined
+          ? await updateCodexEntry(getCurrentProjectId(), id, data)
+          : await updateCodexEntry(getCurrentProjectId(), id, data, {
+              baseVersion: options.baseVersion,
+            });
+      if (!updated) {
+        toast.error(i18next.t("codex.store.updateFailed"));
+        debugLog.warn("CodexStore", `update target missing: ${id}`);
+        return SAVE_NOT_PERSISTED;
       }
+      const saved = updated;
+      set((state) => ({
+        entries: state.entries.map((e) => (e.id === id ? saved : e)),
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          saved,
+        ),
+        selectedEntry:
+          state.selectedEntry?.id === id ? saved : state.selectedEntry,
+      }));
     } catch (e) {
+      if (e instanceof CodexVersionConflictError) {
+        codexEditConflictHandler(id);
+        return SAVE_NOT_PERSISTED;
+      }
       toast.error(i18next.t("codex.store.updateFailed"));
-      debugLog.error("CodexStore", `update: ${rootCause(e)}`, errorDetail(e));
-      return;
+      debugLog.error("CodexStore", "update failed", errorDetail(e));
+      return SAVE_NOT_PERSISTED;
     }
 
     recordChangeEvent({
@@ -521,8 +573,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       },
     });
 
-    if (!before) return;
-    if (useGlobalHistoryStore.getState().isReplaying) return;
+    if (!before) return persistedVersion(updated.version);
+    if (useGlobalHistoryStore.getState().isReplaying) {
+      return persistedVersion(updated.version);
+    }
 
     const undoPatch: Record<string, unknown> = {};
     for (const key of Object.keys(data)) {
@@ -574,6 +628,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         }
       },
     });
+    return persistedVersion(updated.version);
   },
 
   saveTypeAndSummary: async (id, data) => {
@@ -589,16 +644,27 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     if (data.summary !== (before.summary ?? "")) changedFields.push("summary");
     if (changedFields.length === 0) return true;
 
-    const authority = captureRendererAuthority();
+    const authority = captureMutationAuthority(
+      getCurrentProjectId(),
+      getCurrentProjectId,
+    );
     const { projectId } = authority;
     let updated: CodexEntry | undefined;
     try {
-      updated = await updateCodexEntry(
-        projectId,
-        id,
-        { type: data.type, summary: data.summary },
-        { baseVersion: before.version },
+      const outcome = await runAuthoritativeMutation(authority, () =>
+        updateCodexEntry(
+          projectId,
+          id,
+          { type: data.type, summary: data.summary },
+          { baseVersion: before.version },
+        ),
       );
+      if (outcome.status === "stale") {
+        // A completed old-scope write remains persisted, but must publish no
+        // renderer/history/timelapse side effects into the replacement scope.
+        return outcome.value !== undefined;
+      }
+      updated = outcome.value;
       if (!updated) return false;
     } catch (error) {
       if (error instanceof CodexVersionConflictError) {
@@ -608,14 +674,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       toast.error(i18next.t("codex.store.updateFailed"));
       debugLog.error(
         "CodexStore",
-        `saveTypeAndSummary: ${rootCause(error)}`,
+        "saveTypeAndSummary failed",
         errorDetail(error),
       );
       return false;
     }
 
     const syncUpdatedEntry = (entry: CodexEntry): void => {
-      if (!isCurrentRendererAuthority(authority)) return;
+      if (!isCurrentMutationAuthority(authority)) return;
       set((state) => ({
         entries: state.entries.map((candidate) =>
           candidate.id === id ? entry : candidate,
@@ -632,7 +698,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     // await. If renderer authority changed while that write was in flight, the
     // write is still successful but none of its renderer/history/timelapse
     // side effects belong to the newly active scope.
-    if (!isCurrentRendererAuthority(authority)) return true;
+    if (!isCurrentMutationAuthority(authority)) return true;
     syncUpdatedEntry(updated);
 
     const changedPatch: StructuralPatch = {};
@@ -815,44 +881,44 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       toast.error(i18next.t("codex.store.updateFailed"));
       debugLog.error(
         "CodexStore",
-        `registerRubyReading: ${rootCause(error)}`,
+        "registerRubyReading failed",
         errorDetail(error),
       );
       return false;
     }
   },
 
-  updateText: async (id, data) => {
+  updateText: async (id, data, options) => {
     const snapshot = get();
     const before =
       snapshot.entries.find((e) => e.id === id) ??
       (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
+    let updated: CodexEntry | undefined;
     try {
       // OCC: 読み込み時点の version を base_version として渡す。別窓 / 別プロセスが
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
-      const updated = await updateCodexEntry(getCurrentProjectId(), id, data, {
-        baseVersion: before?.version ?? 0,
+      updated = await updateCodexEntry(getCurrentProjectId(), id, data, {
+        baseVersion: options?.baseVersion ?? before?.version ?? 0,
       });
-      if (updated) {
-        set((state) => ({
-          entries: state.entries.map((e) => (e.id === id ? updated : e)),
-          selectedEntry:
-            state.selectedEntry?.id === id ? updated : state.selectedEntry,
-        }));
+      if (!updated) {
+        toast.error(i18next.t("codex.store.updateFailed"));
+        debugLog.warn("CodexStore", `updateText target missing: ${id}`);
+        return SAVE_NOT_PERSISTED;
       }
+      set((state) => ({
+        entries: state.entries.map((e) => (e.id === id ? updated! : e)),
+        selectedEntry:
+          state.selectedEntry?.id === id ? updated! : state.selectedEntry,
+      }));
     } catch (e) {
       if (e instanceof CodexVersionConflictError) {
         // 非破壊: store も timelapse も触らず、呼び出し側に再読み込みを促す。
         codexEditConflictHandler(id);
-        return;
+        return SAVE_NOT_PERSISTED;
       }
       toast.error(i18next.t("codex.store.updateFailed"));
-      debugLog.error(
-        "CodexStore",
-        `updateText: ${rootCause(e)}`,
-        errorDetail(e),
-      );
-      return;
+      debugLog.error("CodexStore", "updateText failed", errorDetail(e));
+      return SAVE_NOT_PERSISTED;
     }
 
     // 本文系 (content / summary) の変更差分を timelapse に記録する。notes は
@@ -878,6 +944,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         payload: { fields, diffs },
       });
     }
+    return persistedVersion(updated.version);
   },
 
   remove: async (id) => {
@@ -885,10 +952,9 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     try {
       await deleteCodexEntry(getCurrentProjectId(), id);
       await get().loadEntries();
-      useChatStore.getState().onCodexAnchorDeleted(id);
     } catch (e) {
       toast.error(i18next.t("codex.store.deleteFailed"));
-      debugLog.error("CodexStore", `remove: ${rootCause(e)}`, errorDetail(e));
+      debugLog.error("CodexStore", "remove failed", errorDetail(e));
       return;
     }
 
@@ -916,7 +982,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         label: i18next.t("codex.history.deleted"),
         entityId: captured.id,
         async undo() {
-          useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
+          cancelPendingTrash(trashTempId);
           await createCodexEntry({
             id: captured.id,
             projectId: captured.projectId,
@@ -950,6 +1016,8 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   requestSelectEntry: (id) => set({ pendingEntryId: id }),
   clearPendingEntry: () => set({ pendingEntryId: null }),
   resetForProject: () => {
+    entriesLoadGeneration++;
+    entriesLoadTracker.clear();
     _clearCodexCrossMentionCaches();
     set({
       entries: [],
@@ -960,6 +1028,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       pendingEntryId: null,
       selectedEntry: null,
       previewPhaseByEntry: {},
+      isLoading: false,
     });
   },
 
@@ -974,11 +1043,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error(i18next.t("codex.store.filterFailed"));
-      debugLog.error(
-        "CodexStore",
-        `setFilterType: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("CodexStore", "setFilterType failed", errorDetail(e));
     }
   },
 }));

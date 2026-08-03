@@ -5,25 +5,10 @@ import { fileURLToPath } from "node:url";
 const CANONICAL_SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
 
-export function validateReleaseVersion({
-  tag,
-  packageVersion,
-  expectedMajor,
-  refType,
-}) {
-  if (refType !== "tag") {
-    throw new Error(`Release must run from a tag ref, received: ${refType}`);
-  }
+export function validatePackageVersion({ packageVersion, expectedMajor }) {
   if (!CANONICAL_SEMVER.test(packageVersion)) {
     throw new Error(
       `package.json version must be canonical semver without build metadata: ${packageVersion}`,
-    );
-  }
-
-  const expectedTag = `v${packageVersion}`;
-  if (tag !== expectedTag) {
-    throw new Error(
-      `Release tag must exactly match package.json version: expected ${expectedTag}, received ${tag}`,
     );
   }
 
@@ -35,10 +20,33 @@ export function validateReleaseVersion({
   }
 
   return {
-    tag,
     version: packageVersion,
     major,
     prerelease: packageVersion.includes("-"),
+  };
+}
+
+export function validateReleaseVersion({
+  tag,
+  packageVersion,
+  expectedMajor,
+  refType,
+}) {
+  if (refType !== "tag") {
+    throw new Error(`Release must run from a tag ref, received: ${refType}`);
+  }
+  const version = validatePackageVersion({ packageVersion, expectedMajor });
+
+  const expectedTag = `v${packageVersion}`;
+  if (tag !== expectedTag) {
+    throw new Error(
+      `Release tag must exactly match package.json version: expected ${expectedTag}, received ${tag}`,
+    );
+  }
+
+  return {
+    tag,
+    ...version,
   };
 }
 

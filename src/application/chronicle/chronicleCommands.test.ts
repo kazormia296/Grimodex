@@ -12,7 +12,7 @@ function ports(): ChronicleCommandPorts {
     event: {
       create: vi.fn().mockResolvedValue({ id: "e1", title: "event" }),
       update: vi.fn().mockResolvedValue(undefined),
-      delete: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue({ version: 0 }),
       addRelation: vi.fn().mockResolvedValue(undefined),
       removeRelation: vi.fn().mockResolvedValue(undefined),
       setParticipants: vi.fn().mockResolvedValue(undefined),
@@ -85,6 +85,23 @@ describe("chronicle commands", () => {
     expect(commandPorts.scene.updateDate).not.toHaveBeenCalled();
   });
 
+  it("passes the version loaded by the editing surface to an event patch", async () => {
+    const commandPorts = ports();
+
+    await patchChronicleItem(
+      { kind: "event", id: "event-1" },
+      { detail: "new detail" },
+      commandPorts,
+      { baseVersion: 7 },
+    );
+
+    expect(commandPorts.event.update).toHaveBeenCalledWith({
+      eventId: "event-1",
+      detail: "new detail",
+      baseVersion: 7,
+    });
+  });
+
   it("clears scene dates instead of deleting the scene", async () => {
     const commandPorts = ports();
     await deleteChronicleItem({ kind: "scene", id: "scene-1" }, commandPorts);
@@ -106,6 +123,16 @@ describe("chronicle commands", () => {
     ).resolves.toEqual({ id: "e1", title: "event" });
     await deleteChronicleItem({ kind: "event", id: "event-1" }, commandPorts);
     expect(commandPorts.event.delete).toHaveBeenCalledWith("event-1");
+  });
+
+  it("passes the selected Event version to deletion", async () => {
+    const commandPorts = ports();
+    await deleteChronicleItem({ kind: "event", id: "event-1" }, commandPorts, {
+      baseVersion: 9,
+    });
+    expect(commandPorts.event.delete).toHaveBeenCalledWith("event-1", {
+      baseVersion: 9,
+    });
   });
 
   it("uses the same empty date patch for explicit clear operations", async () => {

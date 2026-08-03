@@ -17,6 +17,10 @@ import {
   AI_PATHS,
   GENERATION_LAYERS,
 } from "@/features/ai-verification/aiPathRegistry";
+import {
+  __resetDynamicModelCapsForTests,
+  registerDynamicModelCaps,
+} from "./agent/dynamicModelCaps";
 
 const emptyGetter = () => "";
 const getterFor =
@@ -118,8 +122,19 @@ describe("能力ガード — structured/review ロールは構造化JSON対応�
   it("isModelCapableForRole の structured/review 契約", () => {
     expect(isModelCapableForRole("deepseek-r1", "structured")).toBe(false);
     expect(isModelCapableForRole("deepseek-r1", "review")).toBe(false);
+    expect(isModelCapableForRole("deepseek-r1", "reader")).toBe(false);
     expect(isModelCapableForRole("gpt-4o", "structured")).toBe(true);
     expect(isModelCapableForRole("claude-opus-4-8", "review")).toBe(true);
+  });
+
+  it("擬似コメントは校閲レビューと別の reader ロールへ解決される", () => {
+    const getter = getterFor({
+      [roleSettingKey("reader")]: "reader-model",
+    });
+    expect(PATH_TO_ROLE.post_effect_pseudo_comment).toBe("reader");
+    expect(resolveModelForPath("post_effect_pseudo_comment", getter)).toBe(
+      "reader-model",
+    );
   });
 });
 
@@ -180,6 +195,63 @@ describe("resolveRolePathConfig — プロバイダ横断", () => {
       }),
     });
     expect(resolveRolePathConfig("chat_agent_main", getter)).toBeUndefined();
+  });
+
+  it("provider-scoped Ollama capability rejects a same-named no-tools role model", () => {
+    __resetDynamicModelCapsForTests();
+    registerDynamicModelCaps("openrouter", [
+      {
+        id: "shared:latest",
+        name: "OpenRouter shared",
+        supportedParameters: ["tools"],
+      },
+    ]);
+    registerDynamicModelCaps("ollama", [
+      {
+        id: "shared:latest",
+        name: "Ollama shared",
+        supportedParameters: [],
+      },
+    ]);
+    const getter = getterFor({
+      [roleSettingKey("agent")]: "shared:latest",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        agent: { provider: "ollama" },
+      }),
+    });
+
+    expect(resolveRolePathConfig("chat_agent_main", getter)).toBeUndefined();
+    expect(isModelCapableForRole("shared:latest", "agent", "openrouter")).toBe(
+      true,
+    );
+    __resetDynamicModelCapsForTests();
+  });
+
+  it("uses the active provider scope for a providerless Agent role", () => {
+    __resetDynamicModelCapsForTests();
+    registerDynamicModelCaps("ollama", [
+      {
+        id: "local-role:latest",
+        name: "Local role",
+        supportedParameters: [],
+      },
+    ]);
+    const getter = getterFor({
+      [roleSettingKey("agent")]: "local-role:latest",
+    });
+
+    expect(
+      resolveRolePathConfig("chat_agent_main", getter, "ollama"),
+    ).toBeUndefined();
+    expect(
+      resolveRoleSendOverride("context_creator", getter, "ollama"),
+    ).toEqual({
+      model: null,
+      provider: null,
+      apiVariant: null,
+      endpointId: null,
+    });
+    __resetDynamicModelCapsForTests();
   });
 
   it("provider 空文字はオーバーライド扱いしない（active provider 据え置き）", () => {

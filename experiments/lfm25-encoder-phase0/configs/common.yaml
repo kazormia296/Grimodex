@@ -1,0 +1,22 @@
+schema_version: 1
+
+model:
+  id: LiquidAI/LFM2.5-Encoder-230M
+  revision: 0b649ad0c684378b03d4d8304f7577a662ab89bc
+  local_snapshot: local/base-model/0b649ad0c684378b03d4d8304f7577a662ab89bc/snapshot
+  manifest: local/base-model/0b649ad0c684378b03d4d8304f7577a662ab89bc/manifest.json
+  dtype: float32
+  trust_remote_code: true
+
+classifier:
+  pooling: masked_mean
+  dropout: 0.1
+  labels:
+    unaffected: 0
+    affected: 1
+
+offline_environment:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_HUB_DISABLE_PROGRESS_BARS: "1"
+  TOKENIZERS_PARALLELISM: "false"

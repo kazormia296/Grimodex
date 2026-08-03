@@ -31,6 +31,7 @@ const COMMAND_TIMEOUT_MS = 10_000;
 const DETECT_PROBE_TIMEOUT_MS = 8_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
 const DEFAULT_STREAM_TIMEOUT_MS = 290_000;
+const MAX_CLI_STREAM_TOMBSTONES = 256;
 
 const CLI_KINDS = new Set<CliKind>(["claude", "codex", "opencode"]);
 
@@ -142,12 +143,19 @@ interface CliAiDependencies {
 }
 
 interface ActiveRun {
+  streamId: string;
   process: RunningCliProcess;
   aborted: boolean;
   timedOut: boolean;
+  providerTerminalObserved: boolean;
   completed: boolean;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   deadlineTimer: ReturnType<typeof setTimeout> | null;
+}
+
+interface StreamLifecycle {
+  readonly settled: Promise<boolean>;
+  readonly resolveSettled: (transportTerminationObserved: boolean) => void;
 }
 
 export interface CliAiManager {
@@ -175,6 +183,15 @@ function requireString(
 ): string {
   if (typeof value !== "string" || (!allowEmpty && value.length === 0)) {
     throw new Error(`invalid args \`${name}\`: expected a string`);
+  }
+  return value;
+}
+
+function requireTrimmedNonEmptyString(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value || value !== value.trim()) {
+    throw new Error(
+      `invalid args \`${name}\`: expected a trimmed non-empty string`,
+    );
   }
   return value;
 }
@@ -1592,10 +1609,43 @@ export function createCliAiManager(
 
   let active: ActiveRun | null = null;
   let busy = false;
-  let abortBeforeSpawn = false;
+  const pendingAbortIds = new Set<string>();
+  const lifecycles = new Map<string, StreamLifecycle>();
+  const completedAbortReceipts = new Map<string, boolean>();
 
-  const emitError = (error: Error): void => {
-    broadcast("cli:stream-error", { message: error.message });
+  const addBoundedSet = (target: Set<string>, value: string): void => {
+    target.delete(value);
+    target.add(value);
+    while (target.size > MAX_CLI_STREAM_TOMBSTONES) {
+      const oldest = target.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      target.delete(oldest);
+    }
+  };
+  const addCompletedReceipt = (
+    streamId: string,
+    transportTerminationObserved: boolean,
+  ): void => {
+    completedAbortReceipts.delete(streamId);
+    completedAbortReceipts.set(streamId, transportTerminationObserved);
+    while (completedAbortReceipts.size > MAX_CLI_STREAM_TOMBSTONES) {
+      const oldest = completedAbortReceipts.keys().next().value as
+        | string
+        | undefined;
+      if (oldest === undefined) break;
+      completedAbortReceipts.delete(oldest);
+    }
+  };
+  const emitError = (streamId: string, error: Error): void => {
+    broadcast("cli:stream-error", { streamId, message: error.message });
+  };
+  const emitStopped = (streamId: string): void => {
+    broadcast("cli:stream-done", {
+      streamId,
+      stop_reason: "stopped",
+      input_tokens: null,
+      output_tokens: null,
+    });
   };
   const requestStop = (run: ActiveRun, aborted: boolean): void => {
     if (aborted) run.aborted = true;
@@ -1624,27 +1674,53 @@ export function createCliAiManager(
     clearStopTimer(run);
     clearDeadlineTimer(run);
   };
-  const waitForStopped = async (run: ActiveRun): Promise<void> => {
-    if (run.completed) return;
+  const waitForStopped = async (run: ActiveRun): Promise<boolean> => {
+    if (run.completed) return true;
     let fallback: ReturnType<typeof setTimeout> | null = null;
-    await Promise.race([
+    const stopped = await Promise.race([
       run.process.completion.then(
-        () => undefined,
-        () => undefined,
+        () => true,
+        () => true,
       ),
-      new Promise<void>((resolve) => {
-        fallback = setTimeout(resolve, forceKillAfterMs + 250);
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
         fallback.unref();
       }),
     ]);
     if (fallback) clearTimeout(fallback);
+    return stopped;
+  };
+  const waitForLifecycle = async (
+    lifecycle: StreamLifecycle,
+  ): Promise<boolean> => {
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      lifecycle.settled,
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
+        fallback.unref();
+      }),
+    ]);
+    if (fallback) clearTimeout(fallback);
+    return settled;
   };
 
   const sendCliStream = async (args: CommandArgs): Promise<null> => {
+    const streamId = requireTrimmedNonEmptyString(args.streamId, "streamId");
     if (disposed) throw new Error("CLI manager is disposed");
     if (busy) throw new Error("CLI stream is already running");
     busy = true;
-    abortBeforeSpawn = false;
+    completedAbortReceipts.delete(streamId);
+    let resolveLifecycle!: (transportTerminationObserved: boolean) => void;
+    const lifecycle: StreamLifecycle = {
+      settled: new Promise<boolean>((resolve) => {
+        resolveLifecycle = resolve;
+      }),
+      resolveSettled: (transportTerminationObserved) => {
+        resolveLifecycle(transportTerminationObserved);
+      },
+    };
+    lifecycles.set(streamId, lifecycle);
     let run: ActiveRun | null = null;
     let deadlineExpired = false;
     const deadlineTimer = setTimeout(() => {
@@ -1662,17 +1738,17 @@ export function createCliAiManager(
       const model = optionalString(payload.model, "payload.model");
       const rawBinary =
         optionalString(payload.binaryPath, "payload.binaryPath") ?? kind;
+      if (pendingAbortIds.has(streamId)) {
+        emitStopped(streamId);
+        return null;
+      }
       const authorized = await resolveExecutable(kind, rawBinary);
       if (disposed) throw new Error("CLI manager is disposed");
       if (deadlineExpired) {
         throw new Error(`CLI stream timed out after ${streamTimeoutMs}ms`);
       }
-      if (abortBeforeSpawn) {
-        broadcast("cli:stream-done", {
-          stop_reason: "stopped",
-          input_tokens: null,
-          output_tokens: null,
-        });
+      if (pendingAbortIds.has(streamId)) {
+        emitStopped(streamId);
         return null;
       }
       const executable = await prepareExecutableForSpawn(kind, authorized);
@@ -1680,12 +1756,8 @@ export function createCliAiManager(
       if (deadlineExpired) {
         throw new Error(`CLI stream timed out after ${streamTimeoutMs}ms`);
       }
-      if (abortBeforeSpawn) {
-        broadcast("cli:stream-done", {
-          stop_reason: "stopped",
-          input_tokens: null,
-          output_tokens: null,
-        });
+      if (pendingAbortIds.has(streamId)) {
+        emitStopped(streamId);
         return null;
       }
       const spec = buildCliInvocation(kind, executable, { model, prompt });
@@ -1698,13 +1770,15 @@ export function createCliAiManager(
           `Failed to spawn CLI: ${toError(cause).message}`,
           { cause },
         );
-        emitError(error);
+        emitError(streamId, error);
         throw error;
       }
       run = {
+        streamId,
         process: running,
         aborted: false,
         timedOut: false,
+        providerTerminalObserved: false,
         completed: false,
         forceKillTimer: null,
         deadlineTimer,
@@ -1730,17 +1804,37 @@ export function createCliAiManager(
       let outputTokens: number | null = null;
       let stopReason = "end_turn";
       let emittedBytes = 0;
+      const emitProviderDone = (): void => {
+        broadcast("cli:stream-done", {
+          streamId,
+          stop_reason: stopReason,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+        });
+      };
 
       const stdoutDone = consumeLines(
         running.stdout,
         (line) => {
-          if (run?.aborted || run?.timedOut) return;
+          if (run?.timedOut) return;
+          // A provider terminal is authoritative. Do not reinterpret trailing
+          // process diagnostics or buffered semantic events as model output.
+          // When abort won before any provider terminal, correlated late output
+          // remains observable until transport quiescence instead.
+          if (run?.providerTerminalObserved) return;
           for (const event of adapter.parseLine(line)) {
+            if (run?.providerTerminalObserved) break;
             if (event.type === "done") {
               if (event.inputTokens !== null) inputTokens = event.inputTokens;
               if (event.outputTokens !== null)
                 outputTokens = event.outputTokens;
               if (event.stopReason) stopReason = event.stopReason;
+              // The first provider terminal wins only when observed before a
+              // local abort. A terminal received after abort does not replace
+              // the locally observed stopped outcome.
+              if (run && !run.aborted) {
+                run.providerTerminalObserved = true;
+              }
               continue;
             }
             emittedBytes += Buffer.byteLength(event.delta, "utf8");
@@ -1749,6 +1843,7 @@ export function createCliAiManager(
             }
             const blockType = event.type === "thinking" ? "thinking" : "text";
             broadcast("cli:stream-chunk", {
+              streamId,
               delta: event.delta,
               block_type: blockType,
             });
@@ -1770,15 +1865,15 @@ export function createCliAiManager(
           stderrDone,
         ]);
         clearRunTimers(run);
+        if (run.providerTerminalObserved) {
+          emitProviderDone();
+          return null;
+        }
         if (run.timedOut) {
           throw new Error(`CLI stream timed out after ${streamTimeoutMs}ms`);
         }
-        if (run.aborted) {
-          broadcast("cli:stream-done", {
-            stop_reason: "stopped",
-            input_tokens: null,
-            output_tokens: null,
-          });
+        if (run.aborted && !run.providerTerminalObserved) {
+          emitStopped(streamId);
           return null;
         }
         if (result.exitCode !== 0 && stopReason !== "error") {
@@ -1791,25 +1886,28 @@ export function createCliAiManager(
             ),
           );
         }
-        broadcast("cli:stream-done", {
-          stop_reason: stopReason,
-          input_tokens: inputTokens,
-          output_tokens: outputTokens,
-        });
+        emitProviderDone();
         return null;
       } catch (cause) {
+        if (run.providerTerminalObserved) {
+          requestStop(run, false);
+          await waitForStopped(run);
+          emitProviderDone();
+          return null;
+        }
         if (run.aborted && !run.timedOut) {
-          broadcast("cli:stream-done", {
-            stop_reason: "stopped",
-            input_tokens: null,
-            output_tokens: null,
-          });
+          await waitForStopped(run);
+          if (run.providerTerminalObserved) {
+            emitProviderDone();
+          } else {
+            emitStopped(streamId);
+          }
           return null;
         }
         requestStop(run, false);
         await waitForStopped(run);
         const error = toError(cause);
-        emitError(error);
+        emitError(streamId, error);
         throw error;
       }
     } finally {
@@ -1819,8 +1917,14 @@ export function createCliAiManager(
         clearTimeout(deadlineTimer);
       }
       if (active === run) active = null;
-      abortBeforeSpawn = false;
+      pendingAbortIds.delete(streamId);
       busy = false;
+      const transportTerminationObserved = run?.completed ?? true;
+      addCompletedReceipt(streamId, transportTerminationObserved);
+      if (lifecycles.get(streamId) === lifecycle) {
+        lifecycles.delete(streamId);
+      }
+      lifecycle.resolveSettled(transportTerminationObserved);
     }
   };
 
@@ -1866,14 +1970,42 @@ export function createCliAiManager(
 
     send_cli_chat_stream: sendCliStream,
 
-    abort_cli_chat_stream: async () => {
+    abort_cli_chat_stream: async (args) => {
       ensureNotDisposed();
-      if (active) {
-        requestStop(active, true);
-      } else if (busy) {
-        abortBeforeSpawn = true;
+      const streamId = requireTrimmedNonEmptyString(args.streamId, "streamId");
+      const completed = completedAbortReceipts.get(streamId);
+      if (completed !== undefined && !lifecycles.has(streamId)) {
+        return {
+          abortCommandAcknowledged: true,
+          transportTerminationObserved: completed,
+        };
       }
-      return null;
+      const lifecycle = lifecycles.get(streamId);
+      const matchingRun =
+        active?.streamId === streamId && !active.completed ? active : null;
+      if (!matchingRun) {
+        if (!lifecycle) {
+          addBoundedSet(pendingAbortIds, streamId);
+          return {
+            abortCommandAcknowledged: true,
+            transportTerminationObserved: false,
+          };
+        }
+        addBoundedSet(pendingAbortIds, streamId);
+        return {
+          abortCommandAcknowledged: true,
+          transportTerminationObserved: await waitForLifecycle(lifecycle),
+        };
+      }
+      addBoundedSet(pendingAbortIds, streamId);
+      requestStop(matchingRun, true);
+      const processStopped = await waitForStopped(matchingRun);
+      const lifecycleStopped =
+        processStopped && lifecycle ? await waitForLifecycle(lifecycle) : false;
+      return {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved: processStopped && lifecycleStopped,
+      };
     },
   };
 
@@ -1881,8 +2013,8 @@ export function createCliAiManager(
     handlers,
     disposeAll() {
       disposed = true;
-      abortBeforeSpawn = true;
       if (active && !active.completed) {
+        addBoundedSet(pendingAbortIds, active.streamId);
         active.aborted = true;
         active.process.terminate("SIGTERM");
         active.process.terminate("SIGKILL");

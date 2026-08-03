@@ -1,12 +1,15 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { render, fireEvent, act, waitFor } from "@testing-library/react";
 import { SnippetDetailContent } from "./SnippetDetailContent";
 import type { Snippet } from "./api";
+import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import {
   copyWithAttribution,
   handleCopyWithAttribution,
 } from "@/lib/clipboardAttribution";
+import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
+import { createEditorInstanceId } from "@/features/editor/document/documentKey";
 
 // ----- TipTap mocks -----
 let editorHtml = "";
@@ -14,6 +17,10 @@ const setContentMock = vi.fn();
 const onMock = vi.fn();
 const offMock = vi.fn();
 const destroyMock = vi.fn();
+const snippetStoreStateMock = vi.hoisted(() => ({
+  entries: [] as Snippet[],
+  incrementUsageCount: vi.fn(),
+}));
 
 // useEditor must return a stable reference across renders, otherwise
 // SnippetDetailContent's `editor`-dependent useEffect re-fires every render
@@ -84,9 +91,11 @@ vi.mock("@/features/tree/treeStore", () => ({
 }));
 
 vi.mock("./snippetStore", () => ({
-  useSnippetStore: (
-    selector: (s: { incrementUsageCount: () => void }) => unknown,
-  ) => selector({ incrementUsageCount: vi.fn() }),
+  useSnippetStore: Object.assign(
+    (selector: (s: typeof snippetStoreStateMock) => unknown) =>
+      selector(snippetStoreStateMock),
+    { getState: () => snippetStoreStateMock },
+  ),
 }));
 
 vi.mock("@/features/revision/revisionStore", () => ({
@@ -164,12 +173,12 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
     editorHtml = "";
   });
 
-  it("flushes pending edits to onSave when unmounted before debounce fires", () => {
+  it("flushes pending edits to onSave when unmounted before debounce fires", async () => {
     // Regression guard for commit 9cf2644: SnippetPanel keys
     // SnippetDetailContent by snippet.id, so switching to another entry
     // unmounts the component. The previous (debounced) save would be lost
     // unless useAutoSave's unmount-cleanup flushes it.
-    const onSave = vi.fn();
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
     editorHtml = "<p>編集中の本文</p>";
 
     const { unmount, getByTestId } = render(
@@ -190,17 +199,23 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
     // Simulate SnippetPanel switching to another entry → key change → unmount.
     unmount();
 
-    // useAutoSave's unmount cleanup must flush pending edits with the
-    // latest title (from titleRef) and the latest editor.getHTML().
-    expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave).toHaveBeenCalledWith("snippet-1", {
-      title: "編集後のタイトル",
-      content: "<p>編集中の本文</p>",
-    });
+    // useAutoSave's unmount cleanup must flush the dirty title lane. Content
+    // is intentionally omitted so a stale mini-editor body cannot roll back a
+    // peer body save.
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave).toHaveBeenCalledWith(
+      "snippet-1",
+      {
+        title: "編集後のタイトル",
+      },
+      {
+        baseVersion: 0,
+      },
+    );
   });
 
   it("does not call onSave if no edits were scheduled before unmount", () => {
-    const onSave = vi.fn();
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
     const { unmount } = render(
       <SnippetDetailContent
         snippet={fakeSnippet()}
@@ -212,6 +227,95 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
     // No edits made → autosave was never scheduled → flush is a no-op.
     unmount();
     expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("uses the loaded version and advances it only after each successful save", async () => {
+    const onSave = vi
+      .fn()
+      .mockResolvedValueOnce({ persisted: true, version: 4 })
+      .mockResolvedValueOnce({ persisted: true, version: 5 });
+    const { getByTestId } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ version: 3 })}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+    const titleInput = getByTestId("snippet-detail-title") as HTMLInputElement;
+
+    fireEvent.change(titleInput, { target: { value: "first" } });
+    await act(async () => {
+      await flushAllAutoSaves();
+    });
+    fireEvent.change(titleInput, { target: { value: "second" } });
+    await act(async () => {
+      await flushAllAutoSaves();
+    });
+
+    expect(onSave.mock.calls[0]?.[2]).toEqual({ baseVersion: 3 });
+    expect(onSave.mock.calls[1]?.[2]).toEqual({ baseVersion: 4 });
+  });
+
+  it("propagates a non-persisted save through explicit quiesce", async () => {
+    const onSave = vi.fn().mockResolvedValue({
+      persisted: false,
+      version: null,
+    });
+    const { getByTestId } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ version: 6 })}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(getByTestId("snippet-detail-title"), {
+      target: { value: "unsaved" },
+    });
+
+    await expect(flushAllAutoSaves()).rejects.toThrow(
+      "snippet detail save not persisted",
+    );
+    expect(onSave.mock.calls[0]?.[2]).toEqual({ baseVersion: 6 });
+    onSave.mockResolvedValue({ persisted: true, version: 7 });
+    await flushAllAutoSaves();
+  });
+
+  it("adopts a peer title save and never writes the stale title with a later body save", async () => {
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 5 });
+    snippetStoreStateMock.entries = [
+      fakeSnippet({ title: "peer title", version: 4 }),
+    ];
+    const { getByTestId, unmount } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ title: "old title", version: 3 })}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      announcePersistedBinding(
+        { kind: "snippet", id: "snippet-1" },
+        createEditorInstanceId("peer"),
+        { kind: "snippet", id: "snippet-1", loadedVersion: 4 },
+      );
+    });
+    expect(getByTestId("snippet-detail-title")).toHaveValue("peer title");
+
+    editorHtml = "<p>edited body</p>";
+    const updateHandler = onMock.mock.calls.find(
+      ([eventName]) => eventName === "update",
+    )?.[1] as (() => void) | undefined;
+    act(() => updateHandler?.());
+    unmount();
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+
+    expect(onSave).toHaveBeenCalledWith(
+      "snippet-1",
+      { content: "<p>edited body</p>" },
+      { baseVersion: 4 },
+    );
   });
 });
 
@@ -225,7 +329,7 @@ describe("SnippetDetailContent — コピー時の source 伝搬", () => {
     render(
       <SnippetDetailContent
         snippet={fakeSnippet(overrides)}
-        onSave={vi.fn()}
+        onSave={vi.fn().mockResolvedValue({ persisted: true, version: 1 })}
         onDelete={vi.fn()}
       />,
     );

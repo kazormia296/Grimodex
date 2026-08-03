@@ -89,6 +89,7 @@ describe("PanelToggleDropdown pointer drag", () => {
   it("toggles panel on click without movement", async () => {
     await openMenu();
     const item = screen.getByTestId("panel-toggle-item-grid");
+    expect(item).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.pointerDown(item, {
       clientX: 10,
@@ -107,6 +108,7 @@ describe("PanelToggleDropdown pointer drag", () => {
 
     expect(useLayoutStore.getState().draggingPanel).toBeNull();
     expect(useLayoutStore.getState().isPanelActive("grid")).toBe(true);
+    expect(item).toHaveAttribute("aria-pressed", "true");
   });
 
   it("routes the drop to the resolved target with the dragged panel on pointerup", async () => {

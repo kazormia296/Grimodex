@@ -39,8 +39,10 @@ export interface EffectiveDaysResult {
 /**
  * 各イベントに実効日を割り当てる。
  *
- * - 全イベントが startTime を持つなら calendar モード（実時間軸）。
- * - 一つでも欠ければ sequence モード（ordinal の序列ランクを日番号に流用）。
+ * - startTime を持つイベントが一つでもあれば calendar モード（実時間軸）。
+ *   日付未設定イベントは、日付設定済み範囲の後ろへ ordinal / id 順の proxy 日で置く。
+ * - 全イベントが startTime を欠く場合だけ sequence モード
+ *   （ordinal の序列ランクを日番号に流用）。
  */
 export function effectiveDays(events: AxisEventInput[]): EffectiveDaysResult {
   if (events.length === 0) {
@@ -52,13 +54,14 @@ export function effectiveDays(events: AxisEventInput[]): EffectiveDaysResult {
     };
   }
 
-  const hasCalendarAxis = events.every((e) => e.startTime != null);
+  const datedEvents = events.filter((event) => event.startTime != null);
+  const hasCalendarAxis = datedEvents.length > 0;
   const byId = new Map<string, EffectiveDay>();
 
   if (hasCalendarAxis) {
     let dataStart = Infinity;
     let dataEnd = -Infinity;
-    for (const e of events) {
+    for (const e of datedEvents) {
       const startDay = foldMinute(e.startTime as number, e.startMinute);
       const endDay =
         e.endTime != null
@@ -72,15 +75,24 @@ export function effectiveDays(events: AxisEventInput[]): EffectiveDaysResult {
         if (endDay > dataEnd) dataEnd = endDay;
       }
     }
+
+    // 日付未設定イベントは実暦の距離を壊さず、実データ範囲の直後へ安定配置する。
+    // proxy は描画専用であり、元イベントの startTime/endTime は変更しない。
+    const undatedEvents = events
+      .filter((event) => event.startTime == null)
+      .sort(compareByOrdinalAndId);
+    const datedDataEnd = dataEnd;
+    undatedEvents.forEach((event, index) => {
+      const proxyDay = datedDataEnd + index + 1;
+      byId.set(event.id, { startDay: proxyDay, endDay: null });
+      dataEnd = proxyDay;
+    });
+
     return { byId, hasCalendarAxis: true, dataStart, dataEnd };
   }
 
   // sequence モード: ordinal の fractional-index 順、同点は id 文字列順で安定ソート。
-  const sorted = [...events].sort((a, b) => {
-    const c = cmpKeys(a.ordinal, b.ordinal);
-    if (c !== 0) return c;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  const sorted = [...events].sort(compareByOrdinalAndId);
   sorted.forEach((e, index) => {
     byId.set(e.id, { startDay: index, endDay: null });
   });
@@ -90,6 +102,15 @@ export function effectiveDays(events: AxisEventInput[]): EffectiveDaysResult {
     dataStart: 0,
     dataEnd: Math.max(sorted.length - 1, 0),
   };
+}
+
+function compareByOrdinalAndId(
+  a: Pick<AxisEventInput, "id" | "ordinal">,
+  b: Pick<AxisEventInput, "id" | "ordinal">,
+): number {
+  const ordinalOrder = cmpKeys(a.ordinal, b.ordinal);
+  if (ordinalOrder !== 0) return ordinalOrder;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 export interface View {

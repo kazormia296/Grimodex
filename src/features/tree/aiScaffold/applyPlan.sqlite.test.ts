@@ -43,7 +43,7 @@ vi.mock("@/store/globalHistoryStore", () => ({
   },
 }));
 
-import { buildForwardStatements, buildUndoStatements } from "./applyPlan";
+import { buildForwardStatements } from "./applyPlan";
 
 const PROJECT_ID = "default-project";
 
@@ -136,12 +136,14 @@ describe("applyPlan drizzle SQL on real SQLite (browser-mock)", () => {
     expect(mid).toHaveLength(1);
     expect(mid[0].parent_id).toBe("g-new");
 
-    const undo = buildUndoStatements(
-      fx.beforeStates,
-      fx.createdIdsTopo,
-      PROJECT_ID,
-    );
-    await mock.invoke("db_execute_batch", { statements: undo });
+    await mock.invoke("tree_plan_undo", {
+      payload: {
+        projectId: PROJECT_ID,
+        beforeStates: fx.beforeStates,
+        createdIds: fx.createdIdsTopo,
+        updatedAt: new Date().toISOString(),
+      },
+    });
 
     const keep = await rows("SELECT parent_id FROM tree_nodes WHERE id = ?", [
       "sc-keep",

@@ -193,6 +193,7 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
           summaryOverride: null,
           contentOverride: null,
           contextModeOverride: "hidden",
+          version: 0,
           createdAt: "2024-01-01T00:00:00Z",
           updatedAt: "2024-01-01T00:00:00Z",
         }}

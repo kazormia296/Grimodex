@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "tools/freeze_gate2_candidates.ts",
+    "../../src"
+  ]
+}
