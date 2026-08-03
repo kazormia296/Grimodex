@@ -1850,6 +1850,7 @@ impl Backend {
 
     /// Validate the durable CLI lifecycle and atomically append the
     /// main-owned one-shot dispatch claim before the shell manager can spawn.
+    #[allow(clippy::too_many_arguments)]
     #[napi]
     pub async fn ai_audit_claim_cli_dispatch(
         &self,
