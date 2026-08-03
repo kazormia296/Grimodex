@@ -1,18 +1,23 @@
 //! `open_workspace` の共通本体 (旧 `src-tauri/src/commands/workspace.rs` から
-//! Electron 移行 Phase 2 S1 で抽出)。backup → migrate → swap → RAII
-//! SwitchingGuard の一連を Tauri コマンド層と napi 層の両方から呼べるようにする。
+//! Electron 移行 Phase 2 S1 で抽出)。migrate → swap → RAII SwitchingGuard
+//! の一連を Tauri コマンド層と napi 層の両方から呼べるようにする。
 //! semantic キャッシュのクリア等シェル側にしか無い swap 直後の後処理は
 //! `OpenDeps::on_swapped` フックで注入する (napi 側は no-op)。
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::state::{ActiveWorkspace, GlobalSettingsPath, WorkspaceState};
 use crate::workspace;
 use crate::{AppError, Database};
 
-/// Read a global-scoped setting from the `app_settings` key/value table,
-/// falling back to `default` when absent or unreadable.
+/// Read a legacy global-scoped setting from the workspace `app_settings` table.
+///
+/// Global settings moved to `global-settings.json`; this helper is retained as
+/// a compatibility fallback for workspaces that have not gone through the
+/// renderer-side settings migration yet.
 fn read_app_setting(db: &Database, key: &str, default: &str) -> String {
     db.with_conn(|conn| {
         Ok(conn
@@ -26,6 +31,81 @@ fn read_app_setting(db: &Database, key: &str, default: &str) -> String {
     .ok()
     .flatten()
     .unwrap_or_else(|| default.to_string())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AutoBackupConfig {
+    enabled: bool,
+    interval_min: u64,
+    max_backups: usize,
+}
+
+impl Default for AutoBackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_min: 60,
+            max_backups: 10,
+        }
+    }
+}
+
+/// Resolve the effective auto-backup settings.
+///
+/// The JSON global settings file is authoritative for current installations.
+/// The workspace table is consulted only when a key is absent, which preserves
+/// behavior for old workspaces while ensuring that a user's current global
+/// preference always wins.
+fn auto_backup_config(settings: &workspace::GlobalSettings, db: &Database) -> AutoBackupConfig {
+    let value = |key: &str, default: &str| {
+        settings
+            .user_preferences
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| read_app_setting(db, key, default))
+    };
+
+    AutoBackupConfig {
+        enabled: value("data.autoBackup", "true") == "true",
+        interval_min: value("data.backupInterval", "60").parse().unwrap_or(60),
+        max_backups: value("data.maxBackups", "10")
+            .parse::<usize>()
+            .unwrap_or(10)
+            .max(1),
+    }
+}
+
+/// Prevent two rapid reopens of the same workspace from starting duplicate
+/// maintenance workers before the first worker has materialized its backup.
+static AUTO_BACKUP_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+fn auto_backup_in_flight() -> &'static Mutex<HashSet<PathBuf>> {
+    AUTO_BACKUP_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn auto_backup_claim(path: &Path) -> Option<AutoBackupClaim> {
+    let lock = auto_backup_in_flight();
+    let mut paths = match lock.lock() {
+        Ok(paths) => paths,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if !paths.insert(path.to_path_buf()) {
+        return None;
+    }
+    Some(AutoBackupClaim(path.to_path_buf()))
+}
+
+struct AutoBackupClaim(PathBuf);
+
+impl Drop for AutoBackupClaim {
+    fn drop(&mut self) {
+        let lock = auto_backup_in_flight();
+        let mut paths = match lock.lock() {
+            Ok(paths) => paths,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        paths.remove(&self.0);
+    }
 }
 
 /// `<ws>/backups/` のバックアップファイル名か（無圧縮 `.db` と gzip `.db.gz` の両方）。
@@ -83,26 +163,17 @@ fn rotate_backups(dir: &Path, keep: usize) {
     }
 }
 
-/// Automatic backup wiring (DB health audit 2026-07): the `data.autoBackup`
-/// settings were UI-only, so a corrupt/lost grimodex.db meant total data loss.
-/// On workspace open, if enabled and the newest backup is older than the
-/// configured interval, write a `VACUUM INTO` snapshot to `<ws>/backups/` and
-/// rotate to `maxBackups`. Best-effort: never blocks opening the workspace.
-fn maybe_auto_backup(ws_path: &Path, db: &Database) {
-    if read_app_setting(db, "data.autoBackup", "true") != "true" {
+/// Automatic backup wiring (DB health audit 2026-07): if enabled and the
+/// newest backup is older than the configured interval, write a `VACUUM INTO`
+/// snapshot to `<ws>/backups/` and rotate to `maxBackups`.
+fn maybe_auto_backup(ws_path: &Path, db: &Database, config: AutoBackupConfig) {
+    if !config.enabled {
         return;
     }
-    let interval_min: u64 = read_app_setting(db, "data.backupInterval", "60")
-        .parse()
-        .unwrap_or(60);
-    let max_backups: usize = read_app_setting(db, "data.maxBackups", "10")
-        .parse()
-        .unwrap_or(10)
-        .max(1);
     let dir = ws_path.join("backups");
 
     if let Some(age) = newest_backup_age_secs(&dir) {
-        if age < interval_min.saturating_mul(60) {
+        if age < config.interval_min.saturating_mul(60) {
             return;
         }
     }
@@ -127,7 +198,49 @@ fn maybe_auto_backup(ws_path: &Path, db: &Database) {
         tracing::warn!("auto-backup: VACUUM INTO failed: {e}");
         return;
     }
-    rotate_backups(&dir, max_backups);
+    rotate_backups(&dir, config.max_backups);
+}
+
+/// Run open-time maintenance after the workspace authority has been swapped.
+/// A separate SQLite connection keeps a long `VACUUM INTO` from holding the
+/// active renderer connection's mutex. `with_background_connection_priority`
+/// also yields between maintenance statements whenever a foreground DB call
+/// is waiting.
+fn schedule_workspace_maintenance(ws_path: &Path, global_settings_path: &Path) {
+    let Some(claim) = auto_backup_claim(ws_path) else {
+        return;
+    };
+    let workspace_path = ws_path.to_path_buf();
+    let db_path = workspace_path.join("grimodex.db");
+    let global_settings_path = global_settings_path.to_path_buf();
+    let result = std::thread::Builder::new()
+        .name("grimodex-workspace-maintenance".to_string())
+        .spawn(move || {
+            let _claim = claim;
+            let database = match Database::new(&db_path) {
+                Ok(database) => database,
+                Err(error) => {
+                    tracing::warn!(
+                        "workspace maintenance: cannot open background connection: {error}"
+                    );
+                    return;
+                }
+            };
+            // Atomic tmp+rename writes make an unlocked read safe here: the
+            // worker sees either the previous complete settings file or the
+            // next complete file, never a torn JSON document.
+            let settings = workspace::read_global_settings(&global_settings_path);
+            let config = auto_backup_config(&settings, &database);
+            database.with_background_connection_priority(|| {
+                maybe_auto_backup(&workspace_path, &database, config);
+                if let Err(error) = database.prune_old_logs(90) {
+                    tracing::warn!("prune_old_logs in workspace maintenance failed: {error}");
+                }
+            });
+        });
+    if let Err(error) = result {
+        tracing::warn!("workspace maintenance: cannot spawn worker: {error}");
+    }
 }
 
 #[derive(Serialize)]
@@ -249,8 +362,9 @@ pub struct OpenDeps<'a> {
 }
 
 /// `open_workspace` コマンドの同期本体 (blocking 前提 — 呼び出し側が
-/// spawn_blocking 等で退避する)。backup → migrate → swap → RAII
-/// SwitchingGuard → recent-workspaces 更新までを行う。
+/// spawn_blocking 等で退避する)。migrate → swap → RAII
+/// SwitchingGuard → recent-workspaces 更新までを行い、重い maintenance は
+/// authority commit 後の低優先度 worker に委ねる。
 pub fn open_workspace_sync(
     ws_state: &WorkspaceState,
     deps: &mut OpenDeps<'_>,
@@ -278,6 +392,8 @@ pub fn open_workspace_sync(
     // Open database
     let db_path = ws_path.join("grimodex.db");
     let database = Database::new(&db_path)?;
+    let maintenance_workspace_path = ws_path.clone();
+    let maintenance_settings_path = deps.gs_path.path.clone();
     database.migrate()?;
     // Refresh planner stats on open (cheap: analysis_limit is set). Non-fatal —
     // a stats refresh failure must not block opening the workspace.
@@ -286,17 +402,9 @@ pub fn open_workspace_sync(
     }
     // slim バックアップ復元後などで FTS 索引が空なら content から再構築（自己修復。
     // restore の happy path 以外＝再オープン失敗経由の reload や手動昇格でも検索が
-    // 無音故障しないようにする。通常 DB では count だけで no-op）。maybe_auto_backup
-    // より前に置き、live の FTS を埋めてからバックアップコピーを slim する。
+    // 無音故障しないようにする。通常 DB では count だけで no-op）。
     if let Err(e) = database.rebuild_fts_if_stale() {
         tracing::warn!("rebuild_fts_if_stale on workspace open failed: {e}");
-    }
-    // Automatic backup (best-effort, throttled by data.backupInterval).
-    maybe_auto_backup(&ws_path, &database);
-    // Age out unbounded append-only logs (90-day retention; change_events is
-    // excluded — hash chain). Non-fatal.
-    if let Err(e) = database.prune_old_logs(90) {
-        tracing::warn!("prune_old_logs on workspace open failed: {e}");
     }
 
     // swap 直前で switching を立てる (Fix I3)。ここまでの migrate /
@@ -360,6 +468,10 @@ pub fn open_workspace_sync(
         }
     }
 
+    // Backup and log pruning are deliberately after the authority swap and
+    // recent-workspace commit. They must not delay the renderer's open invoke.
+    schedule_workspace_maintenance(&maintenance_workspace_path, &maintenance_settings_path);
+
     let name = workspace::workspace_name(path);
     Ok(OpenWorkspaceResult {
         name,
@@ -415,6 +527,73 @@ mod tests {
         // materialize 用 restore-tmp は "grimodex." 始まり (ハイフン無し) で除外。
         assert!(!is_backup_file("grimodex.db.restore-tmp"));
         assert!(!is_backup_file("other.db"));
+    }
+
+    #[test]
+    fn auto_backup_config_prefers_global_preferences_over_legacy_workspace_values() {
+        let db = Database::new(Path::new(":memory:")).expect("open settings fixture");
+        db.with_conn(|conn| {
+            conn.execute(
+                "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )?;
+            conn.execute_batch(
+                "INSERT INTO app_settings (key, value) VALUES
+                    ('data.autoBackup', 'true'),
+                    ('data.backupInterval', '1'),
+                    ('data.maxBackups', '2')",
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy settings");
+
+        let mut settings = workspace::GlobalSettings::default();
+        settings
+            .user_preferences
+            .insert("data.autoBackup".to_string(), "false".to_string());
+        settings
+            .user_preferences
+            .insert("data.backupInterval".to_string(), "240".to_string());
+        settings
+            .user_preferences
+            .insert("data.maxBackups".to_string(), "7".to_string());
+
+        assert_eq!(
+            auto_backup_config(&settings, &db),
+            AutoBackupConfig {
+                enabled: false,
+                interval_min: 240,
+                max_backups: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn auto_backup_config_falls_back_to_legacy_values_for_old_workspaces() {
+        let db = Database::new(Path::new(":memory:")).expect("open settings fixture");
+        db.with_conn(|conn| {
+            conn.execute(
+                "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )?;
+            conn.execute_batch(
+                "INSERT INTO app_settings (key, value) VALUES
+                    ('data.autoBackup', 'false'),
+                    ('data.backupInterval', '15'),
+                    ('data.maxBackups', '4')",
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy settings");
+
+        assert_eq!(
+            auto_backup_config(&workspace::GlobalSettings::default(), &db),
+            AutoBackupConfig {
+                enabled: false,
+                interval_min: 15,
+                max_backups: 4,
+            }
+        );
     }
 
     #[test]

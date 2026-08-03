@@ -32,6 +32,7 @@ import {
   type WorkspaceProjectLoadLease,
 } from "@/features/project/projectLoadGate";
 import { hydrateWorkspaceStores } from "@/application/workspace/workspaceHydration";
+import { ensureRuntimeStoreComposition } from "@/application/composition/runtimeStoreCompositionLoader";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { cancelWorkspaceScopedSchedules } from "@/application/workspace/workspaceScheduleQuiescence";
 import {
@@ -261,15 +262,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         // consumer ends the interval only after a seeded scene is visible, so
         // this cannot accidentally regress to measuring bridge/header readiness.
         performance.mark("grimodex.workspaceOpen.start");
+        const compositionReady = ensureRuntimeStoreComposition();
+        void compositionReady.catch(() => undefined);
         openResult = await invoke<OpenWorkspaceResult>("open_workspace", {
           path,
         });
-        // swap 完了。Rust 側 open_workspace は swap 以降 infallible
-        // (src-tauri/src/commands/workspace.rs の不変条件コメント参照) なので
-        // 「invoke エラー ⟹ swap 未実行」が成立し、下の restoreBinding 判定が
-        // 安全になる。
         swapDone = true;
         targetOpenRevision = get().workspaceOpenRevision + 1;
+        await compositionReady;
       } finally {
         // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →
         // 復元して記録をそのまま再開する。swap 済みなら束縛は無効のまま =

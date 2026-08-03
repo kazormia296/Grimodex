@@ -56,21 +56,30 @@ async function exec(backend, sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
 
+async function waitForNewBackup(backend, before, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const created = JSON.parse(await backend.listBackups()).find(
+      ({ fileName }) => !before.has(fileName),
+    );
+    if (created) return created;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`automatic backup was not created within ${timeoutMs}ms`);
+}
+
 async function writeTrustedPlainBackup(backend, workspace, path) {
   const before = new Set(
     JSON.parse(await backend.listBackups()).map(({ fileName }) => fileName),
   );
-  await exec(
-    backend,
-    "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('data.backupInterval', '0')",
-    [],
-    "run",
-  );
+  const settings = JSON.parse(await backend.getGlobalSettings());
+  settings.userPreferences = {
+    ...(settings.userPreferences ?? {}),
+    "data.backupInterval": "0",
+  };
+  await backend.saveGlobalSettings(settings);
   await backend.openWorkspace(workspace);
-  const created = JSON.parse(await backend.listBackups()).find(
-    ({ fileName }) => !before.has(fileName),
-  );
-  assert.ok(created, "openWorkspace must create a trusted automatic backup");
+  const created = await waitForNewBackup(backend, before);
   const compressed = readFileSync(join(workspace, "backups", created.fileName));
   writeFileSync(path, gunzipSync(compressed));
 }

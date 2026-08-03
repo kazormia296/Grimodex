@@ -2343,6 +2343,39 @@ impl Database {
     /// `writable_schema` で sqlite_master.sql を直接書き換える方式を採る
     /// (テーブル再構築より影響範囲が小さく、FTS5/triggers/indexes/外部 FK の
     /// 取り回しが要らない)。冪等性は CHECK 文字列の中に新値が含まれるかで判定。
+    fn verify_post_effect_category_migration(
+        conn: &Connection,
+        checks: &[(&str, &str)],
+        migration_name: &str,
+    ) -> anyhow::Result<()> {
+        for (table, marker) in checks {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [*table],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("{migration_name}: cannot read schema for {table}: {error}")
+                })?;
+            if !sql.contains(marker) {
+                anyhow::bail!("{migration_name}: {table} CHECK does not contain {marker}");
+            }
+
+            // The migration edits only CHECK text, but verify the affected
+            // tables' FK rows without scanning every b-tree in the workspace.
+            let pragma = format!("PRAGMA foreign_key_check('{table}')");
+            let mut statement = conn.prepare(&pragma)?;
+            let mut rows = statement.query([])?;
+            if rows.next()?.is_some() {
+                anyhow::bail!(
+                    "{migration_name}: foreign_key_check reported a violation in {table}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn migrate_post_effect_typo_categories(conn: &Connection) -> anyhow::Result<()> {
         let runs_sql: Option<String> = conn
             .query_row(
@@ -2418,11 +2451,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        // 反映を確認: integrity_check が ok を返さなければ巻き戻して bail
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after typo CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "typo_detection"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "typo_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "typo CHECK widening")?;
 
         Ok(())
     }
@@ -2496,10 +2532,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after intent CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "intent_drift"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "intent_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "intent CHECK widening")?;
 
         Ok(())
     }
@@ -2577,10 +2617,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after timeline CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "timeline_consistency"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "timeline_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "timeline CHECK widening")?;
 
         Ok(())
     }
@@ -2666,10 +2710,14 @@ impl Database {
         conn.pragma_update(None, "schema_version", current_version + 1)?;
         conn.pragma_update(None, "writable_schema", false)?;
 
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!("integrity_check failed after impact_review CHECK widening: {integrity}");
+        let mut checks = Vec::new();
+        if runs_needs {
+            checks.push(("post_effect_runs", "impact_review"));
         }
+        if anns_needs {
+            checks.push(("post_effect_annotations", "impact_review_anchor"));
+        }
+        Self::verify_post_effect_category_migration(conn, &checks, "impact_review CHECK widening")?;
 
         Ok(())
     }
@@ -3064,6 +3112,70 @@ impl Database {
     /// a newer in-memory snapshot has been persisted. SQLite cannot drop a
     /// foreign key in place, so preserve every stored field and rebuild only
     /// when the legacy FK is present.
+    fn verify_ai_audit_events_project_identity_migration(
+        conn: &Connection,
+        expected_row_count: i64,
+        expected_max_id: Option<i64>,
+        expected_sequence_high_water: i64,
+    ) -> anyhow::Result<()> {
+        let row_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM ai_audit_events", [], |row| row.get(0))?;
+        if row_count != expected_row_count {
+            anyhow::bail!(
+                "ai_audit_events row count changed during project identity migration: expected {expected_row_count}, got {row_count}"
+            );
+        }
+
+        let max_id: Option<i64> =
+            conn.query_row("SELECT MAX(id) FROM ai_audit_events", [], |row| row.get(0))?;
+        if max_id != expected_max_id {
+            anyhow::bail!(
+                "ai_audit_events max id changed during project identity migration: expected {expected_max_id:?}, got {max_id:?}"
+            );
+        }
+
+        let sequence_high_water: i64 = conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'), 0)",
+            [],
+            |row| row.get(0),
+        )?;
+        if sequence_high_water != expected_sequence_high_water {
+            anyhow::bail!(
+                "ai_audit_events sqlite_sequence changed during project identity migration: expected {expected_sequence_high_water}, got {sequence_high_water}"
+            );
+        }
+
+        const REQUIRED_INDEXES: &[&str] = &[
+            "uq_ai_audit_scope_seq",
+            "uq_ai_audit_scope_event",
+            "idx_ai_audit_scope_execution",
+            "idx_ai_audit_scope_execution_event_type",
+            "idx_ai_audit_scope_operation",
+            "idx_ai_audit_scope_timestamp",
+        ];
+        for index in REQUIRED_INDEXES {
+            let present: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [*index],
+                |row| row.get(0),
+            )?;
+            if present != 1 {
+                anyhow::bail!(
+                    "ai_audit_events project identity migration is missing index {index}"
+                );
+            }
+        }
+
+        let mut statement = conn.prepare("PRAGMA foreign_key_check('ai_audit_events')")?;
+        let mut rows = statement.query([])?;
+        if rows.next()?.is_some() {
+            anyhow::bail!(
+                "ai_audit_events project identity migration left a foreign-key violation"
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn migrate_ai_audit_events_project_identity(
         conn: &Connection,
     ) -> anyhow::Result<()> {
@@ -3081,6 +3193,19 @@ impl Database {
         if !has_project_fk {
             return Ok(());
         }
+
+        let row_count_before: i64 =
+            conn.query_row("SELECT COUNT(*) FROM ai_audit_events", [], |row| row.get(0))?;
+        let max_id_before: Option<i64> =
+            conn.query_row("SELECT MAX(id) FROM ai_audit_events", [], |row| row.get(0))?;
+        let sequence_high_water_before: i64 = conn.query_row(
+            "SELECT MAX(
+                COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'), 0),
+                COALESCE((SELECT MAX(id) FROM ai_audit_events), 0)
+            )",
+            [],
+            |row| row.get(0),
+        )?;
 
         let foreign_keys_enabled: bool =
             conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
@@ -3187,12 +3312,12 @@ impl Database {
         if remaining_project_fks != 0 {
             anyhow::bail!("ai_audit_events project foreign key migration did not take effect");
         }
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-        if integrity != "ok" {
-            anyhow::bail!(
-                "integrity_check failed after ai_audit_events project identity migration: {integrity}"
-            );
-        }
+        Self::verify_ai_audit_events_project_identity_migration(
+            conn,
+            row_count_before,
+            max_id_before,
+            sequence_high_water_before,
+        )?;
         Ok(())
     }
 
