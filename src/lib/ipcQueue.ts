@@ -26,7 +26,15 @@ let activeDerivedCount = 0;
 let activeMutationCount = 0;
 let readAdmissionBarrierCount = 0;
 let derivedAdmissionBarrierCount = 0;
+let mutationAdmissionBarrierCount = 0;
+let auditExportSafeReadAllowanceCount = 0;
+let auditExportActualTaskTrackingCount = 0;
+const auditExportActualTaskFailures = new Set<unknown>();
 const mutationActualTasks = new Map<Promise<unknown>, string>();
+const allActualTasks = new Map<
+  Promise<unknown>,
+  { readonly cmd: string; readonly category: IpcQueueCategory }
+>();
 const activeReadItems = new Set<QueueItem<unknown>>();
 const activeDerivedItems = new Set<QueueItem<unknown>>();
 
@@ -41,6 +49,18 @@ function derivedCancellationError(cmd: string): Error {
     `IPC_DERIVED_CANCELLED: rebuildable background work cancelled for lifecycle transition: ${cmd}`,
   );
 }
+
+function mutationCancellationError(cmd: string): Error {
+  return new Error(
+    `IPC_MUTATION_CANCELLED: mutation blocked during frozen AI audit export: ${cmd}`,
+  );
+}
+
+const AUDIT_EXPORT_SAFE_READ_COMMANDS = new Set([
+  "db_execute",
+  "ai_audit_read_snapshot",
+  "ai_audit_verify",
+]);
 
 function runQueuedItem<T>(item: QueueItem<T>): Promise<void> {
   return new Promise<void>((done) => {
@@ -67,6 +87,16 @@ function runQueuedItem<T>(item: QueueItem<T>): Promise<void> {
     // allow an unbounded number of still-running native operations to sit
     // behind the advertised MAX_CONCURRENT limit.
     const actualTask = Promise.resolve().then(item.run);
+    allActualTasks.set(actualTask, { cmd: item.cmd, category: item.category });
+    void actualTask.then(
+      () => allActualTasks.delete(actualTask),
+      (error) => {
+        allActualTasks.delete(actualTask);
+        if (auditExportActualTaskTrackingCount > 0) {
+          auditExportActualTaskFailures.add(error);
+        }
+      },
+    );
     if (item.category === "mutation") {
       mutationActualTasks.set(actualTask, item.cmd);
       void actualTask.then(
@@ -143,7 +173,17 @@ export function enqueueIpc<T>(
   timeoutMs: number | null,
   category: IpcQueueCategory = "mutation",
 ): Promise<T> {
-  if (category === "read" && readAdmissionBarrierCount > 0) {
+  if (category === "mutation" && mutationAdmissionBarrierCount > 0) {
+    return Promise.reject(mutationCancellationError(cmd));
+  }
+  if (
+    category === "read" &&
+    readAdmissionBarrierCount > 0 &&
+    !(
+      auditExportSafeReadAllowanceCount > 0 &&
+      AUDIT_EXPORT_SAFE_READ_COMMANDS.has(cmd)
+    )
+  ) {
     return Promise.reject(readCancellationError(cmd));
   }
   if (category === "derived" && derivedAdmissionBarrierCount > 0) {
@@ -190,6 +230,61 @@ export function acquireIpcDerivedAdmissionBarrier(): () => void {
       0,
       derivedAdmissionBarrierCount - 1,
     );
+  };
+}
+
+/** Close low-level mutation admission before a frozen audit read phase. */
+export function acquireIpcMutationAdmissionBarrier(): () => void {
+  mutationAdmissionBarrierCount++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    mutationAdmissionBarrierCount = Math.max(
+      0,
+      mutationAdmissionBarrierCount - 1,
+    );
+  };
+}
+
+/**
+ * Permit only deterministic audit-export database queries while the global
+ * read barrier remains closed. Model/semantic reads are deliberately absent.
+ */
+export function acquireAuditExportSafeReadAllowance(): () => void {
+  auditExportSafeReadAllowanceCount++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    auditExportSafeReadAllowanceCount = Math.max(
+      0,
+      auditExportSafeReadAllowanceCount - 1,
+    );
+  };
+}
+
+/**
+ * Retain failures from tasks that race between audit-export drain stages.
+ * Acquisition happens synchronously with the lease, so even a pre-existing
+ * task that settles before the first drain remains observable fail-closed.
+ */
+export function acquireAuditExportActualTaskFailureTracking(): () => void {
+  if (auditExportActualTaskTrackingCount === 0) {
+    auditExportActualTaskFailures.clear();
+  }
+  auditExportActualTaskTrackingCount++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    auditExportActualTaskTrackingCount = Math.max(
+      0,
+      auditExportActualTaskTrackingCount - 1,
+    );
+    if (auditExportActualTaskTrackingCount === 0) {
+      auditExportActualTaskFailures.clear();
+    }
   };
 }
 
@@ -283,6 +378,44 @@ export async function awaitPendingIpcActualTasks(): Promise<void> {
   }
 }
 
+/**
+ * Audit export must retain, rather than detach, pre-existing read/derived
+ * callers because native inference can append its audit terminal inside those
+ * tasks. The audit-export lease has already closed new background admission;
+ * wait every queued/active category to its real transport settlement before
+ * opening the frozen report-read phase.
+ */
+export async function awaitPendingIpcActualTasksForAuditExport(): Promise<void> {
+  const failures = new Set<unknown>(auditExportActualTaskFailures);
+  const observed = new Set<Promise<unknown>>();
+
+  while (queue.length > 0 || activeCount > 0 || allActualTasks.size > 0) {
+    const snapshot = [...allActualTasks.keys()];
+    if (snapshot.length === 0) {
+      await Promise.resolve();
+      continue;
+    }
+    const results = await Promise.allSettled(snapshot);
+    results.forEach((result, index) => {
+      const task = snapshot[index];
+      if (task && !observed.has(task) && result.status === "rejected") {
+        failures.add(result.reason);
+      }
+      if (task) observed.add(task);
+    });
+  }
+
+  for (const failure of auditExportActualTaskFailures) failures.add(failure);
+  if (failures.size > 0) {
+    const failureList = [...failures];
+    const message =
+      failureList.length === 1 && failureList[0] instanceof Error
+        ? failureList[0].message
+        : "One or more IPC tasks failed before AI audit export";
+    throw new AggregateError(failureList, message);
+  }
+}
+
 registerQuiescenceProvider({
   id: "ipc-actual-tasks",
   stage: "ipc-actual-tasks",
@@ -298,7 +431,12 @@ export function resetIpcQueueForTests(): void {
   activeMutationCount = 0;
   readAdmissionBarrierCount = 0;
   derivedAdmissionBarrierCount = 0;
+  mutationAdmissionBarrierCount = 0;
+  auditExportSafeReadAllowanceCount = 0;
+  auditExportActualTaskTrackingCount = 0;
+  auditExportActualTaskFailures.clear();
   mutationActualTasks.clear();
+  allActualTasks.clear();
   activeReadItems.clear();
   activeDerivedItems.clear();
 }

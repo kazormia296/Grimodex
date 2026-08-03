@@ -333,7 +333,7 @@ pub fn read_scene_for_index(db: &Database, scene_id: &str) -> Result<Option<(Str
 /// ため、呼び出し側は workspace lock (with_db) の外で呼ぶこと。
 /// 推論中に本文が変わっても、後段の `upsert_scene_chunks` が TX 内で
 /// initial hash を再確認して負けた側を捨てるので整合は保たれる。
-#[cfg(feature = "semantic-embedding")]
+#[cfg(all(feature = "semantic-embedding", test))]
 pub fn embed_scene_payloads(
     embedder: &mut crate::embedding::Embedder,
     scene_id: &str,
@@ -350,13 +350,35 @@ pub fn embed_scene_payloads(
 /// 推論前後に確認する。`None` はキャンセル済みを表し、途中まで構築した payload は
 /// 破棄される。呼び出し側は `None` のとき `upsert_scene_chunks` を呼ばないことで、
 /// 既存の index を部分 payload で置換しない。
-#[cfg(feature = "semantic-embedding")]
+#[cfg(all(feature = "semantic-embedding", test))]
 pub fn embed_scene_payloads_cancellable(
     embedder: &mut crate::embedding::Embedder,
     scene_id: &str,
     content: &str,
     spec: &'static crate::spec::EmbeddingModelSpec,
+    should_continue: impl FnMut() -> bool,
+) -> Result<Option<Vec<ChunkPayload>>> {
+    embed_scene_payloads_cancellable_with(
+        embedder,
+        scene_id,
+        content,
+        spec,
+        should_continue,
+        |embedder, text| embedder.embed_document(text),
+    )
+}
+
+/// Runtime-owned model boundary variant. The callback is invoked once per
+/// exact document chunk immediately before the tokenizer/ONNX pipeline, which
+/// lets the shell-independent runtime enforce durable audit-before-inference.
+#[cfg(feature = "semantic-embedding")]
+pub fn embed_scene_payloads_cancellable_with(
+    embedder: &mut crate::embedding::Embedder,
+    scene_id: &str,
+    content: &str,
+    spec: &'static crate::spec::EmbeddingModelSpec,
     mut should_continue: impl FnMut() -> bool,
+    mut embed_document: impl FnMut(&mut crate::embedding::Embedder, &str) -> Result<Vec<f32>>,
 ) -> Result<Option<Vec<ChunkPayload>>> {
     use crate::chunker::{chunk_scene, CHUNKER_VERSION};
     use crate::chunker_en::chunk_scene_en;
@@ -381,7 +403,7 @@ pub fn embed_scene_payloads_cancellable(
     embed_chunks_cancellable(
         &chunks,
         embedder.embedding_dim(),
-        |text| embedder.embed_document(text),
+        |text| embed_document(embedder, text),
         &mut should_continue,
     )
 }
@@ -427,7 +449,7 @@ fn embed_chunks_cancellable(
 /// 不要な呼び出し側」用。Tauri command 側は workspace lock を embed 中に
 /// 保持しないよう、`read_scene_for_index` / `embed_scene_payloads` /
 /// `upsert_scene_chunks` を個別に呼ぶ (commands/semantic.rs 参照)。
-#[cfg(feature = "semantic-embedding")]
+#[cfg(all(feature = "semantic-embedding", test))]
 pub fn index_scene(
     db: &Database,
     embedder: &mut crate::embedding::Embedder,

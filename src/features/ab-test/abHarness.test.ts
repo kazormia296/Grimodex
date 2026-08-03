@@ -1,6 +1,25 @@
 import { describe, it, expect, vi } from "vitest";
+
+const auditMocks = vi.hoisted(() => ({
+  begin: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace",
+    operationId: input.operationId as string,
+    executionId: crypto.randomUUID(),
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  cacheHit: vi.fn(async (_handle: unknown, _terminal: unknown) => undefined),
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecutionInWorkspace: auditMocks.begin,
+  cacheHitAiAuditExecution: auditMocks.cacheHit,
+}));
+
 import {
   applyPromptVariant,
+  buildAbReuseIdentity,
   runAbComparison,
   type AbDispatcher,
   type AbMessage,
@@ -10,6 +29,39 @@ const BASE: AbMessage[] = [
   { role: "system", content: "you are a writer" },
   { role: "user", content: "continue the scene" },
 ];
+const AUDIT = {
+  audit: {
+    projectId: "project-test",
+    pathId: "ab_chat" as const,
+    expectedWorkspacePath: "/workspace",
+    settingsAuthority: "settings:v1",
+  },
+};
+
+function reuseEntry(
+  request: { messages: AbMessage[] },
+  config: Parameters<typeof buildAbReuseIdentity>[0]["config"],
+  result: { ok: true; text: string } | { ok: false; error: string },
+  audit: {
+    projectId: string | null;
+    expectedWorkspacePath: string;
+    pathId: "ab_chat" | "ab_inline";
+    settingsAuthority: string;
+  } = AUDIT.audit,
+) {
+  const messages = applyPromptVariant(request.messages, config.promptVariant);
+  return {
+    result,
+    identity: buildAbReuseIdentity({
+      projectId: audit.projectId,
+      expectedWorkspacePath: audit.expectedWorkspacePath,
+      pathId: audit.pathId,
+      settingsAuthority: audit.settingsAuthority,
+      messages,
+      config,
+    }),
+  };
+}
 
 describe("applyPromptVariant", () => {
   it("returns a copy unchanged when variant is empty", () => {
@@ -47,6 +99,7 @@ describe("runAbComparison", () => {
       { messages: BASE },
       [{}, { model: "gpt-b" }, { model: "gpt-c" }],
       dispatch,
+      AUDIT,
     );
 
     expect(out.map((s) => s.result)).toEqual([
@@ -55,6 +108,10 @@ describe("runAbComparison", () => {
       { ok: true, text: "model=gpt-c" },
     ]);
     expect(dispatch).toHaveBeenCalledTimes(3);
+    for (const [, , context] of vi.mocked(dispatch).mock.calls) {
+      expect(context.projectId).toBe("project-test");
+      expect(context.expectedWorkspacePath).toBe("/workspace");
+    }
   });
 
   it("passes the provider override through to the dispatcher", async () => {
@@ -67,6 +124,7 @@ describe("runAbComparison", () => {
       { messages: BASE },
       [{}, { provider: "sakana", model: "fugu" }],
       dispatch,
+      AUDIT,
     );
     expect(seen).toEqual([undefined, "sakana"]);
   });
@@ -93,6 +151,7 @@ describe("runAbComparison", () => {
       { messages: BASE },
       [{ model: "a" }, { model: "b" }],
       dispatch,
+      AUDIT,
     );
 
     expect(out[0].result).toEqual({ ok: true, text: "A" });
@@ -114,7 +173,7 @@ describe("runAbComparison", () => {
       { messages: BASE },
       [{ model: "a" }, { model: "b" }, { model: "c" }],
       dispatch,
-      { parallel: false },
+      { ...AUDIT, parallel: false },
     );
 
     expect(order).toEqual([
@@ -127,6 +186,33 @@ describe("runAbComparison", () => {
     ]);
   });
 
+  it("keeps one workspace authority and fails a later sequential slot before provider dispatch", async () => {
+    let activeWorkspacePath = "/workspace";
+    const providerDispatch = vi.fn();
+    const dispatch: AbDispatcher = async (_messages, config, context) => {
+      if (context.expectedWorkspacePath !== activeWorkspacePath) {
+        throw new Error("AI_AUDIT_WORKSPACE_CHANGED");
+      }
+      providerDispatch(config.model);
+      activeWorkspacePath = "/workspace/other";
+      return { ok: true, text: config.model ?? "" };
+    };
+
+    const out = await runAbComparison(
+      { messages: BASE },
+      [{ model: "first" }, { model: "second" }],
+      dispatch,
+      { ...AUDIT, parallel: false },
+    );
+
+    expect(providerDispatch).toHaveBeenCalledTimes(1);
+    expect(providerDispatch).toHaveBeenCalledWith("first");
+    expect(out[1].result).toEqual({
+      ok: false,
+      error: "AI_AUDIT_WORKSPACE_CHANGED",
+    });
+  });
+
   it("isolates a thrown error on one slot without failing the others", async () => {
     const dispatch: AbDispatcher = async (_messages, config) => {
       if (config.model === "boom") throw new Error("kaboom");
@@ -137,6 +223,7 @@ describe("runAbComparison", () => {
       { messages: BASE },
       [{ model: "boom" }, { model: "fine" }],
       dispatch,
+      AUDIT,
     );
 
     expect(out[0].result).toEqual({ ok: false, error: "kaboom" });
@@ -148,6 +235,7 @@ describe("runAbComparison", () => {
       { messages: BASE },
       [{ model: "m", promptVariant: "variant A" }, { model: "m" }],
       async () => ({ ok: true as const, text: "ok" }),
+      AUDIT,
     );
 
     expect(out[0].messages).toHaveLength(3);
@@ -162,18 +250,16 @@ describe("runAbComparison", () => {
       return { ok: true as const, text: `model=${config.model ?? "default"}` };
     };
 
-    const out = await runAbComparison(
-      { messages: BASE },
-      [{}, { model: "gpt-b" }, { model: "gpt-c" }],
-      dispatch,
-      {
-        reuse: [
-          { ok: true, text: "REUSED_0" },
-          null,
-          { ok: true, text: "REUSED_2" },
-        ],
-      },
-    );
+    const request = { messages: BASE };
+    const configs = [{}, { model: "gpt-b" }, { model: "gpt-c" }];
+    const out = await runAbComparison(request, configs, dispatch, {
+      ...AUDIT,
+      reuse: [
+        reuseEntry(request, configs[0], { ok: true, text: "REUSED_0" }),
+        null,
+        reuseEntry(request, configs[2], { ok: true, text: "REUSED_2" }),
+      ],
+    });
 
     expect(out[0].result).toEqual({ ok: true, text: "REUSED_0" });
     expect(out[1].result).toEqual({ ok: true, text: "model=gpt-b" });
@@ -188,16 +274,146 @@ describe("runAbComparison", () => {
       text: `${config.model}`,
     }));
 
-    const out = await runAbComparison(
-      { messages: BASE },
-      [{ model: "a" }, { model: "b" }],
-      dispatch,
-      { reuse: [{ ok: false, error: "boom" }, null] },
-    );
+    const request = { messages: BASE };
+    const configs = [{ model: "a" }, { model: "b" }];
+    const out = await runAbComparison(request, configs, dispatch, {
+      ...AUDIT,
+      reuse: [
+        reuseEntry(request, configs[0], { ok: false, error: "boom" }),
+        null,
+      ],
+    });
 
     // failed reuse is not honored → both slots run.
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(out[0].result).toEqual({ ok: true, text: "a" });
     expect(out[1].result).toEqual({ ok: true, text: "b" });
   });
+
+  it.each(["ab_chat", "ab_inline"] as const)(
+    "AI audit A/B reuse: %s records cache-hit terminals under one operation without model dispatch",
+    async (pathId) => {
+      auditMocks.begin.mockClear();
+      auditMocks.cacheHit.mockClear();
+      const dispatch: AbDispatcher = vi.fn(async () => ({
+        ok: true as const,
+        text: "provider result",
+      }));
+      const reused = [
+        { ok: true as const, text: "cached A" },
+        { ok: true as const, text: "cached B" },
+      ];
+      const request = { messages: BASE };
+      const configs = [
+        { model: "model-a" },
+        { model: "model-b", promptVariant: "variant B" },
+      ];
+      const audit = {
+        projectId: "project-1",
+        pathId,
+        expectedWorkspacePath: "/workspace",
+        settingsAuthority: "settings:v1",
+      };
+
+      const output = await runAbComparison(request, configs, dispatch, {
+        reuse: configs.map((config, index) =>
+          reuseEntry(request, config, reused[index], audit),
+        ),
+        audit,
+      });
+
+      expect(output.map((slot) => slot.result)).toEqual(reused);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(auditMocks.begin).toHaveBeenCalledTimes(2);
+      const starts = auditMocks.begin.mock.calls.map(([input]) => input);
+      expect(starts.map((input) => input.pathId)).toEqual([pathId, pathId]);
+      expect(new Set(starts.map((input) => input.operationId)).size).toBe(1);
+      expect(starts[1]).toEqual(
+        expect.objectContaining({
+          request: expect.objectContaining({
+            messages: expect.arrayContaining([
+              { role: "user", content: "variant B" },
+            ]),
+          }),
+          metadata: expect.objectContaining({
+            reused: true,
+            modelDispatched: false,
+            sourceExecutionId: null,
+          }),
+          captureState: "partial",
+          limitations: ["cache-source-execution-unavailable"],
+        }),
+      );
+      expect(auditMocks.cacheHit).toHaveBeenCalledTimes(2);
+      for (const [, terminal] of auditMocks.cacheHit.mock.calls) {
+        expect(terminal).toEqual(
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              modelDispatched: false,
+              sourceExecutionId: null,
+            }),
+          }),
+        );
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: "base prompt",
+      nextRequest: {
+        messages: [
+          { role: "system", content: "you are a writer" },
+          { role: "user", content: "a different scene" },
+        ],
+      },
+      nextAudit: AUDIT.audit,
+    },
+    {
+      name: "project",
+      nextRequest: { messages: BASE },
+      nextAudit: { ...AUDIT.audit, projectId: "project-other" },
+    },
+    {
+      name: "workspace",
+      nextRequest: { messages: BASE },
+      nextAudit: {
+        ...AUDIT.audit,
+        expectedWorkspacePath: "/workspace/other",
+      },
+    },
+    {
+      name: "surface path",
+      nextRequest: { messages: BASE },
+      nextAudit: { ...AUDIT.audit, pathId: "ab_inline" as const },
+    },
+    {
+      name: "AI settings",
+      nextRequest: { messages: BASE },
+      nextAudit: { ...AUDIT.audit, settingsAuthority: "settings:v2" },
+    },
+  ])(
+    "does not reuse across a changed $name authority",
+    async ({ nextRequest, nextAudit }) => {
+      const config = { model: "model-a" };
+      const cached = reuseEntry(
+        { messages: BASE },
+        config,
+        { ok: true, text: "stale" },
+        AUDIT.audit,
+      );
+      const dispatch: AbDispatcher = vi.fn(async () => ({
+        ok: true as const,
+        text: "fresh",
+      }));
+
+      const output = await runAbComparison(nextRequest, [config], dispatch, {
+        reuse: [cached],
+        audit: nextAudit,
+      });
+
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(output[0].result).toEqual({ ok: true, text: "fresh" });
+    },
+  );
 });

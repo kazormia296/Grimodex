@@ -142,6 +142,8 @@ describe("SemanticRerankerApplyCoordinator", () => {
     expect(score).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: "request-1",
+        projectId: "project-1",
+        auditPathId: "semantic_reranker",
         candidates: expect.arrayContaining([
           expect.objectContaining({ candidateId: "scene-low:30:40" }),
         ]),

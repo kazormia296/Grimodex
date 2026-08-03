@@ -16,7 +16,6 @@ import {
 } from "@/application/project/workspaceProjectCommands";
 import { toast } from "sonner";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
-import { cancelScheduledImeExports } from "@/features/ime/scheduler";
 import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
@@ -34,6 +33,7 @@ import {
 } from "@/features/project/projectLoadGate";
 import { hydrateWorkspaceStores } from "@/application/workspace/workspaceHydration";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { cancelWorkspaceScopedSchedules } from "@/application/workspace/workspaceScheduleQuiescence";
 import {
   beginWorkspaceOpenRequest,
   runWorkspaceOpenRequest,
@@ -212,7 +212,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       });
       // Debounced snapshot writes carry the old Project id. Stop them before
       // any await so they cannot wake up against the replacement database.
-      cancelScheduledImeExports();
+      cancelWorkspaceScopedSchedules();
       set({
         error: null,
         workspaceSwitchInProgress: true,

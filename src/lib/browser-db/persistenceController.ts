@@ -1,5 +1,7 @@
 import {
   BrowserWorkspaceError,
+  type AiAuditJournalBatch,
+  type AiAuditJournalEntry,
   type BrowserWorkspaceStore,
   type WorkspaceSnapshot,
 } from "./indexedDbStore";
@@ -17,6 +19,13 @@ export interface PersistenceControllerOptions {
 export interface PersistenceController {
   markDirty(): void;
   flush(): Promise<void>;
+  /**
+   * Explicit snapshot flush that rejects a retained stale-write conflict.
+   * Audit pre-dispatch persistence uses acknowledgeAiAuditBatch instead.
+   */
+  flushStrict(): Promise<void>;
+  acknowledgeAiAuditBatch(batch: AiAuditJournalBatch): Promise<void>;
+  loadAiAuditJournal(): Promise<AiAuditJournalEntry[]>;
   whenIdle(): Promise<void>;
   restore(): Promise<WorkspaceSnapshot | undefined>;
   attachLifecycle(target?: Window): () => void;
@@ -34,8 +43,12 @@ export function createPersistenceController(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let queue: Promise<void> = Promise.resolve();
   let blockedByConflict = false;
+  let blockedConflictCause: unknown = null;
 
-  const writeSnapshot = async (snapshotRevision: number): Promise<void> => {
+  const writeSnapshot = async (
+    snapshotRevision: number,
+    auditJournalCompactionWatermark: number,
+  ): Promise<void> => {
     const bytes = await options.exportDatabase();
     await options.store.put({
       workspaceId: options.workspaceId,
@@ -43,15 +56,49 @@ export function createPersistenceController(
       schemaVersion: options.schemaVersion ?? 1,
       updatedAt: now(),
       bytes,
+      auditJournalCompactionWatermark,
     });
   };
 
-  const runFlush = async (): Promise<void> => {
-    if (blockedByConflict || dirtyGeneration === persistedGeneration) return;
+  const retainedConflict = (): unknown =>
+    blockedConflictCause ??
+    new BrowserWorkspaceError(
+      "stale-write",
+      "Browser workspace persistence is blocked by a stale-write conflict",
+    );
+
+  const blockOnStaleWrite = (cause: unknown): void => {
+    if (
+      cause instanceof BrowserWorkspaceError &&
+      cause.code === "stale-write"
+    ) {
+      blockedByConflict = true;
+      blockedConflictCause = cause;
+    }
+  };
+
+  const runFlush = async (strict: boolean): Promise<void> => {
+    if (blockedByConflict) {
+      if (strict) throw retainedConflict();
+      return;
+    }
     const generationAtStart = dirtyGeneration;
     const nextRevision = revision + 1;
     try {
-      await writeSnapshot(nextRevision);
+      // Capture this before export. An append that commits after export starts
+      // receives a higher sequence and must remain replayable after this put.
+      const auditJournalCompactionWatermark =
+        await options.store.getAiAuditJournalHighWatermark(
+          options.workspaceId,
+          revision,
+        );
+      if (
+        dirtyGeneration === persistedGeneration &&
+        auditJournalCompactionWatermark === 0
+      ) {
+        return;
+      }
+      await writeSnapshot(nextRevision, auditJournalCompactionWatermark);
       revision = nextRevision;
     } catch (cause) {
       if (
@@ -60,31 +107,40 @@ export function createPersistenceController(
       ) {
         throw cause;
       }
-      const latest = await options.store.get(options.workspaceId);
+      const latest = await options.store.getState(options.workspaceId);
       revision = latest?.revision ?? 0;
       // A stale write means another tab has newer application state. Do not
       // promote this tab's old in-memory export to a newer revision: doing so
       // would silently overwrite the other tab. Stop until the caller restores
       // (or explicitly resolves) the conflict.
-      blockedByConflict = true;
+      blockOnStaleWrite(cause);
       throw cause;
     }
     if (generationAtStart === dirtyGeneration)
       persistedGeneration = generationAtStart;
   };
 
-  const flush = (): Promise<void> => {
+  const enqueueOperation = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = queue.then(operation, operation);
+    queue = result.then(
+      () => undefined,
+      (cause) => {
+        options.onError?.(cause);
+        return undefined;
+      },
+    );
+    return result;
+  };
+
+  const enqueueFlush = (strict: boolean): Promise<void> => {
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
     }
-    const operation = queue.then(runFlush, runFlush);
-    queue = operation.catch((cause) => {
-      options.onError?.(cause);
-      return undefined;
-    });
-    return operation;
+    return enqueueOperation(() => runFlush(strict));
   };
+  const flush = (): Promise<void> => enqueueFlush(false);
+  const flushStrict = (): Promise<void> => enqueueFlush(true);
 
   return {
     markDirty() {
@@ -97,11 +153,43 @@ export function createPersistenceController(
       }, debounceMs);
     },
     flush,
+    flushStrict,
+    acknowledgeAiAuditBatch(batch) {
+      return enqueueOperation(async () => {
+        if (blockedByConflict) throw retainedConflict();
+        try {
+          await options.store.appendAiAuditJournal({
+            workspaceId: options.workspaceId,
+            expectedRevision: revision,
+            createdAt: now(),
+            ...batch,
+          });
+        } catch (cause) {
+          blockOnStaleWrite(cause);
+          throw cause;
+        }
+      });
+    },
+    loadAiAuditJournal() {
+      return enqueueOperation(async () => {
+        if (blockedByConflict) throw retainedConflict();
+        try {
+          return await options.store.readAiAuditJournal(
+            options.workspaceId,
+            revision,
+          );
+        } catch (cause) {
+          blockOnStaleWrite(cause);
+          throw cause;
+        }
+      });
+    },
     whenIdle: () => queue,
     async restore() {
       const state = await options.store.getState(options.workspaceId);
       if (state) revision = state.revision;
       blockedByConflict = false;
+      blockedConflictCause = null;
       return state && !("deleted" in state) ? state : undefined;
     },
     attachLifecycle(

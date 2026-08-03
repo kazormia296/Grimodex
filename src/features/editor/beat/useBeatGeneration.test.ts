@@ -6,6 +6,32 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 type ListenHandler = (payload: unknown) => void;
 const listeners = new Map<string, ListenHandler>();
 const invokeMock = vi.fn();
+const auditMocks = vi.hoisted(() => ({
+  begin: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace/test.gdx",
+    operationId: "operation-test",
+    executionId: "execution-test",
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  dispatched: vi.fn(async () => undefined),
+  complete: vi.fn(async () => undefined),
+  fail: vi.fn(async () => undefined),
+  cancel: vi.fn(async () => undefined),
+  partials: vi.fn(async () => undefined),
+  recovery: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: auditMocks.begin,
+  markAiAuditDispatched: auditMocks.dispatched,
+  completeAiAuditExecution: auditMocks.complete,
+  failAiAuditExecution: auditMocks.fail,
+  cancelAiAuditExecution: auditMocks.cancel,
+  recordAiAuditPartials: auditMocks.partials,
+  attemptAiAuditPersistenceFailureTerminal: auditMocks.recovery,
+}));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -57,7 +83,10 @@ import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import { useBeatGeneration } from "./useBeatGeneration";
 
 function emit(event: string, payload: unknown) {
-  listeners.get(event)?.(payload);
+  listeners.get(event)?.({
+    streamId: "execution-test",
+    ...(payload as Record<string, unknown>),
+  });
 }
 
 function createEditorWithBeat(beatId: string) {
@@ -129,7 +158,11 @@ describe("useBeatGeneration", () => {
         },
       ],
     });
-    useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
+    useWorkspaceStore.setState({
+      activeWorkspaceName: "テスト作品",
+      activeWorkspacePath: "/workspace/test.gdx",
+      workspaceSwitchInProgress: false,
+    });
     useCodexStore.setState({ entries: [] });
     useCodexHighlightStore.setState({ matchedEntryIds: [] });
     // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
@@ -175,6 +208,11 @@ describe("useBeatGeneration", () => {
     });
     await waitFor(() => expect(result.current.state.status).toBe("generating"));
 
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.find((c) => c[0] === "send_inline_ai_stream"),
+      ).toBeDefined(),
+    );
     const call = invokeMock.mock.calls.find(
       (c) => c[0] === "send_inline_ai_stream",
     );
@@ -208,11 +246,17 @@ describe("useBeatGeneration", () => {
     let pending: Promise<void>;
     await act(async () => {
       pending = result.current.generate();
-      // Wait a tick for the listener registration before emitting events.
+      // Let the hook publish its generating state; transport readiness is
+      // observed explicitly below because the implementation is lazy-loaded.
       await Promise.resolve();
     });
 
     await waitFor(() => expect(result.current.state.status).toBe("generating"));
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.find((c) => c[0] === "send_inline_ai_stream"),
+      ).toBeDefined(),
+    );
 
     await act(async () => {
       emit("inline-ai:stream-chunk", { delta: "ドロシー", block_type: "text" });
@@ -597,7 +641,11 @@ describe("runRoleInference (C-7)", () => {
         },
       ],
     });
-    useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
+    useWorkspaceStore.setState({
+      activeWorkspaceName: "テスト作品",
+      activeWorkspacePath: "/workspace/test.gdx",
+      workspaceSwitchInProgress: false,
+    });
     useCodexStore.setState({ entries: [] });
     // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
     // 素通りさせ、既存テストの generate を従来どおり走らせる。

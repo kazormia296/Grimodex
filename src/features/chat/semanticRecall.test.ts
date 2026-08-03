@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const rerankerMocks = vi.hoisted(() => ({
   apply: vi.fn(),
@@ -19,6 +19,7 @@ vi.mock("./semanticRerankerShadow", async (importOriginal) => ({
 }));
 
 import { invoke } from "@/lib/tauri";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 const mockInvoke = vi.mocked(invoke);
 
 import type { SemanticSearchHit } from "../semantic-search/api";
@@ -41,6 +42,19 @@ import {
   SEMANTIC_RECALL_HYBRID_FETCH_LIMIT,
   SEMANTIC_RECALL_SPARSE_LIMIT,
 } from "./semanticRecall";
+
+const TEST_WORKSPACE_IDENTITY = {
+  path: "/workspace",
+  openRevision: 3,
+} as const;
+
+beforeEach(() => {
+  setCurrentWorkspaceIdentity(TEST_WORKSPACE_IDENTITY);
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+});
 
 function makeHit(over: Partial<SemanticSearchHit> = {}): SemanticSearchHit {
   return {

@@ -54,7 +54,11 @@ pub fn uses_responses_api(provider: &AiProvider, api_variant: Option<&str>) -> b
 /// 32k の余裕を持たせる(/chat/completions 経路の `openai_max_tokens` と同じ思想)。互換
 /// gateway は reasoning が走るとき(明示 ON、または gpt-5.1+ で OFF=minimal を送る場合)も
 /// 32k、それ以外は 4096(モデル上限超過 400 を避ける)。
-fn max_output_tokens(provider: &AiProvider, model: &str, reasoning_enabled: Option<bool>) -> u32 {
+pub(crate) fn max_output_tokens(
+    provider: &AiProvider,
+    model: &str,
+    reasoning_enabled: Option<bool>,
+) -> u32 {
     // apply_reasoning が何らか reasoning を付与する全ケースで予算を広げる。
     // (Some(false) でも gpt-5.1+ は minimal を送り、reasoning トークンを消費する)
     let reasoning_active = reasoning_enabled == Some(true)
@@ -591,14 +595,7 @@ pub async fn send(
         params.reasoning_enabled,
         &params.reasoning_effort,
     );
-    body["max_output_tokens"] =
-        json!(params
-            .request_max_output_tokens
-            .unwrap_or_else(|| max_output_tokens(
-                params.provider,
-                params.model,
-                params.reasoning_enabled
-            )));
+    body["max_output_tokens"] = json!(crate::effective_request_max_output_tokens(params));
     crate::merge_extra_body(&mut body, &params.extra_body);
     crate::apply_openrouter_provider_pin(
         &mut body,
@@ -652,14 +649,7 @@ pub async fn send_with_tools(
         params.reasoning_enabled,
         &params.reasoning_effort,
     );
-    body["max_output_tokens"] =
-        json!(params
-            .request_max_output_tokens
-            .unwrap_or_else(|| max_output_tokens(
-                params.provider,
-                params.model,
-                params.reasoning_enabled
-            )));
+    body["max_output_tokens"] = json!(crate::effective_request_max_output_tokens(params));
     crate::merge_extra_body(&mut body, &params.extra_body);
     crate::apply_openrouter_provider_pin(
         &mut body,
@@ -706,7 +696,13 @@ async fn send_and_parse_json(
         params.endpoints,
         body,
     );
-    let resp = crate::send_with_429_retry(req, params.retry_429, 3).await?;
+    let resp = crate::send_with_429_retry(
+        req,
+        params.retry_429,
+        3,
+        params.http_retry_observer.as_deref(),
+    )
+    .await?;
     let status = resp.status();
     let body_text = resp.text().await?;
     if crate::ai_wire_log_enabled() {
@@ -745,6 +741,21 @@ pub async fn send_stream(
 
     let chunk_event = format!("{}:stream-chunk", event_prefix);
     let done_event = format!("{}:stream-done", event_prefix);
+    let emit_stopped = || {
+        emitter.emit(
+            &done_event,
+            json!({
+                "stop_reason": "stopped",
+                "input_tokens": null,
+                "output_tokens": null,
+            }),
+        );
+    };
+
+    if abort_flag.load(Ordering::Acquire) {
+        emit_stopped();
+        return Ok(());
+    }
 
     let client = reqwest::Client::new();
     let (instructions, input) = build_chat_input(messages);
@@ -756,14 +767,7 @@ pub async fn send_stream(
         params.reasoning_enabled,
         &params.reasoning_effort,
     );
-    body["max_output_tokens"] =
-        json!(params
-            .request_max_output_tokens
-            .unwrap_or_else(|| max_output_tokens(
-                params.provider,
-                params.model,
-                params.reasoning_enabled
-            )));
+    body["max_output_tokens"] = json!(crate::effective_request_max_output_tokens(params));
     crate::merge_extra_body(&mut body, &params.extra_body);
     crate::apply_openrouter_provider_pin(
         &mut body,
@@ -778,7 +782,18 @@ pub async fn send_stream(
         params.endpoints,
         &body,
     );
-    let resp = crate::send_with_429_retry(req, params.retry_429, 3).await?;
+    let Some(resp) = crate::send_with_429_retry_cancelable(
+        req,
+        params.retry_429,
+        3,
+        params.http_retry_observer.as_deref(),
+        abort_flag.as_ref(),
+    )
+    .await?
+    else {
+        emit_stopped();
+        return Ok(());
+    };
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
@@ -788,20 +803,33 @@ pub async fn send_stream(
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     let mut stop_reason = "end_turn".to_string();
+    let mut provider_terminal_observed = false;
     let mut input_tokens: Option<u64> = None;
     let mut output_tokens: Option<u64> = None;
     let mut cache_read_tokens: Option<u64> = None;
 
-    while let Some(chunk) = stream.next().await {
-        if abort_flag.load(Ordering::Relaxed) {
-            stop_reason = "stopped".to_string();
+    'responses_stream: loop {
+        let next_chunk = tokio::select! {
+            biased;
+            chunk = stream.next() => chunk,
+            _ = crate::wait_for_stream_abort(abort_flag.as_ref()) => None,
+        };
+        let Some(bytes) = crate::resolve_provider_stream_item(
+            next_chunk,
+            abort_flag.load(Ordering::Acquire),
+            provider_terminal_observed,
+            &mut stop_reason,
+        )?
+        else {
             break;
-        }
-        let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
+        };
         buf.push_str(&String::from_utf8_lossy(&bytes));
         if buf.len() > crate::MAX_SSE_BUFFER_BYTES
             && crate::find_sse_frame_separator(&buf).is_none()
         {
+            if provider_terminal_observed {
+                break 'responses_stream;
+            }
             return Err(anyhow::anyhow!(
                 "SSE buffer exceeded {} bytes without a frame separator",
                 crate::MAX_SSE_BUFFER_BYTES
@@ -818,6 +846,7 @@ pub async fn send_stream(
                 };
                 let data = rest.trim_end_matches('\r');
                 if data == "[DONE]" {
+                    provider_terminal_observed = true;
                     break;
                 }
                 let Ok(json) = serde_json::from_str::<Value>(data) else {
@@ -850,6 +879,8 @@ pub async fn send_stream(
                         cache_read_tokens: cr,
                         stop_reason: sr,
                     } => {
+                        let first_provider_terminal = !provider_terminal_observed;
+                        provider_terminal_observed = true;
                         if it.is_some() {
                             input_tokens = it;
                         }
@@ -859,13 +890,16 @@ pub async fn send_stream(
                         if cr.is_some() {
                             cache_read_tokens = cr;
                         }
-                        // abort で既に stopped を立てている場合は上書きしない。
-                        if stop_reason != "stopped" {
+                        if first_provider_terminal {
                             stop_reason = sr;
                         }
                     }
                     StreamAction::Failed(msg) => {
-                        return Err(anyhow::anyhow!(msg));
+                        crate::reject_provider_stream_failure_before_terminal(
+                            provider_terminal_observed,
+                            msg,
+                        )?;
+                        break 'responses_stream;
                     }
                     StreamAction::Ignore => {}
                 }
@@ -890,16 +924,12 @@ pub async fn send_stream(
 /// 校閲 post-effect の単発呼び出しを Responses で行い、最初の出力テキストを返す。
 /// `instructions` に system、`input` に Codex/Scene を `input_text` パートで載せる
 /// (OpenAI は prefix を自動キャッシュするため cache_control は付けない)。
-pub async fn post_effect(
+pub(crate) fn post_effect_body(
     settings: &AiSettings,
-    api_key: &str,
     system_prompt: &str,
     codex_content: Option<&str>,
     scene_content: &str,
-) -> anyhow::Result<String> {
-    let client = reqwest::Client::new();
-    let endpoints = settings.endpoints();
-
+) -> Value {
     let mut parts: Vec<Value> = Vec::new();
     if let Some(codex) = codex_content {
         parts.push(json!({ "type": "input_text", "text": format!("[Codex]\n{}", codex) }));
@@ -923,11 +953,32 @@ pub async fn post_effect(
         &settings.provider,
         settings.openrouter_provider_pin.as_deref(),
     );
+    body
+}
 
-    let req = build_request(&client, &settings.provider, api_key, endpoints, &body);
+pub(crate) async fn post_effect_prepared(
+    settings: &AiSettings,
+    api_key: &str,
+    body: &Value,
+) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    let endpoints = settings.endpoints();
+
+    let req = build_request(&client, &settings.provider, api_key, endpoints, body);
     let resp = req.send().await?.error_for_status()?;
     let result: Value = resp.json().await?;
     extract_first_output_text(&result)
+}
+
+pub async fn post_effect(
+    settings: &AiSettings,
+    api_key: &str,
+    system_prompt: &str,
+    codex_content: Option<&str>,
+    scene_content: &str,
+) -> anyhow::Result<String> {
+    let body = post_effect_body(settings, system_prompt, codex_content, scene_content);
+    post_effect_prepared(settings, api_key, &body).await
 }
 
 #[cfg(test)]
@@ -1524,6 +1575,59 @@ mod tests {
     }
 
     #[test]
+    fn responses_terminal_marker_wins_abort_stream_error_and_late_failed() -> anyhow::Result<()> {
+        let completed = json!({
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "usage": { "input_tokens": 5, "output_tokens": 3 }
+            }
+        });
+        let (mut stop_reason, provider_terminal_observed) = match interpret_stream_event(&completed)
+        {
+            StreamAction::Completed {
+                stop_reason: completed_reason,
+                ..
+            } => (completed_reason, true),
+            other => panic!("expected Completed, got {other:?}"),
+        };
+
+        let aborted = crate::resolve_provider_stream_item::<Vec<u8>, std::io::Error>(
+            None,
+            true,
+            provider_terminal_observed,
+            &mut stop_reason,
+        )?;
+        assert!(aborted.is_none());
+        assert_eq!(stop_reason, "end_turn");
+
+        let transport_error = crate::resolve_provider_stream_item(
+            Some(Err::<Vec<u8>, _>(std::io::Error::other(
+                "connection reset after response.completed",
+            ))),
+            false,
+            provider_terminal_observed,
+            &mut stop_reason,
+        )?;
+        assert!(transport_error.is_none());
+
+        let late_failed = json!({
+            "type": "response.failed",
+            "response": { "error": { "message": "late failure" } }
+        });
+        let StreamAction::Failed(message) = interpret_stream_event(&late_failed) else {
+            panic!("expected Failed");
+        };
+        crate::reject_provider_stream_failure_before_terminal(provider_terminal_observed, message)?;
+        assert!(crate::reject_provider_stream_failure_before_terminal(
+            false,
+            "failure before terminal".to_string(),
+        )
+        .is_err());
+        Ok(())
+    }
+
+    #[test]
     fn extract_first_output_text_prefers_output_text_field() {
         let result = json!({ "output_text": "convenient", "output": [] });
         assert_eq!(extract_first_output_text(&result).unwrap(), "convenient");
@@ -1752,6 +1856,7 @@ mod responses_live_tests {
             reasoning_effort: None,
             extra_body: None,
             retry_429: true,
+            http_retry_observer: None,
             ai_novelist_mode: AiNovelistMode::Chat,
             openrouter_provider_pin: None,
             system_cache_segments: None,

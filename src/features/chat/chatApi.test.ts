@@ -4,6 +4,23 @@ vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspaces/novel",
+    operationId: input.operationId ?? "operation-test",
+    executionId: input.executionId ?? "execution-test",
+    parentExecutionId: input.parentExecutionId ?? null,
+    startedAt: 1,
+  })),
+  markAiAuditDispatched: vi.fn(async () => undefined),
+  completeAiAuditExecution: vi.fn(async () => undefined),
+  failAiAuditExecution: vi.fn(async () => undefined),
+  cancelAiAuditExecution: vi.fn(async () => undefined),
+  recordAiAuditPartial: vi.fn(async () => undefined),
+  skipAiAuditExecution: vi.fn(async () => undefined),
+}));
+
 vi.mock("@/db/client", () => ({
   db: {
     select: vi.fn(),
@@ -869,6 +886,7 @@ describe("chatApi - Ollama endpoint snapshots", () => {
   it("passes the finalized endpoint on a plain request", async () => {
     await sendChatMessageWithThinking(
       [{ role: "user", content: "hello" }],
+      { projectId: "project-1", pathId: "summarization" },
       undefined,
       undefined,
       null,
@@ -896,6 +914,7 @@ describe("chatApi - Ollama endpoint snapshots", () => {
     await sendAgentMessage(
       [{ role: "user", content: "hello" }],
       [],
+      { projectId: "project-1", pathId: "chat_agent_main" },
       undefined,
       undefined,
       null,
@@ -939,7 +958,10 @@ describe("chatApi - unsupported CLI single-shot transport", () => {
     vi.mocked(invoke).mockClear();
 
     await expect(
-      sendChatMessageWithThinking([{ role: "user", content: "hello" }]),
+      sendChatMessageWithThinking([{ role: "user", content: "hello" }], {
+        projectId: "project-1",
+        pathId: "summarization",
+      }),
     ).rejects.toMatchObject({ code: "AI_SINGLE_SHOT_CLI_UNSUPPORTED" });
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -960,6 +982,7 @@ describe("chatApi - unsupported CLI single-shot transport", () => {
     await expect(
       sendChatMessageWithThinking(
         [{ role: "user", content: "hello" }],
+        { projectId: "project-1", pathId: "summarization" },
         undefined,
         undefined,
         null,

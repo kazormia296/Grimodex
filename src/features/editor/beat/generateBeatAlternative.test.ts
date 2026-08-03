@@ -4,6 +4,32 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 type ListenHandler = (payload: unknown) => void;
 const listeners = new Map<string, ListenHandler>();
 const invokeMock = vi.fn();
+const auditMocks = vi.hoisted(() => ({
+  begin: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace/test.gdx",
+    operationId: "operation-test",
+    executionId: "execution-test",
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  dispatched: vi.fn(async () => undefined),
+  complete: vi.fn(async () => undefined),
+  fail: vi.fn(async () => undefined),
+  cancel: vi.fn(async () => undefined),
+  partials: vi.fn(async () => undefined),
+  recovery: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: auditMocks.begin,
+  markAiAuditDispatched: auditMocks.dispatched,
+  completeAiAuditExecution: auditMocks.complete,
+  failAiAuditExecution: auditMocks.fail,
+  cancelAiAuditExecution: auditMocks.cancel,
+  recordAiAuditPartials: auditMocks.partials,
+  attemptAiAuditPersistenceFailureTerminal: auditMocks.recovery,
+}));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -37,7 +63,26 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { generateBeatAlternative } from "./generateBeatAlternative";
 
 function emit(event: string, payload: unknown) {
-  listeners.get(event)?.(payload);
+  listeners.get(event)?.({
+    streamId: "execution-test",
+    ...(payload as Record<string, unknown>),
+  });
+}
+
+async function waitForStreamDispatch() {
+  // A single timer turn is not enough to guarantee that a dynamic import has
+  // evaluated under full-suite load. The invoke is the real provider start
+  // boundary and must only occur after all stream listeners exist.
+  await vi.waitFor(() =>
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "send_inline_ai_stream",
+      ),
+    ).toBe(true),
+  );
+  expect(listeners.has("inline-ai:stream-chunk")).toBe(true);
+  expect(listeners.has("inline-ai:stream-done")).toBe(true);
+  expect(listeners.has("inline-ai:stream-error")).toBe(true);
 }
 
 function createEditorWithBeat(
@@ -100,7 +145,11 @@ describe("generateBeatAlternative", () => {
         },
       ],
     });
-    useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
+    useWorkspaceStore.setState({
+      activeWorkspaceName: "テスト作品",
+      activeWorkspacePath: "/workspace/test.gdx",
+      workspaceSwitchInProgress: false,
+    });
     useCodexStore.setState({ entries: [] });
   });
 
@@ -112,10 +161,7 @@ describe("generateBeatAlternative", () => {
       onDone,
     });
 
-    // Wait for listener registration. A macrotask hop flushes the whole
-    // microtask chain (buildBeatContextForGeneration → streamInlineAiText)
-    // regardless of how many awaits precede the listen() call.
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     emit("inline-ai:stream-chunk", {
       delta: "代替案テキスト",
@@ -146,7 +192,7 @@ describe("generateBeatAlternative", () => {
     const editor = createEditorWithBeat("b1", "決断シーン");
 
     const promise = generateBeatAlternative(editor, "b1", "scene-1");
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     const longText =
       "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめも";
@@ -174,7 +220,7 @@ describe("generateBeatAlternative", () => {
     const promise = generateBeatAlternative(editor, "b1", "scene-1", {
       onError,
     });
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     emit("inline-ai:stream-error", { message: "API error" });
 
@@ -218,7 +264,7 @@ describe("generateBeatAlternative", () => {
     });
 
     const promise = generateBeatAlternative(editor, "b1", "scene-1");
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForStreamDispatch();
 
     const call = invokeMock.mock.calls.find(
       (c) => c[0] === "send_inline_ai_stream",

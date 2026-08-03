@@ -12,6 +12,7 @@ import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import {
   foreshadows,
   foreshadowSetups,
@@ -1455,6 +1456,10 @@ export async function proposePastSetups(
   const ovPropose = resolveRoleSendOverride("foreshadow_propose_past_setups");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "foreshadow_propose_past_setups",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ovPropose.apiVariant, // apiVariant（横断割り当て時のみ）
@@ -1510,6 +1515,10 @@ export async function evaluateSetupStrength(
   const ovEval = resolveRoleSendOverride("foreshadow_evaluate_setup_strength");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "foreshadow_evaluate_setup_strength",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ovEval.apiVariant, // apiVariant（横断割り当て時のみ）
@@ -1607,6 +1616,10 @@ export async function auditChapter(
   const ovAudit = resolveRoleSendOverride("foreshadow_audit_chapter");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "foreshadow_audit_chapter",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ovAudit.apiVariant, // apiVariant（横断割り当て時のみ）

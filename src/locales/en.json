@@ -4253,6 +4253,12 @@
     "exportJson": "JSON",
     "exportHtml": "HTML",
     "exportProjectReportTitle": "Export project-wide authorship report",
+    "exportAiAuditBundle": "AI evidence audit ZIP",
+    "exportAiAuditBundleTitle": "Export current body attribution, the forward execution ledger, and selected surviving legacy evidence with a structural AI-origin basis. This is not a complete pre-ledger history. The ZIP may contain full prompts, context, responses, other scenes, and secrets typed into model-visible content; review every file before sharing",
+    "aiAudit": {
+      "verificationFailed": "The audit ZIP was exported, but hash-chain verification failed. Review its README and manifest.",
+      "exportFailed": "The AI use audit ZIP could not be exported."
+    },
     "knowledgeAiChars": "Codex/Snippet AI: {{chars}} chars",
     "aiUsageLocations": "AI usage locations",
     "provenanceChat": "Chat",

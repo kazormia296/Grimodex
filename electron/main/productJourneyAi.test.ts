@@ -64,19 +64,25 @@ describe("product journey AI backend", () => {
         });
       });
       const stream = wrapped!.sendChatMessageStream(
-        { messages: [{ role: "user", content: "authority" }] },
+        {
+          messages: [{ role: "user", content: "authority" }],
+          streamId: "execution-1",
+          auditContext: { executionId: "execution-1" },
+        },
         {},
         "",
       );
       await vi.advanceTimersByTimeAsync(0);
-      wrapped!.abortChatStream();
+      const abort = wrapped!.abortChatStream("execution-1");
       await vi.runAllTimersAsync();
+      await expect(abort).resolves.toBe(true);
       await stream;
 
       expect(received).toEqual([
         {
           channel: "chat:stream-chunk",
           payload: {
+            streamId: "execution-1",
             delta: PRODUCT_JOURNEY_AUTHORITY_EARLY,
             block_type: "text",
           },
@@ -84,6 +90,7 @@ describe("product journey AI backend", () => {
         {
           channel: "chat:stream-chunk",
           payload: {
+            streamId: "execution-1",
             delta: PRODUCT_JOURNEY_AUTHORITY_LATE,
             block_type: "text",
           },
@@ -91,6 +98,7 @@ describe("product journey AI backend", () => {
         {
           channel: "chat:stream-done",
           payload: {
+            streamId: "execution-1",
             stop_reason: "stopped",
             input_tokens: 1,
             output_tokens: 4,
@@ -106,5 +114,40 @@ describe("product journey AI backend", () => {
     const { backend } = backendStub();
     expect(wrapBackendForProductJourneyAi(backend, false)).toBe(backend);
     expect(wrapBackendForProductJourneyAi(null, true)).toBeNull();
+  });
+
+  it("consumes an abort-before-register tombstone without emitting chunks", async () => {
+    const { backend } = backendStub();
+    const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+    const received: Array<{ channel: string; payload: unknown }> = [];
+    wrapped.onEvent((channel, payload) => {
+      received.push({
+        channel: String(channel),
+        payload: JSON.parse(String(payload)),
+      });
+    });
+
+    await expect(wrapped.abortChatStream("future-stream")).resolves.toBe(false);
+    await wrapped.sendChatMessageStream(
+      {
+        messages: [{ role: "user", content: "never dispatched" }],
+        streamId: "future-stream",
+        auditContext: { executionId: "future-stream" },
+      },
+      {},
+      "",
+    );
+
+    expect(received).toEqual([
+      {
+        channel: "chat:stream-done",
+        payload: {
+          streamId: "future-stream",
+          stop_reason: "stopped",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    ]);
   });
 });

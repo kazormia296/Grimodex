@@ -1,4 +1,5 @@
 export type QuiescenceProviderStage =
+  | "ai-executions"
   | "autosave"
   | "external-write-back"
   | "scoped-mutations"

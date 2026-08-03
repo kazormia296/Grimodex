@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
 
 import { invoke } from "@/lib/tauri";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 const mockInvoke = vi.mocked(invoke);
 
 import {
@@ -32,9 +33,22 @@ import {
   type SemanticSearchHit,
 } from "./api";
 
+const INDEX_AUTHORITY = {
+  expectedWorkspacePath: "/workspace/project-1",
+  projectId: "p1",
+};
+
 describe("semantic-search/api", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setCurrentWorkspaceIdentity({
+      path: INDEX_AUTHORITY.expectedWorkspacePath,
+      openRevision: 1,
+    });
+  });
+
+  afterEach(() => {
+    setCurrentWorkspaceIdentity(null);
   });
 
   describe("semanticCancelBackground", () => {
@@ -48,9 +62,10 @@ describe("semantic-search/api", () => {
   describe("semanticIndexScene", () => {
     it("invokes semantic_index_scene with sceneId payload", async () => {
       mockInvoke.mockResolvedValueOnce(7);
-      const n = await semanticIndexScene("scene-abc");
+      const n = await semanticIndexScene("scene-abc", INDEX_AUTHORITY);
       expect(mockInvoke).toHaveBeenCalledWith("semantic_index_scene", {
         sceneId: "scene-abc",
+        ...INDEX_AUTHORITY,
       });
       expect(n).toBe(7);
     });
@@ -65,6 +80,7 @@ describe("semantic-search/api", () => {
         limit: 5,
       });
       expect(mockInvoke).toHaveBeenCalledWith("semantic_search", {
+        expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
         projectId: "p1",
         query: "嵐の描写",
         limit: 5,
@@ -83,6 +99,7 @@ describe("semantic-search/api", () => {
         descriptionMode: true,
       });
       expect(mockInvoke).toHaveBeenCalledWith("semantic_search", {
+        expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
         projectId: "p1",
         query: "q",
         limit: 3,
@@ -111,6 +128,45 @@ describe("semantic-search/api", () => {
       });
       expect(result).toEqual(hits);
     });
+
+    it("fails closed before dispatch when no renderer workspace is active", async () => {
+      setCurrentWorkspaceIdentity(null);
+
+      await expect(
+        semanticSearch({ projectId: "p1", query: "storm", limit: 5 }),
+      ).rejects.toThrow("SEMANTIC_WORKSPACE_UNAVAILABLE");
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
+    it("pins the dispatch path and rejects a result after a workspace switch", async () => {
+      let resolveSearch!: (value: SemanticSearchHit[]) => void;
+      mockInvoke.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSearch = resolve;
+        }),
+      );
+
+      const search = semanticSearch({
+        projectId: "p1",
+        query: "storm",
+        limit: 5,
+      });
+      setCurrentWorkspaceIdentity({
+        path: "/workspace/project-2",
+        openRevision: 2,
+      });
+      resolveSearch([]);
+
+      await expect(search).rejects.toThrow("SEMANTIC_WORKSPACE_CHANGED");
+      expect(mockInvoke).toHaveBeenCalledWith("semantic_search", {
+        expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
+        projectId: "p1",
+        query: "storm",
+        limit: 5,
+        sceneScope: null,
+        descriptionMode: false,
+      });
+    });
   });
 
   describe("semanticReindexAll", () => {
@@ -118,6 +174,7 @@ describe("semantic-search/api", () => {
       mockInvoke.mockResolvedValueOnce(42);
       const n = await semanticReindexAll("p1");
       expect(mockInvoke).toHaveBeenCalledWith("semantic_reindex_all", {
+        expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
         projectId: "p1",
       });
       expect(n).toBe(42);
@@ -127,6 +184,7 @@ describe("semantic-search/api", () => {
       mockInvoke.mockResolvedValueOnce(9);
       await expect(semanticReindexAll("p1", "run-123")).resolves.toBe(9);
       expect(mockInvoke).toHaveBeenCalledWith("semantic_reindex_all", {
+        expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
         projectId: "p1",
         runId: "run-123",
       });
@@ -164,12 +222,17 @@ describe("semantic-search/api", () => {
         name: "codex_semantic_search",
         call: () =>
           codexSemanticSearch({ projectId: "p1", query: "hero", limit: 5 }),
-        args: { projectId: "p1", query: "hero", limit: 5 },
+        args: {
+          expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
+          projectId: "p1",
+          query: "hero",
+          limit: 5,
+        },
       },
       {
         name: "codex_index_entry",
-        call: () => codexIndexEntry("entry-1"),
-        args: { entryId: "entry-1" },
+        call: () => codexIndexEntry("entry-1", INDEX_AUTHORITY),
+        args: { entryId: "entry-1", ...INDEX_AUTHORITY },
       },
       {
         name: "codex_index_status",
@@ -179,18 +242,26 @@ describe("semantic-search/api", () => {
       {
         name: "codex_reindex_all",
         call: () => codexReindexAll("p1"),
-        args: { projectId: "p1" },
+        args: {
+          expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
+          projectId: "p1",
+        },
       },
       {
         name: "events_semantic_search",
         call: () =>
           eventsSemanticSearch({ projectId: "p1", query: "storm", limit: 6 }),
-        args: { projectId: "p1", query: "storm", limit: 6 },
+        args: {
+          expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
+          projectId: "p1",
+          query: "storm",
+          limit: 6,
+        },
       },
       {
         name: "events_index_entry",
-        call: () => eventsIndexEntry("event-1"),
-        args: { eventId: "event-1" },
+        call: () => eventsIndexEntry("event-1", INDEX_AUTHORITY),
+        args: { eventId: "event-1", ...INDEX_AUTHORITY },
       },
       {
         name: "events_index_status",
@@ -200,18 +271,26 @@ describe("semantic-search/api", () => {
       {
         name: "events_reindex_all",
         call: () => eventsReindexAll("p1"),
-        args: { projectId: "p1" },
+        args: {
+          expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
+          projectId: "p1",
+        },
       },
       {
         name: "chat_message_search",
         call: () =>
           chatMessageSearch({ projectId: "p1", query: "memory", limit: 7 }),
-        args: { projectId: "p1", query: "memory", limit: 7 },
+        args: {
+          expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
+          projectId: "p1",
+          query: "memory",
+          limit: 7,
+        },
       },
       {
         name: "chat_index_message",
-        call: () => chatIndexMessage("message-1"),
-        args: { messageId: "message-1" },
+        call: () => chatIndexMessage("message-1", INDEX_AUTHORITY),
+        args: { messageId: "message-1", ...INDEX_AUTHORITY },
       },
       {
         name: "chat_index_status",
@@ -221,7 +300,10 @@ describe("semantic-search/api", () => {
       {
         name: "chat_reindex_all",
         call: () => chatReindexAll("p1"),
-        args: { projectId: "p1" },
+        args: {
+          expectedWorkspacePath: INDEX_AUTHORITY.expectedWorkspacePath,
+          projectId: "p1",
+        },
       },
       {
         name: "semantic_chunk_context",

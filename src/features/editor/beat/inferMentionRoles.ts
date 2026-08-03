@@ -6,6 +6,7 @@ import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export interface RoleInferenceInput {
   beatInstructions: string;
@@ -66,6 +67,10 @@ export async function inferMentionRoles(
     const ov = resolveRoleSendOverride("beat_role");
     const result = await sendChatMessageWithThinking(
       [{ role: "user", content: prompt }],
+      {
+        projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+        pathId: "beat_role",
+      },
       undefined, // thinkingParams
       undefined, // systemCacheSegments
       ov.apiVariant, // apiVariant（横断割り当て時のみ）

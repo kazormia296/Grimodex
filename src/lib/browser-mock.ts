@@ -19,6 +19,8 @@ import {
   testConnection,
   sendChatWithTools,
   type BrowserAiOperation,
+  type BrowserAiAuditContext,
+  type BrowserAiEffectiveRequestReceipt,
   type BrowserAiRequest,
   type BrowserAiStreamSink,
   type BrowserAiTransport,
@@ -51,10 +53,11 @@ import {
 } from "@/features/revision/projectSnapshotScopes";
 import sampleProjectJa from "../../src-tauri/resources/sample_project/v1.json";
 import sampleProjectEn from "../../src-tauri/resources/sample_project/v1_en.json";
+import type { AiAuditJournalBatch } from "./browser-db/indexedDbStore";
 
 type BrowserSchemaTable = {
   kind: string;
-  columns: Record<string, unknown>;
+  columns: Record<string, { ordinal: number }>;
   createSql: string;
 };
 
@@ -113,8 +116,6 @@ type BrowserPlotBranchTransition = {
 // src/db/schema.contract.test.ts. BrowserMock uses every other canonical
 // CREATE statement so browser editing exercises the same renderer schema.
 const RUST_ONLY_BROWSER_TABLES = new Set([
-  "chat_message_chunks",
-  "event_chunks",
   "fts_meta",
   "codex_fts",
   "codex_fts_en",
@@ -126,7 +127,6 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "tree_nodes_fts_en",
   "post_effect_annotations_fts",
   "post_effect_annotations_fts_en",
-  "undo_journal",
 ]);
 
 function executableCreateSql(createSql: string, columnNames: string[]): string {
@@ -177,6 +177,33 @@ function buildBrowserSchemaDdl(contract: BrowserSchemaContract): string {
   )};`;
 }
 
+function buildBrowserTableDdlStatements(
+  contract: BrowserSchemaContract,
+  tableName: string,
+): string[] {
+  const table = contract.tables[tableName];
+  if (!table || table.kind !== "table") {
+    throw new Error(`canonical browser schema is missing ${tableName}`);
+  }
+  return [
+    executableCreateSql(table.createSql, Object.keys(table.columns)),
+    ...Object.values(contract.indexes)
+      .filter((index) => index.table === tableName)
+      .map((index) => index.createSql),
+    ...Object.values(contract.triggers).filter((createSql) =>
+      new RegExp(`\\b${tableName}\\b`, "u").test(createSql),
+    ),
+  ];
+}
+
+function buildBrowserTableDdl(
+  contract: BrowserSchemaContract,
+  tableName: string,
+): string {
+  const statements = buildBrowserTableDdlStatements(contract, tableName);
+  return `${statements.join(";\n")};`;
+}
+
 type BrowserDbStatementResult = {
   rows: Record<string, unknown>[];
   mutated: boolean;
@@ -211,9 +238,43 @@ function methodAssumesMutation(method: unknown): boolean {
   return method === "run";
 }
 
+function assertRendererDoesNotMutateAiAudit(sql: string): void {
+  const withoutComments = sql
+    .replace(/\/\*[\s\S]*?\*\//gu, "")
+    .replace(/--[^\r\n]*/gu, "");
+  const referencesAudit =
+    /(?:\bmain\s*\.\s*)?[`"'[]?ai_audit_events[`"'\]]?/iu.test(withoutComments);
+  const withoutTrailingSemicolon = withoutComments.trim().replace(/;\s*$/u, "");
+  const isSingleReadOnlySelect =
+    /^select\b/iu.test(withoutTrailingSemicolon) &&
+    !withoutTrailingSemicolon.includes(";");
+  if (referencesAudit && !isSingleReadOnlySelect) {
+    throw new Error(
+      "RENDERER_SQL_SECURITY: denied mutation of ai_audit_events; use typed audit commands",
+    );
+  }
+}
+
 const SCHEMA_DDL = buildBrowserSchemaDdl(
   schemaContract as unknown as BrowserSchemaContract,
 );
+const BROWSER_SCHEMA_CONTRACT =
+  schemaContract as unknown as BrowserSchemaContract;
+const AI_AUDIT_LEDGER_DDL_STATEMENTS = buildBrowserTableDdlStatements(
+  BROWSER_SCHEMA_CONTRACT,
+  "ai_audit_events",
+);
+const AI_AUDIT_LEDGER_CREATE_SQL = AI_AUDIT_LEDGER_DDL_STATEMENTS[0];
+const AI_AUDIT_LEDGER_POST_CREATE_SQL = AI_AUDIT_LEDGER_DDL_STATEMENTS.slice(1);
+const AI_AUDIT_LEDGER_DDL = buildBrowserTableDdl(
+  BROWSER_SCHEMA_CONTRACT,
+  "ai_audit_events",
+);
+const AI_AUDIT_LEDGER_COLUMNS = Object.entries(
+  BROWSER_SCHEMA_CONTRACT.tables.ai_audit_events.columns,
+)
+  .sort(([, left], [, right]) => left.ordinal - right.ordinal)
+  .map(([name]) => name);
 const IDEMPOTENCY_LEDGER_MIGRATION_DDL = `
   CREATE TABLE IF NOT EXISTS idempotency_requests (
     domain TEXT NOT NULL,
@@ -227,6 +288,10 @@ const IDEMPOTENCY_LEDGER_MIGRATION_DDL = `
   CREATE INDEX IF NOT EXISTS idx_idempotency_requests_project_created
     ON idempotency_requests(project_id, created_at);
 `;
+const AI_AUDIT_GENESIS_HASH = "0".repeat(64);
+const AI_AUDIT_SCHEMA_VERSION = 1;
+const AI_AUDIT_CAPTURE_CONTRACT_VERSION = 1;
+const AI_AUDIT_RECORDER = "grimodex-ai-audit";
 const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
 const ROLE_PROVIDERS_SETTING_KEY = "aiModel.roleProviders";
 const ROLE_MODEL_SETTING_PREFIX = "aiModel.role.";
@@ -602,6 +667,14 @@ function seedBrowserTutorialProject(
 export interface BrowserMockOptions {
   databaseBytes?: Uint8Array;
   onDatabaseDirty?: () => void;
+  /**
+   * Production Web runtime durability barrier for AI audit events. The audit
+   * append command awaits this after every idempotent attempt, including a
+   * resend that inserts zero rows after a lost/rejected persistence ACK.
+   */
+  onAiAuditDurabilityRequired?: (batch: AiAuditJournalBatch) => Promise<void>;
+  /** Stable identity of the SQLite image owned by this BrowserMock instance. */
+  workspaceIdentity?: string;
   authorizeAiRequest?: (
     request: BrowserAiAuthorizationRequest,
   ) => Promise<void>;
@@ -642,6 +715,473 @@ interface TimelapseAppendEvent {
   timestamp: number;
 }
 
+interface BrowserAiAuditEventInput {
+  eventId: string;
+  executionId: string;
+  operationId: string;
+  parentExecutionId: string | null;
+  pathId: string;
+  eventType: string;
+  timestamp: number;
+  payload: Record<string, unknown>;
+}
+
+interface BrowserAiAuditExecutionState {
+  operationId: string;
+  parentExecutionId: string | null;
+  pathId: string;
+  started: boolean;
+  preparedBeforeDispatch: boolean;
+  dispatched: boolean;
+  responseCompleted: boolean;
+  terminalEventType: string | null;
+}
+
+const AI_AUDIT_EVENT_TYPES = new Set([
+  "execution.started",
+  "request.prepared",
+  "request.dispatched",
+  "transport.attempt.started",
+  "transport.attempt.finished",
+  "response.partial",
+  "response.completed",
+  "execution.succeeded",
+  "execution.failed",
+  "execution.cancelled",
+  "execution.skipped",
+  "execution.cache_hit",
+  "execution.retrying",
+  "execution.fallback",
+]);
+const AI_AUDIT_CAPTURE_STATES = new Set([
+  "complete",
+  "partial",
+  "redacted",
+  "truncated",
+  "legacy_missing",
+  "unobservable_provider",
+]);
+
+function observeBrowserAiAuditLifecycleEvent(
+  state: BrowserAiAuditExecutionState,
+  eventType: string,
+): void {
+  switch (eventType) {
+    case "execution.started":
+      state.started = true;
+      break;
+    case "request.prepared":
+      if (!state.dispatched) state.preparedBeforeDispatch = true;
+      break;
+    case "request.dispatched":
+      state.dispatched = true;
+      break;
+    case "response.completed":
+      state.responseCompleted = true;
+      break;
+    case "execution.succeeded":
+    case "execution.failed":
+    case "execution.cancelled":
+    case "execution.skipped":
+    case "execution.cache_hit":
+      state.terminalEventType ??= eventType;
+      break;
+    default:
+      break;
+  }
+}
+
+function validateBrowserAiAuditLifecycleTransition(
+  existing: BrowserAiAuditExecutionState | null,
+  event: BrowserAiAuditEventInput,
+): void {
+  if (!existing) {
+    if (event.eventType !== "execution.started") {
+      throw new Error(
+        `AI audit execution must begin with execution.started: ${event.executionId}`,
+      );
+    }
+    return;
+  }
+  if (!existing.started) {
+    throw new Error(
+      `AI audit execution has no leading execution.started event: ${event.executionId}`,
+    );
+  }
+
+  switch (event.eventType) {
+    case "execution.started":
+      throw new Error(
+        `AI audit execution already has execution.started: ${event.executionId}`,
+      );
+    case "request.prepared":
+      if (
+        existing.dispatched &&
+        event.payload.effectiveRequestReceipt !== true
+      ) {
+        throw new Error(
+          "post-dispatch request.prepared requires payload.effectiveRequestReceipt=true",
+        );
+      }
+      return;
+    case "request.dispatched":
+      if (!existing.preparedBeforeDispatch) {
+        throw new Error(
+          "request.dispatched requires a durable pre-dispatch request.prepared",
+        );
+      }
+      if (existing.dispatched) {
+        throw new Error(
+          `AI audit execution already has request.dispatched: ${event.executionId}`,
+        );
+      }
+      return;
+    case "transport.attempt.started":
+    case "transport.attempt.finished":
+    case "response.partial":
+    case "response.completed":
+    case "execution.retrying":
+    case "execution.fallback":
+      if (!existing.dispatched) {
+        throw new Error(
+          `${event.eventType} requires a durable request.dispatched event`,
+        );
+      }
+      return;
+    case "execution.succeeded":
+      if (!existing.dispatched) {
+        throw new Error(
+          "execution.succeeded requires a durable request.dispatched event",
+        );
+      }
+      if (!existing.responseCompleted) {
+        throw new Error(
+          "execution.succeeded requires a durable response.completed event",
+        );
+      }
+      return;
+    case "execution.failed":
+    case "execution.cancelled":
+      return;
+    case "execution.skipped":
+    case "execution.cache_hit":
+      if (existing.dispatched) {
+        throw new Error(
+          `${event.eventType} must not follow request.dispatched`,
+        );
+      }
+      return;
+    default:
+      return;
+  }
+}
+function normalizedAiAuditKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/gu, "");
+}
+
+function segmentedAiAuditKey(key: string): string {
+  return key
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "")
+    .toLowerCase();
+}
+
+const AI_AUDIT_STRONG_CREDENTIAL_KEY_MARKERS = [
+  "authorization",
+  "authentication",
+  "headers",
+  "cookie",
+  "environment",
+  "apikey",
+  "accesstoken",
+  "bearer",
+  "accesskeyid",
+  "secretaccesskey",
+  "privatekey",
+  "password",
+  "passwd",
+] as const;
+
+const AI_AUDIT_SAFE_SEMANTIC_TOKEN_KEYS = new Set([
+  "tokenizeridentity",
+  "tokenizeridentitystatus",
+  "tokenization",
+  "tokenizationcapture",
+  "tokenizeraddsspecialtokens",
+  "tokenizermaytruncateat",
+]);
+
+function hasCredentialMarkerAtKeyBoundary(
+  normalized: string,
+  marker: string,
+): boolean {
+  return (
+    normalized === marker ||
+    normalized.startsWith(marker) ||
+    normalized.endsWith(marker)
+  );
+}
+
+function forbiddenAiAuditKey(key: string): boolean {
+  const normalized = normalizedAiAuditKey(key);
+  const segmented = segmentedAiAuditKey(key);
+  const segments = segmented ? segmented.split("_") : [];
+  if (
+    normalized === "auth" ||
+    normalized.endsWith("auth") ||
+    segments.includes("auth")
+  ) {
+    return true;
+  }
+  if (
+    AI_AUDIT_STRONG_CREDENTIAL_KEY_MARKERS.some((marker) =>
+      hasCredentialMarkerAtKeyBoundary(normalized, marker),
+    )
+  ) {
+    return true;
+  }
+  if (
+    normalized === "env" ||
+    normalized.startsWith("environment") ||
+    normalized.startsWith("processenv") ||
+    normalized.endsWith("env")
+  ) {
+    return true;
+  }
+  if (
+    normalized === "secret" ||
+    normalized.startsWith("secret") ||
+    normalized.endsWith("secret")
+  ) {
+    return true;
+  }
+  if (
+    normalized === "token" ||
+    normalized.endsWith("token") ||
+    (normalized.startsWith("token") &&
+      !AI_AUDIT_SAFE_SEMANTIC_TOKEN_KEYS.has(normalized) &&
+      !/^(?:tokens|(?:token|tokens)(?:usage|count|counts|budget|limit|limits|estimate|estimated|total|totals|used|remaining|input|output|cached|reasoning|billable))$/u.test(
+        normalized,
+      ))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+type BrowserAiAuditJsonPathSegment = string | number;
+
+function isBrowserAiAuditVisiblePath(
+  eventType: string,
+  path: readonly BrowserAiAuditJsonPathSegment[],
+): boolean {
+  if (
+    eventType === "request.prepared" &&
+    path.length === 1 &&
+    path[0] === "input"
+  ) {
+    // Native semantic inference records the exact model input directly at
+    // payload.input rather than under the renderer request envelope.
+    return true;
+  }
+  if (eventType === "request.prepared" && path[0] === "request") {
+    if (
+      path.length === 2 &&
+      ["body", "input", "tools", "modelVisibleContext"].includes(
+        String(path[1]),
+      )
+    ) {
+      return true;
+    }
+    return (
+      path.length === 3 && path[1] === "messages" && typeof path[2] === "number"
+    );
+  }
+  return (
+    path.length === 1 &&
+    path[0] === "response" &&
+    (eventType === "response.partial" ||
+      eventType === "response.completed" ||
+      eventType === "execution.cache_hit")
+  );
+}
+
+function isBrowserAiAuditVisibilityResetPath(
+  eventType: string,
+  path: readonly BrowserAiAuditJsonPathSegment[],
+): boolean {
+  // Codex runtime warnings use this known diagnostic wrapper. Its producer
+  // sanitizes free-form diagnostic strings and the persistence boundary keeps
+  // credential-shaped fields fail-closed as defense in depth. Other observed
+  // response/tool payloads remain exact even when they contain same-named keys.
+  return (
+    eventType === "response.partial" &&
+    path.length === 2 &&
+    path[0] === "response" &&
+    path[1] === "runtimeDiagnostic"
+  );
+}
+
+function validateBrowserAiAuditJson(
+  value: unknown,
+  path: string,
+  eventType: string,
+  jsonPath: readonly BrowserAiAuditJsonPathSegment[] = [],
+  seen = new WeakSet<object>(),
+  aiVisible = false,
+): void {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return;
+  }
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return;
+    throw new Error(`${path} must contain only finite JSON numbers`);
+  }
+  if (typeof value !== "object") {
+    throw new Error(`${path} must be JSON-compatible`);
+  }
+  if (seen.has(value)) throw new Error(`${path} must not be cyclic`);
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      const childPath = [...jsonPath, index];
+      validateBrowserAiAuditJson(
+        item,
+        `${path}[${index}]`,
+        eventType,
+        childPath,
+        seen,
+        aiVisible || isBrowserAiAuditVisiblePath(eventType, childPath),
+      );
+    });
+  } else {
+    for (const [key, child] of Object.entries(value)) {
+      if (!aiVisible && forbiddenAiAuditKey(key)) {
+        throw new Error(
+          `${path}.${key} contains excluded transport credentials`,
+        );
+      }
+      const childPath = [...jsonPath, key];
+      const childAiVisible = isBrowserAiAuditVisibilityResetPath(
+        eventType,
+        childPath,
+      )
+        ? false
+        : aiVisible || isBrowserAiAuditVisiblePath(eventType, childPath);
+      validateBrowserAiAuditJson(
+        child,
+        `${path}.${key}`,
+        eventType,
+        childPath,
+        seen,
+        childAiVisible,
+      );
+    }
+  }
+  seen.delete(value);
+}
+
+function validateBrowserAiAuditEvent(
+  event: BrowserAiAuditEventInput,
+  index: number,
+): void {
+  for (const [key, value] of [
+    ["eventId", event.eventId],
+    ["executionId", event.executionId],
+    ["operationId", event.operationId],
+    ["pathId", event.pathId],
+    ["eventType", event.eventType],
+  ] as const) {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`events[${index}].${key} is required`);
+    }
+  }
+  if (!AI_AUDIT_EVENT_TYPES.has(event.eventType)) {
+    throw new Error(`events[${index}].eventType is unsupported`);
+  }
+  if (!Number.isSafeInteger(event.timestamp) || event.timestamp < 0) {
+    throw new Error(`events[${index}].timestamp is invalid`);
+  }
+  if (
+    event.parentExecutionId !== null &&
+    (typeof event.parentExecutionId !== "string" ||
+      event.parentExecutionId.length === 0)
+  ) {
+    throw new Error(`events[${index}].parentExecutionId is invalid`);
+  }
+  if (
+    !event.payload ||
+    typeof event.payload !== "object" ||
+    Array.isArray(event.payload) ||
+    !AI_AUDIT_CAPTURE_STATES.has(String(event.payload.captureState))
+  ) {
+    throw new Error(`events[${index}].payload.captureState is invalid`);
+  }
+  if (
+    event.eventType === "request.prepared" &&
+    event.payload.credentialsExcluded !== true
+  ) {
+    throw new Error(
+      `events[${index}].payload.credentialsExcluded must be true`,
+    );
+  }
+  const redactions = event.payload.redactions;
+  if (redactions !== undefined) {
+    if (!Array.isArray(redactions)) {
+      throw new Error(`events[${index}].payload.redactions must be an array`);
+    }
+    const allowedKeys = new Set([
+      "path",
+      "category",
+      "ruleId",
+      "originalSha256",
+      "originalByteLength",
+      "placeholder",
+      "reversible",
+    ]);
+    redactions.forEach((candidate, redactionIndex) => {
+      const path = `events[${index}].payload.redactions[${redactionIndex}]`;
+      if (
+        !candidate ||
+        typeof candidate !== "object" ||
+        Array.isArray(candidate)
+      ) {
+        throw new Error(`${path} must be an object`);
+      }
+      const record = candidate as Record<string, unknown>;
+      if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
+        throw new Error(`${path} contains an unexpected redaction key`);
+      }
+      if (
+        typeof record.path !== "string" ||
+        !record.path.trim() ||
+        record.category !== "credential" ||
+        typeof record.ruleId !== "string" ||
+        !record.ruleId.trim() ||
+        typeof record.originalSha256 !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(record.originalSha256) ||
+        !Number.isSafeInteger(record.originalByteLength) ||
+        Number(record.originalByteLength) < 0 ||
+        record.placeholder !== "[REDACTED:credential]" ||
+        record.reversible !== false
+      ) {
+        throw new Error(`${path} is not a valid credential redaction record`);
+      }
+    });
+  }
+  validateBrowserAiAuditJson(
+    event.payload,
+    `events[${index}].payload`,
+    event.eventType,
+  );
+}
+
 function canonicalizeJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeJson);
   if (value !== null && typeof value === "object") {
@@ -652,6 +1192,266 @@ function canonicalizeJson(value: unknown): unknown {
     );
   }
   return value;
+}
+
+function compareUtf8(left: string, right: string): number {
+  const encoder = new TextEncoder();
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = leftBytes[index] - rightBytes[index];
+    if (difference !== 0) return difference;
+  }
+  return leftBytes.length - rightBytes.length;
+}
+
+function canonicalizeAiAuditJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeAiAuditJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => compareUtf8(left, right))
+        .map(([key, child]) => [key, canonicalizeAiAuditJson(child)]),
+    );
+  }
+  return value;
+}
+
+async function sha256AuditHex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function enrichBrowserAiAuditPayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...payload,
+    auditSchemaVersion: AI_AUDIT_SCHEMA_VERSION,
+    captureContractVersion: AI_AUDIT_CAPTURE_CONTRACT_VERSION,
+    recorder: AI_AUDIT_RECORDER,
+    appVersion:
+      typeof payload.appVersion === "string" && payload.appVersion.trim()
+        ? payload.appVersion
+        : "unknown",
+  };
+}
+
+function canonicalStoredAiAuditPayload(
+  payload: Record<string, unknown>,
+): string {
+  return JSON.stringify(canonicalizeAiAuditJson(payload));
+}
+
+function validateStoredAiAuditCaptureContract(
+  payload: Record<string, unknown>,
+): string | null {
+  if (payload.auditSchemaVersion !== AI_AUDIT_SCHEMA_VERSION) {
+    return "payload.auditSchemaVersion is unsupported";
+  }
+  if (payload.captureContractVersion !== AI_AUDIT_CAPTURE_CONTRACT_VERSION) {
+    return "payload.captureContractVersion is unsupported";
+  }
+  if (payload.recorder !== AI_AUDIT_RECORDER) {
+    return "payload.recorder is unsupported";
+  }
+  if (typeof payload.appVersion !== "string" || !payload.appVersion.trim()) {
+    return "payload.appVersion is required";
+  }
+  return null;
+}
+
+function canonicalAiAuditPayloadForAppend(
+  payload: Record<string, unknown>,
+): string {
+  return canonicalStoredAiAuditPayload(enrichBrowserAiAuditPayload(payload));
+}
+
+async function browserAiAuditJournalBatch(
+  expectedWorkspacePath: string,
+  projectId: string | null,
+  events: BrowserAiAuditEventInput[],
+): Promise<AiAuditJournalBatch> {
+  // Persist only the validated command contract. Unknown top-level event
+  // fields (including accidental transport metadata) are never journaled.
+  const appendArgsJson = JSON.stringify(
+    canonicalizeAiAuditJson({
+      expectedWorkspacePath,
+      projectId,
+      events: events.map((event) => ({
+        eventId: event.eventId,
+        executionId: event.executionId,
+        operationId: event.operationId,
+        parentExecutionId: event.parentExecutionId,
+        pathId: event.pathId,
+        eventType: event.eventType,
+        timestamp: event.timestamp,
+        payload: event.payload,
+      })),
+    }),
+  );
+  return {
+    batchId: await sha256AuditHex(appendArgsJson),
+    appendArgsJson,
+  };
+}
+
+interface BrowserAiAuditHashInput {
+  scopeId: string;
+  projectId: string | null;
+  sequence: number;
+  eventId: string;
+  executionId: string;
+  operationId: string;
+  parentExecutionId: string | null;
+  pathId: string;
+  eventType: string;
+  timestamp: number;
+  recordedAt: number;
+  payloadSha256: string;
+  prevHash: string;
+}
+
+async function browserAiAuditHash(
+  input: BrowserAiAuditHashInput,
+): Promise<string> {
+  // Preserve the Rust HashInput field order exactly; JSON object insertion
+  // order is part of this private cross-runtime hash contract.
+  return sha256AuditHex(
+    JSON.stringify({
+      scopeId: input.scopeId,
+      projectId: input.projectId,
+      sequence: input.sequence,
+      eventId: input.eventId,
+      executionId: input.executionId,
+      operationId: input.operationId,
+      parentExecutionId: input.parentExecutionId,
+      pathId: input.pathId,
+      eventType: input.eventType,
+      timestamp: input.timestamp,
+      recordedAt: input.recordedAt,
+      payloadSha256: input.payloadSha256,
+      prevHash: input.prevHash,
+    }),
+  );
+}
+
+function browserTableColumns(db: Database, table: string): string[] {
+  const result = db.exec(`PRAGMA table_info(${table})`)[0];
+  if (!result) return [];
+  const nameIndex = result.columns.indexOf("name");
+  return result.values.map((row) => String(row[nameIndex]));
+}
+
+function browserAiAuditHasProjectForeignKey(db: Database): boolean {
+  const result = db.exec("PRAGMA foreign_key_list(ai_audit_events)")[0];
+  if (!result) return false;
+  const tableIndex = result.columns.indexOf("table");
+  const fromIndex = result.columns.indexOf("from");
+  return result.values.some(
+    (row) =>
+      String(row[tableIndex]) === "projects" &&
+      String(row[fromIndex]) === "project_id",
+  );
+}
+
+function migrateBrowserAiAuditLedger(db: Database): boolean {
+  const columns = browserTableColumns(db, "ai_audit_events");
+  if (columns.length === 0) {
+    db.run(AI_AUDIT_LEDGER_DDL);
+    return true;
+  }
+  if (
+    columns.length !== AI_AUDIT_LEDGER_COLUMNS.length ||
+    columns.some((column, index) => column !== AI_AUDIT_LEDGER_COLUMNS[index])
+  ) {
+    throw new Error(
+      "Unsupported prerelease ai_audit_events schema; export with the originating build before upgrading",
+    );
+  }
+  if (!browserAiAuditHasProjectForeignKey(db)) {
+    return false;
+  }
+
+  const migratedTable = "grimodex_ai_audit_events_without_project_fk";
+  const migratedCreateSql = AI_AUDIT_LEDGER_CREATE_SQL.replace(
+    /^(CREATE TABLE(?: IF NOT EXISTS)?\s+)ai_audit_events\b/u,
+    `$1${migratedTable}`,
+  );
+  if (migratedCreateSql === AI_AUDIT_LEDGER_CREATE_SQL) {
+    throw new Error("canonical ai_audit_events CREATE statement is invalid");
+  }
+  const columnList = AI_AUDIT_LEDGER_COLUMNS.join(", ");
+  const foreignKeysEnabled =
+    Number(db.exec("PRAGMA foreign_keys")[0]?.values[0]?.[0] ?? 0) !== 0;
+  if (foreignKeysEnabled) db.run("PRAGMA foreign_keys = OFF;");
+  let migrationFailure: { cause: unknown } | null = null;
+  try {
+    db.run(`BEGIN IMMEDIATE;
+      CREATE TEMP TABLE grimodex_ai_audit_sequence_high_water (
+        sequence INTEGER NOT NULL
+      );
+      INSERT INTO grimodex_ai_audit_sequence_high_water (sequence)
+        SELECT MAX(
+          COALESCE((
+            SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'
+          ), 0),
+          COALESCE((SELECT MAX(id) FROM ai_audit_events), 0)
+        );
+      ${migratedCreateSql};
+      INSERT INTO ${migratedTable} (${columnList})
+        SELECT ${columnList} FROM ai_audit_events;
+      DROP TABLE ai_audit_events;
+      ALTER TABLE ${migratedTable} RENAME TO ai_audit_events;
+      ${AI_AUDIT_LEDGER_POST_CREATE_SQL.join(";\n")};
+      UPDATE sqlite_sequence
+         SET seq = (SELECT sequence FROM grimodex_ai_audit_sequence_high_water)
+       WHERE name = 'ai_audit_events';
+      INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'ai_audit_events', sequence
+          FROM grimodex_ai_audit_sequence_high_water
+         WHERE sequence > 0
+           AND NOT EXISTS (
+             SELECT 1 FROM sqlite_sequence WHERE name = 'ai_audit_events'
+           );
+      DELETE FROM sqlite_sequence
+       WHERE name = '${migratedTable}';
+      DROP TABLE grimodex_ai_audit_sequence_high_water;
+      COMMIT;`);
+  } catch (error) {
+    try {
+      db.run("ROLLBACK;");
+    } catch {
+      // Preserve the migration failure.
+    }
+    migrationFailure = { cause: error };
+  }
+  let restoreFailure: { cause: unknown } | null = null;
+  if (foreignKeysEnabled) {
+    try {
+      db.run("PRAGMA foreign_keys = ON;");
+    } catch (error) {
+      restoreFailure = { cause: error };
+    }
+  }
+  if (migrationFailure) throw migrationFailure.cause;
+  if (restoreFailure) throw restoreFailure.cause;
+  if (browserAiAuditHasProjectForeignKey(db)) {
+    throw new Error("ai_audit_events project foreign key migration failed");
+  }
+  const integrity = db.exec("PRAGMA integrity_check")[0]?.values[0]?.[0];
+  if (integrity !== "ok") {
+    throw new Error(
+      `ai_audit_events project identity migration failed integrity_check: ${String(integrity)}`,
+    );
+  }
+  return true;
 }
 
 async function browserPayloadFingerprint(
@@ -696,6 +1496,9 @@ export async function createBrowserMock(
     db.run(IDEMPOTENCY_LEDGER_MIGRATION_DDL);
     options.onDatabaseDirty?.();
   }
+  if (migrateBrowserAiAuditLedger(db)) {
+    options.onDatabaseDirty?.();
+  }
   db.run(`CREATE TEMP TABLE grimodex_connection_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     epoch TEXT NOT NULL
@@ -736,7 +1539,134 @@ export async function createBrowserMock(
   } catch {
     // Storage can be unavailable in privacy-restricted browser contexts.
   }
-  const aiTransport = options.aiTransport ?? createBrowserAiTransport();
+  async function observeBrowserAiEffectiveRequest(
+    receipt: BrowserAiEffectiveRequestReceipt,
+  ): Promise<void> {
+    const context = receipt.auditContext;
+    if (!context) {
+      throw new Error(
+        "Browser AI effective request requires an auditContext correlation",
+      );
+    }
+    const body = JSON.parse(receipt.bodyJson) as unknown;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error(
+        "Browser AI effective request body must be a JSON object",
+      );
+    }
+    await handleAiAuditAppendBatch({
+      expectedWorkspacePath: context.expectedWorkspacePath,
+      projectId: context.projectId,
+      events: [
+        {
+          eventId: crypto.randomUUID(),
+          executionId: context.executionId,
+          operationId: context.operationId,
+          parentExecutionId: context.parentExecutionId,
+          pathId: context.pathId,
+          eventType: "request.prepared",
+          timestamp: Date.now(),
+          payload: {
+            captureState: "complete",
+            credentialsExcluded: true,
+            effectiveRequestReceipt: true,
+            request: {
+              provider: receipt.provider,
+              model: receipt.model,
+              body: body as Record<string, unknown>,
+              auditMetadata: {
+                source: "browser-final-request-builder",
+                dispatchKind: receipt.kind,
+                providerWireBodyAssemblyBoundary: "browser-ai",
+                providerWireBodyReceiptObserved: true,
+                credentialsExcluded: true,
+                bodyObservation: {
+                  representation: "parsed-json-value",
+                  sourceBodyJsonEqualsFetchBody: true,
+                  serializedBytesPreserved: false,
+                  serializationWhitespacePreserved: false,
+                  serializationKeyOrderPreserved: false,
+                },
+                routeObservation: {
+                  captureState: "complete",
+                  provider: receipt.provider,
+                  model: receipt.model,
+                  apiVariant: receipt.apiVariant,
+                  endpointId: receipt.endpointId,
+                  endpointOrigin: receipt.endpointOrigin,
+                  transportEffectiveRouteObserved: true,
+                  resolutionBoundary: "browser_final_body_json_value",
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
+  }
+
+  const aiTransport =
+    options.aiTransport ??
+    createBrowserAiTransport({
+      onEffectiveRequest: observeBrowserAiEffectiveRequest,
+    });
+  const MAX_BROWSER_STREAM_TOMBSTONES = 256;
+  const BROWSER_ABORT_QUIESCENCE_TIMEOUT_MS = 2_250;
+  interface BrowserStreamLifecycle {
+    readonly settled: Promise<void>;
+    readonly resolveSettled: () => void;
+    abortRequested: boolean;
+    transportStarted: boolean;
+    providerTerminalObserved: boolean;
+  }
+  const browserStreamLifecycles = new Map<string, BrowserStreamLifecycle>();
+  const pendingBrowserStreamAbortIds = new Set<string>();
+  const completedBrowserStreamReceipts = new Map<string, boolean>();
+
+  const addBoundedBrowserStreamTombstone = (
+    target: Set<string>,
+    streamId: string,
+  ): void => {
+    target.delete(streamId);
+    target.add(streamId);
+    while (target.size > MAX_BROWSER_STREAM_TOMBSTONES) {
+      const oldest = target.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      target.delete(oldest);
+    }
+  };
+  const addCompletedBrowserStreamReceipt = (
+    streamId: string,
+    transportTerminationObserved: boolean,
+  ): void => {
+    completedBrowserStreamReceipts.delete(streamId);
+    completedBrowserStreamReceipts.set(streamId, transportTerminationObserved);
+    while (
+      completedBrowserStreamReceipts.size > MAX_BROWSER_STREAM_TOMBSTONES
+    ) {
+      const oldest = completedBrowserStreamReceipts.keys().next().value as
+        | string
+        | undefined;
+      if (oldest === undefined) break;
+      completedBrowserStreamReceipts.delete(oldest);
+    }
+  };
+  const waitForBrowserStreamSettled = async (
+    promise: Promise<void>,
+  ): Promise<boolean> => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      promise.then(() => true),
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(
+          () => resolve(false),
+          BROWSER_ABORT_QUIESCENCE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (timeout !== null) clearTimeout(timeout);
+    return settled;
+  };
   const authorizeAiRequest =
     options.authorizeAiRequest ??
     (async (request: BrowserAiAuthorizationRequest): Promise<void> => {
@@ -769,6 +1699,164 @@ export async function createBrowserMock(
 
   function optionalString(value: unknown): string | null {
     return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  function requireBrowserAiAuditContext(
+    args: Record<string, unknown>,
+    command: string,
+  ): BrowserAiAuditContext {
+    const raw = args.auditContext;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+        `Browser AI command ${command} requires an auditContext object`,
+      );
+    }
+    const context = raw as Record<string, unknown>;
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "operationId",
+      "executionId",
+      "parentExecutionId",
+      "pathId",
+    ]);
+    if (
+      Object.keys(context).length !== allowedKeys.size ||
+      Object.keys(context).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(
+        `Browser AI command ${command} requires the exact auditContext fields`,
+      );
+    }
+    for (const key of [
+      "expectedWorkspacePath",
+      "operationId",
+      "executionId",
+      "pathId",
+    ] as const) {
+      const value = context[key];
+      if (
+        typeof value !== "string" ||
+        !value.trim() ||
+        value !== value.trim()
+      ) {
+        throw new Error(
+          `Browser AI command ${command} requires auditContext.${key} to be a trimmed non-empty string`,
+        );
+      }
+    }
+    for (const key of ["projectId", "parentExecutionId"] as const) {
+      if (!Object.prototype.hasOwnProperty.call(context, key)) {
+        throw new Error(
+          `Browser AI command ${command} requires auditContext.${key}`,
+        );
+      }
+      const value = context[key];
+      if (
+        value !== null &&
+        (typeof value !== "string" || !value.trim() || value !== value.trim())
+      ) {
+        throw new Error(
+          `Browser AI command ${command} requires auditContext.${key} to be a trimmed non-empty string or null`,
+        );
+      }
+    }
+    return {
+      expectedWorkspacePath: context.expectedWorkspacePath as string,
+      projectId: context.projectId as string | null,
+      operationId: context.operationId as string,
+      executionId: context.executionId as string,
+      parentExecutionId: context.parentExecutionId as string | null,
+      pathId: context.pathId as string,
+    };
+  }
+
+  function assertBrowserAiAuditDispatchPrecondition(
+    context: BrowserAiAuditContext,
+  ): void {
+    assertBrowserAiAuditWorkspace({
+      expectedWorkspacePath: context.expectedWorkspacePath,
+    });
+    const scopeId = browserAiAuditScopeId(context.projectId);
+    const rows = queryAll(
+      `SELECT operation_id, parent_execution_id, path_id, event_type
+         FROM ai_audit_events
+        WHERE scope_id = ? AND execution_id = ?
+        ORDER BY sequence ASC`,
+      [scopeId, context.executionId],
+    );
+    let started = false;
+    let preparedBeforeDispatch = false;
+    let dispatched = false;
+    let terminal = false;
+    for (const row of rows) {
+      if (
+        row.operation_id !== context.operationId ||
+        row.parent_execution_id !== context.parentExecutionId ||
+        row.path_id !== context.pathId
+      ) {
+        throw new Error(
+          `AI_AUDIT_DISPATCH_PRECONDITION_FAILED: execution identity mismatch for ${context.executionId}`,
+        );
+      }
+      const eventType = String(row.event_type);
+      if (eventType === "execution.started") started = true;
+      if (eventType === "request.prepared" && !dispatched) {
+        preparedBeforeDispatch = true;
+      }
+      if (eventType === "request.dispatched") dispatched = true;
+      if (
+        eventType === "execution.succeeded" ||
+        eventType === "execution.failed" ||
+        eventType === "execution.cancelled" ||
+        eventType === "execution.skipped" ||
+        eventType === "execution.cache_hit"
+      ) {
+        terminal = true;
+      }
+    }
+    if (!started || !preparedBeforeDispatch || !dispatched || terminal) {
+      throw new Error(
+        `AI_AUDIT_DISPATCH_PRECONDITION_FAILED: required durable lifecycle is missing, out of order, or terminal for ${context.executionId}`,
+      );
+    }
+  }
+
+  function requireBrowserAiStreamCorrelation(
+    args: Record<string, unknown>,
+    command: string,
+  ): string {
+    const rawStreamId = args.streamId;
+    if (
+      typeof rawStreamId !== "string" ||
+      !rawStreamId ||
+      rawStreamId !== rawStreamId.trim()
+    ) {
+      throw new Error("Browser AI streamId must be a trimmed non-empty string");
+    }
+    const context = requireBrowserAiAuditContext(args, command);
+    if (context.executionId !== rawStreamId) {
+      throw new Error(
+        "Browser AI streamId must match auditContext.executionId",
+      );
+    }
+    return rawStreamId;
+  }
+
+  function requireBrowserAiAbortStreamId(
+    args: Record<string, unknown>,
+  ): string {
+    const streamId = args.streamId;
+    if (
+      typeof streamId !== "string" ||
+      !streamId ||
+      streamId !== streamId.trim()
+    ) {
+      throw new Error(
+        "Browser AI abort streamId must be a trimmed non-empty string",
+      );
+    }
+    return streamId;
   }
 
   function validateExpectedOllamaEndpoint(
@@ -901,7 +1989,10 @@ export async function createBrowserMock(
   function resolveAiRequest(
     args: Record<string, unknown>,
     operation: BrowserAiOperation,
+    command: string,
   ): BrowserAiRequest {
+    const auditContext = requireBrowserAiAuditContext(args, command);
+    assertBrowserAiAuditDispatchPrecondition(auditContext);
     const settings = handleGetAiSettings();
     const provider = requireBrowserAiProvider(
       args.resolvedProvider ?? args.provider ?? settings.provider,
@@ -969,6 +2060,7 @@ export async function createBrowserMock(
     const requestMaxOutputTokens = Number(args.requestMaxOutputTokens);
     return {
       operation,
+      streamId: optionalString(args.streamId) ?? undefined,
       provider,
       model,
       endpointId,
@@ -983,6 +2075,7 @@ export async function createBrowserMock(
       apiVariant,
       toolProtocolMode:
         (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto",
+      auditContext,
     };
   }
 
@@ -1073,6 +2166,7 @@ export async function createBrowserMock(
         ],
       },
       "chat",
+      "test_ai_connection",
     );
     await authorizeResolvedRequest(request, "connection");
     return testConnection(
@@ -1084,13 +2178,17 @@ export async function createBrowserMock(
         baseUrl: request.baseUrl,
         apiVariant: request.apiVariant,
       },
+      {
+        auditContext: request.auditContext,
+        onEffectiveRequest: observeBrowserAiEffectiveRequest,
+      },
     );
   }
 
   async function handleSendChatMessage(
     args: Record<string, unknown>,
   ): Promise<Awaited<ReturnType<BrowserAiTransport["complete"]>>> {
-    const request = resolveAiRequest(args, "chat");
+    const request = resolveAiRequest(args, "chat", "send_chat_message");
     await authorizeResolvedRequest(request);
     return aiTransport.complete(request);
   }
@@ -1098,7 +2196,7 @@ export async function createBrowserMock(
   async function handleSendAgentMessage(
     args: Record<string, unknown>,
   ): Promise<unknown> {
-    const request = resolveAiRequest(args, "chat");
+    const request = resolveAiRequest(args, "chat", "send_agent_message");
     await authorizeResolvedRequest(request, "agent");
 
     const messages = args.messages as AgentMessagePayload[];
@@ -1118,6 +2216,10 @@ export async function createBrowserMock(
         baseUrl: request.baseUrl,
         apiVariant: request.apiVariant,
       },
+      {
+        auditContext: request.auditContext,
+        onEffectiveRequest: observeBrowserAiEffectiveRequest,
+      },
     );
   }
 
@@ -1133,14 +2235,35 @@ export async function createBrowserMock(
     args: Record<string, unknown>,
     operation: BrowserAiOperation,
   ): Promise<void> {
-    const request = resolveAiRequest(args, operation);
-    await authorizeResolvedRequest(request);
+    const command =
+      operation === "chat"
+        ? "send_chat_message_stream"
+        : "send_inline_ai_stream";
+    const streamId = requireBrowserAiStreamCorrelation(args, command);
+    if (browserStreamLifecycles.has(streamId)) {
+      throw new Error(`Browser AI streamId is already active: ${streamId}`);
+    }
+    const request = resolveAiRequest(args, operation, command);
+    completedBrowserStreamReceipts.delete(streamId);
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    const lifecycle: BrowserStreamLifecycle = {
+      settled,
+      resolveSettled,
+      abortRequested: pendingBrowserStreamAbortIds.has(streamId),
+      transportStarted: false,
+      providerTerminalObserved: false,
+    };
+    browserStreamLifecycles.set(streamId, lifecycle);
     const channel = operation === "chat" ? "chat" : "inline-ai";
     let doneEmitted = false;
     const sink: BrowserAiStreamSink = {
       text(delta, blockType = "text") {
-        if (!delta) return;
+        if (!delta || doneEmitted) return;
         emitBrowserAiEvent(`${channel}:stream-chunk`, {
+          streamId,
           delta,
           block_type: blockType,
         });
@@ -1148,8 +2271,19 @@ export async function createBrowserMock(
       done(payload) {
         if (doneEmitted) return;
         doneEmitted = true;
+        if (
+          payload.stopReason !== "stopped" &&
+          (!lifecycle.abortRequested ||
+            payload.providerTerminalObservedBeforeAbort === true)
+        ) {
+          lifecycle.providerTerminalObserved = true;
+        }
         emitBrowserAiEvent(`${channel}:stream-done`, {
-          stop_reason: payload.stopReason,
+          streamId,
+          stop_reason:
+            lifecycle.abortRequested && !lifecycle.providerTerminalObserved
+              ? "stopped"
+              : payload.stopReason,
           input_tokens: payload.inputTokens ?? null,
           output_tokens: payload.outputTokens ?? null,
         });
@@ -1157,7 +2291,14 @@ export async function createBrowserMock(
     };
 
     try {
+      await authorizeResolvedRequest(request);
+      if (pendingBrowserStreamAbortIds.delete(streamId)) {
+        lifecycle.abortRequested = true;
+        sink.done({ stopReason: "stopped" });
+        return;
+      }
       if (aiTransport.stream) {
+        lifecycle.transportStarted = true;
         await aiTransport.stream(request, sink);
       } else {
         const response = await aiTransport.complete(request);
@@ -1174,10 +2315,70 @@ export async function createBrowserMock(
       }
       if (!doneEmitted) sink.done({ stopReason: "end_turn" });
     } catch (error) {
+      if (doneEmitted) return;
+      if (lifecycle.abortRequested) {
+        if (!doneEmitted && !lifecycle.providerTerminalObserved) {
+          sink.done({ stopReason: "stopped" });
+        }
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
-      emitBrowserAiEvent(`${channel}:stream-error`, { message });
+      emitBrowserAiEvent(`${channel}:stream-error`, { streamId, message });
       throw error;
+    } finally {
+      if (
+        lifecycle.abortRequested &&
+        !doneEmitted &&
+        !lifecycle.providerTerminalObserved
+      ) {
+        sink.done({ stopReason: "stopped" });
+      }
+      if (browserStreamLifecycles.get(streamId) === lifecycle) {
+        browserStreamLifecycles.delete(streamId);
+      }
+      pendingBrowserStreamAbortIds.delete(streamId);
+      addCompletedBrowserStreamReceipt(streamId, true);
+      lifecycle.resolveSettled();
     }
+  }
+
+  async function handleAbortAiStream(args: Record<string, unknown>): Promise<{
+    abortCommandAcknowledged: true;
+    transportTerminationObserved: boolean;
+  }> {
+    const streamId = requireBrowserAiAbortStreamId(args);
+    const completed = completedBrowserStreamReceipts.get(streamId);
+    if (completed !== undefined && !browserStreamLifecycles.has(streamId)) {
+      return {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved: completed,
+      };
+    }
+    addBoundedBrowserStreamTombstone(pendingBrowserStreamAbortIds, streamId);
+    const lifecycle = browserStreamLifecycles.get(streamId);
+    if (!lifecycle) {
+      return {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved: false,
+      };
+    }
+    lifecycle.abortRequested = true;
+    if (lifecycle.transportStarted && aiTransport.abort) {
+      try {
+        await aiTransport.abort(streamId);
+      } catch {
+        // The outer BrowserMock lifecycle remains the receipt authority. Do
+        // not let a transport diagnostic (which may contain credentials)
+        // prevent the renderer from recording its terminal audit event.
+      }
+    }
+    const lifecycleSettled = await waitForBrowserStreamSettled(
+      lifecycle.settled,
+    );
+    return {
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: lifecycleSettled,
+    };
   }
 
   function handleDbExecute(args: Record<string, unknown>): {
@@ -1185,6 +2386,7 @@ export async function createBrowserMock(
   } {
     const sql = args.sql as string;
     const params = args.params as SqlValue[];
+    assertRendererDoesNotMutateAiAudit(sql);
     const result = executeBrowserDbStatement(db, sql, params);
 
     if (methodAssumesMutation(args.method) || result.mutated) {
@@ -1651,6 +2853,7 @@ export async function createBrowserMock(
     let mutated = false;
     try {
       for (const s of statements) {
+        assertRendererDoesNotMutateAiAudit(s.sql);
         const result = executeBrowserDbStatement(db, s.sql, s.params);
         last = result.rows;
         mutated ||= methodAssumesMutation(s.method) || result.mutated;
@@ -4678,6 +5881,17 @@ export async function createBrowserMock(
     return row ? sceneId : null;
   }
 
+  let appendLedgerQueue: Promise<void> = Promise.resolve();
+
+  function withAppendLedgerLock<T>(operation: () => Promise<T>): Promise<T> {
+    const result = appendLedgerQueue.then(operation, operation);
+    appendLedgerQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   async function handleTimelapseAppendBatch(
     args: Record<string, unknown>,
   ): Promise<{
@@ -4685,12 +5899,11 @@ export async function createBrowserMock(
     tailSequence: number;
     tailHash: string;
   }> {
-    const projectId = args.projectId as string;
-    const sessionId = args.sessionId as string;
-    const events = (args.events ?? []) as TimelapseAppendEvent[];
+    return withAppendLedgerLock(async () => {
+      const projectId = args.projectId as string;
+      const sessionId = args.sessionId as string;
+      const events = (args.events ?? []) as TimelapseAppendEvent[];
 
-    db.run("BEGIN IMMEDIATE");
-    try {
       // Per-event idempotency (mirror of the Rust allocator): a committed-but-
       // rejected flush can be re-sent merged with new events; skip the
       // already-present uids and append only the genuinely-new suffix so the
@@ -4700,8 +5913,16 @@ export async function createBrowserMock(
         ? eventUidExists(projectId, firstUid)
         : false;
 
-      let { sequence, hash: prevHash } = readTimelapseTail(projectId);
-      let insertedCount = 0;
+      const capturedTail = readTimelapseTail(projectId);
+      let sequence = capturedTail.sequence;
+      let prevHash = capturedTail.hash;
+      const preparedEvents: Array<{
+        event: TimelapseAppendEvent;
+        sceneId: string | null;
+        sequence: number;
+        prevHash: string;
+        hash: string;
+      }> = [];
       for (const ev of events) {
         if (firstPresent && eventUidExists(projectId, ev.eventUid)) continue;
         sequence += 1;
@@ -4721,28 +5942,61 @@ export async function createBrowserMock(
             prevHash: hexToBytes(prevHash),
           }),
         );
-        db.run(
-          "insert into change_events (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id, payload, session_id, sequence, timestamp, prev_hash, hash) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          [
-            ev.eventUid,
-            projectId,
-            sceneId,
-            ev.domain,
-            ev.opType,
-            ev.entityType,
-            ev.entityId,
-            ev.payload,
-            sessionId,
-            sequence,
-            ev.timestamp,
-            prevHash,
-            hash,
-          ],
-        );
+        preparedEvents.push({
+          event: ev,
+          sceneId,
+          sequence,
+          prevHash,
+          hash,
+        });
         prevHash = hash;
-        insertedCount += 1;
       }
-      db.run("COMMIT");
+
+      // WebCrypto yields to other browser-mock commands. Keep the SQLite
+      // transaction itself yield-free, and refuse hashes derived from a tail
+      // that changed while they were being prepared.
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const currentTail = readTimelapseTail(projectId);
+        if (
+          currentTail.sequence !== capturedTail.sequence ||
+          currentTail.hash !== capturedTail.hash
+        ) {
+          throw new Error(
+            "TIMELAPSE_TAIL_DRIFT: change-event tail changed during hash preparation",
+          );
+        }
+        for (const prepared of preparedEvents) {
+          const ev = prepared.event;
+          db.run(
+            "insert into change_events (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id, payload, session_id, sequence, timestamp, prev_hash, hash) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+              ev.eventUid,
+              projectId,
+              prepared.sceneId,
+              ev.domain,
+              ev.opType,
+              ev.entityType,
+              ev.entityId,
+              ev.payload,
+              sessionId,
+              prepared.sequence,
+              ev.timestamp,
+              prepared.prevHash,
+              prepared.hash,
+            ],
+          );
+        }
+        db.run("COMMIT");
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the append failure.
+        }
+        throw error;
+      }
+      const insertedCount = preparedEvents.length;
       if (insertedCount > 0) {
         options.onDatabaseDirty?.();
       }
@@ -4751,14 +6005,495 @@ export async function createBrowserMock(
         tailSequence: sequence,
         tailHash: prevHash,
       };
-    } catch (e) {
-      try {
-        db.run("ROLLBACK");
-      } catch {
-        /* noop */
-      }
-      throw e;
+    });
+  }
+
+  function browserAiAuditProjectId(
+    args: Record<string, unknown>,
+  ): string | null {
+    if (!("projectId" in args)) {
+      throw new Error("projectId must be a non-empty string or null");
     }
+    if (args.projectId === null) return null;
+    if (
+      typeof args.projectId !== "string" ||
+      !args.projectId.trim() ||
+      args.projectId !== args.projectId.trim()
+    ) {
+      throw new Error("projectId must be a non-empty string or null");
+    }
+    return args.projectId;
+  }
+
+  function assertBrowserAiAuditWorkspace(args: Record<string, unknown>): void {
+    if (
+      typeof args.expectedWorkspacePath !== "string" ||
+      !args.expectedWorkspacePath.trim()
+    ) {
+      throw new Error("expectedWorkspacePath is required");
+    }
+    const settingsIdentity = handleGetGlobalSettings().lastActiveWorkspace;
+    const activeIdentity =
+      options.workspaceIdentity ??
+      (typeof settingsIdentity === "string" && settingsIdentity.trim()
+        ? settingsIdentity
+        : BROWSER_WORKSPACE_PATH);
+    if (args.expectedWorkspacePath !== activeIdentity) {
+      throw new Error(
+        `AI_AUDIT_WORKSPACE_CHANGED: expected ${args.expectedWorkspacePath}, active ${activeIdentity}`,
+      );
+    }
+  }
+
+  function assertBrowserSemanticIndexAuthority(
+    args: Record<string, unknown>,
+  ): void {
+    assertBrowserAiAuditWorkspace(args);
+    if (args.projectId !== "default-project") {
+      throw new Error(
+        `SEMANTIC_INDEX_AUTHORITY_MISMATCH: expected default-project, received ${String(args.projectId)}`,
+      );
+    }
+  }
+
+  function browserAiAuditScopeId(projectId: string | null): string {
+    return projectId === null ? "workspace" : `project:${projectId}`;
+  }
+
+  function readBrowserAiAuditTail(scopeId: string): {
+    sequence: number;
+    hash: string;
+  } {
+    const row = queryOne(
+      `SELECT sequence, hash FROM ai_audit_events
+        WHERE scope_id = ? ORDER BY sequence DESC LIMIT 1`,
+      [scopeId],
+    );
+    return row
+      ? { sequence: Number(row.sequence), hash: String(row.hash) }
+      : { sequence: 0, hash: AI_AUDIT_GENESIS_HASH };
+  }
+
+  function browserAiAuditHighWaterHash(
+    scopeId: string,
+    highWaterSequence: number,
+    tail: { sequence: number; hash: string },
+  ): string {
+    if (highWaterSequence === 0) return AI_AUDIT_GENESIS_HASH;
+    if (highWaterSequence === tail.sequence) return tail.hash;
+    const row = queryOne(
+      "SELECT hash FROM ai_audit_events WHERE scope_id = ? AND sequence = ?",
+      [scopeId, highWaterSequence],
+    );
+    if (!row) throw new Error("high-water event is missing");
+    return String(row.hash);
+  }
+
+  function browserAiAuditRow(row: Record<string, SqlValue>) {
+    return {
+      sequence: Number(row.sequence),
+      eventId: String(row.event_id),
+      scopeId: String(row.scope_id),
+      projectId: row.project_id == null ? null : String(row.project_id),
+      executionId: String(row.execution_id),
+      operationId: String(row.operation_id),
+      parentExecutionId:
+        row.parent_execution_id == null
+          ? null
+          : String(row.parent_execution_id),
+      pathId: String(row.path_id),
+      eventType: String(row.event_type),
+      timestamp: Number(row.timestamp),
+      recordedAt: Number(row.recorded_at),
+      payload: JSON.parse(String(row.payload)) as Record<string, unknown>,
+      payloadSha256: String(row.payload_sha256),
+      prevHash: String(row.prev_hash),
+      hash: String(row.hash),
+    };
+  }
+
+  async function handleAiAuditAppendBatch(args: Record<string, unknown>) {
+    return withAppendLedgerLock(async () => {
+      assertBrowserAiAuditWorkspace(args);
+      const projectId = browserAiAuditProjectId(args);
+      const scopeId = browserAiAuditScopeId(projectId);
+      if (
+        !Array.isArray(args.events) ||
+        args.events.length < 1 ||
+        args.events.length > 256
+      ) {
+        throw new Error("events must contain 1..256 entries");
+      }
+      const events = args.events as BrowserAiAuditEventInput[];
+      events.forEach(validateBrowserAiAuditEvent);
+      const journalBatch = await browserAiAuditJournalBatch(
+        String(args.expectedWorkspacePath),
+        projectId,
+        events,
+      );
+      let { sequence, hash: prevHash } = readBrowserAiAuditTail(scopeId);
+      const preparedEvents: Array<{
+        event: BrowserAiAuditEventInput;
+        payload: string;
+        payloadSha256: string;
+        sequence: number;
+        recordedAt: number;
+        prevHash: string;
+        hash: string;
+      }> = [];
+      const preparedEventIds = new Map<
+        string,
+        {
+          event: BrowserAiAuditEventInput;
+          payloadSha256: string;
+        }
+      >();
+      const executionStates = new Map<string, BrowserAiAuditExecutionState>();
+
+      for (const event of events) {
+        const payload = canonicalAiAuditPayloadForAppend(event.payload);
+        const payloadSha256 = await sha256AuditHex(payload);
+        const existing = queryOne(
+          `SELECT execution_id, operation_id, parent_execution_id, path_id,
+                  event_type, timestamp, payload_sha256
+             FROM ai_audit_events
+            WHERE scope_id = ? AND event_id = ?`,
+          [scopeId, event.eventId],
+        );
+        const sameEvent = (candidate: {
+          event: BrowserAiAuditEventInput;
+          payloadSha256: string;
+        }) =>
+          candidate.event.executionId === event.executionId &&
+          candidate.event.operationId === event.operationId &&
+          candidate.event.parentExecutionId === event.parentExecutionId &&
+          candidate.event.pathId === event.pathId &&
+          candidate.event.eventType === event.eventType &&
+          candidate.event.timestamp === event.timestamp &&
+          candidate.payloadSha256 === payloadSha256;
+        if (existing) {
+          const same =
+            existing.execution_id === event.executionId &&
+            existing.operation_id === event.operationId &&
+            existing.parent_execution_id === event.parentExecutionId &&
+            existing.path_id === event.pathId &&
+            existing.event_type === event.eventType &&
+            Number(existing.timestamp) === event.timestamp &&
+            existing.payload_sha256 === payloadSha256;
+          if (!same) {
+            throw new Error(
+              `eventId collision with different AI audit payload: ${event.eventId}`,
+            );
+          }
+          continue;
+        }
+        const preparedDuplicate = preparedEventIds.get(event.eventId);
+        if (preparedDuplicate) {
+          if (!sameEvent(preparedDuplicate)) {
+            throw new Error(
+              `eventId collision with different AI audit payload: ${event.eventId}`,
+            );
+          }
+          continue;
+        }
+
+        let identity = executionStates.get(event.executionId);
+        if (!identity) {
+          const storedEvents = queryAll(
+            `SELECT operation_id, parent_execution_id, path_id, event_type
+               FROM ai_audit_events
+              WHERE scope_id = ? AND execution_id = ?
+              ORDER BY sequence ASC`,
+            [scopeId, event.executionId],
+          );
+          const storedIdentity = storedEvents[0];
+          if (storedIdentity) {
+            identity = {
+              operationId: String(storedIdentity.operation_id),
+              parentExecutionId:
+                storedIdentity.parent_execution_id == null
+                  ? null
+                  : String(storedIdentity.parent_execution_id),
+              pathId: String(storedIdentity.path_id),
+              started: false,
+              preparedBeforeDispatch: false,
+              dispatched: false,
+              responseCompleted: false,
+              terminalEventType: null,
+            };
+            storedEvents.forEach((storedEvent) => {
+              observeBrowserAiAuditLifecycleEvent(
+                identity!,
+                String(storedEvent.event_type),
+              );
+            });
+            executionStates.set(event.executionId, identity);
+          }
+        }
+        if (identity) {
+          if (
+            identity.operationId !== event.operationId ||
+            identity.parentExecutionId !== event.parentExecutionId ||
+            identity.pathId !== event.pathId
+          ) {
+            throw new Error(
+              `execution identity mismatch for AI audit execution: ${event.executionId}`,
+            );
+          }
+          if (identity.terminalEventType) {
+            throw new Error(
+              `AI audit execution already reached terminal event ${identity.terminalEventType}: ${event.executionId}`,
+            );
+          }
+          validateBrowserAiAuditLifecycleTransition(identity, event);
+        } else {
+          validateBrowserAiAuditLifecycleTransition(null, event);
+          identity = {
+            operationId: event.operationId,
+            parentExecutionId: event.parentExecutionId,
+            pathId: event.pathId,
+            started: false,
+            preparedBeforeDispatch: false,
+            dispatched: false,
+            responseCompleted: false,
+            terminalEventType: null,
+          };
+          executionStates.set(event.executionId, identity);
+        }
+
+        sequence += 1;
+        const recordedAt = Date.now();
+        const hash = await browserAiAuditHash({
+          scopeId,
+          projectId,
+          sequence,
+          eventId: event.eventId,
+          executionId: event.executionId,
+          operationId: event.operationId,
+          parentExecutionId: event.parentExecutionId,
+          pathId: event.pathId,
+          eventType: event.eventType,
+          timestamp: event.timestamp,
+          recordedAt,
+          payloadSha256,
+          prevHash,
+        });
+        preparedEvents.push({
+          event,
+          payload,
+          payloadSha256,
+          sequence,
+          recordedAt,
+          prevHash,
+          hash,
+        });
+        preparedEventIds.set(event.eventId, { event, payloadSha256 });
+        observeBrowserAiAuditLifecycleEvent(identity, event.eventType);
+        prevHash = hash;
+      }
+      // All async hashing is complete. Nothing between BEGIN and COMMIT may
+      // yield, otherwise unrelated browser DB commands can join this txn.
+      db.run("BEGIN IMMEDIATE");
+      try {
+        for (const prepared of preparedEvents) {
+          const event = prepared.event;
+          db.run(
+            `INSERT INTO ai_audit_events
+              (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+               parent_execution_id, path_id, event_type, timestamp, recorded_at,
+               payload, payload_sha256, prev_hash, hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              scopeId,
+              projectId,
+              prepared.sequence,
+              event.eventId,
+              event.executionId,
+              event.operationId,
+              event.parentExecutionId,
+              event.pathId,
+              event.eventType,
+              event.timestamp,
+              prepared.recordedAt,
+              prepared.payload,
+              prepared.payloadSha256,
+              prepared.prevHash,
+              prepared.hash,
+            ],
+          );
+        }
+        db.run("COMMIT");
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the append failure.
+        }
+        throw error;
+      }
+      const insertedCount = preparedEvents.length;
+      if (insertedCount > 0) options.onDatabaseDirty?.();
+      await options.onAiAuditDurabilityRequired?.(journalBatch);
+      return { insertedCount, tailSequence: sequence, tailHash: prevHash };
+    });
+  }
+
+  async function handleAiAuditReadSnapshot(args: Record<string, unknown>) {
+    return withAppendLedgerLock(async () => {
+      assertBrowserAiAuditWorkspace(args);
+      const projectId = browserAiAuditProjectId(args);
+      const scopeId = browserAiAuditScopeId(projectId);
+      const afterSequence =
+        args.afterSequence == null ? 0 : Number(args.afterSequence);
+      const limit = args.limit == null ? 500 : Number(args.limit);
+      if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) {
+        throw new Error("afterSequence must be a non-negative safe integer");
+      }
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new Error("limit must be between 1 and 1000");
+      }
+      const tail = readBrowserAiAuditTail(scopeId);
+      const highWaterSequence =
+        args.highWaterSequence == null
+          ? tail.sequence
+          : Number(args.highWaterSequence);
+      if (
+        !Number.isSafeInteger(highWaterSequence) ||
+        highWaterSequence < afterSequence ||
+        highWaterSequence > tail.sequence
+      ) {
+        throw new Error("highWaterSequence is outside the available range");
+      }
+      const highWaterHash = browserAiAuditHighWaterHash(
+        scopeId,
+        highWaterSequence,
+        tail,
+      );
+      const rows = queryAll(
+        `SELECT sequence, event_id, scope_id, project_id, execution_id, operation_id,
+                parent_execution_id, path_id, event_type, timestamp, recorded_at,
+                payload, payload_sha256, prev_hash, hash
+           FROM ai_audit_events
+          WHERE scope_id = ? AND sequence > ? AND sequence <= ?
+          ORDER BY sequence ASC LIMIT ?`,
+        [scopeId, afterSequence, highWaterSequence, limit],
+      );
+      const events = rows.map(browserAiAuditRow);
+      const last = events.at(-1)?.sequence;
+      return {
+        scopeId,
+        projectId,
+        afterSequence,
+        highWaterSequence,
+        highWaterHash,
+        nextAfterSequence:
+          events.length === limit &&
+          last !== undefined &&
+          last < highWaterSequence
+            ? last
+            : null,
+        events,
+      };
+    });
+  }
+
+  async function handleAiAuditVerify(args: Record<string, unknown>) {
+    return withAppendLedgerLock(async () => {
+      assertBrowserAiAuditWorkspace(args);
+      const projectId = browserAiAuditProjectId(args);
+      const scopeId = browserAiAuditScopeId(projectId);
+      const tail = readBrowserAiAuditTail(scopeId);
+      const highWaterSequence =
+        args.highWaterSequence == null
+          ? tail.sequence
+          : Number(args.highWaterSequence);
+      if (
+        !Number.isSafeInteger(highWaterSequence) ||
+        highWaterSequence < 0 ||
+        highWaterSequence > tail.sequence
+      ) {
+        throw new Error("highWaterSequence is outside the available range");
+      }
+      const highWaterHash = browserAiAuditHighWaterHash(
+        scopeId,
+        highWaterSequence,
+        tail,
+      );
+      let expectedSequence = 1;
+      let prevHash = AI_AUDIT_GENESIS_HASH;
+      while (expectedSequence <= highWaterSequence) {
+        const rows = queryAll(
+          `SELECT sequence, event_id, scope_id, project_id, execution_id, operation_id,
+                  parent_execution_id, path_id, event_type, timestamp, recorded_at,
+                  payload, payload_sha256, prev_hash, hash
+             FROM ai_audit_events
+            WHERE scope_id = ? AND sequence >= ? AND sequence <= ?
+            ORDER BY sequence ASC LIMIT 500`,
+          [scopeId, expectedSequence, highWaterSequence],
+        );
+        if (rows.length === 0) {
+          return {
+            ok: false,
+            verifiedThroughSequence: expectedSequence - 1,
+            brokenAtSequence: expectedSequence,
+            reason: "sequence gap before pinned high-water mark",
+            tailHash: highWaterHash,
+          };
+        }
+        for (const row of rows) {
+          const event = browserAiAuditRow(row);
+          const broken = (reason: string) => ({
+            ok: false,
+            verifiedThroughSequence: expectedSequence - 1,
+            brokenAtSequence: expectedSequence,
+            reason,
+            tailHash: highWaterHash,
+          });
+          if (event.sequence !== expectedSequence) {
+            return broken(
+              `sequence gap: expected ${expectedSequence}, found ${event.sequence}`,
+            );
+          }
+          if (event.prevHash !== prevHash) return broken("prevHash mismatch");
+          const contractError = validateStoredAiAuditCaptureContract(
+            event.payload,
+          );
+          if (contractError) {
+            return broken(`stored payload contract mismatch: ${contractError}`);
+          }
+          const payload = canonicalStoredAiAuditPayload(event.payload);
+          const payloadSha256 = await sha256AuditHex(payload);
+          if (payloadSha256 !== event.payloadSha256) {
+            return broken("payloadSha256 mismatch");
+          }
+          const hash = await browserAiAuditHash({
+            scopeId: event.scopeId,
+            projectId: event.projectId,
+            sequence: event.sequence,
+            eventId: event.eventId,
+            executionId: event.executionId,
+            operationId: event.operationId,
+            parentExecutionId: event.parentExecutionId,
+            pathId: event.pathId,
+            eventType: event.eventType,
+            timestamp: event.timestamp,
+            recordedAt: event.recordedAt,
+            payloadSha256: event.payloadSha256,
+            prevHash: event.prevHash,
+          });
+          if (hash !== event.hash) return broken("hash mismatch");
+          prevHash = event.hash;
+          expectedSequence += 1;
+        }
+      }
+      return {
+        ok: true,
+        verifiedThroughSequence: highWaterSequence,
+        brokenAtSequence: null,
+        reason: null,
+        tailHash: highWaterHash,
+      };
+    });
   }
 
   function handleGetGlobalSettings(): Record<string, unknown> {
@@ -4898,6 +6633,12 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "ai_audit_append_batch":
+        return (await handleAiAuditAppendBatch(args)) as T;
+      case "ai_audit_read_snapshot":
+        return (await handleAiAuditReadSnapshot(args)) as T;
+      case "ai_audit_verify":
+        return (await handleAiAuditVerify(args)) as T;
       case "lint_ignore_list":
         return handleLintIgnoreList(args) as T;
       case "lint_ignore_list_scene":
@@ -4978,13 +6719,21 @@ export async function createBrowserMock(
         // explicit empty arm; fts_search above remains a real SQL LIKE arm.
         return [] as T;
       case "semantic_index_scene":
+        assertBrowserSemanticIndexAuthority(args);
+        return 0 as T;
+      case "codex_index_entry":
+        assertBrowserSemanticIndexAuthority(args);
+        return 0 as T;
+      case "events_index_entry":
+        assertBrowserSemanticIndexAuthority(args);
+        return 0 as T;
+      case "chat_index_message":
+        assertBrowserSemanticIndexAuthority(args);
+        return 0 as T;
       case "semantic_reindex_all":
       case "semantic_cancel_background":
-      case "codex_index_entry":
       case "codex_reindex_all":
-      case "events_index_entry":
       case "events_reindex_all":
-      case "chat_index_message":
       case "chat_reindex_all":
         return 0 as T;
       case "semantic_download_model":
@@ -5068,14 +6817,12 @@ export async function createBrowserMock(
         await handleAiStream(args, "chat");
         return undefined as T;
       case "abort_chat_stream":
-        aiTransport.abort?.("chat");
-        return undefined as T;
+        return (await handleAbortAiStream(args)) as T;
       case "send_inline_ai_stream":
         await handleAiStream(args, "inline");
         return undefined as T;
       case "abort_inline_ai_stream":
-        aiTransport.abort?.("inline");
-        return undefined as T;
+        return (await handleAbortAiStream(args)) as T;
       case "detect_cli_binary":
         return null as T;
       case "list_cli_models":
@@ -5147,8 +6894,11 @@ export async function createBrowserMock(
 
   function close(): void {
     if (isClosed) return;
-    aiTransport.abort?.("chat");
-    aiTransport.abort?.("inline");
+    for (const [streamId, lifecycle] of browserStreamLifecycles) {
+      lifecycle.abortRequested = true;
+      const abort = aiTransport.abort?.(streamId);
+      if (abort) void abort.catch(() => undefined);
+    }
     aiTransport.dispose?.();
     apiKeys.clear();
     db.close();

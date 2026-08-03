@@ -172,6 +172,126 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE ab_comparisons ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface TEXT NOT NULL, prompt TEXT NOT NULL, model_a TEXT, model_b TEXT, prompt_variant_a TEXT, prompt_variant_b TEXT, response_a TEXT NOT NULL, response_b TEXT NOT NULL, chosen TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "ai_audit_events": {
+      "kind": "table",
+      "columns": {
+        "event_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "event_type": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "execution_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "hash": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "operation_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "parent_execution_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "path_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_sha256": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "prev_hash": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "recorded_at": {
+          "ordinal": 11,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "scope_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "sequence": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "timestamp": {
+          "ordinal": 10,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE ai_audit_events ( id INTEGER PRIMARY KEY AUTOINCREMENT, scope_id TEXT NOT NULL, project_id TEXT, sequence INTEGER NOT NULL, event_id TEXT NOT NULL, execution_id TEXT NOT NULL, operation_id TEXT NOT NULL, parent_execution_id TEXT, path_id TEXT NOT NULL, event_type TEXT NOT NULL, timestamp INTEGER NOT NULL, recorded_at INTEGER NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL, CHECK ( (scope_id = 'workspace' AND project_id IS NULL) OR (project_id IS NOT NULL AND scope_id = 'project:' || project_id) ) )"
+    },
     "ai_usage": {
       "kind": "table",
       "columns": {
@@ -1024,7 +1144,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["runtime", "external_thread_id"]
+          "columns": [
+            "runtime",
+            "external_thread_id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE chat_runtime_threads ( session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, runtime TEXT NOT NULL, external_thread_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, history_revision TEXT, last_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, runtime), UNIQUE (runtime, external_thread_id) )"
@@ -1578,7 +1701,11 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "type_slug", "name"]
+          "columns": [
+            "project_id",
+            "type_slug",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
@@ -1639,7 +1766,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["entry_id", "definition_id"]
+          "columns": [
+            "entry_id",
+            "definition_id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, UNIQUE(entry_id, definition_id) )"
@@ -2359,7 +2489,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "name"]
+          "columns": [
+            "project_id",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_tags ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT, type_filter TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -2452,7 +2585,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "slug"]
+          "columns": [
+            "project_id",
+            "slug"
+          ]
         }
       ],
       "createSql": "CREATE TABLE codex_types ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, slug TEXT NOT NULL, label TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#888888', palette_index INTEGER, icon TEXT, is_builtin INTEGER NOT NULL DEFAULT 0, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, slug) )"
@@ -2513,7 +2649,11 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": ["entity_type", "entity_id", "version_number"]
+          "columns": [
+            "entity_type",
+            "entity_id",
+            "version_number"
+          ]
         }
       ],
       "createSql": "CREATE TABLE content_versions ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), entity_type TEXT NOT NULL CHECK(entity_type IN ('scene', 'note', 'codex_entry', 'snippet')), entity_id TEXT NOT NULL, content TEXT NOT NULL, version_number INTEGER NOT NULL, snapshot_type TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto', 'manual')), created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entity_type, entity_id, version_number) )"
@@ -3358,7 +3498,9 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["trace_id"]
+          "columns": [
+            "trace_id"
+          ]
         }
       ],
       "createSql": "CREATE TABLE generation_logs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')), command_id TEXT, instruction TEXT, prompt_full TEXT, model TEXT, trace_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
@@ -3548,7 +3690,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "name"]
+          "columns": [
+            "project_id",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE labels ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -5955,7 +6100,10 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": ["project_id", "name"]
+          "columns": [
+            "project_id",
+            "name"
+          ]
         }
       ],
       "createSql": "CREATE TABLE project_snapshots ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -7598,6 +7746,86 @@
         }
       ],
       "createSql": "CREATE INDEX idx_ab_comparisons_project_created ON ab_comparisons(project_id, created_at)"
+    },
+    "idx_ai_audit_scope_execution": {
+      "table": "ai_audit_events",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scope_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "execution_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "sequence"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_ai_audit_scope_execution ON ai_audit_events(scope_id, execution_id, sequence)"
+    },
+    "idx_ai_audit_scope_execution_event_type": {
+      "table": "ai_audit_events",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scope_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "execution_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "event_type"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_ai_audit_scope_execution_event_type ON ai_audit_events(scope_id, execution_id, event_type)"
+    },
+    "idx_ai_audit_scope_operation": {
+      "table": "ai_audit_events",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scope_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "operation_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "sequence"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_ai_audit_scope_operation ON ai_audit_events(scope_id, operation_id, sequence)"
+    },
+    "idx_ai_audit_scope_timestamp": {
+      "table": "ai_audit_events",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scope_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "timestamp"
+        },
+        {
+          "ordinal": 2,
+          "column": "sequence"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_ai_audit_scope_timestamp ON ai_audit_events(scope_id, timestamp, sequence)"
     },
     "idx_ai_usage_project_created": {
       "table": "ai_usage",
@@ -9562,6 +9790,38 @@
         }
       ],
       "createSql": "CREATE INDEX idx_undo_journal_project_entity ON undo_journal(project_id, entity_kind, entity_id)"
+    },
+    "uq_ai_audit_scope_event": {
+      "table": "ai_audit_events",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scope_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "event_id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_ai_audit_scope_event ON ai_audit_events(scope_id, event_id)"
+    },
+    "uq_ai_audit_scope_seq": {
+      "table": "ai_audit_events",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scope_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "sequence"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_ai_audit_scope_seq ON ai_audit_events(scope_id, sequence)"
     },
     "uq_change_events_project_seq": {
       "table": "change_events",

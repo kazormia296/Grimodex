@@ -369,6 +369,7 @@ function chatQuiescenceDependencies(options?: {
   onScopedMutations?: () => void;
 }): QuiescenceDependencies {
   return {
+    awaitAiExecutions: async () => {},
     flushAutoSaves: async () => {},
     flushParticipants: async () => {},
     flushExternalWriteBacks: async () => {},
@@ -3435,9 +3436,9 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().sendMessage("テスト");
 
-      // sendChatMessageStream の第 7 引数(0-indexed 6)が送信モデル。
+      // sendChatMessageStream の第 8 引数(0-indexed 7)が送信モデル。
       const call = mockSendChatMessageStream.mock.calls.at(-1);
-      expect(call?.[6]).toBe("temp-model");
+      expect(call?.[7]).toBe("temp-model");
       // 既定チャットモデルは一時選択で書き換わらない。
       expect(useAiSettingsStore.getState().settings?.model).toBe(
         "default-model",
@@ -3465,10 +3466,10 @@ describe("useChatStore", () => {
       await useChatStore.getState().sendMessage("テスト");
 
       const call = mockSendChatMessageStream.mock.calls.at(-1);
-      // 第7引数(idx6)=model, 第8引数(idx7)=provider, 第5引数(idx4)=apiVariant。
-      expect(call?.[6]).toBe("fugu");
-      expect(call?.[7]).toBe("sakana");
-      expect(call?.[4]).toBe("responses");
+      // 第8引数(idx7)=model, 第9引数(idx8)=provider, 第6引数(idx5)=apiVariant。
+      expect(call?.[7]).toBe("fugu");
+      expect(call?.[8]).toBe("sakana");
+      expect(call?.[5]).toBe("responses");
       // 別プロバイダ一時選択は active 設定(provider/model)を書き換えない。
       expect(useAiSettingsStore.getState().settings?.provider).toBe("openai");
       expect(useAiSettingsStore.getState().settings?.model).toBe(
@@ -3502,8 +3503,8 @@ describe("useChatStore", () => {
       await useChatStore.getState().sendMessage("テスト");
 
       const call = mockSendChatMessageStream.mock.calls.at(-1);
-      expect(call?.[6]).toBe("temp-model");
-      expect(call?.[7] ?? null).toBeNull();
+      expect(call?.[7]).toBe("temp-model");
+      expect(call?.[8] ?? null).toBeNull();
 
       useAiSettingsStore.setState({ settings: null, chatModelOverride: null });
     });
@@ -3728,7 +3729,7 @@ describe("useChatStore", () => {
           ollamaSettings.ollamaEndpoint,
         );
         expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
-        expect(mockSendChatMessageStream.mock.calls[0]?.[12]).toBe(
+        expect(mockSendChatMessageStream.mock.calls[0]?.[13]).toBe(
           ollamaSettings.ollamaEndpoint,
         );
         expect(mockSendAgentMessage).not.toHaveBeenCalled();
@@ -3828,8 +3829,8 @@ describe("useChatStore", () => {
 
           const call = mockSendChatMessageStream.mock.calls.at(-1);
           expect(mockListAiModels).not.toHaveBeenCalled();
-          expect(call?.[6]).toBe("openai/gpt-4o");
-          expect(call?.[7]).toBeNull();
+          expect(call?.[7]).toBe("openai/gpt-4o");
+          expect(call?.[8]).toBeNull();
           expect(mockSendAgentMessage).not.toHaveBeenCalled();
         } finally {
           useSettingsStore.setState((state) => ({
@@ -3876,7 +3877,7 @@ describe("useChatStore", () => {
           ollamaSettings.ollamaEndpoint,
         );
         expect(mockSendAgentMessage).toHaveBeenCalledOnce();
-        expect(mockSendAgentMessage.mock.calls[0]?.[14]).toBe(
+        expect(mockSendAgentMessage.mock.calls[0]?.[15]).toBe(
           ollamaSettings.ollamaEndpoint,
         );
         expect(useChatStore.getState().error).toBeNull();
@@ -5963,8 +5964,8 @@ describe("useChatStore", () => {
 
       const callArgs = mockSendChatMessageStream.mock.calls[0];
       // (messages, thinking, callbacks, systemCacheSegments, apiVariant, systemVolatileTail)
-      expect(callArgs[3]).toEqual(["seg1"]);
-      expect(callArgs[5]).toBe("L5 要約");
+      expect(callArgs[4]).toEqual(["seg1"]);
+      expect(callArgs[6]).toBe("L5 要約");
     });
 
     it("sets activeSceneId and updates context", () => {
@@ -6058,8 +6059,8 @@ describe("useChatStore", () => {
         role: "system",
         content: "DIRECT TURN PROMPT",
       });
-      expect(call[3]).toEqual(["DIRECT CACHE"]);
-      expect(call[5]).toBe("DIRECT TAIL");
+      expect(call[4]).toEqual(["DIRECT CACHE"]);
+      expect(call[6]).toBe("DIRECT TAIL");
     });
 
     it("sendMessage sends no system message when lastSystemPrompt is empty", async () => {
@@ -9453,11 +9454,11 @@ describe("useChatStore", () => {
   describe("送信先 override の優先順位 (xprov > role > active)", () => {
     let useSettingsStore: typeof import("@/features/settings/settingsStore").useSettingsStore;
 
-    // sendChatMessageStream 引数: [4]=apiVariant, [6]=model, [7]=provider, [8]=endpointId。
-    const A_VARIANT = 4;
-    const A_MODEL = 6;
-    const A_PROVIDER = 7;
-    const A_ENDPOINT = 8;
+    // sendChatMessageStream 引数: [5]=apiVariant, [7]=model, [8]=provider, [9]=endpointId。
+    const A_VARIANT = 5;
+    const A_MODEL = 7;
+    const A_PROVIDER = 8;
+    const A_ENDPOINT = 9;
 
     async function setConversationRole(
       model: string | null,

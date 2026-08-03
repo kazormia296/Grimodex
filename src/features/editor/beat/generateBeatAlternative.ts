@@ -7,6 +7,7 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { streamInlineAiText } from "./streamInlineAiText";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import { buildBeatContextForGeneration } from "./buildBeatContext";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 interface GenerateBeatAlternativeCallbacks {
   onStart?: () => void;
@@ -70,6 +71,8 @@ export async function generateBeatAlternative(
     provider: beatModel ? beatModelProvider : undefined,
     endpointId: beatModel ? beatModelEndpointId : undefined,
     usageSurface: "beat",
+    projectId: useTreeStore.getState().projectId,
+    auditPathId: "beat_alternative",
   });
   if (!result.ok) {
     callbacks?.onError?.(result.error);

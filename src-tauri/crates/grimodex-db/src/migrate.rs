@@ -1547,6 +1547,51 @@ impl Database {
                 ON change_events(project_id, event_uid);",
         )?;
 
+        // Complete AI-use audit ledger. Project/scene/message identifiers are
+        // intentionally not foreign keys: mutable content deletion must not
+        // erase this forward-only history, and a durable Browser journal may
+        // be replayed before its project snapshot exists. Existing AI rows are
+        // not backfilled because their exact request/response payloads are
+        // unknowable.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ai_audit_events (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id            TEXT NOT NULL,
+                project_id          TEXT,
+                sequence            INTEGER NOT NULL,
+                event_id            TEXT NOT NULL,
+                execution_id        TEXT NOT NULL,
+                operation_id        TEXT NOT NULL,
+                parent_execution_id TEXT,
+                path_id             TEXT NOT NULL,
+                event_type          TEXT NOT NULL,
+                timestamp           INTEGER NOT NULL,
+                recorded_at         INTEGER NOT NULL,
+                payload             TEXT NOT NULL,
+                payload_sha256      TEXT NOT NULL,
+                prev_hash           TEXT NOT NULL,
+                hash                TEXT NOT NULL,
+                CHECK (
+                    (scope_id = 'workspace' AND project_id IS NULL)
+                    OR
+                    (project_id IS NOT NULL AND scope_id = 'project:' || project_id)
+                )
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_audit_scope_seq
+                ON ai_audit_events(scope_id, sequence);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_audit_scope_event
+                ON ai_audit_events(scope_id, event_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_execution
+                ON ai_audit_events(scope_id, execution_id, sequence);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_execution_event_type
+                ON ai_audit_events(scope_id, execution_id, event_type);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_operation
+                ON ai_audit_events(scope_id, operation_id, sequence);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_timestamp
+                ON ai_audit_events(scope_id, timestamp, sequence);",
+        )?;
+        Self::migrate_ai_audit_events_project_identity(&conn)?;
+
         // Sticky 採用/不採用 (Plan B): AI由来 provenance を branch 所属から分離。
         // ai_branch_id は採用 (adopt) で NULL 化されるため、「AI が生成した付箋か」
         // という出自は別カラムで保持する。StickyNode の onCopy 帰属ラベルはこれを見る。
@@ -3011,6 +3056,146 @@ impl Database {
         Ok(())
     }
 
+    /// Remove the historical project FK from the append-only AI audit ledger.
+    ///
+    /// `project_id` is scope identity, not ownership: deleting a mutable
+    /// project must retain its audit trail, and Browser crash recovery can
+    /// legitimately replay a project-scoped event before the project row from
+    /// a newer in-memory snapshot has been persisted. SQLite cannot drop a
+    /// foreign key in place, so preserve every stored field and rebuild only
+    /// when the legacy FK is present.
+    pub(super) fn migrate_ai_audit_events_project_identity(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let has_project_fk = conn
+            .prepare("PRAGMA foreign_key_list(ai_audit_events)")?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>("table")?,
+                    row.get::<_, String>("from")?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|(table, from)| table == "projects" && from == "project_id");
+        if !has_project_fk {
+            return Ok(());
+        }
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        if foreign_keys_enabled {
+            // PRAGMA foreign_keys has no effect inside a transaction.
+            conn.pragma_update(None, "foreign_keys", false)?;
+        }
+
+        let migration = conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TEMP TABLE grimodex_ai_audit_sequence_high_water (
+                sequence INTEGER NOT NULL
+             );
+             INSERT INTO grimodex_ai_audit_sequence_high_water (sequence)
+             SELECT MAX(
+                COALESCE((
+                    SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'
+                ), 0),
+                COALESCE((SELECT MAX(id) FROM ai_audit_events), 0)
+             );
+             CREATE TABLE grimodex_ai_audit_events_without_project_fk (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id            TEXT NOT NULL,
+                project_id          TEXT,
+                sequence            INTEGER NOT NULL,
+                event_id            TEXT NOT NULL,
+                execution_id        TEXT NOT NULL,
+                operation_id        TEXT NOT NULL,
+                parent_execution_id TEXT,
+                path_id             TEXT NOT NULL,
+                event_type          TEXT NOT NULL,
+                timestamp           INTEGER NOT NULL,
+                recorded_at         INTEGER NOT NULL,
+                payload             TEXT NOT NULL,
+                payload_sha256      TEXT NOT NULL,
+                prev_hash           TEXT NOT NULL,
+                hash                TEXT NOT NULL,
+                CHECK (
+                    (scope_id = 'workspace' AND project_id IS NULL)
+                    OR
+                    (project_id IS NOT NULL AND scope_id = 'project:' || project_id)
+                )
+             );
+             INSERT INTO grimodex_ai_audit_events_without_project_fk
+                (id, scope_id, project_id, sequence, event_id, execution_id,
+                 operation_id, parent_execution_id, path_id, event_type,
+                 timestamp, recorded_at, payload, payload_sha256, prev_hash, hash)
+             SELECT id, scope_id, project_id, sequence, event_id, execution_id,
+                    operation_id, parent_execution_id, path_id, event_type,
+                    timestamp, recorded_at, payload, payload_sha256, prev_hash, hash
+               FROM ai_audit_events;
+             DROP TABLE ai_audit_events;
+             ALTER TABLE grimodex_ai_audit_events_without_project_fk
+                RENAME TO ai_audit_events;
+             CREATE UNIQUE INDEX uq_ai_audit_scope_seq
+                ON ai_audit_events(scope_id, sequence);
+             CREATE UNIQUE INDEX uq_ai_audit_scope_event
+                ON ai_audit_events(scope_id, event_id);
+             CREATE INDEX idx_ai_audit_scope_execution
+                ON ai_audit_events(scope_id, execution_id, sequence);
+             CREATE INDEX idx_ai_audit_scope_execution_event_type
+                ON ai_audit_events(scope_id, execution_id, event_type);
+             CREATE INDEX idx_ai_audit_scope_operation
+                ON ai_audit_events(scope_id, operation_id, sequence);
+             CREATE INDEX idx_ai_audit_scope_timestamp
+                ON ai_audit_events(scope_id, timestamp, sequence);
+             UPDATE sqlite_sequence
+                SET seq = (
+                    SELECT sequence FROM grimodex_ai_audit_sequence_high_water
+                )
+              WHERE name = 'ai_audit_events';
+             INSERT INTO sqlite_sequence (name, seq)
+             SELECT 'ai_audit_events', sequence
+               FROM grimodex_ai_audit_sequence_high_water
+              WHERE sequence > 0
+                AND NOT EXISTS (
+                    SELECT 1 FROM sqlite_sequence WHERE name = 'ai_audit_events'
+                );
+             DELETE FROM sqlite_sequence
+              WHERE name = 'grimodex_ai_audit_events_without_project_fk';
+             DROP TABLE grimodex_ai_audit_sequence_high_water;
+             COMMIT;",
+        );
+        if migration.is_err() && !conn.is_autocommit() {
+            let _ = conn.execute_batch("ROLLBACK;");
+        }
+        let restore_foreign_keys = if foreign_keys_enabled {
+            conn.pragma_update(None, "foreign_keys", true)
+        } else {
+            Ok(())
+        };
+        match (migration, restore_foreign_keys) {
+            (Err(migration_error), _) => return Err(migration_error.into()),
+            (Ok(()), Err(restore_error)) => return Err(restore_error.into()),
+            (Ok(()), Ok(())) => {}
+        }
+
+        let remaining_project_fks: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('ai_audit_events')
+              WHERE \"table\" = 'projects' AND \"from\" = 'project_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        if remaining_project_fks != 0 {
+            anyhow::bail!("ai_audit_events project foreign key migration did not take effect");
+        }
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            anyhow::bail!(
+                "integrity_check failed after ai_audit_events project identity migration: {integrity}"
+            );
+        }
+        Ok(())
+    }
+
     /// Drop FK on codex_relations.source_map_edge_id so promoted edge IDs survive
     /// user-edge deletion (traceability for Map → Relation promotion).
     pub(super) fn migrate_codex_relations_source_map_edge_id(
@@ -3170,6 +3355,221 @@ impl Database {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn migrate_decouples_legacy_ai_audit_project_fk_without_changing_rows() {
+        let db = Database::new(std::path::Path::new(":memory:"))
+            .expect("open in-memory database for legacy audit migration");
+        db.migrate().expect("initial migrate");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('doomed-project', 'Doomed')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO ai_audit_events
+                    (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+                     parent_execution_id, path_id, event_type, timestamp, recorded_at,
+                     payload, payload_sha256, prev_hash, hash)
+                 VALUES
+                    ('project:project-1', 'project-1', 1, 'event-1', 'execution-1',
+                     'operation-1', NULL, 'browser_byok_web', 'execution.started', 1, 2,
+                     '{\"captureState\":\"complete\"}', 'payload-hash', 'prev-hash', 'hash-1')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO ai_audit_events
+                    (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+                     parent_execution_id, path_id, event_type, timestamp, recorded_at,
+                     payload, payload_sha256, prev_hash, hash)
+                 VALUES
+                    ('project:doomed-project', 'doomed-project', 1, 'event-doomed',
+                     'execution-doomed', 'operation-doomed', NULL, 'browser_byok_web',
+                     'execution.started', 3, 4, '{\"captureState\":\"complete\"}',
+                     'payload-hash-doomed', 'prev-hash-doomed', 'hash-doomed')",
+                [],
+            )?;
+
+            conn.pragma_update(None, "foreign_keys", false)?;
+            conn.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE grimodex_ai_audit_events_with_project_fk (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_id            TEXT NOT NULL,
+                    project_id          TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                    sequence            INTEGER NOT NULL,
+                    event_id            TEXT NOT NULL,
+                    execution_id        TEXT NOT NULL,
+                    operation_id        TEXT NOT NULL,
+                    parent_execution_id TEXT,
+                    path_id             TEXT NOT NULL,
+                    event_type          TEXT NOT NULL,
+                    timestamp           INTEGER NOT NULL,
+                    recorded_at         INTEGER NOT NULL,
+                    payload             TEXT NOT NULL,
+                    payload_sha256      TEXT NOT NULL,
+                    prev_hash           TEXT NOT NULL,
+                    hash                TEXT NOT NULL,
+                    CHECK (
+                        (scope_id = 'workspace' AND project_id IS NULL)
+                        OR
+                        (project_id IS NOT NULL AND scope_id = 'project:' || project_id)
+                    )
+                 );
+                 INSERT INTO grimodex_ai_audit_events_with_project_fk
+                    SELECT * FROM ai_audit_events;
+                 DROP TABLE ai_audit_events;
+                 ALTER TABLE grimodex_ai_audit_events_with_project_fk
+                    RENAME TO ai_audit_events;
+                 CREATE UNIQUE INDEX uq_ai_audit_scope_seq
+                    ON ai_audit_events(scope_id, sequence);
+                 CREATE UNIQUE INDEX uq_ai_audit_scope_event
+                    ON ai_audit_events(scope_id, event_id);
+                 CREATE INDEX idx_ai_audit_scope_execution
+                    ON ai_audit_events(scope_id, execution_id, sequence);
+                 CREATE INDEX idx_ai_audit_scope_execution_event_type
+                    ON ai_audit_events(scope_id, execution_id, event_type);
+                 CREATE INDEX idx_ai_audit_scope_operation
+                    ON ai_audit_events(scope_id, operation_id, sequence);
+                 CREATE INDEX idx_ai_audit_scope_timestamp
+                    ON ai_audit_events(scope_id, timestamp, sequence);
+                 COMMIT;",
+            )?;
+            conn.pragma_update(None, "foreign_keys", true)?;
+            conn.execute("DELETE FROM projects WHERE id = 'doomed-project'", [])?;
+            let legacy_fk_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('ai_audit_events')
+                  WHERE \"table\" = 'projects' AND \"from\" = 'project_id'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(legacy_fk_count, 1);
+            let legacy_sequence: i64 = conn.query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'ai_audit_events'",
+                [],
+                |row| row.get(0),
+            )?;
+            let remaining_max_id: i64 =
+                conn.query_row("SELECT MAX(id) FROM ai_audit_events", [], |row| row.get(0))?;
+            assert_eq!(legacy_sequence, 2);
+            assert_eq!(remaining_max_id, 1);
+            Ok(())
+        })
+        .expect("build legacy audit schema");
+
+        db.migrate().expect("migrate legacy audit schema");
+        db.with_conn(|conn| {
+            let remaining_fk_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('ai_audit_events')",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(remaining_fk_count, 0);
+            let row: (String, String, i64, String, String) = conn.query_row(
+                "SELECT scope_id, project_id, sequence, event_id, hash
+                   FROM ai_audit_events WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                row,
+                (
+                    "project:project-1".to_string(),
+                    "project-1".to_string(),
+                    1,
+                    "event-1".to_string(),
+                    "hash-1".to_string(),
+                )
+            );
+            let index_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_index_list('ai_audit_events')
+                  WHERE origin = 'c'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(index_count, 6);
+
+            conn.execute("DELETE FROM projects WHERE id = 'project-1'", [])?;
+            let retained: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM ai_audit_events WHERE project_id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(retained, 1);
+            conn.execute(
+                "INSERT INTO ai_audit_events
+                    (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+                     path_id, event_type, timestamp, recorded_at, payload, payload_sha256,
+                     prev_hash, hash)
+                 VALUES ('project:missing-project', 'missing-project', 1, 'event-2',
+                         'execution-2', 'operation-2', 'browser_byok_web',
+                         'execution.started', 3, 4, '{}', 'payload-hash-2',
+                         'prev-hash-2', 'hash-2')",
+                [],
+            )?;
+            let new_id: i64 = conn.query_row(
+                "SELECT id FROM ai_audit_events WHERE event_id = 'event-2'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(new_id, 3, "migration must preserve issued id high-water");
+            Ok(())
+        })
+        .expect("verify migrated audit schema");
+
+        db.migrate().expect("migration remains idempotent");
+    }
+
+    #[test]
+    fn failed_ai_audit_fk_rebuild_restores_foreign_key_enforcement() {
+        let conn = Connection::open_in_memory()
+            .expect("open in-memory database for failed audit migration");
+        conn.pragma_update(None, "foreign_keys", true)
+            .expect("enable foreign keys before failed audit migration");
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             CREATE TABLE ai_audit_events (
+                id INTEGER PRIMARY KEY,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE
+             );
+             CREATE TABLE grimodex_ai_audit_events_without_project_fk (
+                id INTEGER PRIMARY KEY
+             );",
+        )
+        .expect("create conflicting legacy audit migration fixture");
+
+        Database::migrate_ai_audit_events_project_identity(&conn)
+            .expect_err("conflicting migration table must fail the rebuild");
+
+        let foreign_keys_enabled: bool = conn
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .expect("read foreign key state after failed audit migration");
+        assert!(
+            foreign_keys_enabled,
+            "failed migration must restore FK mode"
+        );
+        let project_fk_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('ai_audit_events')
+                  WHERE \"table\" = 'projects' AND \"from\" = 'project_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect legacy audit foreign key after failed migration");
+        assert_eq!(project_fk_count, 1, "old table must remain intact");
+    }
 
     fn open_legacy_post_effect_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

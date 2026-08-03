@@ -45,6 +45,69 @@ requirements:
       - eval-route-search-scenes
       - eval-route-list-chapters
       - eval-route-character-timeline
+  - id: GDX-AI-AUDIT-001
+    title: Every observable generative and inference execution is durably audited before dispatch.
+    definedIn: policies/quality/iron-laws.md#GDX-AI-AUDIT-001
+    implementedBy:
+      - src/features/ai-audit/api.ts
+      - src/features/ai-audit/orderedStreamAudit.ts
+      - src/features/ai-audit/reportCoverage.ts
+      - src/features/ai-audit/exportBundle.ts
+      - src/features/ai-audit/legacyEvidence.ts
+      - src/features/ai-verification/aiPathRegistry.ts
+      - src-tauri/crates/grimodex-db/src/ai_audit.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - electron/shared/ipcContract.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - src-tauri/crates/grimodex-post-effect/src/lib.rs
+      - src-tauri/crates/grimodex-post-effect/src/audit.rs
+      - src-tauri/crates/grimodex-semantic/src/audit.rs
+      - src-tauri/crates/grimodex-semantic/src/embedding.rs
+      - src-tauri/crates/grimodex-semantic/src/reranker.rs
+      - src-tauri/crates/grimodex-semantic/src/runtime.rs
+      - src/features/chat/singleShotTransport.ts
+      - src/features/chat/chatApi.ts
+      - src/features/chat/chatStreamTransport.ts
+      - src/features/editor/inlineAi/inlineAiStreaming.ts
+      - src/features/chat/cliApi.ts
+      - src/features/chat/codexAppApi.ts
+      - src/features/semantic-search/api.ts
+      - src/features/attribution/AttributionProjectView.tsx
+      - src/lib/browser-ai.ts
+      - src/lib/browser-mock.ts
+      - src/lib/browserRuntime.ts
+      - src/lib/browser-db/persistenceController.ts
+      - src/lib/browser-db/indexedDbStore.ts
+    lightTests:
+      - src/features/ai-audit/api.test.ts
+      - src/features/ai-audit/orderedStreamAudit.test.ts
+      - src/features/ai-audit/transportContext.test.ts
+      - src/features/ai-audit/legacyEvidence.test.ts
+      - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/chat/singleShotTransport.audit.test.ts
+      - src/features/chat/chatApi.audit.test.ts
+      - src/features/editor/inlineAi/inlineAiStreaming.audit.test.ts
+      - src/features/ab-test/abHarness.test.ts
+      - src/features/chat/externalRuntimeAudit.test.ts
+      - src-tauri/crates/grimodex-semantic/src/audit_tests.rs
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ai-audit.test.ts
+      - src/lib/browserRuntime.test.ts
+      - src/lib/browser-db/persistenceController.test.ts
+      - src/lib/browser-db/indexedDbStore.test.ts
+      - src/lib/browser-db/indexedDbStore.browser.test.ts
+      - src-tauri/crates/grimodex-db/tests/ai_audit.rs
+      - electron/shared/ipcContract.test.ts
+      - electron/native/grimodex-node/test/ai-audit.test.mjs
+      - src-tauri/crates/grimodex-post-effect/src/audit_tests.rs
+      - src/features/ai-audit/reportCoverage.test.ts
+      - src/features/ai-audit/exportBundle.test.ts
+      - src/features/attribution/AttributionProjectView.ai-audit.test.tsx
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-ai-audit-pre-dispatch
   - id: GDX-PRECHECK-001
     title: Missing inputs, policies, confirmation, or tools stop before mutation.
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001

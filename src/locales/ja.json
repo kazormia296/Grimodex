@@ -4244,6 +4244,12 @@
     "exportJson": "JSON",
     "exportHtml": "HTML",
     "exportProjectReportTitle": "プロジェクト全体の帰属レポートを書き出す",
+    "exportAiAuditBundle": "AI使用証拠監査ZIP",
+    "exportAiAuditBundleTitle": "現在本文の帰属、導入後のforward実行ledger、DBに残存する旧形式証拠のうちAI由来を構造的に確認できる選択済み証拠を書き出します。監査導入前の完全な履歴ではありません。完全なプロンプト・文脈・応答・他シーン本文や、モデルに渡した秘密情報を含み得るため、共有前に全ファイルを確認してください",
+    "aiAudit": {
+      "verificationFailed": "監査ZIPは書き出しましたが、ハッシュチェーンの整合性確認に失敗しました。ZIP内のREADMEとmanifestを確認してください。",
+      "exportFailed": "AI使用監査ZIPを書き出せませんでした。"
+    },
     "knowledgeAiChars": "Codex/Snippet AI: {{chars}}字",
     "aiUsageLocations": "AI 使用箇所",
     "provenanceChat": "チャット",

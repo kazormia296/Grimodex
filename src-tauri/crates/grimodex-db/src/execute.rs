@@ -94,6 +94,18 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
         return Some("access to an attached database".to_string());
     }
 
+    let mutates_ai_audit = match &ctx.action {
+        AuthAction::Delete { table_name }
+        | AuthAction::Insert { table_name }
+        | AuthAction::Update { table_name, .. } => {
+            table_name.eq_ignore_ascii_case("ai_audit_events")
+        }
+        _ => false,
+    };
+    if mutates_ai_audit {
+        return Some("mutation of ai_audit_events".to_string());
+    }
+
     match ctx.action {
         AuthAction::Attach { .. } => Some("ATTACH or VACUUM".to_string()),
         AuthAction::Detach { .. } => Some("DETACH".to_string()),
@@ -655,6 +667,178 @@ mod tests {
 
         let _ = std::fs::remove_file(attach_path);
         let _ = std::fs::remove_file(vacuum_path);
+    }
+
+    #[test]
+    fn renderer_sql_can_read_but_cannot_mutate_ai_audit_events() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE ai_audit_events (
+                id INTEGER PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                payload TEXT NOT NULL
+             )",
+            &[],
+            "run",
+        )
+        .expect("trusted audit schema setup");
+        db.execute(
+            "INSERT INTO ai_audit_events (id, project_id, payload)
+             VALUES (1, 'project-1', '{}')",
+            &[],
+            "run",
+        )
+        .expect("trusted audit append");
+
+        let rows = db
+            .execute_renderer(
+                "SELECT payload FROM ai_audit_events WHERE project_id = ?1",
+                &[Value::from("project-1")],
+                "all",
+            )
+            .expect("renderer audit read remains available");
+        assert_eq!(rows.len(), 1);
+
+        for sql in [
+            "INSERT INTO ai_audit_events (id, project_id, payload) VALUES (2, 'project-1', '{}')",
+            "UPDATE ai_audit_events SET payload = '{\"tampered\":true}' WHERE id = 1",
+            "DELETE FROM ai_audit_events WHERE id = 1",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer audit mutation must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("RENDERER_SQL_SECURITY: denied mutation of ai_audit_events"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn renderer_rejects_indirect_legacy_ai_audit_cascade() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "foreign_keys", true)?;
+            conn.execute_batch(
+                "CREATE TABLE projects (id TEXT PRIMARY KEY);
+                 CREATE TABLE ai_audit_events (
+                    id INTEGER PRIMARY KEY,
+                    project_id TEXT NOT NULL
+                      REFERENCES projects(id) ON DELETE CASCADE,
+                    payload TEXT NOT NULL
+                 );
+                 INSERT INTO projects (id) VALUES ('project-1');
+                 INSERT INTO ai_audit_events (id, project_id, payload)
+                 VALUES (1, 'project-1', '{}');",
+            )?;
+            Ok(())
+        })
+        .expect("create legacy audit cascade fixture");
+
+        let error = db
+            .execute_renderer(
+                "DELETE FROM projects WHERE id = ?1",
+                &[Value::from("project-1")],
+                "run",
+            )
+            .expect_err("renderer must reject an indirect audit cascade");
+        assert!(
+            error
+                .to_string()
+                .contains("RENDERER_SQL_SECURITY: denied mutation of ai_audit_events"),
+            "unexpected error: {error}"
+        );
+
+        for table in ["projects", "ai_audit_events"] {
+            let rows = db
+                .execute(&format!("SELECT count(*) AS n FROM {table}"), &[], "get")
+                .expect("read fixture after rejected cascade");
+            assert_eq!(rows[0]["n"], Value::from(1));
+        }
+    }
+
+    #[test]
+    fn renderer_batch_audit_mutation_is_rejected_and_rolls_back_prior_writes() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE renderer_batch_guard (id INTEGER PRIMARY KEY);
+                 CREATE TABLE ai_audit_events (
+                id INTEGER PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                payload TEXT NOT NULL
+             );
+             INSERT INTO ai_audit_events (id, project_id, payload)
+             VALUES (1, 'project-1', '{}');",
+            )?;
+            Ok(())
+        })
+        .expect("trusted schema setup");
+
+        let error = db
+            .execute_batch_tx_renderer(&[
+                BatchStatement {
+                    sql: "INSERT INTO renderer_batch_guard (id) VALUES (1)".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+                BatchStatement {
+                    sql: "UPDATE ai_audit_events SET payload = '{}' WHERE id = 1".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+            ])
+            .expect_err("audit mutation must reject the full renderer batch");
+        assert!(error
+            .to_string()
+            .contains("RENDERER_SQL_SECURITY: denied mutation of ai_audit_events"));
+        let rows = db
+            .execute("SELECT count(*) AS n FROM renderer_batch_guard", &[], "get")
+            .expect("query rollback result");
+        assert_eq!(rows[0]["n"], Value::from(0));
+    }
+
+    #[test]
+    fn renderer_project_delete_retains_ai_audit_events() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        db.execute(
+            "INSERT INTO projects (id, title, created_at, updated_at)
+             VALUES ('project-1', 'Project', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed project");
+        db.execute(
+            "INSERT INTO ai_audit_events
+             (scope_id, project_id, sequence, event_id, execution_id, operation_id,
+              path_id, event_type, timestamp, recorded_at, payload, payload_sha256,
+              prev_hash, hash)
+             VALUES ('project:project-1', 'project-1', 1, 'event-1', 'execution-1', 'operation-1',
+                     'chat.direct', 'execution.started', 1, 1, '{}', 'payload-hash',
+                     'prev-hash', 'hash')",
+            &[],
+            "run",
+        )
+        .expect("trusted audit append fixture");
+
+        db.execute_renderer(
+            "DELETE FROM projects WHERE id = ?1",
+            &[Value::from("project-1")],
+            "run",
+        )
+        .expect("delete mutable project without erasing audit ledger");
+
+        let rows = db
+            .execute(
+                "SELECT count(*) AS n FROM ai_audit_events WHERE project_id = 'project-1'",
+                &[],
+                "get",
+            )
+            .expect("query retained ledger");
+        assert_eq!(rows[0]["n"], Value::from(1));
     }
 
     #[test]

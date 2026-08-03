@@ -1,7 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreamLoader";
 import {
   insertGenerationLog,
   serializePromptMessages,
@@ -12,6 +12,8 @@ import { blockIfUnlicensed } from "@/features/license/gate";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import { buildBeatContextForGeneration } from "./buildBeatContext";
 import { appendBeatChunk, ensureGeneratedBlock } from "./insertBeatStream";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -71,6 +73,11 @@ export async function generateBeatOnce(
   try {
     const c = await sendInlineAiStream(
       messages,
+      {
+        projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+        pathId: "beat_generation",
+        operationId: traceId,
+      },
       {
         onTextDelta: (delta) => {
           if (released) return;

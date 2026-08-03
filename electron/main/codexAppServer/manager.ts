@@ -8,7 +8,9 @@ import {
   type AdvanceCodexHistoryRevisionResult,
   buildCodexTurnInput,
   CODEX_APP_SERVER_WORKSPACE_STALE_CODE,
+  type CodexAppAuditContext,
   type CodexAppEventEnvelope,
+  type CodexAppEffectiveRequestReceipt,
   type CodexAppServerStatus,
   type CodexModel,
   type CodexRuntimeThreadBinding,
@@ -177,6 +179,14 @@ export interface CodexAppServerManagerOptions {
     projectId: string,
     workspacePath: string,
   ) => Promise<CodexMcpServerConfig | null>;
+  /**
+   * Main-owned durable ledger append. Production wiring binds this directly to
+   * the native backend; every model-affecting RPC awaits it before dispatch.
+   */
+  appendAuditObservations?: (
+    context: CodexAppAuditContext,
+    observations: readonly CodexAppEffectiveRequestReceipt[],
+  ) => Promise<void>;
   requestTimeoutMs?: number;
   approvalTimeoutMs?: number;
 }
@@ -297,6 +307,36 @@ function optionalPacketString(
     throw new Error(`invalid args \`${key}\`: packet is too large`);
   }
   return value;
+}
+
+function requiredCodexAuditContext(args: CommandArgs): CodexAppAuditContext {
+  const value = args.auditContext;
+  if (!isRecord(value)) {
+    throw new Error("invalid args `auditContext`: expected an object");
+  }
+  const parentExecutionIdValue = value.parentExecutionId;
+  if (
+    parentExecutionIdValue !== null &&
+    parentExecutionIdValue !== undefined &&
+    (typeof parentExecutionIdValue !== "string" ||
+      parentExecutionIdValue.length === 0 ||
+      parentExecutionIdValue.length > MAX_ID_LENGTH)
+  ) {
+    throw new Error(
+      "invalid args `auditContext.parentExecutionId`: expected a string or null",
+    );
+  }
+  return {
+    expectedWorkspacePath: workspacePathString(value, "expectedWorkspacePath"),
+    projectId: requiredString(value, "projectId"),
+    operationId: requiredString(value, "operationId"),
+    executionId: requiredString(value, "executionId"),
+    parentExecutionId:
+      typeof parentExecutionIdValue === "string"
+        ? parentExecutionIdValue
+        : null,
+    pathId: requiredString(value, "pathId"),
+  };
 }
 
 function extractThreadId(value: unknown): string | null {
@@ -1361,6 +1401,73 @@ export function createCodexAppServerManager(
     const allowApprovals = options.getAllowApprovals
       ? await options.getAllowApprovals().catch(() => false)
       : options.allowApprovals === true;
+    const developerInstructions = instructionsForTurn(allowApprovals);
+    const approvalPolicy = allowApprovals ? "on-request" : "never";
+    const appendEffectiveRequest = async (
+      observation: CodexAppEffectiveRequestReceipt,
+    ): Promise<void> => {
+      const context = input.auditContext;
+      // Direct manager unit consumers predate the audited IPC surface. The
+      // production handler always supplies a validated context below.
+      if (!context) return;
+      if (!options.appendAuditObservations) {
+        throw new CodexAppServerError(
+          "AI audit backend is unavailable for Codex App Server",
+          CODEX_APP_SERVER_PRE_TURN_CODE,
+          true,
+        );
+      }
+      if (
+        context.projectId !== input.projectId ||
+        context.expectedWorkspacePath !== input.expectedWorkspacePath ||
+        context.operationId !== input.grimodexTurnId ||
+        context.pathId !== "codex_app_server"
+      ) {
+        throw new CodexAppServerError(
+          "Codex App Server AI audit context does not match the turn",
+          CODEX_APP_SERVER_PRE_TURN_CODE,
+          true,
+        );
+      }
+      assertExpectedWorkspacePath(context.expectedWorkspacePath, cwd, true);
+      await options.appendAuditObservations(context, [observation]);
+      throwIfTurnStartInterrupted(starting);
+      await assertWorkspaceStillActive(cwd);
+      throwIfTurnStartInterrupted(starting);
+    };
+    const effectiveRequestObservation = (
+      inputObservation: Pick<
+        CodexAppEffectiveRequestReceipt,
+        | "rpcMethod"
+        | "modelVisibleMessages"
+        | "retryWithoutMcp"
+        | "mcpObservation"
+      >,
+    ): CodexAppEffectiveRequestReceipt => ({
+      ...inputObservation,
+      provider: "cli",
+      model: input.model ?? null,
+      effort:
+        inputObservation.rpcMethod === "turn/start"
+          ? (input.effort ?? null)
+          : null,
+      approvalPolicy,
+      sandboxMode: "read-only",
+      networkAccess: inputObservation.rpcMethod === "turn/start" ? false : null,
+      captureState: "partial",
+      limitations: [
+        "external-runtime-internal-prompt-unobservable",
+        "app-server-built-in-tool-schemas-unobservable",
+        "provider-private-thinking-unobservable",
+        ...(inputObservation.mcpObservation.configurationIncluded
+          ? ["mcp-negotiated-tool-schemas-unobservable"]
+          : []),
+        ...(inputObservation.mcpObservation
+          .inheritedThreadConfigurationUnobserved
+          ? ["existing-thread-tool-configuration-unobservable"]
+          : []),
+      ],
+    });
     throwIfTurnStartInterrupted(starting);
     const resumedTurnInput = buildCodexTurnInput({
       ...input,
@@ -1401,6 +1508,24 @@ export function createCodexAppServerManager(
     ) {
       try {
         await assertWorkspaceStillActive(cwd);
+        await appendEffectiveRequest(
+          effectiveRequestObservation({
+            rpcMethod: "thread/resume",
+            modelVisibleMessages: [
+              { role: "developer", content: developerInstructions },
+            ],
+            retryWithoutMcp: false,
+            mcpObservation: {
+              inheritedThreadConfigurationUnobserved: true,
+              configurationIncluded: false,
+              serverName: null,
+              command: null,
+              args: [],
+              mcpServerEnvExcluded: true,
+              toolSchemasObserved: false,
+            },
+          }),
+        );
         const resumed = await rpc.request(
           "thread/resume",
           {
@@ -1408,10 +1533,10 @@ export function createCodexAppServerManager(
             cwd,
             ...(input.model ? { model: input.model } : {}),
             sandbox: "read-only",
-            approvalPolicy: allowApprovals ? "on-request" : "never",
-            developerInstructions: instructionsForTurn(allowApprovals),
+            approvalPolicy,
+            developerInstructions,
           },
-          { retry: true },
+          { retry: false },
         );
         const resumedThreadId = extractThreadId(resumed);
         if (resumedThreadId && resumedThreadId !== existing.externalThreadId) {
@@ -1467,8 +1592,8 @@ export function createCodexAppServerManager(
         // Keep the base sandbox read-only even when approval cards are enabled.
         // A specific accepted server request is the only authority escalation.
         sandbox: "read-only",
-        approvalPolicy: allowApprovals ? "on-request" : "never",
-        developerInstructions: instructionsForTurn(allowApprovals),
+        approvalPolicy,
+        developerInstructions,
         ephemeral: false,
         ...(mcpServer
           ? {
@@ -1486,6 +1611,24 @@ export function createCodexAppServerManager(
       };
       let started: unknown;
       try {
+        await appendEffectiveRequest(
+          effectiveRequestObservation({
+            rpcMethod: "thread/start",
+            modelVisibleMessages: [
+              { role: "developer", content: developerInstructions },
+            ],
+            retryWithoutMcp: false,
+            mcpObservation: {
+              inheritedThreadConfigurationUnobserved: false,
+              configurationIncluded: mcpServer !== null,
+              serverName: mcpServer ? "grimodex" : null,
+              command: mcpServer?.command ?? null,
+              args: mcpServer?.args ?? [],
+              mcpServerEnvExcluded: true,
+              toolSchemasObserved: false,
+            },
+          }),
+        );
         started = await rpc.request("thread/start", threadStartParams, {
           retry: false,
         });
@@ -1506,6 +1649,24 @@ export function createCodexAppServerManager(
         } satisfies CodexAppEventEnvelope);
         const withoutMcp = { ...threadStartParams } as Record<string, unknown>;
         delete withoutMcp.config;
+        await appendEffectiveRequest(
+          effectiveRequestObservation({
+            rpcMethod: "thread/start",
+            modelVisibleMessages: [
+              { role: "developer", content: developerInstructions },
+            ],
+            retryWithoutMcp: true,
+            mcpObservation: {
+              inheritedThreadConfigurationUnobserved: false,
+              configurationIncluded: false,
+              serverName: null,
+              command: null,
+              args: [],
+              mcpServerEnvExcluded: true,
+              toolSchemasObserved: false,
+            },
+          }),
+        );
         started = await rpc.request("thread/start", withoutMcp, {
           retry: false,
         });
@@ -1529,6 +1690,27 @@ export function createCodexAppServerManager(
         throw cause;
       }
     }
+    try {
+      await appendEffectiveRequest(
+        effectiveRequestObservation({
+          rpcMethod: "turn/start",
+          modelVisibleMessages: [{ role: "user", content: turnInput }],
+          retryWithoutMcp: false,
+          mcpObservation: {
+            inheritedThreadConfigurationUnobserved: reusedThread,
+            configurationIncluded: false,
+            serverName: null,
+            command: null,
+            args: [],
+            mcpServerEnvExcluded: true,
+            toolSchemasObserved: false,
+          },
+        }),
+      );
+    } catch (cause) {
+      if (!reusedThread) void archiveExternalThread(threadId).catch(() => {});
+      throw cause;
+    }
     const timestamp = nowIso(now);
     const binding: CodexRuntimeThreadBinding = {
       sessionId: input.sessionId,
@@ -1550,6 +1732,7 @@ export function createCodexAppServerManager(
       await options.threadBindings.upsert(binding, cwd);
       throwIfTurnStartInterrupted(starting);
       await assertWorkspaceStillActive(cwd);
+      throwIfTurnStartInterrupted(starting);
     } catch (cause) {
       // A newly-created empty thread is best-effort cleanup only. The binding
       // failure itself remains a proven pre-turn outcome and is therefore safe
@@ -1596,6 +1779,7 @@ export function createCodexAppServerManager(
       // From this point a transport failure is ambiguous: the server may have
       // accepted the turn even when its response never reached main. Never
       // classify such failures as safe for renderer-side fallback.
+      throwIfTurnStartInterrupted(starting);
       starting.turnStartDispatched = true;
       const result = await rpc.request(
         "turn/start",
@@ -1605,7 +1789,7 @@ export function createCodexAppServerManager(
           ...(input.model ? { model: input.model } : {}),
           ...(input.effort ? { effort: input.effort } : {}),
           sandboxPolicy: { type: "readOnly", networkAccess: false },
-          approvalPolicy: active.allowApprovals ? "on-request" : "never",
+          approvalPolicy,
           clientUserMessageId: input.clientUserMessageId,
         },
         { retry: false },
@@ -2104,6 +2288,9 @@ export function createCodexAppServerManager(
         bootstrapHistory: optionalPacketString(args, "bootstrapHistory"),
         historyRevision: requiredString(args, "historyRevision"),
         userMessage: packetString(args, "userMessage"),
+        ...(options.appendAuditObservations
+          ? { auditContext: requiredCodexAuditContext(args) }
+          : {}),
       };
       try {
         const started = await startTurn(input, ownerId);
