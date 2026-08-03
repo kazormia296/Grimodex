@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const zenState = vi.hoisted(() => ({
   reduced: false,
   webGlSupported: true,
+  webGlProbeCalls: 0,
   rendererStatus: "webgl" as
     | "initializing"
     | "webgl"
@@ -32,7 +33,10 @@ vi.mock("./zen/useZenShaderConfig", () => ({
 }));
 
 vi.mock("./zen/zenWebGlSupport", () => ({
-  hasUsableZenWebGl2: () => zenState.webGlSupported,
+  hasUsableZenWebGl2: () => {
+    zenState.webGlProbeCalls += 1;
+    return zenState.webGlSupported;
+  },
 }));
 
 vi.mock("./zen/ZenShaderSurface", () => ({
@@ -98,6 +102,7 @@ describe("ZenAmbientBackdrop", () => {
   beforeEach(() => {
     zenState.reduced = false;
     zenState.webGlSupported = true;
+    zenState.webGlProbeCalls = 0;
     zenState.rendererStatus = "webgl";
     zenState.config.enabled = true;
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
@@ -134,6 +139,23 @@ describe("ZenAmbientBackdrop", () => {
       "false",
     );
     expect(container.querySelector("[data-zen-shader-surface]")).toBeNull();
+    expect(zenState.webGlProbeCalls).toBe(0);
+  });
+
+  it("probes once when a disabled background is enabled later", () => {
+    zenState.config.enabled = false;
+    const { container, rerender } = render(
+      <ZenAmbientBackdrop active={false} />,
+    );
+
+    expect(zenState.webGlProbeCalls).toBe(0);
+    expect(container.querySelector("[data-zen-shader-surface]")).toBeNull();
+
+    zenState.config.enabled = true;
+    rerender(<ZenAmbientBackdrop active={false} />);
+
+    expect(zenState.webGlProbeCalls).toBe(1);
+    expect(container.querySelector("[data-zen-shader-surface]")).not.toBeNull();
   });
 
   it("keeps a static background without mounting WebGL work when WebGL2 is unavailable", () => {
