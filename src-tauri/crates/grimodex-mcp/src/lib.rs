@@ -73,10 +73,25 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     // Open DB
     let conn = db::open_db(&db_path)?;
 
-    // Schema skew guard: mismatch → read-only降格
+    // Schema skew guard: mismatch → read-only降格. A converged v2 workspace
+    // may remain on its previous marker when desktop open deliberately skips a
+    // marker write behind another SQLite writer; the shared read-only probe
+    // proves that this marker-only state is safe for MCP writes too.
     let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let mut readonly = cli.readonly;
-    if user_version != grimodex_core::SCHEMA_VERSION {
+    let schema_write_compatible = match schema_allows_writes(&conn, user_version) {
+        Ok(compatible) => compatible,
+        Err(error) => {
+            tracing::warn!(
+                user_version,
+                expected = grimodex_core::SCHEMA_VERSION,
+                error = %error,
+                "Schema compatibility probe failed; forcing readonly mode"
+            );
+            false
+        }
+    };
+    if !schema_write_compatible {
         tracing::warn!(
             user_version,
             expected = grimodex_core::SCHEMA_VERSION,
@@ -121,6 +136,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     service.waiting().await?;
 
     Ok(())
+}
+
+fn schema_allows_writes(conn: &rusqlite::Connection, user_version: i32) -> anyhow::Result<bool> {
+    if user_version == grimodex_core::SCHEMA_VERSION {
+        return Ok(true);
+    }
+    if user_version != grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION {
+        return Ok(false);
+    }
+    grimodex_core::workspace_schema::is_converged_v2_workspace_schema(conn)
 }
 
 /// Synchronous wrapper for callers without an async runtime: the standalone
@@ -177,4 +202,53 @@ fn init_mcp_logging(
         .try_init();
 
     Some(guard)
+}
+
+#[cfg(test)]
+mod schema_compatibility_tests {
+    use super::*;
+    use grimodex_db::Database;
+
+    #[test]
+    fn converged_previous_marker_preserves_mcp_write_mode() {
+        let database =
+            Database::new(std::path::Path::new(":memory:")).expect("open compatibility fixture");
+        database.migrate().expect("create current schema");
+        database
+            .with_conn(|conn| {
+                conn.pragma_update(
+                    None,
+                    "user_version",
+                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                )?;
+                assert!(schema_allows_writes(
+                    conn,
+                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
+                )?);
+                Ok(())
+            })
+            .expect("verify converged previous schema");
+    }
+
+    #[test]
+    fn incomplete_previous_marker_forces_mcp_readonly_mode() {
+        let database =
+            Database::new(std::path::Path::new(":memory:")).expect("open compatibility fixture");
+        database.migrate().expect("create current schema");
+        database
+            .with_conn(|conn| {
+                conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")?;
+                conn.pragma_update(
+                    None,
+                    "user_version",
+                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                )?;
+                assert!(!schema_allows_writes(
+                    conn,
+                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
+                )?);
+                Ok(())
+            })
+            .expect("verify incomplete previous schema");
+    }
 }
