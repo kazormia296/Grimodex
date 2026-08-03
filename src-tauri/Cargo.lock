@@ -2131,6 +2131,7 @@ dependencies = [
  "clap",
  "dirs",
  "grimodex-core",
+ "grimodex-db",
  "rmcp",
  "rusqlite",
  "schemars 1.2.1",

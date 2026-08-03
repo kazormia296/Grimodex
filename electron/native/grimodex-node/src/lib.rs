@@ -24,6 +24,7 @@ mod test_link_stubs;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, TryLockError};
+use std::time::Instant;
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadSafeCallContext;
@@ -56,7 +57,10 @@ use grimodex_db::lint_terms::{
     self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
-use grimodex_db::open::{open_workspace_sync, OpenDeps};
+use grimodex_db::open::{
+    open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
+    NativeWorkspaceOpenTrace,
+};
 use grimodex_db::plot_threads::{
     self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
     PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
@@ -143,6 +147,12 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+fn native_workspace_open_trace_enabled() -> bool {
+    std::env::var("GRIMODEX_WORKSPACE_OPEN_TRACE")
+        .as_deref()
+        .is_ok_and(|value| value == "1")
 }
 
 /// Semantic commandの共通境界。blocking poolへ投入する**前**にruntimeの
@@ -261,10 +271,20 @@ fn authoritative_ime_mode(
 /// waits for an old snapshot writer to finish, rotates the request generation,
 /// and deactivates the shared pointer before any new writer can enter.
 fn rotate_ime_workspace(state: &AppState) {
+    rotate_ime_workspace_traced(state, None);
+}
+
+fn rotate_ime_workspace_traced(state: &AppState, mut trace: Option<&mut NativeWorkspaceOpenTrace>) {
+    let lock_span = trace
+        .as_deref_mut()
+        .and_then(|trace| trace.begin_span(NativeWorkspaceOpenSpanName::ImeLockWait));
     let _writer = match state.ime_write_lock.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
+    if let Some(trace) = trace {
+        trace.finish_span(lock_span);
+    }
     state.ime_request_gate.rotate_workspace();
     if let Err(error) = set_active_project(&state.ime_root, None, ImeIntegrationMode::On) {
         eprintln!("failed to deactivate IME pointer during workspace swap: {error}");
@@ -1538,7 +1558,8 @@ impl Backend {
         run_blocking(move || with_db_state(&state.ws, |db| db.vacuum())).await
     }
 
-    /// workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
+    /// workspace を開く: migrate → swap → RAII SwitchingGuard →
+    /// authority commit 後の低優先度 maintenance worker →
     /// recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
     /// Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
     /// Codex matcher破棄 + semantic 4cache epoch rotateを行う。
@@ -1548,28 +1569,75 @@ impl Backend {
     #[napi]
     pub async fn open_workspace(&self, path: String) -> Result<String> {
         let state = Arc::clone(&self.state);
-        run_blocking(move || {
+        let trace_enabled = native_workspace_open_trace_enabled();
+        let trace_started_at = Instant::now();
+        let mut trace = NativeWorkspaceOpenTrace::with_start(trace_started_at, trace_enabled);
+        let blocking_pool_span = trace.begin_span(NativeWorkspaceOpenSpanName::BlockingPoolWait);
+        let task = napi::tokio::task::spawn_blocking(move || {
+            trace.finish_span(blocking_pool_span);
             let state_for_hook = Arc::clone(&state);
-            let mut on_swapped = move || {
-                rotate_ime_workspace(&state_for_hook);
+            let mut on_swapped = move |trace: &mut NativeWorkspaceOpenTrace| {
+                rotate_ime_workspace_traced(&state_for_hook, Some(trace));
+
+                let matcher_span = trace.begin_span(NativeWorkspaceOpenSpanName::MatcherLockWait);
                 let mut matcher = match state_for_hook.codex_matcher.lock() {
                     Ok(matcher) => matcher,
                     Err(poisoned) => poisoned.into_inner(),
                 };
+                trace.finish_span(matcher_span);
                 *matcher = None;
+
+                let semantic_span = trace.begin_span(NativeWorkspaceOpenSpanName::SemanticRotate);
                 state_for_hook.semantic.rotate_workspace_epoch();
+                trace.finish_span(semantic_span);
             };
-            let mut deps = OpenDeps {
-                gs_path: &state.gs,
-                on_swapped: &mut on_swapped,
+            let result = match open_workspace_sync_traced(
+                &state.ws,
+                &state.gs,
+                &path,
+                &mut trace,
+                &mut on_swapped,
+            ) {
+                Ok(opened) => {
+                    let serialize_span =
+                        trace.begin_span(NativeWorkspaceOpenSpanName::SerializeEvent);
+                    state
+                        .events
+                        .emit("workspace:opened", serde_json::json!({ "path": path }));
+                    match serde_json::to_string(&opened) {
+                        Ok(json) => {
+                            trace.finish_span(serialize_span);
+                            Ok(json)
+                        }
+                        Err(error) => {
+                            trace.fail_span(serialize_span);
+                            Err(AppError::Anyhow(anyhow::Error::from(error)))
+                        }
+                    }
+                }
+                Err(error) => Err(error),
             };
-            let result = open_workspace_sync(&state.ws, &mut deps, &path)?;
-            state
-                .events
-                .emit("workspace:opened", serde_json::json!({ "path": path }));
-            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
+            (trace, result)
         })
-        .await
+        .await;
+
+        match task {
+            Ok((mut trace, result)) => {
+                let terminal = if result.is_ok() {
+                    NativeWorkspaceOpenResult::Ready
+                } else {
+                    NativeWorkspaceOpenResult::Failed
+                };
+                trace.emit_terminal(terminal);
+                result.map_err(app_err_to_napi)
+            }
+            Err(error) => {
+                let mut trace =
+                    NativeWorkspaceOpenTrace::with_start(trace_started_at, trace_enabled);
+                trace.emit_terminal(NativeWorkspaceOpenResult::Failed);
+                Err(join_err_to_napi(error))
+            }
+        }
     }
 
     /// 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。

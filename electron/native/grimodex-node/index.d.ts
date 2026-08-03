@@ -110,7 +110,8 @@ export declare class Backend {
    */
   vacuumDatabase(): Promise<void>
   /**
-   * workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
+   * workspace を開く: migrate → swap → RAII SwitchingGuard →
+   * authority commit 後の低優先度 maintenance worker →
    * recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
    * Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
    * Codex matcher破棄 + semantic 4cache epoch rotateを行う。

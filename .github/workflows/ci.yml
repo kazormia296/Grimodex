@@ -558,6 +558,16 @@ jobs:
           cargo test --locked --manifest-path src-tauri/Cargo.toml
           -p grimodex-db --lib windows_atomic_write
 
+      - name: Test workspace restore maintenance barrier on Windows
+        run: >-
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          -p grimodex-db --lib restore_waits_for_detached_workspace_maintenance_before_detaching_live_db
+
+      - name: Test same-path workspace reopen during maintenance on Windows
+        run: >-
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          -p grimodex-db --lib same_path_reopen_does_not_retain_the_previous_active_database
+
       - name: Parse the migration E2E PowerShell script
         shell: pwsh
         run: |

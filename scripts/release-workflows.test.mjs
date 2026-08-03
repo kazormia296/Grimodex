@@ -612,13 +612,14 @@ describe("release workflow boundary", () => {
       "utf8",
     );
 
-    assert.match(workspace, /^  "brace-expansion@5\.0\.6": 5\.0\.8$/m);
-    assert.match(workspace, /^  "brace-expansion@2\.1\.2": 5\.0\.8$/m);
-    assert.match(workspace, /^  "brace-expansion@1\.1\.14": 5\.0\.8$/m);
-    assert.match(lockfile, /^  brace-expansion@5\.0\.6: 5\.0\.8$/m);
-    assert.match(lockfile, /^  brace-expansion@2\.1\.2: 5\.0\.8$/m);
-    assert.match(lockfile, /^  brace-expansion@1\.1\.14: 5\.0\.8$/m);
-    assert.match(lockfile, /^  brace-expansion@5\.0\.8:$/m);
+    assert.match(workspace, /^  "brace-expansion@5\.0\.6": 5\.0\.9$/m);
+    assert.match(workspace, /^  "brace-expansion@2\.1\.2": 5\.0\.9$/m);
+    assert.match(workspace, /^  "brace-expansion@1\.1\.14": 5\.0\.9$/m);
+    assert.match(lockfile, /^  brace-expansion@5\.0\.6: 5\.0\.9$/m);
+    assert.match(lockfile, /^  brace-expansion@2\.1\.2: 5\.0\.9$/m);
+    assert.match(lockfile, /^  brace-expansion@1\.1\.14: 5\.0\.9$/m);
+    assert.match(lockfile, /^  brace-expansion@5\.0\.9:$/m);
+    assert.doesNotMatch(lockfile, /^  brace-expansion@5\.0\.8:/m);
     assert.doesNotMatch(lockfile, /^  brace-expansion@5\.0\.7:/m);
     assert.doesNotMatch(lockfile, /^      brace-expansion: 2\.1\.2$/m);
     assert.doesNotMatch(lockfile, /^      brace-expansion: 1\.1\.16$/m);

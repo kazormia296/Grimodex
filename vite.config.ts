@@ -44,6 +44,7 @@ function stripWoffFromFontsource() {
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }) => {
   const webEditorOnly = mode === "web-editor";
+  const rendererTarget = webEditorOnly ? "web-editor" : "desktop";
   const webEditorUnavailableDialogs = path.resolve(
     __dirname,
     "./src/features/hosted-editor/WebEditorUnavailableDialogs.tsx",
@@ -54,6 +55,11 @@ export default defineConfig(async ({ mode }) => {
   );
 
   return {
+    // The Web Editor and Electron renderer resolve different module graphs
+    // (the Web Editor installs four mode-only aliases). Sharing Vite's default
+    // dependency cache makes alternating `pnpm dev` and `pnpm electron:dev`
+    // invalidate and rebuild the other target's optimized dependencies.
+    cacheDir: path.resolve(__dirname, "node_modules/.vite", rendererTarget),
     plugins: [
       stripWoffFromFontsource(),
       react(),

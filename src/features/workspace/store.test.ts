@@ -91,6 +91,197 @@ describe("useWorkspaceStore", () => {
   });
 
   describe("initialize", () => {
+    it("joins concurrent startup initialization without flashing the launcher", async () => {
+      const path = "D:\\Novels\\StrictMode";
+      const settings = {
+        recentWorkspaces: [{ path, lastOpened: "2026-08-03T00:00:00Z" }],
+        lastActiveWorkspace: path,
+        theme: "system",
+        showLauncherOnStartup: false,
+        trustedWorkspaces: [path],
+      };
+      let resolveOpen!: (result: {
+        name: string;
+        isExisting: boolean;
+        workspaceId: string;
+      }) => void;
+      const openGate = new Promise<{
+        name: string;
+        isExisting: boolean;
+        workspaceId: string;
+      }>((resolve) => {
+        resolveOpen = resolve;
+      });
+      mockInvoke.mockImplementation(
+        async (command: string): Promise<unknown> => {
+          if (command === "get_global_settings") return settings;
+          if (command === "validate_workspace_path") return true;
+          if (command === "open_workspace") return openGate;
+          return { rows: [] };
+        },
+      );
+      const viewHistory = [useWorkspaceStore.getState().view];
+      const unsubscribe = useWorkspaceStore.subscribe((state, previous) => {
+        if (state.view !== previous.view) viewHistory.push(state.view);
+      });
+
+      try {
+        const firstInitialize = useWorkspaceStore.getState().initialize();
+        const secondInitialize = useWorkspaceStore.getState().initialize();
+
+        expect(secondInitialize).toBe(firstInitialize);
+        await vi.waitFor(() =>
+          expect(
+            mockInvoke.mock.calls.filter(
+              ([command]) => command === "open_workspace",
+            ),
+          ).toHaveLength(1),
+        );
+        expect(
+          mockInvoke.mock.calls.filter(
+            ([command]) => command === "get_global_settings",
+          ),
+        ).toHaveLength(1);
+        expect(
+          mockInvoke.mock.calls.filter(
+            ([command]) => command === "validate_workspace_path",
+          ),
+        ).toHaveLength(1);
+        expect(useWorkspaceStore.getState().view).toBe("loading");
+        expect(viewHistory).not.toContain("launcher");
+
+        resolveOpen({
+          name: "StrictMode",
+          isExisting: true,
+          workspaceId: "workspace-strict-mode",
+        });
+        await Promise.all([firstInitialize, secondInitialize]);
+
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          view: "editor",
+          activeWorkspacePath: path,
+          activeWorkspaceId: "workspace-strict-mode",
+        });
+        expect(viewHistory).toEqual(["loading", "editor"]);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("allows initialization to retry after the previous run settles", async () => {
+      mockInvoke.mockRejectedValueOnce(new Error("settings unavailable"));
+
+      const failedInitialize = useWorkspaceStore.getState().initialize();
+      await failedInitialize;
+      expect(useWorkspaceStore.getState()).toMatchObject({
+        view: "welcome",
+        globalSettings: null,
+      });
+
+      mockInvoke.mockResolvedValueOnce({
+        recentWorkspaces: [
+          {
+            path: "D:\\Novels\\Retry",
+            lastOpened: "2026-08-03T00:00:00Z",
+          },
+        ],
+        lastActiveWorkspace: "D:\\Novels\\Retry",
+        theme: "system",
+        showLauncherOnStartup: true,
+        trustedWorkspaces: ["D:\\Novels\\Retry"],
+      });
+      const retryInitialize = useWorkspaceStore.getState().initialize();
+
+      expect(retryInitialize).not.toBe(failedInitialize);
+      await retryInitialize;
+      expect(useWorkspaceStore.getState().view).toBe("launcher");
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command]) => command === "get_global_settings",
+        ),
+      ).toHaveLength(2);
+    });
+
+    it("does not replace a manual open in progress with the startup launcher fallback", async () => {
+      const manualPath = "D:\\Novels\\Manual";
+      const startupPath = "D:\\Novels\\Startup";
+      const settings = {
+        recentWorkspaces: [
+          { path: startupPath, lastOpened: "2026-08-03T00:00:00Z" },
+          { path: manualPath, lastOpened: "2026-08-02T00:00:00Z" },
+        ],
+        lastActiveWorkspace: startupPath,
+        theme: "system",
+        uiLanguage: "ja",
+        uiScale: 100,
+        showLauncherOnStartup: false,
+        trustedWorkspaces: [startupPath, manualPath],
+      };
+      useWorkspaceStore.setState({ globalSettings: settings });
+      let resolveManualValidation!: (valid: boolean) => void;
+      const manualValidationGate = new Promise<boolean>((resolve) => {
+        resolveManualValidation = resolve;
+      });
+      mockInvoke.mockImplementation(
+        async (
+          command: string,
+          args?: Record<string, unknown>,
+        ): Promise<unknown> => {
+          if (command === "get_global_settings") return settings;
+          if (command === "validate_workspace_path") {
+            return args?.path === manualPath ? manualValidationGate : true;
+          }
+          if (command === "open_workspace") {
+            return {
+              name: "Manual",
+              isExisting: true,
+              workspaceId: "workspace-manual",
+            };
+          }
+          return { rows: [] };
+        },
+      );
+      const viewHistory = [useWorkspaceStore.getState().view];
+      const unsubscribe = useWorkspaceStore.subscribe((state, previous) => {
+        if (state.view !== previous.view) viewHistory.push(state.view);
+      });
+
+      try {
+        const manualOpen = useWorkspaceStore
+          .getState()
+          .requestOpenWorkspace(manualPath);
+        await vi.waitFor(() =>
+          expect(mockInvoke).toHaveBeenCalledWith("validate_workspace_path", {
+            path: manualPath,
+          }),
+        );
+
+        await useWorkspaceStore.getState().initialize();
+
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          view: "loading",
+          workspaceOpenRequestInProgress: true,
+        });
+        expect(viewHistory).not.toContain("launcher");
+        expect(mockInvoke).not.toHaveBeenCalledWith("validate_workspace_path", {
+          path: startupPath,
+        });
+
+        resolveManualValidation(true);
+        await manualOpen;
+
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          view: "editor",
+          activeWorkspacePath: manualPath,
+          activeWorkspaceId: "workspace-manual",
+          workspaceOpenRequestInProgress: false,
+        });
+        expect(viewHistory).toEqual(["loading", "editor"]);
+      } finally {
+        unsubscribe();
+      }
+    });
+
     it("shows welcome screen when no workspaces exist", async () => {
       mockInvoke.mockResolvedValueOnce({
         recentWorkspaces: [],
