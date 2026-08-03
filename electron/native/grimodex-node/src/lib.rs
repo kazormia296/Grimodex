@@ -282,7 +282,7 @@ fn rotate_ime_workspace_traced(state: &AppState, mut trace: Option<&mut NativeWo
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace {
         trace.finish_span(lock_span);
     }
     state.ime_request_gate.rotate_workspace();
