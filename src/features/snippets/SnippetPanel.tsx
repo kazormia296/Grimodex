@@ -179,6 +179,21 @@ export function SnippetPanel() {
     }
   }, [create, t, setSelectedSnippet]);
 
+  const copySnippet = useCallback(
+    async (snippet: Snippet) => {
+      try {
+        await copyWithAttribution(
+          snippet.content,
+          (snippet.contentSource as AuthorshipSource) ?? "human",
+        );
+        toast.success(t("snippets.copied"));
+      } catch {
+        toast.error(t("snippets.copyFailed"));
+      }
+    },
+    [t],
+  );
+
   const handleKeyDown = useCallback(
     async (e: React.KeyboardEvent) => {
       // Don't intercept keys while typing in an input/textarea or contenteditable
@@ -284,11 +299,7 @@ export function SnippetPanel() {
         const snippet = filteredEntries[focusedIndex];
         if (!snippet) return;
         e.preventDefault();
-        copyWithAttribution(
-          snippet.content,
-          (snippet.contentSource as AuthorshipSource) ?? "human",
-        );
-        toast.success(t("snippets.copied"));
+        await copySnippet(snippet);
         return;
       }
 
@@ -309,6 +320,7 @@ export function SnippetPanel() {
       create,
       search,
       incrementUsageCount,
+      copySnippet,
       t,
       setSelectedSnippet,
     ],
@@ -529,11 +541,7 @@ export function SnippetPanel() {
                           setFocusedIndex(idx);
                         }}
                         onDoubleClick={() => {
-                          const source =
-                            (snippet.contentSource as AuthorshipSource) ??
-                            "human";
-                          copyWithAttribution(snippet.content, source);
-                          toast.success(t("snippets.copied"));
+                          void copySnippet(snippet);
                         }}
                         onContextMenu={(e) => {
                           e.preventDefault();
@@ -577,11 +585,7 @@ export function SnippetPanel() {
                                 tabIndex={-1}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  copyWithAttribution(
-                                    snippet.content,
-                                    (snippet.contentSource as AuthorshipSource) ??
-                                      "human",
-                                  );
+                                  void copySnippet(snippet);
                                 }}
                                 className="rounded p-0.5 text-muted-foreground opacity-0 transition-transform duration-75 hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 group-focus-within:opacity-100 active:scale-[0.97]"
                               >
