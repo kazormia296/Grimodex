@@ -66,13 +66,17 @@ async function rows(backend, sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
 
-async function waitForNewBackup(backend, before, timeoutMs = 30000) {
+async function waitForNewBackup(backend, workspace, before, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     const created = JSON.parse(await backend.listBackups()).find(
       ({ fileName }) => !before.has(fileName),
     );
     if (created) return created;
+    // The previous open may still own the path-scoped maintenance claim.
+    // Reopen until a retry can schedule the worker that observes the newly
+    // enabled automatic-backup setting.
+    await backend.openWorkspace(workspace);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`automatic backup was not created within ${timeoutMs}ms`);
@@ -90,7 +94,7 @@ async function writeBackupViaTrustedOpen(backend, workspace, path) {
   };
   await backend.saveGlobalSettings(settings);
   await backend.openWorkspace(workspace);
-  const created = await waitForNewBackup(backend, before);
+  const created = await waitForNewBackup(backend, workspace, before);
   const compressed = readFileSync(join(workspace, "backups", created.fileName));
   writeFileSync(
     path,
