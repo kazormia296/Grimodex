@@ -5,6 +5,7 @@ import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import {
   createEditorSticky,
   deleteEditorSticky,
+  EditorStickyConflictError,
   listEditorStickies,
   updateEditorSticky,
 } from "./editorStickyApi";
@@ -19,6 +20,17 @@ vi.mock("./editorStickyApi", () => ({
   deleteEditorSticky: vi.fn(),
   listEditorStickies: vi.fn(),
   updateEditorSticky: vi.fn(),
+  EditorStickyConflictError: class MockEditorStickyConflictError extends Error {
+    readonly stickyId: string;
+    readonly expectedVersion: number;
+
+    constructor(stickyId: string, expectedVersion: number) {
+      super(`Editor sticky ${stickyId}: version ${expectedVersion} conflict`);
+      this.name = "EditorStickyConflictError";
+      this.stickyId = stickyId;
+      this.expectedVersion = expectedVersion;
+    }
+  },
 }));
 
 const key: DocumentKey = { kind: "tree", id: "scene-1", storage: "database" };
@@ -147,6 +159,34 @@ describe("editor sticky document store", () => {
     ).toEqual([remote]);
   });
 
+  it("rejects a stale explicit base before publishing an optimistic row", async () => {
+    const current = { ...sticky, body: "remote", version: 1 };
+    vi.mocked(listEditorStickies)
+      .mockResolvedValueOnce([sticky])
+      .mockResolvedValueOnce([current]);
+    vi.mocked(updateEditorSticky).mockResolvedValueOnce(current);
+    await loadEditorStickies("project-1", key);
+
+    await useEditorStickyStore
+      .getState()
+      .update(sticky.id, "project-1", key, { body: "remote" }, 0);
+
+    await expect(
+      useEditorStickyStore
+        .getState()
+        .update(sticky.id, "project-1", key, { body: "stale" }, 0),
+    ).rejects.toMatchObject<Partial<EditorStickyConflictError>>({
+      name: "EditorStickyConflictError",
+      stickyId: sticky.id,
+      expectedVersion: 0,
+    });
+
+    expect(updateEditorSticky).toHaveBeenCalledOnce();
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([current]);
+  });
+
   it("waits for a pending update and deletes the latest persisted version", async () => {
     const updated: EditorSticky = { ...sticky, body: "saved", version: 1 };
     let resolveUpdate!: (value: EditorSticky) => void;
@@ -218,6 +258,61 @@ describe("editor sticky document store", () => {
     expect(
       useEditorStickyStore.getState().getForDocument("project-1", key),
     ).toEqual([]);
+  });
+
+  it("keeps a failed initial load retryable after creating a sticky", async () => {
+    const existing = [
+      { ...sticky, id: "sticky-a", body: "A" },
+      { ...sticky, id: "sticky-b", body: "B" },
+    ];
+    const created = { ...sticky, id: "sticky-c", body: "C" };
+    vi.mocked(listEditorStickies)
+      .mockRejectedValueOnce(new Error("temporary list failure"))
+      .mockResolvedValueOnce([...existing, created]);
+    vi.mocked(createEditorSticky).mockResolvedValueOnce(created);
+
+    await expect(loadEditorStickies("project-1", key)).rejects.toThrow(
+      "temporary list failure",
+    );
+    await expect(
+      useEditorStickyStore.getState().create("project-1", key, {
+        inlineOffset: created.inlineOffset,
+        blockOffset: created.blockOffset,
+      }),
+    ).resolves.toEqual(created);
+
+    await loadEditorStickies("project-1", key);
+
+    expect(listEditorStickies).toHaveBeenCalledTimes(2);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([...existing, created]);
+  });
+
+  it("waits for an in-flight initial load before creating a sticky", async () => {
+    const pending = deferred<EditorSticky[]>();
+    const existing = [{ ...sticky, id: "sticky-a", body: "A" }];
+    const created = { ...sticky, id: "sticky-c", body: "C" };
+    vi.mocked(listEditorStickies).mockReturnValueOnce(pending.promise);
+    vi.mocked(createEditorSticky).mockResolvedValueOnce(created);
+
+    const load = loadEditorStickies("project-1", key);
+    await vi.waitFor(() => expect(listEditorStickies).toHaveBeenCalledOnce());
+
+    const create = useEditorStickyStore.getState().create("project-1", key, {
+      inlineOffset: created.inlineOffset,
+      blockOffset: created.blockOffset,
+    });
+    expect(createEditorSticky).not.toHaveBeenCalled();
+
+    pending.resolve(existing);
+    await load;
+    await expect(create).resolves.toEqual(created);
+
+    expect(createEditorSticky).toHaveBeenCalledOnce();
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([...existing, created]);
   });
 
   it("passes an explicit id through for Global History restoration", async () => {

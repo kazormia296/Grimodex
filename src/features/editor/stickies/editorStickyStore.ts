@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   createEditorSticky,
   deleteEditorSticky,
+  EditorStickyConflictError,
   listEditorStickies,
   updateEditorSticky,
   type CreateEditorStickyInput,
@@ -141,19 +142,26 @@ export const useEditorStickyStore = create<EditorStickyStoreState>()(
 
     async create(projectId, documentKey, input) {
       const scope = captureScope();
+      const key = bucketKey(projectId, documentKey, scope);
+      const pendingLoad = pendingLoads.get(key);
+      if (pendingLoad) {
+        // A list started before this create must publish before we append the
+        // new row. Otherwise its whole-bucket replacement can erase the row
+        // from the visible store when the list result is older than create.
+        await pendingLoad.catch(() => undefined);
+        assertCurrentScope(scope);
+      }
       const created = await createEditorSticky({
         ...input,
         projectId,
         documentKey,
       });
       assertCurrentScope(scope);
-      const key = bucketKey(projectId, documentKey, scope);
       set((state) => ({
         byDocument: {
           ...state.byDocument,
           [key]: [...(state.byDocument[key] ?? []), created],
         },
-        loaded: { ...state.loaded, [key]: true },
       }));
       return created;
     },
@@ -172,6 +180,15 @@ export const useEditorStickyStore = create<EditorStickyStoreState>()(
             throw new Error(`Editor sticky ${stickyId} is not loaded`);
           }
           const expectedVersion = baseVersion ?? current.version;
+          if (baseVersion !== undefined && baseVersion !== current.version) {
+            // Do not expose a stale patch as the current version while native
+            // OCC is still pending. A second Surface could otherwise capture
+            // that optimistic row and save it successfully against the
+            // version belonging to another writer's body.
+            await reloadEditorStickies(projectId, documentKey);
+            assertCurrentScope(scope);
+            throw new EditorStickyConflictError(stickyId, baseVersion);
+          }
           const optimistic = { ...current, ...patch };
           set((state) => ({
             byDocument: {

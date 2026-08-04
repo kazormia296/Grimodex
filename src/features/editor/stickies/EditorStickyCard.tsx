@@ -30,6 +30,11 @@ interface DragState {
   startY: number;
 }
 
+interface EditorStickyDraftSession {
+  baseBody: string;
+  baseVersion: number;
+}
+
 export interface EditorStickyCardProps {
   sticky: EditorSticky;
   left: number;
@@ -101,9 +106,26 @@ export function EditorStickyCard({
     );
   }
   const draftController = draftControllerRef.current;
+  const draftSessionRef = useRef<EditorStickyDraftSession | null>(
+    editing ? { baseBody: sticky.body, baseVersion: sticky.version } : null,
+  );
+  // Capture the edit authority on entry. A sibling Surface may publish a
+  // newer row while this editor is open, but that row must not rebase this
+  // draft before its own save is attempted.
+  if (editing && draftSessionRef.current === null) {
+    draftSessionRef.current = {
+      baseBody: sticky.body,
+      baseVersion: sticky.version,
+    };
+    draftBaseVersionRef.current = sticky.version;
+  }
   draftController.setPersist(async (body) => {
     const saved = await onBodySave(sticky, body, draftBaseVersionRef.current);
     draftBaseVersionRef.current = saved.version;
+    draftSessionRef.current = {
+      baseBody: saved.body,
+      baseVersion: saved.version,
+    };
   });
   const [draftBody, setDraftBody] = useState(sticky.body);
   const [dirty, setDirty] = useState(false);
@@ -112,6 +134,7 @@ export function EditorStickyCard({
     if (!editing && !draftController.dirty) {
       draftController.latestBody = sticky.body;
       draftBaseVersionRef.current = sticky.version;
+      draftSessionRef.current = null;
       setDraftBody(sticky.body);
     }
   }, [draftController, editing, sticky.body, sticky.version]);
@@ -132,6 +155,9 @@ export function EditorStickyCard({
       draftController.discard();
       setDirty(false);
       draftBaseVersionRef.current = sticky.version;
+      draftSessionRef.current = editing
+        ? { baseBody: sticky.body, baseVersion: sticky.version }
+        : null;
       draftController.latestBody = sticky.body;
       setDraftBody(sticky.body);
     },
@@ -173,7 +199,13 @@ export function EditorStickyCard({
   }, [menu]);
 
   const changeDraft = (body: string) => {
-    if (!draftController.dirty) {
+    // Keep the base version captured at edit entry. Re-reading sticky.version
+    // here would turn a sibling's external update into a silent rebase.
+    if (draftSessionRef.current === null) {
+      draftSessionRef.current = {
+        baseBody: sticky.body,
+        baseVersion: sticky.version,
+      };
       draftBaseVersionRef.current = sticky.version;
     }
     draftController.markDirty(body);
