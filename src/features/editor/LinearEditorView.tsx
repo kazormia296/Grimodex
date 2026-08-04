@@ -11,6 +11,7 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { FindScrollbarMarkers } from "@/features/editor/FindScrollbarMarkers";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
+import { requestEditorStickyAtTarget } from "@/features/editor/stickies/editorStickySurfaceRegistry";
 import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
@@ -619,6 +620,9 @@ export function LinearEditorView() {
         editor={focusedEditor}
         containerRef={scrollRef}
         canEditCodexSemanticLink={canEditCodexSemanticLink}
+        onAddSticky={(x, y, target) => {
+          requestEditorStickyAtTarget(target, x, y);
+        }}
       />
       {/* / コマンドのサジェスト。グローバル store (useSlashCommandStore) を
           読む消費者なのでビュー全体で 1 個マウントすれば全ブロックに効く。

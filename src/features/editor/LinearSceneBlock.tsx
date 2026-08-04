@@ -122,6 +122,7 @@ import {
   handleSceneEditorTransaction,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
+import { EditorStickySurface } from "@/features/editor/stickies/EditorStickySurface";
 
 const InlineAIPalette = lazy(async () => {
   const module = await import("@/features/editor/inlineAi/InlineAIPalette");
@@ -1151,7 +1152,15 @@ function MountedSceneBlock({
                 filterSource ? `attribution-filter-${filterSource}` : ""
               }
             >
-              <EditorContent editor={editor} />
+              <EditorStickySurface
+                editor={editor}
+                documentKey={documentKey}
+                projectId={currentProjectId}
+                fontSize={editorSettings.fontSize}
+                verticalMode={editorSettings.verticalMode}
+              >
+                <EditorContent editor={editor} />
+              </EditorStickySurface>
             </div>
             <div className="mt-2 text-right text-xs text-muted-foreground/50">
               {primaryCount.toLocaleString()} {primaryUnitLabel}

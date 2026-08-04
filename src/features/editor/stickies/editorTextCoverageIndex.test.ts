@@ -29,7 +29,9 @@ describe("editor text coverage", () => {
     const rects = vi.fn(function (this: Range) {
       const text = this.toString();
       if (text === "本文" || text === "末尾") {
-        return [{ left: text === "本文" ? 10 : 40, top: 20, width: 20, height: 18 }];
+        return [
+          { left: text === "本文" ? 10 : 40, top: 20, width: 20, height: 18 },
+        ];
       }
       return [];
     });
@@ -55,7 +57,7 @@ describe("editor text coverage", () => {
       projectCoverageToCard(
         [
           { x: 20, y: 30, width: 30, height: 18 },
-          { x: 100, y: 30, width: 30, height: 18 },
+          { x: 140, y: 30, width: 30, height: 18 },
         ],
         { left: 40, top: 20, width: 80, height: 40 },
       ),

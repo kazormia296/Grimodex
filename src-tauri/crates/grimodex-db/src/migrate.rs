@@ -32,12 +32,20 @@ impl Database {
         );
         if !force_full {
             if current == SCHEMA_VERSION {
-                // Crash recovery is an open-time operational invariant, not a
-                // schema revision. The helper first performs a read-only EXISTS
-                // check, so the healthy current-version path never takes a write
-                // lock (and cannot sit behind an unrelated SQLite writer).
-                Self::recover_interrupted_post_effect_runs(&conn)?;
-                return Ok(());
+                // Editor-only visual stickies were added after the v3 schema
+                // marker. Keep the current marker stable, but do not let an
+                // older v3 workspace take the healthy read-only fast path
+                // without this additive table.
+                if !Self::has_editor_stickies_table(&conn)? {
+                    // Fall through to the idempotent DDL below.
+                } else {
+                    // Crash recovery is an open-time operational invariant, not a
+                    // schema revision. The helper first performs a read-only EXISTS
+                    // check, so the healthy current-version path never takes a write
+                    // lock (and cannot sit behind an unrelated SQLite writer).
+                    Self::recover_interrupted_post_effect_runs(&conn)?;
+                    return Ok(());
+                }
             }
 
             if current == grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
@@ -830,6 +838,53 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_map_stickies_chat_msg
                 ON map_stickies(source_chat_message_id)
                 WHERE source_chat_message_id IS NOT NULL;
+
+            -- editor_stickies: display-only notes owned by the exact editor
+            -- document. They are intentionally not Map Stickies and never
+            -- enter export, search, lint, semantic, or AI context pipelines.
+            CREATE TABLE IF NOT EXISTS editor_stickies (
+                id                 TEXT PRIMARY KEY,
+                project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                document_key       TEXT NOT NULL,
+                body               TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}',
+                palette_id         TEXT NOT NULL DEFAULT 'post-it-playful',
+                color_slot         INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0),
+                inline_offset      REAL NOT NULL DEFAULT 0,
+                block_offset       REAL NOT NULL DEFAULT 0,
+                z_index            INTEGER NOT NULL DEFAULT 0,
+                version            INTEGER NOT NULL DEFAULT 0,
+                tree_node_id       TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                codex_entry_id     TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                phase_id           TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+                snippet_id         TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                chronicle_event_id TEXT REFERENCES events(id) ON DELETE CASCADE,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL),
+                CHECK (
+                    (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN chronicle_event_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_editor_stickies_project_document
+                ON editor_stickies(project_id, document_key);
+            CREATE INDEX IF NOT EXISTS idx_editor_stickies_tree_node
+                ON editor_stickies(tree_node_id)
+                WHERE tree_node_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_editor_stickies_codex_entry
+                ON editor_stickies(codex_entry_id)
+                WHERE codex_entry_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_editor_stickies_phase
+                ON editor_stickies(phase_id)
+                WHERE phase_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_editor_stickies_snippet
+                ON editor_stickies(snippet_id)
+                WHERE snippet_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_editor_stickies_event
+                ON editor_stickies(chronicle_event_id)
+                WHERE chronicle_event_id IS NOT NULL;
 
             -- map_node_positions: positions for all node types on a board
             CREATE TABLE IF NOT EXISTS map_node_positions (
@@ -2148,6 +2203,17 @@ impl Database {
             [],
         )?;
         Ok(())
+    }
+
+    fn has_editor_stickies_table(conn: &Connection) -> anyhow::Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'editor_stickies'
+            )",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     fn has_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<bool> {

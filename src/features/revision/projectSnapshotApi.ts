@@ -778,6 +778,9 @@ async function restoreStructural(
     for (const row of auxByScope.get("map_stickies") ?? []) {
       pushStmt(buildInsert("map_stickies", row));
     }
+    for (const row of auxByScope.get("editor_stickies") ?? []) {
+      pushStmt(buildInsert("editor_stickies", row));
+    }
     for (const row of auxByScope.get("map_frames") ?? []) {
       pushStmt(buildInsert("map_frames", row));
     }

@@ -135,7 +135,11 @@ function Wrapper({
 }: {
   editor: Editor | null;
   canEditCodexSemanticLink?: boolean;
-  onAddSticky?: (clientX: number, clientY: number, target: EventTarget | null) => void;
+  onAddSticky?: (
+    clientX: number,
+    clientY: number,
+    target: EventTarget | null,
+  ) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const semanticLinkProps =

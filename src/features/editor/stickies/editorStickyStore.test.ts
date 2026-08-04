@@ -50,7 +50,9 @@ describe("editor sticky document store", () => {
 
     expect(listEditorStickies).toHaveBeenCalledOnce();
     expect(useEditorStickyStore.getState().byDocument.scene1).toBeUndefined();
-    expect(useEditorStickyStore.getState().getForDocument(key)).toEqual([sticky]);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([sticky]);
   });
 
   it("keeps an optimistic edit visible and persists the OCC version", async () => {
@@ -64,14 +66,18 @@ describe("editor sticky document store", () => {
 
     await useEditorStickyStore
       .getState()
-      .update(sticky.id, key, { blockOffset: 40 });
+      .update(sticky.id, "project-1", key, { blockOffset: 40 });
 
     expect(updateEditorSticky).toHaveBeenCalledWith(
+      "project-1",
       sticky.id,
       { blockOffset: 40 },
       0,
     );
-    expect(useEditorStickyStore.getState().getForDocument(key)[0]?.version).toBe(1);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key)[0]
+        ?.version,
+    ).toBe(1);
   });
 
   it("inserts and removes a sticky from the same document bucket", async () => {
@@ -82,10 +88,35 @@ describe("editor sticky document store", () => {
       inlineOffset: 12,
       blockOffset: 24,
     });
-    expect(useEditorStickyStore.getState().getForDocument(key)).toHaveLength(1);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toHaveLength(1);
 
-    await useEditorStickyStore.getState().remove(sticky.id, key, sticky.version);
-    expect(deleteEditorSticky).toHaveBeenCalledWith(sticky.id, sticky.version);
-    expect(useEditorStickyStore.getState().getForDocument(key)).toEqual([]);
+    await useEditorStickyStore
+      .getState()
+      .remove(sticky.id, "project-1", key, sticky.version);
+    expect(deleteEditorSticky).toHaveBeenCalledWith(
+      "project-1",
+      sticky.id,
+      sticky.version,
+    );
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([]);
+  });
+
+  it("does not reuse a loaded document bucket across projects", async () => {
+    vi.mocked(listEditorStickies).mockResolvedValue([sticky]);
+
+    await loadEditorStickies("project-1", key);
+    await loadEditorStickies("project-2", key);
+
+    expect(listEditorStickies).toHaveBeenCalledTimes(2);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-2", key),
+    ).toEqual([sticky]);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([sticky]);
   });
 });

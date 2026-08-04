@@ -41,6 +41,7 @@ use grimodex_db::domain_writes::{
     self, CodexRenameUndoPayload, CreateScanStagingProjectPayload, ReplaceAuthorshipLanePayload,
     SetEntityTagsPayload, UndoTreePlanPayload,
 };
+use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
@@ -1245,6 +1246,62 @@ impl Backend {
                 let rows = db.execute_batch_tx_renderer(&statements)?;
                 Ok(serde_json::to_string(&QueryResult { rows })?)
             })
+        })
+        .await
+    }
+
+    /// Typed persistence commands for Editor-only visual stickies. The
+    /// renderer sends document-shaped DTOs; SQL and typed owner derivation
+    /// stay inside grimodex-db.
+    #[napi]
+    pub async fn editor_sticky_list(
+        &self,
+        project_id: String,
+        document_key: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&editor_stickies::list(
+                    db,
+                    project_id,
+                    document_key,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn editor_sticky_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: editor_stickies::CreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&editor_stickies::create(db, payload)?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn editor_sticky_update(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: editor_stickies::UpdatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&editor_stickies::update(db, payload)?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn editor_sticky_delete(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: editor_stickies::DeletePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| editor_stickies::delete(db, payload))
         })
         .await
     }

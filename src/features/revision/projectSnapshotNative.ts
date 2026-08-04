@@ -40,6 +40,7 @@ export const SNAPSHOT_RESTORE_TABLES = [
   "map_boards",
   "map_ai_branches",
   "map_stickies",
+  "editor_stickies",
   "map_frames",
   "map_node_positions",
   "map_edges",

@@ -88,6 +88,7 @@ pub enum SnapshotRestoreTable {
     MapBoards,
     MapAiBranches,
     MapStickies,
+    EditorStickies,
     MapFrames,
     MapNodePositions,
     MapEdges,
@@ -135,6 +136,7 @@ impl SnapshotRestoreTable {
             Self::MapBoards => "map_boards",
             Self::MapAiBranches => "map_ai_branches",
             Self::MapStickies => "map_stickies",
+            Self::EditorStickies => "editor_stickies",
             Self::MapFrames => "map_frames",
             Self::MapNodePositions => "map_node_positions",
             Self::MapEdges => "map_edges",
@@ -180,6 +182,7 @@ impl SnapshotRestoreTable {
             Self::MapBoards
             | Self::MapAiBranches
             | Self::MapStickies
+            | Self::EditorStickies
             | Self::MapFrames
             | Self::MapNodePositions
             | Self::MapEdges => RestoreScope::Map,
@@ -262,6 +265,7 @@ const AUX_SPECS: &[AuxSpec] = &[
     AuxSpec { scope: "map_boards", owner: RestoreScope::Map, table: "map_boards", predicate: "project_id = ?", binds: 1 },
     AuxSpec { scope: "map_ai_branches", owner: RestoreScope::Map, table: "map_ai_branches", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "map_stickies", owner: RestoreScope::Map, table: "map_stickies", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
+    AuxSpec { scope: "editor_stickies", owner: RestoreScope::Map, table: "editor_stickies", predicate: "project_id = ?", binds: 1 },
     AuxSpec { scope: "map_node_positions", owner: RestoreScope::Map, table: "map_node_positions", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "map_edges", owner: RestoreScope::Map, table: "map_edges", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "map_frames", owner: RestoreScope::Map, table: "map_frames", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
@@ -859,6 +863,12 @@ pub fn apply_project_snapshot_restore(
                 &transaction,
                 "map_boards",
                 "DELETE FROM map_boards WHERE project_id = ?1",
+                &payload.project_id,
+            )?;
+            delete_for_project(
+                &transaction,
+                "editor_stickies",
+                "DELETE FROM editor_stickies WHERE project_id = ?1",
                 &payload.project_id,
             )?;
         }

@@ -2658,6 +2658,194 @@
       ],
       "createSql": "CREATE TABLE content_versions ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), entity_type TEXT NOT NULL CHECK(entity_type IN ('scene', 'note', 'codex_entry', 'snippet')), entity_id TEXT NOT NULL, content TEXT NOT NULL, version_number INTEGER NOT NULL, snapshot_type TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto', 'manual')), created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entity_type, entity_id, version_number) )"
     },
+    "editor_stickies": {
+      "kind": "table",
+      "columns": {
+        "block_offset": {
+          "ordinal": 7,
+          "declaredType": "REAL",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "body": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{\"type\":\"doc\",\"content\":[]}'",
+          "primaryKey": 0
+        },
+        "chronicle_event_id": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "codex_entry_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "color_slot": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "document_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "inline_offset": {
+          "ordinal": 6,
+          "declaredType": "REAL",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "palette_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'post-it-playful'",
+          "primaryKey": 0
+        },
+        "phase_id": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "snippet_id": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "tree_node_id": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 16,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "z_index": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "events",
+          "from": "chronicle_event_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "snippets",
+          "from": "snippet_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
+          "sequence": 0,
+          "table": "codex_entry_phases",
+          "from": "phase_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 3,
+          "sequence": 0,
+          "table": "codex_entries",
+          "from": "codex_entry_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 4,
+          "sequence": 0,
+          "table": "tree_nodes",
+          "from": "tree_node_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 5,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE editor_stickies ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, document_key TEXT NOT NULL, body TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}', palette_id TEXT NOT NULL DEFAULT 'post-it-playful', color_slot INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0), inline_offset REAL NOT NULL DEFAULT 0, block_offset REAL NOT NULL DEFAULT 0, z_index INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0, tree_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, codex_entry_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE, phase_id TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE, snippet_id TEXT REFERENCES snippets(id) ON DELETE CASCADE, chronicle_event_id TEXT REFERENCES events(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL), CHECK ( (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END + CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END + CASE WHEN snippet_id IS NOT NULL THEN 1 ELSE 0 END + CASE WHEN chronicle_event_id IS NOT NULL THEN 1 ELSE 0 END) = 1 ) )"
+    },
     "event_chunks": {
       "kind": "table",
       "columns": {
@@ -8438,6 +8626,82 @@
         }
       ],
       "createSql": "CREATE INDEX idx_cv_entity ON content_versions(entity_type, entity_id, version_number DESC)"
+    },
+    "idx_editor_stickies_codex_entry": {
+      "table": "editor_stickies",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "codex_entry_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_editor_stickies_codex_entry ON editor_stickies(codex_entry_id) WHERE codex_entry_id IS NOT NULL"
+    },
+    "idx_editor_stickies_event": {
+      "table": "editor_stickies",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "chronicle_event_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_editor_stickies_event ON editor_stickies(chronicle_event_id) WHERE chronicle_event_id IS NOT NULL"
+    },
+    "idx_editor_stickies_phase": {
+      "table": "editor_stickies",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "phase_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_editor_stickies_phase ON editor_stickies(phase_id) WHERE phase_id IS NOT NULL"
+    },
+    "idx_editor_stickies_project_document": {
+      "table": "editor_stickies",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "document_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_editor_stickies_project_document ON editor_stickies(project_id, document_key)"
+    },
+    "idx_editor_stickies_snippet": {
+      "table": "editor_stickies",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "snippet_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_editor_stickies_snippet ON editor_stickies(snippet_id) WHERE snippet_id IS NOT NULL"
+    },
+    "idx_editor_stickies_tree_node": {
+      "table": "editor_stickies",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "tree_node_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_editor_stickies_tree_node ON editor_stickies(tree_node_id) WHERE tree_node_id IS NOT NULL"
     },
     "idx_event_chunks_model": {
       "table": "event_chunks",

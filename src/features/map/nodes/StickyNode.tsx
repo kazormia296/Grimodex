@@ -4,7 +4,6 @@ import {
   useRef,
   useCallback,
   useEffect,
-  useMemo,
   useSyncExternalStore,
   type CSSProperties,
 } from "react";
@@ -16,8 +15,11 @@ import { NodeToolbar, Position, type NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
 import { useEditor, EditorContent } from "@tiptap/react";
-import { generateHTML } from "@tiptap/core";
 import { getStickyEditorExtensions } from "@/features/editor/extensions";
+import {
+  parseStickyBody,
+  StickyRichTextBody,
+} from "@/features/sticky/StickyRichTextBody";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import {
   updateSticky,
@@ -186,40 +188,6 @@ const STICKY_REDUCED_VARIANTS = {
   exit: STICKY_EXIT,
 } as const;
 
-function parseBodyContent(body: string): object | undefined {
-  if (!body) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
-
-function StickyBodyView({ body }: { body: string }) {
-  const html = useMemo(() => {
-    const json = parseBodyContent(body);
-    if (!json) return "";
-    try {
-      return generateHTML(json, getStickyEditorExtensions());
-    } catch {
-      return "";
-    }
-  }, [body]);
-  return (
-    <div
-      data-testid="sticky-body-view"
-      className="sticky-body-view"
-      style={{
-        fontSize: 12,
-        lineHeight: 1.5,
-        color: "rgba(0,0,0,0.65)",
-        wordBreak: "break-word",
-      }}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
-}
-
 interface StickyBodyEditorProps {
   stickyId: string;
   body: string;
@@ -235,7 +203,7 @@ function StickyBodyEditor({
 }: StickyBodyEditorProps) {
   const editor = useEditor({
     extensions: getStickyEditorExtensions(),
-    content: parseBodyContent(body),
+    content: parseStickyBody(body),
     onUpdate({ editor: ed }) {
       onContentChange(JSON.stringify(ed.getJSON()));
     },
@@ -633,7 +601,7 @@ export const StickyNode = memo(function StickyNode({
                       onEscape={exitEditing}
                     />
                   ) : (
-                    <StickyBodyView body={d.body} />
+                    <StickyRichTextBody body={d.body} />
                   )}
                 </div>
               </div>

@@ -3,7 +3,10 @@ import { editorStickies } from "./schema";
 
 describe("editor_stickies schema", () => {
   it("declares display-only document identity, logical placement, and OCC fields", () => {
-    const columns = editorStickies as unknown as Record<string, { name: string }>;
+    const columns = editorStickies as unknown as Record<
+      string,
+      { name: string }
+    >;
     expect(columns.documentKey.name).toBe("document_key");
     expect(columns.inlineOffset.name).toBe("inline_offset");
     expect(columns.blockOffset.name).toBe("block_offset");

@@ -57,7 +57,12 @@ describe("editor sticky logical placement", () => {
     expect(
       clampStickyPosition(
         { left: -500, top: 1200 },
-        { surfaceWidth: 800, surfaceHeight: 600, stickyWidth: 200, stickyHeight: 96 },
+        {
+          surfaceWidth: 800,
+          surfaceHeight: 600,
+          stickyWidth: 200,
+          stickyHeight: 96,
+        },
       ),
     ).toEqual({ left: -176, top: 576 });
   });

@@ -1168,6 +1168,67 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: { rows: [] } });
   });
 
+  it("editor sticky commands keep DTO validation and backend mapping typed", async () => {
+    const editorStickyCreate = vi
+      .fn()
+      .mockResolvedValue(
+        '{"id":"sticky-1","projectId":"project-1","documentKey":"tree:database:scene-1"}',
+      );
+    const { backend } = fakeBackend({
+      editorStickyCreate: editorStickyCreate as never,
+    });
+    const payload = {
+      projectId: "project-1",
+      documentKey: "tree:database:scene-1",
+      body: '{"type":"doc","content":[]}',
+      paletteId: "post-it-playful",
+      colorSlot: 0,
+      inlineOffset: 12,
+      blockOffset: 24,
+      zIndex: 0,
+    };
+    const env = await dispatchInvoke(
+      "editor_sticky_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(editorStickyCreate).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        id: "sticky-1",
+        projectId: "project-1",
+        documentKey: "tree:database:scene-1",
+      },
+    });
+
+    const invalid = await dispatchInvoke(
+      "editor_sticky_create",
+      { payload: { ...payload, colorSlot: "0" } },
+      { backend, shell: noShell },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(editorStickyCreate).toHaveBeenCalledOnce();
+    if (!invalid.ok) {
+      expect(invalid.error).toContain(
+        "invalid args `colorSlot` for command `editor_sticky_create`",
+      );
+    }
+  });
+
+  it("editor sticky list reports backend absence instead of falling through", async () => {
+    const { backend } = fakeBackend();
+    const env = await dispatchInvoke(
+      "editor_sticky_list",
+      { projectId: "project-1", documentKey: "tree:database:scene-1" },
+      { backend, shell: noShell },
+    );
+    expect(env).toMatchObject({
+      ok: false,
+      error: "IPC_BACKEND_UNAVAILABLE: native method editorStickyList",
+    });
+  });
+
   it("lint_ignore_create: typed payload を位置引数のJSONへ写像する", async () => {
     const lintIgnoreCreate = vi
       .fn()
@@ -2727,6 +2788,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "db_execute",
       "db_execute_batch",
       "deactivate_license",
+      "editor_sticky_create",
+      "editor_sticky_delete",
+      "editor_sticky_list",
+      "editor_sticky_update",
       "entity_tags_set",
       "event_get_version",
       "event_set_participants",

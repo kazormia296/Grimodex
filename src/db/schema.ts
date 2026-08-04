@@ -1120,6 +1120,67 @@ export const mapStickies = sqliteTable(
   ],
 );
 
+/**
+ * Editor-only visual notes. The body is intentionally outside every content
+ * pipeline; `documentKey` is the stable renderer identity while the typed
+ * nullable owner columns keep deletes/cascades safe in SQLite.
+ */
+export const editorStickies = sqliteTable(
+  "editor_stickies",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    documentKey: text("document_key").notNull(),
+    body: text("body").notNull().default('{"type":"doc","content":[]}'),
+    paletteId: text("palette_id").notNull().default("post-it-playful"),
+    colorSlot: integer("color_slot").notNull().default(0),
+    inlineOffset: real("inline_offset").notNull().default(0),
+    blockOffset: real("block_offset").notNull().default(0),
+    zIndex: integer("z_index").notNull().default(0),
+    version: integer("version").notNull().default(0),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    treeNodeId: text("tree_node_id").references((): any => treeNodes.id, {
+      onDelete: "cascade",
+    }),
+
+    codexEntryId: text("codex_entry_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => codexEntries.id,
+      { onDelete: "cascade" },
+    ),
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    phaseId: text("phase_id").references((): any => codexEntryPhases.id, {
+      onDelete: "cascade",
+    }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snippetId: text("snippet_id").references((): any => snippets.id, {
+      onDelete: "cascade",
+    }),
+
+    chronicleEventId: text("chronicle_event_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => events.id,
+      { onDelete: "cascade" },
+    ),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_editor_stickies_project_document").on(
+      table.projectId,
+      table.documentKey,
+    ),
+    index("idx_editor_stickies_tree_node").on(table.treeNodeId),
+    index("idx_editor_stickies_codex_entry").on(table.codexEntryId),
+    index("idx_editor_stickies_phase").on(table.phaseId),
+    index("idx_editor_stickies_snippet").on(table.snippetId),
+    index("idx_editor_stickies_event").on(table.chronicleEventId),
+  ],
+);
+
 export const mapNodePositions = sqliteTable(
   "map_node_positions",
   {
@@ -2384,6 +2445,8 @@ export type MapFrame = typeof mapFrames.$inferSelect;
 export type NewMapFrame = typeof mapFrames.$inferInsert;
 export type MapSticky = typeof mapStickies.$inferSelect;
 export type NewMapSticky = typeof mapStickies.$inferInsert;
+export type EditorStickyRow = typeof editorStickies.$inferSelect;
+export type NewEditorStickyRow = typeof editorStickies.$inferInsert;
 export type MapAiBranch = typeof mapAiBranches.$inferSelect;
 export type NewMapAiBranch = typeof mapAiBranches.$inferInsert;
 

@@ -1517,6 +1517,89 @@ export async function createBrowserMock(
   // Browser BYOK credentials are deliberately scoped to this runtime. They
   // are never written to localStorage or included in the persisted SQL image.
   const apiKeys = new Map<string, string>();
+  // The browser mock does not load the Electron N-API backend. Keep the
+  // typed editor-sticky surface usable in renderer tests with an ephemeral
+  // in-memory command implementation; native persistence remains owned by
+  // grimodex-db through the editor_sticky_* commands.
+  interface BrowserEditorStickyRow {
+    id: string;
+    projectId: string;
+    documentKey: string;
+    body: string;
+    paletteId: string;
+    colorSlot: number;
+    inlineOffset: number;
+    blockOffset: number;
+    zIndex: number;
+    version: number;
+    createdAt: string;
+    updatedAt: string;
+  }
+  const editorStickyRows = new Map<string, BrowserEditorStickyRow>();
+  const editorStickyRowKey = (projectId: string, stickyId: string) =>
+    `${projectId}:${stickyId}`;
+  const listBrowserEditorStickies = (args: Record<string, unknown>) => {
+    const projectId = String(args.projectId ?? "");
+    const documentKey = String(args.documentKey ?? "");
+    return [...editorStickyRows.values()]
+      .filter(
+        (row) => row.projectId === projectId && row.documentKey === documentKey,
+      )
+      .sort(
+        (left, right) =>
+          left.zIndex - right.zIndex ||
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id),
+      );
+  };
+  const createBrowserEditorSticky = (args: Record<string, unknown>) => {
+    const payload = (args.payload ?? {}) as Record<string, unknown>;
+    const now = new Date().toISOString();
+    const row: BrowserEditorStickyRow = {
+      id: crypto.randomUUID(),
+      projectId: String(payload.projectId ?? ""),
+      documentKey: String(payload.documentKey ?? ""),
+      body: String(payload.body ?? '{"type":"doc","content":[]}'),
+      paletteId: String(payload.paletteId ?? "post-it-playful"),
+      colorSlot: Number(payload.colorSlot ?? 0),
+      inlineOffset: Number(payload.inlineOffset ?? 0),
+      blockOffset: Number(payload.blockOffset ?? 0),
+      zIndex: Number(payload.zIndex ?? 0),
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    editorStickyRows.set(editorStickyRowKey(row.projectId, row.id), row);
+    return row;
+  };
+  const updateBrowserEditorSticky = (args: Record<string, unknown>) => {
+    const payload = (args.payload ?? {}) as Record<string, unknown>;
+    const projectId = String(payload.projectId ?? "");
+    const stickyId = String(payload.stickyId ?? "");
+    const baseVersion = Number(payload.baseVersion ?? -1);
+    const row = editorStickyRows.get(editorStickyRowKey(projectId, stickyId));
+    if (!row || row.version !== baseVersion) {
+      throw new Error(`EDITOR_STICKY_CONFLICT:${stickyId}:${baseVersion}`);
+    }
+    const patch = (payload.patch ?? {}) as Record<string, unknown>;
+    Object.assign(row, patch);
+    row.version += 1;
+    row.updatedAt = new Date().toISOString();
+    return row;
+  };
+  const deleteBrowserEditorSticky = (args: Record<string, unknown>) => {
+    const payload = (args.payload ?? {}) as Record<string, unknown>;
+    const projectId = String(payload.projectId ?? "");
+    const stickyId = String(payload.stickyId ?? "");
+    const baseVersion = Number(payload.baseVersion ?? -1);
+    const key = editorStickyRowKey(projectId, stickyId);
+    const row = editorStickyRows.get(key);
+    if (!row || row.version !== baseVersion) {
+      throw new Error(`EDITOR_STICKY_CONFLICT:${stickyId}:${baseVersion}`);
+    }
+    editorStickyRows.delete(key);
+    return null;
+  };
   try {
     // Remove credentials left by older browser-mock builds. They are not
     // imported into memory: a reload must always require the key again.
@@ -6970,6 +7053,14 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "editor_sticky_list":
+        return listBrowserEditorStickies(args) as T;
+      case "editor_sticky_create":
+        return createBrowserEditorSticky(args) as T;
+      case "editor_sticky_update":
+        return updateBrowserEditorSticky(args) as T;
+      case "editor_sticky_delete":
+        return deleteBrowserEditorSticky(args) as T;
       case "ai_audit_append_batch":
         return (await handleAiAuditAppendBatch(args)) as T;
       case "ai_audit_restore_batch":
