@@ -41,6 +41,7 @@ interface EditorStickyStoreState {
 
 const pendingLoads = new Map<string, Promise<void>>();
 const pendingMutations = new Map<string, Promise<unknown>>();
+const bucketMutationEpochs = new Map<string, number>();
 const EMPTY_STICKIES: EditorSticky[] = [];
 let storeGeneration = 0;
 
@@ -129,6 +130,46 @@ function replaceSticky(
   );
 }
 
+function getBucketMutationEpoch(key: string): number {
+  return bucketMutationEpochs.get(key) ?? 0;
+}
+
+function bumpBucketMutationEpoch(key: string): number {
+  const nextEpoch = getBucketMutationEpoch(key) + 1;
+  bucketMutationEpochs.set(key, nextEpoch);
+  return nextEpoch;
+}
+
+function upsertSticky(
+  stickies: EditorSticky[],
+  replacement: EditorSticky,
+): EditorSticky[] {
+  const existingIndex = stickies.findIndex(
+    (sticky) => sticky.id === replacement.id,
+  );
+  if (existingIndex < 0) return [...stickies, replacement];
+
+  const next = [...stickies];
+  next[existingIndex] = replacement;
+  return next;
+}
+
+function mergeLoadedStickies(
+  current: EditorSticky[],
+  loaded: EditorSticky[],
+): EditorSticky[] {
+  const currentById = new Map(current.map((sticky) => [sticky.id, sticky]));
+  const loadedIds = new Set(loaded.map((sticky) => sticky.id));
+  const merged = loaded.map((sticky) => {
+    const currentSticky = currentById.get(sticky.id);
+    return currentSticky && currentSticky.version > sticky.version
+      ? currentSticky
+      : sticky;
+  });
+
+  return [...merged, ...current.filter((sticky) => !loadedIds.has(sticky.id))];
+}
+
 export const useEditorStickyStore = create<EditorStickyStoreState>()(
   (set, get) => ({
     byDocument: {},
@@ -143,6 +184,11 @@ export const useEditorStickyStore = create<EditorStickyStoreState>()(
     async create(projectId, documentKey, input) {
       const scope = captureScope();
       const key = bucketKey(projectId, documentKey, scope);
+      // Invalidate any list snapshot that starts before this create commits.
+      // The commit bumps the epoch again so a reload that starts after this
+      // function begins but resolves after the native insert cannot erase the
+      // newly created row with an older whole-bucket result.
+      bumpBucketMutationEpoch(key);
       const pendingLoad = pendingLoads.get(key);
       if (pendingLoad) {
         // A list started before this create must publish before we append the
@@ -157,10 +203,11 @@ export const useEditorStickyStore = create<EditorStickyStoreState>()(
         documentKey,
       });
       assertCurrentScope(scope);
+      bumpBucketMutationEpoch(key);
       set((state) => ({
         byDocument: {
           ...state.byDocument,
-          [key]: [...(state.byDocument[key] ?? []), created],
+          [key]: upsertSticky(state.byDocument[key] ?? [], created),
         },
       }));
       return created;
@@ -312,12 +359,19 @@ async function loadEditorStickiesInternal(
   if (!force && useEditorStickyStore.getState().loaded[scopedKey]) return;
   const pending = pendingLoads.get(scopedKey);
   if (pending) return pending;
+  const loadEpoch = getBucketMutationEpoch(scopedKey);
 
   const load = listEditorStickies(projectId, documentKey)
     .then((stickies) => {
       if (!isCurrentScope(scope)) return;
+      const mutationChanged = getBucketMutationEpoch(scopedKey) !== loadEpoch;
       useEditorStickyStore.setState((state) => ({
-        byDocument: { ...state.byDocument, [scopedKey]: stickies },
+        byDocument: {
+          ...state.byDocument,
+          [scopedKey]: mutationChanged
+            ? mergeLoadedStickies(state.byDocument[scopedKey] ?? [], stickies)
+            : stickies,
+        },
         loaded: { ...state.loaded, [scopedKey]: true },
       }));
     })
@@ -332,6 +386,7 @@ export function resetEditorStickyStoreForProject(): void {
   storeGeneration += 1;
   pendingLoads.clear();
   pendingMutations.clear();
+  bucketMutationEpochs.clear();
   useEditorStickyStore.setState({ byDocument: {}, loaded: {} });
 }
 

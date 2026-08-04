@@ -11,6 +11,7 @@ import {
 } from "./editorStickyApi";
 import {
   loadEditorStickies,
+  reloadEditorStickies,
   resetEditorStickyStoreForTests,
   useEditorStickyStore,
 } from "./editorStickyStore";
@@ -313,6 +314,66 @@ describe("editor sticky document store", () => {
     expect(
       useEditorStickyStore.getState().getForDocument("project-1", key),
     ).toEqual([...existing, created]);
+  });
+
+  it("preserves a create that commits before a later reload publishes its old list", async () => {
+    const reload = deferred<EditorSticky[]>();
+    const pendingCreate = deferred<EditorSticky>();
+    const existing = { ...sticky, id: "sticky-a", body: "A" };
+    const created = { ...sticky, id: "sticky-c", body: "C" };
+    vi.mocked(listEditorStickies)
+      .mockResolvedValueOnce([existing])
+      .mockReturnValueOnce(reload.promise);
+    vi.mocked(createEditorSticky).mockReturnValueOnce(pendingCreate.promise);
+
+    await loadEditorStickies("project-1", key);
+    const create = useEditorStickyStore.getState().create("project-1", key, {
+      inlineOffset: created.inlineOffset,
+      blockOffset: created.blockOffset,
+    });
+    await vi.waitFor(() => expect(createEditorSticky).toHaveBeenCalledOnce());
+
+    const pendingReload = reloadEditorStickies("project-1", key);
+    await vi.waitFor(() => expect(listEditorStickies).toHaveBeenCalledTimes(2));
+
+    pendingCreate.resolve(created);
+    await expect(create).resolves.toEqual(created);
+    reload.resolve([existing]);
+    await pendingReload;
+
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([existing, created]);
+  });
+
+  it("upserts a created sticky when reload publishes it before create completes", async () => {
+    const reload = deferred<EditorSticky[]>();
+    const pendingCreate = deferred<EditorSticky>();
+    const existing = { ...sticky, id: "sticky-a", body: "A" };
+    const created = { ...sticky, id: "sticky-c", body: "C" };
+    vi.mocked(listEditorStickies)
+      .mockResolvedValueOnce([existing])
+      .mockReturnValueOnce(reload.promise);
+    vi.mocked(createEditorSticky).mockReturnValueOnce(pendingCreate.promise);
+
+    await loadEditorStickies("project-1", key);
+    const create = useEditorStickyStore.getState().create("project-1", key, {
+      inlineOffset: created.inlineOffset,
+      blockOffset: created.blockOffset,
+    });
+    await vi.waitFor(() => expect(createEditorSticky).toHaveBeenCalledOnce());
+
+    const pendingReload = reloadEditorStickies("project-1", key);
+    await vi.waitFor(() => expect(listEditorStickies).toHaveBeenCalledTimes(2));
+
+    reload.resolve([existing, created]);
+    await pendingReload;
+    pendingCreate.resolve(created);
+    await expect(create).resolves.toEqual(created);
+
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([existing, created]);
   });
 
   it("passes an explicit id through for Global History restoration", async () => {
