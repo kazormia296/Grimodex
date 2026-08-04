@@ -11,6 +11,7 @@ import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore"
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { resetEditorStickyStoreForProject } from "@/features/editor/stickies/editorStickyStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { useGridStore } from "@/features/grid/gridStore";
 import { useLabelStore } from "@/features/labels/labelStore";
@@ -109,6 +110,7 @@ const participants: readonly ProjectLifecycleParticipant[] = [
   },
   { id: "inline-ai", reset: () => useInlineAiStore.getState().reset() },
   { id: "editor", reset: () => useEditorStore.getState().setEditor(null) },
+  { id: "editor-stickies", reset: () => resetEditorStickyStoreForProject() },
   {
     id: "focused-content-editor",
     reset: () => useFocusedContentEditorStore.getState().setCurrent(null, null),

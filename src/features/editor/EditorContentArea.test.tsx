@@ -125,6 +125,7 @@ function makeSettings(spellCheck: boolean): EditorSettings {
     showLineNumbers: false,
     aozoraInput: true,
     showInvisibles: false,
+    showStickies: true,
     autoPairBrackets: true,
     paragraphIndent: 0,
     verticalMode: false,

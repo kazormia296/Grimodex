@@ -37,6 +37,12 @@ interface EditorContextMenuProps {
   toolbarActionsRef?: React.RefObject<ToolbarActions | null>;
   /** DB-backed sceneだけが明示Codexリンクを作成できる。 */
   canEditCodexSemanticLink?: boolean;
+  /** Editorの表示専用付箋を、右クリック位置へ追加する。 */
+  onAddSticky?: (
+    clientX: number,
+    clientY: number,
+    target: EventTarget | null,
+  ) => void;
 }
 
 /**
@@ -48,10 +54,12 @@ export function EditorContextMenu({
   containerRef,
   toolbarActionsRef,
   canEditCodexSemanticLink = false,
+  onAddSticky,
 }: EditorContextMenuProps) {
   const { t } = useTranslation();
   const [pos, setPos] = useState<Position | null>(null);
   const [selectedText, setSelectedText] = useState("");
+  const [contextTarget, setContextTarget] = useState<EventTarget | null>(null);
   const [lintDisableOpen, setLintDisableOpen] = useState(false);
   /**
    * Snapshot of disable presence at context-menu open time. Captured at
@@ -108,6 +116,7 @@ export function EditorContextMenu({
 
   const close = useCallback(() => {
     setPos(null);
+    setContextTarget(null);
   }, []);
 
   // Context menu handler
@@ -117,6 +126,12 @@ export function EditorContextMenu({
 
     function onContextMenu(e: MouseEvent) {
       if (!editor) return;
+      if (
+        e.target instanceof Element &&
+        e.target.closest("[data-editor-sticky-card]")
+      ) {
+        return;
+      }
       e.preventDefault();
 
       const sel = editor.state.selection;
@@ -139,6 +154,7 @@ export function EditorContextMenu({
       setDisableState(disableSnapshot);
       setHasAuthorship(authorshipSnapshot);
       setSingleMatchedCodex(single);
+      setContextTarget(e.target);
       setPos({ x: e.clientX, y: e.clientY });
     }
 
@@ -309,6 +325,14 @@ export function EditorContextMenu({
   const handleInsertSceneBreak = () => {
     close();
     editor?.chain().focus().insertSceneBreak().run();
+  };
+
+  const handleAddSticky = () => {
+    if (!pos || !onAddSticky) return;
+    const point = pos;
+    const target = contextTarget;
+    close();
+    onAddSticky(point.x, point.y, target);
   };
 
   const handleSetRuby = () => {
@@ -515,6 +539,15 @@ export function EditorContextMenu({
         >
           {t("editor.contextMenu.insertFromSnippet")}
         </button>
+        {onAddSticky && (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
+            onClick={handleAddSticky}
+          >
+            {t("editor.contextMenu.addSticky", "付箋を追加")}
+          </button>
+        )}
 
         {/* Selection actions */}
         {canSetDisable && (

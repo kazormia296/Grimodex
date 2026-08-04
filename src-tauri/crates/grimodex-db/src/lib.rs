@@ -547,6 +547,7 @@ pub mod change_events;
 pub mod chronicle;
 pub mod chronicle_bulk;
 pub mod domain_writes;
+pub mod editor_stickies;
 mod execute;
 pub mod foreshadow;
 mod fts;

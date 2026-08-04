@@ -27,15 +27,38 @@ const SQL = await initSqlJs();
 
 function makeFixture(label) {
   const root = mkdtempSync(join(tmpdir(), `grimodex-backup-${label}-`));
+  const appData = join(root, "app-data");
   const workspace = join(root, "workspace");
   const backups = join(workspace, "backups");
-  const backend = new Backend(join(root, "app-data"));
+  // Keep ordinary backup-list/restore fixtures free of the detached automatic
+  // backup writer. Tests that exercise trusted automatic backup creation opt
+  // in explicitly in writeBackupViaTrustedOpen below.
+  mkdirSync(appData, { recursive: true });
+  writeFileSync(
+    join(appData, "global-settings.json"),
+    JSON.stringify({
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+      userPreferences: { "data.autoBackup": "false" },
+    }),
+  );
+  const backend = new Backend(appData);
   return {
     root,
     workspace,
     backups,
     backend,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () =>
+      rmSync(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 50,
+      }),
   };
 }
 
@@ -43,13 +66,17 @@ async function rows(backend, sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
 
-async function waitForNewBackup(backend, before, timeoutMs = 30000) {
+async function waitForNewBackup(backend, workspace, before, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     const created = JSON.parse(await backend.listBackups()).find(
       ({ fileName }) => !before.has(fileName),
     );
     if (created) return created;
+    // The previous open may still own the path-scoped maintenance claim.
+    // Reopen until a retry can schedule the worker that observes the newly
+    // enabled automatic-backup setting.
+    await backend.openWorkspace(workspace);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`automatic backup was not created within ${timeoutMs}ms`);
@@ -62,11 +89,12 @@ async function writeBackupViaTrustedOpen(backend, workspace, path) {
   const settings = JSON.parse(await backend.getGlobalSettings());
   settings.userPreferences = {
     ...(settings.userPreferences ?? {}),
+    "data.autoBackup": "true",
     "data.backupInterval": "0",
   };
   await backend.saveGlobalSettings(settings);
   await backend.openWorkspace(workspace);
-  const created = await waitForNewBackup(backend, before);
+  const created = await waitForNewBackup(backend, workspace, before);
   const compressed = readFileSync(join(workspace, "backups", created.fileName));
   writeFileSync(
     path,

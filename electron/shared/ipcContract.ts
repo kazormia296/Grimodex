@@ -329,6 +329,10 @@ export function clampZoomFactor(factor: unknown): number {
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
+  editorStickyList?(projectId: string, documentKey: string): Promise<string>;
+  editorStickyCreate?(payload: unknown): Promise<string>;
+  editorStickyUpdate?(payload: unknown): Promise<string>;
+  editorStickyDelete?(payload: unknown): Promise<void>;
   lintIgnoreList?(projectId: string): Promise<string>;
   lintIgnoreListScene?(projectId: string, sceneId: string): Promise<string>;
   lintIgnoreCreate?(payload: unknown): Promise<string>;
@@ -1337,6 +1341,55 @@ function requireLintIgnoreCreatePayload(args: CommandArgs): CommandArgs {
   return payload;
 }
 
+function requireEditorStickyCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "editor_sticky_create";
+  const payload = requireRecord(args, "payload", command);
+  if (Object.hasOwn(payload, "id")) {
+    requireNonEmptyString(payload, "id", command);
+  }
+  for (const key of ["projectId", "documentKey", "body", "paletteId"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  for (const key of ["inlineOffset", "blockOffset"]) {
+    requireNumber(payload, key, command);
+  }
+  for (const key of ["colorSlot", "zIndex"]) {
+    requireSafeInteger(payload, key, command);
+  }
+  return payload;
+}
+
+function requireEditorStickyUpdatePayload(args: CommandArgs): CommandArgs {
+  const command = "editor_sticky_update";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "stickyId", command);
+  requireSafeInteger(payload, "baseVersion", command);
+  const patch = requireRecord(payload, "patch", command);
+  if (Object.hasOwn(patch, "body")) {
+    requireNonEmptyString(patch, "body", command);
+  }
+  if (Object.hasOwn(patch, "paletteId")) {
+    requireNonEmptyString(patch, "paletteId", command);
+  }
+  for (const key of ["inlineOffset", "blockOffset"]) {
+    if (Object.hasOwn(patch, key)) requireNumber(patch, key, command);
+  }
+  for (const key of ["colorSlot", "zIndex"]) {
+    if (Object.hasOwn(patch, key)) requireSafeInteger(patch, key, command);
+  }
+  return payload;
+}
+
+function requireEditorStickyDeletePayload(args: CommandArgs): CommandArgs {
+  const command = "editor_sticky_delete";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "stickyId", command);
+  requireSafeInteger(payload, "baseVersion", command);
+  return payload;
+}
+
 function requireLintIgnoreCopyPayload(args: CommandArgs): CommandArgs {
   const command = "lint_ignore_copy";
   const payload = requireRecord(args, "payload", command);
@@ -1804,6 +1857,7 @@ const PROJECT_SNAPSHOT_RESTORE_TABLES = new Set([
   "map_boards",
   "map_ai_branches",
   "map_stickies",
+  "editor_stickies",
   "map_frames",
   "map_node_positions",
   "map_edges",
@@ -3276,6 +3330,49 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requirePresent(a, "statements", "db_execute_batch"),
         ),
       ),
+  },
+  editor_sticky_list: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.editorStickyList,
+          "editorStickyList",
+        )(
+          requireNonEmptyString(a, "projectId", "editor_sticky_list"),
+          requireNonEmptyString(a, "documentKey", "editor_sticky_list"),
+        ),
+      ),
+  },
+  editor_sticky_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.editorStickyCreate,
+          "editorStickyCreate",
+        )(requireEditorStickyCreatePayload(a)),
+      ),
+  },
+  editor_sticky_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.editorStickyUpdate,
+          "editorStickyUpdate",
+        )(requireEditorStickyUpdatePayload(a)),
+      ),
+  },
+  editor_sticky_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.editorStickyDelete,
+        "editorStickyDelete",
+      )(requireEditorStickyDeletePayload(a));
+      return null;
+    },
   },
   lint_ignore_list: {
     run: async (b, a) =>

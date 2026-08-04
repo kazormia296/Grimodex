@@ -4,9 +4,7 @@ import {
   useRef,
   useCallback,
   useEffect,
-  useMemo,
   useSyncExternalStore,
-  type CSSProperties,
 } from "react";
 import { Check, X } from "lucide-react";
 import { motion } from "motion/react";
@@ -15,25 +13,17 @@ import { toast } from "sonner";
 import { NodeToolbar, Position, type NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
-import { useEditor, EditorContent } from "@tiptap/react";
-import { generateHTML } from "@tiptap/core";
-import { getStickyEditorExtensions } from "@/features/editor/extensions";
-import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
+import { StickyRichTextBody } from "@/features/sticky/StickyRichTextBody";
+import { StickyBodyEditor } from "@/features/sticky/StickyBodyEditor";
+import { StickyPaperVisual } from "@/features/sticky/StickyPaperVisual";
 import {
   updateSticky,
   extractPreviewText,
   pendingAutoFocusIds,
 } from "../mapApi";
 import { resolveStickyHex } from "@/lib/stickyPalettes";
-import {
-  aiEditedKey,
-  createAiEditedPlugin,
-} from "@/features/attribution/AiEditedPlugin";
-import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
-import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { rootCause } from "@/lib/debugLog";
-import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
 import { registerQuiescenceParticipant } from "@/application/lifecycle/quiescenceParticipants";
 import {
   canScheduleQuiescenceMutation,
@@ -46,6 +36,10 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  createStickyDraftController,
+  type StickyDraftController,
+} from "@/features/sticky/stickyDraftController";
 
 export interface StickyNodeData {
   id: string;
@@ -81,85 +75,6 @@ export interface StickyNodeData {
   [key: string]: unknown;
 }
 
-type StickyUpdate = NonNullable<StickyNodeData["onUpdate"]>;
-
-interface StickyDraftController {
-  readonly id: string;
-  latestBody: string;
-  dirty: boolean;
-  generation: number;
-  setOnUpdate: (onUpdate: StickyUpdate | undefined) => void;
-  markDirty: (body: string) => void;
-  save: () => Promise<void>;
-  discard: () => void;
-}
-
-/**
- * The controller deliberately outlives the React surface that created it.
- * A virtualized/unmounted Sticky can therefore keep one retryable lifecycle
- * participant until its final body is saved or explicitly discarded.
- */
-function createStickyDraftController(
-  id: string,
-  initialBody: string,
-): StickyDraftController {
-  let onUpdate: StickyUpdate | undefined;
-  let inFlight: Promise<void> | null = null;
-
-  const controller: StickyDraftController = {
-    id,
-    latestBody: initialBody,
-    dirty: false,
-    generation: 0,
-    setOnUpdate(nextOnUpdate) {
-      onUpdate = nextOnUpdate;
-    },
-    markDirty(body) {
-      controller.latestBody = body;
-      controller.dirty = true;
-      controller.generation += 1;
-    },
-    async save() {
-      if (inFlight) return inFlight;
-
-      const drain = async (): Promise<void> => {
-        while (controller.dirty) {
-          const body = controller.latestBody;
-          const generation = controller.generation;
-          const updates = {
-            body,
-            previewText: extractPreviewText(body),
-          };
-          const write = onUpdate
-            ? onUpdate(updates)
-            : updateSticky(id, updates).then(() => undefined);
-          await trackPendingEditorWrite(write);
-          if (controller.generation === generation) {
-            controller.dirty = false;
-          }
-        }
-      };
-
-      const pending = drain();
-      inFlight = pending;
-      void pending.then(
-        () => {
-          if (inFlight === pending) inFlight = null;
-        },
-        () => {
-          if (inFlight === pending) inFlight = null;
-        },
-      );
-      return pending;
-    },
-    discard() {
-      controller.dirty = false;
-    },
-  };
-
-  return controller;
-}
-
 const STICKY_ANIMATE = {
   opacity: 1,
   y: 0,
@@ -185,112 +100,6 @@ const STICKY_REDUCED_VARIANTS = {
   animate: STICKY_ANIMATE,
   exit: STICKY_EXIT,
 } as const;
-
-function parseBodyContent(body: string): object | undefined {
-  if (!body) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
-
-function StickyBodyView({ body }: { body: string }) {
-  const html = useMemo(() => {
-    const json = parseBodyContent(body);
-    if (!json) return "";
-    try {
-      return generateHTML(json, getStickyEditorExtensions());
-    } catch {
-      return "";
-    }
-  }, [body]);
-  return (
-    <div
-      data-testid="sticky-body-view"
-      className="sticky-body-view"
-      style={{
-        fontSize: 12,
-        lineHeight: 1.5,
-        color: "rgba(0,0,0,0.65)",
-        wordBreak: "break-word",
-      }}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
-}
-
-interface StickyBodyEditorProps {
-  stickyId: string;
-  body: string;
-  onContentChange: (json: string) => void;
-  onEscape: () => void;
-}
-
-function StickyBodyEditor({
-  stickyId,
-  body,
-  onContentChange,
-  onEscape,
-}: StickyBodyEditorProps) {
-  const editor = useEditor({
-    extensions: getStickyEditorExtensions(),
-    content: parseBodyContent(body),
-    onUpdate({ editor: ed }) {
-      onContentChange(JSON.stringify(ed.getJSON()));
-    },
-  });
-  useTrashBinCapture(editor, { kind: "sticky", id: stickyId });
-  useLicenseEditableSync(editor);
-
-  // Register AiEditedPlugin so text the human types inside an AI-seeded span
-  // loses its "ai" authorship mark (becomes human). This is what lets copy
-  // distinguish edited (human) text from AI-original text within one sticky.
-  // We register only this plugin (not the full useAttribution) to keep the
-  // sticky's visual behavior unchanged — no attribution decorations.
-  useEffect(() => {
-    if (!isEditorViewReady(editor)) return;
-    const has = editor.view.state.plugins.find(
-      (p) => p.spec.key === aiEditedKey,
-    );
-    if (!has) editor.registerPlugin(createAiEditedPlugin());
-    return () => {
-      if (isEditorViewReady(editor)) editor.unregisterPlugin(aiEditedKey);
-    };
-  }, [editor]);
-
-  useEffect(() => {
-    if (editor) {
-      setTimeout(() => editor.commands.focus("end"), 0);
-    }
-  }, [editor]);
-
-  if (!editor) return null;
-
-  return (
-    // `nodrag`: xyflow's d3-drag captures pointerdown on the node and
-    // preventDefault()s it, which blocks caret placement in the contenteditable.
-    // The class makes the drag filter skip this region so clicks move the caret.
-    // (React onPointerDown stopPropagation runs at the React root, after d3-drag's
-    // element-level native listener already fired — too late.) `nowheel`/`nopan`
-    // let the editor scroll/select without zooming or panning the map. Same
-    // pattern as UserEdge's editable label.
-    <div
-      onPointerDown={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopPropagation();
-          onEscape();
-        }
-      }}
-      style={{ fontSize: 12, lineHeight: 1.5 }}
-      className="sticky-editor nodrag nowheel nopan"
-    >
-      <EditorContent editor={editor} />
-    </div>
-  );
-}
 
 export const StickyNode = memo(function StickyNode({
   data,
@@ -325,7 +134,12 @@ export const StickyNode = memo(function StickyNode({
     draftControllerRef.current = createStickyDraftController(d.id, d.body);
   }
   const draftController = draftControllerRef.current;
-  draftController.setOnUpdate(d.onUpdate);
+  draftController.setPersist((body) => {
+    const updates = { body, previewText: extractPreviewText(body) };
+    return d.onUpdate
+      ? d.onUpdate(updates)
+      : updateSticky(d.id, updates).then(() => undefined);
+  });
   const measureRef = useRef<HTMLDivElement>(null);
   const wrapperElRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
@@ -572,26 +386,20 @@ export const StickyNode = memo(function StickyNode({
                 transform: `rotate(${rotation}deg)`,
               }}
             >
-              <div
+              <StickyPaperVisual
                 data-testid="sticky-paper"
-                className="sticky-paper"
                 data-glue={glueOrient}
-                style={
-                  {
-                    width: 200,
-                    minHeight: 52,
-                    maxHeight: editing ? 480 : undefined,
-                    overflow: editing ? "auto" : "visible",
-                    outline: selected ? "2px solid #534AB7" : "none",
-                    outlineOffset: "2px",
-                    cursor: editing ? "text" : "default",
-                    userSelect: editing ? "text" : "none",
-                    "--sticky-bg-light": resolveStickyHex(
-                      d.paletteId,
-                      d.colorSlot,
-                    ),
-                  } as CSSProperties
-                }
+                paperColor={resolveStickyHex(d.paletteId, d.colorSlot)}
+                style={{
+                  width: 200,
+                  minHeight: 52,
+                  maxHeight: editing ? 480 : undefined,
+                  overflow: editing ? "auto" : "visible",
+                  outline: selected ? "2px solid #534AB7" : "none",
+                  outlineOffset: "2px",
+                  cursor: editing ? "text" : "default",
+                  userSelect: editing ? "text" : "none",
+                }}
                 onDoubleClick={(e) => {
                   if (
                     !editing &&
@@ -620,7 +428,6 @@ export const StickyNode = memo(function StickyNode({
                   {/* Body */}
                   {editing ? (
                     <StickyBodyEditor
-                      stickyId={d.id}
                       body={
                         draftController.dirty
                           ? draftController.latestBody
@@ -631,12 +438,17 @@ export const StickyNode = memo(function StickyNode({
                         draftController.markDirty(json);
                       }}
                       onEscape={exitEditing}
+                      trashOrigin={{ kind: "sticky", id: d.id }}
+                      enableAiEdited
+                      className="nodrag nowheel nopan"
+                      style={{ fontSize: 12, lineHeight: 1.5 }}
+                      onPointerDown={(event) => event.stopPropagation()}
                     />
                   ) : (
-                    <StickyBodyView body={d.body} />
+                    <StickyRichTextBody body={d.body} />
                   )}
                 </div>
-              </div>
+              </StickyPaperVisual>
             </div>
           </motion.div>
         </div>

@@ -2887,6 +2887,7 @@ export function EditorPane({
     handleTitleEditStart,
     isSceneContentLoading,
     sceneId: nodeId,
+    documentKey: activeLoadedDocumentKey,
     canEditCodexSemanticLink:
       canEditCodexSemanticLink && editor?.isEditable === true,
     zenMode,

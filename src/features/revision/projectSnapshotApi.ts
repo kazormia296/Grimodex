@@ -398,10 +398,13 @@ async function restoreStructural(
   // selected to decide whether `pov_character_id` / `location_id` on
   // restored tree_nodes can keep their value or must be NULLed.
   const liveCodexIds = new Set(context.liveCodexIds);
+  const liveCodexPhaseIds = new Set(context.liveCodexPhaseIds);
 
   // Live tree_node ids — used when body scope is not selected to decide
   // whether cross-scope FKs to tree_nodes can keep their value.
   const liveTreeNodeIds = new Set(context.liveTreeNodeIds);
+  const liveSnippetIds = new Set(context.liveSnippetIds);
+  const liveEventIds = new Set(context.liveEventIds);
 
   // Live codex_tag ids — used by snippet_entry_tags / codex_entry_tags when
   // codex scope is not selected (the codex_tags row may have been removed
@@ -777,6 +780,32 @@ async function restoreStructural(
     }
     for (const row of auxByScope.get("map_stickies") ?? []) {
       pushStmt(buildInsert("map_stickies", row));
+    }
+    for (const row of auxByScope.get("editor_stickies") ?? []) {
+      const treeNodeId = (row.tree_node_id as string | null) ?? null;
+      const codexEntryId = (row.codex_entry_id as string | null) ?? null;
+      const phaseId = (row.phase_id as string | null) ?? null;
+      const snippetId = (row.snippet_id as string | null) ?? null;
+      const eventId = (row.chronicle_event_id as string | null) ?? null;
+      const ownerUnavailable =
+        (!scopes.has("body") &&
+          treeNodeId !== null &&
+          !liveTreeNodeIds.has(treeNodeId)) ||
+        (!scopes.has("codex") &&
+          codexEntryId !== null &&
+          !liveCodexIds.has(codexEntryId)) ||
+        (!scopes.has("codex") &&
+          phaseId !== null &&
+          !liveCodexPhaseIds.has(phaseId)) ||
+        (!scopes.has("snippet") &&
+          snippetId !== null &&
+          !liveSnippetIds.has(snippetId)) ||
+        (!scopes.has("body") && eventId !== null && !liveEventIds.has(eventId));
+      if (ownerUnavailable) {
+        skipped.editorStickies++;
+        continue;
+      }
+      pushStmt(buildInsert("editor_stickies", row));
     }
     for (const row of auxByScope.get("map_frames") ?? []) {
       pushStmt(buildInsert("map_frames", row));

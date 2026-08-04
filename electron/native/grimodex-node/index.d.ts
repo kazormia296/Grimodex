@@ -55,6 +55,15 @@ export declare class Backend {
    */
   dbExecuteBatch(statements: any): Promise<string>
   /**
+   * Typed persistence commands for Editor-only visual stickies. The
+   * renderer sends document-shaped DTOs; SQL and typed owner derivation
+   * stay inside grimodex-db.
+   */
+  editorStickyList(projectId: string, documentKey: string): Promise<string>
+  editorStickyCreate(payload: any): Promise<string>
+  editorStickyUpdate(payload: any): Promise<string>
+  editorStickyDelete(payload: any): Promise<void>
+  /**
    * Project-scoped lint diagnostic ignore-list commands. The renderer
    * receives a domain DTO instead of owning SQL strings or generic DB
    * parameters; all scene ownership checks happen in grimodex-db.

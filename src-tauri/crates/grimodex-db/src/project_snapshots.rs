@@ -88,6 +88,7 @@ pub enum SnapshotRestoreTable {
     MapBoards,
     MapAiBranches,
     MapStickies,
+    EditorStickies,
     MapFrames,
     MapNodePositions,
     MapEdges,
@@ -135,6 +136,7 @@ impl SnapshotRestoreTable {
             Self::MapBoards => "map_boards",
             Self::MapAiBranches => "map_ai_branches",
             Self::MapStickies => "map_stickies",
+            Self::EditorStickies => "editor_stickies",
             Self::MapFrames => "map_frames",
             Self::MapNodePositions => "map_node_positions",
             Self::MapEdges => "map_edges",
@@ -180,6 +182,7 @@ impl SnapshotRestoreTable {
             Self::MapBoards
             | Self::MapAiBranches
             | Self::MapStickies
+            | Self::EditorStickies
             | Self::MapFrames
             | Self::MapNodePositions
             | Self::MapEdges => RestoreScope::Map,
@@ -230,7 +233,10 @@ pub struct ProjectSnapshotRestoreContext {
     pub aux_rows: Vec<SnapshotAuxRow>,
     pub content_rows: Vec<SnapshotContentRow>,
     pub live_codex_ids: Vec<String>,
+    pub live_codex_phase_ids: Vec<String>,
     pub live_tree_node_ids: Vec<String>,
+    pub live_snippet_ids: Vec<String>,
+    pub live_event_ids: Vec<String>,
     pub live_codex_tag_ids: Vec<String>,
 }
 
@@ -262,6 +268,7 @@ const AUX_SPECS: &[AuxSpec] = &[
     AuxSpec { scope: "map_boards", owner: RestoreScope::Map, table: "map_boards", predicate: "project_id = ?", binds: 1 },
     AuxSpec { scope: "map_ai_branches", owner: RestoreScope::Map, table: "map_ai_branches", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "map_stickies", owner: RestoreScope::Map, table: "map_stickies", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
+    AuxSpec { scope: "editor_stickies", owner: RestoreScope::Map, table: "editor_stickies", predicate: "project_id = ?", binds: 1 },
     AuxSpec { scope: "map_node_positions", owner: RestoreScope::Map, table: "map_node_positions", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "map_edges", owner: RestoreScope::Map, table: "map_edges", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "map_frames", owner: RestoreScope::Map, table: "map_frames", predicate: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)", binds: 1 },
@@ -621,9 +628,24 @@ pub fn project_snapshot_restore_context(
             "SELECT id FROM codex_entries WHERE project_id = ?1",
             &project_param,
         )?;
+        let live_codex_phase_ids = query_strings(
+            conn,
+            "SELECT id FROM codex_entry_phases WHERE entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?1)",
+            &project_param,
+        )?;
         let live_tree_node_ids = query_strings(
             conn,
             "SELECT id FROM tree_nodes WHERE project_id = ?1",
+            &project_param,
+        )?;
+        let live_snippet_ids = query_strings(
+            conn,
+            "SELECT id FROM snippets WHERE project_id = ?1",
+            &project_param,
+        )?;
+        let live_event_ids = query_strings(
+            conn,
+            "SELECT id FROM events WHERE project_id = ?1",
             &project_param,
         )?;
         let live_codex_tag_ids = query_strings(
@@ -640,7 +662,10 @@ pub fn project_snapshot_restore_context(
             aux_rows,
             content_rows,
             live_codex_ids,
+            live_codex_phase_ids,
             live_tree_node_ids,
+            live_snippet_ids,
+            live_event_ids,
             live_codex_tag_ids,
         })
     })
@@ -734,6 +759,91 @@ fn restore_parked_map_reference(
     Ok(())
 }
 
+const EDITOR_STICKY_PARK_TABLE: &str = "__grimodex_editor_sticky_restore_park";
+
+/// Protect display-only editor stickies while an owner scope is replaced.
+///
+/// `editor_stickies` is owned by several different scope tables, so deleting
+/// one of those tables' rows can cascade-delete a sticky even when the map
+/// scope is deliberately not being restored. A temporary table keeps the
+/// current rows inside the same transaction; rows whose owner is not rebuilt
+/// are intentionally omitted during restore rather than reintroducing an
+/// orphaned foreign key.
+fn park_editor_stickies(transaction: &Transaction<'_>, project_id: &str) -> anyhow::Result<()> {
+    transaction.execute_batch(&format!(
+        "DROP TABLE IF EXISTS temp.{EDITOR_STICKY_PARK_TABLE};"
+    ))?;
+    let sql = format!(
+        "CREATE TEMP TABLE {EDITOR_STICKY_PARK_TABLE} AS
+         SELECT id, project_id, document_key, body, palette_id, color_slot,
+                inline_offset, block_offset, z_index, version, tree_node_id,
+                codex_entry_id, phase_id, snippet_id, chronicle_event_id,
+                created_at, updated_at
+           FROM editor_stickies
+          WHERE project_id = ?1"
+    );
+    transaction.execute(&sql, params![project_id])?;
+    Ok(())
+}
+
+fn restore_parked_editor_stickies(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let sql = format!(
+        "INSERT OR IGNORE INTO editor_stickies (
+             id, project_id, document_key, body, palette_id, color_slot,
+             inline_offset, block_offset, z_index, version, tree_node_id,
+             codex_entry_id, phase_id, snippet_id, chronicle_event_id,
+             created_at, updated_at
+         )
+         SELECT parked.id, parked.project_id, parked.document_key, parked.body,
+                parked.palette_id, parked.color_slot, parked.inline_offset,
+                parked.block_offset, parked.z_index, parked.version,
+                parked.tree_node_id, parked.codex_entry_id, parked.phase_id,
+                parked.snippet_id, parked.chronicle_event_id, parked.created_at,
+                parked.updated_at
+           FROM temp.{EDITOR_STICKY_PARK_TABLE} AS parked
+          WHERE parked.project_id = ?1
+            AND (
+                (parked.tree_node_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM tree_nodes
+                     WHERE tree_nodes.id = parked.tree_node_id
+                       AND tree_nodes.project_id = ?1
+                ))
+                OR
+                (parked.codex_entry_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM codex_entries
+                     WHERE codex_entries.id = parked.codex_entry_id
+                       AND codex_entries.project_id = ?1
+                ) AND (
+                    parked.phase_id IS NULL OR EXISTS (
+                        SELECT 1 FROM codex_entry_phases
+                         WHERE codex_entry_phases.id = parked.phase_id
+                           AND codex_entry_phases.entry_id = parked.codex_entry_id
+                    )
+                ))
+                OR
+                (parked.snippet_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM snippets
+                     WHERE snippets.id = parked.snippet_id
+                       AND snippets.project_id = ?1
+                ))
+                OR
+                (parked.chronicle_event_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM events
+                     WHERE events.id = parked.chronicle_event_id
+                       AND events.project_id = ?1
+                ))
+            )"
+    );
+    transaction.execute(&sql, params![project_id])?;
+    transaction.execute_batch(&format!(
+        "DROP TABLE IF EXISTS temp.{EDITOR_STICKY_PARK_TABLE};"
+    ))?;
+    Ok(())
+}
+
 pub fn apply_project_snapshot_restore(
     db: &Database,
     payload: ApplyProjectSnapshotRestorePayload,
@@ -780,6 +890,11 @@ pub fn apply_project_snapshot_restore(
         let park_codex = scopes.contains(&RestoreScope::Codex)
             && !scopes.contains(&RestoreScope::Map)
             && table_exists(&transaction, "map_node_positions")?;
+        let park_editor_stickies_needed = !scopes.contains(&RestoreScope::Map)
+            && (scopes.contains(&RestoreScope::Body)
+                || scopes.contains(&RestoreScope::Codex)
+                || scopes.contains(&RestoreScope::Snippet))
+            && table_exists(&transaction, "editor_stickies")?;
         if park_tree {
             park_map_reference(
                 &transaction,
@@ -795,6 +910,9 @@ pub fn apply_project_snapshot_restore(
                 "codex_entry_id",
                 &codex_prefix,
             )?;
+        }
+        if park_editor_stickies_needed {
+            park_editor_stickies(&transaction, &payload.project_id)?;
         }
 
         if scopes.contains(&RestoreScope::Body) {
@@ -861,6 +979,12 @@ pub fn apply_project_snapshot_restore(
                 "DELETE FROM map_boards WHERE project_id = ?1",
                 &payload.project_id,
             )?;
+            delete_for_project(
+                &transaction,
+                "editor_stickies",
+                "DELETE FROM editor_stickies WHERE project_id = ?1",
+                &payload.project_id,
+            )?;
         }
         if scopes.contains(&RestoreScope::Foreshadow) {
             delete_for_project(
@@ -903,6 +1027,10 @@ pub fn apply_project_snapshot_restore(
                 &insert.row,
                 insert.mode == SnapshotInsertMode::Replace,
             )?;
+        }
+
+        if park_editor_stickies_needed {
+            restore_parked_editor_stickies(&transaction, &payload.project_id)?;
         }
 
         if park_tree {
@@ -1064,6 +1192,220 @@ mod tests {
             Ok(())
         })
         .expect("read map references");
+    }
+
+    #[test]
+    fn owner_scope_restore_preserves_editor_stickies_without_map_scope() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_types (id, project_id, slug, label)
+                 VALUES ('type-review-character', 'p1', 'review-character', 'Review Character')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name)
+                 VALUES ('cx1', 'p1', 'review-character', 'Hero')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_entry_phases (id, entry_id, label)
+                 VALUES ('phase1', 'cx1', 'Older')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO snippets (id, project_id, title)
+                 VALUES ('snippet1', 'p1', 'A note')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal, precision, kind)
+                 VALUES ('event1', 'p1', 'Arrival', 'a0', 'exact', 'generic')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO editor_stickies
+                    (id, project_id, document_key, tree_node_id)
+                 VALUES ('sticky-tree', 'p1', 'tree: t1', 't1')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO editor_stickies
+                    (id, project_id, document_key, codex_entry_id, phase_id)
+                 VALUES ('sticky-codex', 'p1', 'codex: cx1', 'cx1', 'phase1')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO editor_stickies
+                    (id, project_id, document_key, snippet_id)
+                 VALUES ('sticky-snippet', 'p1', 'snippet: snippet1', 'snippet1')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO editor_stickies
+                    (id, project_id, document_key, chronicle_event_id)
+                 VALUES ('sticky-event', 'p1', 'chronicle-event: event1', 'event1')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed editor sticky owners");
+
+        create_project_snapshot(&db, empty_snapshot("s-sticky-owners"))
+            .expect("create sticky owner snapshot");
+
+        apply_project_snapshot_restore(
+            &db,
+            ApplyProjectSnapshotRestorePayload {
+                project_id: "p1".to_string(),
+                snapshot_id: "s-sticky-owners".to_string(),
+                scopes: vec![RestoreScope::Body],
+                inserts: vec![
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::TreeNodes,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "id": "t1",
+                            "project_id": "p1",
+                            "node_type": "scene",
+                            "title": "Restored",
+                            "sort_order": "a"
+                        })),
+                    },
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::Events,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "id": "event1",
+                            "project_id": "p1",
+                            "title": "Arrival",
+                            "ordinal": "a0",
+                            "precision": "exact",
+                            "kind": "generic"
+                        })),
+                    },
+                ],
+            },
+        )
+        .expect("restore body without map");
+
+        apply_project_snapshot_restore(
+            &db,
+            ApplyProjectSnapshotRestorePayload {
+                project_id: "p1".to_string(),
+                snapshot_id: "s-sticky-owners".to_string(),
+                scopes: vec![RestoreScope::Codex],
+                inserts: vec![
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::CodexTypes,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "id": "type-review-character",
+                            "project_id": "p1",
+                            "slug": "review-character",
+                            "label": "Review Character"
+                        })),
+                    },
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::CodexEntries,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "id": "cx1",
+                            "project_id": "p1",
+                            "type": "review-character",
+                            "name": "Hero"
+                        })),
+                    },
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::CodexEntryPhases,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "id": "phase1",
+                            "entry_id": "cx1",
+                            "label": "Older"
+                        })),
+                    },
+                ],
+            },
+        )
+        .expect("restore codex without map");
+
+        apply_project_snapshot_restore(
+            &db,
+            ApplyProjectSnapshotRestorePayload {
+                project_id: "p1".to_string(),
+                snapshot_id: "s-sticky-owners".to_string(),
+                scopes: vec![RestoreScope::Snippet],
+                inserts: vec![SnapshotInsertPlan {
+                    table: SnapshotRestoreTable::Snippets,
+                    mode: SnapshotInsertMode::Insert,
+                    row: raw(json!({
+                        "id": "snippet1",
+                        "project_id": "p1",
+                        "title": "A note"
+                    })),
+                }],
+            },
+        )
+        .expect("restore snippet without map");
+
+        db.with_conn(|conn| {
+            let ids = query_strings(
+                conn,
+                "SELECT id FROM editor_stickies WHERE project_id = 'p1' ORDER BY id",
+                &[],
+            )?;
+            assert_eq!(
+                ids,
+                vec![
+                    "sticky-codex".to_string(),
+                    "sticky-event".to_string(),
+                    "sticky-snippet".to_string(),
+                    "sticky-tree".to_string(),
+                ]
+            );
+            Ok(())
+        })
+        .expect("read restored editor stickies");
+    }
+
+    #[test]
+    fn parked_editor_sticky_with_missing_owner_is_skipped() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO editor_stickies
+                    (id, project_id, document_key, tree_node_id)
+                 VALUES ('sticky-missing-owner', 'p1', 'tree: t1', 't1')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed editor sticky");
+        create_project_snapshot(&db, empty_snapshot("s-missing-owner"))
+            .expect("create missing-owner snapshot");
+
+        apply_project_snapshot_restore(
+            &db,
+            ApplyProjectSnapshotRestorePayload {
+                project_id: "p1".to_string(),
+                snapshot_id: "s-missing-owner".to_string(),
+                scopes: vec![RestoreScope::Body],
+                inserts: Vec::new(),
+            },
+        )
+        .expect("restore body without rebuilding owner");
+
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM editor_stickies WHERE id = 'sticky-missing-owner'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .expect("verify missing-owner sticky was skipped");
     }
 
     #[test]

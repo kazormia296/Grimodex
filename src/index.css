@@ -2354,6 +2354,107 @@ button[role="switch"][aria-checked="true"] {
     position: relative;
     z-index: 1;
   }
+
+  /* Editor-only sticky surface. The surface is a sibling overlay above the
+     editor body; its SVG paper is the only layer that receives text holes. */
+  .editor-sticky-surface {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .editor-sticky-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  .editor-sticky-card {
+    box-sizing: border-box;
+    pointer-events: auto;
+    border-radius: 0.28em;
+    color: rgba(0, 0, 0, 0.75);
+    user-select: none;
+  }
+
+  .editor-sticky-card__paper {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: visible;
+    pointer-events: none;
+    filter: drop-shadow(0 0.18em 0.34em rgba(0, 0, 0, 0.2));
+  }
+
+  .editor-sticky-card__content {
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
+    min-height: inherit;
+    padding: 0.28em 0.75em 0.75em;
+  }
+
+  .editor-sticky-card__handle {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: flex-end;
+    border: 0;
+    background: transparent;
+    min-height: 1.1em;
+    padding: 0;
+    color: rgba(0, 0, 0, 0.38);
+    cursor: grab;
+    line-height: 1;
+    touch-action: none;
+  }
+
+  .editor-sticky-card__handle:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+  }
+
+  .editor-sticky-card__handle:active {
+    cursor: grabbing;
+  }
+
+  .editor-sticky-card__body {
+    min-height: 1.4em;
+    overflow-wrap: anywhere;
+  }
+
+  .editor-sticky-card .sticky-editor,
+  .editor-sticky-card .sticky-editor .ProseMirror {
+    min-height: 1.4em;
+    outline: none;
+    white-space: pre-wrap;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+  }
+
+  .editor-sticky-menu {
+    position: fixed;
+    z-index: 60;
+    display: flex;
+    min-width: 9rem;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    background: var(--popover);
+    box-shadow: 0 0.35rem 1rem rgba(0, 0, 0, 0.2);
+    padding: 0.25rem 0;
+  }
+
+  .editor-sticky-menu button {
+    padding: 0.35rem 0.75rem;
+    text-align: left;
+    font-size: 0.8rem;
+  }
+
+  .editor-sticky-menu button:hover {
+    background: var(--accent);
+  }
 }
 
 /* ── Trash Bin: ドラッグ中の body 強調 ──────────────────────────────── */

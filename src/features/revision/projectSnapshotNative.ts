@@ -40,6 +40,7 @@ export const SNAPSHOT_RESTORE_TABLES = [
   "map_boards",
   "map_ai_branches",
   "map_stickies",
+  "editor_stickies",
   "map_frames",
   "map_node_positions",
   "map_edges",
@@ -70,7 +71,10 @@ export interface ProjectSnapshotRestoreContext {
   auxRows: Array<{ scope: string; payloadJson: string }>;
   contentRows: Array<{ id: string; content: string }>;
   liveCodexIds: string[];
+  liveCodexPhaseIds: string[];
   liveTreeNodeIds: string[];
+  liveSnippetIds: string[];
+  liveEventIds: string[];
   liveCodexTagIds: string[];
 }
 

@@ -40,7 +40,9 @@ function countSkipped(r: SkipReport): number {
     r.eventParticipants +
     r.foreshadowPayoffSceneCleared +
     r.mapNodePositionsLinkCleared +
-    r.eventCodexRefCleared
+    r.eventCodexRefCleared +
+    r.eventRevealSceneCleared +
+    r.editorStickies
   );
 }
 

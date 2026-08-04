@@ -28,6 +28,9 @@ import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
 import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { EditorStickySurface } from "@/features/editor/stickies/EditorStickySurface";
+import { requestEditorStickyAtTarget } from "@/features/editor/stickies/editorStickySurfaceRegistry";
+import type { DocumentKey } from "@/features/editor/document/documentKey";
 
 export interface EditorContentAreaProps {
   editor: Editor | null;
@@ -54,6 +57,8 @@ export interface EditorContentAreaProps {
   handleTitleEditStart: () => void;
   isSceneContentLoading: boolean;
   sceneId: string;
+  /** The exact loaded document identity, including file-backed/Codex phase. */
+  documentKey?: DocumentKey | null;
   /** DB-backed sceneでのみ、選択範囲からCodex明示リンクを編集できる。 */
   canEditCodexSemanticLink?: boolean;
   zenMode?: boolean;
@@ -92,6 +97,7 @@ export function EditorContentArea({
   handleTitleEditStart,
   isSceneContentLoading,
   sceneId,
+  documentKey = null,
   canEditCodexSemanticLink = false,
   zenMode = false,
   onInlineAiCommand,
@@ -226,49 +232,60 @@ export function EditorContentArea({
               </div>
             )}
             <EditorBodyWithLoading isLoading={isSceneContentLoading}>
-              <SceneBeatEditorContextProvider value={{ sceneId: sceneId }}>
-                <EditorContent editor={editor} />
-              </SceneBeatEditorContextProvider>
-              <CodexPopover editor={editor} />
-              <EditorBubbleMenu
+              <EditorStickySurface
                 editor={editor}
-                toolbarActionsRef={toolbarActionsRef}
-                canEditCodexSemanticLink={canEditCodexSemanticLink}
-                onInlineAiCommand={onInlineAiCommand}
-              />
-              {canEditCodexSemanticLink && (
-                <CodexSemanticLinkPopover editor={editor} />
-              )}
-              {!phoneWorkspace && (
-                <>
-                  <CommentAddPopover editor={editor} />
-                  <ForeshadowMarkPopover editor={editor} />
-                  <ForeshadowMarkHoverPopover
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                  />
-                  <CommentHoverPopover
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                  />
-                  <PseudoCommentBubble
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                  />
-                  <AnnotationHoverPopover containerRef={editorContainerRef} />
-                  <LintHoverPopover
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                    sceneId={sceneId}
-                  />
-                  <EditorContextMenu
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                    toolbarActionsRef={toolbarActionsRef}
-                    canEditCodexSemanticLink={canEditCodexSemanticLink}
-                  />
-                </>
-              )}
+                documentKey={documentKey}
+                fontSize={editorSettings.fontSize}
+                verticalMode={editorSettings.verticalMode}
+                visible={editorSettings.showStickies}
+              >
+                <SceneBeatEditorContextProvider value={{ sceneId: sceneId }}>
+                  <EditorContent editor={editor} />
+                </SceneBeatEditorContextProvider>
+                <CodexPopover editor={editor} />
+                <EditorBubbleMenu
+                  editor={editor}
+                  toolbarActionsRef={toolbarActionsRef}
+                  canEditCodexSemanticLink={canEditCodexSemanticLink}
+                  onInlineAiCommand={onInlineAiCommand}
+                />
+                {canEditCodexSemanticLink && (
+                  <CodexSemanticLinkPopover editor={editor} />
+                )}
+                {!phoneWorkspace && (
+                  <>
+                    <CommentAddPopover editor={editor} />
+                    <ForeshadowMarkPopover editor={editor} />
+                    <ForeshadowMarkHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <CommentHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <PseudoCommentBubble
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <AnnotationHoverPopover containerRef={editorContainerRef} />
+                    <LintHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                      sceneId={sceneId}
+                    />
+                    <EditorContextMenu
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                      toolbarActionsRef={toolbarActionsRef}
+                      canEditCodexSemanticLink={canEditCodexSemanticLink}
+                      onAddSticky={(x, y, target) => {
+                        requestEditorStickyAtTarget(target, x, y);
+                      }}
+                    />
+                  </>
+                )}
+              </EditorStickySurface>
             </EditorBodyWithLoading>
           </div>
         </EditorDropDiv>

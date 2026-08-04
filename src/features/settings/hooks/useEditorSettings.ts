@@ -28,6 +28,7 @@ export interface EditorSettings {
   showLineNumbers: boolean;
   aozoraInput: boolean;
   showInvisibles: boolean;
+  showStickies: boolean;
   autoPairBrackets: boolean;
   paragraphIndent: number;
   verticalMode: boolean;
@@ -69,6 +70,7 @@ export function useEditorSettings(): EditorSettings {
     showLineNumbers: store.getBoolean("editor.showLineNumbers", false),
     aozoraInput: store.getBoolean("editor.aozoraInput", true),
     showInvisibles: store.getBoolean("editor.showInvisibles", false),
+    showStickies: store.getBoolean("editor.showStickies", true),
     autoPairBrackets: store.getBoolean("editor.autoPairBrackets", true),
     paragraphIndent: store.getNumber("editor.paragraphIndent", 0),
     verticalMode: store.getBoolean("editor.verticalMode", false),
