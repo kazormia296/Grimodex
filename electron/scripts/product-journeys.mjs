@@ -185,12 +185,20 @@ export async function assertLifecycleTransitionOrder(
   return matching;
 }
 
-async function configureWorkspace(
+export async function configureWorkspace(
   harness,
   workspace,
-  { appSettings = {}, deterministicAi = false } = {},
+  { appSettings = {}, deterministicAi = false, additionalWorkspaces = [] } = {},
 ) {
-  await mkdir(workspace, { recursive: true });
+  const configuredWorkspaces = [
+    workspace,
+    ...additionalWorkspaces.filter((candidate) => candidate !== workspace),
+  ];
+  await Promise.all(
+    configuredWorkspaces.map((candidate) =>
+      mkdir(candidate, { recursive: true }),
+    ),
+  );
   const launched = await harness.launch("configure");
   try {
     await harness.invokeOk(launched.page, "open_workspace", {
@@ -217,6 +225,19 @@ async function configureWorkspace(
         },
       });
     }
+    // Create every secondary DB before global settings enable startup
+    // auto-open. Launching another renderer between these native swaps can
+    // race its startup hydration against the test-only DB preparation.
+    for (const additionalWorkspace of configuredWorkspaces.slice(1)) {
+      await harness.invokeOk(launched.page, "open_workspace", {
+        path: additionalWorkspace,
+      });
+    }
+    if (configuredWorkspaces.length > 1) {
+      await harness.invokeOk(launched.page, "open_workspace", {
+        path: workspace,
+      });
+    }
     const settings = await harness.invokeOk(
       launched.page,
       "get_global_settings",
@@ -225,7 +246,7 @@ async function configureWorkspace(
       settings: {
         ...settings,
         lastActiveWorkspace: workspace,
-        trustedWorkspaces: [workspace],
+        trustedWorkspaces: configuredWorkspaces,
         showLauncherOnStartup: false,
         hasSeenWelcome: true,
         acceptedEulaVersion: readEulaVersion(),
@@ -351,55 +372,6 @@ async function switchProjectThroughUi(harness, page, { id, title }, label) {
       String(triggerText ?? "").includes(title)
     );
   }, label);
-}
-
-async function prepareWorkspacePair(harness, workspaceA, workspaceB, phase) {
-  await mkdir(workspaceB, { recursive: true });
-  const prepared = await harness.launch(`${phase}/prepare-workspaces`);
-  try {
-    await harness.invokeOk(prepared.page, "open_workspace", {
-      path: workspaceB,
-    });
-    const settings = await harness.invokeOk(
-      prepared.page,
-      "get_global_settings",
-    );
-    await harness.invokeOk(prepared.page, "save_global_settings", {
-      settings: {
-        ...settings,
-        lastActiveWorkspace: workspaceB,
-        trustedWorkspaces: [workspaceA, workspaceB],
-        showLauncherOnStartup: false,
-        hasSeenWelcome: true,
-        acceptedEulaVersion: readEulaVersion(),
-        lastSeenReleaseNotesVersion: appVersion(),
-      },
-    });
-    await harness.invokeOk(prepared.page, "open_workspace", {
-      path: workspaceA,
-    });
-    const restoredSettings = await harness.invokeOk(
-      prepared.page,
-      "get_global_settings",
-    );
-    await harness.invokeOk(prepared.page, "save_global_settings", {
-      settings: {
-        ...restoredSettings,
-        lastActiveWorkspace: workspaceA,
-        trustedWorkspaces: [workspaceA, workspaceB],
-        showLauncherOnStartup: false,
-        hasSeenWelcome: true,
-        acceptedEulaVersion: readEulaVersion(),
-        lastSeenReleaseNotesVersion: appVersion(),
-      },
-    });
-  } finally {
-    await harness.close(
-      prepared.app,
-      prepared.page,
-      `${phase}/prepare-workspaces`,
-    );
-  }
 }
 
 async function switchWorkspaceThroughUi(harness, page, workspace, label) {
@@ -808,13 +780,8 @@ async function runWorkspaceSwitchAuthorityJourney(harness) {
     appSettings: {
       "editor.autoSaveDelay": PENDING_SAVE_AUTOSAVE_DELAY_MS,
     },
+    additionalWorkspaces: [workspaceB],
   });
-  await prepareWorkspacePair(
-    harness,
-    workspaceA,
-    workspaceB,
-    "workspace-switch",
-  );
 
   const switched = await harness.launch("workspace-switch/pending-save");
   try {
@@ -1128,13 +1095,8 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
   const workspaceB = harness.workspacePath("chat-workspace-b");
   await configureWorkspace(harness, workspaceA, {
     deterministicAi: true,
+    additionalWorkspaces: [workspaceB],
   });
-  await prepareWorkspacePair(
-    harness,
-    workspaceA,
-    workspaceB,
-    "chat-stream-workspace-switch",
-  );
 
   const chat = await harness.launch("chat-stream-workspace-switch");
   try {
