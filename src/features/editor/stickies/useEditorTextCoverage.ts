@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/core";
 import {
   collectEditorTextCoverage,
+  indexEditorTextCoverage,
+  type EditorTextCoverageIndex,
   type EditorTextCoverageRect,
 } from "./editorTextCoverageIndex";
 
@@ -62,6 +64,9 @@ export function useEditorTextCoverage(
     editor.on("transaction", schedule);
     editor.on("update", schedule);
     const editorRoot = editor.view.dom as HTMLElement;
+    editorRoot.addEventListener("compositionstart", schedule);
+    editorRoot.addEventListener("compositionupdate", schedule);
+    editorRoot.addEventListener("compositionend", schedule);
     const mutationObserver =
       typeof MutationObserver === "undefined"
         ? null
@@ -84,6 +89,9 @@ export function useEditorTextCoverage(
     return () => {
       editor.off("transaction", schedule);
       editor.off("update", schedule);
+      editorRoot.removeEventListener("compositionstart", schedule);
+      editorRoot.removeEventListener("compositionupdate", schedule);
+      editorRoot.removeEventListener("compositionend", schedule);
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
@@ -92,5 +100,9 @@ export function useEditorTextCoverage(
     };
   }, [draggingRef, editor, measureVersion, requestMeasure, surfaceRef]);
 
-  return { coverage, requestMeasure };
+  const coverageIndex: EditorTextCoverageIndex = useMemo(
+    () => indexEditorTextCoverage(coverage),
+    [coverage],
+  );
+  return { coverage: coverageIndex, requestMeasure };
 }

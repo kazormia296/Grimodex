@@ -109,7 +109,7 @@ describe("useLicenseEditableSync lifecycle barrier", () => {
     "src/features/editor/LinearSceneBlock.tsx",
     "src/features/codex/components/CodexContentEditor.tsx",
     "src/features/snippets/SnippetDetailContent.tsx",
-    "src/features/map/nodes/StickyNode.tsx",
+    "src/features/sticky/StickyBodyEditor.tsx",
     "src/features/editor/UnplacedBeatItem.tsx",
   ])("%s routes editable state through the shared hook", (relativePath) => {
     const source = readFileSync(resolve(process.cwd(), relativePath), "utf8");

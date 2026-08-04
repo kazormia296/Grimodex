@@ -472,6 +472,7 @@ export interface SkipReport {
   mapNodePositionsLinkCleared: number;
   eventCodexRefCleared: number;
   eventRevealSceneCleared: number;
+  editorStickies: number;
 }
 
 export function emptySkipReport(): SkipReport {
@@ -491,6 +492,7 @@ export function emptySkipReport(): SkipReport {
     mapNodePositionsLinkCleared: 0,
     eventCodexRefCleared: 0,
     eventRevealSceneCleared: 0,
+    editorStickies: 0,
   };
 }
 
@@ -510,7 +512,8 @@ export function skipReportIsEmpty(r: SkipReport): boolean {
       r.foreshadowPayoffSceneCleared +
       r.mapNodePositionsLinkCleared +
       r.eventCodexRefCleared +
-      r.eventRevealSceneCleared ===
+      r.eventRevealSceneCleared +
+      r.editorStickies ===
     0
   );
 }

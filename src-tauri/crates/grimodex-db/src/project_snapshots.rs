@@ -233,7 +233,10 @@ pub struct ProjectSnapshotRestoreContext {
     pub aux_rows: Vec<SnapshotAuxRow>,
     pub content_rows: Vec<SnapshotContentRow>,
     pub live_codex_ids: Vec<String>,
+    pub live_codex_phase_ids: Vec<String>,
     pub live_tree_node_ids: Vec<String>,
+    pub live_snippet_ids: Vec<String>,
+    pub live_event_ids: Vec<String>,
     pub live_codex_tag_ids: Vec<String>,
 }
 
@@ -625,9 +628,24 @@ pub fn project_snapshot_restore_context(
             "SELECT id FROM codex_entries WHERE project_id = ?1",
             &project_param,
         )?;
+        let live_codex_phase_ids = query_strings(
+            conn,
+            "SELECT id FROM codex_entry_phases WHERE entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?1)",
+            &project_param,
+        )?;
         let live_tree_node_ids = query_strings(
             conn,
             "SELECT id FROM tree_nodes WHERE project_id = ?1",
+            &project_param,
+        )?;
+        let live_snippet_ids = query_strings(
+            conn,
+            "SELECT id FROM snippets WHERE project_id = ?1",
+            &project_param,
+        )?;
+        let live_event_ids = query_strings(
+            conn,
+            "SELECT id FROM events WHERE project_id = ?1",
             &project_param,
         )?;
         let live_codex_tag_ids = query_strings(
@@ -644,7 +662,10 @@ pub fn project_snapshot_restore_context(
             aux_rows,
             content_rows,
             live_codex_ids,
+            live_codex_phase_ids,
             live_tree_node_ids,
+            live_snippet_ids,
+            live_event_ids,
             live_codex_tag_ids,
         })
     })

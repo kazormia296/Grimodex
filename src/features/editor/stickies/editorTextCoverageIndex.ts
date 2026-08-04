@@ -5,6 +5,12 @@ export interface EditorTextCoverageRect {
   height: number;
 }
 
+export interface EditorTextCoverageIndex {
+  rects: readonly EditorTextCoverageRect[];
+  tileSize: number;
+  tiles: ReadonlyMap<string, readonly EditorTextCoverageRect[]>;
+}
+
 export interface SurfaceRectOrigin {
   left: number;
   top: number;
@@ -21,6 +27,7 @@ export interface CoverageCardRect {
 
 const COVERAGE_EXPANSION_PX = 1;
 const NON_WHITESPACE_RUN = /\S+/gu;
+export const EDITOR_STICKY_COVERAGE_TILE_SIZE = 768;
 
 function isCoverageExcluded(textNode: Text): boolean {
   const parent = textNode.parentElement;
@@ -91,9 +98,36 @@ export function collectEditorTextCoverage(
   return coverage;
 }
 
+/**
+ * Partition coverage once so every sticky mask only scans nearby text. The
+ * full rect list remains available for diagnostics and correctness; tiles are
+ * an acceleration index, not a visibility filter.
+ */
+export function indexEditorTextCoverage(
+  rects: readonly EditorTextCoverageRect[],
+  tileSize = EDITOR_STICKY_COVERAGE_TILE_SIZE,
+): EditorTextCoverageIndex {
+  const tiles = new Map<string, EditorTextCoverageRect[]>();
+  for (const rect of rects) {
+    const firstX = Math.floor(rect.x / tileSize);
+    const lastX = Math.floor((rect.x + rect.width) / tileSize);
+    const firstY = Math.floor(rect.y / tileSize);
+    const lastY = Math.floor((rect.y + rect.height) / tileSize);
+    for (let tileX = firstX; tileX <= lastX; tileX += 1) {
+      for (let tileY = firstY; tileY <= lastY; tileY += 1) {
+        const key = `${tileX}:${tileY}`;
+        const bucket = tiles.get(key);
+        if (bucket) bucket.push(rect);
+        else tiles.set(key, [rect]);
+      }
+    }
+  }
+  return { rects, tileSize, tiles };
+}
+
 /** Intersect global surface coverage with one paper's local coordinate space. */
 export function projectCoverageToCard(
-  coverage: readonly EditorTextCoverageRect[],
+  coverage: readonly EditorTextCoverageRect[] | EditorTextCoverageIndex,
   card: CoverageCardRect,
 ): EditorTextCoverageRect[] {
   const cardX = card.x ?? card.left ?? 0;
@@ -101,8 +135,27 @@ export function projectCoverageToCard(
   const right = cardX + card.width;
   const bottom = cardY + card.height;
   const projected: EditorTextCoverageRect[] = [];
+  const candidates =
+    "tiles" in coverage
+      ? (() => {
+          const firstX = Math.floor(cardX / coverage.tileSize);
+          const lastX = Math.floor(right / coverage.tileSize);
+          const firstY = Math.floor(cardY / coverage.tileSize);
+          const lastY = Math.floor(bottom / coverage.tileSize);
+          const unique = new Set<EditorTextCoverageRect>();
+          for (let tileX = firstX; tileX <= lastX; tileX += 1) {
+            for (let tileY = firstY; tileY <= lastY; tileY += 1) {
+              for (const rect of coverage.tiles.get(`${tileX}:${tileY}`) ??
+                []) {
+                unique.add(rect);
+              }
+            }
+          }
+          return unique;
+        })()
+      : coverage;
 
-  for (const rect of coverage) {
+  for (const rect of candidates) {
     const left = Math.max(cardX, rect.x);
     const top = Math.max(cardY, rect.y);
     const clippedRight = Math.min(right, rect.x + rect.width);

@@ -105,6 +105,24 @@ describe("editor sticky document store", () => {
     ).toEqual([]);
   });
 
+  it("passes an explicit id through for Global History restoration", async () => {
+    vi.mocked(createEditorSticky).mockResolvedValue(sticky);
+
+    await useEditorStickyStore.getState().create("project-1", key, {
+      id: sticky.id,
+      inlineOffset: sticky.inlineOffset,
+      blockOffset: sticky.blockOffset,
+    });
+
+    expect(createEditorSticky).toHaveBeenCalledWith({
+      id: sticky.id,
+      projectId: "project-1",
+      documentKey: key,
+      inlineOffset: sticky.inlineOffset,
+      blockOffset: sticky.blockOffset,
+    });
+  });
+
   it("does not reuse a loaded document bucket across projects", async () => {
     vi.mocked(listEditorStickies).mockResolvedValue([sticky]);
 

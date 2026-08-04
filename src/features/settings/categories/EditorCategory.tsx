@@ -225,6 +225,12 @@ export function EditorCategory() {
           />
         </SettingRow>
         <SettingRow
+          label={t("settings.editor.showStickies")}
+          description={t("settings.editor.showStickiesDesc")}
+        >
+          <SettingToggle settingKey="editor.showStickies" defaultValue={true} />
+        </SettingRow>
+        <SettingRow
           label={t("settings.editor.codexCompletion")}
           description={t("settings.editor.codexCompletionDesc")}
         >

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   collectEditorTextCoverage,
+  indexEditorTextCoverage,
   projectCoverageToCard,
 } from "./editorTextCoverageIndex";
 
@@ -62,5 +63,51 @@ describe("editor text coverage", () => {
         { left: 40, top: 20, width: 80, height: 40 },
       ),
     ).toEqual([{ x: 0, y: 10, width: 10, height: 18 }]);
+  });
+
+  it("keeps ruby, tate-chu-yoko, and non-whitespace runs in the mask", () => {
+    const editorRoot = document.createElement("div");
+    editorRoot.innerHTML =
+      '<p><ruby><rb>漢字</rb><rt>かんじ</rt></ruby><span style="text-combine-upright: all">12</span> 本文   </p>';
+    const measuredTexts: string[] = [];
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value: function (this: Range) {
+        const text = this.toString();
+        measuredTexts.push(text);
+        return [
+          {
+            left: measuredTexts.length * 20,
+            top: 30,
+            width: 16,
+            height: 18,
+          },
+        ];
+      },
+    });
+
+    const coverage = collectEditorTextCoverage(editorRoot, {
+      left: 0,
+      top: 0,
+    });
+
+    expect(measuredTexts).toEqual(["漢字", "かんじ", "12", "本文"]);
+    expect(coverage).toHaveLength(4);
+  });
+
+  it("indexes long-document coverage and only projects nearby tiles", () => {
+    const near = { x: 10, y: 10, width: 20, height: 20 };
+    const far = { x: 2_000, y: 10, width: 20, height: 20 };
+    const index = indexEditorTextCoverage([near, far], 100);
+
+    expect(index.rects).toEqual([near, far]);
+    expect(
+      projectCoverageToCard(index, {
+        left: 0,
+        top: 0,
+        width: 50,
+        height: 50,
+      }),
+    ).toEqual([{ x: 10, y: 10, width: 20, height: 20 }]);
   });
 });

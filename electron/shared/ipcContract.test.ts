@@ -1202,13 +1202,30 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       },
     });
 
+    const restorePayload = { ...payload, id: "sticky-restore" };
+    const restored = await dispatchInvoke(
+      "editor_sticky_create",
+      { payload: restorePayload },
+      { backend, shell: noShell },
+    );
+    expect(editorStickyCreate).toHaveBeenLastCalledWith(restorePayload);
+    expect(restored.ok).toBe(true);
+
+    const invalidId = await dispatchInvoke(
+      "editor_sticky_create",
+      { payload: { ...payload, id: "" } },
+      { backend, shell: noShell },
+    );
+    expect(invalidId.ok).toBe(false);
+    expect(editorStickyCreate).toHaveBeenCalledTimes(2);
+
     const invalid = await dispatchInvoke(
       "editor_sticky_create",
       { payload: { ...payload, colorSlot: "0" } },
       { backend, shell: noShell },
     );
     expect(invalid.ok).toBe(false);
-    expect(editorStickyCreate).toHaveBeenCalledOnce();
+    expect(editorStickyCreate).toHaveBeenCalledTimes(2);
     if (!invalid.ok) {
       expect(invalid.error).toContain(
         "invalid args `colorSlot` for command `editor_sticky_create`",
@@ -1684,7 +1701,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         auxRows: [],
         contentRows: [],
         liveCodexIds: [],
+        liveCodexPhaseIds: [],
         liveTreeNodeIds: [],
+        liveSnippetIds: [],
+        liveEventIds: [],
         liveCodexTagIds: [],
       }),
     );

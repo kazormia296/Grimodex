@@ -71,7 +71,10 @@ export interface ProjectSnapshotRestoreContext {
   auxRows: Array<{ scope: string; payloadJson: string }>;
   contentRows: Array<{ id: string; content: string }>;
   liveCodexIds: string[];
+  liveCodexPhaseIds: string[];
   liveTreeNodeIds: string[];
+  liveSnippetIds: string[];
+  liveEventIds: string[];
   liveCodexTagIds: string[];
 }
 

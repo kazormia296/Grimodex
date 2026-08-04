@@ -8,12 +8,16 @@ import {
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
-import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
 import { getPalette, resolveStickyHex } from "@/lib/stickyPalettes";
 import { StickyBodyEditor } from "@/features/sticky/StickyBodyEditor";
 import { StickyRichTextBody } from "@/features/sticky/StickyRichTextBody";
 import {
+  createStickyDraftController,
+  type StickyDraftController,
+} from "@/features/sticky/stickyDraftController";
+import {
   projectCoverageToCard,
+  type EditorTextCoverageIndex,
   type EditorTextCoverageRect,
 } from "./editorTextCoverageIndex";
 import type { EditorSticky } from "./editorStickyTypes";
@@ -30,9 +34,10 @@ export interface EditorStickyCardProps {
   top: number;
   width: number;
   minHeight: number;
+  maxHeight: number;
   height: number;
   fontSize: number;
-  coverage: readonly EditorTextCoverageRect[];
+  coverage: readonly EditorTextCoverageRect[] | EditorTextCoverageIndex;
   selected: boolean;
   editing: boolean;
   onSelect: (stickyId: string) => void;
@@ -55,6 +60,7 @@ export function EditorStickyCard({
   top,
   width,
   minHeight,
+  maxHeight,
   height,
   fontSize,
   coverage,
@@ -76,45 +82,53 @@ export function EditorStickyCard({
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const draftControllerRef = useRef<StickyDraftController | null>(null);
+  if (
+    draftControllerRef.current === null ||
+    draftControllerRef.current.id !== sticky.id
+  ) {
+    draftControllerRef.current = createStickyDraftController(
+      sticky.id,
+      sticky.body,
+    );
+  }
+  const draftController = draftControllerRef.current;
+  draftController.setPersist((body) => onBodySave(sticky, body));
   const [draftBody, setDraftBody] = useState(sticky.body);
-  const draftRef = useRef(sticky.body);
-  const dirtyRef = useRef(false);
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    if (!editing && !dirtyRef.current) {
-      draftRef.current = sticky.body;
+    if (!editing && !draftController.dirty) {
+      draftController.latestBody = sticky.body;
       setDraftBody(sticky.body);
     }
-  }, [editing, sticky.body]);
+  }, [draftController, editing, sticky.body]);
 
   const commitBody = useCallback(async () => {
-    if (!dirtyRef.current) return;
-    const body = draftRef.current;
-    await trackPendingEditorWrite(onBodySave(sticky, body));
-    dirtyRef.current = false;
+    if (!draftController.dirty) return;
+    await draftController.save();
     setDirty(false);
-    setDraftBody(body);
-  }, [onBodySave, sticky]);
+    setDraftBody(draftController.latestBody);
+  }, [draftController]);
 
   useQuiescentDraftParticipant({
     id: `editor-sticky:${sticky.id}`,
     enabled: dirty,
-    isDirty: () => dirtyRef.current,
+    isDirty: () => draftController.dirty,
     flush: commitBody,
     discard: () => {
-      dirtyRef.current = false;
+      draftController.discard();
       setDirty(false);
-      draftRef.current = sticky.body;
+      draftController.latestBody = sticky.body;
       setDraftBody(sticky.body);
     },
     recovery: () =>
-      dirtyRef.current
+      draftController.dirty
         ? {
             kind: "editor-sticky-draft",
             stickyId: sticky.id,
             documentKey: sticky.documentKey,
-            body: draftRef.current,
+            body: draftController.latestBody,
           }
         : null,
   });
@@ -146,9 +160,8 @@ export function EditorStickyCard({
   }, [menu]);
 
   const changeDraft = (body: string) => {
-    draftRef.current = body;
+    draftController.markDirty(body);
     setDraftBody(body);
-    dirtyRef.current = true;
     setDirty(true);
   };
 
@@ -161,7 +174,7 @@ export function EditorStickyCard({
       .catch(() => toast.error("付箋を保存できませんでした"));
   };
 
-  const finishDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+  const finishDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
@@ -185,6 +198,8 @@ export function EditorStickyCard({
     top,
     width,
     minHeight,
+    maxHeight,
+    overflow: "hidden",
     zIndex: sticky.zIndex + 1000,
     fontSize,
     writingMode: "horizontal-tb",
@@ -203,7 +218,9 @@ export function EditorStickyCard({
       data-editor-sticky-id={sticky.id}
       className="editor-sticky-card"
       style={cardStyle}
-      tabIndex={selected ? 0 : -1}
+      tabIndex={0}
+      aria-label="Editor付箋"
+      aria-selected={selected}
       onClick={(event) => {
         event.stopPropagation();
         onSelect(sticky.id);
@@ -281,10 +298,17 @@ export function EditorStickyCard({
         className="editor-sticky-card__content"
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <div
+        <button
+          type="button"
           className="editor-sticky-card__handle"
-          role="button"
           aria-label="付箋を移動"
+          tabIndex={editing ? -1 : 0}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            event.stopPropagation();
+            onSelect(sticky.id);
+          }}
           onPointerDown={(event) => {
             if (event.button !== 0 || editing) return;
             event.preventDefault();
@@ -312,8 +336,14 @@ export function EditorStickyCard({
           onPointerCancel={finishDrag}
         >
           <span aria-hidden="true">⋮⋮</span>
-        </div>
-        <div className="editor-sticky-card__body">
+        </button>
+        <div
+          className="editor-sticky-card__body"
+          style={{
+            maxHeight: Math.max(maxHeight - fontSize * 2.5, fontSize * 1.4),
+            overflowY: "auto",
+          }}
+        >
           {editing ? (
             <StickyBodyEditor
               body={draftBody}

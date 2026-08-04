@@ -21,6 +21,7 @@ async function resetSnapshotTables() {
     projectSnapshotAux,
     projectSnapshots,
     contentVersions,
+    editorStickies,
     treeNodes,
     codexEntries,
     snippets,
@@ -28,6 +29,7 @@ async function resetSnapshotTables() {
     plotThreadSceneLinks,
     plotThreadBranches,
   } = await import("@/db/schema");
+  await db.delete(editorStickies);
   await db.delete(projectSnapshotEntries);
   await db.delete(projectSnapshotTreeNodes);
   await db.delete(projectSnapshotCodexEntries);
@@ -469,6 +471,37 @@ describe("projectSnapshotApi", () => {
     expect(scene[0]?.content).toBe(
       '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
     );
+  });
+
+  it("skips an editor sticky when a map-only restore excludes its missing body owner", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const { db } = await import("@/db/client");
+    const { editorStickies, treeNodes } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+
+    await db.insert(editorStickies).values({
+      id: "editor-sticky-snapshot",
+      projectId: PROJECT_ID,
+      documentKey: "tree:database:scene-snapshot-test",
+      body: '{"type":"doc","content":[]}',
+      paletteId: "post-it-playful",
+      colorSlot: 0,
+      inlineOffset: 12,
+      blockOffset: 24,
+      zIndex: 0,
+      treeNodeId: SCENE_ID,
+    });
+    const target = await createProjectSnapshot({ name: "sticky-owner" });
+
+    await db.delete(editorStickies);
+    await db.delete(treeNodes).where(eq(treeNodes.id, SCENE_ID));
+
+    const result = await restoreProjectSnapshot(target.id, "sticky-owner", {
+      scopes: new Set(["map"]),
+    });
+
+    expect(result.skipped.editorStickies).toBe(1);
+    expect(await db.select().from(editorStickies)).toEqual([]);
   });
 
   it("restore preserves original created_at / updated_at instead of writing 'now'", async () => {

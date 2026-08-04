@@ -18,7 +18,8 @@ export type HistoryKind =
   | "tags"
   | "foreshadow"
   | "plot"
-  | "chronicle";
+  | "chronicle"
+  | "editor";
 
 export interface HistoryCommand {
   kind: HistoryKind;

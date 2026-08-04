@@ -13,6 +13,8 @@ import {
 export interface CreateEditorStickyInput {
   projectId: string;
   documentKey: DocumentKey;
+  /** Set only for an intentional Global History restore. */
+  id?: string;
   body?: string;
   paletteId?: string;
   colorSlot?: number;
@@ -41,9 +43,7 @@ export class EditorStickyConflictError extends Error {
   readonly expectedVersion: number;
 
   constructor(stickyId: string, expectedVersion: number) {
-    super(
-      `Editor sticky ${stickyId} changed before version ${expectedVersion}`,
-    );
+    super(`Editor sticky ${stickyId}: version ${expectedVersion} conflict`);
     this.name = "EditorStickyConflictError";
     this.stickyId = stickyId;
     this.expectedVersion = expectedVersion;
@@ -140,6 +140,7 @@ export async function createEditorSticky(
 ): Promise<EditorSticky> {
   const row = await invoke<EditorStickyWire>("editor_sticky_create", {
     payload: {
+      ...(input.id === undefined ? {} : { id: input.id }),
       projectId: input.projectId,
       documentKey: encodeDocumentKey(input.documentKey),
       body: input.body ?? EMPTY_STICKY_BODY,

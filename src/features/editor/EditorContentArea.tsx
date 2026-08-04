@@ -237,6 +237,7 @@ export function EditorContentArea({
                 documentKey={documentKey}
                 fontSize={editorSettings.fontSize}
                 verticalMode={editorSettings.verticalMode}
+                visible={editorSettings.showStickies}
               >
                 <SceneBeatEditorContextProvider value={{ sceneId: sceneId }}>
                   <EditorContent editor={editor} />

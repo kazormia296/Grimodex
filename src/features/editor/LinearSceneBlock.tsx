@@ -1158,6 +1158,7 @@ function MountedSceneBlock({
                 projectId={currentProjectId}
                 fontSize={editorSettings.fontSize}
                 verticalMode={editorSettings.verticalMode}
+                visible={editorSettings.showStickies}
               >
                 <EditorContent editor={editor} />
               </EditorStickySurface>

@@ -1556,7 +1556,7 @@ export async function createBrowserMock(
     const payload = (args.payload ?? {}) as Record<string, unknown>;
     const now = new Date().toISOString();
     const row: BrowserEditorStickyRow = {
-      id: crypto.randomUUID(),
+      id: String(payload.id ?? crypto.randomUUID()),
       projectId: String(payload.projectId ?? ""),
       documentKey: String(payload.documentKey ?? ""),
       body: String(payload.body ?? '{"type":"doc","content":[]}'),
@@ -4177,10 +4177,20 @@ export async function createBrowserMock(
         "SELECT id FROM codex_entries WHERE project_id = ?",
         [projectId],
       ).map((row) => String(row.id)),
+      liveCodexPhaseIds: queryAll(
+        "SELECT id FROM codex_entry_phases WHERE entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)",
+        [projectId],
+      ).map((row) => String(row.id)),
       liveTreeNodeIds: queryAll(
         "SELECT id FROM tree_nodes WHERE project_id = ?",
         [projectId],
       ).map((row) => String(row.id)),
+      liveSnippetIds: queryAll("SELECT id FROM snippets WHERE project_id = ?", [
+        projectId,
+      ]).map((row) => String(row.id)),
+      liveEventIds: queryAll("SELECT id FROM events WHERE project_id = ?", [
+        projectId,
+      ]).map((row) => String(row.id)),
       liveCodexTagIds: queryAll(
         "SELECT id FROM codex_tags WHERE project_id = ?",
         [projectId],

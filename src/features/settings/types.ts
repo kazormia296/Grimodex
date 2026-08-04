@@ -148,6 +148,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.showLineNumbers": "global",
   "editor.aozoraInput": "global",
   "editor.showInvisibles": "global",
+  "editor.showStickies": "global",
   "editor.codexCompletion": "global",
   "editor.promptCodexReadingOnRuby": "global",
   "editor.autoPairBrackets": "global",
@@ -441,6 +442,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.aozoraInput": "true",
   // 空白・改行(¶/↵/半角・全角空白/タブ)の可視化。既定OFF。
   "editor.showInvisibles": "false",
+  // Editor上の表示専用付箋オーバーレイ。本文やAI経路には影響しない。
+  "editor.showStickies": "true",
   // Codex name/alias ghost completion. Local only; no AI or translation.
   "editor.codexCompletion": "true",
   // 手動ルビを未設定の Codex 読みとして登録する確認。ユーザー設定で停止可能。

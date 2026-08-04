@@ -17,8 +17,8 @@ import {
  *
  * 注意: `setEditable` を無条件に同期するため、独自の editable 制御を持つ
  * エディタ（ChatInput の isStreaming 等）にはこのフックを使わないこと。
- * 導入時点で対象 6 エディタ（EditorPane / LinearSceneBlock /
- * CodexContentEditor / SnippetDetailContent / StickyNode /
+ * 導入時点で対象の編集面（EditorPane / LinearSceneBlock /
+ * CodexContentEditor / SnippetDetailContent / StickyBodyEditor /
  * UnplacedBeatItem）に他の editable 制御が無いことを確認済み。
  *
  * `forceReadOnly`: ライセンス以外の read-only 要因（マルチウインドウの advisory

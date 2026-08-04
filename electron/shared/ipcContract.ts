@@ -1344,6 +1344,9 @@ function requireLintIgnoreCreatePayload(args: CommandArgs): CommandArgs {
 function requireEditorStickyCreatePayload(args: CommandArgs): CommandArgs {
   const command = "editor_sticky_create";
   const payload = requireRecord(args, "payload", command);
+  if (Object.hasOwn(payload, "id")) {
+    requireNonEmptyString(payload, "id", command);
+  }
   for (const key of ["projectId", "documentKey", "body", "paletteId"]) {
     requireNonEmptyString(payload, key, command);
   }

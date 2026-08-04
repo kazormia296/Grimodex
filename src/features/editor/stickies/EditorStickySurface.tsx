@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import {
   clampStickyPosition,
@@ -23,6 +24,7 @@ import { registerEditorStickySurface } from "./editorStickySurfaceRegistry";
 import { EditorStickyCard, nextStickyColor } from "./EditorStickyCard";
 import { useEditorTextCoverage } from "./useEditorTextCoverage";
 import { type DocumentKey } from "@/features/editor/document/documentKey";
+import { getStickyMetrics } from "@/features/sticky/stickyMetrics";
 
 const EMPTY_STICKIES: EditorSticky[] = [];
 const DEFAULT_HEIGHT = 520;
@@ -43,6 +45,7 @@ export interface EditorStickySurfaceProps {
   projectId?: string | null;
   fontSize: number;
   verticalMode: boolean;
+  visible?: boolean;
   children: ReactNode;
 }
 
@@ -80,13 +83,18 @@ export function EditorStickySurface({
   projectId,
   fontSize,
   verticalMode,
+  visible = true,
   children,
 }: EditorStickySurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
   const surfaceSize = useSurfaceSize(surfaceRef);
-  const stickyWidth = Math.max(fontSize * 12.5, 160);
-  const stickyMinHeight = Math.max(fontSize * 3.25, 52);
+  const stickyMetrics = useMemo(() => getStickyMetrics(fontSize), [fontSize]);
+  const {
+    width: stickyWidth,
+    minHeight: stickyMinHeight,
+    maxHeight: stickyMaxHeight,
+  } = stickyMetrics;
   const currentProjectId = useCurrentProjectId();
   const resolvedProjectId = projectId ?? currentProjectId;
   const stickies = useEditorStickyStore((state) => {
@@ -231,14 +239,56 @@ export function EditorStickySurface({
 
   const handleDelete = useCallback(
     async (sticky: EditorSticky) => {
-      if (!documentKey) return;
+      if (!documentKey || !resolvedProjectId) return;
+      const projectId = resolvedProjectId;
+      const document = documentKey;
       await useEditorStickyStore
         .getState()
-        .remove(sticky.id, sticky.projectId, documentKey, sticky.version);
+        .remove(sticky.id, projectId, document, sticky.version);
       setSelectedId((current) => (current === sticky.id ? null : current));
       setEditingId((current) => (current === sticky.id ? null : current));
+
+      if (useGlobalHistoryStore.getState().isReplaying) return;
+      const snapshot = { ...sticky, documentKey: document };
+      useGlobalHistoryStore.getState().push({
+        kind: "editor",
+        label: "Editor付箋を削除",
+        entityId: sticky.id,
+        documentKey: document,
+        async undo() {
+          const restored = await useEditorStickyStore
+            .getState()
+            .create(projectId, document, {
+              id: snapshot.id,
+              body: snapshot.body,
+              paletteId: snapshot.paletteId,
+              colorSlot: snapshot.colorSlot,
+              inlineOffset: snapshot.inlineOffset,
+              blockOffset: snapshot.blockOffset,
+              zIndex: snapshot.zIndex,
+            });
+          setSelectedId(restored.id);
+          setEditingId(null);
+        },
+        async redo() {
+          const current = useEditorStickyStore
+            .getState()
+            .getForDocument(projectId, document)
+            .find((item) => item.id === snapshot.id);
+          if (!current) return;
+          await useEditorStickyStore
+            .getState()
+            .remove(current.id, projectId, document, current.version);
+          setSelectedId((currentId) =>
+            currentId === snapshot.id ? null : currentId,
+          );
+          setEditingId((currentId) =>
+            currentId === snapshot.id ? null : currentId,
+          );
+        },
+      });
     },
-    [documentKey],
+    [documentKey, resolvedProjectId],
   );
 
   const handleColorChange = useCallback(
@@ -371,47 +421,56 @@ export function EditorStickySurface({
       }}
     >
       {children}
-      <div className="editor-sticky-overlay" aria-label="Editor付箋">
-        {[...stickies]
-          .sort((left, right) => left.zIndex - right.zIndex)
-          .map((sticky) => {
-            const position = dragPositions[sticky.id] ?? positions[sticky.id];
-            if (!position) return null;
-            const size = cardSizes[sticky.id];
-            return (
-              <EditorStickyCard
-                key={sticky.id}
-                sticky={sticky}
-                left={position.left}
-                top={position.top}
-                width={size?.width ?? stickyWidth}
-                minHeight={Math.max(size?.height ?? 0, stickyMinHeight)}
-                height={Math.max(size?.height ?? 0, stickyMinHeight)}
-                fontSize={fontSize}
-                coverage={coverage}
-                selected={selectedId === sticky.id}
-                editing={editingId === sticky.id}
-                onSelect={setSelectedId}
-                onEdit={(id) => {
-                  setSelectedId(id);
-                  setEditingId(id);
-                }}
-                onStopEditing={(id) => {
-                  setEditingId((current) => (current === id ? null : current));
-                }}
-                onBodySave={handleBodySave}
-                onDelete={handleDelete}
-                onColorChange={handleColorChange}
-                onBringToFront={handleBringToFront}
-                onSendToBack={handleSendToBack}
-                onDragStart={handleDragStart}
-                onDragMove={handleDragMove}
-                onDragEnd={handleDragEnd}
-                onMeasure={handleMeasure}
-              />
-            );
-          })}
-      </div>
+      {visible && (
+        <div
+          className="editor-sticky-overlay"
+          role="group"
+          aria-label="Editor付箋"
+        >
+          {[...stickies]
+            .sort((left, right) => left.zIndex - right.zIndex)
+            .map((sticky) => {
+              const position = dragPositions[sticky.id] ?? positions[sticky.id];
+              if (!position) return null;
+              const size = cardSizes[sticky.id];
+              return (
+                <EditorStickyCard
+                  key={sticky.id}
+                  sticky={sticky}
+                  left={position.left}
+                  top={position.top}
+                  width={size?.width ?? stickyWidth}
+                  minHeight={stickyMinHeight}
+                  maxHeight={stickyMaxHeight}
+                  height={Math.max(size?.height ?? 0, stickyMinHeight)}
+                  fontSize={fontSize}
+                  coverage={coverage}
+                  selected={selectedId === sticky.id}
+                  editing={editingId === sticky.id}
+                  onSelect={setSelectedId}
+                  onEdit={(id) => {
+                    setSelectedId(id);
+                    setEditingId(id);
+                  }}
+                  onStopEditing={(id) => {
+                    setEditingId((current) =>
+                      current === id ? null : current,
+                    );
+                  }}
+                  onBodySave={handleBodySave}
+                  onDelete={handleDelete}
+                  onColorChange={handleColorChange}
+                  onBringToFront={handleBringToFront}
+                  onSendToBack={handleSendToBack}
+                  onDragStart={handleDragStart}
+                  onDragMove={handleDragMove}
+                  onDragEnd={handleDragEnd}
+                  onMeasure={handleMeasure}
+                />
+              );
+            })}
+        </div>
+      )}
     </div>
   );
 }

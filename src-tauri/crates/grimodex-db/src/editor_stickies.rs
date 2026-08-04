@@ -17,6 +17,7 @@ const CONFLICT_MARKER: &str = "EDITOR_STICKY_CONFLICT";
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePayload {
+    pub id: Option<String>,
     pub project_id: String,
     pub document_key: String,
     pub body: String,
@@ -297,6 +298,9 @@ pub fn list(db: &Database, project_id: String, document_key: String) -> Result<V
 }
 
 pub fn create(db: &Database, payload: CreatePayload) -> Result<Entry> {
+    if let Some(id) = &payload.id {
+        require_non_empty(id, "id")?;
+    }
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.document_key, "documentKey")?;
     require_non_empty(&payload.body, "body")?;
@@ -310,7 +314,7 @@ pub fn create(db: &Database, payload: CreatePayload) -> Result<Entry> {
 
     db.with_conn(|conn| {
         ensure_owner_in_project(conn, &payload.project_id, &owners)?;
-        let id = Uuid::new_v4().to_string();
+        let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
         Ok(conn.query_row(
             "INSERT INTO editor_stickies (
                  id, project_id, document_key, body, palette_id, color_slot,
