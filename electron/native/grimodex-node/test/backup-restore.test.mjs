@@ -27,15 +27,38 @@ const SQL = await initSqlJs();
 
 function makeFixture(label) {
   const root = mkdtempSync(join(tmpdir(), `grimodex-backup-${label}-`));
+  const appData = join(root, "app-data");
   const workspace = join(root, "workspace");
   const backups = join(workspace, "backups");
-  const backend = new Backend(join(root, "app-data"));
+  // Keep ordinary backup-list/restore fixtures free of the detached automatic
+  // backup writer. Tests that exercise trusted automatic backup creation opt
+  // in explicitly in writeBackupViaTrustedOpen below.
+  mkdirSync(appData, { recursive: true });
+  writeFileSync(
+    join(appData, "global-settings.json"),
+    JSON.stringify({
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+      userPreferences: { "data.autoBackup": "false" },
+    }),
+  );
+  const backend = new Backend(appData);
   return {
     root,
     workspace,
     backups,
     backend,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () =>
+      rmSync(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 50,
+      }),
   };
 }
 
@@ -62,6 +85,7 @@ async function writeBackupViaTrustedOpen(backend, workspace, path) {
   const settings = JSON.parse(await backend.getGlobalSettings());
   settings.userPreferences = {
     ...(settings.userPreferences ?? {}),
+    "data.autoBackup": "true",
     "data.backupInterval": "0",
   };
   await backend.saveGlobalSettings(settings);
