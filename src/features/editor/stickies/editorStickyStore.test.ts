@@ -80,6 +80,48 @@ describe("editor sticky document store", () => {
     ).toBe(1);
   });
 
+  it("reloads the bucket after an OCC failure instead of keeping the optimistic row", async () => {
+    const remote = { ...sticky, blockOffset: 88, version: 1 };
+    vi.mocked(listEditorStickies)
+      .mockResolvedValueOnce([sticky])
+      .mockResolvedValueOnce([remote]);
+    vi.mocked(updateEditorSticky).mockRejectedValueOnce(
+      new Error("editor sticky version conflict"),
+    );
+    await loadEditorStickies("project-1", key);
+
+    await expect(
+      useEditorStickyStore
+        .getState()
+        .update(sticky.id, "project-1", key, { blockOffset: 40 }),
+    ).rejects.toThrow("editor sticky version conflict");
+
+    expect(listEditorStickies).toHaveBeenCalledTimes(2);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([remote]);
+  });
+
+  it("rolls back the optimistic row when the failure refresh also fails", async () => {
+    vi.mocked(listEditorStickies)
+      .mockResolvedValueOnce([sticky])
+      .mockRejectedValueOnce(new Error("database unavailable"));
+    vi.mocked(updateEditorSticky).mockRejectedValueOnce(
+      new Error("write failed"),
+    );
+    await loadEditorStickies("project-1", key);
+
+    await expect(
+      useEditorStickyStore
+        .getState()
+        .update(sticky.id, "project-1", key, { blockOffset: 40 }),
+    ).rejects.toThrow("write failed");
+
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual([sticky]);
+  });
+
   it("inserts and removes a sticky from the same document bucket", async () => {
     vi.mocked(createEditorSticky).mockResolvedValue(sticky);
     vi.mocked(deleteEditorSticky).mockResolvedValue(undefined);

@@ -94,6 +94,7 @@ pub fn has_v3_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
         "ai_audit_events",
         "post_effect_runs",
         "post_effect_annotations",
+        "editor_stickies",
     ] {
         if !table_exists(conn, table)? {
             return Ok(false);
@@ -293,6 +294,9 @@ mod tests {
                 run_id TEXT NOT NULL,
                 category TEXT NOT NULL,
                 metadata TEXT
+             );
+             CREATE TABLE editor_stickies (
+                id TEXT PRIMARY KEY
              );",
         )
         .expect("create converged v2 fixture");
@@ -326,6 +330,15 @@ mod tests {
         .expect("insert unrepaired annotation");
 
         assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect legacy metadata"));
+    }
+
+    #[test]
+    fn rejects_v2_schema_without_editor_stickies() {
+        let conn = converged_v2_connection();
+        conn.execute_batch("DROP TABLE editor_stickies")
+            .expect("remove editor sticky invariant");
+
+        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect missing stickies"));
     }
 
     #[test]

@@ -43,6 +43,24 @@ describe("editor sticky logical placement", () => {
     ).toEqual(logical);
   });
 
+  it("round-trips vertical positions across the full horizontal scroll extent", () => {
+    const logical = { inlineOffset: 96, blockOffset: 1120 };
+    const physical = logicalToPhysicalPosition(logical, {
+      verticalMode: true,
+      surfaceWidth: 1440,
+      stickyWidth: 200,
+    });
+
+    expect(physical).toEqual({ left: 120, top: 96 });
+    expect(
+      physicalToLogicalPosition(physical, {
+        verticalMode: true,
+        surfaceWidth: 1440,
+        stickyWidth: 200,
+      }),
+    ).toEqual(logical);
+  });
+
   it("maps pointer deltas into inline/block deltas in vertical writing", () => {
     expect(
       applyStickyPhysicalDelta(

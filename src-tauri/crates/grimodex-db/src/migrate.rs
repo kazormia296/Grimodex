@@ -3845,6 +3845,38 @@ mod tests {
     }
 
     #[test]
+    fn converged_previous_schema_migrate_repairs_missing_editor_stickies() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "DROP TABLE editor_stickies;
+                 PRAGMA user_version = 2;",
+            )?;
+            Ok(())
+        })
+        .expect("simulate converged v2 workspace missing sticky table");
+
+        db.migrate()
+            .expect("one migration must recreate editor stickies");
+        db.with_conn(|conn| {
+            let table_exists: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = 'editor_stickies'
+                )",
+                [],
+                |row| row.get(0),
+            )?;
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert!(table_exists);
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("verify sticky table repair");
+    }
+
+    #[test]
     fn converged_previous_schema_preserves_post_effect_crash_recovery() {
         let db =
             Database::new(std::path::Path::new(":memory:")).expect("open crash recovery fixture");

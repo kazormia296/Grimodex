@@ -365,7 +365,9 @@ export function EditorStickyCard({
               <button
                 type="button"
                 onClick={() =>
-                  void onColorChange(sticky).finally(() => setMenu(null))
+                  void onColorChange(sticky)
+                    .catch(() => toast.error("付箋の色を変更できませんでした"))
+                    .finally(() => setMenu(null))
                 }
               >
                 色を変更
@@ -373,7 +375,11 @@ export function EditorStickyCard({
               <button
                 type="button"
                 onClick={() =>
-                  void onBringToFront(sticky).finally(() => setMenu(null))
+                  void onBringToFront(sticky)
+                    .catch(() =>
+                      toast.error("付箋を前面へ移動できませんでした"),
+                    )
+                    .finally(() => setMenu(null))
                 }
               >
                 前面へ
@@ -381,7 +387,11 @@ export function EditorStickyCard({
               <button
                 type="button"
                 onClick={() =>
-                  void onSendToBack(sticky).finally(() => setMenu(null))
+                  void onSendToBack(sticky)
+                    .catch(() =>
+                      toast.error("付箋を背面へ移動できませんでした"),
+                    )
+                    .finally(() => setMenu(null))
                 }
               >
                 背面へ

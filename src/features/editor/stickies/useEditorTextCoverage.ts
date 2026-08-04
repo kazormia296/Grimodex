@@ -7,12 +7,16 @@ import {
   type EditorTextCoverageRect,
 } from "./editorTextCoverageIndex";
 
+const EMPTY_COVERAGE: EditorTextCoverageRect[] = [];
+
 export function useEditorTextCoverage(
   editor: Editor | null,
   surfaceRef: React.RefObject<HTMLElement | null>,
   draggingRef: React.RefObject<boolean>,
+  enabled: boolean,
 ) {
-  const [coverage, setCoverage] = useState<EditorTextCoverageRect[]>([]);
+  const [coverage, setCoverage] =
+    useState<EditorTextCoverageRect[]>(EMPTY_COVERAGE);
   const [measureVersion, setMeasureVersion] = useState(0);
 
   const requestMeasure = useCallback(() => {
@@ -21,18 +25,21 @@ export function useEditorTextCoverage(
 
   useEffect(() => {
     if (
+      !enabled ||
       !editor ||
       typeof editor.on !== "function" ||
       typeof editor.off !== "function" ||
       !editor.view?.dom
     ) {
-      setCoverage([]);
+      setCoverage(EMPTY_COVERAGE);
       return;
     }
 
     let frame = 0;
+    let disposed = false;
     let queuedDuringDrag = false;
     const measure = () => {
+      if (disposed) return;
       frame = 0;
       const surface = surfaceRef.current;
       if (!surface || draggingRef.current) {
@@ -50,6 +57,7 @@ export function useEditorTextCoverage(
       queuedDuringDrag = false;
     };
     const schedule = () => {
+      if (disposed) return;
       if (draggingRef.current) {
         queuedDuringDrag = true;
         return;
@@ -87,6 +95,7 @@ export function useEditorTextCoverage(
 
     schedule();
     return () => {
+      disposed = true;
       editor.off("transaction", schedule);
       editor.off("update", schedule);
       editorRoot.removeEventListener("compositionstart", schedule);
@@ -98,7 +107,14 @@ export function useEditorTextCoverage(
       void fontsReady;
       onDragEnd();
     };
-  }, [draggingRef, editor, measureVersion, requestMeasure, surfaceRef]);
+  }, [
+    draggingRef,
+    editor,
+    enabled,
+    measureVersion,
+    requestMeasure,
+    surfaceRef,
+  ]);
 
   const coverageIndex: EditorTextCoverageIndex = useMemo(
     () => indexEditorTextCoverage(coverage),

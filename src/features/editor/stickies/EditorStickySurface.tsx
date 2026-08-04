@@ -25,14 +25,13 @@ import { EditorStickyCard, nextStickyColor } from "./EditorStickyCard";
 import { useEditorTextCoverage } from "./useEditorTextCoverage";
 import { type DocumentKey } from "@/features/editor/document/documentKey";
 import { getStickyMetrics } from "@/features/sticky/stickyMetrics";
+import {
+  measureEditorStickySurface,
+  type EditorStickySurfaceSize,
+} from "./editorStickySurfaceGeometry";
 
 const EMPTY_STICKIES: EditorSticky[] = [];
 const DEFAULT_HEIGHT = 520;
-
-interface SurfaceSize {
-  width: number;
-  height: number;
-}
 
 interface CardSize {
   width: number;
@@ -49,30 +48,56 @@ export interface EditorStickySurfaceProps {
   children: ReactNode;
 }
 
-function useSurfaceSize(surfaceRef: React.RefObject<HTMLDivElement | null>) {
-  const [size, setSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+function useSurfaceSize(
+  surfaceRef: React.RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  layoutKey: string,
+) {
+  const [size, setSize] = useState<EditorStickySurfaceSize>({
+    width: 0,
+    height: 0,
+  });
 
   useLayoutEffect(() => {
     const surface = surfaceRef.current;
-    if (!surface) return;
+    if (!enabled || !surface) {
+      setSize({ width: 0, height: 0 });
+      return;
+    }
+    let frame = 0;
     const measure = () => {
-      const rect = surface.getBoundingClientRect();
-      setSize({
-        width: Math.max(1, surface.clientWidth, rect.width),
-        height: Math.max(
-          1,
-          surface.clientHeight,
-          surface.scrollHeight,
-          rect.height,
-        ),
-      });
+      frame = 0;
+      setSize(measureEditorStickySurface(surface));
+    };
+    const scheduleMeasure = () => {
+      if (frame) return;
+      if (typeof window.requestAnimationFrame === "function") {
+        frame = window.requestAnimationFrame(measure);
+      } else {
+        measure();
+      }
     };
     measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(surface);
-    return () => observer.disconnect();
-  }, [surfaceRef]);
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(scheduleMeasure);
+    resizeObserver?.observe(surface);
+    const mutationObserver =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(scheduleMeasure);
+    mutationObserver?.observe(surface, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+    return () => {
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [enabled, layoutKey, surfaceRef]);
 
   return size;
 }
@@ -88,7 +113,6 @@ export function EditorStickySurface({
 }: EditorStickySurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
-  const surfaceSize = useSurfaceSize(surfaceRef);
   const stickyMetrics = useMemo(() => getStickyMetrics(fontSize), [fontSize]);
   const {
     width: stickyWidth,
@@ -101,6 +125,12 @@ export function EditorStickySurface({
     if (!resolvedProjectId || !documentKey) return EMPTY_STICKIES;
     return state.getForDocument(resolvedProjectId, documentKey);
   });
+  const coverageEnabled = visible && stickies.length > 0;
+  const surfaceSize = useSurfaceSize(
+    surfaceRef,
+    coverageEnabled,
+    `${fontSize}:${verticalMode ? "vertical" : "horizontal"}`,
+  );
   const cardSizesRef = useRef<Record<string, CardSize>>({});
   const [cardSizes, setCardSizes] = useState<Record<string, CardSize>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -114,11 +144,13 @@ export function EditorStickySurface({
     editor,
     surfaceRef,
     draggingRef,
+    coverageEnabled,
   );
 
   useEffect(() => {
+    if (!coverageEnabled) return;
     requestMeasure();
-  }, [fontSize, requestMeasure, verticalMode]);
+  }, [coverageEnabled, fontSize, requestMeasure, verticalMode]);
 
   useEffect(() => {
     if (!resolvedProjectId || !documentKey) return;
