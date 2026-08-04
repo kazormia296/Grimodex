@@ -294,7 +294,9 @@ describe("editor sticky document store", () => {
     const pending = deferred<EditorSticky[]>();
     const existing = [{ ...sticky, id: "sticky-a", body: "A" }];
     const created = { ...sticky, id: "sticky-c", body: "C" };
-    vi.mocked(listEditorStickies).mockReturnValueOnce(pending.promise);
+    vi.mocked(listEditorStickies)
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(existing);
     vi.mocked(createEditorSticky).mockResolvedValueOnce(created);
 
     const load = loadEditorStickies("project-1", key);
@@ -311,6 +313,7 @@ describe("editor sticky document store", () => {
     await expect(create).resolves.toEqual(created);
 
     expect(createEditorSticky).toHaveBeenCalledOnce();
+    expect(listEditorStickies).toHaveBeenCalledTimes(2);
     expect(
       useEditorStickyStore.getState().getForDocument("project-1", key),
     ).toEqual([...existing, created]);
@@ -323,7 +326,8 @@ describe("editor sticky document store", () => {
     const created = { ...sticky, id: "sticky-c", body: "C" };
     vi.mocked(listEditorStickies)
       .mockResolvedValueOnce([existing])
-      .mockReturnValueOnce(reload.promise);
+      .mockReturnValueOnce(reload.promise)
+      .mockResolvedValueOnce([existing, created]);
     vi.mocked(createEditorSticky).mockReturnValueOnce(pendingCreate.promise);
 
     await loadEditorStickies("project-1", key);
@@ -374,6 +378,75 @@ describe("editor sticky document store", () => {
     expect(
       useEditorStickyStore.getState().getForDocument("project-1", key),
     ).toEqual([existing, created]);
+  });
+
+  it("retries a stale reload after a delete instead of resurrecting the row", async () => {
+    const staleReload = deferred<EditorSticky[]>();
+    const pendingDelete = deferred<void>();
+    const existing = [
+      { ...sticky, id: "sticky-a", body: "A" },
+      { ...sticky, id: "sticky-b", body: "B" },
+    ];
+    const afterDelete = [existing[1]];
+    vi.mocked(listEditorStickies)
+      .mockResolvedValueOnce(existing)
+      .mockReturnValueOnce(staleReload.promise)
+      .mockResolvedValueOnce(afterDelete);
+    vi.mocked(deleteEditorSticky).mockReturnValueOnce(pendingDelete.promise);
+
+    await loadEditorStickies("project-1", key);
+    const pendingReload = reloadEditorStickies("project-1", key);
+    await vi.waitFor(() => expect(listEditorStickies).toHaveBeenCalledTimes(2));
+
+    const remove = useEditorStickyStore
+      .getState()
+      .remove(existing[0].id, "project-1", key, existing[0].version);
+    await vi.waitFor(() => expect(deleteEditorSticky).toHaveBeenCalledOnce());
+    pendingDelete.resolve();
+    await expect(remove).resolves.toEqual(existing[0]);
+
+    staleReload.resolve(existing);
+    await pendingReload;
+
+    expect(listEditorStickies).toHaveBeenCalledTimes(3);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual(afterDelete);
+  });
+
+  it("retries a stale reload after an update instead of rolling back the saved row", async () => {
+    const staleReload = deferred<EditorSticky[]>();
+    const pendingUpdate = deferred<EditorSticky>();
+    const existing = [
+      { ...sticky, id: "sticky-a", body: "A" },
+      { ...sticky, id: "sticky-b", body: "B" },
+    ];
+    const updated = { ...existing[0], body: "saved", version: 1 };
+    const afterUpdate = [updated, existing[1]];
+    vi.mocked(listEditorStickies)
+      .mockResolvedValueOnce(existing)
+      .mockReturnValueOnce(staleReload.promise)
+      .mockResolvedValueOnce(afterUpdate);
+    vi.mocked(updateEditorSticky).mockReturnValueOnce(pendingUpdate.promise);
+
+    await loadEditorStickies("project-1", key);
+    const pendingReload = reloadEditorStickies("project-1", key);
+    await vi.waitFor(() => expect(listEditorStickies).toHaveBeenCalledTimes(2));
+
+    const update = useEditorStickyStore
+      .getState()
+      .update(existing[0].id, "project-1", key, { body: "saved" }, 0);
+    await vi.waitFor(() => expect(updateEditorSticky).toHaveBeenCalledOnce());
+    pendingUpdate.resolve(updated);
+    await expect(update).resolves.toEqual(updated);
+
+    staleReload.resolve(existing);
+    await pendingReload;
+
+    expect(listEditorStickies).toHaveBeenCalledTimes(3);
+    expect(
+      useEditorStickyStore.getState().getForDocument("project-1", key),
+    ).toEqual(afterUpdate);
   });
 
   it("passes an explicit id through for Global History restoration", async () => {

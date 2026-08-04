@@ -154,22 +154,6 @@ function upsertSticky(
   return next;
 }
 
-function mergeLoadedStickies(
-  current: EditorSticky[],
-  loaded: EditorSticky[],
-): EditorSticky[] {
-  const currentById = new Map(current.map((sticky) => [sticky.id, sticky]));
-  const loadedIds = new Set(loaded.map((sticky) => sticky.id));
-  const merged = loaded.map((sticky) => {
-    const currentSticky = currentById.get(sticky.id);
-    return currentSticky && currentSticky.version > sticky.version
-      ? currentSticky
-      : sticky;
-  });
-
-  return [...merged, ...current.filter((sticky) => !loadedIds.has(sticky.id))];
-}
-
 export const useEditorStickyStore = create<EditorStickyStoreState>()(
   (set, get) => ({
     byDocument: {},
@@ -236,6 +220,7 @@ export const useEditorStickyStore = create<EditorStickyStoreState>()(
             assertCurrentScope(scope);
             throw new EditorStickyConflictError(stickyId, baseVersion);
           }
+          bumpBucketMutationEpoch(key);
           const optimistic = { ...current, ...patch };
           set((state) => ({
             byDocument: {
@@ -255,6 +240,7 @@ export const useEditorStickyStore = create<EditorStickyStoreState>()(
               expectedVersion,
             );
             assertCurrentScope(scope);
+            bumpBucketMutationEpoch(key);
             set((state) => ({
               byDocument: {
                 ...state.byDocument,
@@ -317,8 +303,10 @@ export const useEditorStickyStore = create<EditorStickyStoreState>()(
           // The queued update, if any, has already committed its newer row.
           // Delete that row rather than the stale render-time version.
           const expectedVersion = current.version ?? baseVersion;
+          bumpBucketMutationEpoch(key);
           await deleteEditorSticky(projectId, stickyId, expectedVersion);
           assertCurrentScope(scope);
+          bumpBucketMutationEpoch(key);
           set((state) => ({
             byDocument: {
               ...state.byDocument,
@@ -359,25 +347,28 @@ async function loadEditorStickiesInternal(
   if (!force && useEditorStickyStore.getState().loaded[scopedKey]) return;
   const pending = pendingLoads.get(scopedKey);
   if (pending) return pending;
-  const loadEpoch = getBucketMutationEpoch(scopedKey);
 
-  const load = listEditorStickies(projectId, documentKey)
-    .then((stickies) => {
+  const load = (async () => {
+    while (true) {
+      const loadEpoch = getBucketMutationEpoch(scopedKey);
+      const stickies = await listEditorStickies(projectId, documentKey);
       if (!isCurrentScope(scope)) return;
-      const mutationChanged = getBucketMutationEpoch(scopedKey) !== loadEpoch;
+      // A whole-bucket result is only authoritative when no mutation crossed
+      // the request boundary. Discard stale results and fetch again rather
+      // than attempting to infer delete tombstones from the current rows.
+      if (getBucketMutationEpoch(scopedKey) !== loadEpoch) continue;
       useEditorStickyStore.setState((state) => ({
         byDocument: {
           ...state.byDocument,
-          [scopedKey]: mutationChanged
-            ? mergeLoadedStickies(state.byDocument[scopedKey] ?? [], stickies)
-            : stickies,
+          [scopedKey]: stickies,
         },
         loaded: { ...state.loaded, [scopedKey]: true },
       }));
-    })
-    .finally(() => {
-      if (pendingLoads.get(scopedKey) === load) pendingLoads.delete(scopedKey);
-    });
+      return;
+    }
+  })().finally(() => {
+    if (pendingLoads.get(scopedKey) === load) pendingLoads.delete(scopedKey);
+  });
   pendingLoads.set(scopedKey, load);
   return load;
 }
