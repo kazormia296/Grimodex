@@ -3,6 +3,17 @@ export interface EditorStickySurfaceSize {
   height: number;
 }
 
+export function ensureEditorStickySurfaceSize(
+  measured: EditorStickySurfaceSize,
+  minimumWidth: number,
+  minimumHeight: number,
+): EditorStickySurfaceSize {
+  return {
+    width: Math.max(measured.width, minimumWidth),
+    height: Math.max(measured.height, minimumHeight),
+  };
+}
+
 export function measureEditorStickySurface(
   surface: Pick<
     HTMLElement,

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type CSSProperties,
@@ -21,6 +22,7 @@ import {
   type EditorTextCoverageRect,
 } from "./editorTextCoverageIndex";
 import type { EditorSticky } from "./editorStickyTypes";
+import { createEditorStickyMaskId } from "./editorStickyMaskId";
 
 interface DragState {
   pointerId: number;
@@ -43,7 +45,11 @@ export interface EditorStickyCardProps {
   onSelect: (stickyId: string) => void;
   onEdit: (stickyId: string) => void;
   onStopEditing: (stickyId: string) => void;
-  onBodySave: (sticky: EditorSticky, body: string) => Promise<void>;
+  onBodySave: (
+    sticky: EditorSticky,
+    body: string,
+    baseVersion: number,
+  ) => Promise<EditorSticky>;
   onDelete: (sticky: EditorSticky) => Promise<void>;
   onColorChange: (sticky: EditorSticky) => Promise<void>;
   onBringToFront: (sticky: EditorSticky) => Promise<void>;
@@ -83,6 +89,8 @@ export function EditorStickyCard({
   const dragRef = useRef<DragState | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const draftControllerRef = useRef<StickyDraftController | null>(null);
+  const draftBaseVersionRef = useRef<number>(sticky.version);
+  const surfaceInstanceId = useId();
   if (
     draftControllerRef.current === null ||
     draftControllerRef.current.id !== sticky.id
@@ -93,16 +101,20 @@ export function EditorStickyCard({
     );
   }
   const draftController = draftControllerRef.current;
-  draftController.setPersist((body) => onBodySave(sticky, body));
+  draftController.setPersist(async (body) => {
+    const saved = await onBodySave(sticky, body, draftBaseVersionRef.current);
+    draftBaseVersionRef.current = saved.version;
+  });
   const [draftBody, setDraftBody] = useState(sticky.body);
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     if (!editing && !draftController.dirty) {
       draftController.latestBody = sticky.body;
+      draftBaseVersionRef.current = sticky.version;
       setDraftBody(sticky.body);
     }
-  }, [draftController, editing, sticky.body]);
+  }, [draftController, editing, sticky.body, sticky.version]);
 
   const commitBody = useCallback(async () => {
     if (!draftController.dirty) return;
@@ -119,6 +131,7 @@ export function EditorStickyCard({
     discard: () => {
       draftController.discard();
       setDirty(false);
+      draftBaseVersionRef.current = sticky.version;
       draftController.latestBody = sticky.body;
       setDraftBody(sticky.body);
     },
@@ -160,6 +173,9 @@ export function EditorStickyCard({
   }, [menu]);
 
   const changeDraft = (body: string) => {
+    if (!draftController.dirty) {
+      draftBaseVersionRef.current = sticky.version;
+    }
     draftController.markDirty(body);
     setDraftBody(body);
     setDirty(true);
@@ -174,6 +190,11 @@ export function EditorStickyCard({
       .catch(() => toast.error("付箋を保存できませんでした"));
   };
 
+  const handleDelete = useCallback(async () => {
+    await commitBody();
+    await onDelete(sticky);
+  }, [commitBody, onDelete, sticky]);
+
   const finishDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -184,7 +205,7 @@ export function EditorStickyCard({
     onDragEnd(sticky.id);
   };
 
-  const maskId = `editor-sticky-mask-${sticky.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const maskId = createEditorStickyMaskId(sticky.id, surfaceInstanceId);
   const clippedCoverage = projectCoverageToCard(coverage, {
     x: left,
     y: top,
@@ -242,7 +263,7 @@ export function EditorStickyCard({
           else onSelect(sticky.id);
         } else if (event.key === "Delete" && !editing) {
           event.preventDefault();
-          void onDelete(sticky).catch(() =>
+          void handleDelete().catch(() =>
             toast.error("付箋を削除できませんでした"),
           );
         }
@@ -399,7 +420,7 @@ export function EditorStickyCard({
               <button
                 type="button"
                 onClick={() =>
-                  void onDelete(sticky)
+                  void handleDelete()
                     .catch(() => toast.error("付箋を削除できませんでした"))
                     .finally(() => setMenu(null))
                 }

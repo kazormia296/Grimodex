@@ -3,6 +3,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useSyncExternalStore,
   useRef,
   useState,
   type CSSProperties,
@@ -26,12 +27,26 @@ import { useEditorTextCoverage } from "./useEditorTextCoverage";
 import { type DocumentKey } from "@/features/editor/document/documentKey";
 import { getStickyMetrics } from "@/features/sticky/stickyMetrics";
 import {
+  getCurrentWorkspaceIdentity,
+  subscribeCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import {
+  ensureEditorStickySurfaceSize,
   measureEditorStickySurface,
   type EditorStickySurfaceSize,
 } from "./editorStickySurfaceGeometry";
 
 const EMPTY_STICKIES: EditorSticky[] = [];
 const DEFAULT_HEIGHT = 520;
+
+function getStickyWorkspaceAuthorityKey(): string | null {
+  const identity = getCurrentWorkspaceIdentity();
+  return identity ? `${identity.path}\u0000${identity.openRevision}` : null;
+}
+
+function getUnboundWorkspaceAuthorityKey(): null {
+  return null;
+}
 
 interface CardSize {
   width: number;
@@ -121,6 +136,11 @@ export function EditorStickySurface({
   } = stickyMetrics;
   const currentProjectId = useCurrentProjectId();
   const resolvedProjectId = projectId ?? currentProjectId;
+  const workspaceAuthorityKey = useSyncExternalStore(
+    subscribeCurrentWorkspaceIdentity,
+    getStickyWorkspaceAuthorityKey,
+    getUnboundWorkspaceAuthorityKey,
+  );
   const stickies = useEditorStickyStore((state) => {
     if (!resolvedProjectId || !documentKey) return EMPTY_STICKIES;
     return state.getForDocument(resolvedProjectId, documentKey);
@@ -129,7 +149,7 @@ export function EditorStickySurface({
   const surfaceSize = useSurfaceSize(
     surfaceRef,
     coverageEnabled,
-    `${fontSize}:${verticalMode ? "vertical" : "horizontal"}`,
+    `${workspaceAuthorityKey ?? "unbound"}:${fontSize}:${verticalMode ? "vertical" : "horizontal"}`,
   );
   const cardSizesRef = useRef<Record<string, CardSize>>({});
   const [cardSizes, setCardSizes] = useState<Record<string, CardSize>>({});
@@ -153,16 +173,17 @@ export function EditorStickySurface({
   }, [coverageEnabled, fontSize, requestMeasure, verticalMode]);
 
   useEffect(() => {
-    if (!resolvedProjectId || !documentKey) return;
+    if (!resolvedProjectId || !documentKey || !workspaceAuthorityKey) return;
     void loadEditorStickies(resolvedProjectId, documentKey).catch(() => {
       toast.error("付箋を読み込めませんでした");
     });
-  }, [documentKey, resolvedProjectId]);
+  }, [documentKey, resolvedProjectId, workspaceAuthorityKey]);
 
-  const effectiveSurfaceSize = {
-    width: Math.max(surfaceSize.width, stickyWidth + 48),
-    height: Math.max(surfaceSize.height, DEFAULT_HEIGHT),
-  };
+  const effectiveSurfaceSize = ensureEditorStickySurfaceSize(
+    surfaceSize,
+    stickyWidth + 48,
+    DEFAULT_HEIGHT,
+  );
 
   const positionForSticky = useCallback(
     (sticky: EditorSticky): StickyPhysicalPosition => {
@@ -207,23 +228,29 @@ export function EditorStickySurface({
 
   const addAtClientPoint = useCallback(
     (clientX: number, clientY: number) => {
-      if (!resolvedProjectId || !documentKey || !surfaceRef.current) return;
-      const rect = surfaceRef.current.getBoundingClientRect();
+      const surface = surfaceRef.current;
+      if (!resolvedProjectId || !documentKey || !surface) return;
+      const rect = surface.getBoundingClientRect();
+      const placementSurfaceSize = ensureEditorStickySurfaceSize(
+        measureEditorStickySurface(surface),
+        stickyWidth + 48,
+        DEFAULT_HEIGHT,
+      );
       const position = clampStickyPosition(
         {
           left: clientX - rect.left - stickyWidth / 2,
           top: clientY - rect.top - stickyMinHeight / 2,
         },
         {
-          surfaceWidth: effectiveSurfaceSize.width,
-          surfaceHeight: effectiveSurfaceSize.height,
+          surfaceWidth: placementSurfaceSize.width,
+          surfaceHeight: placementSurfaceSize.height,
           stickyWidth,
           stickyHeight: stickyMinHeight,
         },
       );
       const logical = physicalToLogicalPosition(position, {
         verticalMode,
-        surfaceWidth: effectiveSurfaceSize.width,
+        surfaceWidth: placementSurfaceSize.width,
         stickyWidth,
       });
       void useEditorStickyStore
@@ -237,8 +264,6 @@ export function EditorStickySurface({
     },
     [
       documentKey,
-      effectiveSurfaceSize.height,
-      effectiveSurfaceSize.width,
       resolvedProjectId,
       stickyMinHeight,
       stickyWidth,
@@ -253,18 +278,24 @@ export function EditorStickySurface({
   }, [addAtClientPoint]);
 
   const updateSticky = useCallback(
-    async (sticky: EditorSticky, patch: EditorStickyPatch) => {
-      if (!documentKey || !resolvedProjectId) return;
-      await useEditorStickyStore
+    async (
+      sticky: EditorSticky,
+      patch: EditorStickyPatch,
+      baseVersion?: number,
+    ) => {
+      if (!documentKey || !resolvedProjectId) {
+        throw new Error("Editor sticky document is not active");
+      }
+      return useEditorStickyStore
         .getState()
-        .update(sticky.id, resolvedProjectId, documentKey, patch);
+        .update(sticky.id, resolvedProjectId, documentKey, patch, baseVersion);
     },
     [documentKey, resolvedProjectId],
   );
 
   const handleBodySave = useCallback(
-    async (sticky: EditorSticky, body: string) => {
-      await updateSticky(sticky, { body });
+    (sticky: EditorSticky, body: string, baseVersion: number) => {
+      return updateSticky(sticky, { body }, baseVersion);
     },
     [updateSticky],
   );
@@ -274,14 +305,14 @@ export function EditorStickySurface({
       if (!documentKey || !resolvedProjectId) return;
       const projectId = resolvedProjectId;
       const document = documentKey;
-      await useEditorStickyStore
+      const deleted = await useEditorStickyStore
         .getState()
         .remove(sticky.id, projectId, document, sticky.version);
       setSelectedId((current) => (current === sticky.id ? null : current));
       setEditingId((current) => (current === sticky.id ? null : current));
 
       if (useGlobalHistoryStore.getState().isReplaying) return;
-      const snapshot = { ...sticky, documentKey: document };
+      const snapshot = { ...deleted, documentKey: document };
       useGlobalHistoryStore.getState().push({
         kind: "editor",
         label: "Editor付箋を削除",
