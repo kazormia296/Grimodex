@@ -14,7 +14,7 @@
 //        構造/統合の問題で、合成 over を渡す本テストでは捕まらない。検証には実 DndContext +
 //        実ジェスチャ (programmatic には flaky) が要るため対象外とする。
 // → 「onDragEnd 全分岐を gate」ではなく「handler 分岐 + collision seam を gate / 登録位置は非対象」。
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -33,9 +33,10 @@ import {
 } from "./beat/unplacedBeatsStore";
 
 const SCENE = "s1";
+const editors = new Set<Editor>();
 
 function createEditor(content = "") {
-  return new Editor({
+  const editor = new Editor({
     extensions: [
       StarterKit,
       AuthorshipMark,
@@ -44,6 +45,8 @@ function createEditor(content = "") {
     ],
     content,
   });
+  editors.add(editor);
+  return editor;
 }
 
 function insertBeat(editor: Editor, id: string) {
@@ -87,6 +90,11 @@ const unplacedIds = () =>
 
 beforeEach(() => {
   useUnplacedBeatsStore.getState().clearScene(SCENE);
+});
+
+afterEach(() => {
+  for (const editor of editors) editor.destroy();
+  editors.clear();
 });
 
 describe("useBeatDragDrop.onDragEnd (happy-dom: 非 geometry 分岐)", () => {
