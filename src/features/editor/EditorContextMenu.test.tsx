@@ -131,9 +131,11 @@ function isSemanticLinkPickerOpen(): boolean {
 function Wrapper({
   editor,
   canEditCodexSemanticLink,
+  onAddSticky,
 }: {
   editor: Editor | null;
   canEditCodexSemanticLink?: boolean;
+  onAddSticky?: (clientX: number, clientY: number, target: EventTarget | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const semanticLinkProps =
@@ -143,6 +145,7 @@ function Wrapper({
       <EditorContextMenu
         editor={editor}
         containerRef={ref}
+        onAddSticky={onAddSticky}
         {...semanticLinkProps}
       />
     </div>
@@ -250,6 +253,22 @@ describe("EditorContextMenu - Codexに追加", () => {
       expect(isSemanticLinkPickerOpen()).toBe(false);
     },
   );
+});
+
+describe("EditorContextMenu - 付箋", () => {
+  it("passes the right-click point and target to the sticky surface", async () => {
+    const onAddSticky = vi.fn();
+    const editor = makeEditor("");
+    const { getByTestId } = render(
+      <Wrapper editor={editor} onAddSticky={onAddSticky} />,
+    );
+    const container = getByTestId("container");
+
+    fireEvent.contextMenu(container, { clientX: 140, clientY: 220 });
+    fireEvent.click(await screen.findByText("付箋を追加"));
+
+    expect(onAddSticky).toHaveBeenCalledWith(140, 220, container);
+  });
 });
 
 describe("EditorContextMenu - 除外エイリアスとして登録", () => {
