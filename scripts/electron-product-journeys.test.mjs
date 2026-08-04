@@ -13,7 +13,10 @@ import {
   createProductJourneyHarness,
   MAIN_PROCESS_NOISE_ALLOWLIST,
 } from "../electron/scripts/product-journey-harness.mjs";
-import { PRODUCT_JOURNEYS } from "../electron/scripts/product-journeys.mjs";
+import {
+  configureWorkspace,
+  PRODUCT_JOURNEYS,
+} from "../electron/scripts/product-journeys.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -214,6 +217,67 @@ test("catalog and runner implementation IDs match in deterministic order", () =>
     PRODUCT_JOURNEYS.map((journey) => journey.id),
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
   );
+});
+
+test("workspace pairs are created in one cold configure session before startup auto-open", async (t) => {
+  const temporaryRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-workspace-pair-"),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const workspaceA = path.join(temporaryRoot, "workspace-a");
+  const workspaceB = path.join(temporaryRoot, "workspace-b");
+  const calls = [];
+  const app = {};
+  const page = {};
+  const harness = {
+    async launch(phase) {
+      calls.push({ kind: "launch", phase });
+      return { app, page };
+    },
+    async invokeOk(_page, command, args) {
+      calls.push({ kind: "invoke", command, args });
+      if (command === "get_global_settings") {
+        return {
+          recentWorkspaces: [],
+          trustedWorkspaces: [],
+          showLauncherOnStartup: true,
+        };
+      }
+      return undefined;
+    },
+    async close(closedApp, closedPage, phase) {
+      calls.push({ kind: "close", closedApp, closedPage, phase });
+    },
+  };
+
+  await configureWorkspace(harness, workspaceA, {
+    appSettings: { "editor.autoSaveDelay": 60_000 },
+    additionalWorkspaces: [workspaceB],
+  });
+
+  assert.deepEqual(
+    calls
+      .filter(
+        (call) => call.kind === "invoke" && call.command === "open_workspace",
+      )
+      .map((call) => call.args.path),
+    [workspaceA, workspaceB, workspaceA],
+    "the secondary DB must be created and authority restored before the cold configure renderer closes",
+  );
+  assert.equal(
+    calls.filter((call) => call.kind === "launch").length,
+    1,
+    "pair setup must not launch an auto-opening renderer between DB swaps",
+  );
+  const savedSettings = calls.find(
+    (call) => call.kind === "invoke" && call.command === "save_global_settings",
+  );
+  assert.deepEqual(savedSettings.args.settings.trustedWorkspaces, [
+    workspaceA,
+    workspaceB,
+  ]);
+  assert.equal(savedSettings.args.settings.lastActiveWorkspace, workspaceA);
+  assert.equal(savedSettings.args.settings.showLauncherOnStartup, false);
 });
 
 test("product runner keeps the real boundary assertions", async () => {
