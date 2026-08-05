@@ -31,9 +31,9 @@ function registeredClosestSurface(element: Element | null): HTMLElement | null {
 }
 
 function registeredSurfacesWithin(root: ParentNode): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(SURFACE_SELECTOR)).filter(
-    (surface) => handles.has(surface),
-  );
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(SURFACE_SELECTOR),
+  ).filter((surface) => handles.has(surface));
 }
 
 function distanceSquaredToSurface(
@@ -42,7 +42,9 @@ function distanceSquaredToSurface(
   clientY: number,
 ): number {
   const rect = surface.getBoundingClientRect();
-  const right = Number.isFinite(rect.right) ? rect.right : rect.left + rect.width;
+  const right = Number.isFinite(rect.right)
+    ? rect.right
+    : rect.left + rect.width;
   const bottom = Number.isFinite(rect.bottom)
     ? rect.bottom
     : rect.top + rect.height;
