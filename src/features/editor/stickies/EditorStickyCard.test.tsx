@@ -136,6 +136,26 @@ describe("EditorStickyCard Map parity", () => {
     expect(screen.queryByRole("button", { name: "付箋を移動" })).toBeNull();
   });
 
+  it("applies Map's stable micro-rotation without rotating the mask holes", () => {
+    renderCard({
+      editing: false,
+      coverage: [{ x: 20, y: 30, width: 40, height: 24 }],
+    });
+
+    const card = screen.getByLabelText("Editor付箋");
+    const match = /^rotate\((-?\d+(?:\.\d+)?)deg\)$/.exec(
+      card.style.transform,
+    );
+    expect(match).not.toBeNull();
+    const rotation = Number(match?.[1]);
+    expect(Math.abs(rotation)).toBeLessThanOrEqual(2.5);
+    expect(rotation).not.toBe(0);
+    expect(screen.getByTestId("editor-sticky-mask-holes")).toHaveAttribute(
+      "transform",
+      `rotate(${-rotation} 120 60)`,
+    );
+  });
+
   it("keeps the manuscript font size in display and edit modes", () => {
     const { rerender } = renderCard({ editing: false, fontSize: 18 });
 
