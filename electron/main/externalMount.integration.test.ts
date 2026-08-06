@@ -29,7 +29,14 @@ const dirs: string[] = [];
 
 afterEach(async () => {
   for (const m of managers.splice(0)) await m.disposeAll();
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) {
+    rmSync(d, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 50,
+    });
+  }
 });
 
 function tempDir(): string {
