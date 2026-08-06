@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildZenGlassMask,
-  hasZenGlassRegion,
-} from "./zenGlassCompositor";
+import { buildZenGlassMask, hasZenGlassRegion } from "./zenGlassCompositor";
 import type { ZenGlassLayout } from "./useZenShaderLayouts";
 
 function decodeMask(mask: string) {

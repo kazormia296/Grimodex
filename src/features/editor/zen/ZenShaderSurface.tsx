@@ -17,10 +17,7 @@ import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
-import {
-  buildZenGlassMask,
-  hasZenGlassRegion,
-} from "./zenGlassCompositor";
+import { buildZenGlassMask, hasZenGlassRegion } from "./zenGlassCompositor";
 
 const PREVIEW_PIXEL_BUDGET = 300_000;
 const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;

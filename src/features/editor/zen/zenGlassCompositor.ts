@@ -38,19 +38,11 @@ function svgRectGeometry(
 
 function svgRect(layout: ZenGlassLayout, surfaceSize: ZenGlassMaskSurfaceSize) {
   const rect = svgRectGeometry(layout, surfaceSize);
-  const radius = Math.min(
-    layout.cornerRadius,
-    rect.width / 2,
-    rect.height / 2,
-  );
+  const radius = Math.min(layout.cornerRadius, rect.width / 2, rect.height / 2);
   return `<rect x="${svgNumber(rect.x)}" y="${svgNumber(rect.y)}" width="${svgNumber(rect.width)}" height="${svgNumber(rect.height)}" rx="${svgNumber(radius)}" ry="${svgNumber(radius)}" fill="white"/>`;
 }
 
-function gradientStops(
-  startFeather: number,
-  span: number,
-  endFeather: number,
-) {
+function gradientStops(startFeather: number, span: number, endFeather: number) {
   const total = startFeather + span + endFeather;
   if (total <= 0) return "";
 
