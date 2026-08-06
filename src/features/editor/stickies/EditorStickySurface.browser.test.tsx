@@ -48,12 +48,6 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock("@/lib/animation", () => ({
-  DURATIONS: { slow: 0.3 },
-  EASINGS: { easeOut: [0.16, 1, 0.3, 1] },
-  useReducedMotion: () => false,
-}));
-
 vi.mock("@/application/lifecycle/useQuiescentDraftParticipant", () => ({
   useQuiescentDraftParticipant: () => undefined,
 }));
@@ -70,17 +64,19 @@ vi.mock("@/features/license/useLicenseEditableSync", () => ({
   useLicenseEditableSync: () => undefined,
 }));
 
-vi.mock("@/features/project/projectStore", () => ({
-  useCurrentProjectId: () => "project-1",
-}));
-
-vi.mock("@/runtime/workspaceIdentity", () => ({
-  getCurrentWorkspaceIdentity: () => ({
-    path: "/browser-workspace",
-    openRevision: 1,
-  }),
-  subscribeCurrentWorkspaceIdentity: () => () => undefined,
-}));
+vi.mock("@/runtime/workspaceIdentity", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/runtime/workspaceIdentity")
+  >();
+  return {
+    ...actual,
+    getCurrentWorkspaceIdentity: () => ({
+      path: "/browser-workspace",
+      openRevision: 1,
+    }),
+    subscribeCurrentWorkspaceIdentity: () => () => undefined,
+  };
+});
 
 vi.mock("./editorStickyStore", () => {
   const useEditorStickyStore = Object.assign(
@@ -102,12 +98,6 @@ vi.mock("./useEditorTextCoverage", () => ({
 
 vi.mock("./editorStickySurfaceRegistry", () => ({
   registerEditorStickySurface: () => () => undefined,
-}));
-
-vi.mock("@/store/globalHistoryStore", () => ({
-  useGlobalHistoryStore: Object.assign(() => undefined, {
-    getState: () => ({ isReplaying: true, push: vi.fn() }),
-  }),
 }));
 
 import { EditorStickySurface } from "./EditorStickySurface";
