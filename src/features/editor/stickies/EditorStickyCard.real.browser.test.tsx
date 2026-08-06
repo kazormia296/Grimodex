@@ -92,6 +92,7 @@ interface StatefulCardProps {
 }
 
 function StatefulCard({ onEdit, onStopEditing }: StatefulCardProps) {
+  const [selected, setSelected] = useState(false);
   const [editing, setEditing] = useState(false);
   return (
     <EditorStickyCard
@@ -104,11 +105,12 @@ function StatefulCard({ onEdit, onStopEditing }: StatefulCardProps) {
       height={120}
       fontSize={16}
       coverage={[]}
-      selected={false}
+      selected={selected}
       editing={editing}
-      onSelect={vi.fn()}
+      onSelect={(stickyId) => setSelected(stickyId === sticky.id)}
       onEdit={() => {
         onEdit();
+        setSelected(true);
         setEditing(true);
       }}
       onStopEditing={() => {
@@ -132,7 +134,7 @@ function StatefulCard({ onEdit, onStopEditing }: StatefulCardProps) {
   );
 }
 
-it("keeps the real TipTap sticky editor open after a text double-click", async () => {
+it("keeps the real TipTap sticky editor open after selecting text by double-click", async () => {
   const onEdit = vi.fn();
   const onStopEditing = vi.fn();
   render(<StatefulCard onEdit={onEdit} onStopEditing={onStopEditing} />);
