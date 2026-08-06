@@ -6,6 +6,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/context-menu";
 import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
 import { getPalette, resolveStickyHex } from "@/lib/stickyPalettes";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { StickyBodyEditor } from "@/features/sticky/StickyBodyEditor";
 import { StickyPaperVisual } from "@/features/sticky/StickyPaperVisual";
 import { StickyRichTextBody } from "@/features/sticky/StickyRichTextBody";
@@ -57,6 +59,32 @@ const STICKY_LEFT_OUTER_SHADOW =
   "0 1px 0 rgba(0, 0, 0, 0.04), 2px 3px 3px rgba(0, 0, 0, 0.06), 8px 14px 22px -10px rgba(0, 0, 0, 0.32)";
 const STICKY_TOP_OUTER_SHADOW =
   "0 1px 0 rgba(0, 0, 0, 0.04), 0 3px 3px rgba(0, 0, 0, 0.06), 0 14px 22px -10px rgba(0, 0, 0, 0.32)";
+
+const STICKY_ANIMATE = {
+  opacity: 1,
+  y: 0,
+  rotateX: 0,
+  transition: { duration: DURATIONS.slow, ease: EASINGS.easeOut },
+} as const;
+
+const STICKY_EXIT = {
+  opacity: 0,
+  y: -100,
+  rotate: -16,
+  transition: { duration: DURATIONS.slow, ease: EASINGS.easeOut },
+} as const;
+
+const STICKY_ENTER_VARIANTS = {
+  initial: { opacity: 0, y: -14, rotateX: -24 },
+  animate: STICKY_ANIMATE,
+  exit: STICKY_EXIT,
+} as const;
+
+const STICKY_REDUCED_VARIANTS = {
+  initial: { opacity: 1, y: 0, rotateX: 0 },
+  animate: STICKY_ANIMATE,
+  exit: STICKY_EXIT,
+} as const;
 
 // Keep identical to Map's stickyRotation: stable per id, ±2.5deg.
 function stickyRotation(id: string): number {
@@ -127,8 +155,14 @@ export function EditorStickyCard({
   onMeasure,
 }: EditorStickyCardProps) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
+  const enterVariants = reducedMotion
+    ? STICKY_REDUCED_VARIANTS
+    : STICKY_ENTER_VARIANTS;
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const exitFiredRef = useRef(false);
+  const [deleting, setDeleting] = useState(false);
   const [glueOrient, setGlueOrient] = useState<StickyGlueOrientation>("left");
   const draftControllerRef = useRef<StickyDraftController | null>(null);
   const draftBaseVersionRef = useRef<number>(sticky.version);
@@ -175,6 +209,10 @@ export function EditorStickyCard({
       setDraftBody(sticky.body);
     }
   }, [draftController, editing, sticky.body, sticky.version]);
+
+  useEffect(() => {
+    if (!deleting) exitFiredRef.current = false;
+  }, [deleting]);
 
   const commitBody = useCallback(async () => {
     if (!draftController.dirty) return;
@@ -240,7 +278,7 @@ export function EditorStickyCard({
   }, [onMeasure, sticky.id]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (!selected || deleting) return;
     const clearSelection = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -253,7 +291,7 @@ export function EditorStickyCard({
     document.addEventListener("pointerdown", clearSelection, true);
     return () =>
       document.removeEventListener("pointerdown", clearSelection, true);
-  }, [onSelect, selected, sticky.id]);
+  }, [deleting, onSelect, selected, sticky.id]);
 
   const changeDraft = (body: string) => {
     // Keep the base version captured at edit entry. Re-reading sticky.version
@@ -280,9 +318,11 @@ export function EditorStickyCard({
   };
 
   const handleDelete = useCallback(async () => {
+    if (deleting) return;
     await commitBody();
-    await onDelete(sticky);
-  }, [commitBody, onDelete, sticky]);
+    onStopEditing(sticky.id);
+    setDeleting(true);
+  }, [commitBody, deleting, onStopEditing, sticky.id]);
 
   const finishDrag = (event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
@@ -320,16 +360,12 @@ export function EditorStickyCard({
     writingMode: "horizontal-tb",
     textOrientation: "mixed",
     direction: "ltr",
-    pointerEvents: "auto",
+    pointerEvents: deleting ? "none" : "auto",
     borderRadius: 0,
     color: "rgba(0, 0, 0, 0.78)",
-    boxShadow:
-      glueOrient === "top" ? STICKY_TOP_OUTER_SHADOW : STICKY_LEFT_OUTER_SHADOW,
-    outline: selected ? "2px solid #534AB7" : "none",
-    outlineOffset: "2px",
     transform: `rotate(${rotation}deg)`,
     transformOrigin: `${width / 2}px ${height / 2}px`,
-    cursor: editing ? "text" : "default",
+    cursor: deleting ? "default" : editing ? "text" : "default",
     userSelect: editing ? "text" : "none",
     touchAction: editing ? "auto" : "none",
   };
@@ -337,7 +373,7 @@ export function EditorStickyCard({
   return (
     <ContextMenu
       onOpenChange={(open) => {
-        if (open) onSelect(sticky.id);
+        if (open && !deleting) onSelect(sticky.id);
       }}
     >
       <ContextMenuTrigger asChild>
@@ -351,18 +387,19 @@ export function EditorStickyCard({
           tabIndex={0}
           aria-label="Editor付箋"
           aria-selected={selected}
+          aria-disabled={deleting || undefined}
           onClick={(event) => {
             event.stopPropagation();
-            onSelect(sticky.id);
+            if (!deleting) onSelect(sticky.id);
           }}
           onDoubleClickCapture={(event) => {
-            if (editing) return;
+            if (editing || deleting) return;
             event.preventDefault();
             event.stopPropagation();
             onEdit(sticky.id);
           }}
           onPointerDown={(event) => {
-            if (event.button !== 0 || editing) return;
+            if (event.button !== 0 || editing || deleting) return;
             event.stopPropagation();
             dragRef.current = {
               pointerId: event.pointerId,
@@ -391,14 +428,14 @@ export function EditorStickyCard({
           onPointerCancel={finishDrag}
           onContextMenu={(event) => {
             event.stopPropagation();
-            onSelect(sticky.id);
+            if (!deleting) onSelect(sticky.id);
           }}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
               if (editing) leaveEditing();
               else onSelect(null);
-            } else if (event.key === "Delete" && !editing) {
+            } else if (event.key === "Delete" && !editing && !deleting) {
               event.preventDefault();
               void handleDelete().catch(() =>
                 toast.error("付箋を削除できませんでした"),
@@ -415,92 +452,120 @@ export function EditorStickyCard({
               .catch(() => toast.error("付箋を保存できませんでした"));
           }}
         >
-          <svg
-            className="editor-sticky-card__paper"
-            aria-hidden="true"
-            width="100%"
-            height="100%"
-            viewBox={`0 0 ${width} ${height}`}
-            preserveAspectRatio="none"
-            style={{ filter: "none" }}
+          <motion.div
+            data-testid="editor-sticky-motion"
+            data-motion-phase={deleting ? "exit" : "present"}
+            initial={enterVariants.initial}
+            animate={deleting ? enterVariants.exit : enterVariants.animate}
+            style={{
+              position: "relative",
+              minHeight: "inherit",
+              maxHeight: "inherit",
+              boxShadow:
+                glueOrient === "top"
+                  ? STICKY_TOP_OUTER_SHADOW
+                  : STICKY_LEFT_OUTER_SHADOW,
+              outline: selected ? "2px solid #534AB7" : "none",
+              outlineOffset: "2px",
+              transformOrigin: deleting ? "100% 100%" : "50% 0%",
+            }}
+            onAnimationComplete={() => {
+              if (!deleting || exitFiredRef.current) return;
+              exitFiredRef.current = true;
+              void onDelete(sticky).catch(() => {
+                exitFiredRef.current = false;
+                setDeleting(false);
+                toast.error("付箋を削除できませんでした");
+              });
+            }}
           >
-            <defs>
-              <mask
-                id={maskId}
-                maskUnits="userSpaceOnUse"
-                maskContentUnits="userSpaceOnUse"
-                x="0"
-                y="0"
+            <svg
+              className="editor-sticky-card__paper"
+              aria-hidden="true"
+              width="100%"
+              height="100%"
+              viewBox={`0 0 ${width} ${height}`}
+              preserveAspectRatio="none"
+              style={{ filter: "none" }}
+            >
+              <defs>
+                <mask
+                  id={maskId}
+                  maskUnits="userSpaceOnUse"
+                  maskContentUnits="userSpaceOnUse"
+                  x="0"
+                  y="0"
+                  width={width}
+                  height={height}
+                >
+                  <rect width={width} height={height} fill="white" />
+                  <g
+                    data-testid="editor-sticky-mask-holes"
+                    transform={`rotate(${-rotation} ${width / 2} ${height / 2})`}
+                  >
+                    {clippedCoverage.map((rect, index) => (
+                      <rect
+                        key={`${rect.x}:${rect.y}:${index}`}
+                        x={rect.x}
+                        y={rect.y}
+                        width={rect.width}
+                        height={rect.height}
+                        fill="black"
+                      />
+                    ))}
+                  </g>
+                </mask>
+              </defs>
+              <rect
                 width={width}
                 height={height}
-              >
-                <rect width={width} height={height} fill="white" />
-                <g
-                  data-testid="editor-sticky-mask-holes"
-                  transform={`rotate(${-rotation} ${width / 2} ${height / 2})`}
-                >
-                  {clippedCoverage.map((rect, index) => (
-                    <rect
-                      key={`${rect.x}:${rect.y}:${index}`}
-                      x={rect.x}
-                      y={rect.y}
-                      width={rect.width}
-                      height={rect.height}
-                      fill="black"
-                    />
-                  ))}
-                </g>
-              </mask>
-            </defs>
-            <rect
-              width={width}
-              height={height}
-              fill={paperColor}
-              fillOpacity="0.94"
-              mask={`url(#${maskId})`}
-            />
-            <foreignObject
-              data-testid="editor-sticky-paper-mask"
-              width={width}
-              height={height}
-              mask={`url(#${maskId})`}
-            >
-              <StickyPaperVisual
-                data-testid="editor-sticky-paper-visual"
-                data-glue={glueOrient}
-                paperColor={paperColor}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  boxShadow: STICKY_INSET_SHADOW,
-                }}
+                fill={paperColor}
+                fillOpacity="0.94"
+                mask={`url(#${maskId})`}
               />
-            </foreignObject>
-          </svg>
-          <div
-            className="sticky-content editor-sticky-card__content"
-            style={{ padding: "6px 10px 10px" }}
-          >
-            <div
-              className="editor-sticky-card__body"
-              style={{
-                maxHeight: Math.max(maxHeight - 16, fontSize * 1.5),
-                overflowY: "auto",
-              }}
-            >
-              {editing ? (
-                <StickyBodyEditor
-                  body={draftBody}
-                  onContentChange={changeDraft}
-                  onEscape={leaveEditing}
-                  style={{ fontSize, lineHeight: 1.5 }}
-                  onPointerDown={(event) => event.stopPropagation()}
+              <foreignObject
+                data-testid="editor-sticky-paper-mask"
+                width={width}
+                height={height}
+                mask={`url(#${maskId})`}
+              >
+                <StickyPaperVisual
+                  data-testid="editor-sticky-paper-visual"
+                  data-glue={glueOrient}
+                  paperColor={paperColor}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    boxShadow: STICKY_INSET_SHADOW,
+                  }}
                 />
-              ) : (
-                <StickyRichTextBody body={sticky.body} fontSize={fontSize} />
-              )}
+              </foreignObject>
+            </svg>
+            <div
+              className="sticky-content editor-sticky-card__content"
+              style={{ padding: "6px 10px 10px" }}
+            >
+              <div
+                className="editor-sticky-card__body"
+                style={{
+                  maxHeight: Math.max(maxHeight - 16, fontSize * 1.5),
+                  overflowY: "auto",
+                }}
+              >
+                {editing ? (
+                  <StickyBodyEditor
+                    body={draftBody}
+                    onContentChange={changeDraft}
+                    onEscape={leaveEditing}
+                    style={{ fontSize, lineHeight: 1.5 }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  />
+                ) : (
+                  <StickyRichTextBody body={sticky.body} fontSize={fontSize} />
+                )}
+              </div>
             </div>
-          </div>
+          </motion.div>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent
