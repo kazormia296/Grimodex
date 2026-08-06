@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/fix-editor-sticky-menu-selection
+  workflow_dispatch:
 
 permissions:
   contents: write
