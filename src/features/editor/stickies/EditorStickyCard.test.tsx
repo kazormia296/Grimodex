@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { CSSProperties } from "react";
+import type {
+  CSSProperties,
+  HTMLAttributes,
+  ReactNode,
+} from "react";
 import type { EditorSticky } from "./editorStickyTypes";
 
 const { mockToastError } = vi.hoisted(() => ({
@@ -10,6 +14,33 @@ const { mockToastError } = vi.hoisted(() => ({
 
 vi.mock("sonner", () => ({
   toast: { error: mockToastError },
+}));
+
+vi.mock("motion/react", () => ({
+  useReducedMotion: () => false,
+  motion: {
+    div: ({
+      children,
+      initial,
+      animate,
+      onAnimationComplete,
+      ...props
+    }: HTMLAttributes<HTMLDivElement> & {
+      children?: ReactNode;
+      initial?: unknown;
+      animate?: unknown;
+      onAnimationComplete?: () => void;
+    }) => (
+      <div
+        {...props}
+        data-motion-initial={JSON.stringify(initial)}
+        data-motion-animate={JSON.stringify(animate)}
+        onTransitionEnd={() => onAnimationComplete?.()}
+      >
+        {children}
+      </div>
+    ),
+  },
 }));
 
 vi.mock("@/application/lifecycle/useQuiescentDraftParticipant", () => ({
@@ -83,6 +114,7 @@ function renderCard(
   const onSelect = vi.fn();
   const onEdit = vi.fn();
   const onStopEditing = vi.fn();
+  const onDelete = vi.fn().mockResolvedValue(undefined);
   const onDragStart = vi.fn();
   const onDragMove = vi.fn();
   const onDragEnd = vi.fn();
@@ -103,7 +135,7 @@ function renderCard(
       onEdit={onEdit}
       onStopEditing={onStopEditing}
       onBodySave={onBodySave}
-      onDelete={vi.fn().mockResolvedValue(undefined)}
+      onDelete={onDelete}
       onColorChange={vi.fn().mockResolvedValue(undefined)}
       onBringToFront={vi.fn().mockResolvedValue(undefined)}
       onSendToBack={vi.fn().mockResolvedValue(undefined)}
@@ -120,6 +152,7 @@ function renderCard(
     onSelect,
     onEdit,
     onStopEditing,
+    onDelete,
     onDragStart,
     onDragMove,
     onDragEnd,
@@ -199,6 +232,27 @@ describe("EditorStickyCard Map parity", () => {
     });
   });
 
+  it("uses Map's enter animation for newly mounted stickies", () => {
+    renderCard({ editing: false });
+
+    const motion = screen.getByTestId("editor-sticky-motion");
+    expect(motion).toHaveAttribute("data-motion-phase", "present");
+    expect(JSON.parse(motion.getAttribute("data-motion-initial") ?? "{}")).toEqual(
+      {
+        opacity: 0,
+        y: -14,
+        rotateX: -24,
+      },
+    );
+    expect(JSON.parse(motion.getAttribute("data-motion-animate") ?? "{}")).toMatchObject(
+      {
+        opacity: 1,
+        y: 0,
+        rotateX: 0,
+      },
+    );
+  });
+
   it("enters editing when the body is double-clicked", () => {
     const { onEdit } = renderCard({ editing: false });
 
@@ -207,7 +261,34 @@ describe("EditorStickyCard Map parity", () => {
     expect(onEdit).toHaveBeenCalledExactlyOnceWith(sticky.id);
   });
 
-  it("uses the whole non-editing paper as the drag surface", () => {
+  it("keeps click jitter below the drag threshold so a body double-click survives", () => {
+    const { onEdit, onDragStart, onDragMove, onDragEnd } = renderCard({
+      editing: false,
+    });
+    const body = screen.getByTestId("sticky-body-view");
+    const card = screen.getByLabelText("Editor付箋");
+
+    fireEvent.pointerDown(body, {
+      button: 0,
+      pointerId: 7,
+      clientX: 10,
+      clientY: 20,
+    });
+    fireEvent.pointerMove(card, {
+      pointerId: 7,
+      clientX: 12,
+      clientY: 22,
+    });
+    fireEvent.pointerUp(card, { pointerId: 7 });
+    fireEvent.doubleClick(body);
+
+    expect(onDragStart).not.toHaveBeenCalled();
+    expect(onDragMove).not.toHaveBeenCalled();
+    expect(onDragEnd).not.toHaveBeenCalled();
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith(sticky.id);
+  });
+
+  it("uses the whole non-editing paper as the drag surface after the threshold", () => {
     const { onDragStart, onDragMove, onDragEnd } = renderCard({
       editing: false,
     });
@@ -230,6 +311,35 @@ describe("EditorStickyCard Map parity", () => {
     expect(onDragStart).toHaveBeenCalledExactlyOnceWith(sticky.id);
     expect(onDragMove).toHaveBeenCalledExactlyOnceWith(sticky.id, 6, 12);
     expect(onDragEnd).toHaveBeenCalledExactlyOnceWith(sticky.id);
+  });
+
+  it("plays Map's exit animation before deleting the sticky", async () => {
+    const { onDelete } = renderCard({ editing: false });
+    const card = screen.getByLabelText("Editor付箋");
+
+    fireEvent.keyDown(card, { key: "Delete" });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("editor-sticky-motion")).toHaveAttribute(
+        "data-motion-phase",
+        "exit",
+      ),
+    );
+    const motion = screen.getByTestId("editor-sticky-motion");
+    expect(JSON.parse(motion.getAttribute("data-motion-animate") ?? "{}")).toMatchObject(
+      {
+        opacity: 0,
+        y: -100,
+        rotate: -16,
+      },
+    );
+    expect(onDelete).not.toHaveBeenCalled();
+
+    fireEvent.transitionEnd(motion);
+
+    await waitFor(() =>
+      expect(onDelete).toHaveBeenCalledExactlyOnceWith(sticky),
+    );
   });
 });
 
