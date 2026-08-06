@@ -6,8 +6,18 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
 import { getPalette, resolveStickyHex } from "@/lib/stickyPalettes";
 import { StickyBodyEditor } from "@/features/sticky/StickyBodyEditor";
@@ -22,6 +32,7 @@ import {
   type EditorTextCoverageIndex,
   type EditorTextCoverageRect,
 } from "./editorTextCoverageIndex";
+import { setEditorStickyColor } from "./editorStickyCommands";
 import type { EditorSticky } from "./editorStickyTypes";
 import { createEditorStickyMaskId } from "./editorStickyMaskId";
 
@@ -68,7 +79,7 @@ export interface EditorStickyCardProps {
   coverage: readonly EditorTextCoverageRect[] | EditorTextCoverageIndex;
   selected: boolean;
   editing: boolean;
-  onSelect: (stickyId: string) => void;
+  onSelect: (stickyId: string | null) => void;
   onEdit: (stickyId: string) => void;
   onStopEditing: (stickyId: string) => void;
   onBodySave: (
@@ -77,6 +88,11 @@ export interface EditorStickyCardProps {
     baseVersion: number,
   ) => Promise<EditorSticky>;
   onDelete: (sticky: EditorSticky) => Promise<void>;
+  /**
+   * Compatibility callback for callers that still expose the former
+   * next-color action. Explicit palette choices are persisted through the
+   * editor sticky command so every submenu item maps to its exact slot.
+   */
   onColorChange: (sticky: EditorSticky) => Promise<void>;
   onBringToFront: (sticky: EditorSticky) => Promise<void>;
   onSendToBack: (sticky: EditorSticky) => Promise<void>;
@@ -103,7 +119,6 @@ export function EditorStickyCard({
   onStopEditing,
   onBodySave,
   onDelete,
-  onColorChange,
   onBringToFront,
   onSendToBack,
   onDragStart,
@@ -111,9 +126,9 @@ export function EditorStickyCard({
   onDragEnd,
   onMeasure,
 }: EditorStickyCardProps) {
+  const { t } = useTranslation();
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [glueOrient, setGlueOrient] = useState<StickyGlueOrientation>("left");
   const draftControllerRef = useRef<StickyDraftController | null>(null);
   const draftBaseVersionRef = useRef<number>(sticky.version);
@@ -225,15 +240,20 @@ export function EditorStickyCard({
   }, [onMeasure, sticky.id]);
 
   useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    document.addEventListener("mousedown", close);
-    document.addEventListener("contextmenu", close);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("contextmenu", close);
+    if (!selected) return;
+    const clearSelection = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (cardRef.current?.contains(target)) return;
+      const element = target instanceof Element ? target : target.parentElement;
+      const menu = element?.closest("[data-editor-sticky-menu]");
+      if (menu?.getAttribute("data-editor-sticky-menu") === sticky.id) return;
+      onSelect(null);
     };
-  }, [menu]);
+    document.addEventListener("pointerdown", clearSelection, true);
+    return () =>
+      document.removeEventListener("pointerdown", clearSelection, true);
+  }, [onSelect, selected, sticky.id]);
 
   const changeDraft = (body: string) => {
     // Keep the base version captured at edit entry. Re-reading sticky.version
@@ -284,6 +304,7 @@ export function EditorStickyCard({
     width,
     height,
   });
+  const palette = getPalette(sticky.paletteId);
   const paperColor = resolveStickyHex(sticky.paletteId, sticky.colorSlot);
   const rotation = stickyRotation(sticky.id);
   const cardStyle: CSSProperties = {
@@ -314,223 +335,247 @@ export function EditorStickyCard({
   };
 
   return (
-    <div
-      ref={cardRef}
-      data-editor-sticky-card="true"
-      data-editor-sticky-id={sticky.id}
-      data-glue={glueOrient}
-      className="editor-sticky-card"
-      style={cardStyle}
-      tabIndex={0}
-      aria-label="Editor付箋"
-      aria-selected={selected}
-      onClick={(event) => {
-        event.stopPropagation();
-        onSelect(sticky.id);
-      }}
-      onDoubleClickCapture={(event) => {
-        if (editing) return;
-        event.preventDefault();
-        event.stopPropagation();
-        onEdit(sticky.id);
-      }}
-      onPointerDown={(event) => {
-        if (event.button !== 0 || editing) return;
-        event.stopPropagation();
-        dragRef.current = {
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startY: event.clientY,
-        };
-        if (typeof event.currentTarget.setPointerCapture === "function") {
-          event.currentTarget.setPointerCapture(event.pointerId);
-        }
-        event.currentTarget.focus();
-        onSelect(sticky.id);
-        onDragStart(sticky.id);
-      }}
-      onPointerMove={(event) => {
-        const drag = dragRef.current;
-        if (!drag || drag.pointerId !== event.pointerId) return;
-        event.preventDefault();
-        event.stopPropagation();
-        onDragMove(
-          sticky.id,
-          event.clientX - drag.startX,
-          event.clientY - drag.startY,
-        );
-      }}
-      onPointerUp={finishDrag}
-      onPointerCancel={finishDrag}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        onSelect(sticky.id);
-        setMenu({ x: event.clientX, y: event.clientY });
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          if (editing) leaveEditing();
-          else onSelect(sticky.id);
-        } else if (event.key === "Delete" && !editing) {
-          event.preventDefault();
-          void handleDelete().catch(() =>
-            toast.error("付箋を削除できませんでした"),
-          );
-        }
-      }}
-      onBlur={(event) => {
-        if (!editing) return;
-        const next = event.relatedTarget;
-        if (next instanceof Node && event.currentTarget.contains(next)) return;
-        void commitBody()
-          .then(() => onStopEditing(sticky.id))
-          .catch(() => toast.error("付箋を保存できませんでした"));
+    <ContextMenu
+      onOpenChange={(open) => {
+        if (open) onSelect(sticky.id);
       }}
     >
-      <svg
-        className="editor-sticky-card__paper"
-        aria-hidden="true"
-        width="100%"
-        height="100%"
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        style={{ filter: "none" }}
-      >
-        <defs>
-          <mask
-            id={maskId}
-            maskUnits="userSpaceOnUse"
-            maskContentUnits="userSpaceOnUse"
-            x="0"
-            y="0"
-            width={width}
-            height={height}
-          >
-            <rect width={width} height={height} fill="white" />
-            <g
-              data-testid="editor-sticky-mask-holes"
-              transform={`rotate(${-rotation} ${width / 2} ${height / 2})`}
-            >
-              {clippedCoverage.map((rect, index) => (
-                <rect
-                  key={`${rect.x}:${rect.y}:${index}`}
-                  x={rect.x}
-                  y={rect.y}
-                  width={rect.width}
-                  height={rect.height}
-                  fill="black"
-                />
-              ))}
-            </g>
-          </mask>
-        </defs>
-        <rect
-          width={width}
-          height={height}
-          fill={paperColor}
-          fillOpacity="0.94"
-          mask={`url(#${maskId})`}
-        />
-        <foreignObject
-          data-testid="editor-sticky-paper-mask"
-          width={width}
-          height={height}
-          mask={`url(#${maskId})`}
-        >
-          <StickyPaperVisual
-            data-testid="editor-sticky-paper-visual"
-            data-glue={glueOrient}
-            paperColor={paperColor}
-            style={{
-              width: "100%",
-              height: "100%",
-              boxShadow: STICKY_INSET_SHADOW,
-            }}
-          />
-        </foreignObject>
-      </svg>
-      <div
-        className="sticky-content editor-sticky-card__content"
-        style={{ padding: "6px 10px 10px" }}
-      >
+      <ContextMenuTrigger asChild>
         <div
-          className="editor-sticky-card__body"
-          style={{
-            maxHeight: Math.max(maxHeight - 16, fontSize * 1.5),
-            overflowY: "auto",
+          ref={cardRef}
+          data-editor-sticky-card="true"
+          data-editor-sticky-id={sticky.id}
+          data-glue={glueOrient}
+          className="editor-sticky-card"
+          style={cardStyle}
+          tabIndex={0}
+          aria-label="Editor付箋"
+          aria-selected={selected}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect(sticky.id);
+          }}
+          onDoubleClickCapture={(event) => {
+            if (editing) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onEdit(sticky.id);
+          }}
+          onPointerDown={(event) => {
+            if (event.button !== 0 || editing) return;
+            event.stopPropagation();
+            dragRef.current = {
+              pointerId: event.pointerId,
+              startX: event.clientX,
+              startY: event.clientY,
+            };
+            if (typeof event.currentTarget.setPointerCapture === "function") {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }
+            event.currentTarget.focus();
+            onSelect(sticky.id);
+            onDragStart(sticky.id);
+          }}
+          onPointerMove={(event) => {
+            const drag = dragRef.current;
+            if (!drag || drag.pointerId !== event.pointerId) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onDragMove(
+              sticky.id,
+              event.clientX - drag.startX,
+              event.clientY - drag.startY,
+            );
+          }}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onContextMenu={(event) => {
+            event.stopPropagation();
+            onSelect(sticky.id);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              if (editing) leaveEditing();
+              else onSelect(null);
+            } else if (event.key === "Delete" && !editing) {
+              event.preventDefault();
+              void handleDelete().catch(() =>
+                toast.error("付箋を削除できませんでした"),
+              );
+            }
+          }}
+          onBlur={(event) => {
+            if (!editing) return;
+            const next = event.relatedTarget;
+            if (next instanceof Node && event.currentTarget.contains(next)) return;
+            void commitBody()
+              .then(() => onStopEditing(sticky.id))
+              .catch(() => toast.error("付箋を保存できませんでした"));
           }}
         >
-          {editing ? (
-            <StickyBodyEditor
-              body={draftBody}
-              onContentChange={changeDraft}
-              onEscape={leaveEditing}
-              style={{ fontSize, lineHeight: 1.5 }}
-              onPointerDown={(event) => event.stopPropagation()}
+          <svg
+            className="editor-sticky-card__paper"
+            aria-hidden="true"
+            width="100%"
+            height="100%"
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+            style={{ filter: "none" }}
+          >
+            <defs>
+              <mask
+                id={maskId}
+                maskUnits="userSpaceOnUse"
+                maskContentUnits="userSpaceOnUse"
+                x="0"
+                y="0"
+                width={width}
+                height={height}
+              >
+                <rect width={width} height={height} fill="white" />
+                <g
+                  data-testid="editor-sticky-mask-holes"
+                  transform={`rotate(${-rotation} ${width / 2} ${height / 2})`}
+                >
+                  {clippedCoverage.map((rect, index) => (
+                    <rect
+                      key={`${rect.x}:${rect.y}:${index}`}
+                      x={rect.x}
+                      y={rect.y}
+                      width={rect.width}
+                      height={rect.height}
+                      fill="black"
+                    />
+                  ))}
+                </g>
+              </mask>
+            </defs>
+            <rect
+              width={width}
+              height={height}
+              fill={paperColor}
+              fillOpacity="0.94"
+              mask={`url(#${maskId})`}
             />
-          ) : (
-            <StickyRichTextBody body={sticky.body} fontSize={fontSize} />
-          )}
-        </div>
-      </div>
-      {menu
-        ? createPortal(
-            <div
-              className="editor-sticky-menu"
-              style={{ left: menu.x, top: menu.y }}
-              onMouseDown={(event) => event.stopPropagation()}
+            <foreignObject
+              data-testid="editor-sticky-paper-mask"
+              width={width}
+              height={height}
+              mask={`url(#${maskId})`}
             >
-              <button
-                type="button"
-                onClick={() =>
-                  void onColorChange(sticky)
-                    .catch(() => toast.error("付箋の色を変更できませんでした"))
-                    .finally(() => setMenu(null))
-                }
+              <StickyPaperVisual
+                data-testid="editor-sticky-paper-visual"
+                data-glue={glueOrient}
+                paperColor={paperColor}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  boxShadow: STICKY_INSET_SHADOW,
+                }}
+              />
+            </foreignObject>
+          </svg>
+          <div
+            className="sticky-content editor-sticky-card__content"
+            style={{ padding: "6px 10px 10px" }}
+          >
+            <div
+              className="editor-sticky-card__body"
+              style={{
+                maxHeight: Math.max(maxHeight - 16, fontSize * 1.5),
+                overflowY: "auto",
+              }}
+            >
+              {editing ? (
+                <StickyBodyEditor
+                  body={draftBody}
+                  onContentChange={changeDraft}
+                  onEscape={leaveEditing}
+                  style={{ fontSize, lineHeight: 1.5 }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                />
+              ) : (
+                <StickyRichTextBody body={sticky.body} fontSize={fontSize} />
+              )}
+            </div>
+          </div>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent
+        className="min-w-[180px]"
+        data-editor-sticky-menu={sticky.id}
+      >
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>
+            {t("map.menu.changeColor")}
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent
+            className="min-w-[160px]"
+            data-editor-sticky-menu={sticky.id}
+          >
+            {palette.colors.map((color, slot) => (
+              <ContextMenuItem
+                key={slot}
+                onSelect={() => {
+                  void setEditorStickyColor(
+                    sticky,
+                    palette.id,
+                    slot,
+                  ).catch(() =>
+                    toast.error("付箋の色を変更できませんでした"),
+                  );
+                }}
               >
-                色を変更
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void onBringToFront(sticky)
-                    .catch(() =>
-                      toast.error("付箋を前面へ移動できませんでした"),
-                    )
-                    .finally(() => setMenu(null))
-                }
-              >
-                前面へ
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void onSendToBack(sticky)
-                    .catch(() =>
-                      toast.error("付箋を背面へ移動できませんでした"),
-                    )
-                    .finally(() => setMenu(null))
-                }
-              >
-                背面へ
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void handleDelete()
-                    .catch(() => toast.error("付箋を削除できませんでした"))
-                    .finally(() => setMenu(null))
-                }
-              >
-                削除
-              </button>
-            </div>,
-            document.body,
-          )
-        : null}
-    </div>
+                <span
+                  aria-hidden
+                  style={{
+                    width: 12,
+                    height: 12,
+                    borderRadius: "50%",
+                    border: "1.5px solid rgba(0,0,0,0.2)",
+                    background: color.hex,
+                    flexShrink: 0,
+                    marginRight: 8,
+                  }}
+                />
+                <span>{color.label}</span>
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          onSelect={() => {
+            void onBringToFront(sticky).catch(() =>
+              toast.error("付箋を前面へ移動できませんでした"),
+            );
+          }}
+        >
+          {t("map.menu.bringToFront")}
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() => {
+            void onSendToBack(sticky).catch(() =>
+              toast.error("付箋を背面へ移動できませんでした"),
+            );
+          }}
+        >
+          {t("map.menu.sendToBack")}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          className="text-destructive focus:text-destructive"
+          onSelect={() => {
+            void handleDelete().catch(() =>
+              toast.error("付箋を削除できませんでした"),
+            );
+          }}
+        >
+          {t("common.delete")}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
