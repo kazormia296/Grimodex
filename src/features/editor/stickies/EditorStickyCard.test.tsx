@@ -1,11 +1,7 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type {
-  CSSProperties,
-  HTMLAttributes,
-  ReactNode,
-} from "react";
+import type { CSSProperties, HTMLAttributes, ReactNode } from "react";
 import type { EditorSticky } from "./editorStickyTypes";
 
 const { mockToastError } = vi.hoisted(() => ({
@@ -237,20 +233,20 @@ describe("EditorStickyCard Map parity", () => {
 
     const motion = screen.getByTestId("editor-sticky-motion");
     expect(motion).toHaveAttribute("data-motion-phase", "present");
-    expect(JSON.parse(motion.getAttribute("data-motion-initial") ?? "{}")).toEqual(
-      {
-        opacity: 0,
-        y: -14,
-        rotateX: -24,
-      },
-    );
-    expect(JSON.parse(motion.getAttribute("data-motion-animate") ?? "{}")).toMatchObject(
-      {
-        opacity: 1,
-        y: 0,
-        rotateX: 0,
-      },
-    );
+    expect(
+      JSON.parse(motion.getAttribute("data-motion-initial") ?? "{}"),
+    ).toEqual({
+      opacity: 0,
+      y: -14,
+      rotateX: -24,
+    });
+    expect(
+      JSON.parse(motion.getAttribute("data-motion-animate") ?? "{}"),
+    ).toMatchObject({
+      opacity: 1,
+      y: 0,
+      rotateX: 0,
+    });
   });
 
   it("enters editing when the body is double-clicked", () => {
@@ -326,13 +322,13 @@ describe("EditorStickyCard Map parity", () => {
       ),
     );
     const motion = screen.getByTestId("editor-sticky-motion");
-    expect(JSON.parse(motion.getAttribute("data-motion-animate") ?? "{}")).toMatchObject(
-      {
-        opacity: 0,
-        y: -100,
-        rotate: -16,
-      },
-    );
+    expect(
+      JSON.parse(motion.getAttribute("data-motion-animate") ?? "{}"),
+    ).toMatchObject({
+      opacity: 0,
+      y: -100,
+      rotate: -16,
+    });
     expect(onDelete).not.toHaveBeenCalled();
 
     fireEvent.transitionEnd(motion);
