@@ -1,0 +1,9 @@
+/*
+ * The focusable card wrapper stays in place while its paper child performs the
+ * delete animation. Suppress Chromium's native focus outline during that
+ * interval so an empty rectangular ring is not left behind after the paper has
+ * moved and faded away. The selected-state outline lives on the animated child.
+ */
+.editor-sticky-card[aria-disabled="true"] {
+  outline: none;
+}
