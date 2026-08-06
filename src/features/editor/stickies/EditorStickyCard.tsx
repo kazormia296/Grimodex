@@ -105,8 +105,7 @@ export function EditorStickyCard({
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const [glueOrient, setGlueOrient] =
-    useState<StickyGlueOrientation>("left");
+  const [glueOrient, setGlueOrient] = useState<StickyGlueOrientation>("left");
   const draftControllerRef = useRef<StickyDraftController | null>(null);
   const draftBaseVersionRef = useRef<number>(sticky.version);
   const surfaceInstanceId = useId();
