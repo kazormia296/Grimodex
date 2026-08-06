@@ -143,9 +143,7 @@ describe("EditorStickyCard Map parity", () => {
     });
 
     const card = screen.getByLabelText("Editor付箋");
-    const match = /^rotate\((-?\d+(?:\.\d+)?)deg\)$/.exec(
-      card.style.transform,
-    );
+    const match = /^rotate\((-?\d+(?:\.\d+)?)deg\)$/.exec(card.style.transform);
     expect(match).not.toBeNull();
     const rotation = Number(match?.[1]);
     expect(Math.abs(rotation)).toBeLessThanOrEqual(2.5);
