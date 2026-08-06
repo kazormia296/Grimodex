@@ -147,9 +147,7 @@ it("uses the paper outline instead of Chromium's native wrapper ring", async () 
   card.focus();
   fireEvent.click(card);
 
-  await vi.waitFor(() =>
-    expect(card).toHaveAttribute("aria-selected", "true"),
-  );
+  await vi.waitFor(() => expect(card).toHaveAttribute("aria-selected", "true"));
   expect(document.activeElement).toBe(card);
   expect(getComputedStyle(card).outlineStyle).toBe("none");
   expect(getComputedStyle(motion).outlineStyle).toBe("solid");
@@ -157,8 +155,6 @@ it("uses the paper outline instead of Chromium's native wrapper ring", async () 
 
   fireEvent.keyDown(card, { key: "Delete" });
 
-  await vi.waitFor(() =>
-    expect(card).toHaveAttribute("aria-disabled", "true"),
-  );
+  await vi.waitFor(() => expect(card).toHaveAttribute("aria-disabled", "true"));
   expect(getComputedStyle(card).outlineStyle).toBe("none");
 });
