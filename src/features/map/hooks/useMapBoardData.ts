@@ -174,13 +174,11 @@ export function useMapBoardData(projectId: string) {
         cancelled = true;
       };
     }
+    const authorityKey = workspaceAuthorityKey;
 
     async function init() {
       const allBoards = await reloadBoards();
-      if (
-        cancelled ||
-        !isCurrentMapWorkspaceAuthority(workspaceAuthorityKey)
-      ) {
+      if (cancelled || !isCurrentMapWorkspaceAuthority(authorityKey)) {
         return;
       }
       // Read activeBoardId fresh (not via a stale render closure): keep it only
@@ -194,10 +192,7 @@ export function useMapBoardData(projectId: string) {
       // Closing the previous workspace rejects its in-flight SQLite reads.
       // Once this effect has lost authority, that rejection is cancellation,
       // not an application error and must not poison strict diagnostics.
-      if (
-        !cancelled &&
-        isCurrentMapWorkspaceAuthority(workspaceAuthorityKey)
-      ) {
+      if (!cancelled && isCurrentMapWorkspaceAuthority(authorityKey)) {
         console.error(error);
       }
     });
