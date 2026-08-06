@@ -47,6 +47,15 @@ const STICKY_LEFT_OUTER_SHADOW =
 const STICKY_TOP_OUTER_SHADOW =
   "0 1px 0 rgba(0, 0, 0, 0.04), 0 3px 3px rgba(0, 0, 0, 0.06), 0 14px 22px -10px rgba(0, 0, 0, 0.32)";
 
+// Keep identical to Map's stickyRotation: stable per id, ±2.5deg.
+function stickyRotation(id: string): number {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = ((hash << 5) - hash + id.charCodeAt(index)) | 0;
+  }
+  return ((Math.abs(hash) % 1000) / 1000) * 5 - 2.5;
+}
+
 export interface EditorStickyCardProps {
   sticky: EditorSticky;
   left: number;
@@ -276,6 +285,7 @@ export function EditorStickyCard({
     height,
   });
   const paperColor = resolveStickyHex(sticky.paletteId, sticky.colorSlot);
+  const rotation = stickyRotation(sticky.id);
   const cardStyle: CSSProperties = {
     position: "absolute",
     left,
@@ -296,6 +306,8 @@ export function EditorStickyCard({
       glueOrient === "top" ? STICKY_TOP_OUTER_SHADOW : STICKY_LEFT_OUTER_SHADOW,
     outline: selected ? "2px solid #534AB7" : "none",
     outlineOffset: "2px",
+    transform: `rotate(${rotation}deg)`,
+    transformOrigin: `${width / 2}px ${height / 2}px`,
     cursor: editing ? "text" : "default",
     userSelect: editing ? "text" : "none",
     touchAction: editing ? "auto" : "none",
@@ -397,16 +409,21 @@ export function EditorStickyCard({
             height={height}
           >
             <rect width={width} height={height} fill="white" />
-            {clippedCoverage.map((rect, index) => (
-              <rect
-                key={`${rect.x}:${rect.y}:${index}`}
-                x={rect.x}
-                y={rect.y}
-                width={rect.width}
-                height={rect.height}
-                fill="black"
-              />
-            ))}
+            <g
+              data-testid="editor-sticky-mask-holes"
+              transform={`rotate(${-rotation} ${width / 2} ${height / 2})`}
+            >
+              {clippedCoverage.map((rect, index) => (
+                <rect
+                  key={`${rect.x}:${rect.y}:${index}`}
+                  x={rect.x}
+                  y={rect.y}
+                  width={rect.width}
+                  height={rect.height}
+                  fill="black"
+                />
+              ))}
+            </g>
           </mask>
         </defs>
         <rect
