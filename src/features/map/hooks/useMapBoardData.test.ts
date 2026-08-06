@@ -106,15 +106,11 @@ afterEach(() => {
 
 describe("resolveActiveBoardId", () => {
   it("保存ボードがこのプロジェクトに属するなら維持する", () => {
-    expect(resolveActiveBoardId("b1", [{ id: "b1" }, { id: "b2" }])).toBe(
-      "b1",
-    );
+    expect(resolveActiveBoardId("b1", [{ id: "b1" }, { id: "b2" }])).toBe("b1");
   });
 
   it("保存ボードが別プロジェクト(=このボード一覧に無い)なら先頭ボードへ", () => {
-    expect(resolveActiveBoardId("a1", [{ id: "b1" }, { id: "b2" }])).toBe(
-      "b1",
-    );
+    expect(resolveActiveBoardId("a1", [{ id: "b1" }, { id: "b2" }])).toBe("b1");
   });
 
   it("保存ボードが null なら先頭ボード", () => {
