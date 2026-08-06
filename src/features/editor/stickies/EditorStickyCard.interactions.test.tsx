@@ -149,9 +149,7 @@ describe("EditorStickyCard context menu and selection", () => {
     const { onBringToFront } = renderCard();
 
     fireEvent.contextMenu(screen.getByLabelText("Editor付箋"));
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "前面へ" }),
-    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "前面へ" }));
 
     await waitFor(() =>
       expect(onBringToFront).toHaveBeenCalledExactlyOnceWith(sticky),

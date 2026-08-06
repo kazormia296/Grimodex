@@ -408,7 +408,8 @@ export function EditorStickyCard({
           onBlur={(event) => {
             if (!editing) return;
             const next = event.relatedTarget;
-            if (next instanceof Node && event.currentTarget.contains(next)) return;
+            if (next instanceof Node && event.currentTarget.contains(next))
+              return;
             void commitBody()
               .then(() => onStopEditing(sticky.id))
               .catch(() => toast.error("付箋を保存できませんでした"));
@@ -518,12 +519,8 @@ export function EditorStickyCard({
               <ContextMenuItem
                 key={slot}
                 onSelect={() => {
-                  void setEditorStickyColor(
-                    sticky,
-                    palette.id,
-                    slot,
-                  ).catch(() =>
-                    toast.error("付箋の色を変更できませんでした"),
+                  void setEditorStickyColor(sticky, palette.id, slot).catch(
+                    () => toast.error("付箋の色を変更できませんでした"),
                   );
                 }}
               >
