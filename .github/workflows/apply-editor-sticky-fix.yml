@@ -1,0 +1,42 @@
+name: Apply editor sticky interaction fix
+
+on:
+  push:
+    branches:
+      - agent/fix-editor-sticky-menu-selection
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Apply source changes
+        run: python3 .github/agent/apply_editor_sticky_fix.py
+
+      - name: Format changed sources
+        run: >-
+          npx --yes prettier@3.8.3 --write
+          src/features/editor/stickies/EditorStickyCard.tsx
+          src/features/editor/stickies/EditorStickySurface.tsx
+          src/features/editor/stickies/EditorStickyCard.test.tsx
+          src/features/editor/stickies/editorStickySelection.ts
+          src/features/editor/stickies/editorStickySelection.test.ts
+
+      - name: Validate patch whitespace
+        run: git diff --check
+
+      - name: Commit applied fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(editor): repair sticky menu and selection"
+          git push origin HEAD:${GITHUB_REF_NAME}
