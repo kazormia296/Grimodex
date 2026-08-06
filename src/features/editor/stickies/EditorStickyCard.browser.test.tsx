@@ -1,7 +1,13 @@
 import { render } from "@testing-library/react";
 import { page } from "vitest/browser";
 import { expect, it, vi } from "vitest";
-import type { CSSProperties, HTMLAttributes, ReactNode } from "react";
+import {
+  useState,
+  type CSSProperties,
+  type HTMLAttributes,
+  type PointerEventHandler,
+  type ReactNode,
+} from "react";
 import type { EditorSticky } from "./editorStickyTypes";
 
 vi.mock("sonner", () => ({
@@ -44,8 +50,22 @@ vi.mock("./editorStickyCommands", () => ({
 }));
 
 vi.mock("@/features/sticky/StickyBodyEditor", () => ({
-  StickyBodyEditor: ({ style }: { style?: CSSProperties }) => (
-    <textarea aria-label="付箋本文" style={style} />
+  StickyBodyEditor: ({
+    style,
+    onPointerDown,
+  }: {
+    style?: CSSProperties;
+    onPointerDown?: PointerEventHandler<HTMLDivElement>;
+  }) => (
+    <div onPointerDown={onPointerDown}>
+      <textarea
+        aria-label="付箋本文"
+        style={style}
+        ref={(node) => {
+          if (node) window.setTimeout(() => node.focus(), 0);
+        }}
+      />
+    </div>
   ),
 }));
 
@@ -82,9 +102,14 @@ const sticky: EditorSticky = {
   updatedAt: "2026-08-06T00:00:00.000Z",
 };
 
-it("enters edit mode when Chromium double-clicks rendered sticky text", async () => {
-  const onEdit = vi.fn();
-  render(
+interface StatefulCardProps {
+  onEdit: () => void;
+  onStopEditing: () => void;
+}
+
+function StatefulCard({ onEdit, onStopEditing }: StatefulCardProps) {
+  const [editing, setEditing] = useState(false);
+  return (
     <EditorStickyCard
       sticky={sticky}
       left={0}
@@ -96,10 +121,16 @@ it("enters edit mode when Chromium double-clicks rendered sticky text", async ()
       fontSize={16}
       coverage={[]}
       selected={false}
-      editing={false}
+      editing={editing}
       onSelect={vi.fn()}
-      onEdit={onEdit}
-      onStopEditing={vi.fn()}
+      onEdit={() => {
+        onEdit();
+        setEditing(true);
+      }}
+      onStopEditing={() => {
+        onStopEditing();
+        setEditing(false);
+      }}
       onBodySave={vi.fn(async (row, body) => ({
         ...row,
         body,
@@ -113,12 +144,22 @@ it("enters edit mode when Chromium double-clicks rendered sticky text", async ()
       onDragMove={vi.fn()}
       onDragEnd={vi.fn()}
       onMeasure={vi.fn()}
-    />,
+    />
   );
+}
+
+it("keeps edit mode open when Chromium double-clicks rendered sticky text", async () => {
+  const onEdit = vi.fn();
+  const onStopEditing = vi.fn();
+  render(<StatefulCard onEdit={onEdit} onStopEditing={onStopEditing} />);
 
   const text = page.getByText("付箋の文字");
   await expect.element(text).toBeVisible();
   await text.dblClick();
 
-  expect(onEdit).toHaveBeenCalledExactlyOnceWith(sticky.id);
+  expect(onEdit).toHaveBeenCalledExactlyOnceWith();
+  await expect
+    .element(page.getByRole("textbox", { name: "付箋本文" }))
+    .toBeVisible();
+  expect(onStopEditing).not.toHaveBeenCalled();
 });
