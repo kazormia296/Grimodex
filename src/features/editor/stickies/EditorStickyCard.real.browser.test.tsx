@@ -127,7 +127,7 @@ it("keeps the real TipTap sticky editor open after selecting text by double-clic
   expect(onStopEditing).not.toHaveBeenCalled();
 });
 
-it("suppresses the focused wrapper outline while the sticky paper exits", async () => {
+it("uses the paper outline instead of Chromium's native wrapper ring", async () => {
   render(
     <StatefulCard
       onEdit={vi.fn()}
@@ -139,15 +139,26 @@ it("suppresses the focused wrapper outline while the sticky paper exits", async 
   const card = document.querySelector<HTMLElement>(
     '[data-editor-sticky-card="true"]',
   );
-  if (!card) throw new Error("Editor sticky card was not rendered");
+  const motion = document.querySelector<HTMLElement>(
+    '[data-testid="editor-sticky-motion"]',
+  );
+  if (!card || !motion) throw new Error("Editor sticky card was not rendered");
+
   card.focus();
+  fireEvent.click(card);
+
+  await vi.waitFor(() =>
+    expect(card).toHaveAttribute("aria-selected", "true"),
+  );
   expect(document.activeElement).toBe(card);
+  expect(getComputedStyle(card).outlineStyle).toBe("none");
+  expect(getComputedStyle(motion).outlineStyle).toBe("solid");
+  expect(getComputedStyle(motion).outlineWidth).toBe("2px");
 
   fireEvent.keyDown(card, { key: "Delete" });
 
   await vi.waitFor(() =>
     expect(card).toHaveAttribute("aria-disabled", "true"),
   );
-  expect(document.activeElement).toBe(card);
   expect(getComputedStyle(card).outlineStyle).toBe("none");
 });
