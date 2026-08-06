@@ -1,5 +1,5 @@
 import { generateHTML } from "@tiptap/core";
-import type { CSSProperties } from "react";
+import { memo, type CSSProperties } from "react";
 import { getStickyEditorExtensions } from "@/features/editor/extensions";
 
 function parseBody(body: string): object | undefined {
@@ -11,7 +11,7 @@ function parseBody(body: string): object | undefined {
   }
 }
 
-export function StickyRichTextBody({
+export const StickyRichTextBody = memo(function StickyRichTextBody({
   body,
   fontSize = 12,
 }: {
@@ -42,6 +42,6 @@ export function StickyRichTextBody({
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
-}
+});
 
 export { parseBody as parseStickyBody };
