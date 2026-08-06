@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
 import { getPalette, resolveStickyHex } from "@/lib/stickyPalettes";
 import { StickyBodyEditor } from "@/features/sticky/StickyBodyEditor";
+import { StickyPaperVisual } from "@/features/sticky/StickyPaperVisual";
 import { StickyRichTextBody } from "@/features/sticky/StickyRichTextBody";
 import {
   createStickyDraftController,
@@ -34,6 +35,17 @@ interface EditorStickyDraftSession {
   baseBody: string;
   baseVersion: number;
 }
+
+type StickyGlueOrientation = "left" | "top";
+
+const STICKY_GLUE_TO_TOP_HEIGHT = 110;
+const STICKY_GLUE_TO_LEFT_HEIGHT = 90;
+const STICKY_INSET_SHADOW =
+  "inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -10px 18px -14px rgba(0, 0, 0, 0.18)";
+const STICKY_LEFT_OUTER_SHADOW =
+  "0 1px 0 rgba(0, 0, 0, 0.04), 2px 3px 3px rgba(0, 0, 0, 0.06), 8px 14px 22px -10px rgba(0, 0, 0, 0.32)";
+const STICKY_TOP_OUTER_SHADOW =
+  "0 1px 0 rgba(0, 0, 0, 0.04), 0 3px 3px rgba(0, 0, 0, 0.06), 0 14px 22px -10px rgba(0, 0, 0, 0.32)";
 
 export interface EditorStickyCardProps {
   sticky: EditorSticky;
@@ -93,6 +105,8 @@ export function EditorStickyCard({
   const cardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [glueOrient, setGlueOrient] =
+    useState<StickyGlueOrientation>("left");
   const draftControllerRef = useRef<StickyDraftController | null>(null);
   const draftBaseVersionRef = useRef<number>(sticky.version);
   const surfaceInstanceId = useId();
@@ -181,6 +195,21 @@ export function EditorStickyCard({
         entry.contentRect;
       if (measuredWidth > 0 && measuredHeight > 0) {
         onMeasure(sticky.id, measuredWidth, measuredHeight);
+        setGlueOrient((current) => {
+          if (
+            current === "left" &&
+            measuredHeight >= STICKY_GLUE_TO_TOP_HEIGHT
+          ) {
+            return "top";
+          }
+          if (
+            current === "top" &&
+            measuredHeight <= STICKY_GLUE_TO_LEFT_HEIGHT
+          ) {
+            return "left";
+          }
+          return current;
+        });
       }
     });
     observer.observe(element);
@@ -227,11 +256,14 @@ export function EditorStickyCard({
     await onDelete(sticky);
   }, [commitBody, onDelete, sticky]);
 
-  const finishDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+  const finishDrag = (event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+    if (
+      typeof event.currentTarget.hasPointerCapture === "function" &&
+      event.currentTarget.hasPointerCapture(event.pointerId)
+    ) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     onDragEnd(sticky.id);
@@ -252,16 +284,24 @@ export function EditorStickyCard({
     width,
     minHeight,
     maxHeight,
-    overflow: "hidden",
+    overflow: "visible",
     zIndex: sticky.zIndex + 1000,
     fontSize,
     writingMode: "horizontal-tb",
     textOrientation: "mixed",
     direction: "ltr",
     pointerEvents: "auto",
-    outline: selected
-      ? "2px solid color-mix(in srgb, currentColor 55%, transparent)"
-      : undefined,
+    borderRadius: 0,
+    color: "rgba(0, 0, 0, 0.78)",
+    boxShadow:
+      glueOrient === "top"
+        ? STICKY_TOP_OUTER_SHADOW
+        : STICKY_LEFT_OUTER_SHADOW,
+    outline: selected ? "2px solid #534AB7" : "none",
+    outlineOffset: "2px",
+    cursor: editing ? "text" : "grab",
+    userSelect: editing ? "text" : "none",
+    touchAction: editing ? "auto" : "none",
   };
 
   return (
@@ -269,6 +309,7 @@ export function EditorStickyCard({
       ref={cardRef}
       data-editor-sticky-card="true"
       data-editor-sticky-id={sticky.id}
+      data-glue={glueOrient}
       className="editor-sticky-card"
       style={cardStyle}
       tabIndex={0}
@@ -278,10 +319,40 @@ export function EditorStickyCard({
         event.stopPropagation();
         onSelect(sticky.id);
       }}
-      onDoubleClick={(event) => {
+      onDoubleClickCapture={(event) => {
+        if (editing) return;
+        event.preventDefault();
         event.stopPropagation();
         onEdit(sticky.id);
       }}
+      onPointerDown={(event) => {
+        if (event.button !== 0 || editing) return;
+        event.stopPropagation();
+        dragRef.current = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+        };
+        if (typeof event.currentTarget.setPointerCapture === "function") {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }
+        event.currentTarget.focus();
+        onSelect(sticky.id);
+        onDragStart(sticky.id);
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onDragMove(
+          sticky.id,
+          event.clientX - drag.startX,
+          event.clientY - drag.startY,
+        );
+      }}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -316,11 +387,13 @@ export function EditorStickyCard({
         height="100%"
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
+        style={{ filter: "none" }}
       >
         <defs>
           <mask
             id={maskId}
             maskUnits="userSpaceOnUse"
+            maskContentUnits="userSpaceOnUse"
             x="0"
             y="0"
             width={width}
@@ -346,54 +419,32 @@ export function EditorStickyCard({
           fillOpacity="0.94"
           mask={`url(#${maskId})`}
         />
+        <foreignObject
+          data-testid="editor-sticky-paper-mask"
+          width={width}
+          height={height}
+          mask={`url(#${maskId})`}
+        >
+          <StickyPaperVisual
+            data-testid="editor-sticky-paper-visual"
+            data-glue={glueOrient}
+            paperColor={paperColor}
+            style={{
+              width: "100%",
+              height: "100%",
+              boxShadow: STICKY_INSET_SHADOW,
+            }}
+          />
+        </foreignObject>
       </svg>
       <div
-        className="editor-sticky-card__content"
-        onPointerDown={(event) => event.stopPropagation()}
+        className="sticky-content editor-sticky-card__content"
+        style={{ padding: "6px 10px 10px" }}
       >
-        <button
-          type="button"
-          className="editor-sticky-card__handle"
-          aria-label="付箋を移動"
-          tabIndex={editing ? -1 : 0}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            event.stopPropagation();
-            onSelect(sticky.id);
-          }}
-          onPointerDown={(event) => {
-            if (event.button !== 0 || editing) return;
-            event.preventDefault();
-            event.stopPropagation();
-            dragRef.current = {
-              pointerId: event.pointerId,
-              startX: event.clientX,
-              startY: event.clientY,
-            };
-            event.currentTarget.setPointerCapture(event.pointerId);
-            onSelect(sticky.id);
-            onDragStart(sticky.id);
-          }}
-          onPointerMove={(event) => {
-            const drag = dragRef.current;
-            if (!drag || drag.pointerId !== event.pointerId) return;
-            event.stopPropagation();
-            onDragMove(
-              sticky.id,
-              event.clientX - drag.startX,
-              event.clientY - drag.startY,
-            );
-          }}
-          onPointerUp={finishDrag}
-          onPointerCancel={finishDrag}
-        >
-          <span aria-hidden="true">⋮⋮</span>
-        </button>
         <div
           className="editor-sticky-card__body"
           style={{
-            maxHeight: Math.max(maxHeight - fontSize * 2.5, fontSize * 1.4),
+            maxHeight: Math.max(maxHeight - 16, fontSize * 1.5),
             overflowY: "auto",
           }}
         >
@@ -402,9 +453,11 @@ export function EditorStickyCard({
               body={draftBody}
               onContentChange={changeDraft}
               onEscape={leaveEditing}
+              style={{ fontSize, lineHeight: 1.5 }}
+              onPointerDown={(event) => event.stopPropagation()}
             />
           ) : (
-            <StickyRichTextBody body={sticky.body} />
+            <StickyRichTextBody body={sticky.body} fontSize={fontSize} />
           )}
         </div>
       </div>
