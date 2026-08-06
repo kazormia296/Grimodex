@@ -1,9 +1,15 @@
 /*
- * The focusable card wrapper stays in place while its paper child performs the
- * delete animation. Suppress Chromium's native focus outline during that
- * interval so an empty rectangular ring is not left behind after the paper has
- * moved and faded away. The selected-state outline lives on the animated child.
+ * The focusable card wrapper owns input and stays stationary while the paper
+ * child animates. Selection and keyboard-focus feedback are drawn on that
+ * paper child, so Chromium's native rectangular wrapper ring is redundant.
  */
-.editor-sticky-card[aria-disabled="true"] {
+.editor-sticky-card {
   outline: none;
+}
+
+/* Keep keyboard focus visible with the same custom paper ring used by the
+ * selected state. `!important` overrides the unselected inline outline:none. */
+.editor-sticky-card:focus-visible > [data-motion-phase] {
+  outline: 2px solid #534ab7 !important;
+  outline-offset: 2px;
 }
