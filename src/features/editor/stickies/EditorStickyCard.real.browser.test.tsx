@@ -1,8 +1,9 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { page } from "vitest/browser";
 import { expect, it, vi } from "vitest";
 import { useState } from "react";
 import type { EditorSticky } from "./editorStickyTypes";
+import "./editorStickyCard.css";
 
 vi.mock("sonner", () => ({
   toast: { error: vi.fn() },
@@ -62,9 +63,14 @@ const sticky: EditorSticky = {
 interface StatefulCardProps {
   onEdit: () => void;
   onStopEditing: () => void;
+  onDelete?: (sticky: EditorSticky) => Promise<void>;
 }
 
-function StatefulCard({ onEdit, onStopEditing }: StatefulCardProps) {
+function StatefulCard({
+  onEdit,
+  onStopEditing,
+  onDelete = async () => undefined,
+}: StatefulCardProps) {
   const [selected, setSelected] = useState(false);
   const [editing, setEditing] = useState(false);
   return (
@@ -95,7 +101,7 @@ function StatefulCard({ onEdit, onStopEditing }: StatefulCardProps) {
         body,
         version: row.version + 1,
       }))}
-      onDelete={vi.fn().mockResolvedValue(undefined)}
+      onDelete={onDelete}
       onColorChange={vi.fn().mockResolvedValue(undefined)}
       onBringToFront={vi.fn().mockResolvedValue(undefined)}
       onSendToBack={vi.fn().mockResolvedValue(undefined)}
@@ -119,4 +125,29 @@ it("keeps the real TipTap sticky editor open after selecting text by double-clic
   expect(onEdit).toHaveBeenCalledExactlyOnceWith();
   await expect.element(page.getByRole("textbox")).toBeVisible();
   expect(onStopEditing).not.toHaveBeenCalled();
+});
+
+it("suppresses the focused wrapper outline while the sticky paper exits", async () => {
+  render(
+    <StatefulCard
+      onEdit={vi.fn()}
+      onStopEditing={vi.fn()}
+      onDelete={vi.fn().mockResolvedValue(undefined)}
+    />,
+  );
+
+  const card = document.querySelector<HTMLElement>(
+    '[data-editor-sticky-card="true"]',
+  );
+  if (!card) throw new Error("Editor sticky card was not rendered");
+  card.focus();
+  expect(document.activeElement).toBe(card);
+
+  fireEvent.keyDown(card, { key: "Delete" });
+
+  await vi.waitFor(() =>
+    expect(card).toHaveAttribute("aria-disabled", "true"),
+  );
+  expect(document.activeElement).toBe(card);
+  expect(getComputedStyle(card).outlineStyle).toBe("none");
 });
