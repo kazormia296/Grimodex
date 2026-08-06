@@ -1,4 +1,10 @@
-import { useEffect, useReducer, useState, useCallback } from "react";
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   getOrCreateBoard,
   getMapBoard,
@@ -23,6 +29,10 @@ import type {
   MapSticky,
   MapAiBranch,
 } from "@/db/schema";
+import {
+  getCurrentWorkspaceIdentity,
+  subscribeCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
 
 type PositionUpdate = React.SetStateAction<MapNodePositionRecord[]>;
 
@@ -41,6 +51,19 @@ function resolvePositionUpdate(
   update: PositionUpdate,
 ): MapNodePositionRecord[] {
   return typeof update === "function" ? update(rows) : update;
+}
+
+function getMapWorkspaceAuthorityKey(): string | null {
+  const identity = getCurrentWorkspaceIdentity();
+  return identity ? `${identity.path}\u0000${identity.openRevision}` : null;
+}
+
+function getUnboundMapWorkspaceAuthorityKey(): null {
+  return null;
+}
+
+function isCurrentMapWorkspaceAuthority(authorityKey: string): boolean {
+  return getMapWorkspaceAuthorityKey() === authorityKey;
 }
 
 export function mapPositionStateReducer(
@@ -82,6 +105,11 @@ export function useMapBoardData(projectId: string) {
   const activeBoardId = useMapStore((s) => s.activeBoardId);
   const setActiveBoardId = useMapStore((s) => s.setActiveBoardId);
   const boardDataVersion = useMapStore((s) => s.boardDataVersion);
+  const workspaceAuthorityKey = useSyncExternalStore(
+    subscribeCurrentWorkspaceIdentity,
+    getMapWorkspaceAuthorityKey,
+    getUnboundMapWorkspaceAuthorityKey,
+  );
 
   const [boards, setBoards] = useState<MapBoard[]>([]);
   const [positionState, dispatchPositions] = useReducer(
@@ -104,59 +132,96 @@ export function useMapBoardData(projectId: string) {
   const [stickies, setStickies] = useState<MapSticky[]>([]);
   const [aiBranches, setAiBranches] = useState<MapAiBranch[]>([]);
 
-  // Load all boards for this project
+  // Load all boards for this project. A workspace switch can retain the same
+  // project id ("default-project"), so the database identity is part of the
+  // authority and every state publication is checked against it.
   const reloadBoards = useCallback(async () => {
+    const authorityKey = workspaceAuthorityKey;
+    if (!authorityKey || !isCurrentMapWorkspaceAuthority(authorityKey)) {
+      return [];
+    }
+
     const allBoards = await listBoards(projectId);
+    if (!isCurrentMapWorkspaceAuthority(authorityKey)) return [];
+
     if (allBoards.length === 0) {
       const main = await getOrCreateBoard(projectId);
+      if (!isCurrentMapWorkspaceAuthority(authorityKey)) return [];
       setBoards([main]);
       return [main];
     }
     setBoards(allBoards);
     return allBoards;
-  }, [projectId]);
+  }, [projectId, workspaceAuthorityKey]);
 
-  // Initial load / project switch: resolve boards and set the active board.
-  // This hook is the *single authority* for activeBoardId per project — on a
-  // project switch we drop the previous project's board/data and re-resolve
-  // against THIS project's boards. (reloadProjectData deliberately no longer
-  // nulls activeBoardId, which used to race this effect and leave the previous
-  // project's board — or no board — selected.)
+  // Initial load / project or workspace switch: resolve boards and set the
+  // active board. This hook is the *single authority* for activeBoardId per
+  // database. The workspace key matters because separate databases commonly
+  // contain the same "default-project" id.
   useEffect(() => {
     let cancelled = false;
-    // Drop the previous project's board data immediately so the canvas can't
-    // keep showing a stale board while the new project's boards load.
+    // Drop the previous database's board data immediately so the canvas can't
+    // keep showing stale content while the new workspace's boards load.
     setBoards([]);
     setPositions([]);
     setUserEdges([]);
     setFrames([]);
     setStickies([]);
     setAiBranches([]);
+
+    if (!workspaceAuthorityKey) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
     async function init() {
       const allBoards = await reloadBoards();
-      if (cancelled) return;
+      if (
+        cancelled ||
+        !isCurrentMapWorkspaceAuthority(workspaceAuthorityKey)
+      ) {
+        return;
+      }
       // Read activeBoardId fresh (not via a stale render closure): keep it only
-      // when it belongs to this project, else fall back to the first board.
+      // when it belongs to this database/project, else use its first board.
       const stored = useMapStore.getState().activeBoardId;
       const target = resolveActiveBoardId(stored, allBoards);
-      if (!cancelled) setActiveBoardId(target);
+      setActiveBoardId(target);
     }
-    init().catch(console.error);
+
+    void init().catch((error: unknown) => {
+      // Closing the previous workspace rejects its in-flight SQLite reads.
+      // Once this effect has lost authority, that rejection is cancellation,
+      // not an application error and must not poison strict diagnostics.
+      if (
+        !cancelled &&
+        isCurrentMapWorkspaceAuthority(workspaceAuthorityKey)
+      ) {
+        console.error(error);
+      }
+    });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [
+    projectId,
+    reloadBoards,
+    setActiveBoardId,
+    setPositions,
+    workspaceAuthorityKey,
+  ]);
 
-  // Load board data whenever active board (or project) changes
+  // Load board data whenever active board, project, workspace, or version changes
   useEffect(() => {
-    if (!activeBoardId) return;
+    if (!activeBoardId || !workspaceAuthorityKey) return;
     const boardId = activeBoardId;
+    const authorityKey = workspaceAuthorityKey;
     let cancelled = false;
 
     async function load() {
       const board = await getMapBoard(boardId);
-      if (cancelled) return;
+      if (cancelled || !isCurrentMapWorkspaceAuthority(authorityKey)) return;
       // Guard against a board id carried over from another project (can happen
       // for one render during a project switch). Never hydrate another
       // project's board data into this project's canvas.
@@ -175,7 +240,7 @@ export function useMapBoardData(projectId: string) {
         listStickies(boardId),
         listAiBranches(boardId),
       ]);
-      if (cancelled) return;
+      if (cancelled || !isCurrentMapWorkspaceAuthority(authorityKey)) return;
 
       markBoardHydrating();
       useMapStore.getState().hydrateFromBoard(board);
@@ -188,11 +253,22 @@ export function useMapBoardData(projectId: string) {
       setStickies(st);
       setAiBranches(ai);
     }
-    load();
+
+    void load().catch((error: unknown) => {
+      if (!cancelled && isCurrentMapWorkspaceAuthority(authorityKey)) {
+        console.error(error);
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [activeBoardId, boardDataVersion, projectId, setPositions]);
+  }, [
+    activeBoardId,
+    boardDataVersion,
+    projectId,
+    setPositions,
+    workspaceAuthorityKey,
+  ]);
 
   return {
     boards,
