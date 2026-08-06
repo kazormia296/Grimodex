@@ -293,12 +293,10 @@ export function EditorStickyCard({
     borderRadius: 0,
     color: "rgba(0, 0, 0, 0.78)",
     boxShadow:
-      glueOrient === "top"
-        ? STICKY_TOP_OUTER_SHADOW
-        : STICKY_LEFT_OUTER_SHADOW,
+      glueOrient === "top" ? STICKY_TOP_OUTER_SHADOW : STICKY_LEFT_OUTER_SHADOW,
     outline: selected ? "2px solid #534AB7" : "none",
     outlineOffset: "2px",
-    cursor: editing ? "text" : "grab",
+    cursor: editing ? "text" : "default",
     userSelect: editing ? "text" : "none",
     touchAction: editing ? "auto" : "none",
   };
