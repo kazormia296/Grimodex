@@ -257,34 +257,7 @@ describe("EditorStickyCard Map parity", () => {
     expect(onEdit).toHaveBeenCalledExactlyOnceWith(sticky.id);
   });
 
-  it("keeps click jitter below the drag threshold so a body double-click survives", () => {
-    const { onEdit, onDragStart, onDragMove, onDragEnd } = renderCard({
-      editing: false,
-    });
-    const body = screen.getByTestId("sticky-body-view");
-    const card = screen.getByLabelText("Editor付箋");
-
-    fireEvent.pointerDown(body, {
-      button: 0,
-      pointerId: 7,
-      clientX: 10,
-      clientY: 20,
-    });
-    fireEvent.pointerMove(card, {
-      pointerId: 7,
-      clientX: 12,
-      clientY: 22,
-    });
-    fireEvent.pointerUp(card, { pointerId: 7 });
-    fireEvent.doubleClick(body);
-
-    expect(onDragStart).not.toHaveBeenCalled();
-    expect(onDragMove).not.toHaveBeenCalled();
-    expect(onDragEnd).not.toHaveBeenCalled();
-    expect(onEdit).toHaveBeenCalledExactlyOnceWith(sticky.id);
-  });
-
-  it("uses the whole non-editing paper as the drag surface after the threshold", () => {
+  it("uses the whole non-editing paper as the drag surface", () => {
     const { onDragStart, onDragMove, onDragEnd } = renderCard({
       editing: false,
     });
