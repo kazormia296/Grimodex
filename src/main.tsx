@@ -8,6 +8,7 @@ import "./lib/i18n";
 import "./lib/perfLog";
 import "./lib/imeLog";
 import "./index.css";
+import "./features/editor/stickies/editorStickyCard.css";
 import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
 import { isElectron, isTauri, listen } from "./lib/tauri";
 import { installDefaultEditorNavigation } from "./features/editor/editorNavigationPorts";
