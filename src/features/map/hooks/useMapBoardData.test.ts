@@ -6,11 +6,12 @@
 //   (B) フック統合 — プロジェクト切替で activeBoardId が旧プロジェクトのボードに
 //       居残らず新プロジェクトのボードへ再解決され、cross-project な board id では
 //       盤面データを hydrate しない (前プロジェクトのボードが残るバグ #Map 切替)。
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useMapStore } from "../mapStore";
 import { resolveActiveBoardId, useMapBoardData } from "./useMapBoardData";
 import type { MapBoard } from "@/db/schema";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 vi.mock("../mapApi", () => ({
   listBoards: vi.fn(),
@@ -75,6 +76,11 @@ const positionsByBoard: Record<string, { nodeId: string }[]> = {
 };
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  setCurrentWorkspaceIdentity({
+    path: "/workspace-a.grimodex",
+    openRevision: 1,
+  });
   vi.mocked(listBoards).mockImplementation(
     async (pid: string) => boardsByProject[pid] ?? [],
   );
@@ -94,13 +100,21 @@ beforeEach(() => {
   useMapStore.setState({ activeBoardId: null });
 });
 
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+});
+
 describe("resolveActiveBoardId", () => {
   it("保存ボードがこのプロジェクトに属するなら維持する", () => {
-    expect(resolveActiveBoardId("b1", [{ id: "b1" }, { id: "b2" }])).toBe("b1");
+    expect(resolveActiveBoardId("b1", [{ id: "b1" }, { id: "b2" }])).toBe(
+      "b1",
+    );
   });
 
   it("保存ボードが別プロジェクト(=このボード一覧に無い)なら先頭ボードへ", () => {
-    expect(resolveActiveBoardId("a1", [{ id: "b1" }, { id: "b2" }])).toBe("b1");
+    expect(resolveActiveBoardId("a1", [{ id: "b1" }, { id: "b2" }])).toBe(
+      "b1",
+    );
   });
 
   it("保存ボードが null なら先頭ボード", () => {
@@ -152,6 +166,43 @@ describe("useMapBoardData — project switch", () => {
     await waitFor(() =>
       expect(result.current.positions).toEqual([{ nodeId: "node-B" }]),
     );
+  });
+
+  it("同じ projectId の workspace 切替で旧DBの失敗を診断エラーにしない", async () => {
+    let rejectStaleLoad: ((error: Error) => void) | undefined;
+    const staleLoad = new Promise<MapBoard[]>((_, reject) => {
+      rejectStaleLoad = reject;
+    });
+    vi.mocked(listBoards)
+      .mockImplementationOnce(() => staleLoad)
+      .mockResolvedValueOnce(boardsByProject.projA);
+
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const { result } = renderHook(() => useMapBoardData("projA"));
+
+    await waitFor(() => expect(listBoards).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      setCurrentWorkspaceIdentity({
+        path: "/workspace-b.grimodex",
+        openRevision: 2,
+      });
+    });
+
+    await waitFor(() => expect(listBoards).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      rejectStaleLoad?.(new Error("stale workspace database was closed"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(result.current.boards).toEqual(boardsByProject.projA),
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   it("座標だけの更新は structure/layout revision を進めず、構造変更は進める", async () => {
