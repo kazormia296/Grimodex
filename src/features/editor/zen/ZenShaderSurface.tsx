@@ -17,7 +17,10 @@ import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
-import { buildZenGlassMask } from "./zenGlassCompositor";
+import {
+  buildZenGlassMask,
+  hasZenGlassRegion,
+} from "./zenGlassCompositor";
 
 const PREVIEW_PIXEL_BUDGET = 300_000;
 const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;
@@ -187,11 +190,13 @@ export function ZenShaderSurface({
         resolvedMaxPixelCount ?? LIVE_BACKGROUND_PIXEL_BUDGET,
         LIVE_BACKGROUND_PIXEL_BUDGET,
       );
+  // Keep the writing-column contrast correction outside the native Glass
+  // filter even when the Editor is the only visible Glass region.
   const useSharedGlassCompositor =
     shaderReady &&
     !preview &&
     config.glass.enabled &&
-    layouts.uiSurfaces.length > 0;
+    hasZenGlassRegion(layouts.glass, layouts.uiSurfaces);
 
   return (
     <div
@@ -254,6 +259,9 @@ export function ZenShaderSurface({
               layouts.surfaceSize,
               layouts.glass,
               layouts.uiSurfaces,
+              config.contrastGuard.mode === "auto"
+                ? layouts.contrast
+                : undefined,
             ),
             maskPosition: "0 0",
             maskRepeat: "no-repeat",
