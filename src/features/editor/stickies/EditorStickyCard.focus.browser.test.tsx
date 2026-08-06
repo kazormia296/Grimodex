@@ -13,9 +13,9 @@ it("suppresses the stationary wrapper focus ring during sticky deletion", () => 
   );
 
   const card = document.querySelector<HTMLElement>(".editor-sticky-card");
-  expect(card).not.toBeNull();
-  card?.focus();
+  if (!card) throw new Error("Editor sticky card was not rendered");
+  card.focus();
 
   expect(document.activeElement).toBe(card);
-  expect(getComputedStyle(card as HTMLElement).outlineStyle).toBe("none");
+  expect(getComputedStyle(card).outlineStyle).toBe("none");
 });
