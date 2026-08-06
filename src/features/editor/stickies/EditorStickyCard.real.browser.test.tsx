@@ -1,11 +1,7 @@
 import { render } from "@testing-library/react";
 import { page } from "vitest/browser";
 import { expect, it, vi } from "vitest";
-import {
-  useState,
-  type HTMLAttributes,
-  type ReactNode,
-} from "react";
+import { useState } from "react";
 import type { EditorSticky } from "./editorStickyTypes";
 
 vi.mock("sonner", () => ({
@@ -20,23 +16,6 @@ vi.mock("@/lib/animation", () => ({
   DURATIONS: { slow: 0.3 },
   EASINGS: { easeOut: [0.16, 1, 0.3, 1] },
   useReducedMotion: () => false,
-}));
-
-vi.mock("motion/react", () => ({
-  motion: {
-    div: ({
-      children,
-      initial: _initial,
-      animate: _animate,
-      onAnimationComplete: _onAnimationComplete,
-      ...props
-    }: HTMLAttributes<HTMLDivElement> & {
-      children?: ReactNode;
-      initial?: unknown;
-      animate?: unknown;
-      onAnimationComplete?: () => void;
-    }) => <div {...props}>{children}</div>,
-  },
 }));
 
 vi.mock("@/application/lifecycle/useQuiescentDraftParticipant", () => ({
