@@ -65,9 +65,8 @@ vi.mock("@/features/license/useLicenseEditableSync", () => ({
 }));
 
 vi.mock("@/runtime/workspaceIdentity", async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import("@/runtime/workspaceIdentity")
-  >();
+  const actual =
+    await importOriginal<typeof import("@/runtime/workspaceIdentity")>();
   return {
     ...actual,
     getCurrentWorkspaceIdentity: () => ({
@@ -123,7 +122,7 @@ it("opens the real sticky editor when text is double-clicked through the surface
 
   await expect.element(page.getByRole("textbox")).toBeVisible();
   expect(
-    document.querySelector<HTMLElement>("[data-editor-sticky-card]")
-      ?.dataset.editorStickyId,
+    document.querySelector<HTMLElement>("[data-editor-sticky-card]")?.dataset
+      .editorStickyId,
   ).toBe((fixture.sticky as EditorSticky).id);
 });
