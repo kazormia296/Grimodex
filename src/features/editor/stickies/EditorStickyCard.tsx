@@ -42,7 +42,6 @@ interface DragState {
   pointerId: number;
   startX: number;
   startY: number;
-  active: boolean;
 }
 
 interface EditorStickyDraftSession {
@@ -54,7 +53,6 @@ type StickyGlueOrientation = "left" | "top";
 
 const STICKY_GLUE_TO_TOP_HEIGHT = 110;
 const STICKY_GLUE_TO_LEFT_HEIGHT = 90;
-const EDITOR_STICKY_DRAG_THRESHOLD_PX = 4;
 const STICKY_INSET_SHADOW =
   "inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -10px 18px -14px rgba(0, 0, 0, 0.18)";
 const STICKY_LEFT_OUTER_SHADOW =
@@ -336,7 +334,7 @@ export function EditorStickyCard({
     ) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    if (drag.active) onDragEnd(sticky.id);
+    onDragEnd(sticky.id);
   };
 
   const maskId = createEditorStickyMaskId(sticky.id, surfaceInstanceId);
@@ -407,33 +405,24 @@ export function EditorStickyCard({
               pointerId: event.pointerId,
               startX: event.clientX,
               startY: event.clientY,
-              active: false,
             };
             if (typeof event.currentTarget.setPointerCapture === "function") {
               event.currentTarget.setPointerCapture(event.pointerId);
             }
             event.currentTarget.focus();
             onSelect(sticky.id);
+            onDragStart(sticky.id);
           }}
           onPointerMove={(event) => {
             const drag = dragRef.current;
             if (!drag || drag.pointerId !== event.pointerId) return;
-            const deltaX = event.clientX - drag.startX;
-            const deltaY = event.clientY - drag.startY;
-            if (!drag.active) {
-              if (
-                deltaX * deltaX + deltaY * deltaY <
-                EDITOR_STICKY_DRAG_THRESHOLD_PX *
-                  EDITOR_STICKY_DRAG_THRESHOLD_PX
-              ) {
-                return;
-              }
-              drag.active = true;
-              onDragStart(sticky.id);
-            }
             event.preventDefault();
             event.stopPropagation();
-            onDragMove(sticky.id, deltaX, deltaY);
+            onDragMove(
+              sticky.id,
+              event.clientX - drag.startX,
+              event.clientY - drag.startY,
+            );
           }}
           onPointerUp={finishDrag}
           onPointerCancel={finishDrag}
