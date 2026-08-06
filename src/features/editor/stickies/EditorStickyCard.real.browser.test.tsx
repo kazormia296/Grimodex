@@ -12,12 +12,6 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock("@/lib/animation", () => ({
-  DURATIONS: { slow: 0.3 },
-  EASINGS: { easeOut: [0.16, 1, 0.3, 1] },
-  useReducedMotion: () => false,
-}));
-
 vi.mock("@/application/lifecycle/useQuiescentDraftParticipant", () => ({
   useQuiescentDraftParticipant: () => undefined,
 }));
