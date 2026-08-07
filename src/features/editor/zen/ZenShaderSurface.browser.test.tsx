@@ -125,6 +125,9 @@ describe("ZenShaderSurface multipass integration", () => {
     expect(visibleCanvas).toBeInstanceOf(HTMLCanvasElement);
     expect(getComputedStyle(visibleCanvas!).position).toBe("absolute");
     expect(getComputedStyle(visibleCanvas!).zIndex).toBe("0");
+    expect(getComputedStyle(visibleCanvas!.parentElement!).isolation).toBe(
+      "isolate",
+    );
 
     const firstAnimatedDrawCount = drawCount(view.container);
     const firstAnimatedFrame = readFrame(view.container);
