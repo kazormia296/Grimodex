@@ -34,6 +34,7 @@ jobs:
           live_base="b8eea3a529f8c0a612035a9ae53f305e0dde2a3b"
           final_base="d14759afdd63bf403ea6987fe2764b592e7fcb82"
           branch="agent/zen-gpu-glass-pipeline-final"
+          surface_test="src/features/editor/zen/ZenShaderSurface.test.tsx"
 
           gzip -dc .github/pr471/fix-pr471-live-updates.patch.gz > /tmp/fix-pr471-live-updates.patch
           gzip -dc .github/pr471/pr471-final-visible-color-fix.patch.gz > /tmp/pr471-final-visible-color-fix.patch
@@ -41,12 +42,202 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Both bundles were assembled from focused diffs whose hunk line
-          # counts predate a formatting pass. --recount validates the actual
-          # context instead of trusting those stale counts.
           git checkout --detach "$live_base"
-          git apply --check --recount /tmp/fix-pr471-live-updates.patch
-          git apply --recount /tmp/fix-pr471-live-updates.patch
+          git apply --check --recount \
+            --exclude="$surface_test" \
+            /tmp/fix-pr471-live-updates.patch
+          git apply --recount \
+            --exclude="$surface_test" \
+            /tmp/fix-pr471-live-updates.patch
+
+          # The focused bundle contains one malformed hunk header for this
+          # node test. Apply its intended edits explicitly and fail closed if
+          # any expected source fragment has drifted.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/features/editor/zen/ZenShaderSurface.test.tsx")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"expected exactly one match in {path}: {old[:80]!r}; got {count}"
+                  )
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '  animation: [] as Array<{ playing: boolean; speed: number }>,\n',
+              '',
+          )
+          replace_once(
+              '''vi.mock("./zenShaderAnimation", () => ({
+            useZenShaderAnimation: (
+              _ref: unknown,
+              options: { playing: boolean; speed: number },
+            ) => {
+              shaderLifecycle.animation.push(options);
+            },
+          }));
+
+          ''',
+              '',
+          )
+
+          mock_start = text.index(
+              'vi.mock("@paper-design/shaders-react", async (importOriginal) => {'
+          )
+          mock_end = text.index('vi.mock("./zenThemePalette"', mock_start)
+          multipass_mock = '''vi.mock("./ZenMultipassCanvas", () => ({
+            ZenMultipassCanvas: forwardRef<
+              PaperShaderElement,
+              {
+                "data-paper-shader": string;
+                maxPixelCount: number;
+                speed: number;
+                minPixelRatio: number;
+                webGlContextAttributes?: WebGLContextAttributes;
+                compositeFragment: string;
+                compositeUniforms: Record<string, unknown>;
+              }
+            >(function MockZenMultipassCanvas(
+              {
+                "data-paper-shader": shader,
+                maxPixelCount,
+                speed,
+                minPixelRatio,
+                webGlContextAttributes,
+                compositeFragment,
+                compositeUniforms,
+              },
+              forwardedRef,
+            ) {
+              const elementRef = useRef<HTMLDivElement>(null);
+              const mountedShader = useRef(shader).current;
+              const mountedCapacity = useRef(
+                Number(
+                  /u_zenUiSurfaceRects\\[(\\d+)\\]/.exec(compositeFragment)?.[1] ?? 0,
+                ),
+              ).current;
+              const mountedUniformLength = useRef(
+                compositeUniforms["u_zenUiSurfaceRects[0]"] instanceof Float32Array
+                  ? compositeUniforms["u_zenUiSurfaceRects[0]"].length
+                  : 0,
+              ).current;
+              shaderLifecycle.props.push({ maxPixelCount, speed });
+              shaderLifecycle.antiAliasing.push({
+                minPixelRatio,
+                antialias: webGlContextAttributes?.antialias ?? false,
+              });
+              useImperativeHandle(forwardedRef, () => {
+                const element = elementRef.current as unknown as PaperShaderElement;
+                element.paperShaderMount = {
+                  getPerformanceStats: () => ({
+                    drawCount: shaderLifecycle.drawCount,
+                    gpuTimeMs: null,
+                    isStaticFrameReady: shaderLifecycle.staticFrameReady,
+                  }),
+                } as NonNullable<PaperShaderElement["paperShaderMount"]>;
+                return element;
+              }, []);
+
+              useEffect(() => {
+                shaderLifecycle.mounted.push(mountedShader);
+                shaderLifecycle.mountedCapacities.push(mountedCapacity);
+                shaderLifecycle.mountedUniformLengths.push(mountedUniformLength);
+                return () => {
+                  shaderLifecycle.unmounted.push(mountedShader);
+                  shaderLifecycle.unmountedCapacities.push(mountedCapacity);
+                };
+              }, [mountedCapacity, mountedShader, mountedUniformLength]);
+
+              return <div ref={elementRef} data-paper-shader={shader} />;
+            }),
+          }));
+
+          '''
+          text = text[:mock_start] + multipass_mock + text[mock_end:]
+
+          replace_once('    shaderLifecycle.animation.length = 0;\n', '')
+          replace_once(
+              '''    expect(shaderLifecycle.props.at(-1)).toEqual({
+              maxPixelCount: 2_073_600,
+              speed: 0,
+            });
+            await waitFor(() =>
+              expect(shaderLifecycle.animation.at(-1)).toMatchObject({
+                playing: true,
+                speed: ZEN_SHADER_DEFAULTS.speed / 100,
+              }),
+            );
+          ''',
+              '''    expect(shaderLifecycle.props.at(-1)).toEqual({
+              maxPixelCount: 2_073_600,
+              speed: ZEN_SHADER_DEFAULTS.speed / 100,
+            });
+          ''',
+          )
+          replace_once(
+              '''    expect(shaderLifecycle.animation.at(-1)).toMatchObject({
+              playing: false,
+            });
+          ''',
+              '',
+          )
+          replace_once(
+              '''  it("uses the shader's analytic antialiasing without WebGL MSAA", () => {
+            render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
+
+            expect(shaderLifecycle.antiAliasing.at(-1)).toEqual({
+              minPixelRatio: 1,
+              antialias: false,
+            });
+            expect(shaderLifecycle.props.at(-1)).toEqual({
+              maxPixelCount: 2_073_600,
+              speed: 0,
+            });
+          });
+          ''',
+              '''  it("uses the shader's analytic antialiasing without WebGL MSAA", () => {
+            render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
+
+            expect(shaderLifecycle.antiAliasing.at(-1)).toEqual({
+              minPixelRatio: 1,
+              antialias: false,
+            });
+            expect(shaderLifecycle.props.at(-1)).toEqual({
+              maxPixelCount: 2_073_600,
+              speed: ZEN_SHADER_DEFAULTS.speed / 100,
+            });
+          });
+          ''',
+          )
+          replace_once(
+              '''  it("keeps previews at the smaller pixel budget", () => {
+            render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing preview />);
+
+            expect(shaderLifecycle.props.at(-1)).toEqual({
+              maxPixelCount: 300_000,
+              speed: 0,
+            });
+          });
+          ''',
+              '''  it("keeps previews at the smaller pixel budget", () => {
+            render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing preview />);
+
+            expect(shaderLifecycle.props.at(-1)).toEqual({
+              maxPixelCount: 300_000,
+              speed: ZEN_SHADER_DEFAULTS.speed / 100,
+            });
+          });
+          ''',
+          )
+
+          path.write_text(text)
+          PY
+
           git add -A
           git commit -m "fix(editor): make multipass updates renderer-owned"
           live_commit="$(git rev-parse HEAD)"
@@ -58,9 +249,6 @@ jobs:
           git commit -m "fix(editor): preserve visible motion through final contrast"
           final_commit="$(git rev-parse HEAD)"
 
-          # Merge both independently valid results. In overlapping animation
-          # hunks, keep the renderer-owned implementation; all non-overlapping
-          # d147 and final-color changes are retained from final_commit.
           git checkout -B "$branch" "$live_commit"
           git merge --no-ff -X ours "$final_commit" \
             -m "fix(editor): restore visible live multipass updates"
