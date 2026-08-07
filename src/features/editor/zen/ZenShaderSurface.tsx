@@ -106,10 +106,8 @@ export function ZenShaderSurface({
           glassCornerRadius: layouts.glass.cornerRadius,
           uiSurfaces: layouts.uiSurfaces,
           textColor: palette.textColor ?? [0.85, 0.85, 0.85],
-          uiTextColor:
-            palette.uiTextColor ??
-            palette.textColor ??
-            [0.85, 0.85, 0.85],
+          uiTextColor: palette.uiTextColor ??
+            palette.textColor ?? [0.85, 0.85, 0.85],
           backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
         },
         surfaceUniformBuffer,
@@ -226,7 +224,9 @@ export function ZenShaderSurface({
       data-ui-contrast-surface-count={layouts.uiSurfaces.length}
       className="zen-shader-surface absolute inset-0 overflow-hidden"
       style={{
-        opacity: config.opacity / 100,
+        // The final GPU pass already composites the configured opacity against
+        // the theme backdrop. Do not apply it again after contrast correction.
+        opacity: shaderReady ? 1 : config.opacity / 100,
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >

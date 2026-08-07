@@ -16,6 +16,8 @@ import {
   ZEN_MULTIPASS_FULLSCREEN_VERTEX,
 } from "./zenMultipassPipeline";
 
+const ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT = 2;
+
 const PAPER_VERTEX_SHADER = `#version 300 es
 precision mediump float;
 layout(location = 0) in vec4 a_position;
@@ -177,10 +179,14 @@ export interface ZenMultipassCanvasProps {
 }
 
 function isImage(value: unknown): value is HTMLImageElement {
-  return (
-    typeof HTMLImageElement !== "undefined" &&
-    value instanceof HTMLImageElement
-  );
+  if (!value || typeof value !== "object") return false;
+  const image = value as HTMLImageElement;
+  const ImageConstructor = image.ownerDocument?.defaultView?.HTMLImageElement;
+  return ImageConstructor
+    ? image instanceof ImageConstructor
+    : typeof image.complete === "boolean" &&
+        typeof image.naturalWidth === "number" &&
+        typeof image.naturalHeight === "number";
 }
 
 function compileShader(
@@ -287,7 +293,8 @@ class ZenMultipassRenderer {
     contextAttributes?: WebGLContextAttributes,
   ) {
     const gl = canvas.getContext("webgl2", contextAttributes);
-    if (!gl) throw new Error("WebGL2 is unavailable for Zen multipass rendering");
+    if (!gl)
+      throw new Error("WebGL2 is unavailable for Zen multipass rendering");
     this.gl = gl;
     this.sceneUniforms = sceneUniforms;
     this.compositeUniforms = compositeUniforms;
@@ -324,7 +331,9 @@ class ZenMultipassRenderer {
 
   private readonly requestFrame = (callback: FrameRequestCallback) => {
     const view = this.host.ownerDocument.defaultView;
-    return view?.requestAnimationFrame(callback) ?? requestAnimationFrame(callback);
+    return (
+      view?.requestAnimationFrame(callback) ?? requestAnimationFrame(callback)
+    );
   };
 
   private readonly cancelFrame = (handle: number) => {
@@ -475,7 +484,9 @@ class ZenMultipassRenderer {
       stored = {
         image,
         texture,
-        unit: stored?.unit ?? this.imageTextures.size,
+        unit:
+          stored?.unit ??
+          ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT + this.imageTextures.size,
       };
       this.imageTextures.set(name, stored);
       gl.activeTexture(gl.TEXTURE0 + stored.unit);
@@ -558,6 +569,13 @@ class ZenMultipassRenderer {
     this.gl.bindVertexArray(bundle.vao);
   }
 
+  private unbindIntermediateTextures() {
+    for (let unit = 0; unit < ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT; unit += 1) {
+      this.gl.activeTexture(this.gl.TEXTURE0 + unit);
+      this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+    }
+  }
+
   private drawScene() {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
@@ -565,6 +583,8 @@ class ZenMultipassRenderer {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     this.useBundle(this.sceneProgram);
+    this.unbindIntermediateTextures();
+    this.applyUniforms(this.sceneProgram.program, this.sceneUniforms);
     const resolution = gl.getUniformLocation(
       this.sceneProgram.program,
       "u_resolution",
@@ -579,7 +599,6 @@ class ZenMultipassRenderer {
     if (pixelRatio !== null) gl.uniform1f(pixelRatio, this.renderScale);
     const time = gl.getUniformLocation(this.sceneProgram.program, "u_time");
     if (time !== null) gl.uniform1f(time, this.frame * 0.001);
-    this.applyUniforms(this.sceneProgram.program, this.sceneUniforms);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 

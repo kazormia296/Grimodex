@@ -375,24 +375,11 @@ vec3 zenGuardVisibleColor(
   float correctionDirection
 ) {
   float textLuminance = zenRelativeLuminance(textColor);
-  float backgroundLuminance = zenRelativeLuminance(visibleColor);
-  float currentContrast =
-    (max(textLuminance, backgroundLuminance) + 0.05) /
-    (min(textLuminance, backgroundLuminance) + 0.05);
-  bool followsCorrectionDirection = true;
-  if (correctionDirection > 0.5) {
-    followsCorrectionDirection = backgroundLuminance >= textLuminance;
-  } else if (correctionDirection < -0.5) {
-    followsCorrectionDirection = backgroundLuminance <= textLuminance;
-  }
-  if (
-    currentContrast >= u_zenContrastTarget &&
-    followsCorrectionDirection
-  ) {
-    return visibleColor;
-  }
-
   vec3 linearColor = zenSrgbToLinear(clamp(visibleColor, 0.0, 1.0));
+  float backgroundLuminance = dot(
+    linearColor,
+    vec3(0.2126, 0.7152, 0.0722)
+  );
   vec3 correctedLinear;
   float contrastAgainstBlack = (textLuminance + 0.05) / 0.05;
   float contrastAgainstWhite = 1.05 / (textLuminance + 0.05);
@@ -408,7 +395,13 @@ vec3 zenGuardVisibleColor(
       0.0,
       1.0
     );
-    float scale = maximumBackground / max(backgroundLuminance, 0.00001);
+    // A per-pixel clamp maps every failing grayscale sample to the same
+    // luminance and freezes an otherwise animated background. Compress the
+    // complete visible range smoothly below the safe ceiling instead.
+    float mappedLuminance =
+      maximumBackground * backgroundLuminance /
+      max(maximumBackground + backgroundLuminance, 0.00001);
+    float scale = mappedLuminance / max(backgroundLuminance, 0.00001);
     correctedLinear = linearColor * clamp(scale, 0.0, 1.0);
   } else {
     float minimumBackground = clamp(
@@ -416,73 +409,49 @@ vec3 zenGuardVisibleColor(
       0.0,
       1.0
     );
-    float maximumChannel = max(max(linearColor.r, linearColor.g), linearColor.b);
-    float hueScale = min(
-      minimumBackground / max(backgroundLuminance, 0.00001),
-      1.0 / max(maximumChannel, 0.00001)
-    );
-    vec3 huePreservingLift = clamp(linearColor * hueScale, 0.0, 1.0);
-    float liftedLuminance = dot(
-      huePreservingLift,
-      vec3(0.2126, 0.7152, 0.0722)
-    );
-    float whiteMix =
-      (minimumBackground - liftedLuminance) /
-      max(1.0 - liftedLuminance, 0.00001);
+    // Linear interpolation to white maps [0, 1] into
+    // [minimumBackground, 1], preserving motion while guaranteeing the floor.
     correctedLinear = mix(
-      huePreservingLift,
+      linearColor,
       vec3(1.0),
-      clamp(whiteMix, 0.0, 1.0)
+      minimumBackground
     );
   }
   return clamp(zenLinearToSrgb(correctedLinear), 0.0, 1.0);
 }
 
 vec3 applyZenFinalContrast(vec3 composedColor, float uiMask) {
-  if (u_zenContrastGuardEnabled < 0.5) return composedColor;
-  float paperMask = zenContrastColumnMask();
-  if (paperMask <= 0.0 && uiMask <= 0.0) return composedColor;
-
   float surfaceOpacity = clamp(u_zenContrastSurfaceOpacity, 0.0, 1.0);
   vec3 visibleColor = mix(
     u_zenContrastBackdropColor,
     clamp(composedColor, 0.0, 1.0),
     surfaceOpacity
   );
-  vec3 guardedColor = composedColor;
-  if (paperMask > 0.0) {
-    vec3 guardedVisible = zenGuardVisibleColor(
-      visibleColor,
-      u_zenContrastTextColor,
-      0.0
-    );
-    vec3 corrected = composedColor;
-    if (surfaceOpacity > 0.00001) {
-      corrected =
-        (guardedVisible - u_zenContrastBackdropColor * (1.0 - surfaceOpacity)) /
-        surfaceOpacity;
-    }
-    guardedColor = mix(guardedColor, clamp(corrected, 0.0, 1.0), paperMask);
-  }
-  if (uiMask > 0.0) {
-    vec3 guardedVisible = zenGuardVisibleColor(
-      visibleColor,
-      u_zenUiContrastTextColor,
-      zenSurfaceCorrectionDirection(u_zenContrastBackdropColor)
-    );
-    vec3 corrected = composedColor;
-    if (surfaceOpacity > 0.00001) {
-      corrected =
-        (guardedVisible - u_zenContrastBackdropColor * (1.0 - surfaceOpacity)) /
-        surfaceOpacity;
-    }
-    guardedColor = mix(
-      guardedColor,
-      clamp(corrected, 0.0, 1.0),
-      uiMask * clamp(u_zenUiContrastMix, 0.0, 1.0)
-    );
-  }
-  return guardedColor;
+  if (u_zenContrastGuardEnabled < 0.5) return visibleColor;
+
+  float paperMask = clamp(zenContrastColumnMask(), 0.0, 1.0);
+  float uiWeight = clamp(uiMask, 0.0, 1.0);
+  if (paperMask <= 0.0 && uiWeight <= 0.0) return visibleColor;
+
+  // Paper and UI candidates must both start from the same final Glass color.
+  // UI owns overlap, avoiding a paper correction followed by a second UI pass.
+  vec3 paperCorrected = zenGuardVisibleColor(
+    visibleColor,
+    u_zenContrastTextColor,
+    0.0
+  );
+  vec3 uiCorrected = zenGuardVisibleColor(
+    visibleColor,
+    u_zenUiContrastTextColor,
+    zenSurfaceCorrectionDirection(u_zenContrastBackdropColor)
+  );
+  float paperWeight = paperMask * (1.0 - uiWeight);
+  vec3 guardedColor = mix(visibleColor, paperCorrected, paperWeight);
+  return mix(
+    guardedColor,
+    uiCorrected,
+    uiWeight * clamp(u_zenUiContrastMix, 0.0, 1.0)
+  );
 }
 
 vec3 zenSaturate(vec3 color, float saturation) {
@@ -552,7 +521,6 @@ export function buildZenMultipassCompositeUniforms(
     u_zenGlassEnabled: config.glass.enabled ? 1 : 0,
     u_zenGlassBlur: config.glass.enabled ? config.glass.blur : 0,
     u_zenGlassSaturation: config.glass.saturation,
-    u_zenGlassShine:
-      typeof configuredShine === "number" ? configuredShine : 0,
+    u_zenGlassShine: typeof configuredShine === "number" ? configuredShine : 0,
   };
 }
