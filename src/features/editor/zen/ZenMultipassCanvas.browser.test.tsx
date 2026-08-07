@@ -13,6 +13,7 @@ import {
 import {
   buildZenShaderProps,
   ZEN_SHADER_DEFAULTS,
+  type ZenResolvedPalette,
   type ZenShaderConfig,
 } from "./zenShaderConfig";
 import { ZenShaderImageCache } from "./zenShaderImageUniforms";
@@ -63,10 +64,10 @@ void main() {
   fragColor = vec4(texture(u_sceneTexture, v_uv).rgb * u_gain, 1.0);
 }`;
 
-const TEST_PALETTE = {
+const TEST_PALETTE: ZenResolvedPalette = {
   background: "#101318",
   colors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
-} as const;
+};
 
 function readFrame(container: HTMLElement) {
   const canvas = container.querySelector("canvas");
