@@ -41,20 +41,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # The renderer-owned animation patch was authored against b8ee.
+          # Both bundles were assembled from focused diffs whose hunk line
+          # counts predate a formatting pass. --recount validates the actual
+          # context instead of trusting those stale counts.
           git checkout --detach "$live_base"
-          git apply --check /tmp/fix-pr471-live-updates.patch
-          git apply /tmp/fix-pr471-live-updates.patch
+          git apply --check --recount /tmp/fix-pr471-live-updates.patch
+          git apply --recount /tmp/fix-pr471-live-updates.patch
           git add -A
           git commit -m "fix(editor): make multipass updates renderer-owned"
           live_commit="$(git rev-parse HEAD)"
 
-          # The final-visible-color patch was authored against d147 and also
-          # contains the later texture/readPixels fixes already accumulated on
-          # the PR branch.
           git checkout --detach "$final_base"
-          git apply --check /tmp/pr471-final-visible-color-fix.patch
-          git apply /tmp/pr471-final-visible-color-fix.patch
+          git apply --check --recount /tmp/pr471-final-visible-color-fix.patch
+          git apply --recount /tmp/pr471-final-visible-color-fix.patch
           git add -A
           git commit -m "fix(editor): preserve visible motion through final contrast"
           final_commit="$(git rev-parse HEAD)"
