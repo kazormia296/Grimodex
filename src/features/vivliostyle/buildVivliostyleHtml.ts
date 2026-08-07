@@ -33,6 +33,7 @@ export const VIVLIOSTYLE_HTML_FILENAME = "book.html";
 const VIVLIOSTYLE_EXPORT_SETTINGS: ExportSettings = {
   ...DEFAULT_EXPORT_SETTINGS,
   format: "html",
+  paragraphIndent: "css",
   folderHeading: true,
   folderHeadingStyle: "numbers",
   folderHeadingFormat: "standard",

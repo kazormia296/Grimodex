@@ -82,3 +82,15 @@ describe("VIVLIOSTYLE_THEMES — 組版宣言", () => {
     },
   );
 });
+
+describe("VIVLIOSTYLE_THEMES — paragraph indentation", () => {
+  it.each(VIVLIOSTYLE_THEME_IDS)(
+    "%s: only explicitly marked paragraphs receive a one-em indent",
+    (id) => {
+      const css = VIVLIOSTYLE_THEMES[id].css;
+      expect(css).toMatch(/p\.paragraph-indent\s*\{[^}]*text-indent:\s*1em/s);
+      const baseRule = /(?:^|\n)p\s*\{([^}]*)\}/s.exec(css)?.[1] ?? "";
+      expect(baseRule).not.toContain("text-indent");
+    },
+  );
+});

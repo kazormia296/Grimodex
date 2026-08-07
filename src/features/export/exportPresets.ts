@@ -26,9 +26,7 @@ export const EXPORT_PRESET_IDS = [
 //
 // 「プリセットに含まれない意思決定」は current から引き継ぐ：
 //  - includeTrashBin: ゴミ箱含めるかはユーザーの判断、プリセットで上書きしない
-
-/** サイト選択時に「現在値を引き継ぐ」フィールド一覧 */
-const PRESERVED_FIELDS = ["includeTrashBin"] as const;
+//  - paragraphIndent: 投稿先の記法ではなく、ユーザーが選ぶ出力整形
 
 export function applyExportPreset(
   id: ExportPresetId,
@@ -38,13 +36,10 @@ export function applyExportPreset(
     return { ...current, exportPresetId: "custom" };
   }
   const resolved = resolveSitePreset(id);
-  const preserved: Partial<ExportSettings> = {};
-  for (const key of PRESERVED_FIELDS) {
-    preserved[key] = current[key];
-  }
   return {
     ...resolved,
-    ...preserved,
+    includeTrashBin: current.includeTrashBin,
+    paragraphIndent: current.paragraphIndent,
     exportPresetId: id,
   };
 }

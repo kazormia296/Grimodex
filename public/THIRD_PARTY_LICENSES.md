@@ -12119,7 +12119,7 @@ THE SOFTWARE.
 ```
 </details>
 
-### js-yaml (4.3.0)
+### js-yaml (4.3.1)
 
 - License: MIT
 - Repository: nodeca/js-yaml

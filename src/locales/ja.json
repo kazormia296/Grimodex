@@ -4768,7 +4768,13 @@
         "baseExceeded": "親文字 {{actual}}/{{limit}} 字「{{base}}」",
         "moreCount": "他 {{count}} 件"
       },
-      "trashBin": "ゴミ箱"
+      "trashBin": "ゴミ箱",
+      "paragraphStyle": "段落",
+      "paragraphIndent": "段落頭の字下げ",
+      "paragraphIndentNone": "なし",
+      "paragraphIndentFullwidth": "全角スペースを付加",
+      "paragraphIndentCss": "CSSで1字下げ（HTMLのみ）",
+      "paragraphIndentDesc": "本文の各段落に適用します。既に空白で始まる段落には重ねて字下げしません。"
     },
     "disclosure": {
       "remainingAi": "残存 AI: {{count}} 文字",

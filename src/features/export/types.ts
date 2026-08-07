@@ -1,6 +1,9 @@
 /** エクスポート出力形式 */
 export type ExportFormat = "markdown" | "plaintext" | "html";
 
+/** 段落先頭の字下げ出力方式 */
+export type ParagraphIndentExportStyle = "none" | "fullwidth-space" | "css";
+
 /** フォルダー見出し記号スタイル（プレーンテキスト時のみ有効） */
 export type FolderHeadingStyle = "squares" | "brackets" | "numbers";
 
@@ -113,6 +116,8 @@ export type ExportPresetId =
 
 export interface ExportSettings {
   format: ExportFormat;
+  /** 本文段落の字下げ出力。CSS は HTML 形式でのみ有効。 */
+  paragraphIndent: ParagraphIndentExportStyle;
   /** フォルダー名を見出しとして出力するか */
   folderHeading: boolean;
   /** プレーンテキスト時の見出し記号スタイル */
@@ -147,6 +152,7 @@ export interface ExportSettings {
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   format: "plaintext",
+  paragraphIndent: "none",
   folderHeading: true,
   folderHeadingStyle: "squares",
   folderHeadingFormat: "standard",
@@ -167,6 +173,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
 /** settings テーブルのキー定数 */
 export const EXPORT_SETTING_KEYS = {
   format: "export.format",
+  paragraphIndent: "export.paragraphIndent",
   folderHeading: "export.folderHeading",
   folderHeadingStyle: "export.folderHeadingStyle",
   folderHeadingFormat: "export.folderHeadingFormat",

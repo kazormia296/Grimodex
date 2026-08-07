@@ -102,3 +102,23 @@ describe("findUserPreset", () => {
     expect(findUserPreset([], "u1")).toBeUndefined();
   });
 });
+
+describe("legacy user preset migration", () => {
+  it("fills a missing paragraphIndent with the backwards-compatible default", () => {
+    const json = JSON.stringify([
+      {
+        id: "legacy",
+        name: "旧プリセット",
+        settings: {
+          ...DEFAULT_EXPORT_SETTINGS,
+          format: "markdown",
+          exportPresetId: "custom",
+          paragraphIndent: undefined,
+        },
+      },
+    ]);
+    const [preset] = parseUserPresets(json);
+    expect(preset.settings.format).toBe("markdown");
+    expect(preset.settings.paragraphIndent).toBe("none");
+  });
+});
