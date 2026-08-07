@@ -37,6 +37,40 @@ function shaderMount(container: HTMLElement) {
     ?.paperShaderMount;
 }
 
+function readFrame(container: HTMLElement) {
+  const canvas = container.querySelector("canvas");
+  expect(canvas).toBeInstanceOf(HTMLCanvasElement);
+  const gl = canvas?.getContext("webgl2");
+  expect(gl).not.toBeNull();
+  gl?.finish();
+  const pixels = new Uint8Array(
+    (canvas?.width ?? 0) * (canvas?.height ?? 0) * 4,
+  );
+  gl?.readPixels(
+    0,
+    0,
+    canvas?.width ?? 0,
+    canvas?.height ?? 0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    pixels,
+  );
+  return pixels;
+}
+
+function averageRgbDelta(first: Uint8Array, second: Uint8Array) {
+  expect(second).toHaveLength(first.length);
+  let total = 0;
+  let channels = 0;
+  for (let index = 0; index < first.length; index += 4) {
+    total += Math.abs(first[index]! - second[index]!);
+    total += Math.abs(first[index + 1]! - second[index + 1]!);
+    total += Math.abs(first[index + 2]! - second[index + 2]!);
+    channels += 3;
+  }
+  return total / Math.max(channels, 1);
+}
+
 function sleep(duration: number) {
   return new Promise((resolve) => window.setTimeout(resolve, duration));
 }
@@ -77,11 +111,16 @@ describe("ZenShaderSurface multipass integration", () => {
 
     const firstAnimatedDrawCount =
       shaderMount(view.container)?.getPerformanceStats().drawCount ?? 0;
+    const firstAnimatedFrame = readFrame(view.container);
     await waitFor(() => {
       expect(
         shaderMount(view.container)?.getPerformanceStats().drawCount ?? 0,
-      ).toBeGreaterThan(firstAnimatedDrawCount + 1);
+      ).toBeGreaterThan(firstAnimatedDrawCount + 4);
     });
+    const secondAnimatedFrame = readFrame(view.container);
+    expect(averageRgbDelta(firstAnimatedFrame, secondAnimatedFrame)).toBeGreaterThan(
+      0.1,
+    );
 
     view.rerender(
       <div style={{ position: "relative", width: 240, height: 160 }}>
@@ -100,6 +139,7 @@ describe("ZenShaderSurface multipass integration", () => {
     expect(
       shaderMount(view.container)?.getPerformanceStats().drawCount ?? 0,
     ).toBe(pausedDrawCount);
+    const weakContrastFrame = readFrame(view.container);
 
     view.rerender(
       <div style={{ position: "relative", width: 240, height: 160 }}>
@@ -122,5 +162,9 @@ describe("ZenShaderSurface multipass integration", () => {
         shaderMount(view.container)?.getPerformanceStats().drawCount ?? 0,
       ).toBeGreaterThan(pausedDrawCount);
     });
+    const strongContrastFrame = readFrame(view.container);
+    expect(averageRgbDelta(weakContrastFrame, strongContrastFrame)).toBeGreaterThan(
+      0.1,
+    );
   });
 });
