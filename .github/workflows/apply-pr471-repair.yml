@@ -1,0 +1,48 @@
+name: Apply PR471 repair bundle
+
+on:
+  push:
+    branches:
+      - agent/zen-gpu-glass-pipeline-final
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-pr471-repair
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[apply-pr471-repair]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/zen-gpu-glass-pipeline-final
+          fetch-depth: 0
+
+      - name: Apply the live-update and final-visible-color fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          gzip -dc .github/pr471/fix-pr471-live-updates.patch.gz > /tmp/fix-pr471-live-updates.patch
+          gzip -dc .github/pr471/pr471-final-visible-color-fix.patch.gz > /tmp/pr471-final-visible-color-fix.patch
+          git apply --3way /tmp/fix-pr471-live-updates.patch
+          git apply --3way /tmp/pr471-final-visible-color-fix.patch
+          rm -rf .github/pr471
+          rm .github/workflows/apply-pr471-repair.yml
+          git diff --check
+
+      - name: Publish repaired branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(editor): restore visible live multipass updates"
+          git push origin HEAD:agent/zen-gpu-glass-pipeline-final
