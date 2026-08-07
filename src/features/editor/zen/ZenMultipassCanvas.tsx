@@ -286,7 +286,8 @@ class ZenMultipassRenderer {
     contextAttributes?: WebGLContextAttributes,
   ) {
     const gl = canvas.getContext("webgl2", contextAttributes);
-    if (!gl) throw new Error("WebGL2 is unavailable for Zen multipass rendering");
+    if (!gl)
+      throw new Error("WebGL2 is unavailable for Zen multipass rendering");
     this.gl = gl;
     this.sceneUniforms = sceneUniforms;
     this.compositeUniforms = compositeUniforms;
@@ -322,7 +323,9 @@ class ZenMultipassRenderer {
 
   private readonly requestFrame = (callback: FrameRequestCallback) => {
     const view = this.host.ownerDocument.defaultView;
-    return view?.requestAnimationFrame(callback) ?? requestAnimationFrame(callback);
+    return (
+      view?.requestAnimationFrame(callback) ?? requestAnimationFrame(callback)
+    );
   };
 
   private readonly cancelFrame = (handle: number) => {
@@ -397,10 +400,7 @@ class ZenMultipassRenderer {
     this.canvas.width = width;
     this.canvas.height = height;
     this.allocateTarget(this.sceneTarget, width, height);
-    const blurWidth = Math.max(
-      1,
-      Math.ceil(width * ZEN_MULTIPASS_BLUR_SCALE),
-    );
+    const blurWidth = Math.max(1, Math.ceil(width * ZEN_MULTIPASS_BLUR_SCALE));
     const blurHeight = Math.max(
       1,
       Math.ceil(height * ZEN_MULTIPASS_BLUR_SCALE),
@@ -506,10 +506,7 @@ class ZenMultipassRenderer {
     }
   }
 
-  private applyUniforms(
-    program: WebGLProgram,
-    uniforms: ShaderMountUniforms,
-  ) {
+  private applyUniforms(program: WebGLProgram, uniforms: ShaderMountUniforms) {
     for (const [name, value] of Object.entries(uniforms)) {
       this.setUniform(program, name, value);
     }
@@ -593,10 +590,7 @@ class ZenMultipassRenderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, blurredTexture);
     gl.uniform1i(
-      gl.getUniformLocation(
-        this.compositeProgram.program,
-        "u_blurredTexture",
-      ),
+      gl.getUniformLocation(this.compositeProgram.program, "u_blurredTexture"),
       1,
     );
     gl.uniform2f(
@@ -790,11 +784,7 @@ export const ZenMultipassCanvas = forwardRef<
   ]);
 
   useLayoutEffect(() => {
-    rendererRef.current?.setUniforms(
-      sceneUniforms,
-      compositeUniforms,
-      mipmaps,
-    );
+    rendererRef.current?.setUniforms(sceneUniforms, compositeUniforms, mipmaps);
   }, [compositeUniforms, mipmaps, sceneUniforms]);
 
   return (

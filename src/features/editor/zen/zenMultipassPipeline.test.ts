@@ -56,14 +56,14 @@ void main() { fragColor = vec4(0.25); }`);
     const fragment = buildZenMultipassCompositeFragment(7);
 
     expect(fragment).toContain("u_zenUiSurfaceRects[8]");
-    expect(fragment.indexOf("texture(u_blurredTexture, refractedUv)"))
-      .toBeLessThan(fragment.indexOf("vec3 composedColor = mix("));
-    expect(fragment.indexOf("vec3 composedColor = mix("))
-      .toBeLessThan(
-        fragment.indexOf(
-          "composedColor = applyZenFinalContrast(composedColor, uiContrastMask)",
-        ),
-      );
+    expect(
+      fragment.indexOf("texture(u_blurredTexture, refractedUv)"),
+    ).toBeLessThan(fragment.indexOf("vec3 composedColor = mix("));
+    expect(fragment.indexOf("vec3 composedColor = mix(")).toBeLessThan(
+      fragment.indexOf(
+        "composedColor = applyZenFinalContrast(composedColor, uiContrastMask)",
+      ),
+    );
     expect(fragment).toContain("float paperMask = zenContrastColumnMask()");
     expect(fragment).toContain(
       "vec3 applyZenFinalContrast(vec3 composedColor, float uiMask)",

@@ -107,10 +107,8 @@ export function ZenShaderSurface({
           glassCornerRadius: layouts.glass.cornerRadius,
           uiSurfaces: layouts.uiSurfaces,
           textColor: palette.textColor ?? [0.85, 0.85, 0.85],
-          uiTextColor:
-            palette.uiTextColor ??
-            palette.textColor ??
-            [0.85, 0.85, 0.85],
+          uiTextColor: palette.uiTextColor ??
+            palette.textColor ?? [0.85, 0.85, 0.85],
           backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
         },
         surfaceUniformBuffer,
@@ -235,26 +233,24 @@ export function ZenShaderSurface({
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >
-      {webGlSupported &&
-        lostMountKey !== mountKey &&
-        preparedSceneUniforms && (
-          <ZenMultipassCanvas
-            key={mountKey}
-            ref={paperMountRef}
-            data-paper-shader={config.shader}
-            data-zen-glass-compositor={ownsGpuGlass ? "true" : undefined}
-            sceneFragment={sceneFragment}
-            sceneUniforms={preparedSceneUniforms}
-            compositeFragment={compositeFragment}
-            compositeUniforms={compositeUniforms}
-            mipmaps={resolved.mipmaps}
-            speed={0}
-            minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
-            maxPixelCount={maxPixelCount}
-            webGlContextAttributes={LIVE_WEBGL_CONTEXT_ATTRIBUTES}
-            className="pointer-events-none absolute inset-0 overflow-hidden"
-          />
-        )}
+      {webGlSupported && lostMountKey !== mountKey && preparedSceneUniforms && (
+        <ZenMultipassCanvas
+          key={mountKey}
+          ref={paperMountRef}
+          data-paper-shader={config.shader}
+          data-zen-glass-compositor={ownsGpuGlass ? "true" : undefined}
+          sceneFragment={sceneFragment}
+          sceneUniforms={preparedSceneUniforms}
+          compositeFragment={compositeFragment}
+          compositeUniforms={compositeUniforms}
+          mipmaps={resolved.mipmaps}
+          speed={0}
+          minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
+          maxPixelCount={maxPixelCount}
+          webGlContextAttributes={LIVE_WEBGL_CONTEXT_ATTRIBUTES}
+          className="pointer-events-none absolute inset-0 overflow-hidden"
+        />
+      )}
     </div>
   );
 }

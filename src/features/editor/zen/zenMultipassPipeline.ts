@@ -552,7 +552,6 @@ export function buildZenMultipassCompositeUniforms(
     u_zenGlassEnabled: config.glass.enabled ? 1 : 0,
     u_zenGlassBlur: config.glass.enabled ? config.glass.blur : 0,
     u_zenGlassSaturation: config.glass.saturation,
-    u_zenGlassShine:
-      typeof configuredShine === "number" ? configuredShine : 0,
+    u_zenGlassShine: typeof configuredShine === "number" ? configuredShine : 0,
   };
 }
