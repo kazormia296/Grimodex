@@ -86,6 +86,7 @@ function readFrame(container: HTMLElement) {
     gl.UNSIGNED_BYTE,
     pixels,
   );
+  expect(gl?.getError()).toBe(gl?.NO_ERROR);
   return pixels;
 }
 
@@ -104,6 +105,7 @@ function readCenterPixel(container: HTMLElement) {
     gl.UNSIGNED_BYTE,
     pixel,
   );
+  expect(gl?.getError()).toBe(gl?.NO_ERROR);
   return pixel;
 }
 
@@ -150,21 +152,59 @@ function runtime() {
   };
 }
 
-async function resolvedScene(config: ZenShaderConfig) {
-  const resolved = resolvePaperShaderMount(
-    config.shader as PaperShaderId,
-    buildZenShaderProps(config, TEST_PALETTE),
-  );
+async function resolvedScene(
+  config: ZenShaderConfig,
+  overrides: Record<string, unknown> = {},
+) {
+  const resolved = resolvePaperShaderMount(config.shader as PaperShaderId, {
+    ...buildZenShaderProps(config, TEST_PALETTE),
+    ...overrides,
+  });
   const cache = new ZenShaderImageCache();
   const sceneUniforms = await cache.prepare({
     ...resolved.uniforms,
     ...buildZenMultipassSceneUniforms(config),
+    u_imageAspectRatio: 1,
   });
   return {
     fragment: buildZenMultipassSceneFragment(resolved.fragmentShader),
     uniforms: sceneUniforms,
     mipmaps: resolved.mipmaps ?? [],
   };
+}
+
+async function expectAnimatedScene(
+  scene: Awaited<ReturnType<typeof resolvedScene>>,
+  shader: string,
+) {
+  const ref = createRef<PaperShaderElement>();
+  const view = render(
+    <ZenMultipassCanvas
+      ref={ref}
+      data-paper-shader={shader}
+      sceneFragment={scene.fragment}
+      sceneUniforms={scene.uniforms}
+      compositeFragment={GAIN_COMPOSITE_FRAGMENT}
+      compositeUniforms={{ u_gain: 1 }}
+      mipmaps={scene.mipmaps}
+      minPixelRatio={1}
+      maxPixelCount={128 * 96}
+      webGlContextAttributes={contextAttributes}
+      style={{ position: "relative", width: 128, height: 96 }}
+    />,
+  );
+
+  await waitForDraw(ref, 1);
+  const initialDrawCount =
+    ref.current?.paperShaderMount?.getPerformanceStats().drawCount ?? 0;
+  const initial = readFrame(view.container);
+  act(() => {
+    ref.current?.paperShaderMount?.setFrame(2_000);
+  });
+  await waitForDraw(ref, initialDrawCount + 1);
+  const advanced = readFrame(view.container);
+  expect(averageRgbDelta(initial, advanced)).toBeGreaterThan(0.1);
+  view.unmount();
 }
 
 describe("ZenMultipassCanvas runtime updates", () => {
@@ -200,7 +240,41 @@ describe("ZenMultipassCanvas runtime updates", () => {
     expect(advanced[0]).toBeGreaterThan(96);
   });
 
-  it("animates the real default Liquid Metal scene before final contrast", async () => {
+  it("keeps u_time live after wrapping a Paper fragment for the scene pass", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const view = render(
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="wrapped-frame-probe"
+        sceneFragment={buildZenMultipassSceneFragment(TIME_SCENE_FRAGMENT)}
+        sceneUniforms={{
+          ...SCENE_VERTEX_UNIFORMS,
+          ...buildZenMultipassSceneUniforms(ZEN_SHADER_DEFAULTS),
+        }}
+        compositeFragment={GAIN_COMPOSITE_FRAGMENT}
+        compositeUniforms={{ u_gain: 1 }}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        webGlContextAttributes={contextAttributes}
+        style={{ position: "relative", width: 64, height: 64 }}
+      />,
+    );
+
+    await waitForDraw(ref, 1);
+    const initialDrawCount =
+      ref.current?.paperShaderMount?.getPerformanceStats().drawCount ?? 0;
+    const initial = readCenterPixel(view.container);
+    act(() => {
+      ref.current?.paperShaderMount?.setFrame(500);
+    });
+    await waitForDraw(ref, initialDrawCount + 1);
+    const advanced = readCenterPixel(view.container);
+
+    expect(initial[0]).toBeLessThan(8);
+    expect(advanced[0]).toBeGreaterThan(96);
+  });
+
+  it("animates Liquid Metal in shape mode without an image sampler", async () => {
     const config = {
       ...ZEN_SHADER_DEFAULTS,
       speed: 100,
@@ -210,35 +284,23 @@ describe("ZenMultipassCanvas runtime updates", () => {
         mode: "none" as const,
       },
     };
-    const scene = await resolvedScene(config);
-    const ref = createRef<PaperShaderElement>();
-    const view = render(
-      <ZenMultipassCanvas
-        ref={ref}
-        data-paper-shader={config.shader}
-        sceneFragment={scene.fragment}
-        sceneUniforms={scene.uniforms}
-        compositeFragment={GAIN_COMPOSITE_FRAGMENT}
-        compositeUniforms={{ u_gain: 1 }}
-        mipmaps={scene.mipmaps}
-        minPixelRatio={1}
-        maxPixelCount={128 * 96}
-        webGlContextAttributes={contextAttributes}
-        style={{ position: "relative", width: 128, height: 96 }}
-      />,
+    await expectAnimatedScene(
+      await resolvedScene(config, { image: undefined, shape: "metaballs" }),
+      "liquid-metal-shape",
     );
+  });
 
-    await waitForDraw(ref, 1);
-    const initialDrawCount =
-      ref.current?.paperShaderMount?.getPerformanceStats().drawCount ?? 0;
-    const initial = readFrame(view.container);
-    act(() => {
-      ref.current?.paperShaderMount?.setFrame(2_000);
-    });
-    await waitForDraw(ref, initialDrawCount + 1);
-    const advanced = readFrame(view.container);
-
-    expect(averageRgbDelta(initial, advanced)).toBeGreaterThan(0.1);
+  it("animates the real default Liquid Metal image scene before final contrast", async () => {
+    const config = {
+      ...ZEN_SHADER_DEFAULTS,
+      speed: 100,
+      opacity: 100,
+      contrastGuard: {
+        ...ZEN_SHADER_DEFAULTS.contrastGuard,
+        mode: "none" as const,
+      },
+    };
+    await expectAnimatedScene(await resolvedScene(config), config.shader);
   });
 
   it("redraws the final pass when live contrast uniforms change", async () => {
