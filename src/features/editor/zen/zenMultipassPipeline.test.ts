@@ -38,6 +38,7 @@ const config = {
   },
 } as ZenShaderConfig;
 
+// Runtime pixels are covered separately; this suite fixes the shader-stage contract.
 describe("Zen multipass pipeline", () => {
   it("keeps Scene effects before Glass and contrast work", () => {
     const fragment = buildZenMultipassSceneFragment(`#version 300 es
