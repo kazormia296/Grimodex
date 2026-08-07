@@ -596,7 +596,7 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
     expect(topEl!.closest("[data-event-id]")).toBeNull();
   });
 
-  it("Glass 時は Chronicle 構造面を透過し、track 境界で marker を clip する", async () => {
+  it("WebGL Glass 時は CSS blur を重ねず Chronicle 構造面を透過し、track 境界で marker を clip する", async () => {
     const { container, getByTestId } = mountInWorkspace(true, true);
     await settleBrowserLayout();
     const host = container.querySelector<HTMLElement>(
@@ -609,7 +609,8 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
       getByTestId("chronicle-scrollbar"),
     ];
 
-    expect(getComputedStyle(host).backdropFilter).toContain("blur(14px)");
+    // GPUの最終パスがGlass blurを所有するためCSS blurは重ねない。
+    expect(getComputedStyle(host).backdropFilter).toBe("none");
     for (const surface of surfaces) {
       expect(getComputedStyle(surface).backgroundColor).toBe(
         "rgba(0, 0, 0, 0)",

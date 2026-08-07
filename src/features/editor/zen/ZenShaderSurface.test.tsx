@@ -15,7 +15,6 @@ const shaderLifecycle = vi.hoisted(() => ({
   mountedUniformLengths: [] as number[],
   props: [] as Array<{ maxPixelCount: number; speed: number }>,
   antiAliasing: [] as Array<{ minPixelRatio: number; antialias: boolean }>,
-  animation: [] as Array<{ playing: boolean; speed: number }>,
   drawCount: 1,
   staticFrameReady: true,
 }));
@@ -27,85 +26,72 @@ vi.mock("./useZenShaderLayouts", () => ({
   useZenShaderLayouts: () => shaderLayouts.current,
 }));
 
-vi.mock("./zenShaderAnimation", () => ({
-  useZenShaderAnimation: (
-    _ref: unknown,
-    options: { playing: boolean; speed: number },
-  ) => {
-    shaderLifecycle.animation.push(options);
-  },
+vi.mock("./ZenMultipassCanvas", () => ({
+  ZenMultipassCanvas: forwardRef<
+    PaperShaderElement,
+    {
+      "data-paper-shader": string;
+      maxPixelCount: number;
+      speed: number;
+      minPixelRatio: number;
+      webGlContextAttributes?: WebGLContextAttributes;
+      compositeFragment: string;
+      compositeUniforms: Record<string, unknown>;
+    }
+  >(function MockZenMultipassCanvas(
+    {
+      "data-paper-shader": shader,
+      maxPixelCount,
+      speed,
+      minPixelRatio,
+      webGlContextAttributes,
+      compositeFragment,
+      compositeUniforms,
+    },
+    forwardedRef,
+  ) {
+    const elementRef = useRef<HTMLDivElement>(null);
+    const mountedShader = useRef(shader).current;
+    const mountedCapacity = useRef(
+      Number(
+        /u_zenUiSurfaceRects\[(\d+)\]/.exec(compositeFragment)?.[1] ?? 0,
+      ),
+    ).current;
+    const mountedUniformLength = useRef(
+      compositeUniforms["u_zenUiSurfaceRects[0]"] instanceof Float32Array
+        ? compositeUniforms["u_zenUiSurfaceRects[0]"].length
+        : 0,
+    ).current;
+    shaderLifecycle.props.push({ maxPixelCount, speed });
+    shaderLifecycle.antiAliasing.push({
+      minPixelRatio,
+      antialias: webGlContextAttributes?.antialias ?? false,
+    });
+    useImperativeHandle(forwardedRef, () => {
+      const element = elementRef.current as unknown as PaperShaderElement;
+      element.paperShaderMount = {
+        getPerformanceStats: () => ({
+          drawCount: shaderLifecycle.drawCount,
+          gpuTimeMs: null,
+          isStaticFrameReady: shaderLifecycle.staticFrameReady,
+        }),
+      } as NonNullable<PaperShaderElement["paperShaderMount"]>;
+      return element;
+    }, []);
+
+    useEffect(() => {
+      shaderLifecycle.mounted.push(mountedShader);
+      shaderLifecycle.mountedCapacities.push(mountedCapacity);
+      shaderLifecycle.mountedUniformLengths.push(mountedUniformLength);
+      return () => {
+        shaderLifecycle.unmounted.push(mountedShader);
+        shaderLifecycle.unmountedCapacities.push(mountedCapacity);
+      };
+    }, [mountedCapacity, mountedShader, mountedUniformLength]);
+
+    return <div ref={elementRef} data-paper-shader={shader} />;
+  }),
 }));
-
-vi.mock("@paper-design/shaders-react", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@paper-design/shaders-react")>();
-
-  return {
-    ...actual,
-    ShaderMount: forwardRef<
-      PaperShaderElement,
-      {
-        "data-paper-shader": string;
-        maxPixelCount: number;
-        speed: number;
-        minPixelRatio: number;
-        webGlContextAttributes?: WebGLContextAttributes;
-        fragmentShader: string;
-        uniforms: Record<string, unknown>;
-      }
-    >(function MockShaderMount(
-      {
-        "data-paper-shader": shader,
-        maxPixelCount,
-        speed,
-        minPixelRatio,
-        webGlContextAttributes,
-        fragmentShader,
-        uniforms,
-      },
-      forwardedRef,
-    ) {
-      const elementRef = useRef<HTMLDivElement>(null);
-      const mountedShader = useRef(shader).current;
-      const mountedCapacity = useRef(
-        Number(/u_zenUiSurfaceRects\[(\d+)\]/.exec(fragmentShader)?.[1] ?? 0),
-      ).current;
-      const mountedUniformLength = useRef(
-        uniforms["u_zenUiSurfaceRects[0]"] instanceof Float32Array
-          ? uniforms["u_zenUiSurfaceRects[0]"].length
-          : 0,
-      ).current;
-      shaderLifecycle.props.push({ maxPixelCount, speed });
-      shaderLifecycle.antiAliasing.push({
-        minPixelRatio,
-        antialias: webGlContextAttributes?.antialias ?? false,
-      });
-      useImperativeHandle(forwardedRef, () => {
-        const element = elementRef.current as unknown as PaperShaderElement;
-        element.paperShaderMount = {
-          getPerformanceStats: () => ({
-            drawCount: shaderLifecycle.drawCount,
-            gpuTimeMs: null,
-            isStaticFrameReady: shaderLifecycle.staticFrameReady,
-          }),
-        } as NonNullable<PaperShaderElement["paperShaderMount"]>;
-        return element;
-      }, []);
-
-      useEffect(() => {
-        shaderLifecycle.mounted.push(mountedShader);
-        shaderLifecycle.mountedCapacities.push(mountedCapacity);
-        shaderLifecycle.mountedUniformLengths.push(mountedUniformLength);
-        return () => {
-          shaderLifecycle.unmounted.push(mountedShader);
-          shaderLifecycle.unmountedCapacities.push(mountedCapacity);
-        };
-      }, [mountedCapacity, mountedShader, mountedUniformLength]);
-
-      return <div ref={elementRef} data-paper-shader={shader} />;
-    }),
-  };
-});
 
 vi.mock("./zenThemePalette", () => ({
   useZenThemePalette: () => ({
@@ -141,7 +127,6 @@ describe("ZenShaderSurface", () => {
     shaderLifecycle.mountedUniformLengths.length = 0;
     shaderLifecycle.props.length = 0;
     shaderLifecycle.antiAliasing.length = 0;
-    shaderLifecycle.animation.length = 0;
     shaderLifecycle.drawCount = 1;
     shaderLifecycle.staticFrameReady = true;
   });
@@ -241,14 +226,8 @@ describe("ZenShaderSurface", () => {
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 2_073_600,
-      speed: 0,
+      speed: ZEN_SHADER_DEFAULTS.speed / 100,
     });
-    await waitFor(() =>
-      expect(shaderLifecycle.animation.at(-1)).toMatchObject({
-        playing: true,
-        speed: ZEN_SHADER_DEFAULTS.speed / 100,
-      }),
-    );
 
     rerender(
       <ZenShaderSurface
@@ -261,9 +240,6 @@ describe("ZenShaderSurface", () => {
       maxPixelCount: 2_073_600,
       speed: 0,
     });
-    expect(shaderLifecycle.animation.at(-1)).toMatchObject({
-      playing: false,
-    });
   });
 
   it("uses the shader's analytic antialiasing without WebGL MSAA", () => {
@@ -275,7 +251,7 @@ describe("ZenShaderSurface", () => {
     });
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 2_073_600,
-      speed: 0,
+      speed: ZEN_SHADER_DEFAULTS.speed / 100,
     });
   });
 
@@ -284,7 +260,7 @@ describe("ZenShaderSurface", () => {
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 300_000,
-      speed: 0,
+      speed: ZEN_SHADER_DEFAULTS.speed / 100,
     });
   });
 

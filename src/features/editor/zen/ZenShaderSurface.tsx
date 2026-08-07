@@ -7,7 +7,6 @@ import {
 import { buildZenShaderProps, type ZenShaderConfig } from "./zenShaderConfig";
 import { contrastTargetRatio } from "./zenContrastGuard";
 import { useZenShaderLayouts } from "./useZenShaderLayouts";
-import { useZenShaderAnimation } from "./zenShaderAnimation";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
@@ -37,6 +36,7 @@ interface ZenShaderSurfaceProps {
   playing: boolean;
   preview?: boolean;
   webGlSupported?: boolean;
+  webGlContextAttributes?: WebGLContextAttributes;
   onRendererStatusChange?: (status: ZenShaderRendererStatus) => void;
 }
 
@@ -51,6 +51,7 @@ export function ZenShaderSurface({
   playing,
   preview = false,
   webGlSupported = true,
+  webGlContextAttributes = LIVE_WEBGL_CONTEXT_ATTRIBUTES,
   onRendererStatusChange,
 }: ZenShaderSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
@@ -179,17 +180,13 @@ export function ZenShaderSurface({
   }, [mountKey]);
 
   const animationSpeed = config.speed / 100;
-  const shouldAnimate =
+  const activeAnimationSpeed =
     preparedSceneUniforms !== null &&
-    shaderReady &&
     playing &&
     definition.animated &&
-    animationSpeed > 0;
-  useZenShaderAnimation(paperMountRef, {
-    playing: shouldAnimate,
-    speed: animationSpeed,
-    resetKey: config.shader,
-  });
+    animationSpeed > 0
+      ? animationSpeed
+      : 0;
 
   const resolvedMaxPixelCount = resolved.maxPixelCount;
   const maxPixelCount = preview
@@ -229,28 +226,32 @@ export function ZenShaderSurface({
       data-ui-contrast-surface-count={layouts.uiSurfaces.length}
       className="zen-shader-surface absolute inset-0 overflow-hidden"
       style={{
-        opacity: config.opacity / 100,
+        // The final GPU pass already composites the configured opacity against
+        // the theme backdrop. Do not apply it again after contrast correction.
+        opacity: shaderReady ? 1 : config.opacity / 100,
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >
-      {webGlSupported && lostMountKey !== mountKey && preparedSceneUniforms && (
-        <ZenMultipassCanvas
-          key={mountKey}
-          ref={paperMountRef}
-          data-paper-shader={config.shader}
-          data-zen-glass-compositor={ownsGpuGlass ? "true" : undefined}
-          sceneFragment={sceneFragment}
-          sceneUniforms={preparedSceneUniforms}
-          compositeFragment={compositeFragment}
-          compositeUniforms={compositeUniforms}
-          mipmaps={resolved.mipmaps}
-          speed={0}
-          minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
-          maxPixelCount={maxPixelCount}
-          webGlContextAttributes={LIVE_WEBGL_CONTEXT_ATTRIBUTES}
-          className="pointer-events-none absolute inset-0 overflow-hidden"
-        />
-      )}
+      {webGlSupported &&
+        lostMountKey !== mountKey &&
+        preparedSceneUniforms && (
+          <ZenMultipassCanvas
+            key={mountKey}
+            ref={paperMountRef}
+            data-paper-shader={config.shader}
+            data-zen-glass-compositor={ownsGpuGlass ? "true" : undefined}
+            sceneFragment={sceneFragment}
+            sceneUniforms={preparedSceneUniforms}
+            compositeFragment={compositeFragment}
+            compositeUniforms={compositeUniforms}
+            mipmaps={resolved.mipmaps}
+            speed={activeAnimationSpeed}
+            minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
+            maxPixelCount={maxPixelCount}
+            webGlContextAttributes={webGlContextAttributes}
+            className="pointer-events-none absolute inset-0 overflow-hidden"
+          />
+        )}
     </div>
   );
 }
