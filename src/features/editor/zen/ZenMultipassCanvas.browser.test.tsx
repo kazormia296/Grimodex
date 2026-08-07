@@ -79,6 +79,8 @@ function compositeUniforms(strength: number, enabled = true) {
 function readCenterRed(canvas: HTMLCanvasElement) {
   const gl = canvas.getContext("webgl2");
   if (!gl) throw new Error("WebGL2 context is unavailable");
+  // Read the default framebuffer: draw counters alone cannot prove that the
+  // user-visible multipass output changed.
   const pixel = new Uint8Array(4);
   gl.readPixels(
     Math.floor(canvas.width / 2),
