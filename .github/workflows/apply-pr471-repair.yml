@@ -25,24 +25,51 @@ jobs:
           ref: agent/zen-gpu-glass-pipeline-final
           fetch-depth: 0
 
-      - name: Apply the live-update and final-visible-color fixes
+      - name: Build the repaired history from the exact patch bases
         shell: bash
         run: |
           set -euo pipefail
+
+          staged_head="$(git rev-parse HEAD)"
+          live_base="b8eea3a529f8c0a612035a9ae53f305e0dde2a3b"
+          final_base="d14759afdd63bf403ea6987fe2764b592e7fcb82"
+          branch="agent/zen-gpu-glass-pipeline-final"
+
           gzip -dc .github/pr471/fix-pr471-live-updates.patch.gz > /tmp/fix-pr471-live-updates.patch
           gzip -dc .github/pr471/pr471-final-visible-color-fix.patch.gz > /tmp/pr471-final-visible-color-fix.patch
-          git apply --3way /tmp/fix-pr471-live-updates.patch
-          git apply --3way /tmp/pr471-final-visible-color-fix.patch
-          rm -rf .github/pr471
-          rm .github/workflows/apply-pr471-repair.yml
-          git diff --check
 
-      - name: Publish repaired branch
-        shell: bash
-        run: |
-          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # The renderer-owned animation patch was authored against b8ee.
+          git checkout --detach "$live_base"
+          git apply --check /tmp/fix-pr471-live-updates.patch
+          git apply /tmp/fix-pr471-live-updates.patch
           git add -A
-          git commit -m "fix(editor): restore visible live multipass updates"
-          git push origin HEAD:agent/zen-gpu-glass-pipeline-final
+          git commit -m "fix(editor): make multipass updates renderer-owned"
+          live_commit="$(git rev-parse HEAD)"
+
+          # The final-visible-color patch was authored against d147 and also
+          # contains the later texture/readPixels fixes already accumulated on
+          # the PR branch.
+          git checkout --detach "$final_base"
+          git apply --check /tmp/pr471-final-visible-color-fix.patch
+          git apply /tmp/pr471-final-visible-color-fix.patch
+          git add -A
+          git commit -m "fix(editor): preserve visible motion through final contrast"
+          final_commit="$(git rev-parse HEAD)"
+
+          # Merge both independently valid results. In overlapping animation
+          # hunks, keep the renderer-owned implementation; all non-overlapping
+          # d147 and final-color changes are retained from final_commit.
+          git checkout -B "$branch" "$live_commit"
+          git merge --no-ff -X ours "$final_commit" \
+            -m "fix(editor): restore visible live multipass updates"
+
+          git show --check --oneline --stat HEAD
+          test ! -e .github/pr471
+          test ! -e .github/workflows/apply-pr471-repair.yml
+
+          git push \
+            --force-with-lease="refs/heads/$branch:$staged_head" \
+            origin "HEAD:refs/heads/$branch"
