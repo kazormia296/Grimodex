@@ -1,6 +1,5 @@
 import {
   forwardRef,
-  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -266,6 +265,13 @@ class ZenMultipassRenderer {
   private renderScale = 1;
   private drawCount = 0;
   private rafId: number | null = null;
+  private needsDraw = false;
+  private dirtyScene = true;
+  private dirtyBlur = true;
+  private dirtyComposite = true;
+  private animationSpeed = 0;
+  private lastAnimationTimestamp: number | null = null;
+  private blurredTexture: WebGLTexture;
   private disposed = false;
 
   constructor(
@@ -304,6 +310,7 @@ class ZenMultipassRenderer {
     this.sceneTarget = this.createTarget();
     this.blurHorizontalTarget = this.createTarget();
     this.blurVerticalTarget = this.createTarget();
+    this.blurredTexture = this.sceneTarget.texture;
     gl.disable(gl.BLEND);
 
     this.resizeObserver =
@@ -386,31 +393,72 @@ class ZenMultipassRenderer {
     const height = Math.max(1, Math.round(targetHeight * budgetScale));
     this.renderScale = width / rect.width;
     if (this.canvas.width === width && this.canvas.height === height) {
-      this.requestDraw();
       return;
     }
     this.canvas.width = width;
     this.canvas.height = height;
     this.allocateTarget(this.sceneTarget, width, height);
-    const blurWidth = Math.max(
-      1,
-      Math.ceil(width * ZEN_MULTIPASS_BLUR_SCALE),
-    );
+    const blurWidth = Math.max(1, Math.ceil(width * ZEN_MULTIPASS_BLUR_SCALE));
     const blurHeight = Math.max(
       1,
       Math.ceil(height * ZEN_MULTIPASS_BLUR_SCALE),
     );
     this.allocateTarget(this.blurHorizontalTarget, blurWidth, blurHeight);
     this.allocateTarget(this.blurVerticalTarget, blurWidth, blurHeight);
-    this.requestDraw();
+    this.invalidateScene();
+  };
+
+  private scheduleFrame() {
+    if (this.disposed || this.rafId !== null) return;
+    this.rafId = this.requestFrame(this.flushFrame);
+  }
+
+  private readonly flushFrame = (timestamp: number) => {
+    this.rafId = null;
+    if (this.disposed) return;
+
+    if (this.animationSpeed > 0) {
+      if (this.lastAnimationTimestamp !== null) {
+        this.frame +=
+          Math.max(0, timestamp - this.lastAnimationTimestamp) *
+          this.animationSpeed;
+      }
+      this.lastAnimationTimestamp = timestamp;
+      this.dirtyScene = true;
+      this.dirtyBlur = true;
+      this.dirtyComposite = true;
+      this.needsDraw = true;
+    }
+
+    if (this.needsDraw) {
+      this.needsDraw = false;
+      this.draw();
+    }
+
+    if (this.animationSpeed > 0) this.scheduleFrame();
   };
 
   private requestDraw() {
-    if (this.disposed || this.rafId !== null) return;
-    this.rafId = this.requestFrame(() => {
-      this.rafId = null;
-      this.draw();
-    });
+    this.needsDraw = true;
+    this.scheduleFrame();
+  }
+
+  private invalidateScene() {
+    this.dirtyScene = true;
+    this.dirtyBlur = true;
+    this.dirtyComposite = true;
+    this.requestDraw();
+  }
+
+  private invalidateBlur() {
+    this.dirtyBlur = true;
+    this.dirtyComposite = true;
+    this.requestDraw();
+  }
+
+  private invalidateComposite() {
+    this.dirtyComposite = true;
+    this.requestDraw();
   }
 
   private setImageUniform(
@@ -499,10 +547,7 @@ class ZenMultipassRenderer {
     }
   }
 
-  private applyUniforms(
-    program: WebGLProgram,
-    uniforms: ShaderMountUniforms,
-  ) {
+  private applyUniforms(program: WebGLProgram, uniforms: ShaderMountUniforms) {
     for (const [name, value] of Object.entries(uniforms)) {
       this.setUniform(program, name, value);
     }
@@ -578,10 +623,7 @@ class ZenMultipassRenderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, blurredTexture);
     gl.uniform1i(
-      gl.getUniformLocation(
-        this.compositeProgram.program,
-        "u_blurredTexture",
-      ),
+      gl.getUniformLocation(this.compositeProgram.program, "u_blurredTexture"),
       1,
     );
     gl.uniform2f(
@@ -606,43 +648,77 @@ class ZenMultipassRenderer {
     ) {
       return;
     }
-    this.drawScene();
-    const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
-    let blurredTexture = this.sceneTarget.texture;
-    if (blurRadius > 0.00001) {
-      const blurStep = Math.max(0.5, (blurRadius * this.renderScale) / 4);
-      this.drawBlurPass(
-        this.sceneTarget.texture,
-        this.blurHorizontalTarget,
-        blurStep / this.sceneTarget.width,
-        0,
-      );
-      this.drawBlurPass(
-        this.blurHorizontalTarget.texture,
-        this.blurVerticalTarget,
-        0,
-        blurStep / this.sceneTarget.height,
-      );
-      blurredTexture = this.blurVerticalTarget.texture;
+    let rendered = false;
+
+    if (this.dirtyScene) {
+      this.drawScene();
+      this.dirtyScene = false;
+      this.dirtyBlur = true;
+      this.dirtyComposite = true;
+      rendered = true;
     }
-    this.drawComposite(blurredTexture);
-    this.drawCount += 1;
+
+    if (this.dirtyBlur) {
+      const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
+      this.blurredTexture = this.sceneTarget.texture;
+      if (blurRadius > 0.00001) {
+        const blurStep = Math.max(0.5, (blurRadius * this.renderScale) / 4);
+        this.drawBlurPass(
+          this.sceneTarget.texture,
+          this.blurHorizontalTarget,
+          blurStep / this.sceneTarget.width,
+          0,
+        );
+        this.drawBlurPass(
+          this.blurHorizontalTarget.texture,
+          this.blurVerticalTarget,
+          0,
+          blurStep / this.sceneTarget.height,
+        );
+        this.blurredTexture = this.blurVerticalTarget.texture;
+      }
+      this.dirtyBlur = false;
+      this.dirtyComposite = true;
+      rendered = true;
+    }
+
+    if (this.dirtyComposite) {
+      this.drawComposite(this.blurredTexture);
+      this.dirtyComposite = false;
+      rendered = true;
+    }
+
+    if (rendered) this.drawCount += 1;
   }
 
   setFrame = (frame: number) => {
     this.frame = Number.isFinite(frame) ? frame : 0;
-    this.requestDraw();
+    this.invalidateScene();
   };
 
-  setUniforms(
+  setSpeed = (speed: number) => {
+    const nextSpeed = Number.isFinite(speed) ? Math.max(0, speed) : 0;
+    if (nextSpeed === this.animationSpeed) return;
+    this.animationSpeed = nextSpeed;
+    this.lastAnimationTimestamp = null;
+    if (nextSpeed > 0) this.scheduleFrame();
+  };
+
+  setSceneUniforms(
     sceneUniforms: ShaderMountUniforms,
-    compositeUniforms: ShaderMountUniforms,
     mipmaps: readonly string[],
   ) {
     this.sceneUniforms = sceneUniforms;
-    this.compositeUniforms = compositeUniforms;
     this.mipmaps = mipmaps;
-    this.requestDraw();
+    this.invalidateScene();
+  }
+
+  setCompositeUniforms(compositeUniforms: ShaderMountUniforms) {
+    const previousBlur = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
+    const nextBlur = Number(compositeUniforms.u_zenGlassBlur ?? 0);
+    this.compositeUniforms = compositeUniforms;
+    if (previousBlur !== nextBlur) this.invalidateBlur();
+    else this.invalidateComposite();
   }
 
   getPerformanceStats = () => ({
@@ -651,8 +727,7 @@ class ZenMultipassRenderer {
     isStaticFrameReady:
       this.drawCount > 0 &&
       this.canvas.width > 0 &&
-      this.canvas.height > 0 &&
-      this.rafId === null,
+      this.canvas.height > 0,
   });
 
   resetPerformanceStats = () => {
@@ -661,6 +736,8 @@ class ZenMultipassRenderer {
 
   dispose() {
     this.disposed = true;
+    this.animationSpeed = 0;
+    this.lastAnimationTimestamp = null;
     if (this.rafId !== null) this.cancelFrame(this.rafId);
     this.resizeObserver?.disconnect();
     this.host.ownerDocument.defaultView?.removeEventListener(
@@ -704,7 +781,7 @@ export const ZenMultipassCanvas = forwardRef<
     minPixelRatio,
     maxPixelCount,
     webGlContextAttributes,
-    speed: _speed,
+    speed = 0,
     className,
     style,
     "data-paper-shader": paperShader,
@@ -731,10 +808,10 @@ export const ZenMultipassCanvas = forwardRef<
         host,
         canvas,
         sceneFragment,
-        sceneUniforms,
+        {},
         compositeFragment,
-        compositeUniforms,
-        mipmaps,
+        {},
+        [],
         minPixelRatio,
         maxPixelCount,
         webGlContextAttributes,
@@ -742,6 +819,7 @@ export const ZenMultipassCanvas = forwardRef<
       rendererRef.current = renderer;
       host.paperShaderMount = {
         setFrame: renderer.setFrame,
+        setSpeed: renderer.setSpeed,
         getPerformanceStats: renderer.getPerformanceStats,
         resetPerformanceStats: renderer.resetPerformanceStats,
       } as unknown as ShaderMount;
@@ -774,13 +852,17 @@ export const ZenMultipassCanvas = forwardRef<
     webGlContextAttributes,
   ]);
 
-  useEffect(() => {
-    rendererRef.current?.setUniforms(
-      sceneUniforms,
-      compositeUniforms,
-      mipmaps,
-    );
-  }, [compositeUniforms, mipmaps, sceneUniforms]);
+  useLayoutEffect(() => {
+    rendererRef.current?.setSceneUniforms(sceneUniforms, mipmaps);
+  }, [mipmaps, sceneUniforms]);
+
+  useLayoutEffect(() => {
+    rendererRef.current?.setCompositeUniforms(compositeUniforms);
+  }, [compositeUniforms]);
+
+  useLayoutEffect(() => {
+    rendererRef.current?.setSpeed(speed);
+  }, [speed]);
 
   return (
     <div

@@ -7,7 +7,6 @@ import {
 import { buildZenShaderProps, type ZenShaderConfig } from "./zenShaderConfig";
 import { contrastTargetRatio } from "./zenContrastGuard";
 import { useZenShaderLayouts } from "./useZenShaderLayouts";
-import { useZenShaderAnimation } from "./zenShaderAnimation";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
@@ -181,17 +180,13 @@ export function ZenShaderSurface({
   }, [mountKey]);
 
   const animationSpeed = config.speed / 100;
-  const shouldAnimate =
+  const activeAnimationSpeed =
     preparedSceneUniforms !== null &&
-    shaderReady &&
     playing &&
     definition.animated &&
-    animationSpeed > 0;
-  useZenShaderAnimation(paperMountRef, {
-    playing: shouldAnimate,
-    speed: animationSpeed,
-    resetKey: config.shader,
-  });
+    animationSpeed > 0
+      ? animationSpeed
+      : 0;
 
   const resolvedMaxPixelCount = resolved.maxPixelCount;
   const maxPixelCount = preview
@@ -248,7 +243,7 @@ export function ZenShaderSurface({
             compositeFragment={compositeFragment}
             compositeUniforms={compositeUniforms}
             mipmaps={resolved.mipmaps}
-            speed={0}
+            speed={activeAnimationSpeed}
             minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
             maxPixelCount={maxPixelCount}
             webGlContextAttributes={LIVE_WEBGL_CONTEXT_ATTRIBUTES}
