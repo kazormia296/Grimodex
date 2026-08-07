@@ -4,6 +4,7 @@
  * 保存形態: settings テーブルに JSON 文字列を1キーで持つ（key=export.userPresets）。
  * プリセット追加・削除・検索は純粋関数として実装し、永続化は呼び出し側 (ExportDialog) に任せる。
  */
+import { DEFAULT_EXPORT_SETTINGS } from "./types";
 import type { ExportSettings } from "./types";
 
 export interface UserExportPreset {
@@ -27,15 +28,25 @@ export function parseUserPresets(json: string): UserExportPreset[] {
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed)) return [];
     // 最低限の shape チェック。後方互換のため緩めに通す。
-    return parsed.filter(
-      (p): p is UserExportPreset =>
-        typeof p === "object" &&
-        p !== null &&
-        typeof p.id === "string" &&
-        typeof p.name === "string" &&
-        typeof p.settings === "object" &&
-        p.settings !== null,
-    );
+    // 新しい設定項目は DEFAULT と merge し、旧プリセットをロード時に移行する。
+    return parsed
+      .filter(
+        (p): p is UserExportPreset =>
+          typeof p === "object" &&
+          p !== null &&
+          typeof p.id === "string" &&
+          typeof p.name === "string" &&
+          typeof p.settings === "object" &&
+          p.settings !== null,
+      )
+      .map((p) => ({
+        ...p,
+        settings: {
+          ...DEFAULT_EXPORT_SETTINGS,
+          ...p.settings,
+          exportPresetId: p.settings.exportPresetId ?? "custom",
+        },
+      }));
   } catch {
     return [];
   }

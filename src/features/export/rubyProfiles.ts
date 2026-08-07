@@ -45,6 +45,7 @@ export interface RubyProfile {
  */
 const PROFILE_BASE: ExportSettings = {
   format: "plaintext",
+  paragraphIndent: "none",
   folderHeading: false,
   folderHeadingStyle: "squares",
   folderHeadingFormat: "standard",

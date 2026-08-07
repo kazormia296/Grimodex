@@ -17,6 +17,8 @@ export function loadSettingsFromStore(
   return {
     format: (store.get(EXPORT_SETTING_KEYS.format) ||
       DEFAULT_EXPORT_SETTINGS.format) as ExportSettings["format"],
+    paragraphIndent: (store.get(EXPORT_SETTING_KEYS.paragraphIndent) ||
+      DEFAULT_EXPORT_SETTINGS.paragraphIndent) as ExportSettings["paragraphIndent"],
     folderHeading: store.getBoolean(
       EXPORT_SETTING_KEYS.folderHeading,
       DEFAULT_EXPORT_SETTINGS.folderHeading,
