@@ -65,9 +65,21 @@ void main() { fragColor = vec4(0.25); }`);
         "composedColor = applyZenFinalContrast(composedColor, uiContrastMask)",
       ),
     );
-    expect(fragment).toContain("float paperMask = zenContrastColumnMask()");
+    expect(fragment).toContain(
+      "float paperMask = clamp(zenContrastColumnMask(), 0.0, 1.0)",
+    );
     expect(fragment).toContain(
       "vec3 applyZenFinalContrast(vec3 composedColor, float uiMask)",
+    );
+    expect(fragment).toContain("vec3 visibleColor = mix(");
+    expect(fragment).toContain(
+      "float paperWeight = paperMask * (1.0 - uiWeight)",
+    );
+    expect(fragment).not.toContain(
+      "guardedVisible - u_zenContrastBackdropColor",
+    );
+    expect(fragment).toContain(
+      "maximumBackground * backgroundLuminance",
     );
   });
 

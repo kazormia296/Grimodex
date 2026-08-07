@@ -563,19 +563,16 @@ button[role="switch"][aria-checked="true"] {
     saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
 }
 
-/* When Editor plus one or more tool surfaces are visible, one masked
-   compositor layer owns the expensive backdrop sampling for all of them.
-   Keep the full enabled-Glass context in these selectors so they outrank the
-   per-surface declarations above instead of accidentally double-filtering. */
+/* The completed multipass frame already owns blur, saturation and contrast.
+   Renderer status, rather than a transient mask element, is the authoritative
+   hand-off so Editor-only and tool-only layouts cannot double-filter. */
 #main-content:has(
-    > [data-editor-ambient][data-background-enabled="true"]
-      [data-zen-glass-compositor]
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="webgl"]
   )
   [data-editor-fluid-glass="true"]
   > [data-editor-fluid-glass-filter],
 #main-content:has(
-    > [data-editor-ambient][data-background-enabled="true"]
-      [data-zen-glass-compositor]
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="webgl"]
   )
   [data-workspace-glass-root][data-workspace-fluid-glass="true"]
   [data-ambient-glass-surface] {
@@ -590,6 +587,27 @@ button[role="switch"][aria-checked="true"] {
    tonally uniform. Must follow the `.gx-panel` rule to win on order. */
 .app-shell .gx-panel--flat {
   background: var(--background);
+}
+
+/* Contrast is the final color-changing GPU stage. Once WebGL reports a
+   complete frame, retain only the DOM rim/drop shadow; CSS tint and shine must
+   not alter the pixels that the contrast pass measured. */
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="webgl"]
+  )
+  [data-editor-fluid-glass="true"] {
+  background-color: transparent;
+  background-image: none;
+  box-shadow: 0 16px 42px rgb(0 0 0 / 0.1);
+}
+
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="webgl"]
+  )
+  [data-editor-fluid-glass="true"]::before {
+  opacity: 0;
+  background-image: none;
+  box-shadow: none;
 }
 
 /* WebGL can be blocklisted on remote desktops, VMs, and software-only X11

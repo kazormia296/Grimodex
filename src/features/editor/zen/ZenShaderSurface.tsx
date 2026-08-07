@@ -229,7 +229,9 @@ export function ZenShaderSurface({
       data-ui-contrast-surface-count={layouts.uiSurfaces.length}
       className="zen-shader-surface absolute inset-0 overflow-hidden"
       style={{
-        opacity: config.opacity / 100,
+        // The final GPU pass already composites the configured opacity against
+        // the theme backdrop. Do not apply it again after contrast correction.
+        opacity: shaderReady ? 1 : config.opacity / 100,
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >
