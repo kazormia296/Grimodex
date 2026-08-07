@@ -889,10 +889,31 @@ export const ZenMultipassCanvas = forwardRef<
       data-paper-shader={paperShader}
       data-zen-glass-compositor={ownsGlass}
       className={className}
-      style={style}
+      style={{
+        // Paper Shaders injects a global [data-paper-shader] rule that
+        // makes its canvas z-index: -1. This custom renderer must own
+        // its stacking contract instead of inheriting that DOM contract.
+        position: "absolute",
+        inset: 0,
+        isolation: "isolate",
+        overflow: "hidden",
+        ...style,
+      }}
       aria-hidden="true"
     >
-      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 h-full w-full"
+        style={{
+          contain: "strict",
+          display: "block",
+          position: "absolute",
+          inset: 0,
+          zIndex: 0,
+          width: "100%",
+          height: "100%",
+        }}
+      />
     </div>
   );
 });

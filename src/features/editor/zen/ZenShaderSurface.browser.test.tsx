@@ -5,6 +5,15 @@ import { ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
 import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 
+const TEST_WEBGL_CONTEXT_ATTRIBUTES = {
+  alpha: true,
+  antialias: false,
+  powerPreference: "default",
+  premultipliedAlpha: true,
+  // The integration test reads after React yields; preserve only here.
+  preserveDrawingBuffer: true,
+} satisfies WebGLContextAttributes;
+
 const shaderLayouts = vi.hoisted(() => ({
   current: {
     surfaceSize: { width: 240, height: 160 },
@@ -98,6 +107,7 @@ describe("ZenShaderSurface multipass integration", () => {
           config={animatedConfig}
           playing
           webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
           onRendererStatusChange={onRendererStatusChange}
         />
       </div>,
@@ -110,6 +120,11 @@ describe("ZenShaderSurface multipass integration", () => {
       },
       { timeout: 5_000 },
     );
+
+    const visibleCanvas = view.container.querySelector("canvas");
+    expect(visibleCanvas).toBeInstanceOf(HTMLCanvasElement);
+    expect(getComputedStyle(visibleCanvas!).position).toBe("absolute");
+    expect(getComputedStyle(visibleCanvas!).zIndex).toBe("0");
 
     const firstAnimatedDrawCount = drawCount(view.container);
     const firstAnimatedFrame = readFrame(view.container);
@@ -129,6 +144,7 @@ describe("ZenShaderSurface multipass integration", () => {
           config={animatedConfig}
           playing={false}
           webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
           onRendererStatusChange={onRendererStatusChange}
         />
       </div>,
@@ -157,6 +173,7 @@ describe("ZenShaderSurface multipass integration", () => {
           config={weakConfig}
           playing={false}
           webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
           onRendererStatusChange={onRendererStatusChange}
         />
       </div>,
@@ -188,6 +205,7 @@ describe("ZenShaderSurface multipass integration", () => {
           }}
           playing={false}
           webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
           onRendererStatusChange={onRendererStatusChange}
         />
       </div>,

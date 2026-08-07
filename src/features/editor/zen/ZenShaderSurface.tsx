@@ -36,6 +36,7 @@ interface ZenShaderSurfaceProps {
   playing: boolean;
   preview?: boolean;
   webGlSupported?: boolean;
+  webGlContextAttributes?: WebGLContextAttributes;
   onRendererStatusChange?: (status: ZenShaderRendererStatus) => void;
 }
 
@@ -50,6 +51,7 @@ export function ZenShaderSurface({
   playing,
   preview = false,
   webGlSupported = true,
+  webGlContextAttributes = LIVE_WEBGL_CONTEXT_ATTRIBUTES,
   onRendererStatusChange,
 }: ZenShaderSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
@@ -246,7 +248,7 @@ export function ZenShaderSurface({
             speed={activeAnimationSpeed}
             minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
             maxPixelCount={maxPixelCount}
-            webGlContextAttributes={LIVE_WEBGL_CONTEXT_ATTRIBUTES}
+            webGlContextAttributes={webGlContextAttributes}
             className="pointer-events-none absolute inset-0 overflow-hidden"
           />
         )}
