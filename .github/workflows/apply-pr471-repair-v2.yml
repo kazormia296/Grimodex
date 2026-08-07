@@ -25,6 +25,7 @@ jobs:
           staged_head="$(git rev-parse HEAD)"
           branch="agent/zen-gpu-glass-pipeline-final"
           surface_test="src/features/editor/zen/ZenShaderSurface.test.tsx"
+          surface_impl="src/features/editor/zen/ZenShaderSurface.tsx"
 
           gzip -dc .github/pr471/fix-pr471-live-updates.patch.gz > /tmp/live.patch
           gzip -dc .github/pr471/pr471-final-visible-color-fix.patch.gz > /tmp/final.patch
@@ -147,17 +148,13 @@ jobs:
               )
               section, count = re.subn(
                   r'\n    await waitFor\(\(\) =>\n      expect\(shaderLifecycle\.animation\.at\(-1\)\)\.toMatchObject\(\{\n        playing: true,\n        speed: ZEN_SHADER_DEFAULTS\.speed / 100,\n      \}\),\n    \);\n',
-                  '\n',
-                  section,
-                  count=1,
+                  '\n', section, count=1,
               )
               if count != 1:
                   raise SystemExit("animated scheduler assertion not found")
               section, count = re.subn(
                   r'\n    expect\(shaderLifecycle\.animation\.at\(-1\)\)\.toMatchObject\(\{\n      playing: false,\n    \}\);\n',
-                  '\n',
-                  section,
-                  count=1,
+                  '\n', section, count=1,
               )
               if count != 1:
                   raise SystemExit("static scheduler assertion not found")
@@ -188,7 +185,6 @@ jobs:
               '  it("uses the static fallback',
               active_speed,
           )
-
           path.write_text(text)
           PY
 
@@ -197,8 +193,27 @@ jobs:
           live_commit="$(git rev-parse HEAD)"
 
           git checkout --detach d14759afdd63bf403ea6987fe2764b592e7fcb82
-          git apply --check --recount /tmp/final.patch
-          git apply --recount /tmp/final.patch
+          git apply --check --recount --exclude="$surface_impl" /tmp/final.patch
+          git apply --recount --exclude="$surface_impl" /tmp/final.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/features/editor/zen/ZenShaderSurface.tsx")
+          text = path.read_text()
+          old = '''      style={{
+                opacity: config.opacity / 100,
+                background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
+              }}'''
+          new = '''      style={{
+                // The final GPU pass already composites the configured opacity against
+                // the theme backdrop. Do not apply it again after contrast correction.
+                opacity: shaderReady ? 1 : config.opacity / 100,
+                background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
+              }}'''
+          if text.count(old) != 1:
+              raise SystemExit("ZenShaderSurface opacity block did not match")
+          path.write_text(text.replace(old, new, 1))
+          PY
           git add -A
           git commit -m "fix(editor): preserve visible motion through final contrast"
           final_commit="$(git rev-parse HEAD)"
