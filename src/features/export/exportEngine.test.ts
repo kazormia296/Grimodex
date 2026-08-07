@@ -1624,3 +1624,136 @@ describe("renderPmDocToMarkdown - @mention (file-backed write-back)", () => {
     expect(md).toBe("アキラの声がした。\n");
   });
 });
+
+describe("generateExport - paragraph indentation", () => {
+  it("none preserves the existing plaintext output", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ paragraphIndent: "none" }),
+    });
+    expect(result).toBe("本文\n");
+  });
+
+  it("fullwidth-space prefixes every top-level non-empty paragraph", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: doc(para("第一段落"), para("第二段落")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ paragraphIndent: "fullwidth-space" }),
+    });
+    expect(result).toBe("\u3000第一段落\n\n\u3000第二段落\n");
+  });
+
+  it("fullwidth-space does not duplicate author-entered leading whitespace", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: doc(para("\u3000既入力")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ paragraphIndent: "fullwidth-space" }),
+    });
+    expect(result).toBe("\u3000既入力\n");
+  });
+
+  it("fullwidth-space does not indent paragraphs nested in a list", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const list = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [para("項目")],
+            },
+          ],
+        },
+      ],
+    });
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: list },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ paragraphIndent: "fullwidth-space" }),
+    });
+    expect(result).toContain("- 項目");
+    expect(result).not.toContain("- \u3000項目");
+  });
+
+  it("generated prose wrappers keep top-level paragraph indentation", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const generated = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "generatedProseBlock",
+          content: [para("生成本文")],
+        },
+      ],
+    });
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: generated },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ paragraphIndent: "fullwidth-space" }),
+    });
+    expect(result).toBe("\u3000生成本文\n");
+  });
+
+  it("css emits real HTML paragraphs, hard breaks, and the indent rule", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const content = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "一行目" },
+            { type: "hardBreak" },
+            { type: "text", text: "二行目" },
+          ],
+        },
+      ],
+    });
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: content },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html", paragraphIndent: "css" }),
+    });
+    expect(result).toContain(
+      '<p class="paragraph-indent">一行目<br>二行目</p>',
+    );
+    expect(result).toContain(".paragraph-indent { text-indent: 1em; }");
+  });
+
+  it("css does not double-indent author-entered leading whitespace", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: doc(para("\u3000既入力")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html", paragraphIndent: "css" }),
+    });
+    expect(result).toContain("<p>\u3000既入力</p>");
+    expect(result).not.toContain(
+      '<p class="paragraph-indent">\u3000既入力</p>',
+    );
+  });
+
+  it("css is a no-op for non-HTML output", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "plaintext", paragraphIndent: "css" }),
+    });
+    expect(result).toBe("本文\n");
+  });
+});

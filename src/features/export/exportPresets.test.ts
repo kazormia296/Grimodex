@@ -144,13 +144,15 @@ describe("applyExportPreset", () => {
     expect(result.exportPresetId).toBe("ao3");
   });
 
-  it("プリセット適用は includeTrashBin など『ユーザー意図』フィールドを保持する", () => {
+  it("プリセット適用は出力先と独立したユーザー意図フィールドを保持する", () => {
     const current: ExportSettings = {
       ...DEFAULT_EXPORT_SETTINGS,
       includeTrashBin: true,
+      paragraphIndent: "fullwidth-space",
     };
     const result = applyExportPreset("narou", current);
     expect(result.includeTrashBin).toBe(true);
+    expect(result.paragraphIndent).toBe("fullwidth-space");
   });
 });
 
@@ -269,10 +271,14 @@ describe("detectExportPreset", () => {
     expect(detectExportPreset(modified, "narou")).toBe("custom");
   });
 
-  it("includeTrashBin の差は検出に影響しない（プリセットの一部ではない）", () => {
+  it("独立設定の差はプリセット検出に影響しない", () => {
     const narou = applyExportPreset("narou", DEFAULT_EXPORT_SETTINGS);
-    const withTrash: ExportSettings = { ...narou, includeTrashBin: true };
-    expect(detectExportPreset(withTrash, "narou")).toBe("narou");
+    const customized: ExportSettings = {
+      ...narou,
+      includeTrashBin: true,
+      paragraphIndent: "fullwidth-space",
+    };
+    expect(detectExportPreset(customized, "narou")).toBe("narou");
   });
 });
 
