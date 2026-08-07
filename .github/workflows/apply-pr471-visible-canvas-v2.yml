@@ -1,0 +1,142 @@
+name: Apply PR471 visible canvas fix v2
+
+on:
+  push:
+    branches:
+      - agent/zen-gpu-glass-pipeline-final
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: contains(github.event.head_commit.message, '[apply-pr471-visible-canvas-v2]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/zen-gpu-glass-pipeline-final
+          fetch-depth: 0
+
+      - name: Apply visible canvas and integration test fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              target = Path(path)
+              text = target.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} matches, got {count}: {old!r}")
+              target.write_text(text.replace(old, new))
+
+          canvas = "src/features/editor/zen/ZenMultipassCanvas.tsx"
+          replace_exact(
+              canvas,
+              "      style={style}\n",
+              "      style={{\n"
+              "        // Paper Shaders injects a global [data-paper-shader] rule that\n"
+              "        // makes its canvas z-index: -1. This custom renderer must own\n"
+              "        // its stacking contract instead of inheriting that DOM contract.\n"
+              "        position: \"absolute\",\n"
+              "        inset: 0,\n"
+              "        isolation: \"isolate\",\n"
+              "        overflow: \"hidden\",\n"
+              "        ...style,\n"
+              "      }}\n",
+          )
+          replace_exact(
+              canvas,
+              "      <canvas ref={canvasRef} className=\"absolute inset-0 h-full w-full\" />\n",
+              "      <canvas\n"
+              "        ref={canvasRef}\n"
+              "        className=\"absolute inset-0 h-full w-full\"\n"
+              "        style={{\n"
+              "          contain: \"strict\",\n"
+              "          display: \"block\",\n"
+              "          position: \"absolute\",\n"
+              "          inset: 0,\n"
+              "          zIndex: 0,\n"
+              "          width: \"100%\",\n"
+              "          height: \"100%\",\n"
+              "        }}\n"
+              "      />\n",
+          )
+
+          surface = "src/features/editor/zen/ZenShaderSurface.tsx"
+          replace_exact(
+              surface,
+              "  webGlSupported?: boolean;\n  onRendererStatusChange?: (status: ZenShaderRendererStatus) => void;\n",
+              "  webGlSupported?: boolean;\n  webGlContextAttributes?: WebGLContextAttributes;\n  onRendererStatusChange?: (status: ZenShaderRendererStatus) => void;\n",
+          )
+          replace_exact(
+              surface,
+              "  webGlSupported = true,\n  onRendererStatusChange,\n",
+              "  webGlSupported = true,\n  webGlContextAttributes = LIVE_WEBGL_CONTEXT_ATTRIBUTES,\n  onRendererStatusChange,\n",
+          )
+          replace_exact(
+              surface,
+              "            webGlContextAttributes={LIVE_WEBGL_CONTEXT_ATTRIBUTES}\n",
+              "            webGlContextAttributes={webGlContextAttributes}\n",
+          )
+
+          browser_test = "src/features/editor/zen/ZenShaderSurface.browser.test.tsx"
+          attributes = (
+              "const TEST_WEBGL_CONTEXT_ATTRIBUTES = {\n"
+              "  alpha: true,\n"
+              "  antialias: false,\n"
+              "  powerPreference: \"default\",\n"
+              "  premultipliedAlpha: true,\n"
+              "  // The integration test reads after React yields; preserve only here.\n"
+              "  preserveDrawingBuffer: true,\n"
+              "} satisfies WebGLContextAttributes;\n\n"
+          )
+          replace_exact(
+              browser_test,
+              "const shaderLayouts = vi.hoisted(() => ({\n",
+              attributes + "const shaderLayouts = vi.hoisted(() => ({\n",
+          )
+          replace_exact(
+              browser_test,
+              "          webGlSupported\n          onRendererStatusChange={onRendererStatusChange}\n",
+              "          webGlSupported\n          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}\n          onRendererStatusChange={onRendererStatusChange}\n",
+              expected=4,
+          )
+          replace_exact(
+              browser_test,
+              "    const firstAnimatedDrawCount = drawCount(view.container);\n"
+              "    const firstAnimatedFrame = readFrame(view.container);\n",
+              "    const visibleCanvas = view.container.querySelector(\"canvas\");\n"
+              "    expect(visibleCanvas).toBeInstanceOf(HTMLCanvasElement);\n"
+              "    expect(getComputedStyle(visibleCanvas!).position).toBe(\"absolute\");\n"
+              "    expect(getComputedStyle(visibleCanvas!).zIndex).toBe(\"0\");\n\n"
+              "    const firstAnimatedDrawCount = drawCount(view.container);\n"
+              "    const firstAnimatedFrame = readFrame(view.container);\n",
+          )
+
+          chronicle = "src/features/chronicle/ChronicleViewport.browser.test.tsx"
+          replace_exact(
+              chronicle,
+              "  it(\"Glass 時は Chronicle 構造面を透過し、track 境界で marker を clip する\", async () => {\n",
+              "  it(\"WebGL Glass 時は CSS blur を重ねず Chronicle 構造面を透過し、track 境界で marker を clip する\", async () => {\n",
+          )
+          replace_exact(
+              chronicle,
+              "    expect(getComputedStyle(host).backdropFilter).toContain(\"blur(14px)\");\n",
+              "    // GPUの最終パスがGlass blurを所有するためCSS blurは重ねない。\n"
+              "    expect(getComputedStyle(host).backdropFilter).toBe(\"none\");\n",
+          )
+          PY
+
+          git diff --check
+          rm -f \
+            .github/workflows/apply-pr471-visible-canvas.yml \
+            .github/workflows/apply-pr471-visible-canvas-v2.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(editor): keep the multipass canvas visible"
+          git push origin HEAD:agent/zen-gpu-glass-pipeline-final
