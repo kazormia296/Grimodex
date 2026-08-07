@@ -6,11 +6,22 @@ import type {
 } from "@paper-design/shaders";
 import { describe, expect, it } from "vitest";
 import { ZenMultipassCanvas } from "./ZenMultipassCanvas";
-import { ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
+import {
+  resolvePaperShaderMount,
+  type PaperShaderId,
+} from "./paperShaderCatalog";
+import {
+  buildZenShaderProps,
+  ZEN_SHADER_DEFAULTS,
+  type ZenShaderConfig,
+} from "./zenShaderConfig";
+import { ZenShaderImageCache } from "./zenShaderImageUniforms";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
+  buildZenMultipassSceneFragment,
+  buildZenMultipassSceneUniforms,
   ZEN_MULTIPASS_FULLSCREEN_VERTEX,
 } from "./zenMultipassPipeline";
 
@@ -52,6 +63,32 @@ void main() {
   fragColor = vec4(texture(u_sceneTexture, v_uv).rgb * u_gain, 1.0);
 }`;
 
+const TEST_PALETTE = {
+  background: "#101318",
+  colors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
+} as const;
+
+function readFrame(container: HTMLElement) {
+  const canvas = container.querySelector("canvas");
+  expect(canvas).toBeInstanceOf(HTMLCanvasElement);
+  const gl = canvas?.getContext("webgl2");
+  expect(gl).not.toBeNull();
+  gl?.finish();
+  const pixels = new Uint8Array(
+    (canvas?.width ?? 0) * (canvas?.height ?? 0) * 4,
+  );
+  gl?.readPixels(
+    0,
+    0,
+    canvas?.width ?? 0,
+    canvas?.height ?? 0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    pixels,
+  );
+  return pixels;
+}
+
 function readCenterPixel(container: HTMLElement) {
   const canvas = container.querySelector("canvas");
   expect(canvas).toBeInstanceOf(HTMLCanvasElement);
@@ -70,6 +107,19 @@ function readCenterPixel(container: HTMLElement) {
   return pixel;
 }
 
+function averageRgbDelta(first: Uint8Array, second: Uint8Array) {
+  expect(second).toHaveLength(first.length);
+  let total = 0;
+  let channels = 0;
+  for (let index = 0; index < first.length; index += 4) {
+    total += Math.abs(first[index]! - second[index]!);
+    total += Math.abs(first[index + 1]! - second[index + 1]!);
+    total += Math.abs(first[index + 2]! - second[index + 2]!);
+    channels += 3;
+  }
+  return total / Math.max(channels, 1);
+}
+
 async function waitForDraw(
   ref: React.RefObject<PaperShaderElement | null>,
   minimum: number,
@@ -86,6 +136,36 @@ const contextAttributes = {
   antialias: false,
   preserveDrawingBuffer: true,
 } satisfies WebGLContextAttributes;
+
+function runtime() {
+  return {
+    rect: [0, 0, 1, 1] as [number, number, number, number],
+    feather: [0, 0, 0, 0] as [number, number, number, number],
+    glassRect: [0, 0, 1, 1] as [number, number, number, number],
+    glassCornerRadius: 12,
+    uiSurfaces: [],
+    textColor: [1, 1, 1] as [number, number, number],
+    uiTextColor: [1, 1, 1] as [number, number, number],
+    backdropColor: [0, 0, 0] as [number, number, number],
+  };
+}
+
+async function resolvedScene(config: ZenShaderConfig) {
+  const resolved = resolvePaperShaderMount(
+    config.shader as PaperShaderId,
+    buildZenShaderProps(config, TEST_PALETTE),
+  );
+  const cache = new ZenShaderImageCache();
+  const sceneUniforms = await cache.prepare({
+    ...resolved.uniforms,
+    ...buildZenMultipassSceneUniforms(config),
+  });
+  return {
+    fragment: buildZenMultipassSceneFragment(resolved.fragmentShader),
+    uniforms: sceneUniforms,
+    mipmaps: resolved.mipmaps ?? [],
+  };
+}
 
 describe("ZenMultipassCanvas runtime updates", () => {
   it("redraws an animated Paper scene when the shared scheduler advances its frame", async () => {
@@ -120,20 +200,51 @@ describe("ZenMultipassCanvas runtime updates", () => {
     expect(advanced[0]).toBeGreaterThan(96);
   });
 
+  it("animates the real default Liquid Metal scene before final contrast", async () => {
+    const config = {
+      ...ZEN_SHADER_DEFAULTS,
+      speed: 100,
+      opacity: 100,
+      contrastGuard: {
+        ...ZEN_SHADER_DEFAULTS.contrastGuard,
+        mode: "none" as const,
+      },
+    };
+    const scene = await resolvedScene(config);
+    const ref = createRef<PaperShaderElement>();
+    const view = render(
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader={config.shader}
+        sceneFragment={scene.fragment}
+        sceneUniforms={scene.uniforms}
+        compositeFragment={GAIN_COMPOSITE_FRAGMENT}
+        compositeUniforms={{ u_gain: 1 }}
+        mipmaps={scene.mipmaps}
+        minPixelRatio={1}
+        maxPixelCount={128 * 96}
+        webGlContextAttributes={contextAttributes}
+        style={{ position: "relative", width: 128, height: 96 }}
+      />,
+    );
+
+    await waitForDraw(ref, 1);
+    const initialDrawCount =
+      ref.current?.paperShaderMount?.getPerformanceStats().drawCount ?? 0;
+    const initial = readFrame(view.container);
+    act(() => {
+      ref.current?.paperShaderMount?.setFrame(2_000);
+    });
+    await waitForDraw(ref, initialDrawCount + 1);
+    const advanced = readFrame(view.container);
+
+    expect(averageRgbDelta(initial, advanced)).toBeGreaterThan(0.1);
+  });
+
   it("redraws the final pass when live contrast uniforms change", async () => {
     const ref = createRef<PaperShaderElement>();
     const surfaceBuffer = new ZenUiSurfaceUniformBuffer(1);
     const compositeFragment = buildZenMultipassCompositeFragment(1);
-    const runtime = {
-      rect: [0, 0, 1, 1] as [number, number, number, number],
-      feather: [0, 0, 0, 0] as [number, number, number, number],
-      glassRect: [0, 0, 0, 0] as [number, number, number, number],
-      glassCornerRadius: 0,
-      uiSurfaces: [],
-      textColor: [1, 1, 1] as [number, number, number],
-      uiTextColor: [1, 1, 1] as [number, number, number],
-      backdropColor: [0, 0, 0] as [number, number, number],
-    };
     const weakConfig = {
       ...ZEN_SHADER_DEFAULTS,
       opacity: 100,
@@ -162,7 +273,7 @@ describe("ZenMultipassCanvas runtime updates", () => {
         compositeFragment={compositeFragment}
         compositeUniforms={buildZenMultipassCompositeUniforms(
           weakConfig,
-          runtime,
+          runtime(),
           surfaceBuffer,
         )}
         minPixelRatio={1}
@@ -186,7 +297,7 @@ describe("ZenMultipassCanvas runtime updates", () => {
         compositeFragment={compositeFragment}
         compositeUniforms={buildZenMultipassCompositeUniforms(
           strongConfig,
-          runtime,
+          runtime(),
           surfaceBuffer,
         )}
         minPixelRatio={1}
