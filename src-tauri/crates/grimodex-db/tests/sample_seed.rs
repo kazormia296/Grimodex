@@ -7,8 +7,10 @@ use grimodex_db::workspace::{self, GlobalSettings, WorkspaceMeta};
 use grimodex_db::{Database, GlobalSettingsPath};
 use serde_json::Value;
 
-const JA_SEED: &str = include_str!("../../../resources/sample_project/v1.json");
-const EN_SEED: &str = include_str!("../../../resources/sample_project/v1_en.json");
+const JA_SEED: &str = include_str!("../../../resources/sample_project/v2.json");
+const EN_SEED: &str = include_str!("../../../resources/sample_project/v2_en.json");
+const JA_SEED_EXTRA: &str = include_str!("../../../resources/sample_project/v2.sql");
+const EN_SEED_EXTRA: &str = include_str!("../../../resources/sample_project/v2_en.sql");
 
 struct TempRoot(PathBuf);
 
@@ -34,8 +36,15 @@ fn array_len(seed: &Value, key: &str) -> i64 {
         .len() as i64
 }
 
-fn assert_seeded_database(db_path: &Path, seed_src: &str, language: &str, ai_policy: &str) {
+fn assert_seeded_database(
+    db_path: &Path,
+    seed_src: &str,
+    extra_seed_src: &str,
+    language: &str,
+    ai_policy: &str,
+) {
     let seed: Value = serde_json::from_str(seed_src).expect("parse embedded seed");
+    let extra_tree_node_count = extra_seed_src.matches("INSERT INTO tree_nodes").count() as i64;
     let db = Database::new(db_path).expect("open seeded database");
     db.with_conn(|conn| {
         let project: (String, String, i64) = conn.query_row(
@@ -63,7 +72,12 @@ fn assert_seeded_database(db_path: &Path, seed_src: &str, language: &str, ai_pol
                 conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                     row.get(0)
                 })?;
-            assert_eq!(count, array_len(&seed, seed_key), "{table}");
+            let expected_count = if table == "tree_nodes" {
+                array_len(&seed, seed_key) + extra_tree_node_count
+            } else {
+                array_len(&seed, seed_key)
+            };
+            assert_eq!(count, expected_count, "{table}");
         }
 
         let char_count: i64 = conn.query_row(
@@ -114,6 +128,7 @@ fn seed_sample_workspace_publishes_fresh_end_to_end_generations() {
     assert_seeded_database(
         &first_workspace.join("grimodex.db"),
         EN_SEED,
+        EN_SEED_EXTRA,
         "en",
         en_policy,
     );
@@ -156,6 +171,7 @@ fn seed_sample_workspace_publishes_fresh_end_to_end_generations() {
     assert_seeded_database(
         &second_workspace.join("grimodex.db"),
         JA_SEED,
+        JA_SEED_EXTRA,
         "ja",
         fallback_policy,
     );
@@ -203,18 +219,21 @@ fn seed_never_unlinks_a_previously_published_generation() {
     assert_seeded_database(
         &PathBuf::from(&first.path).join("grimodex.db"),
         EN_SEED,
+        EN_SEED_EXTRA,
         "en",
         r#"{"slot":1}"#,
     );
     assert_seeded_database(
         &PathBuf::from(&second.path).join("grimodex.db"),
         JA_SEED,
+        JA_SEED_EXTRA,
         "ja",
         r#"{"slot":2}"#,
     );
     assert_seeded_database(
         &PathBuf::from(&third.path).join("grimodex.db"),
         EN_SEED,
+        EN_SEED_EXTRA,
         "en",
         r#"{"slot":3}"#,
     );
@@ -334,12 +353,14 @@ fn concurrent_seed_requests_leave_one_coherent_seed_generation() {
     assert_seeded_database(
         &PathBuf::from(&en_result.path).join("grimodex.db"),
         EN_SEED,
+        EN_SEED_EXTRA,
         "en",
         en_policy,
     );
     assert_seeded_database(
         &PathBuf::from(&ja_result.path).join("grimodex.db"),
         JA_SEED,
+        JA_SEED_EXTRA,
         "ja",
         ja_policy,
     );
