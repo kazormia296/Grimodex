@@ -119,8 +119,8 @@ INSERT INTO chat_session_pinned_codex (id, session_id, codex_entry_id, snippet_i
 INSERT INTO chat_session_pinned_codex (id, session_id, codex_entry_id, snippet_id, with_children, pin_source, created_at) VALUES ('sample-chat-pin-2', 'sample-session-2', 'sample-codex-toma', NULL, 0, 'manual', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 INSERT INTO chat_session_pinned_codex (id, session_id, codex_entry_id, snippet_id, with_children, pin_source, created_at) VALUES ('sample-chat-pin-3', 'sample-session-1', NULL, 'sample-snippet-3', 0, 'chat_mention', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 UPDATE snippets SET scene_id='sample-scene-3', source_chat_message_id='sample-msg-12', usage_count=2, version=1 WHERE id='sample-snippet-1';
-UPDATE snippets SET scene_id='sample-scene-1', source_chat_message_id='sample-msg-2', usage_count=1 WHERE id='sample-snippet-2';
-UPDATE snippets SET scene_id='sample-scene-2', source_chat_message_id='sample-msg-4', usage_count=3 WHERE id='sample-snippet-3';
+UPDATE snippets SET scene_id='sample-scene-1', source_chat_message_id=NULL, usage_count=1 WHERE id='sample-snippet-2';
+UPDATE snippets SET scene_id='sample-scene-2', source_chat_message_id=NULL, usage_count=3 WHERE id='sample-snippet-3';
 INSERT OR IGNORE INTO snippet_entry_tags (snippet_id, tag_id) VALUES ('sample-snippet-1', 'sample-tag-clue');
 INSERT OR IGNORE INTO snippet_entry_tags (snippet_id, tag_id) VALUES ('sample-snippet-2', 'sample-tag-investigator');
 INSERT OR IGNORE INTO snippet_entry_tags (snippet_id, tag_id) VALUES ('sample-snippet-3', 'sample-tag-clue');

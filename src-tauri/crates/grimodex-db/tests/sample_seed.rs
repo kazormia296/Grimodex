@@ -211,6 +211,57 @@ fn assert_map_ai_contract(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn assert_snippet_provenance_contract(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let linked_snippets: Vec<(String, Option<String>, String)> = {
+        let mut statement = conn.prepare(
+            "SELECT snippets.id, snippets.content_source, chat_messages.role
+               FROM snippets
+               JOIN chat_messages
+                 ON chat_messages.id = snippets.source_chat_message_id
+              WHERE snippets.source_chat_message_id IS NOT NULL
+              ORDER BY snippets.id",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    assert!(
+        !linked_snippets.is_empty(),
+        "sample must retain at least one provenance-linked snippet"
+    );
+    for (snippet_id, content_source, role) in linked_snippets {
+        let content_source = content_source
+            .unwrap_or_else(|| panic!("linked snippet {snippet_id} must declare content_source"));
+        match content_source.as_str() {
+            "ai" => assert_eq!(
+                role, "assistant",
+                "AI snippet {snippet_id} must reference an assistant message"
+            ),
+            "human" => assert_eq!(
+                role, "user",
+                "human snippet {snippet_id} must reference a user message"
+            ),
+            other => panic!("snippet {snippet_id} has unsupported content_source {other}"),
+        }
+    }
+
+    for snippet_id in ["sample-snippet-2", "sample-snippet-3"] {
+        let source_chat_message_id: Option<String> = conn.query_row(
+            "SELECT source_chat_message_id
+               FROM snippets
+              WHERE id = ?1",
+            [snippet_id],
+            |row| row.get(0),
+        )?;
+        assert!(
+            source_chat_message_id.is_none(),
+            "human sample snippet {snippet_id} must not claim a chat source"
+        );
+    }
+
+    Ok(())
+}
+
 fn assert_seeded_database(
     db_path: &Path,
     seed_src: &str,
@@ -272,6 +323,7 @@ fn assert_seeded_database(
         )?;
         assert!(ai_length > 0, "AI authorship spans must be populated");
         assert_map_ai_contract(conn)?;
+        assert_snippet_provenance_contract(conn)?;
         Ok(())
     })
     .expect("verify seeded database");
