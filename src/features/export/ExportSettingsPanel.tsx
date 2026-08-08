@@ -237,6 +237,34 @@ export function ExportSettingsPanel({
           ))}
         </div>
 
+        {/* 段落 */}
+        <SectionTitle>{t("export.settings.paragraphStyle")}</SectionTitle>
+        <div className="space-y-1.5">
+          <Row label={t("export.settings.paragraphIndent")}>
+            <Select
+              value={settings.paragraphIndent}
+              onChange={(v) => update("paragraphIndent", v)}
+              options={[
+                {
+                  value: "none",
+                  label: t("export.settings.paragraphIndentNone"),
+                },
+                {
+                  value: "fullwidth-space",
+                  label: t("export.settings.paragraphIndentFullwidth"),
+                },
+                {
+                  value: "css",
+                  label: t("export.settings.paragraphIndentCss"),
+                },
+              ]}
+            />
+          </Row>
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            {t("export.settings.paragraphIndentDesc")}
+          </p>
+        </div>
+
         {/* フォルダー見出し */}
         <SectionTitle>{t("export.settings.folderHeading")}</SectionTitle>
         <div className="space-y-1.5">

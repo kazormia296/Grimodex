@@ -26,7 +26,7 @@ export interface VivliostyleTheme {
 /**
  * 全テーマ共通の本文組版。
  *
- * - `p { margin: 0; text-indent: 1em }` — 小説の字下げ段落（段落間空きなし）
+ * - `p { margin: 0 } / p.paragraph-indent { text-indent: 1em }` — 明示された小説段落だけ字下げ
  * - `p.blank` — 連続空行由来の空段落。whitespace-only は潰れるため
  *   `block-size` で 1 行分の高さを保証する
  * - 見出し（章）は改ページ。ただし先頭見出しは空白ページを作らないよう除外
@@ -40,6 +40,9 @@ html {
 
 p {
   margin: 0;
+}
+
+p.paragraph-indent {
   text-indent: 1em;
 }
 

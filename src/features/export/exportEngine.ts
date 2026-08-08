@@ -216,52 +216,77 @@ interface RenderCtx {
  * lists. Joining with `""` collapses adjacent paragraphs into a single one
  * (soft-break joined) on the next parse, which loses paragraph structure.
  */
-function renderBlockChildren(nodes: PMNode[], ctx: RenderCtx): string {
+function renderBlockChildren(
+  nodes: PMNode[],
+  ctx: RenderCtx,
+  topLevel = false,
+): string {
   return nodes
-    .map((c) => renderNode(c, ctx))
+    .map((c) => renderNode(c, ctx, topLevel))
     .filter((s) => s.length > 0)
     .join("\n");
 }
 
-function renderNode(node: PMNode, ctx: RenderCtx): string {
+function rendersHtmlParagraphs(ctx: RenderCtx): boolean {
+  return (
+    ctx.settings.format === "html" &&
+    (ctx.htmlParagraphs || (ctx.settings.paragraphIndent ?? "none") !== "none")
+  );
+}
+
+/** Whether the paragraph already begins with author-entered whitespace. */
+function nodeStartsWithWhitespace(node: PMNode): boolean {
+  if (node.type === "text") return /^\s/u.test(node.text ?? "");
+  if (node.type === "ruby") {
+    return /^\s/u.test(String(node.attrs?.base ?? ""));
+  }
+  if (node.type === "hardBreak") return true;
+  for (const child of node.content ?? []) {
+    if (child.type === "sceneBeat") continue;
+    if (child.type === "text" && (child.text ?? "").length === 0) continue;
+    return nodeStartsWithWhitespace(child);
+  }
+  return false;
+}
+
+function renderNode(node: PMNode, ctx: RenderCtx, topLevel = false): string {
   switch (node.type) {
     case "doc":
-      return renderBlockChildren(node.content ?? [], ctx);
+      return renderBlockChildren(node.content ?? [], ctx, true);
 
     case "paragraph": {
       const inner = (node.content ?? [])
         .map((c) => renderNode(c, ctx))
         .join("");
       // Empty paragraph nodes carry "visible blank line" semantics — they
-      // originate from `<p></p>` HTML blocks injected by
-      // `normalizeImportedMarkdown` when the user wrote 2+ consecutive
-      // blank lines. Round-trip them back as `<p></p>` so markdown-it
-      // (html:true) preserves them on re-parse; emitting just `"\n"`
-      // would let `renderBlockChildren`'s `"\n"`-join inflate them into
-      // additional blank lines on every save (3 paragraphs → 4 blanks →
-      // 4 paragraphs on the next read).
-      //
-      // Format-gated: only markdown needs the explicit marker — the markdown
-      // round-trip (`renderPmDocToMarkdown` → `markdownToPmJson`, used by
-      // `hashForDiskContent` and external-mount write-back) is the only path
-      // where the doc is re-parsed and must reproduce the same node graph.
-      // plaintext / html (publish-only output, no re-parse) keep the prior
-      // behaviour (`"\n"` lets the doc-level `"\n"`-join surface a blank
-      // line) so users don't see literal `<p></p>` in their `.txt` / `.html`
-      // exports.
+      // originate from <p></p> HTML blocks injected by normalizeImportedMarkdown.
+      // Only non-empty top-level body paragraphs receive export indentation.
       if (inner === "") {
         if (ctx.settings.format === "markdown") return "<p></p>\n";
-        if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
-          // 意図的な空行（連続空行由来の空段落）。CSS 組版では whitespace-only
-          // 行は潰れるため、blank class 付き要素として高さを保持させる。
+        if (rendersHtmlParagraphs(ctx)) {
           return '<p class="blank"></p>\n';
         }
         return "\n";
       }
-      if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
-        return `<p>${inner}</p>\n`;
+
+      const paragraphIndent = topLevel
+        ? (ctx.settings.paragraphIndent ?? "none")
+        : "none";
+      const alreadyIndented =
+        paragraphIndent !== "none" && nodeStartsWithWhitespace(node);
+      const renderedInner =
+        paragraphIndent === "fullwidth-space" && !alreadyIndented
+          ? "\u3000" + inner
+          : inner;
+
+      if (rendersHtmlParagraphs(ctx)) {
+        const className =
+          paragraphIndent === "css" && !alreadyIndented
+            ? ' class="paragraph-indent"'
+            : "";
+        return "<p" + className + ">" + renderedInner + "</p>\n";
       }
-      return inner + "\n";
+      return renderedInner + "\n";
     }
 
     case "heading": {
@@ -316,7 +341,7 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       //  - `breaks: false` (CommonMark strict, opt-in): bare `\n` collapses to
       //    a soft break (space) on re-parse, permanently losing the node. Emit
       //    the spec hardBreak marker (`  \n`) so it round-trips.
-      if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
+      if (rendersHtmlParagraphs(ctx)) {
         // <p> 内の生 \n は whitespace として潰れるため実 <br> で出す。
         return "<br>";
       }
@@ -360,8 +385,8 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       return "";
 
     case "generatedProseBlock":
-      // 生成 prose は中身の段落だけを残す（unwrap）
-      return renderBlockChildren(node.content ?? [], ctx);
+      // 生成 prose は中身の段落だけを残す（unwrap）。doc 直下なら段落扱いも継承。
+      return renderBlockChildren(node.content ?? [], ctx, topLevel);
 
     case "sceneBreak":
       return renderSceneBreak(ctx.settings);
@@ -720,6 +745,7 @@ export function renderPmDocToArchiveMarkdown(
   const ctx: RenderCtx = {
     settings: {
       format: "markdown",
+      paragraphIndent: "none",
       folderHeading: false,
       folderHeadingStyle: "numbers",
       folderHeadingFormat: "standard",
@@ -877,6 +903,7 @@ function wrapHtml(body: string, title: string, lang: string): string {
   <title>${escapeHtml(title)}</title>
   <style>
     body { max-width: 40em; margin: 2em auto; font-family: serif; line-height: 1.8; }
+    .paragraph-indent { text-indent: 1em; }
     .emphasis-dots { text-emphasis: sesame; -webkit-text-emphasis: sesame; }
     .scene-break { text-align: center; margin: 2em 0; }
     rt { font-size: 0.5em; }

@@ -148,6 +148,10 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
       // 各設定キーを settingsStore に書き込む
       settingsStore.set(EXPORT_SETTING_KEYS.format, next.format);
       settingsStore.set(
+        EXPORT_SETTING_KEYS.paragraphIndent,
+        next.paragraphIndent,
+      );
+      settingsStore.set(
         EXPORT_SETTING_KEYS.folderHeading,
         String(next.folderHeading),
       );

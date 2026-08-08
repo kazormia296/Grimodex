@@ -145,8 +145,19 @@ describe("buildVivliostyleHtml — 文書シェル", () => {
 describe("buildVivliostyleHtml — 本文構造", () => {
   it("段落を実 <p> 要素で包む", () => {
     const out = build();
-    expect(out).toContain("<p>最初の段落。</p>");
-    expect(out).toContain("<p>次の段落。</p>");
+    expect(out).toContain('<p class="paragraph-indent">最初の段落。</p>');
+    expect(out).toContain('<p class="paragraph-indent">次の段落。</p>');
+  });
+
+  it("先頭空白が入力済みの段落には CSS 字下げを重ねない", () => {
+    const out = build({
+      contentMap: { s1: pmDoc(["\u3000既入力の段落。"]) },
+      checkedIds: new Set(["f1", "s1"]),
+    });
+    expect(out).toContain("<p>\u3000既入力の段落。</p>");
+    expect(out).not.toContain(
+      '<p class="paragraph-indent">\u3000既入力の段落。</p>',
+    );
   });
 
   it('空段落（意図的な空行）は <p class="blank"> として保持する', () => {
@@ -175,7 +186,7 @@ describe("buildVivliostyleHtml — 本文構造", () => {
       contentMap: { s1: doc },
       checkedIds: new Set(["f1", "s1"]),
     });
-    expect(out).toContain("<p>一行目<br>二行目</p>");
+    expect(out).toContain('<p class="paragraph-indent">一行目<br>二行目</p>');
   });
 
   it("章フォルダーは見出し要素になる", () => {

@@ -4781,7 +4781,13 @@
         "baseExceeded": "Base {{actual}}/{{limit}} chars for “{{base}}”",
         "moreCount": "+{{count}} more"
       },
-      "trashBin": "Trash bin"
+      "trashBin": "Trash bin",
+      "paragraphStyle": "Paragraphs",
+      "paragraphIndent": "First-line indent",
+      "paragraphIndentNone": "None",
+      "paragraphIndentFullwidth": "Insert ideographic space",
+      "paragraphIndentCss": "CSS 1 em (HTML only)",
+      "paragraphIndentDesc": "Applies to top-level body paragraphs. Existing leading whitespace is not indented again."
     },
     "disclosure": {
       "remainingAi": "Remaining AI: {{count}} chars",
