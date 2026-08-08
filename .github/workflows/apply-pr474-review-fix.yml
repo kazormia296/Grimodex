@@ -1,0 +1,298 @@
+name: Apply PR 474 review fix
+
+on:
+  push:
+    branches:
+      - agent/dialogue-paragraph-indent
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out review branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: agent/dialogue-paragraph-indent
+          fetch-depth: 0
+
+      - name: Apply renderer-level paragraph policy
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          def replace_once(source: str, old: str, new: str, label: str) -> str:
+              count = source.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one match, found {count}")
+              return source.replace(old, new, 1)
+
+          export_core_path = Path("src/features/export/exportEngineCore.ts")
+          export_text = export_core_path.read_text(encoding="utf-8")
+
+          export_text = replace_once(
+              export_text,
+              '''import {
+            tateChuYokoRunAllowed,
+            TATE_CHU_YOKO_RUN,
+            type TateChuYokoPolicy,
+          } from "@/features/editor/tateChuYokoPolicy";
+          ''',
+              '''import {
+            tateChuYokoRunAllowed,
+            TATE_CHU_YOKO_RUN,
+            type TateChuYokoPolicy,
+          } from "@/features/editor/tateChuYokoPolicy";
+          import { shouldApplyAutomaticParagraphIndent } from "@/lib/paragraphIndentPolicy";
+          ''',
+              "export policy import",
+          )
+
+          export_text = replace_once(
+              export_text,
+              '''/** Whether the paragraph already begins with author-entered whitespace. */
+          function nodeStartsWithWhitespace(node: PMNode): boolean {
+            if (node.type === "text") return /^\\s/u.test(node.text ?? "");
+            if (node.type === "ruby") {
+              return /^\\s/u.test(String(node.attrs?.base ?? ""));
+            }
+            if (node.type === "hardBreak") return true;
+            for (const child of node.content ?? []) {
+              if (child.type === "sceneBeat") continue;
+              if (child.type === "text" && (child.text ?? "").length === 0) continue;
+              return nodeStartsWithWhitespace(child);
+            }
+            return false;
+          }
+          ''',
+              '''/**
+           * Return the first user-visible text represented by a node. Unknown leaf
+           * nodes count as visible content so an inline atom before dialogue does not
+           * accidentally suppress indentation. sceneBeat is display metadata and is
+           * skipped, matching the editor decoration policy.
+           */
+          function firstRenderedText(node: PMNode): string {
+            if (node.type === "text") return node.text ?? "";
+            if (node.type === "ruby") return String(node.attrs?.base ?? "");
+            if (node.type === "hardBreak") return "\\n";
+            if (node.type === "sceneBeat") return "";
+
+            if (node.content) {
+              for (const child of node.content) {
+                const text = firstRenderedText(child);
+                if (text.length > 0) return text;
+              }
+              return "";
+            }
+
+            return "\\uFFFC";
+          }
+          ''',
+              "leading content helper",
+          )
+
+          export_text = replace_once(
+              export_text,
+              '''      const paragraphIndent = topLevel
+                ? (ctx.settings.paragraphIndent ?? "none")
+                : "none";
+              const alreadyIndented =
+                paragraphIndent !== "none" && nodeStartsWithWhitespace(node);
+              const renderedInner =
+                paragraphIndent === "fullwidth-space" && !alreadyIndented
+                  ? "\\u3000" + inner
+                  : inner;
+
+              if (rendersHtmlParagraphs(ctx)) {
+                const className =
+                  paragraphIndent === "css" && !alreadyIndented
+                    ? ' class="paragraph-indent"'
+                    : "";
+                return "<p" + className + ">" + renderedInner + "</p>\\n";
+              }
+          ''',
+              '''      const paragraphIndent = topLevel
+                ? (ctx.settings.paragraphIndent ?? "none")
+                : "none";
+              const shouldIndent =
+                paragraphIndent !== "none" &&
+                shouldApplyAutomaticParagraphIndent(firstRenderedText(node));
+              const renderedInner =
+                paragraphIndent === "fullwidth-space" && shouldIndent
+                  ? "\\u3000" + inner
+                  : inner;
+
+              if (rendersHtmlParagraphs(ctx)) {
+                const className =
+                  paragraphIndent === "css" && shouldIndent
+                    ? ' class="paragraph-indent"'
+                    : "";
+                return "<p" + className + ">" + renderedInner + "</p>\\n";
+              }
+          ''',
+              "paragraph indentation rendering",
+          )
+
+          Path("src/features/export/exportEngine.ts").write_text(
+              export_text, encoding="utf-8"
+          )
+          export_core_path.unlink()
+
+          extensions_core_path = Path("src/features/editor/extensionsCore.ts")
+          extensions_text = extensions_core_path.read_text(encoding="utf-8")
+          extensions_text = replace_once(
+              extensions_text,
+              '''import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
+          ''',
+              '''import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
+          import { createParagraphIndentPlugin } from "@/features/editor/ParagraphIndentPlugin";
+          ''',
+              "editor plugin import",
+          )
+          extensions_text = replace_once(
+              extensions_text,
+              '''export const ParagraphWithEmptyLineSupport = Paragraph.extend({
+            addStorage() {
+          ''',
+              '''export const ParagraphWithEmptyLineSupport = Paragraph.extend({
+            addProseMirrorPlugins() {
+              return [createParagraphIndentPlugin()];
+            },
+
+            addStorage() {
+          ''',
+              "paragraph extension plugin registration",
+          )
+          Path("src/features/editor/extensions.ts").write_text(
+              extensions_text, encoding="utf-8"
+          )
+          extensions_core_path.unlink()
+
+          test_path = Path("src/features/export/paragraphIndentDialogue.test.ts")
+          test_text = test_path.read_text(encoding="utf-8")
+          test_text = replace_once(
+              test_text,
+              '''function settings(overrides: Partial<ExportSettings>): ExportSettings {
+          ''',
+              '''function generatedDocument(...paragraphs: string[]): string {
+            return JSON.stringify({
+              type: "doc",
+              content: [
+                {
+                  type: "generatedProseBlock",
+                  attrs: { beatId: "beat-1", modified: false },
+                  content: paragraphs.map((text) => ({
+                    type: "paragraph",
+                    content: [{ type: "text", text }],
+                  })),
+                },
+              ],
+            });
+          }
+
+          function settings(overrides: Partial<ExportSettings>): ExportSettings {
+          ''',
+              "generated document helper",
+          )
+          test_text = replace_once(
+              test_text,
+              '''describe("dialogue paragraph indentation", () => {
+          ''',
+              '''function exportGeneratedParagraphs(
+            paragraphs: string[],
+            exportSettings: ExportSettings,
+          ): string {
+            const scene = makeScene();
+            return generateExport({
+              nodes: [scene],
+              contentMap: { [scene.id]: generatedDocument(...paragraphs) },
+              checkedIds: new Set([scene.id]),
+              settings: exportSettings,
+            });
+          }
+
+          describe("dialogue paragraph indentation", () => {
+          ''',
+              "generated export helper",
+          )
+          test_text = test_text.replace(
+              '    expect(result).not.toContain("grimodex-dialogue-indent-exempt");\n',
+              "",
+          )
+          closing = '''  it("omits inserted full-width spaces in HTML output", () => {
+            const result = exportParagraphs(
+              ["地の文", "「会話文」"],
+              settings({
+                format: "html",
+                paragraphIndent: "fullwidth-space",
+              }),
+            );
+
+            expect(result).toContain("<p>　地の文</p>");
+            expect(result).toContain("<p>「会話文」</p>");
+          });
+          });
+          '''
+          replacement = '''  it("omits inserted full-width spaces in HTML output", () => {
+            const result = exportParagraphs(
+              ["地の文", "「会話文」"],
+              settings({
+                format: "html",
+                paragraphIndent: "fullwidth-space",
+              }),
+            );
+
+            expect(result).toContain("<p>　地の文</p>");
+            expect(result).toContain("<p>「会話文」</p>");
+          });
+
+            it("applies the policy inside generated prose blocks for full-width output", () => {
+              const result = exportGeneratedParagraphs(
+                ["生成地の文", "「会話」", "『内声』", "　「意図的な字下げ」"],
+                settings({
+                  format: "plaintext",
+                  paragraphIndent: "fullwidth-space",
+                }),
+              );
+
+              expect(result).toBe(
+                "　生成地の文\\n\\n「会話」\\n\\n『内声』\\n\\n　「意図的な字下げ」\\n",
+              );
+            });
+
+            it("applies the policy inside generated prose blocks for CSS output", () => {
+              const result = exportGeneratedParagraphs(
+                ["生成地の文", "「会話」", "『内声』", "　「意図的な字下げ」"],
+                settings({ format: "html", paragraphIndent: "css" }),
+              );
+
+              expect(result).toContain(
+                '<p class="paragraph-indent">生成地の文</p>',
+              );
+              expect(result).toContain("<p>「会話」</p>");
+              expect(result).toContain("<p>『内声』</p>");
+              expect(result).toContain("<p>　「意図的な字下げ」</p>");
+            });
+          });
+          '''
+          test_text = replace_once(
+              test_text, closing, replacement, "generated prose regression tests"
+          )
+          test_path.write_text(test_text, encoding="utf-8")
+
+          workflow_path = Path(".github/workflows/apply-pr474-review-fix.yml")
+          workflow_path.unlink()
+          PY
+
+      - name: Commit review fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add -A
+          git commit -m "fix: apply paragraph indent policy during rendering"
+          git push origin "HEAD:agent/dialogue-paragraph-indent"
