@@ -1,5 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { DOMParser as PMDOMParser, Fragment, Slice } from "@tiptap/pm/model";
+import { transformAozoraNotationInSlice } from "@/features/editor/aozoraNotation";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 /**
  * 貼り付けた Markdown を本文に取り込むためのユーティリティ。
@@ -46,10 +48,13 @@ export function parseMarkdownToSlice(
   if (!parser) return null;
   try {
     const html = parser.parse(text, { inline: true });
-    return PMDOMParser.fromSchema(editor.schema).parseSlice(
+    const slice = PMDOMParser.fromSchema(editor.schema).parseSlice(
       elementFromString(html),
       { preserveWhitespace: true, context: editor.state.selection.$from },
     );
+    return useSettingsStore.getState().getBoolean("editor.aozoraInput", true)
+      ? transformAozoraNotationInSlice(slice, editor.schema)
+      : slice;
   } catch {
     return null;
   }

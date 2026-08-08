@@ -766,7 +766,7 @@
       "paletteShortcut": "Ctrl+Shift+Space パレットを有効化",
       "bubbleMenu": "選択時のツールバーを表示",
       "aozoraInput": "青空文庫記法の入力補助",
-      "aozoraInputDesc": "入力中に ｜親文字《ふりがな》・漢字《ふりがな》をルビへ、《《傍点》》を圏点へ自動変換",
+      "aozoraInputDesc": "入力中または通常貼り付け時に、｜親文字《ふりがな》・漢字《ふりがな》をルビ、《《傍点》》を圏点、［＃縦中横］…［＃縦中横終わり］を縦中横へ自動変換",
       "autoPairBrackets": "約物ペアの自動補完",
       "autoPairBracketsDesc": "「『（【〔［〈｛ を入力すると対応する閉じ約物を自動挿入（閉じを打つと重複せず通過）",
       "showInvisibles": "空白と改行を表示",

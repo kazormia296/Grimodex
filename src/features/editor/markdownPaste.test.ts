@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Editor } from "@tiptap/core";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   markdownToPlainText,
   insertMarkdownAsUnknown,
@@ -52,6 +53,9 @@ function runs(editor: Editor): Run[] {
 
 let editor: Editor;
 beforeEach(() => {
+  useSettingsStore.setState((state) => ({
+    cache: { ...state.cache, "editor.aozoraInput": "true" },
+  }));
   editor = makeEditor();
 });
 afterEach(() => {
@@ -80,6 +84,116 @@ describe("markdownToPlainText (Ctrl+Shift+V: markdown 記法を除去)", () => {
 });
 
 describe("insertMarkdownAsUnknown (通常ペースト: markdown を変換し unknown 帰属)", () => {
+  it("青空記法の pipe/auto ruby を ruby node に変換する", () => {
+    editor.commands.focus();
+    insertMarkdownAsUnknown(
+      editor,
+      "｜東雲《しののめ》と霞ヶ関《かすみがせき》",
+    );
+
+    const ruby: Array<{ base: string; annotation: string; source: string }> =
+      [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "ruby") {
+        const authorship = node.marks.find(
+          (mark) => mark.type.name === "authorship",
+        );
+        ruby.push({
+          base: node.attrs.base as string,
+          annotation: node.attrs.annotation as string,
+          source: (authorship?.attrs.source as string | undefined) ?? "",
+        });
+      }
+    });
+    expect(ruby).toEqual([
+      { base: "東雲", annotation: "しののめ", source: "unknown" },
+      { base: "霞ヶ関", annotation: "かすみがせき", source: "unknown" },
+    ]);
+  });
+
+  it("青空記法の傍点と縦中横を mark に変換する", () => {
+    editor.commands.focus();
+    insertMarkdownAsUnknown(
+      editor,
+      "《《重要》》と［＃縦中横］25［＃縦中横終わり］",
+    );
+
+    const marks = new Map<string, string[]>();
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.text) {
+        marks.set(
+          node.text,
+          node.marks.map((mark) => mark.type.name),
+        );
+      }
+    });
+    expect(marks.get("重要")).toContain("emphasisDots");
+    expect(marks.get("25")).toContain("tcy");
+  });
+
+  it("Markdown 構造と青空記法を同時に変換する", () => {
+    editor.commands.focus();
+    insertMarkdownAsUnknown(editor, "# 見出し\n\n**強調**と｜漢字《かんじ》");
+
+    expect(editor.state.doc.firstChild?.type.name).toBe("heading");
+    let hasBold = false;
+    let hasRuby = false;
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.marks.some((m) => m.type.name === "bold")) {
+        hasBold = true;
+      }
+      if (node.type.name === "ruby") hasRuby = true;
+    });
+    expect(hasBold).toBe(true);
+    expect(hasRuby).toBe(true);
+  });
+
+  it("設定OFFでは青空記法をリテラルのまま残す", () => {
+    useSettingsStore.setState((state) => ({
+      cache: { ...state.cache, "editor.aozoraInput": "false" },
+    }));
+    editor.commands.focus();
+    insertMarkdownAsUnknown(editor, "｜漢字《かんじ》と《《傍点》》");
+
+    expect(editor.state.doc.textContent).toBe("｜漢字《かんじ》と《《傍点》》");
+    let hasSpecial = false;
+    editor.state.doc.descendants((node) => {
+      if (
+        node.type.name === "ruby" ||
+        node.marks.some((mark) =>
+          ["emphasisDots", "tcy"].includes(mark.type.name),
+        )
+      ) {
+        hasSpecial = true;
+      }
+    });
+    expect(hasSpecial).toBe(false);
+  });
+
+  it("未完成記法と inline/code block 内の記法は変換しない", () => {
+    editor.commands.focus();
+    insertMarkdownAsUnknown(
+      editor,
+      "未完成｜漢字《かんじ と `｜コード《こーど》`\n\n```text\n《《逐語》》\n```",
+    );
+
+    expect(editor.state.doc.textContent).toContain("｜漢字《かんじ");
+    expect(editor.state.doc.textContent).toContain("｜コード《こーど》");
+    expect(editor.state.doc.textContent).toContain("《《逐語》》");
+    let hasSpecial = false;
+    editor.state.doc.descendants((node) => {
+      if (
+        node.type.name === "ruby" ||
+        node.marks.some((mark) =>
+          ["emphasisDots", "tcy"].includes(mark.type.name),
+        )
+      ) {
+        hasSpecial = true;
+      }
+    });
+    expect(hasSpecial).toBe(false);
+  });
+
   it("'# 見出し' を heading ノードに変換する", () => {
     editor.commands.focus();
     insertMarkdownAsUnknown(editor, "# 見出し");
@@ -464,5 +578,16 @@ describe("pasteExternalText (Case 3 の分岐: 通常=変換 / Shift=除去)", (
       (n) => n.type.name === "heading",
     );
     expect(hasHeading).toBe(false);
+  });
+
+  it("plain=true: 青空記法もリテラルのまま insertRaw に渡す", () => {
+    const rawArgs: string[] = [];
+    pasteExternalText(
+      editor,
+      "｜漢字《かんじ》と《《傍点》》",
+      (text) => rawArgs.push(text),
+      true,
+    );
+    expect(rawArgs).toEqual(["｜漢字《かんじ》と《《傍点》》"]);
   });
 });

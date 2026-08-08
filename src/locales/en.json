@@ -767,7 +767,7 @@
       "paletteShortcut": "Enable Ctrl+Shift+Space palette",
       "bubbleMenu": "Show selection toolbar",
       "aozoraInput": "Aozora notation input aid",
-      "aozoraInputDesc": "While typing, convert ｜base《reading》 and 漢字《reading》 to ruby, and 《《text》》 to emphasis dots",
+      "aozoraInputDesc": "While typing or using regular paste, convert ｜base《reading》 and 漢字《reading》 to ruby, 《《text》》 to emphasis dots, and ［＃縦中横］…［＃縦中横終わり］ to tate-chu-yoko",
       "autoPairBrackets": "Auto-close bracket pairs",
       "autoPairBracketsDesc": "Typing 「『（【〔［〈｛ auto-inserts the matching close (typing the close steps over it instead of duplicating)",
       "showInvisibles": "Show whitespace & line breaks",
