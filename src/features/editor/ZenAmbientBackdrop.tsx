@@ -28,6 +28,10 @@ function useWindowActive() {
     window.addEventListener("focus", sync);
     window.addEventListener("blur", deactivate);
     document.addEventListener("visibilitychange", sync);
+    // Electron creates the window hidden, then shows and focuses it after the
+    // renderer has loaded. Re-read after subscribing so a focus event between
+    // the initial render and this effect cannot leave animation paused forever.
+    sync();
     return () => {
       window.removeEventListener("focus", sync);
       window.removeEventListener("blur", deactivate);

@@ -4,6 +4,7 @@ import {
   ZEN_SHADER_IDS,
   buildZenShaderProps,
   parseZenShaderConfig,
+  resolveZenShaderAnimationSpeed,
   type ZenResolvedPalette,
 } from "./zenShaderConfig";
 
@@ -49,6 +50,7 @@ describe("editor background shader settings", () => {
     expect(ZEN_SHADER_DEFAULTS.shader).toBe("liquid-metal");
     expect(ZEN_SHADER_DEFAULTS.opacity).toBe(100);
     expect(ZEN_SHADER_DEFAULTS.speed).toBe(3);
+    expect(ZEN_SHADER_DEFAULTS.speedMode).toBe("fast");
     expect(ZEN_SHADER_DEFAULTS.scale).toBe(1.7);
     expect(ZEN_SHADER_DEFAULTS.rotation).toBe(170);
     expect(ZEN_SHADER_DEFAULTS.offsetX).toBe(0.25);
@@ -90,6 +92,7 @@ describe("editor background shader settings", () => {
     const config = parseZenShaderConfig({
       "editor.zenBackground.opacity": "300",
       "editor.zenBackground.speedPercent": "300",
+      "editor.zenBackground.speedMode": "slow",
       "editor.zenBackground.paperOpacity": "-5",
       "editor.zenBackground.paperEdgeFade": "30",
       "editor.zenBackground.contrastGuard.mode": "invalid",
@@ -99,6 +102,7 @@ describe("editor background shader settings", () => {
 
     expect(config.opacity).toBe(100);
     expect(config.speed).toBe(100);
+    expect(config.speedMode).toBe("slow");
     expect(config).not.toHaveProperty("paperOpacity");
     expect(config).not.toHaveProperty("paperEdgeFade");
     expect(config.contrastGuard).toEqual({
@@ -114,6 +118,25 @@ describe("editor background shader settings", () => {
     });
 
     expect(config.speed).toBe(8);
+  });
+
+  it("keeps zero paused and exposes a ten-times slower speed range", () => {
+    expect(resolveZenShaderAnimationSpeed(0, "fast")).toBe(0);
+    expect(resolveZenShaderAnimationSpeed(0, "slow")).toBe(0);
+    expect(resolveZenShaderAnimationSpeed(2, "fast")).toBeCloseTo(0.118);
+    expect(resolveZenShaderAnimationSpeed(2, "slow")).toBeCloseTo(0.0118);
+    expect(resolveZenShaderAnimationSpeed(100, "fast")).toBe(1);
+    expect(resolveZenShaderAnimationSpeed(100, "slow")).toBeCloseTo(0.1);
+  });
+
+  it("falls back to Fast for an invalid persisted speed mode", () => {
+    const config = parseZenShaderConfig({
+      "editor.zenBackground.speedPercent": "37",
+      "editor.zenBackground.speedMode": "turbo",
+    });
+
+    expect(config.speed).toBe(37);
+    expect(config.speedMode).toBe("fast");
   });
 
   it("normalizes malformed persisted values into safe shader ranges", () => {
@@ -139,6 +162,7 @@ describe("editor background shader settings", () => {
     expect(config.enabled).toBe(false);
     expect(config.shader).toBe("liquid-metal");
     expect(config.paletteMode).toBe("theme");
+    expect(config.speedMode).toBe("fast");
     expect(config.scale).toBe(ZEN_SHADER_DEFAULTS.scale);
     expect(config.rotation).toBe(360);
     expect(config.offsetX).toBe(-1);
@@ -191,7 +215,7 @@ describe("editor background shader settings", () => {
     });
 
     expect(buildZenShaderProps(config, palette)).toMatchObject({
-      speed: 0.37,
+      speed: resolveZenShaderAnimationSpeed(37),
       fit: "cover",
       scale: 1.4,
       colorBack: palette.background,

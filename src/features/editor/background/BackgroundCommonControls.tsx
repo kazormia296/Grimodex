@@ -26,6 +26,10 @@ export function BackgroundCommonControls() {
     value: mode,
     label: t(`settings.editor.zenPalette_${mode}`),
   }));
+  const speedModeOptions = ["slow", "fast"].map((mode) => ({
+    value: mode,
+    label: t(`settings.editor.zenSpeedMode_${mode}`),
+  }));
 
   return (
     <>
@@ -52,6 +56,18 @@ export function BackgroundCommonControls() {
           max={100}
           defaultValue={ZEN_BACKGROUND_DEFAULTS.opacity}
           format={percent}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("settings.editor.zenSpeedMode")}
+        description={t("settings.editor.zenSpeedModeDesc")}
+        disabled={!definition.animated}
+      >
+        <SettingDropdown
+          settingKey="editor.zenBackground.speedMode"
+          options={speedModeOptions}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.speedMode}
+          disabled={!definition.animated}
         />
       </SettingRow>
       <SettingRow

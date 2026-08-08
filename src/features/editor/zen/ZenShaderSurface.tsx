@@ -1,34 +1,42 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PaperShaderElement } from "@paper-design/shaders";
-import { ShaderMount } from "@paper-design/shaders-react";
 import {
   getPaperShaderDefinition,
   resolvePaperShaderMount,
 } from "./paperShaderCatalog";
 import { buildZenShaderProps, type ZenShaderConfig } from "./zenShaderConfig";
-import {
-  buildZenPostProcessUniforms,
-  buildZenPostProcessedFragment,
-} from "./zenPostProcessing";
 import { contrastTargetRatio } from "./zenContrastGuard";
 import { useZenShaderLayouts } from "./useZenShaderLayouts";
-import { useZenShaderAnimation } from "./zenShaderAnimation";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
-import { buildZenGlassMask, hasZenGlassRegion } from "./zenGlassCompositor";
+import { hasZenGlassRegion } from "./zenGlassCompositor";
+import { ZenMultipassCanvas } from "./ZenMultipassCanvas";
+import {
+  buildZenMultipassCompositeFragment,
+  buildZenMultipassCompositeUniforms,
+  buildZenMultipassSceneFragment,
+  buildZenMultipassSceneUniforms,
+} from "./zenMultipassPipeline";
 
 const PREVIEW_PIXEL_BUDGET = 300_000;
 const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;
 const LIVE_BACKGROUND_MIN_PIXEL_RATIO = 1;
 const INITIAL_UI_SURFACE_CAPACITY = 16;
+const LIVE_WEBGL_CONTEXT_ATTRIBUTES = {
+  alpha: true,
+  antialias: false,
+  powerPreference: "default",
+  premultipliedAlpha: true,
+} satisfies WebGLContextAttributes;
 
 interface ZenShaderSurfaceProps {
   config: ZenShaderConfig;
   playing: boolean;
   preview?: boolean;
   webGlSupported?: boolean;
+  webGlContextAttributes?: WebGLContextAttributes;
   onRendererStatusChange?: (status: ZenShaderRendererStatus) => void;
 }
 
@@ -43,15 +51,16 @@ export function ZenShaderSurface({
   playing,
   preview = false,
   webGlSupported = true,
+  webGlContextAttributes = LIVE_WEBGL_CONTEXT_ATTRIBUTES,
   onRendererStatusChange,
 }: ZenShaderSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const paperMountRef = useRef<PaperShaderElement>(null);
   const palette = useZenThemePalette();
   const layouts = useZenShaderLayouts(surfaceRef);
-  // Paper prepares uniforms asynchronously. Keep the program, upload buffer,
-  // and React mount on a high-water capacity so transient surface removal
-  // cannot replace the compositor while a panel is closing.
+
+  // Keep the shader variants and packed UI buffer on a high-water capacity so
+  // transient surface removal cannot replace the renderer during panel exit.
   const requiredUiSurfaceCapacity = zenUiSurfaceVariantCapacity(
     layouts.uiSurfaces.length,
   );
@@ -64,6 +73,7 @@ export function ZenShaderSurface({
     () => new ZenUiSurfaceUniformBuffer(uiSurfaceCapacity),
     [uiSurfaceCapacity],
   );
+
   const resolved = useMemo(
     () =>
       resolvePaperShaderMount(
@@ -72,15 +82,25 @@ export function ZenShaderSurface({
       ),
     [config, palette],
   );
-  const fragmentShader = useMemo(
-    () =>
-      buildZenPostProcessedFragment(resolved.fragmentShader, uiSurfaceCapacity),
-    [resolved.fragmentShader, uiSurfaceCapacity],
+  const sceneFragment = useMemo(
+    () => buildZenMultipassSceneFragment(resolved.fragmentShader),
+    [resolved.fragmentShader],
   );
-  const uniforms = useMemo(
+  const compositeFragment = useMemo(
+    () => buildZenMultipassCompositeFragment(uiSurfaceCapacity),
+    [uiSurfaceCapacity],
+  );
+  const sceneUniforms = useMemo(
     () => ({
       ...resolved.uniforms,
-      ...buildZenPostProcessUniforms(
+      ...buildZenMultipassSceneUniforms(config),
+    }),
+    [config, resolved.uniforms],
+  );
+  const preparedSceneUniforms = usePreparedZenShaderUniforms(sceneUniforms);
+  const compositeUniforms = useMemo(
+    () =>
+      buildZenMultipassCompositeUniforms(
         config,
         {
           ...layouts.contrast,
@@ -94,10 +114,9 @@ export function ZenShaderSurface({
         },
         surfaceUniformBuffer,
       ),
-    }),
-    [config, layouts, palette, resolved.uniforms, surfaceUniformBuffer],
+    [config, layouts, palette, surfaceUniformBuffer],
   );
-  const preparedUniforms = usePreparedZenShaderUniforms(uniforms);
+
   const mountKey = `${config.shader}:${uiSurfaceCapacity}`;
   const definition = getPaperShaderDefinition(config.shader);
   const [readyMountKey, setReadyMountKey] = useState<string | null>(null);
@@ -113,8 +132,8 @@ export function ZenShaderSurface({
         : "initializing";
 
   // Keep the parent CSS topology in the same paint as mount-key changes.
-  // A passive update would briefly restore per-surface backdrop filters while
-  // the replacement shader is still settling.
+  // A passive update would briefly restore per-surface fallback filters while
+  // the replacement compositor is still settling.
   useLayoutEffect(() => {
     onRendererStatusChange?.(rendererStatus);
   }, [onRendererStatusChange, rendererStatus]);
@@ -122,7 +141,7 @@ export function ZenShaderSurface({
   useEffect(() => {
     if (
       !webGlSupported ||
-      preparedUniforms === null ||
+      preparedSceneUniforms === null ||
       lostMountKey === mountKey
     ) {
       return;
@@ -144,7 +163,7 @@ export function ZenShaderSurface({
       cancelled = true;
       if (frameId !== null) cancelAnimationFrame(frameId);
     };
-  }, [lostMountKey, mountKey, preparedUniforms, webGlSupported]);
+  }, [lostMountKey, mountKey, preparedSceneUniforms, webGlSupported]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -160,36 +179,23 @@ export function ZenShaderSurface({
     };
   }, [mountKey]);
 
-  const animationSpeed = config.speed / 100;
-  const shouldAnimate =
-    preparedUniforms !== null &&
-    shaderReady &&
+  const animationSpeed = resolved.speed ?? 0;
+  const activeAnimationSpeed =
+    preparedSceneUniforms !== null &&
     playing &&
     definition.animated &&
-    animationSpeed > 0;
-  useZenShaderAnimation(paperMountRef, {
-    playing: shouldAnimate,
-    speed: animationSpeed,
-    resetKey: config.shader,
-  });
-  const {
-    fragmentShader: _fragmentShader,
-    uniforms: _uniforms,
-    speed: _speed,
-    frame: _frame,
-    maxPixelCount: resolvedMaxPixelCount,
-    webGlContextAttributes: _context,
-    ...mountProps
-  } = resolved;
+    animationSpeed > 0
+      ? animationSpeed
+      : 0;
+
+  const resolvedMaxPixelCount = resolved.maxPixelCount;
   const maxPixelCount = preview
     ? PREVIEW_PIXEL_BUDGET
     : Math.min(
         resolvedMaxPixelCount ?? LIVE_BACKGROUND_PIXEL_BUDGET,
         LIVE_BACKGROUND_PIXEL_BUDGET,
       );
-  // Keep the writing-column contrast correction outside the native Glass
-  // filter even when the Editor is the only visible Glass region.
-  const useSharedGlassCompositor =
+  const ownsGpuGlass =
     shaderReady &&
     !preview &&
     config.glass.enabled &&
@@ -200,7 +206,7 @@ export function ZenShaderSurface({
       ref={surfaceRef}
       data-zen-shader-surface
       data-zen-shader-preview={preview ? "true" : "false"}
-      data-zen-shader-ready={preparedUniforms ? "true" : "false"}
+      data-zen-shader-ready={preparedSceneUniforms ? "true" : "false"}
       data-zen-shader-renderer={rendererStatus}
       data-contrast-guard={config.contrastGuard.mode}
       data-contrast-target={
@@ -220,50 +226,33 @@ export function ZenShaderSurface({
       data-ui-contrast-surface-count={layouts.uiSurfaces.length}
       className="zen-shader-surface absolute inset-0 overflow-hidden"
       style={{
-        opacity: config.opacity / 100,
+        // The final GPU pass already composites the configured opacity against
+        // the theme backdrop. Do not apply it again after contrast correction.
+        // A zero opacity setting is an explicit hide contract. Keep the whole
+        // surface transparent even after the renderer becomes ready so the
+        // final contrast pass (which intentionally renders opaque pixels) does
+        // not reintroduce a theme-colored backdrop.
+        opacity:
+          config.opacity === 0 ? 0 : shaderReady ? 1 : config.opacity / 100,
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >
-      {webGlSupported && lostMountKey !== mountKey && preparedUniforms && (
-        <ShaderMount
+      {webGlSupported && lostMountKey !== mountKey && preparedSceneUniforms && (
+        <ZenMultipassCanvas
           key={mountKey}
-          {...mountProps}
           ref={paperMountRef}
           data-paper-shader={config.shader}
-          fragmentShader={fragmentShader}
-          uniforms={preparedUniforms}
-          speed={0}
-          frame={0}
-          width="100%"
-          height="100%"
+          data-zen-glass-compositor={ownsGpuGlass ? "true" : undefined}
+          sceneFragment={sceneFragment}
+          sceneUniforms={preparedSceneUniforms}
+          compositeFragment={compositeFragment}
+          compositeUniforms={compositeUniforms}
+          mipmaps={resolved.mipmaps}
+          speed={activeAnimationSpeed}
           minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
           maxPixelCount={maxPixelCount}
-          webGlContextAttributes={{
-            alpha: true,
-            antialias: false,
-            powerPreference: "default",
-            premultipliedAlpha: true,
-          }}
-        />
-      )}
-      {useSharedGlassCompositor && (
-        <div
-          data-zen-glass-compositor
-          className="pointer-events-none absolute inset-0"
-          style={{
-            backdropFilter: `blur(${config.glass.blur}px) saturate(${config.glass.saturation}) contrast(1.03)`,
-            maskImage: buildZenGlassMask(
-              layouts.surfaceSize,
-              layouts.glass,
-              layouts.uiSurfaces,
-              config.contrastGuard.mode === "auto"
-                ? layouts.contrast
-                : undefined,
-            ),
-            maskPosition: "0 0",
-            maskRepeat: "no-repeat",
-            maskSize: "100% 100%",
-          }}
+          webGlContextAttributes={webGlContextAttributes}
+          className="pointer-events-none absolute inset-0 overflow-hidden"
         />
       )}
     </div>

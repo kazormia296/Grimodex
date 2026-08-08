@@ -178,18 +178,17 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(getComputedStyle(layout!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     const editorStyle = getComputedStyle(editor!);
     expect(editorStyle.backgroundColor).toBe("rgba(0, 0, 0, 0)");
-    expect(editorStyle.backgroundImage).not.toBe("none");
+    expect(editorStyle.backgroundImage).toBe("none");
     expect(editorStyle.backdropFilter).toBe("none");
     expect(editorStyle.isolation).toBe("auto");
     const editorFilterStyle = getComputedStyle(editorGlassFilter!);
     expect(editorFilterStyle.position).toBe("absolute");
     expect(editorFilterStyle.pointerEvents).toBe("none");
-    expect(editorFilterStyle.backdropFilter).toContain("blur(14px)");
-    expect(editorFilterStyle.backdropFilter).toContain("saturate(1.16)");
-    expect(editorFilterStyle.backdropFilter).toContain("contrast(1.03)");
+    expect(editorFilterStyle.backdropFilter).toBe("none");
     const glass = getComputedStyle(editor!, "::before");
-    expect(glass.backgroundImage).not.toBe("none");
-    expect(glass.boxShadow).not.toBe("none");
+    expect(glass.opacity).toBe("0");
+    expect(glass.backgroundImage).toBe("none");
+    expect(glass.boxShadow).toBe("none");
     expect(glass.filter).toBe("none");
     expect(getComputedStyle(breadcrumb!).backdropFilter).toBe("none");
     expect(getComputedStyle(chrome!).backdropFilter).toBe("none");
@@ -211,9 +210,7 @@ describe("editor ambient background layering (real Chromium)", () => {
       const surfaceStyle = getComputedStyle(surface);
       expect(surfaceStyle.backgroundColor).toBe("rgba(0, 0, 0, 0)");
       expect(surfaceStyle.backgroundImage).toBe("none");
-      expect(surfaceStyle.backdropFilter).toContain("blur(22px)");
-      expect(surfaceStyle.backdropFilter).toContain("saturate(1.4)");
-      expect(surfaceStyle.backdropFilter).toContain("contrast(1.03)");
+      expect(surfaceStyle.backdropFilter).toBe("none");
       const highlight = getComputedStyle(surface, "::before");
       expect(highlight.opacity).toBe("0");
       expect(highlight.backgroundImage).toBe("none");
@@ -337,7 +334,7 @@ describe("editor ambient background layering (real Chromium)", () => {
   });
 
   it.each(THEME_CASES)(
-    "keeps the tool panel transparent and blurred for $name",
+    "keeps the tool panel transparent with GPU-owned Glass for $name",
     ({ palette }) => {
       const { container } = renderLayering(true, true, palette);
       const toolPanel = container.querySelector<HTMLElement>(
@@ -352,9 +349,7 @@ describe("editor ambient background layering (real Chromium)", () => {
       expect(getComputedStyle(toolPanel!).backgroundColor).toBe(
         "rgba(0, 0, 0, 0)",
       );
-      expect(getComputedStyle(toolPanel!).backdropFilter).toContain(
-        "blur(22px)",
-      );
+      expect(getComputedStyle(toolPanel!).backdropFilter).toBe("none");
       expect(getComputedStyle(toolPanel!).backgroundImage).toBe("none");
       expect(getComputedStyle(toolPanel!).borderTopLeftRadius).toBe("18px");
       expect(getComputedStyle(toolPanel!, "::before").opacity).toBe("0");

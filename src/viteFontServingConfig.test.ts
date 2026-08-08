@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveConfig } from "vite";
+import { normalizePath, resolveConfig } from "vite";
 
 describe("Vite development font serving", () => {
   it("allows the real dependency directory used by /@fs/ font requests", async () => {
@@ -35,10 +35,10 @@ describe("Vite development font serving", () => {
     ]);
 
     expect(webEditor.cacheDir).toBe(
-      path.resolve(root, "node_modules/.vite/web-editor"),
+      normalizePath(path.resolve(root, "node_modules/.vite/web-editor")),
     );
     expect(desktop.cacheDir).toBe(
-      path.resolve(root, "node_modules/.vite/desktop"),
+      normalizePath(path.resolve(root, "node_modules/.vite/desktop")),
     );
     expect(webEditor.cacheDir).not.toBe(desktop.cacheDir);
   });

@@ -129,6 +129,22 @@ describe("ZenAmbientBackdrop", () => {
     ).toHaveAttribute("data-playing", "true");
   });
 
+  it("resynchronizes focus after Electron shows an initially hidden window", () => {
+    vi.mocked(document.hasFocus)
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true);
+
+    const { container } = render(<ZenAmbientBackdrop active />);
+
+    expect(container.querySelector("[data-editor-ambient]")).toHaveAttribute(
+      "data-window-active",
+      "true",
+    );
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-playing", "true");
+  });
+
   it("unmounts the WebGL surface when the background is disabled", () => {
     zenState.config.enabled = false;
 
@@ -142,7 +158,7 @@ describe("ZenAmbientBackdrop", () => {
     expect(zenState.webGlProbeCalls).toBe(0);
   });
 
-  it("probes once when a disabled background is enabled later", () => {
+  it("probes once and remounts the surface when a disabled background is enabled", () => {
     zenState.config.enabled = false;
     const { container, rerender } = render(
       <ZenAmbientBackdrop active={false} />,
@@ -155,7 +171,25 @@ describe("ZenAmbientBackdrop", () => {
     rerender(<ZenAmbientBackdrop active={false} />);
 
     expect(zenState.webGlProbeCalls).toBe(1);
-    expect(container.querySelector("[data-zen-shader-surface]")).not.toBeNull();
+    const initializedSurface = container.querySelector(
+      "[data-zen-shader-surface]",
+    );
+    expect(initializedSurface).toHaveAttribute("data-playing", "true");
+
+    zenState.config.enabled = false;
+    rerender(<ZenAmbientBackdrop active={false} />);
+
+    expect(container.querySelector("[data-zen-shader-surface]")).toBeNull();
+
+    zenState.config.enabled = true;
+    rerender(<ZenAmbientBackdrop active={false} />);
+
+    expect(zenState.webGlProbeCalls).toBe(1);
+    const remountedSurface = container.querySelector(
+      "[data-zen-shader-surface]",
+    );
+    expect(remountedSurface).not.toBe(initializedSurface);
+    expect(remountedSurface).toHaveAttribute("data-playing", "true");
   });
 
   it("keeps a static background without mounting WebGL work when WebGL2 is unavailable", () => {

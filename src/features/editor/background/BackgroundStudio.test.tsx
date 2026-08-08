@@ -50,6 +50,10 @@ describe("BackgroundStudio", () => {
       expect(slider).toHaveAttribute("min", "0");
       expect(slider).toHaveAttribute("max", "100");
     }
+
+    const speedMode = screen.getByLabelText("settings.editor.zenSpeedMode");
+    expect(within(speedMode).getAllByRole("option")).toHaveLength(2);
+    expect(speedMode).toHaveValue("fast");
   });
 
   it("can disable the ambient background without losing its configuration", () => {
@@ -177,6 +181,39 @@ describe("BackgroundStudio", () => {
       });
       expect(useSettingsStore.getState().cache[settingKey]).toBe("100");
     }
+  });
+
+  it("changes the global speed range without changing the percentage", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    const speed = screen.getByLabelText("settings.editor.zenSpeed");
+    const speedMode = screen.getByLabelText("settings.editor.zenSpeedMode");
+    fireEvent.change(speed, { target: { value: "37" } });
+    fireEvent.change(speedMode, { target: { value: "slow" } });
+
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.speedPercent"],
+    ).toBe("37");
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.speedMode"],
+    ).toBe("slow");
+    expect(speed).toHaveValue("37");
+  });
+
+  it("disables speed controls for a static shader", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    fireEvent.change(
+      screen.getByLabelText("settings.editor.zenBackgroundShader"),
+      {
+        target: { value: "dot-grid" },
+      },
+    );
+
+    expect(
+      screen.getByLabelText("settings.editor.zenSpeedMode"),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("settings.editor.zenSpeed")).toBeDisabled();
   });
 
   it("opens custom color palettes in a viewport-aware portal", () => {
