@@ -6,4 +6,4 @@ license = "Elastic-2.0"
 description = "System font family enumeration shared by the Tauri command layer and the napi backend"
 
 [dependencies]
-fontdb = "0.23"
+fontdb = "0.24"
