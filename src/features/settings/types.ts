@@ -74,6 +74,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.zenBackground.opacity": "global",
   "editor.zenBackground.speed": "global",
   "editor.zenBackground.speedPercent": "global",
+  "editor.zenBackground.speedMode": "global",
   "editor.zenBackground.shaderProps": "global",
   "editor.zenBackground.scale": "global",
   "editor.zenBackground.rotation": "global",
@@ -324,6 +325,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.zenBackground.speedPercent": String(
     ZEN_BACKGROUND_DEFAULTS.speedPercent,
   ),
+  "editor.zenBackground.speedMode": ZEN_BACKGROUND_DEFAULTS.speedMode,
   "editor.zenBackground.shaderProps": JSON.stringify(
     ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
   ),

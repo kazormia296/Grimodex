@@ -251,6 +251,35 @@ describe("ZenShaderSurface", () => {
     });
   });
 
+  it("changes speed range without remounting the Paper canvas", () => {
+    const view = render(
+      <ZenShaderSurface
+        config={{ ...ZEN_SHADER_DEFAULTS, speed: 37, speedMode: "fast" }}
+        playing
+      />,
+    );
+    const mountedCanvas = view.container.querySelector("[data-paper-shader]");
+
+    expect(shaderLifecycle.props.at(-1)?.speed).toBeCloseTo(
+      resolveZenShaderAnimationSpeed(37, "fast"),
+    );
+
+    view.rerender(
+      <ZenShaderSurface
+        config={{ ...ZEN_SHADER_DEFAULTS, speed: 37, speedMode: "slow" }}
+        playing
+      />,
+    );
+
+    expect(view.container.querySelector("[data-paper-shader]")).toBe(
+      mountedCanvas,
+    );
+    expect(shaderLifecycle.unmounted).toEqual([]);
+    expect(shaderLifecycle.props.at(-1)?.speed).toBeCloseTo(
+      resolveZenShaderAnimationSpeed(37, "slow"),
+    );
+  });
+
   it("uses the shader's analytic antialiasing without WebGL MSAA", () => {
     render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
 

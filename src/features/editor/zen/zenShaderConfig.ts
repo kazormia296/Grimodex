@@ -19,6 +19,7 @@ export const ZEN_SHADER_IDS = PAPER_SHADER_IDS;
 export type ZenShaderId = PaperShaderId;
 export type ZenPaletteMode = "theme" | "custom";
 export type ZenContrastGuardMode = "none" | "auto";
+export type ZenSpeedMode = "slow" | "fast";
 
 export interface ZenResolvedPalette {
   background: string;
@@ -32,6 +33,7 @@ export interface ZenShaderConfig {
   opacity: number;
   /** User-facing percentage. Paper receives a perceptually mapped speed. */
   speed: number;
+  speedMode: ZenSpeedMode;
   scale: number;
   rotation: number;
   offsetX: number;
@@ -74,6 +76,7 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
   paletteMode: ZEN_BACKGROUND_DEFAULTS.paletteMode,
   opacity: ZEN_BACKGROUND_DEFAULTS.opacity,
   speed: ZEN_BACKGROUND_DEFAULTS.speedPercent,
+  speedMode: ZEN_BACKGROUND_DEFAULTS.speedMode,
   scale: ZEN_BACKGROUND_DEFAULTS.scale,
   rotation: ZEN_BACKGROUND_DEFAULTS.rotation,
   offsetX: ZEN_BACKGROUND_DEFAULTS.offsetX,
@@ -106,13 +109,20 @@ function finiteNumber(
  * which makes the live background indistinguishable from a static frame.
  */
 export const ZEN_SHADER_MIN_ACTIVE_SPEED = 0.1;
+export const ZEN_SHADER_SLOW_SPEED_MULTIPLIER = 0.1;
 
-export function resolveZenShaderAnimationSpeed(speedPercent: number): number {
+export function resolveZenShaderAnimationSpeed(
+  speedPercent: number,
+  speedMode: ZenSpeedMode = "fast",
+): number {
   const normalized = finiteNumber(speedPercent, 0, 0, 100) / 100;
   if (normalized === 0) return 0;
-  return (
-    ZEN_SHADER_MIN_ACTIVE_SPEED + (1 - ZEN_SHADER_MIN_ACTIVE_SPEED) * normalized
-  );
+  const fastSpeed =
+    ZEN_SHADER_MIN_ACTIVE_SPEED +
+    (1 - ZEN_SHADER_MIN_ACTIVE_SPEED) * normalized;
+  return speedMode === "slow"
+    ? fastSpeed * ZEN_SHADER_SLOW_SPEED_MULTIPLIER
+    : fastSpeed;
 }
 
 function enumValue<T extends string>(
@@ -273,6 +283,11 @@ export function parseZenShaderConfig(
     ),
     opacity: finiteNumber(value(values, "opacity"), d.opacity, 0, 100),
     speed: parseSpeedPercent(values),
+    speedMode: enumValue(
+      value(values, "speedMode"),
+      ["slow", "fast"],
+      d.speedMode,
+    ),
     scale: finiteNumber(value(values, "scale"), d.scale, 0.25, 4),
     rotation: finiteNumber(value(values, "rotation"), d.rotation, 0, 360),
     offsetX: finiteNumber(value(values, "offsetX"), d.offsetX, -1, 1),
@@ -432,7 +447,7 @@ export function buildZenShaderProps(
     width: "100%",
     height: "100%",
     fit: "cover",
-    speed: resolveZenShaderAnimationSpeed(config.speed),
+    speed: resolveZenShaderAnimationSpeed(config.speed, config.speedMode),
     frame: 0,
     scale: config.scale,
     rotation: config.rotation,

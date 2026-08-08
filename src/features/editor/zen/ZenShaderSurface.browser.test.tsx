@@ -255,4 +255,69 @@ describe("ZenShaderSurface multipass integration", () => {
       averageRgbDelta(weakContrastFrame, strongContrastFrame),
     ).toBeGreaterThan(0.1);
   });
+
+  it("switches to the slow range without recreating the canvas", async () => {
+    const onRendererStatusChange = vi.fn();
+    const fastConfig = {
+      ...ZEN_SHADER_DEFAULTS,
+      speed: 100,
+      speedMode: "fast" as const,
+      opacity: 100,
+      glass: { ...ZEN_SHADER_DEFAULTS.glass, blur: 40 },
+      contrastGuard: {
+        ...ZEN_SHADER_DEFAULTS.contrastGuard,
+        mode: "auto" as const,
+        strength: 1,
+      },
+    };
+    const view = render(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={fastConfig}
+          playing
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+
+    await waitFor(
+      () => {
+        expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl");
+        expect(drawCount(view.container)).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+
+    const canvas = view.container.querySelector("canvas");
+    const beforeSwitch = readFrame(view.container);
+    const beforeSwitchDrawCount = drawCount(view.container);
+    view.rerender(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={{ ...fastConfig, speedMode: "slow" }}
+          playing
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+
+    expect(view.container.querySelector("canvas")).toBe(canvas);
+    await waitFor(() => {
+      expect(drawCount(view.container)).toBeGreaterThan(
+        beforeSwitchDrawCount + 4,
+      );
+    });
+    await waitFor(
+      () => {
+        expect(
+          averageRgbDelta(beforeSwitch, readFrame(view.container)),
+        ).toBeGreaterThan(0.1);
+      },
+      { timeout: 5_000, interval: 200 },
+    );
+  });
 });

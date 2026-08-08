@@ -4,11 +4,7 @@ import {
   getPaperShaderDefinition,
   resolvePaperShaderMount,
 } from "./paperShaderCatalog";
-import {
-  buildZenShaderProps,
-  resolveZenShaderAnimationSpeed,
-  type ZenShaderConfig,
-} from "./zenShaderConfig";
+import { buildZenShaderProps, type ZenShaderConfig } from "./zenShaderConfig";
 import { contrastTargetRatio } from "./zenContrastGuard";
 import { useZenShaderLayouts } from "./useZenShaderLayouts";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
@@ -183,7 +179,7 @@ export function ZenShaderSurface({
     };
   }, [mountKey]);
 
-  const animationSpeed = resolveZenShaderAnimationSpeed(config.speed);
+  const animationSpeed = resolved.speed ?? 0;
   const activeAnimationSpeed =
     preparedSceneUniforms !== null &&
     playing &&
