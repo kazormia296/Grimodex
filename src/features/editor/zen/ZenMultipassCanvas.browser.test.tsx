@@ -50,6 +50,22 @@ void main() {
   fragColor = vec4(vec3(0.1), 1.0);
 }`;
 
+const CONTRAST_BOUNDARY_SCENE = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  float value = gl_FragCoord.x < 32.0 ? 118.0 / 255.0 : 119.0 / 255.0;
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BRIGHT_CONTRAST_BOUNDARY_SCENE = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  float value = gl_FragCoord.x < 32.0 ? 116.0 / 255.0 : 117.0 / 255.0;
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
 const RUNTIME: ZenPostProcessRuntime = {
   rect: [0, 0, 1, 1],
   feather: [0, 0, 0, 0],
@@ -61,7 +77,18 @@ const RUNTIME: ZenPostProcessRuntime = {
   backdropColor: [0, 0, 0],
 } as const;
 
-function compositeUniforms(strength: number, enabled = true) {
+const BRIGHT_RUNTIME: ZenPostProcessRuntime = {
+  ...RUNTIME,
+  textColor: [0, 0, 0],
+  uiTextColor: [0, 0, 0],
+  backdropColor: [1, 1, 1],
+} as const;
+
+function compositeUniforms(
+  strength: number,
+  enabled = true,
+  runtime: ZenPostProcessRuntime = RUNTIME,
+) {
   return buildZenMultipassCompositeUniforms(
     {
       ...ZEN_SHADER_DEFAULTS,
@@ -78,7 +105,7 @@ function compositeUniforms(strength: number, enabled = true) {
         toolMix: 0,
       },
     },
-    RUNTIME,
+    runtime,
     new ZenUiSurfaceUniformBuffer(1),
   );
 }
@@ -87,22 +114,22 @@ function readCenterRed(canvas: HTMLCanvasElement) {
   return readCenterPixel(canvas)[0] ?? 0;
 }
 
-function readCenterPixel(canvas: HTMLCanvasElement) {
+function readPixel(canvas: HTMLCanvasElement, x: number, y: number) {
   const gl = canvas.getContext("webgl2");
   if (!gl) throw new Error("WebGL2 context is unavailable");
   // Read the default framebuffer: draw counters alone cannot prove that the
   // user-visible multipass output changed.
   const pixel = new Uint8Array(4);
-  gl.readPixels(
+  gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+  return pixel;
+}
+
+function readCenterPixel(canvas: HTMLCanvasElement) {
+  return readPixel(
+    canvas,
     Math.floor(canvas.width / 2),
     Math.floor(canvas.height / 2),
-    1,
-    1,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    pixel,
   );
-  return pixel;
 }
 
 function srgbLuminance(pixel: Uint8Array) {
@@ -325,6 +352,116 @@ describe("ZenMultipassCanvas live updates", () => {
       expect(guardedLuminance).toBeLessThan(unguardedLuminance);
       expect(1.05 / (guardedLuminance + 0.05)).toBeGreaterThanOrEqual(
         4.5 - 0.15,
+      );
+    });
+  });
+
+  it("keeps the contrast correction continuous at the target boundary", async () => {
+    const view = render(
+      <ZenMultipassCanvas
+        data-paper-shader="contrast-boundary-probe"
+        sceneFragment={CONTRAST_BOUNDARY_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0, false)}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={0}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    const canvas = canvasFrom(view.container);
+
+    await waitFor(() => expect(canvas.width).toBeGreaterThan(0));
+    await waitFor(() => expect(readCenterRed(canvas)).toBeGreaterThan(0));
+    const boundaryY = Math.floor(canvas.height / 2);
+    const unguardedPassing = readPixel(canvas, 16, boundaryY);
+    const unguardedFailing = readPixel(canvas, 48, boundaryY);
+    expect(unguardedPassing[0]).toBeGreaterThanOrEqual(117);
+    expect(unguardedPassing[0]).toBeLessThanOrEqual(119);
+    expect(unguardedFailing[0]).toBeGreaterThanOrEqual(118);
+    expect(unguardedFailing[0]).toBeLessThanOrEqual(120);
+
+    view.rerender(
+      <ZenMultipassCanvas
+        data-paper-shader="contrast-boundary-probe"
+        sceneFragment={CONTRAST_BOUNDARY_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0)}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={0}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+
+    await waitFor(() => {
+      const guardedPassing = readPixel(canvas, 16, boundaryY);
+      const guardedFailing = readPixel(canvas, 48, boundaryY);
+      expect(Math.abs((guardedPassing[0] ?? 0) - 118)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs((guardedPassing[0] ?? 0) - (guardedFailing[0] ?? 0)),
+      ).toBeLessThanOrEqual(3);
+      expect(
+        1.05 / (srgbLuminance(guardedFailing) + 0.05),
+      ).toBeGreaterThanOrEqual(4.45);
+    });
+  });
+
+  it("keeps bright-side contrast correction continuous at the target boundary", async () => {
+    const view = render(
+      <ZenMultipassCanvas
+        data-paper-shader="bright-contrast-boundary-probe"
+        sceneFragment={BRIGHT_CONTRAST_BOUNDARY_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0, false, BRIGHT_RUNTIME)}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={0}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    const canvas = canvasFrom(view.container);
+
+    await waitFor(() => expect(canvas.width).toBeGreaterThan(0));
+    await waitFor(() => expect(readCenterRed(canvas)).toBeGreaterThan(0));
+    const boundaryY = Math.floor(canvas.height / 2);
+    const unguardedFailing = readPixel(canvas, 16, boundaryY);
+    const unguardedPassing = readPixel(canvas, 48, boundaryY);
+    expect(unguardedFailing[0]).toBeGreaterThanOrEqual(115);
+    expect(unguardedFailing[0]).toBeLessThanOrEqual(117);
+    expect(unguardedPassing[0]).toBeGreaterThanOrEqual(116);
+    expect(unguardedPassing[0]).toBeLessThanOrEqual(118);
+
+    view.rerender(
+      <ZenMultipassCanvas
+        data-paper-shader="bright-contrast-boundary-probe"
+        sceneFragment={BRIGHT_CONTRAST_BOUNDARY_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0, true, BRIGHT_RUNTIME)}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={0}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+
+    await waitFor(() => {
+      const guardedFailing = readPixel(canvas, 16, boundaryY);
+      const guardedPassing = readPixel(canvas, 48, boundaryY);
+      expect(Math.abs((guardedPassing[0] ?? 0) - 117)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs((guardedPassing[0] ?? 0) - (guardedFailing[0] ?? 0)),
+      ).toBeLessThanOrEqual(3);
+      expect(srgbLuminance(guardedFailing) + 0.05).toBeGreaterThanOrEqual(
+        4.45 * 0.05,
       );
     });
   });

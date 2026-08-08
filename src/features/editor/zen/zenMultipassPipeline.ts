@@ -414,12 +414,14 @@ vec3 zenGuardVisibleColor(
       0.0,
       1.0
     );
-    // A per-pixel clamp maps every failing grayscale sample to the same
-    // luminance and freezes an otherwise animated background. Compress the
-    // complete visible range smoothly below the safe ceiling instead.
+    // Connect the failing-side correction to the identity path at the safe
+    // ceiling. This preserves motion without introducing a dark contour when
+    // a live pixel crosses the contrast threshold.
     float mappedLuminance =
-      maximumBackground * backgroundLuminance /
-      max(maximumBackground + backgroundLuminance, 0.00001);
+      maximumBackground <= 0.00001
+        ? 0.0
+        : maximumBackground * maximumBackground /
+          max(backgroundLuminance, 0.00001);
     float scale = mappedLuminance / max(backgroundLuminance, 0.00001);
     correctedLinear = linearColor * clamp(scale, 0.0, 1.0);
   } else {
@@ -428,12 +430,19 @@ vec3 zenGuardVisibleColor(
       0.0,
       1.0
     );
-    // Linear interpolation to white maps [0, 1] into
-    // [minimumBackground, 1], preserving motion while guaranteeing the floor.
+    // Mirror the darkening curve around white so the correction is also
+    // continuous at the minimum safe luminance. Recover the white mix from
+    // the desired luminance to preserve the source hue.
+    float distanceToWhite = max(1.0 - backgroundLuminance, 0.00001);
+    float safeDistanceToWhite = 1.0 - minimumBackground;
+    float mappedLuminance =
+      1.0 - safeDistanceToWhite * safeDistanceToWhite / distanceToWhite;
+    float whiteMix =
+      (mappedLuminance - backgroundLuminance) / distanceToWhite;
     correctedLinear = mix(
       linearColor,
       vec3(1.0),
-      minimumBackground
+      clamp(whiteMix, 0.0, 1.0)
     );
   }
   return clamp(zenLinearToSrgb(correctedLinear), 0.0, 1.0);
