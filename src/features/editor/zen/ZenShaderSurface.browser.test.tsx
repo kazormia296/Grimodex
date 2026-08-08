@@ -197,7 +197,9 @@ describe("ZenShaderSurface multipass integration", () => {
     const weakConfig = {
       ...ZEN_SHADER_DEFAULTS,
       speed: 0,
-      opacity: 18,
+      // Keep the surface translucent while ensuring the sampled Paper frame
+      // still contains pixels below the stronger 7:1 target.
+      opacity: 40,
       contrastGuard: {
         ...ZEN_SHADER_DEFAULTS.contrastGuard,
         mode: "auto" as const,
