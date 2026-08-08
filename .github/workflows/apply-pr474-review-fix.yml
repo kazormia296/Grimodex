@@ -94,27 +94,13 @@ jobs:
               "leading content helper",
           )
 
-          export_text = replace_once(
-              export_text,
-              '''      const paragraphIndent = topLevel
-                ? (ctx.settings.paragraphIndent ?? "none")
-                : "none";
-              const alreadyIndented =
-                paragraphIndent !== "none" && nodeStartsWithWhitespace(node);
-              const renderedInner =
-                paragraphIndent === "fullwidth-space" && !alreadyIndented
-                  ? "\\u3000" + inner
-                  : inner;
-
-              if (rendersHtmlParagraphs(ctx)) {
-                const className =
-                  paragraphIndent === "css" && !alreadyIndented
-                    ? ' class="paragraph-indent"'
-                    : "";
-                return "<p" + className + ">" + renderedInner + "</p>\\n";
-              }
-          ''',
-              '''      const paragraphIndent = topLevel
+          paragraph_start = export_text.index(
+              '      const paragraphIndent = topLevel\n'
+          )
+          paragraph_end = export_text.index(
+              '      return renderedInner + "\\n";\n', paragraph_start
+          )
+          paragraph_block = '''      const paragraphIndent = topLevel
                 ? (ctx.settings.paragraphIndent ?? "none")
                 : "none";
               const shouldIndent =
@@ -132,8 +118,11 @@ jobs:
                     : "";
                 return "<p" + className + ">" + renderedInner + "</p>\\n";
               }
-          ''',
-              "paragraph indentation rendering",
+          '''
+          export_text = (
+              export_text[:paragraph_start]
+              + paragraph_block
+              + export_text[paragraph_end:]
           )
 
           Path("src/features/export/exportEngine.ts").write_text(
@@ -173,6 +162,29 @@ jobs:
 
           test_path = Path("src/features/export/paragraphIndentDialogue.test.ts")
           test_text = test_path.read_text(encoding="utf-8")
+          test_text = replace_once(
+              test_text,
+              '''function makeScene(): TreeNodeData {
+            return {
+              id: "scene-1",
+          ''',
+              '''function makeScene(
+            id = "scene-1",
+            sortOrder = "a0",
+          ): TreeNodeData {
+            return {
+              id,
+          ''',
+              "scene fixture parameters",
+          )
+          test_text = replace_once(
+              test_text,
+              '''    sortOrder: "a0",
+          ''',
+              '''    sortOrder,
+          ''',
+              "scene fixture sort order",
+          )
           test_text = replace_once(
               test_text,
               '''function settings(overrides: Partial<ExportSettings>): ExportSettings {
@@ -222,33 +234,8 @@ jobs:
               '    expect(result).not.toContain("grimodex-dialogue-indent-exempt");\n',
               "",
           )
-          closing = '''  it("omits inserted full-width spaces in HTML output", () => {
-            const result = exportParagraphs(
-              ["地の文", "「会話文」"],
-              settings({
-                format: "html",
-                paragraphIndent: "fullwidth-space",
-              }),
-            );
 
-            expect(result).toContain("<p>　地の文</p>");
-            expect(result).toContain("<p>「会話文」</p>");
-          });
-          });
-          '''
-          replacement = '''  it("omits inserted full-width spaces in HTML output", () => {
-            const result = exportParagraphs(
-              ["地の文", "「会話文」"],
-              settings({
-                format: "html",
-                paragraphIndent: "fullwidth-space",
-              }),
-            );
-
-            expect(result).toContain("<p>　地の文</p>");
-            expect(result).toContain("<p>「会話文」</p>");
-          });
-
+          generated_tests = '''
             it("applies the policy inside generated prose blocks for full-width output", () => {
               const result = exportGeneratedParagraphs(
                 ["生成地の文", "「会話」", "『内声』", "　「意図的な字下げ」"],
@@ -276,15 +263,46 @@ jobs:
               expect(result).toContain("<p>『内声』</p>");
               expect(result).toContain("<p>　「意図的な字下げ」</p>");
             });
-          });
+
+            it("does not enumerate content for unselected scenes", () => {
+              const selected = makeScene("scene-1", "a0");
+              const unselected = makeScene("scene-2", "a1");
+              const contentMap = new Proxy<Record<string, string>>(
+                {
+                  [selected.id]: document("地の文"),
+                  [unselected.id]: document("「未選択の会話」"),
+                },
+                {
+                  ownKeys() {
+                    throw new Error("contentMap must not be enumerated");
+                  },
+                },
+              );
+
+              expect(
+                generateExport({
+                  nodes: [selected, unselected],
+                  contentMap,
+                  checkedIds: new Set([selected.id]),
+                  settings: settings({
+                    format: "plaintext",
+                    paragraphIndent: "fullwidth-space",
+                  }),
+                }),
+              ).toBe("　地の文\\n");
+            });
           '''
-          test_text = replace_once(
-              test_text, closing, replacement, "generated prose regression tests"
+          describe_end = test_text.rfind("\n});\n")
+          if describe_end < 0:
+              raise RuntimeError("dialogue describe terminator not found")
+          test_text = (
+              test_text[:describe_end]
+              + generated_tests
+              + test_text[describe_end:]
           )
           test_path.write_text(test_text, encoding="utf-8")
 
-          workflow_path = Path(".github/workflows/apply-pr474-review-fix.yml")
-          workflow_path.unlink()
+          Path(".github/workflows/apply-pr474-review-fix.yml").unlink()
           PY
 
       - name: Commit review fixes
