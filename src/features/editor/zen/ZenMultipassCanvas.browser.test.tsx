@@ -43,6 +43,18 @@ void main() {
   fragColor = vec4(vec3(0.5), 1.0);
 }`;
 
+const BLUR_STEP_SCENE = `#version 300 es
+precision mediump float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main() {
+  float value = step(u_resolution.x * 0.5, gl_FragCoord.x);
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BLUR_PROBE_WIDTH = 512;
+const BLUR_PROBE_HEIGHT = 64;
+
 const PASSING_DARK_SCENE = `#version 300 es
 precision highp float;
 out vec4 fragColor;
@@ -84,6 +96,11 @@ const BRIGHT_RUNTIME: ZenPostProcessRuntime = {
   backdropColor: [1, 1, 1],
 } as const;
 
+const FULL_GLASS_RUNTIME: ZenPostProcessRuntime = {
+  ...RUNTIME,
+  glassRect: [0, 0, 1, 1],
+} as const;
+
 function compositeUniforms(
   strength: number,
   enabled = true,
@@ -110,6 +127,61 @@ function compositeUniforms(
   );
 }
 
+function blurCompositeUniforms(blur: number) {
+  return buildZenMultipassCompositeUniforms(
+    {
+      ...ZEN_SHADER_DEFAULTS,
+      opacity: 100,
+      glass: {
+        ...ZEN_SHADER_DEFAULTS.glass,
+        enabled: true,
+        blur,
+        saturation: 1,
+        refraction: 0,
+        shine: 0,
+      },
+      contrastGuard: {
+        mode: "none",
+        strength: 0,
+        toolMix: 0,
+      },
+    },
+    FULL_GLASS_RUNTIME,
+    new ZenUiSurfaceUniformBuffer(1),
+  );
+}
+
+function BlurProbe({
+  name,
+  blur,
+  renderScale,
+}: {
+  name: string;
+  blur: number;
+  renderScale: number;
+}) {
+  return (
+    <ZenMultipassCanvas
+      data-paper-shader={`blur-strength-${name}`}
+      sceneFragment={BLUR_STEP_SCENE}
+      sceneUniforms={SIZING_UNIFORMS}
+      compositeFragment={buildZenMultipassCompositeFragment(1)}
+      compositeUniforms={blurCompositeUniforms(blur)}
+      minPixelRatio={1}
+      maxPixelCount={
+        BLUR_PROBE_WIDTH * BLUR_PROBE_HEIGHT * renderScale * renderScale
+      }
+      speed={0}
+      style={{
+        position: "relative",
+        width: BLUR_PROBE_WIDTH,
+        height: BLUR_PROBE_HEIGHT,
+      }}
+      webGlContextAttributes={WEBGL_ATTRIBUTES}
+    />
+  );
+}
+
 function readCenterRed(canvas: HTMLCanvasElement) {
   return readCenterPixel(canvas)[0] ?? 0;
 }
@@ -130,6 +202,43 @@ function readCenterPixel(canvas: HTMLCanvasElement) {
     Math.floor(canvas.width / 2),
     Math.floor(canvas.height / 2),
   );
+}
+
+function effectiveHorizontalBlurSigma(canvas: HTMLCanvasElement) {
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 context is unavailable");
+  const scanline = new Uint8Array(canvas.width * 4);
+  gl.readPixels(
+    0,
+    Math.floor(canvas.height / 2),
+    canvas.width,
+    1,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    scanline,
+  );
+
+  let weight = 0;
+  let weightedPosition = 0;
+  const positiveDifferences: Array<[position: number, weight: number]> = [];
+  for (let x = 0; x < canvas.width - 1; x += 1) {
+    const difference = (scanline[(x + 1) * 4] ?? 0) - (scanline[x * 4] ?? 0);
+    if (difference <= 0) continue;
+    const position = x + 0.5;
+    positiveDifferences.push([position, difference]);
+    weight += difference;
+    weightedPosition += position * difference;
+  }
+  if (weight === 0) return 0;
+
+  const mean = weightedPosition / weight;
+  const variance = positiveDifferences.reduce(
+    (sum, [position, difference]) => sum + (position - mean) ** 2 * difference,
+    0,
+  );
+  const cssWidth = canvas.getBoundingClientRect().width;
+  const renderScale = canvas.width / cssWidth;
+  return Math.sqrt(variance / weight) / renderScale;
 }
 
 function srgbLuminance(pixel: Uint8Array) {
@@ -159,6 +268,63 @@ const WEBGL_ATTRIBUTES = {
 } satisfies WebGLContextAttributes;
 
 describe("ZenMultipassCanvas live updates", () => {
+  it("matches CSS blur strength across render scales", async () => {
+    const probes = [
+      { name: "zero", blur: 0, renderScale: 1 },
+      { name: "one", blur: 1, renderScale: 1 },
+      { name: "twenty-two-full", blur: 22, renderScale: 1 },
+      { name: "twenty-two-half", blur: 22, renderScale: 0.5 },
+      { name: "forty", blur: 40, renderScale: 1 },
+    ] as const;
+    const { container } = render(
+      <div>
+        {probes.map((probe) => (
+          <BlurProbe key={probe.name} {...probe} />
+        ))}
+      </div>,
+    );
+    const canvasFor = (name: string) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="blur-strength-${name}"]`,
+        ) ?? container,
+      );
+
+    await waitFor(
+      () => {
+        for (const probe of probes) {
+          const canvas = canvasFor(probe.name);
+          expect(canvas.width).toBe(BLUR_PROBE_WIDTH * probe.renderScale);
+          expect(
+            readPixel(canvas, canvas.width - 2, canvas.height / 2)[0],
+          ).toBe(255);
+        }
+      },
+      { timeout: 5_000 },
+    );
+
+    const blur0 = effectiveHorizontalBlurSigma(canvasFor("zero"));
+    const blur1 = effectiveHorizontalBlurSigma(canvasFor("one"));
+    const blur22Full = effectiveHorizontalBlurSigma(
+      canvasFor("twenty-two-full"),
+    );
+    const blur22Half = effectiveHorizontalBlurSigma(
+      canvasFor("twenty-two-half"),
+    );
+    const blur40 = effectiveHorizontalBlurSigma(canvasFor("forty"));
+
+    expect(blur22Full).toBeGreaterThanOrEqual(19.8);
+    expect(blur22Full).toBeLessThanOrEqual(24.2);
+    expect(blur22Half).toBeGreaterThanOrEqual(19.8);
+    expect(blur22Half).toBeLessThanOrEqual(24.2);
+    expect(Math.abs(blur22Half - blur22Full)).toBeLessThanOrEqual(2);
+    expect(blur40).toBeGreaterThanOrEqual(36);
+    expect(blur40).toBeLessThanOrEqual(44);
+    expect(blur0).toBeLessThanOrEqual(1.5);
+    expect(blur1).toBeGreaterThan(blur0);
+    expect(blur1).toBeLessThan(4);
+  }, 30_000);
+
   it("allocates fresh render targets when Strict Mode replays initialization", async () => {
     const ref = createRef<PaperShaderElement>();
     const { container } = render(

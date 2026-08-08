@@ -12,8 +12,10 @@ import type {
 } from "@paper-design/shaders";
 import {
   ZEN_MULTIPASS_BLUR_FRAGMENT,
+  ZEN_MULTIPASS_BLUR_ITERATIONS,
   ZEN_MULTIPASS_BLUR_SCALE,
   ZEN_MULTIPASS_FULLSCREEN_VERTEX,
+  resolveZenMultipassBlurStep,
 } from "./zenMultipassPipeline";
 
 const ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT = 2;
@@ -693,21 +695,32 @@ class ZenMultipassRenderer {
 
     if (this.dirtyBlur) {
       const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
+      const blurStep = resolveZenMultipassBlurStep(
+        blurRadius,
+        this.renderScale,
+      );
       this.blurredTexture = this.sceneTarget.texture;
-      if (blurRadius > 0.00001) {
-        const blurStep = Math.max(0.5, (blurRadius * this.renderScale) / 4);
-        this.drawBlurPass(
-          this.sceneTarget.texture,
-          this.blurHorizontalTarget,
-          blurStep / this.sceneTarget.width,
-          0,
-        );
-        this.drawBlurPass(
-          this.blurHorizontalTarget.texture,
-          this.blurVerticalTarget,
-          0,
-          blurStep / this.sceneTarget.height,
-        );
+      if (blurStep > 0) {
+        let blurSource = this.sceneTarget.texture;
+        for (
+          let iteration = 0;
+          iteration < ZEN_MULTIPASS_BLUR_ITERATIONS;
+          iteration += 1
+        ) {
+          this.drawBlurPass(
+            blurSource,
+            this.blurHorizontalTarget,
+            blurStep / this.sceneTarget.width,
+            0,
+          );
+          this.drawBlurPass(
+            this.blurHorizontalTarget.texture,
+            this.blurVerticalTarget,
+            0,
+            blurStep / this.sceneTarget.height,
+          );
+          blurSource = this.blurVerticalTarget.texture;
+        }
         this.blurredTexture = this.blurVerticalTarget.texture;
       }
       this.dirtyBlur = false;

@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { ZenShaderConfig } from "./zenShaderConfig";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import {
+  ZEN_MULTIPASS_BLUR_ITERATIONS,
+  ZEN_MULTIPASS_BLUR_KERNEL_SIGMA,
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
   buildZenMultipassSceneFragment,
   buildZenMultipassSceneUniforms,
+  resolveZenMultipassBlurStep,
   zenMultipassSurfaceCapacity,
 } from "./zenMultipassPipeline";
 
@@ -40,6 +43,28 @@ const config = {
 
 // Runtime pixels are covered separately; this suite fixes the shader-stage contract.
 describe("Zen multipass pipeline", () => {
+  it("maps CSS blur radius to the repeated kernel sample step", () => {
+    expect(resolveZenMultipassBlurStep(0, 1)).toBe(0);
+    expect(resolveZenMultipassBlurStep(-1, 1)).toBe(0);
+    expect(resolveZenMultipassBlurStep(Number.NaN, 1)).toBe(0);
+    expect(resolveZenMultipassBlurStep(Number.POSITIVE_INFINITY, 1)).toBe(0);
+    expect(resolveZenMultipassBlurStep(22, 0)).toBe(0);
+    expect(resolveZenMultipassBlurStep(22, -1)).toBe(0);
+    expect(resolveZenMultipassBlurStep(22, Number.NaN)).toBe(0);
+    expect(resolveZenMultipassBlurStep(22, Number.POSITIVE_INFINITY)).toBe(0);
+
+    const fullScaleStep = resolveZenMultipassBlurStep(22, 1);
+    const halfScaleStep = resolveZenMultipassBlurStep(22, 0.5);
+
+    expect(fullScaleStep).toBeCloseTo(7.75964455, 8);
+    expect(halfScaleStep).toBeCloseTo(fullScaleStep / 2, 10);
+    expect(
+      fullScaleStep *
+        ZEN_MULTIPASS_BLUR_KERNEL_SIGMA *
+        Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS),
+    ).toBeCloseTo(22, 10);
+  });
+
   it("keeps Scene effects before Glass and contrast work", () => {
     const fragment = buildZenMultipassSceneFragment(`#version 300 es
 precision highp float;

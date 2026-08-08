@@ -6,6 +6,28 @@ import {
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
 export const ZEN_MULTIPASS_BLUR_SCALE = 0.5;
+export const ZEN_MULTIPASS_BLUR_ITERATIONS = 3;
+// Standard deviation produced by one unit step of the fixed five-tap kernel.
+export const ZEN_MULTIPASS_BLUR_KERNEL_SIGMA = 1.6368927515195764;
+
+export function resolveZenMultipassBlurStep(
+  blurCssPx: number,
+  renderScale: number,
+) {
+  if (
+    !Number.isFinite(blurCssPx) ||
+    !Number.isFinite(renderScale) ||
+    blurCssPx <= 0 ||
+    renderScale <= 0
+  ) {
+    return 0;
+  }
+  // Variances add across repeated Gaussian passes, hence sqrt(iterations).
+  return (
+    (blurCssPx * renderScale) /
+    (ZEN_MULTIPASS_BLUR_KERNEL_SIGMA * Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS))
+  );
+}
 
 const MAIN_PATTERN = /void\s+main\s*\(\s*\)/;
 
