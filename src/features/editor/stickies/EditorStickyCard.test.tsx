@@ -183,6 +183,25 @@ describe("EditorStickyCard Map parity", () => {
     );
   });
 
+  it("bleeds the mask boundary beyond the paper edge for smoother rotation AA", () => {
+    renderCard({ editing: false, width: 240, height: 120 });
+
+    const holes = screen.getByTestId("editor-sticky-mask-holes");
+    const mask = holes.parentElement;
+    expect(mask).not.toBeNull();
+    expect(mask).toHaveAttribute("x", "-1");
+    expect(mask).toHaveAttribute("y", "-1");
+    expect(mask).toHaveAttribute("width", "242");
+    expect(mask).toHaveAttribute("height", "122");
+
+    const whiteRect = mask?.querySelector("rect");
+    expect(whiteRect).not.toBeNull();
+    expect(whiteRect).toHaveAttribute("x", "-1");
+    expect(whiteRect).toHaveAttribute("y", "-1");
+    expect(whiteRect).toHaveAttribute("width", "242");
+    expect(whiteRect).toHaveAttribute("height", "122");
+  });
+
   it("keeps the manuscript font size in display and edit modes", () => {
     const { rerender } = renderCard({ editing: false, fontSize: 18 });
 
