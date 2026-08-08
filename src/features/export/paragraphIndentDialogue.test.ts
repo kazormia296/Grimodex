@@ -3,10 +3,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { generateExport } from "./exportEngine";
 import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from "./types";
 
-function makeScene(
-  id = "scene-1",
-  sortOrder = "a0",
-): TreeNodeData {
+function makeScene(id = "scene-1", sortOrder = "a0"): TreeNodeData {
   return {
     id,
     projectId: "project-1",
@@ -151,9 +148,7 @@ describe("dialogue paragraph indentation", () => {
       settings({ format: "html", paragraphIndent: "css" }),
     );
 
-    expect(result).toContain(
-      '<p class="paragraph-indent">生成地の文</p>',
-    );
+    expect(result).toContain('<p class="paragraph-indent">生成地の文</p>');
     expect(result).toContain("<p>「会話」</p>");
     expect(result).toContain("<p>『内声』</p>");
     expect(result).toContain("<p>　「意図的な字下げ」</p>");
@@ -186,5 +181,4 @@ describe("dialogue paragraph indentation", () => {
       }),
     ).toBe("　地の文\n");
   });
-
 });

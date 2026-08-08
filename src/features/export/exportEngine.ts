@@ -279,23 +279,23 @@ function renderNode(node: PMNode, ctx: RenderCtx, topLevel = false): string {
       }
 
       const paragraphIndent = topLevel
-      ? (ctx.settings.paragraphIndent ?? "none")
-      : "none";
-    const shouldIndent =
-      paragraphIndent !== "none" &&
-      shouldApplyAutomaticParagraphIndent(firstRenderedText(node));
-    const renderedInner =
-      paragraphIndent === "fullwidth-space" && shouldIndent
-        ? "\u3000" + inner
-        : inner;
+        ? (ctx.settings.paragraphIndent ?? "none")
+        : "none";
+      const shouldIndent =
+        paragraphIndent !== "none" &&
+        shouldApplyAutomaticParagraphIndent(firstRenderedText(node));
+      const renderedInner =
+        paragraphIndent === "fullwidth-space" && shouldIndent
+          ? "\u3000" + inner
+          : inner;
 
-    if (rendersHtmlParagraphs(ctx)) {
-      const className =
-        paragraphIndent === "css" && shouldIndent
-          ? ' class="paragraph-indent"'
-          : "";
-      return "<p" + className + ">" + renderedInner + "</p>\n";
-    }
+      if (rendersHtmlParagraphs(ctx)) {
+        const className =
+          paragraphIndent === "css" && shouldIndent
+            ? ' class="paragraph-indent"'
+            : "";
+        return "<p" + className + ">" + renderedInner + "</p>\n";
+      }
       return renderedInner + "\n";
     }
 
