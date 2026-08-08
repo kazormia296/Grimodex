@@ -228,6 +228,33 @@ describe("ZenShaderSurface", () => {
     ).toHaveAttribute("data-glass-refraction", "0");
   });
 
+  it("keeps zero opacity hidden after WebGL readiness for editor and preview", async () => {
+    const onRendererStatusChange = vi.fn();
+    const config = { ...ZEN_SHADER_DEFAULTS, opacity: 0 };
+    const view = render(
+      <ZenShaderSurface
+        config={config}
+        playing={false}
+        onRendererStatusChange={onRendererStatusChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl");
+    });
+    const surface = view.container.querySelector<HTMLElement>(
+      "[data-zen-shader-surface]",
+    );
+    expect(surface).not.toBeNull();
+    expect(surface?.style.opacity).toBe("0");
+
+    view.rerender(<ZenShaderSurface config={config} playing={false} preview />);
+    expect(
+      view.container.querySelector<HTMLElement>("[data-zen-shader-surface]")
+        ?.style.opacity,
+    ).toBe("0");
+  });
+
   it("uses one native pixel per CSS pixel up to Full HD", async () => {
     const { rerender } = render(
       <ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />,

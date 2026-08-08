@@ -228,7 +228,12 @@ export function ZenShaderSurface({
       style={{
         // The final GPU pass already composites the configured opacity against
         // the theme backdrop. Do not apply it again after contrast correction.
-        opacity: shaderReady ? 1 : config.opacity / 100,
+        // A zero opacity setting is an explicit hide contract. Keep the whole
+        // surface transparent even after the renderer becomes ready so the
+        // final contrast pass (which intentionally renders opaque pixels) does
+        // not reintroduce a theme-colored backdrop.
+        opacity:
+          config.opacity === 0 ? 0 : shaderReady ? 1 : config.opacity / 100,
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >

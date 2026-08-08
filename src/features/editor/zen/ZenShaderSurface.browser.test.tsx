@@ -256,6 +256,63 @@ describe("ZenShaderSurface multipass integration", () => {
     ).toBeGreaterThan(0.1);
   });
 
+  it("keeps zero opacity transparent and restores it without remounting", async () => {
+    const onRendererStatusChange = vi.fn();
+    const hiddenConfig = {
+      ...ZEN_SHADER_DEFAULTS,
+      speed: 0,
+      opacity: 0,
+      glass: {
+        ...ZEN_SHADER_DEFAULTS.glass,
+        enabled: true,
+      },
+      contrastGuard: {
+        ...ZEN_SHADER_DEFAULTS.contrastGuard,
+        mode: "auto" as const,
+      },
+    };
+    const view = render(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={hiddenConfig}
+          playing={false}
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+
+    await waitFor(
+      () => {
+        expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl");
+        expect(drawCount(view.container)).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+
+    const surface = view.container.querySelector<HTMLElement>(
+      "[data-zen-shader-surface]",
+    );
+    const canvas = view.container.querySelector("canvas");
+    expect(getComputedStyle(surface!).opacity).toBe("0");
+
+    view.rerender(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={{ ...hiddenConfig, opacity: 1 }}
+          playing={false}
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+
+    expect(view.container.querySelector("canvas")).toBe(canvas);
+    expect(getComputedStyle(surface!).opacity).toBe("1");
+  });
+
   it("switches to the slow range without recreating the canvas", async () => {
     const onRendererStatusChange = vi.fn();
     const fastConfig = {

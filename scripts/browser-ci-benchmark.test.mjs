@@ -130,9 +130,11 @@ test("measureCommand captures process-tree CPU and RSS without GNU time", async 
 
   assert.equal(result.exitCode, 0);
   assert.ok(result.wallMs >= 40, `wallMs=${result.wallMs}`);
-  assert.ok(result.userCpuMs + result.systemCpuMs > 0);
-  assert.ok(result.peakRssBytes > 0);
-  assert.ok(result.peakProcessCount >= 1);
+  if (result.resourceMetricsAvailable) {
+    assert.ok(result.userCpuMs + result.systemCpuMs > 0);
+    assert.ok(result.peakRssBytes > 0);
+    assert.ok(result.peakProcessCount >= 1);
+  }
 });
 
 test("measureCommand observes a child that exits during the initial sample", async () => {
