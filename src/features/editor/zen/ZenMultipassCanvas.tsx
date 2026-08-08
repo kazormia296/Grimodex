@@ -13,9 +13,8 @@ import type {
 import {
   ZEN_MULTIPASS_BLUR_FRAGMENT,
   ZEN_MULTIPASS_BLUR_ITERATIONS,
-  ZEN_MULTIPASS_BLUR_SCALE,
   ZEN_MULTIPASS_FULLSCREEN_VERTEX,
-  resolveZenMultipassBlurStep,
+  resolveZenMultipassBlurPlan,
 } from "./zenMultipassPipeline";
 
 const ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT = 2;
@@ -156,6 +155,7 @@ interface RenderTarget {
   texture: WebGLTexture;
   width: number;
   height: number;
+  mipmapped: boolean;
 }
 
 interface ProgramBundle {
@@ -316,7 +316,7 @@ class ZenMultipassRenderer {
       ZEN_MULTIPASS_FULLSCREEN_VERTEX,
       compositeFragment,
     );
-    this.sceneTarget = this.createTarget();
+    this.sceneTarget = this.createTarget(true);
     this.blurHorizontalTarget = this.createTarget();
     this.blurVerticalTarget = this.createTarget();
     this.blurredTexture = this.sceneTarget.texture;
@@ -344,13 +344,13 @@ class ZenMultipassRenderer {
     else cancelAnimationFrame(handle);
   };
 
-  private createTarget(): RenderTarget {
+  private createTarget(mipmapped = false): RenderTarget {
     const framebuffer = this.gl.createFramebuffer();
     const texture = this.gl.createTexture();
     if (!framebuffer || !texture) {
       throw new Error("Unable to allocate Zen multipass render target");
     }
-    return { framebuffer, texture, width: 0, height: 0 };
+    return { framebuffer, texture, width: 0, height: 0, mipmapped };
   }
 
   private allocateTarget(target: RenderTarget, width: number, height: number) {
@@ -361,7 +361,11 @@ class ZenMultipassRenderer {
     gl.bindTexture(gl.TEXTURE_2D, target.texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(
+      gl.TEXTURE_2D,
+      gl.TEXTURE_MIN_FILTER,
+      target.mipmapped ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR,
+    );
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texImage2D(
       gl.TEXTURE_2D,
@@ -374,6 +378,7 @@ class ZenMultipassRenderer {
       gl.UNSIGNED_BYTE,
       null,
     );
+    if (target.mipmapped) gl.generateMipmap(gl.TEXTURE_2D);
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
     gl.framebufferTexture2D(
       gl.FRAMEBUFFER,
@@ -402,21 +407,11 @@ class ZenMultipassRenderer {
     );
     const width = Math.max(1, Math.round(targetWidth * budgetScale));
     const height = Math.max(1, Math.round(targetHeight * budgetScale));
-    const blurWidth = Math.max(1, Math.ceil(width * ZEN_MULTIPASS_BLUR_SCALE));
-    const blurHeight = Math.max(
-      1,
-      Math.ceil(height * ZEN_MULTIPASS_BLUR_SCALE),
-    );
     const nextRenderScale = width / rect.width;
     const renderScaleChanged = this.renderScale !== nextRenderScale;
     this.renderScale = nextRenderScale;
     const targetsReady =
-      this.sceneTarget.width === width &&
-      this.sceneTarget.height === height &&
-      this.blurHorizontalTarget.width === blurWidth &&
-      this.blurHorizontalTarget.height === blurHeight &&
-      this.blurVerticalTarget.width === blurWidth &&
-      this.blurVerticalTarget.height === blurHeight;
+      this.sceneTarget.width === width && this.sceneTarget.height === height;
     if (
       this.canvas.width === width &&
       this.canvas.height === height &&
@@ -428,8 +423,6 @@ class ZenMultipassRenderer {
     if (this.canvas.width !== width) this.canvas.width = width;
     if (this.canvas.height !== height) this.canvas.height = height;
     this.allocateTarget(this.sceneTarget, width, height);
-    this.allocateTarget(this.blurHorizontalTarget, blurWidth, blurHeight);
-    this.allocateTarget(this.blurVerticalTarget, blurWidth, blurHeight);
     this.invalidateScene();
   };
 
@@ -621,6 +614,7 @@ class ZenMultipassRenderer {
   private drawBlurPass(
     source: WebGLTexture,
     target: RenderTarget,
+    sourceLod: number,
     directionX: number,
     directionY: number,
   ) {
@@ -633,6 +627,10 @@ class ZenMultipassRenderer {
     gl.uniform1i(
       gl.getUniformLocation(this.blurProgram.program, "u_sourceTexture"),
       0,
+    );
+    gl.uniform1f(
+      gl.getUniformLocation(this.blurProgram.program, "u_sourceLod"),
+      sourceLod,
     );
     gl.uniform2f(
       gl.getUniformLocation(this.blurProgram.program, "u_blurDirection"),
@@ -695,13 +693,33 @@ class ZenMultipassRenderer {
 
     if (this.dirtyBlur) {
       const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
-      const blurStep = resolveZenMultipassBlurStep(
+      const blurPlan = resolveZenMultipassBlurPlan(
         blurRadius,
         this.renderScale,
       );
       this.blurredTexture = this.sceneTarget.texture;
-      if (blurStep > 0) {
+      if (blurPlan) {
+        const blurDivisor = 2 ** blurPlan.sourceLod;
+        const blurWidth = Math.max(
+          1,
+          Math.floor(this.sceneTarget.width / blurDivisor),
+        );
+        const blurHeight = Math.max(
+          1,
+          Math.floor(this.sceneTarget.height / blurDivisor),
+        );
+        this.allocateTarget(this.blurHorizontalTarget, blurWidth, blurHeight);
+        this.allocateTarget(this.blurVerticalTarget, blurWidth, blurHeight);
+        if (blurPlan.sourceLod > 0) {
+          const gl = this.gl;
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.texture);
+          gl.generateMipmap(gl.TEXTURE_2D);
+        }
+
         let blurSource = this.sceneTarget.texture;
+        let sourceLod = blurPlan.sourceLod;
         for (
           let iteration = 0;
           iteration < ZEN_MULTIPASS_BLUR_ITERATIONS;
@@ -710,16 +728,19 @@ class ZenMultipassRenderer {
           this.drawBlurPass(
             blurSource,
             this.blurHorizontalTarget,
-            blurStep / this.sceneTarget.width,
+            sourceLod,
+            blurPlan.sampleStep / this.blurHorizontalTarget.width,
             0,
           );
           this.drawBlurPass(
             this.blurHorizontalTarget.texture,
             this.blurVerticalTarget,
             0,
-            blurStep / this.sceneTarget.height,
+            0,
+            blurPlan.sampleStep / this.blurVerticalTarget.height,
           );
           blurSource = this.blurVerticalTarget.texture;
+          sourceLod = 0;
         }
         this.blurredTexture = this.blurVerticalTarget.texture;
       }

@@ -4,11 +4,13 @@ import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import {
   ZEN_MULTIPASS_BLUR_ITERATIONS,
   ZEN_MULTIPASS_BLUR_KERNEL_SIGMA,
+  ZEN_MULTIPASS_MAX_SAMPLE_STEP,
+  ZEN_MULTIPASS_BLUR_FRAGMENT,
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
   buildZenMultipassSceneFragment,
   buildZenMultipassSceneUniforms,
-  resolveZenMultipassBlurStep,
+  resolveZenMultipassBlurPlan,
   zenMultipassSurfaceCapacity,
 } from "./zenMultipassPipeline";
 
@@ -43,26 +45,43 @@ const config = {
 
 // Runtime pixels are covered separately; this suite fixes the shader-stage contract.
 describe("Zen multipass pipeline", () => {
-  it("maps CSS blur radius to the repeated kernel sample step", () => {
-    expect(resolveZenMultipassBlurStep(0, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(-1, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(Number.NaN, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(Number.POSITIVE_INFINITY, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, 0)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, -1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, Number.NaN)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, Number.POSITIVE_INFINITY)).toBe(0);
-
-    const fullScaleStep = resolveZenMultipassBlurStep(22, 1);
-    const halfScaleStep = resolveZenMultipassBlurStep(22, 0.5);
-
-    expect(fullScaleStep).toBeCloseTo(7.75964455, 8);
-    expect(halfScaleStep).toBeCloseTo(fullScaleStep / 2, 10);
+  it("maps CSS blur radius to an anti-lattice mip and sample step", () => {
+    expect(resolveZenMultipassBlurPlan(0, 1)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(-1, 1)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(Number.NaN, 1)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(Number.POSITIVE_INFINITY, 1)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(22, 0)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(22, -1)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(22, Number.NaN)).toBeNull();
     expect(
-      fullScaleStep *
-        ZEN_MULTIPASS_BLUR_KERNEL_SIGMA *
-        Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS),
-    ).toBeCloseTo(22, 10);
+      resolveZenMultipassBlurPlan(22, Number.POSITIVE_INFINITY),
+    ).toBeNull();
+
+    const cases = [
+      { blur: 1, renderScale: 1, lod: 0, targetScale: 1 },
+      { blur: 22, renderScale: 1, lod: 3, targetScale: 1 / 8 },
+      { blur: 22, renderScale: 0.5, lod: 2, targetScale: 1 / 4 },
+      { blur: 40, renderScale: 1, lod: 4, targetScale: 1 / 16 },
+    ] as const;
+
+    for (const testCase of cases) {
+      const plan = resolveZenMultipassBlurPlan(
+        testCase.blur,
+        testCase.renderScale,
+      );
+      expect(plan).not.toBeNull();
+      expect(plan?.sourceLod).toBe(testCase.lod);
+      expect(plan?.targetScale).toBe(testCase.targetScale);
+      expect(plan?.sampleStep).toBeLessThanOrEqual(
+        ZEN_MULTIPASS_MAX_SAMPLE_STEP + Number.EPSILON,
+      );
+      const reconstructedCssBlur =
+        ((plan?.sampleStep ?? 0) *
+          ZEN_MULTIPASS_BLUR_KERNEL_SIGMA *
+          Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS)) /
+        (testCase.targetScale * testCase.renderScale);
+      expect(reconstructedCssBlur).toBeCloseTo(testCase.blur, 10);
+    }
   });
 
   it("keeps Scene effects before Glass and contrast work", () => {
@@ -82,6 +101,8 @@ void main() { fragColor = vec4(0.25); }`);
     const fragment = buildZenMultipassCompositeFragment(7);
 
     expect(fragment).toContain("u_zenUiSurfaceRects[8]");
+    expect(ZEN_MULTIPASS_BLUR_FRAGMENT).toContain("textureLod");
+    expect(ZEN_MULTIPASS_BLUR_FRAGMENT).toContain("u_sourceLod");
     expect(
       fragment.indexOf("texture(u_blurredTexture, refractedUv)"),
     ).toBeLessThan(fragment.indexOf("vec3 composedColor = mix("));

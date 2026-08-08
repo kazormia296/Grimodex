@@ -52,6 +52,14 @@ void main() {
   fragColor = vec4(vec3(value), 1.0);
 }`;
 
+const BLUR_GRATING_SCENE = `#version 300 es
+precision mediump float;
+out vec4 fragColor;
+void main() {
+  float value = mod(floor(gl_FragCoord.x / 6.0), 2.0);
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
 const BLUR_PROBE_WIDTH = 512;
 const BLUR_PROBE_HEIGHT = 64;
 
@@ -155,15 +163,17 @@ function BlurProbe({
   name,
   blur,
   renderScale,
+  sceneFragment = BLUR_STEP_SCENE,
 }: {
   name: string;
   blur: number;
   renderScale: number;
+  sceneFragment?: string;
 }) {
   return (
     <ZenMultipassCanvas
       data-paper-shader={`blur-strength-${name}`}
-      sceneFragment={BLUR_STEP_SCENE}
+      sceneFragment={sceneFragment}
       sceneUniforms={SIZING_UNIFORMS}
       compositeFragment={buildZenMultipassCompositeFragment(1)}
       compositeUniforms={blurCompositeUniforms(blur)}
@@ -239,6 +249,29 @@ function effectiveHorizontalBlurSigma(canvas: HTMLCanvasElement) {
   const cssWidth = canvas.getBoundingClientRect().width;
   const renderScale = canvas.width / cssWidth;
   return Math.sqrt(variance / weight) / renderScale;
+}
+
+function horizontalRedRange(canvas: HTMLCanvasElement, inset: number) {
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 context is unavailable");
+  const scanline = new Uint8Array(canvas.width * 4);
+  gl.readPixels(
+    0,
+    Math.floor(canvas.height / 2),
+    canvas.width,
+    1,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    scanline,
+  );
+  let minimum = 255;
+  let maximum = 0;
+  for (let x = inset; x < canvas.width - inset; x += 1) {
+    const value = scanline[x * 4] ?? 0;
+    minimum = Math.min(minimum, value);
+    maximum = Math.max(maximum, value);
+  }
+  return maximum - minimum;
 }
 
 function srgbLuminance(pixel: Uint8Array) {
@@ -324,6 +357,30 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(blur1).toBeGreaterThan(blur0);
     expect(blur1).toBeLessThan(4);
   }, 30_000);
+
+  it("suppresses periodic echoes from the repeated blur kernel", async () => {
+    const { container } = render(
+      <BlurProbe
+        name="grating"
+        blur={22}
+        renderScale={1}
+        sceneFragment={BLUR_GRATING_SCENE}
+      />,
+    );
+    const canvas = canvasFrom(container);
+
+    await waitFor(() => expect(canvas.width).toBe(BLUR_PROBE_WIDTH));
+    await waitFor(
+      () => {
+        expect(readCenterRed(canvas)).toBeGreaterThan(96);
+        expect(readCenterRed(canvas)).toBeLessThan(160);
+        expect(
+          horizontalRedRange(canvas, BLUR_PROBE_WIDTH / 4),
+        ).toBeLessThanOrEqual(24);
+      },
+      { timeout: 5_000 },
+    );
+  });
 
   it("allocates fresh render targets when Strict Mode replays initialization", async () => {
     const ref = createRef<PaperShaderElement>();

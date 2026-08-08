@@ -5,28 +5,49 @@ import {
 } from "./zenPostProcessing";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
-export const ZEN_MULTIPASS_BLUR_SCALE = 0.5;
 export const ZEN_MULTIPASS_BLUR_ITERATIONS = 3;
 // Standard deviation produced by one unit step of the fixed five-tap kernel.
 export const ZEN_MULTIPASS_BLUR_KERNEL_SIGMA = 1.6368927515195764;
+export const ZEN_MULTIPASS_MAX_SAMPLE_STEP = 1;
+export const ZEN_MULTIPASS_MAX_BLUR_LOD = 8;
+const ZEN_MULTIPASS_TARGET_SIGMA =
+  ZEN_MULTIPASS_BLUR_KERNEL_SIGMA *
+  Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS) *
+  ZEN_MULTIPASS_MAX_SAMPLE_STEP;
 
-export function resolveZenMultipassBlurStep(
+export interface ZenMultipassBlurPlan {
+  sourceLod: number;
+  targetScale: number;
+  sampleStep: number;
+}
+
+export function resolveZenMultipassBlurPlan(
   blurCssPx: number,
   renderScale: number,
-) {
+): ZenMultipassBlurPlan | null {
   if (
     !Number.isFinite(blurCssPx) ||
     !Number.isFinite(renderScale) ||
     blurCssPx <= 0 ||
     renderScale <= 0
   ) {
-    return 0;
+    return null;
   }
-  // Variances add across repeated Gaussian passes, hence sqrt(iterations).
-  return (
-    (blurCssPx * renderScale) /
-    (ZEN_MULTIPASS_BLUR_KERNEL_SIGMA * Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS))
+
+  const blurScenePx = blurCssPx * renderScale;
+  const requestedLod = Math.ceil(
+    Math.log2(blurScenePx / ZEN_MULTIPASS_TARGET_SIGMA),
   );
+  const sourceLod = Math.min(
+    ZEN_MULTIPASS_MAX_BLUR_LOD,
+    Math.max(0, requestedLod),
+  );
+  const targetScale = 2 ** -sourceLod;
+  const sampleStep =
+    (blurScenePx * targetScale) /
+    (ZEN_MULTIPASS_BLUR_KERNEL_SIGMA *
+      Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS));
+  return { sourceLod, targetScale, sampleStep };
 }
 
 const MAIN_PATTERN = /void\s+main\s*\(\s*\)/;
@@ -141,13 +162,14 @@ precision highp float;
 in vec2 v_uv;
 out vec4 fragColor;
 uniform sampler2D u_sourceTexture;
+uniform float u_sourceLod;
 uniform vec2 u_blurDirection;
 void main() {
-  vec4 color = texture(u_sourceTexture, v_uv) * 0.2270270270;
-  color += texture(u_sourceTexture, v_uv + u_blurDirection * 1.3846153846) * 0.3162162162;
-  color += texture(u_sourceTexture, v_uv - u_blurDirection * 1.3846153846) * 0.3162162162;
-  color += texture(u_sourceTexture, v_uv + u_blurDirection * 3.2307692308) * 0.0702702703;
-  color += texture(u_sourceTexture, v_uv - u_blurDirection * 3.2307692308) * 0.0702702703;
+  vec4 color = textureLod(u_sourceTexture, v_uv, u_sourceLod) * 0.2270270270;
+  color += textureLod(u_sourceTexture, v_uv + u_blurDirection * 1.3846153846, u_sourceLod) * 0.3162162162;
+  color += textureLod(u_sourceTexture, v_uv - u_blurDirection * 1.3846153846, u_sourceLod) * 0.3162162162;
+  color += textureLod(u_sourceTexture, v_uv + u_blurDirection * 3.2307692308, u_sourceLod) * 0.0702702703;
+  color += textureLod(u_sourceTexture, v_uv - u_blurDirection * 3.2307692308, u_sourceLod) * 0.0702702703;
   fragColor = color;
 }`;
 
