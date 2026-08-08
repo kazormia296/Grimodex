@@ -90,15 +90,20 @@ function sleep(duration: number) {
 }
 
 describe("ZenShaderSurface multipass integration", () => {
-  it("keeps the default live shader visibly animated", async () => {
+  it("keeps a low-speed live shader visibly animated through final compositing", async () => {
     const onRendererStatusChange = vi.fn();
     const animatedConfig = {
       ...ZEN_SHADER_DEFAULTS,
-      speed: 100,
+      speed: 2,
       opacity: 100,
+      glass: {
+        ...ZEN_SHADER_DEFAULTS.glass,
+        blur: 40,
+      },
       contrastGuard: {
         ...ZEN_SHADER_DEFAULTS.contrastGuard,
-        mode: "none" as const,
+        mode: "auto" as const,
+        strength: 1,
       },
     };
     const view = render(
@@ -136,10 +141,14 @@ describe("ZenShaderSurface multipass integration", () => {
         firstAnimatedDrawCount + 4,
       );
     });
-    const secondAnimatedFrame = readFrame(view.container);
-    expect(
-      averageRgbDelta(firstAnimatedFrame, secondAnimatedFrame),
-    ).toBeGreaterThan(0.1);
+    await waitFor(
+      () => {
+        expect(
+          averageRgbDelta(firstAnimatedFrame, readFrame(view.container)),
+        ).toBeGreaterThan(0.1);
+      },
+      { timeout: 5_000, interval: 200 },
+    );
 
     view.rerender(
       <div style={{ position: "relative", width: 240, height: 160 }}>
@@ -154,8 +163,33 @@ describe("ZenShaderSurface multipass integration", () => {
     );
     await sleep(80);
     const pausedDrawCount = drawCount(view.container);
+    const pausedFrame = readFrame(view.container);
     await sleep(80);
     expect(drawCount(view.container)).toBe(pausedDrawCount);
+
+    view.rerender(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={animatedConfig}
+          playing
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+    expect(view.container.querySelector("canvas")).toBe(visibleCanvas);
+    await waitFor(() => {
+      expect(drawCount(view.container)).toBeGreaterThan(pausedDrawCount + 4);
+    });
+    await waitFor(
+      () => {
+        expect(
+          averageRgbDelta(pausedFrame, readFrame(view.container)),
+        ).toBeGreaterThan(0.1);
+      },
+      { timeout: 5_000, interval: 200 },
+    );
   });
 
   it("applies low-opacity contrast strength to final visible pixels", async () => {

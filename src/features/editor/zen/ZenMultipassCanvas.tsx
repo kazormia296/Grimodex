@@ -400,18 +400,32 @@ class ZenMultipassRenderer {
     );
     const width = Math.max(1, Math.round(targetWidth * budgetScale));
     const height = Math.max(1, Math.round(targetHeight * budgetScale));
-    this.renderScale = width / rect.width;
-    if (this.canvas.width === width && this.canvas.height === height) {
-      return;
-    }
-    this.canvas.width = width;
-    this.canvas.height = height;
-    this.allocateTarget(this.sceneTarget, width, height);
     const blurWidth = Math.max(1, Math.ceil(width * ZEN_MULTIPASS_BLUR_SCALE));
     const blurHeight = Math.max(
       1,
       Math.ceil(height * ZEN_MULTIPASS_BLUR_SCALE),
     );
+    const nextRenderScale = width / rect.width;
+    const renderScaleChanged = this.renderScale !== nextRenderScale;
+    this.renderScale = nextRenderScale;
+    const targetsReady =
+      this.sceneTarget.width === width &&
+      this.sceneTarget.height === height &&
+      this.blurHorizontalTarget.width === blurWidth &&
+      this.blurHorizontalTarget.height === blurHeight &&
+      this.blurVerticalTarget.width === blurWidth &&
+      this.blurVerticalTarget.height === blurHeight;
+    if (
+      this.canvas.width === width &&
+      this.canvas.height === height &&
+      targetsReady &&
+      !renderScaleChanged
+    ) {
+      return;
+    }
+    if (this.canvas.width !== width) this.canvas.width = width;
+    if (this.canvas.height !== height) this.canvas.height = height;
+    this.allocateTarget(this.sceneTarget, width, height);
     this.allocateTarget(this.blurHorizontalTarget, blurWidth, blurHeight);
     this.allocateTarget(this.blurVerticalTarget, blurWidth, blurHeight);
     this.invalidateScene();
@@ -744,9 +758,7 @@ class ZenMultipassRenderer {
     drawCount: this.drawCount,
     gpuTimeMs: null,
     isStaticFrameReady:
-      this.drawCount > 0 &&
-      this.canvas.width > 0 &&
-      this.canvas.height > 0,
+      this.drawCount > 0 && this.canvas.width > 0 && this.canvas.height > 0,
   });
 
   resetPerformanceStats = () => {

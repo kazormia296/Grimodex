@@ -30,7 +30,7 @@ export interface ZenShaderConfig {
   shader: ZenShaderId;
   paletteMode: ZenPaletteMode;
   opacity: number;
-  /** Normalized user-facing percentage. Paper receives speed / 100. */
+  /** User-facing percentage. Paper receives a perceptually mapped speed. */
   speed: number;
   scale: number;
   rotation: number;
@@ -98,6 +98,21 @@ function finiteNumber(
   if (!Number.isFinite(parsed)) return fallback;
   const bounded = Math.min(max, Math.max(min, parsed));
   return integer ? Math.round(bounded) : bounded;
+}
+
+/**
+ * Keep 0% as a true pause while giving every non-zero slider value visible
+ * motion. A literal 1-3% Paper speed takes many minutes to complete a cycle,
+ * which makes the live background indistinguishable from a static frame.
+ */
+export const ZEN_SHADER_MIN_ACTIVE_SPEED = 0.1;
+
+export function resolveZenShaderAnimationSpeed(speedPercent: number): number {
+  const normalized = finiteNumber(speedPercent, 0, 0, 100) / 100;
+  if (normalized === 0) return 0;
+  return (
+    ZEN_SHADER_MIN_ACTIVE_SPEED + (1 - ZEN_SHADER_MIN_ACTIVE_SPEED) * normalized
+  );
 }
 
 function enumValue<T extends string>(
@@ -417,7 +432,7 @@ export function buildZenShaderProps(
     width: "100%",
     height: "100%",
     fit: "cover",
-    speed: config.speed / 100,
+    speed: resolveZenShaderAnimationSpeed(config.speed),
     frame: 0,
     scale: config.scale,
     rotation: config.rotation,

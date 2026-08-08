@@ -4,6 +4,7 @@ import {
   ZEN_SHADER_IDS,
   buildZenShaderProps,
   parseZenShaderConfig,
+  resolveZenShaderAnimationSpeed,
   type ZenResolvedPalette,
 } from "./zenShaderConfig";
 
@@ -116,6 +117,12 @@ describe("editor background shader settings", () => {
     expect(config.speed).toBe(8);
   });
 
+  it("keeps zero paused and maps low non-zero percentages to visible motion", () => {
+    expect(resolveZenShaderAnimationSpeed(0)).toBe(0);
+    expect(resolveZenShaderAnimationSpeed(2)).toBeCloseTo(0.118);
+    expect(resolveZenShaderAnimationSpeed(100)).toBe(1);
+  });
+
   it("normalizes malformed persisted values into safe shader ranges", () => {
     const config = parseZenShaderConfig({
       "editor.zenBackground.enabled": "false",
@@ -191,7 +198,7 @@ describe("editor background shader settings", () => {
     });
 
     expect(buildZenShaderProps(config, palette)).toMatchObject({
-      speed: 0.37,
+      speed: resolveZenShaderAnimationSpeed(37),
       fit: "cover",
       scale: 1.4,
       colorBack: palette.background,

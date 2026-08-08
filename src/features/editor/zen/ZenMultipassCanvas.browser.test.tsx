@@ -1,4 +1,4 @@
-import { createRef } from "react";
+import { createRef, StrictMode } from "react";
 import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type {
@@ -109,6 +109,35 @@ const WEBGL_ATTRIBUTES = {
 } satisfies WebGLContextAttributes;
 
 describe("ZenMultipassCanvas live updates", () => {
+  it("allocates fresh render targets when Strict Mode replays initialization", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const { container } = render(
+      <StrictMode>
+        <ZenMultipassCanvas
+          ref={ref}
+          data-paper-shader="strict-mode-probe"
+          sceneFragment={STATIC_SCENE}
+          sceneUniforms={SIZING_UNIFORMS}
+          compositeFragment={buildZenMultipassCompositeFragment(1)}
+          compositeUniforms={compositeUniforms(0, false)}
+          minPixelRatio={1}
+          maxPixelCount={64 * 64}
+          speed={0}
+          style={{ position: "relative", width: 64, height: 64 }}
+          webGlContextAttributes={WEBGL_ATTRIBUTES}
+        />
+      </StrictMode>,
+    );
+    const canvas = canvasFrom(container);
+
+    await waitFor(() =>
+      expect(
+        ref.current?.paperShaderMount?.getPerformanceStats().drawCount,
+      ).toBeGreaterThan(0),
+    );
+    expect(readCenterRed(canvas)).toBeGreaterThan(0);
+  });
+
   it("advances the Paper scene while speed is positive", async () => {
     const ref = createRef<PaperShaderElement>();
     const { container } = render(

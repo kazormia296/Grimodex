@@ -3,7 +3,10 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperShaderElement } from "@paper-design/shaders";
-import { ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
+import {
+  resolveZenShaderAnimationSpeed,
+  ZEN_SHADER_DEFAULTS,
+} from "./zenShaderConfig";
 import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 
@@ -31,6 +34,7 @@ vi.mock("./ZenMultipassCanvas", () => ({
     PaperShaderElement,
     {
       "data-paper-shader": string;
+      "data-zen-glass-compositor"?: string;
       maxPixelCount: number;
       speed: number;
       minPixelRatio: number;
@@ -41,6 +45,7 @@ vi.mock("./ZenMultipassCanvas", () => ({
   >(function MockZenMultipassCanvas(
     {
       "data-paper-shader": shader,
+      "data-zen-glass-compositor": ownsGlass,
       maxPixelCount,
       speed,
       minPixelRatio,
@@ -53,9 +58,7 @@ vi.mock("./ZenMultipassCanvas", () => ({
     const elementRef = useRef<HTMLDivElement>(null);
     const mountedShader = useRef(shader).current;
     const mountedCapacity = useRef(
-      Number(
-        /u_zenUiSurfaceRects\[(\d+)\]/.exec(compositeFragment)?.[1] ?? 0,
-      ),
+      Number(/u_zenUiSurfaceRects\[(\d+)\]/.exec(compositeFragment)?.[1] ?? 0),
     ).current;
     const mountedUniformLength = useRef(
       compositeUniforms["u_zenUiSurfaceRects[0]"] instanceof Float32Array
@@ -89,7 +92,13 @@ vi.mock("./ZenMultipassCanvas", () => ({
       };
     }, [mountedCapacity, mountedShader, mountedUniformLength]);
 
-    return <div ref={elementRef} data-paper-shader={shader} />;
+    return (
+      <div
+        ref={elementRef}
+        data-paper-shader={shader}
+        data-zen-glass-compositor={ownsGlass}
+      />
+    );
   }),
 }));
 
@@ -226,7 +235,7 @@ describe("ZenShaderSurface", () => {
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 2_073_600,
-      speed: ZEN_SHADER_DEFAULTS.speed / 100,
+      speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
     });
 
     rerender(
@@ -251,7 +260,7 @@ describe("ZenShaderSurface", () => {
     });
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 2_073_600,
-      speed: ZEN_SHADER_DEFAULTS.speed / 100,
+      speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
     });
   });
 
@@ -260,7 +269,7 @@ describe("ZenShaderSurface", () => {
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 300_000,
-      speed: ZEN_SHADER_DEFAULTS.speed / 100,
+      speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
     });
   });
 

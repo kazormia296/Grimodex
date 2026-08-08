@@ -4,7 +4,11 @@ import {
   getPaperShaderDefinition,
   resolvePaperShaderMount,
 } from "./paperShaderCatalog";
-import { buildZenShaderProps, type ZenShaderConfig } from "./zenShaderConfig";
+import {
+  buildZenShaderProps,
+  resolveZenShaderAnimationSpeed,
+  type ZenShaderConfig,
+} from "./zenShaderConfig";
 import { contrastTargetRatio } from "./zenContrastGuard";
 import { useZenShaderLayouts } from "./useZenShaderLayouts";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
@@ -179,7 +183,7 @@ export function ZenShaderSurface({
     };
   }, [mountKey]);
 
-  const animationSpeed = config.speed / 100;
+  const animationSpeed = resolveZenShaderAnimationSpeed(config.speed);
   const activeAnimationSpeed =
     preparedSceneUniforms !== null &&
     playing &&
@@ -232,26 +236,24 @@ export function ZenShaderSurface({
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >
-      {webGlSupported &&
-        lostMountKey !== mountKey &&
-        preparedSceneUniforms && (
-          <ZenMultipassCanvas
-            key={mountKey}
-            ref={paperMountRef}
-            data-paper-shader={config.shader}
-            data-zen-glass-compositor={ownsGpuGlass ? "true" : undefined}
-            sceneFragment={sceneFragment}
-            sceneUniforms={preparedSceneUniforms}
-            compositeFragment={compositeFragment}
-            compositeUniforms={compositeUniforms}
-            mipmaps={resolved.mipmaps}
-            speed={activeAnimationSpeed}
-            minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
-            maxPixelCount={maxPixelCount}
-            webGlContextAttributes={webGlContextAttributes}
-            className="pointer-events-none absolute inset-0 overflow-hidden"
-          />
-        )}
+      {webGlSupported && lostMountKey !== mountKey && preparedSceneUniforms && (
+        <ZenMultipassCanvas
+          key={mountKey}
+          ref={paperMountRef}
+          data-paper-shader={config.shader}
+          data-zen-glass-compositor={ownsGpuGlass ? "true" : undefined}
+          sceneFragment={sceneFragment}
+          sceneUniforms={preparedSceneUniforms}
+          compositeFragment={compositeFragment}
+          compositeUniforms={compositeUniforms}
+          mipmaps={resolved.mipmaps}
+          speed={activeAnimationSpeed}
+          minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
+          maxPixelCount={maxPixelCount}
+          webGlContextAttributes={webGlContextAttributes}
+          className="pointer-events-none absolute inset-0 overflow-hidden"
+        />
+      )}
     </div>
   );
 }
