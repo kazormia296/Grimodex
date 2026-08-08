@@ -30,7 +30,15 @@ export default defineConfig({
     globals: true,
     browser: {
       enabled: true,
-      provider: playwright(),
+      // Vitest's default 63315 can fall inside a Windows/Hyper-V excluded
+      // range, so stay below Windows' default dynamic-port range.
+      api: { host: "127.0.0.1", port: 45123 },
+      connectTimeout: 180_000,
+      provider: playwright({
+        launchOptions: {
+          args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
+        },
+      }),
       headless: true,
       instances: [{ browser: "chromium" }],
     },

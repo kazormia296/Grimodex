@@ -510,17 +510,35 @@ describe("ZenMultipassCanvas live updates", () => {
   }, 30_000);
 
   it("keeps the point-spread function radial without terraces or side peaks", async () => {
-    const blur22Ref = createRef<PaperShaderElement>();
+    const blur22HalfRef = createRef<PaperShaderElement>();
+    const blur22FullRef = createRef<PaperShaderElement>();
+    const blur22DoubleRef = createRef<PaperShaderElement>();
     const blur40Ref = createRef<PaperShaderElement>();
     const fallbackRef = createRef<PaperShaderElement>();
     const { container } = render(
       <div>
         <DirectBlurProbe
-          name="point-22-auto"
+          name="point-22-half"
           sceneFragment={BLUR_POINT_SCENE}
           blur={22}
           gain={8}
-          mountRef={blur22Ref}
+          renderScale={0.5}
+          mountRef={blur22HalfRef}
+        />
+        <DirectBlurProbe
+          name="point-22-full"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          gain={8}
+          mountRef={blur22FullRef}
+        />
+        <DirectBlurProbe
+          name="point-22-double"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          gain={8}
+          renderScale={2}
+          mountRef={blur22DoubleRef}
         />
         <DirectBlurProbe
           name="point-40-auto"
@@ -548,22 +566,42 @@ describe("ZenMultipassCanvas live updates", () => {
 
     await waitFor(
       () => {
-        expect(blurPerformanceStats(blur22Ref).drawCount).toBeGreaterThan(0);
+        expect(blurPerformanceStats(blur22HalfRef).drawCount).toBeGreaterThan(
+          0,
+        );
+        expect(blurPerformanceStats(blur22FullRef).drawCount).toBeGreaterThan(
+          0,
+        );
+        expect(blurPerformanceStats(blur22DoubleRef).drawCount).toBeGreaterThan(
+          0,
+        );
         expect(blurPerformanceStats(blur40Ref).drawCount).toBeGreaterThan(0);
         expect(blurPerformanceStats(fallbackRef).drawCount).toBeGreaterThan(0);
       },
       { timeout: 5_000 },
     );
 
-    const blur22Canvas = canvasFor("point-22-auto");
+    const blur22Canvases = [
+      canvasFor("point-22-half"),
+      canvasFor("point-22-full"),
+      canvasFor("point-22-double"),
+    ];
     const blur40Canvas = canvasFor("point-40-auto");
     const fallbackCanvas = canvasFor("point-40-rgba8");
-    expect(angularAnisotropy(blur22Canvas, 22)).toBeLessThan(0.18);
+    const blur22Anisotropies = blur22Canvases.map((canvas) =>
+      angularAnisotropy(canvas, 22),
+    );
+    for (const anisotropy of blur22Anisotropies) {
+      expect(anisotropy).toBeLessThan(0.2);
+    }
+    expect(
+      Math.max(...blur22Anisotropies) - Math.min(...blur22Anisotropies),
+    ).toBeLessThan(0.1);
     expect(angularAnisotropy(blur40Canvas, 40)).toBeLessThan(0.18);
     expect(angularAnisotropy(fallbackCanvas, 40)).toBeLessThan(0.25);
 
     for (const [canvas, blur] of [
-      [blur22Canvas, 22],
+      ...blur22Canvases.map((canvas) => [canvas, 22] as const),
       [blur40Canvas, 40],
       [fallbackCanvas, 40],
     ] as const) {
@@ -578,7 +616,7 @@ describe("ZenMultipassCanvas live updates", () => {
       }
     }
 
-    const blur22Stats = blurPerformanceStats(blur22Ref);
+    const blur22Stats = blurPerformanceStats(blur22FullRef);
     const blur40Stats = blurPerformanceStats(blur40Ref);
     const fallbackStats = blurPerformanceStats(fallbackRef);
     expect(["rgba16f", "rgba8"]).toContain(blur22Stats.blurFormat);
@@ -600,6 +638,11 @@ describe("ZenMultipassCanvas live updates", () => {
 
   it("attenuates sinusoidal gratings equally at 0, 45 and 90 degrees", async () => {
     const frequency = (Math.PI * 2) / 96;
+    const scales = [
+      { name: "half", value: 0.5 },
+      { name: "full", value: 1 },
+      { name: "double", value: 2 },
+    ] as const;
     const directions = [
       { name: "0", value: [1, 0] },
       { name: "45", value: [Math.SQRT1_2, Math.SQRT1_2] },
@@ -607,48 +650,127 @@ describe("ZenMultipassCanvas live updates", () => {
     ] as const;
     const { container } = render(
       <div>
-        {directions.map((direction) => (
-          <DirectBlurProbe
-            key={direction.name}
-            name={`grating-${direction.name}`}
-            sceneFragment={BLUR_GRATING_SCENE}
-            sceneUniforms={{
-              ...SIZING_UNIFORMS,
-              u_probeDirection: Array.from(direction.value),
-              u_probeFrequency: frequency,
-            }}
-            blur={22}
-          />
-        ))}
+        {scales.flatMap((scale) =>
+          directions.map((direction) => (
+            <DirectBlurProbe
+              key={`${scale.name}-${direction.name}`}
+              name={`grating-${scale.name}-${direction.name}`}
+              sceneFragment={BLUR_GRATING_SCENE}
+              sceneUniforms={{
+                ...SIZING_UNIFORMS,
+                u_probeDirection: Array.from(direction.value),
+                u_probeFrequency: frequency,
+              }}
+              blur={22}
+              renderScale={scale.value}
+            />
+          )),
+        )}
       </div>,
     );
-    const canvases = directions.map((direction) =>
-      canvasFrom(
-        container.querySelector<HTMLElement>(
-          `[data-paper-shader="direct-blur-grating-${direction.name}"]`,
-        ) ?? container,
+    const canvases = scales.map((scale) => ({
+      scale,
+      directions: directions.map((direction) =>
+        canvasFrom(
+          container.querySelector<HTMLElement>(
+            `[data-paper-shader="direct-blur-grating-${scale.name}-${direction.name}"]`,
+          ) ?? container,
+        ),
       ),
-    );
+    }));
 
     await waitFor(
       () => {
-        for (const canvas of canvases) {
-          expect(canvas.width).toBe(256);
-          expect(readCenterRed(canvas)).toBeGreaterThan(0);
+        for (const probe of canvases) {
+          for (const canvas of probe.directions) {
+            expect(canvas.width).toBe(256 * probe.scale.value);
+            expect(readCenterRed(canvas)).toBeGreaterThan(0);
+          }
         }
       },
       { timeout: 5_000 },
     );
 
-    const amplitudes = canvases.map(centralRedAmplitude);
-    const mean =
-      amplitudes.reduce((sum, amplitude) => sum + amplitude, 0) /
-      amplitudes.length;
-    expect(Math.min(...amplitudes)).toBeGreaterThan(3);
+    const meanAmplitudes = canvases.map((probe) => {
+      const amplitudes = probe.directions.map(centralRedAmplitude);
+      const mean =
+        amplitudes.reduce((sum, amplitude) => sum + amplitude, 0) /
+        amplitudes.length;
+      expect(Math.min(...amplitudes)).toBeGreaterThan(3);
+      expect(
+        (Math.max(...amplitudes) - Math.min(...amplitudes)) / mean,
+      ).toBeLessThan(0.2);
+      return mean;
+    });
+    const crossScaleMean =
+      meanAmplitudes.reduce((sum, amplitude) => sum + amplitude, 0) /
+      meanAmplitudes.length;
     expect(
-      (Math.max(...amplitudes) - Math.min(...amplitudes)) / mean,
-    ).toBeLessThan(0.2);
+      (Math.max(...meanAmplitudes) - Math.min(...meanAmplitudes)) /
+        crossScaleMean,
+    ).toBeLessThan(0.25);
   }, 30_000);
+
+  it("invalidates blur when a reused UI surface buffer starts refracting", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const surfaceBuffer = new ZenUiSurfaceUniformBuffer(1);
+    const uiSurface = {
+      rect: [0, 0, 1, 1] as [number, number, number, number],
+      feather: [0, 0, 0, 0] as [number, number, number, number],
+      cornerRadius: 0,
+    };
+    const compositeFor = (refracts: boolean) => {
+      const packed = surfaceBuffer.update([{ ...uiSurface, refracts }]);
+      return {
+        u_probeGain: 1,
+        u_zenGlassBlur: 22,
+        u_zenGlassEnabled: 1,
+        u_zenGlassRect: [0, 0, 0, 0],
+        u_zenUiSurfaceCount: packed.count,
+        "u_zenUiSurfaceRects[0]": packed.rects,
+        "u_zenUiSurfaceParams[0]": packed.params,
+      } satisfies ShaderMountUniforms;
+    };
+    const probe = (compositeUniforms: ShaderMountUniforms) => (
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="reused-surface-buffer-probe"
+        sceneFragment={BLUR_POINT_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={BLUR_PROBE_COMPOSITE}
+        compositeUniforms={compositeUniforms}
+        minPixelRatio={1}
+        maxPixelCount={256 * 256}
+        speed={0}
+        style={{ position: "relative", width: 256, height: 256 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />
+    );
+
+    const { container, rerender } = render(probe(compositeFor(false)));
+    const canvas = canvasFrom(container);
+    await waitFor(() =>
+      expect(
+        ref.current?.paperShaderMount?.getPerformanceStats(),
+      ).toMatchObject({
+        blurTargetWidth: 0,
+        gaussianPairCount: 0,
+      }),
+    );
+    const unblurredCenter = readCenterRed(canvas);
+    const previousDrawCount = blurPerformanceStats(ref).drawCount;
+
+    // `update` mutates the same Float32Arrays that the previous props hold.
+    // Blur invalidation must therefore compare against renderer-owned state.
+    rerender(probe(compositeFor(true)));
+    await waitFor(() => {
+      const stats = blurPerformanceStats(ref);
+      expect(stats.drawCount).toBeGreaterThan(previousDrawCount);
+      expect(stats.blurTargetWidth).toBeGreaterThan(0);
+      expect(stats.gaussianPairCount).toBeGreaterThan(0);
+    });
+    expect(readCenterRed(canvas)).toBeLessThan(unblurredCenter - 20);
+  });
 
   it("allocates fresh render targets when Strict Mode replays initialization", async () => {
     const ref = createRef<PaperShaderElement>();

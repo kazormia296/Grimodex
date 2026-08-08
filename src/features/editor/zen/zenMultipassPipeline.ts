@@ -5,28 +5,145 @@ import {
 } from "./zenPostProcessing";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
-export const ZEN_MULTIPASS_BLUR_SCALE = 0.5;
-export const ZEN_MULTIPASS_BLUR_ITERATIONS = 3;
-// Standard deviation produced by one unit step of the fixed five-tap kernel.
-export const ZEN_MULTIPASS_BLUR_KERNEL_SIGMA = 1.6368927515195764;
+export const ZEN_MULTIPASS_MAX_TARGET_SIGMA = 6;
+export const ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS = 16;
 
-export function resolveZenMultipassBlurStep(
+const ZEN_MULTIPASS_MIN_CSS_SCALE = 0.25;
+// A 3x3 tent sampled at +/- half a target pixel contributes 3/24 per-axis
+// variance. Linear reconstruction contributes another 4/24.
+const ZEN_MULTIPASS_RESAMPLING_VARIANCE = 7 / 24;
+
+export interface ZenMultipassBlurPlan {
+  blurCssScale: number;
+  targetWidth: number;
+  targetHeight: number;
+  sigmaInTargetPixels: number;
+  kernelSigmaInTargetPixels: number;
+  resamplingVarianceInTargetPixels: number;
+  requiresDownsample: boolean;
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+export function resolveZenMultipassBlurPlan(
   blurCssPx: number,
   renderScale: number,
+  cssWidth: number,
+  cssHeight: number,
 ) {
   if (
     !Number.isFinite(blurCssPx) ||
     !Number.isFinite(renderScale) ||
+    !Number.isFinite(cssWidth) ||
+    !Number.isFinite(cssHeight) ||
     blurCssPx <= 0 ||
-    renderScale <= 0
+    renderScale <= 0 ||
+    cssWidth <= 0 ||
+    cssHeight <= 0
   ) {
-    return 0;
+    return null;
   }
-  // Variances add across repeated Gaussian passes, hence sqrt(iterations).
-  return (
-    (blurCssPx * renderScale) /
-    (ZEN_MULTIPASS_BLUR_KERNEL_SIGMA * Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS))
+
+  const maxAvailableCssScale = Math.min(1, renderScale);
+  const minCssScale = Math.min(
+    ZEN_MULTIPASS_MIN_CSS_SCALE,
+    maxAvailableCssScale,
   );
+  let blurCssScale = clamp(
+    ZEN_MULTIPASS_MAX_TARGET_SIGMA / blurCssPx,
+    minCssScale,
+    maxAvailableCssScale,
+  );
+  let requiresDownsample = blurCssScale < renderScale - Number.EPSILON;
+  let sigmaInTargetPixels = blurCssPx * blurCssScale;
+  let resamplingVarianceInTargetPixels = requiresDownsample
+    ? ZEN_MULTIPASS_RESAMPLING_VARIANCE
+    : 0;
+  let kernelVariance =
+    sigmaInTargetPixels * sigmaInTargetPixels -
+    resamplingVarianceInTargetPixels;
+
+  // Very small blur radii cannot donate more variance than resampling adds.
+  // In that case preserve the scene resolution and apply only the requested
+  // Gaussian instead of turning a resize filter into the visible blur.
+  if (kernelVariance <= 0 && requiresDownsample) {
+    blurCssScale = renderScale;
+    requiresDownsample = false;
+    sigmaInTargetPixels = blurCssPx * blurCssScale;
+    resamplingVarianceInTargetPixels = 0;
+    kernelVariance = sigmaInTargetPixels * sigmaInTargetPixels;
+  }
+
+  return {
+    blurCssScale,
+    targetWidth: Math.max(1, Math.round(cssWidth * blurCssScale)),
+    targetHeight: Math.max(1, Math.round(cssHeight * blurCssScale)),
+    sigmaInTargetPixels,
+    kernelSigmaInTargetPixels: Math.sqrt(kernelVariance),
+    resamplingVarianceInTargetPixels,
+    requiresDownsample,
+  } satisfies ZenMultipassBlurPlan;
+}
+
+export interface ZenGaussianKernel {
+  centerWeight: number;
+  pairOffsets: Float32Array;
+  pairWeights: Float32Array;
+  pairCount: number;
+  radius: number;
+}
+
+export function buildZenGaussianKernel(sigmaInTargetPixels: number) {
+  const pairOffsets = new Float32Array(ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS);
+  const pairWeights = new Float32Array(ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS);
+  if (!Number.isFinite(sigmaInTargetPixels) || sigmaInTargetPixels <= 0) {
+    return {
+      centerWeight: 1,
+      pairOffsets,
+      pairWeights,
+      pairCount: 0,
+      radius: 0,
+    } satisfies ZenGaussianKernel;
+  }
+
+  const radius = Math.min(
+    Math.ceil(sigmaInTargetPixels * 3),
+    ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS * 2,
+  );
+  const unnormalizedWeights = Array.from({ length: radius + 1 }, (_, index) =>
+    Math.exp(
+      -(index * index) / (2 * sigmaInTargetPixels * sigmaInTargetPixels),
+    ),
+  );
+  const normalization =
+    unnormalizedWeights[0] +
+    2 * unnormalizedWeights.slice(1).reduce((sum, weight) => sum + weight, 0);
+  const centerWeight = unnormalizedWeights[0] / normalization;
+  const pairCount = Math.ceil(radius / 2);
+
+  for (let pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
+    const firstOffset = pairIndex * 2 + 1;
+    const secondOffset = firstOffset + 1;
+    const firstWeight = unnormalizedWeights[firstOffset] / normalization;
+    const secondWeight =
+      (unnormalizedWeights[secondOffset] ?? 0) / normalization;
+    const pairWeight = firstWeight + secondWeight;
+    pairOffsets[pairIndex] =
+      pairWeight > 0
+        ? (firstOffset * firstWeight + secondOffset * secondWeight) / pairWeight
+        : firstOffset;
+    pairWeights[pairIndex] = pairWeight;
+  }
+
+  return {
+    centerWeight,
+    pairOffsets,
+    pairWeights,
+    pairCount,
+    radius,
+  } satisfies ZenGaussianKernel;
 }
 
 const MAIN_PATTERN = /void\s+main\s*\(\s*\)/;
@@ -136,18 +253,55 @@ void main() {
   gl_Position = vec4(a_position, 0.0, 1.0);
 }`;
 
-export const ZEN_MULTIPASS_BLUR_FRAGMENT = `#version 300 es
+export const ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_sourceTexture;
+uniform vec2 u_sourceTexelSize;
+uniform vec2 u_sourceToTargetScale;
+void main() {
+  // A separable 3x3 tent sampled at +/- half of the source footprint. The
+  // symmetric nine taps preserve rotational balance during arbitrary resize.
+  vec2 halfFootprint =
+    u_sourceTexelSize * u_sourceToTargetScale * 0.5;
+  vec4 color = texture(u_sourceTexture, v_uv) * 0.25;
+  color += texture(u_sourceTexture, v_uv + vec2(halfFootprint.x, 0.0)) * 0.125;
+  color += texture(u_sourceTexture, v_uv - vec2(halfFootprint.x, 0.0)) * 0.125;
+  color += texture(u_sourceTexture, v_uv + vec2(0.0, halfFootprint.y)) * 0.125;
+  color += texture(u_sourceTexture, v_uv - vec2(0.0, halfFootprint.y)) * 0.125;
+  color += texture(u_sourceTexture, v_uv + halfFootprint) * 0.0625;
+  color += texture(u_sourceTexture, v_uv - halfFootprint) * 0.0625;
+  color += texture(
+    u_sourceTexture,
+    v_uv + vec2(halfFootprint.x, -halfFootprint.y)
+  ) * 0.0625;
+  color += texture(
+    u_sourceTexture,
+    v_uv + vec2(-halfFootprint.x, halfFootprint.y)
+  ) * 0.0625;
+  fragColor = color;
+}`;
+
+export const ZEN_MULTIPASS_GAUSSIAN_FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 out vec4 fragColor;
 uniform sampler2D u_sourceTexture;
 uniform vec2 u_blurDirection;
+uniform float u_centerWeight;
+uniform float u_pairOffsets[16];
+uniform float u_pairWeights[16];
+uniform int u_pairCount;
 void main() {
-  vec4 color = texture(u_sourceTexture, v_uv) * 0.2270270270;
-  color += texture(u_sourceTexture, v_uv + u_blurDirection * 1.3846153846) * 0.3162162162;
-  color += texture(u_sourceTexture, v_uv - u_blurDirection * 1.3846153846) * 0.3162162162;
-  color += texture(u_sourceTexture, v_uv + u_blurDirection * 3.2307692308) * 0.0702702703;
-  color += texture(u_sourceTexture, v_uv - u_blurDirection * 3.2307692308) * 0.0702702703;
+  vec4 color = texture(u_sourceTexture, v_uv) * u_centerWeight;
+  for (int index = 0; index < 16; index += 1) {
+    if (index >= u_pairCount) break;
+    vec2 offset = u_blurDirection * u_pairOffsets[index];
+    float weight = u_pairWeights[index];
+    color += texture(u_sourceTexture, v_uv + offset) * weight;
+    color += texture(u_sourceTexture, v_uv - offset) * weight;
+  }
   fragColor = color;
 }`;
 
