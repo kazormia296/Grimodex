@@ -1,4 +1,4 @@
-import { createRef, StrictMode } from "react";
+import { createRef, StrictMode, type RefObject } from "react";
 import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type {
@@ -50,6 +50,43 @@ out vec4 fragColor;
 void main() {
   float value = step(u_resolution.x * 0.5, gl_FragCoord.x);
   fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BLUR_POINT_SCENE = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_pixelRatio;
+out vec4 fragColor;
+void main() {
+  vec2 point = gl_FragCoord.xy - u_resolution * 0.5;
+  // Eight CSS pixels keeps the RGBA8 fallback above its intermediate
+  // quantization floor while remaining small relative to 22/40px sigma.
+  float value = 1.0 - step(8.0 * u_pixelRatio, length(point));
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BLUR_GRATING_SCENE = `#version 300 es
+precision highp float;
+uniform float u_pixelRatio;
+uniform vec2 u_probeDirection;
+uniform float u_probeFrequency;
+out vec4 fragColor;
+void main() {
+  vec2 cssPosition = gl_FragCoord.xy / max(u_pixelRatio, 0.0001);
+  float value = 0.5 + 0.45 * cos(
+    dot(cssPosition, u_probeDirection) * u_probeFrequency
+  );
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BLUR_PROBE_COMPOSITE = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_blurredTexture;
+uniform float u_probeGain;
+void main() {
+  fragColor = vec4(texture(u_blurredTexture, v_uv).rgb * u_probeGain, 1.0);
 }`;
 
 const BLUR_PROBE_WIDTH = 512;
@@ -167,7 +204,7 @@ function BlurProbe({
       sceneUniforms={SIZING_UNIFORMS}
       compositeFragment={buildZenMultipassCompositeFragment(1)}
       compositeUniforms={blurCompositeUniforms(blur)}
-      minPixelRatio={1}
+      minPixelRatio={Math.max(1, renderScale)}
       maxPixelCount={
         BLUR_PROBE_WIDTH * BLUR_PROBE_HEIGHT * renderScale * renderScale
       }
@@ -177,6 +214,55 @@ function BlurProbe({
         width: BLUR_PROBE_WIDTH,
         height: BLUR_PROBE_HEIGHT,
       }}
+      webGlContextAttributes={WEBGL_ATTRIBUTES}
+    />
+  );
+}
+
+type BlurTargetPrecision = "auto" | "rgba8";
+
+function DirectBlurProbe({
+  name,
+  sceneFragment,
+  sceneUniforms = SIZING_UNIFORMS,
+  blur,
+  gain = 1,
+  renderScale = 1,
+  blurTargetPrecision = "auto",
+  width = 256,
+  height = 256,
+  mountRef,
+}: {
+  name: string;
+  sceneFragment: string;
+  sceneUniforms?: ShaderMountUniforms;
+  blur: number;
+  gain?: number;
+  renderScale?: number;
+  blurTargetPrecision?: BlurTargetPrecision;
+  width?: number;
+  height?: number;
+  mountRef?: RefObject<PaperShaderElement | null>;
+}) {
+  return (
+    <ZenMultipassCanvas
+      ref={mountRef}
+      data-paper-shader={`direct-blur-${name}`}
+      sceneFragment={sceneFragment}
+      sceneUniforms={sceneUniforms}
+      compositeFragment={BLUR_PROBE_COMPOSITE}
+      compositeUniforms={{
+        u_probeGain: gain,
+        u_zenGlassBlur: blur,
+        u_zenGlassEnabled: 1,
+        u_zenGlassRect: [0, 0, 1, 1],
+        u_zenUiSurfaceCount: 0,
+      }}
+      blurTargetPrecision={blurTargetPrecision}
+      minPixelRatio={Math.max(1, renderScale)}
+      maxPixelCount={width * height * renderScale * renderScale}
+      speed={0}
+      style={{ position: "relative", width, height }}
       webGlContextAttributes={WEBGL_ATTRIBUTES}
     />
   );
@@ -241,6 +327,86 @@ function effectiveHorizontalBlurSigma(canvas: HTMLCanvasElement) {
   return Math.sqrt(variance / weight) / renderScale;
 }
 
+function angularRedSamples(canvas: HTMLCanvasElement, radiusCss: number) {
+  const cssWidth = canvas.getBoundingClientRect().width;
+  const renderScale = canvas.width / cssWidth;
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  return Array.from({ length: 16 }, (_, index) => {
+    const angle = (index * Math.PI * 2) / 16;
+    const x = Math.max(
+      0,
+      Math.min(
+        canvas.width - 1,
+        Math.round(centerX + Math.cos(angle) * radiusCss * renderScale - 0.5),
+      ),
+    );
+    const y = Math.max(
+      0,
+      Math.min(
+        canvas.height - 1,
+        Math.round(centerY + Math.sin(angle) * radiusCss * renderScale - 0.5),
+      ),
+    );
+    return readPixel(canvas, x, y)[0] ?? 0;
+  });
+}
+
+function angularAnisotropy(canvas: HTMLCanvasElement, radiusCss: number) {
+  const samples = angularRedSamples(canvas, radiusCss);
+  const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  return mean <= 0
+    ? Number.POSITIVE_INFINITY
+    : (Math.max(...samples) - Math.min(...samples)) / mean;
+}
+
+function meanAngularRed(canvas: HTMLCanvasElement, radiusCss: number) {
+  const samples = angularRedSamples(canvas, radiusCss);
+  return samples.reduce((sum, value) => sum + value, 0) / samples.length;
+}
+
+function centralRedAmplitude(canvas: HTMLCanvasElement) {
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 context is unavailable");
+  const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+  gl.readPixels(
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    pixels,
+  );
+  const marginX = Math.floor(canvas.width * 0.25);
+  const marginY = Math.floor(canvas.height * 0.25);
+  let minimum = 255;
+  let maximum = 0;
+  for (let y = marginY; y < canvas.height - marginY; y += 1) {
+    for (let x = marginX; x < canvas.width - marginX; x += 1) {
+      const red = pixels[(y * canvas.width + x) * 4] ?? 0;
+      minimum = Math.min(minimum, red);
+      maximum = Math.max(maximum, red);
+    }
+  }
+  return (maximum - minimum) / 2;
+}
+
+interface BlurPerformanceStats {
+  drawCount: number;
+  blurFormat: "rgba16f" | "rgba8";
+  blurTargetWidth: number;
+  blurTargetHeight: number;
+  gaussianPairCount: number;
+}
+
+function blurPerformanceStats(ref: RefObject<PaperShaderElement | null>) {
+  const stats = ref.current?.paperShaderMount?.getPerformanceStats();
+  if (!stats)
+    throw new Error("Zen multipass performance stats are unavailable");
+  return stats as unknown as BlurPerformanceStats;
+}
+
 function srgbLuminance(pixel: Uint8Array) {
   const linear = (channel: number) => {
     const value = channel / 255;
@@ -272,8 +438,11 @@ describe("ZenMultipassCanvas live updates", () => {
     const probes = [
       { name: "zero", blur: 0, renderScale: 1 },
       { name: "one", blur: 1, renderScale: 1 },
+      { name: "twenty-one", blur: 21, renderScale: 1 },
       { name: "twenty-two-full", blur: 22, renderScale: 1 },
       { name: "twenty-two-half", blur: 22, renderScale: 0.5 },
+      { name: "twenty-two-double", blur: 22, renderScale: 2 },
+      { name: "twenty-three", blur: 23, renderScale: 1 },
       { name: "forty", blur: 40, renderScale: 1 },
     ] as const;
     const { container } = render(
@@ -305,12 +474,17 @@ describe("ZenMultipassCanvas live updates", () => {
 
     const blur0 = effectiveHorizontalBlurSigma(canvasFor("zero"));
     const blur1 = effectiveHorizontalBlurSigma(canvasFor("one"));
+    const blur21 = effectiveHorizontalBlurSigma(canvasFor("twenty-one"));
     const blur22Full = effectiveHorizontalBlurSigma(
       canvasFor("twenty-two-full"),
     );
     const blur22Half = effectiveHorizontalBlurSigma(
       canvasFor("twenty-two-half"),
     );
+    const blur22Double = effectiveHorizontalBlurSigma(
+      canvasFor("twenty-two-double"),
+    );
+    const blur23 = effectiveHorizontalBlurSigma(canvasFor("twenty-three"));
     const blur40 = effectiveHorizontalBlurSigma(canvasFor("forty"));
 
     expect(blur22Full).toBeGreaterThanOrEqual(19.8);
@@ -318,11 +492,162 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(blur22Half).toBeGreaterThanOrEqual(19.8);
     expect(blur22Half).toBeLessThanOrEqual(24.2);
     expect(Math.abs(blur22Half - blur22Full)).toBeLessThanOrEqual(2);
+    expect(blur22Double).toBeGreaterThanOrEqual(19.8);
+    expect(blur22Double).toBeLessThanOrEqual(24.2);
+    expect(Math.abs(blur22Double - blur22Full)).toBeLessThanOrEqual(2);
     expect(blur40).toBeGreaterThanOrEqual(36);
     expect(blur40).toBeLessThanOrEqual(44);
     expect(blur0).toBeLessThanOrEqual(1.5);
     expect(blur1).toBeGreaterThan(blur0);
     expect(blur1).toBeLessThan(4);
+    const firstIncrement = blur22Full - blur21;
+    const secondIncrement = blur23 - blur22Full;
+    expect(firstIncrement).toBeGreaterThan(0.2);
+    expect(firstIncrement).toBeLessThan(1.8);
+    expect(secondIncrement).toBeGreaterThan(0.2);
+    expect(secondIncrement).toBeLessThan(1.8);
+    expect(Math.abs(firstIncrement - secondIncrement)).toBeLessThan(0.8);
+  }, 30_000);
+
+  it("keeps the point-spread function radial without terraces or side peaks", async () => {
+    const blur22Ref = createRef<PaperShaderElement>();
+    const blur40Ref = createRef<PaperShaderElement>();
+    const fallbackRef = createRef<PaperShaderElement>();
+    const { container } = render(
+      <div>
+        <DirectBlurProbe
+          name="point-22-auto"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          gain={8}
+          mountRef={blur22Ref}
+        />
+        <DirectBlurProbe
+          name="point-40-auto"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={40}
+          gain={8}
+          mountRef={blur40Ref}
+        />
+        <DirectBlurProbe
+          name="point-40-rgba8"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={40}
+          gain={8}
+          blurTargetPrecision="rgba8"
+          mountRef={fallbackRef}
+        />
+      </div>,
+    );
+    const canvasFor = (name: string) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="direct-blur-${name}"]`,
+        ) ?? container,
+      );
+
+    await waitFor(
+      () => {
+        expect(blurPerformanceStats(blur22Ref).drawCount).toBeGreaterThan(0);
+        expect(blurPerformanceStats(blur40Ref).drawCount).toBeGreaterThan(0);
+        expect(blurPerformanceStats(fallbackRef).drawCount).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+
+    const blur22Canvas = canvasFor("point-22-auto");
+    const blur40Canvas = canvasFor("point-40-auto");
+    const fallbackCanvas = canvasFor("point-40-rgba8");
+    expect(angularAnisotropy(blur22Canvas, 22)).toBeLessThan(0.18);
+    expect(angularAnisotropy(blur40Canvas, 40)).toBeLessThan(0.18);
+    expect(angularAnisotropy(fallbackCanvas, 40)).toBeLessThan(0.25);
+
+    for (const [canvas, blur] of [
+      [blur22Canvas, 22],
+      [blur40Canvas, 40],
+      [fallbackCanvas, 40],
+    ] as const) {
+      const radialProfile = [0.5, 0.75, 1, 1.25, 1.5].map((radius) =>
+        meanAngularRed(canvas, blur * radius),
+      );
+      expect(radialProfile[0]).toBeGreaterThan(radialProfile.at(-1) ?? 0);
+      for (let index = 1; index < radialProfile.length; index += 1) {
+        expect(radialProfile[index]).toBeLessThanOrEqual(
+          radialProfile[index - 1] + 2,
+        );
+      }
+    }
+
+    const blur22Stats = blurPerformanceStats(blur22Ref);
+    const blur40Stats = blurPerformanceStats(blur40Ref);
+    const fallbackStats = blurPerformanceStats(fallbackRef);
+    expect(["rgba16f", "rgba8"]).toContain(blur22Stats.blurFormat);
+    expect(blur22Stats).toMatchObject({
+      blurTargetWidth: 70,
+      blurTargetHeight: 70,
+    });
+    expect(blur22Stats.gaussianPairCount).toBeGreaterThan(0);
+    expect(blur22Stats.gaussianPairCount).toBeLessThanOrEqual(16);
+    expect(blur40Stats).toMatchObject({
+      blurTargetWidth: 64,
+      blurTargetHeight: 64,
+    });
+    expect(blur40Stats.gaussianPairCount).toBe(15);
+    expect(fallbackStats.blurFormat).toBe("rgba8");
+    expect(fallbackStats.blurTargetWidth).toBe(64);
+    expect(fallbackStats.blurTargetHeight).toBe(64);
+  }, 30_000);
+
+  it("attenuates sinusoidal gratings equally at 0, 45 and 90 degrees", async () => {
+    const frequency = (Math.PI * 2) / 96;
+    const directions = [
+      { name: "0", value: [1, 0] },
+      { name: "45", value: [Math.SQRT1_2, Math.SQRT1_2] },
+      { name: "90", value: [0, 1] },
+    ] as const;
+    const { container } = render(
+      <div>
+        {directions.map((direction) => (
+          <DirectBlurProbe
+            key={direction.name}
+            name={`grating-${direction.name}`}
+            sceneFragment={BLUR_GRATING_SCENE}
+            sceneUniforms={{
+              ...SIZING_UNIFORMS,
+              u_probeDirection: Array.from(direction.value),
+              u_probeFrequency: frequency,
+            }}
+            blur={22}
+          />
+        ))}
+      </div>,
+    );
+    const canvases = directions.map((direction) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="direct-blur-grating-${direction.name}"]`,
+        ) ?? container,
+      ),
+    );
+
+    await waitFor(
+      () => {
+        for (const canvas of canvases) {
+          expect(canvas.width).toBe(256);
+          expect(readCenterRed(canvas)).toBeGreaterThan(0);
+        }
+      },
+      { timeout: 5_000 },
+    );
+
+    const amplitudes = canvases.map(centralRedAmplitude);
+    const mean =
+      amplitudes.reduce((sum, amplitude) => sum + amplitude, 0) /
+      amplitudes.length;
+    expect(Math.min(...amplitudes)).toBeGreaterThan(3);
+    expect(
+      (Math.max(...amplitudes) - Math.min(...amplitudes)) / mean,
+    ).toBeLessThan(0.2);
   }, 30_000);
 
   it("allocates fresh render targets when Strict Mode replays initialization", async () => {

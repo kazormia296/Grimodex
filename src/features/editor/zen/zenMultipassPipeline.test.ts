@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { ZenShaderConfig } from "./zenShaderConfig";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import {
-  ZEN_MULTIPASS_BLUR_ITERATIONS,
-  ZEN_MULTIPASS_BLUR_KERNEL_SIGMA,
+  ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT,
+  ZEN_MULTIPASS_GAUSSIAN_FRAGMENT,
+  ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS,
+  ZEN_MULTIPASS_MAX_TARGET_SIGMA,
+  buildZenGaussianKernel,
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
   buildZenMultipassSceneFragment,
   buildZenMultipassSceneUniforms,
-  resolveZenMultipassBlurStep,
+  resolveZenMultipassBlurPlan,
   zenMultipassSurfaceCapacity,
 } from "./zenMultipassPipeline";
 
@@ -43,26 +46,121 @@ const config = {
 
 // Runtime pixels are covered separately; this suite fixes the shader-stage contract.
 describe("Zen multipass pipeline", () => {
-  it("maps CSS blur radius to the repeated kernel sample step", () => {
-    expect(resolveZenMultipassBlurStep(0, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(-1, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(Number.NaN, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(Number.POSITIVE_INFINITY, 1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, 0)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, -1)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, Number.NaN)).toBe(0);
-    expect(resolveZenMultipassBlurStep(22, Number.POSITIVE_INFINITY)).toBe(0);
+  it("plans blur targets in CSS pixels instead of scene pixels", () => {
+    expect(resolveZenMultipassBlurPlan(0, 1, 1920, 1080)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(-1, 1, 1920, 1080)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(Number.NaN, 1, 1920, 1080)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(22, 0, 1920, 1080)).toBeNull();
+    expect(resolveZenMultipassBlurPlan(22, 1, 0, 1080)).toBeNull();
 
-    const fullScaleStep = resolveZenMultipassBlurStep(22, 1);
-    const halfScaleStep = resolveZenMultipassBlurStep(22, 0.5);
+    const blur1 = resolveZenMultipassBlurPlan(1, 1, 1920, 1080);
+    const blur22 = resolveZenMultipassBlurPlan(22, 1, 1920, 1080);
+    const blur40 = resolveZenMultipassBlurPlan(40, 1, 1920, 1080);
+    const blur40Half = resolveZenMultipassBlurPlan(40, 0.5, 1920, 1080);
 
-    expect(fullScaleStep).toBeCloseTo(7.75964455, 8);
-    expect(halfScaleStep).toBeCloseTo(fullScaleStep / 2, 10);
+    expect(ZEN_MULTIPASS_MAX_TARGET_SIGMA).toBe(6);
+    expect(blur1).toMatchObject({
+      blurCssScale: 1,
+      targetWidth: 1920,
+      targetHeight: 1080,
+      sigmaInTargetPixels: 1,
+      kernelSigmaInTargetPixels: 1,
+    });
+    expect(blur22).toMatchObject({
+      targetWidth: 524,
+      targetHeight: 295,
+      sigmaInTargetPixels: 6,
+    });
+    expect(blur22?.blurCssScale).toBeCloseTo(6 / 22, 10);
+    expect(blur40).toMatchObject({
+      blurCssScale: 0.25,
+      targetWidth: 480,
+      targetHeight: 270,
+      sigmaInTargetPixels: 10,
+    });
+    expect(blur40Half).toMatchObject({
+      blurCssScale: 0.25,
+      targetWidth: 480,
+      targetHeight: 270,
+      sigmaInTargetPixels: 10,
+    });
+    expect(blur40?.kernelSigmaInTargetPixels).toBeGreaterThan(0);
+    expect(blur40?.kernelSigmaInTargetPixels).toBeLessThan(10);
+  });
+
+  it("changes target scale continuously across the former LOD boundary", () => {
+    const plans = [21, 22, 23].map((blur) => {
+      const plan = resolveZenMultipassBlurPlan(blur, 1, 1920, 1080);
+      expect(plan).not.toBeNull();
+      return plan!;
+    });
+
+    expect(plans.map((plan) => plan.sigmaInTargetPixels)).toEqual([6, 6, 6]);
+    expect(plans[0].blurCssScale).toBeGreaterThan(plans[1].blurCssScale);
+    expect(plans[1].blurCssScale).toBeGreaterThan(plans[2].blurCssScale);
+    expect(plans[0].blurCssScale - plans[1].blurCssScale).toBeLessThan(0.02);
+    expect(plans[1].blurCssScale - plans[2].blurCssScale).toBeLessThan(0.02);
     expect(
-      fullScaleStep *
-        ZEN_MULTIPASS_BLUR_KERNEL_SIGMA *
-        Math.sqrt(ZEN_MULTIPASS_BLUR_ITERATIONS),
-    ).toBeCloseTo(22, 10);
+      Math.abs(
+        plans[0].kernelSigmaInTargetPixels - plans[2].kernelSigmaInTargetPixels,
+      ),
+    ).toBeLessThan(0.1);
+  });
+
+  it("builds a normalized bilinear-paired Gaussian within the fixed budget", () => {
+    const medium = buildZenGaussianKernel(6);
+    const large = buildZenGaussianKernel(10);
+    const capped = buildZenGaussianKernel(100);
+
+    expect(ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS).toBe(16);
+    expect(medium.radius).toBe(18);
+    expect(medium.pairCount).toBe(9);
+    expect(large.radius).toBe(30);
+    expect(large.pairCount).toBe(15);
+    expect(capped.radius).toBe(32);
+    expect(capped.pairCount).toBe(16);
+
+    for (const kernel of [medium, large, capped]) {
+      expect(kernel.pairOffsets).toHaveLength(16);
+      expect(kernel.pairWeights).toHaveLength(16);
+      expect(
+        kernel.centerWeight +
+          2 *
+            Array.from(kernel.pairWeights)
+              .slice(0, kernel.pairCount)
+              .reduce((sum, weight) => sum + weight, 0),
+      ).toBeCloseTo(1, 6);
+      for (let index = 0; index < kernel.pairCount; index += 1) {
+        expect(kernel.pairWeights[index]).toBeGreaterThan(0);
+        expect(kernel.pairOffsets[index]).toBeGreaterThan(index * 2 + 1);
+        expect(kernel.pairOffsets[index]).toBeLessThanOrEqual(index * 2 + 2);
+      }
+    }
+  });
+
+  it("uses explicit downsampling and a compile-time-bounded Gaussian loop", () => {
+    expect(ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT).toContain(
+      "uniform vec2 u_sourceTexelSize",
+    );
+    expect(ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT).toContain(
+      "uniform vec2 u_sourceToTargetScale",
+    );
+    expect(ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT).not.toContain("textureLod");
+    expect(ZEN_MULTIPASS_GAUSSIAN_FRAGMENT).toContain(
+      "uniform float u_centerWeight",
+    );
+    expect(ZEN_MULTIPASS_GAUSSIAN_FRAGMENT).toContain(
+      "uniform float u_pairOffsets[16]",
+    );
+    expect(ZEN_MULTIPASS_GAUSSIAN_FRAGMENT).toContain(
+      "uniform float u_pairWeights[16]",
+    );
+    expect(ZEN_MULTIPASS_GAUSSIAN_FRAGMENT).toContain(
+      "uniform int u_pairCount",
+    );
+    expect(ZEN_MULTIPASS_GAUSSIAN_FRAGMENT).toMatch(
+      /for\s*\(int\s+index\s*=\s*0;\s*index\s*<\s*16;/,
+    );
   });
 
   it("keeps Scene effects before Glass and contrast work", () => {
