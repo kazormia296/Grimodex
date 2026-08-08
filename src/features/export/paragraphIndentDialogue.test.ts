@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { generateExport } from "./exportEngine";
-import {
-  DEFAULT_EXPORT_SETTINGS,
-  type ExportSettings,
-} from "./types";
+import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from "./types";
 
 function makeScene(): TreeNodeData {
   return {

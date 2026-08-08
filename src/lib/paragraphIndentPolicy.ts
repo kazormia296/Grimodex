@@ -12,8 +12,6 @@ export function startsWithJapaneseDialogue(text: string): boolean {
  */
 export function shouldApplyAutomaticParagraphIndent(text: string): boolean {
   return (
-    text.length > 0 &&
-    !/^\s/u.test(text) &&
-    !startsWithJapaneseDialogue(text)
+    text.length > 0 && !/^\s/u.test(text) && !startsWithJapaneseDialogue(text)
   );
 }
