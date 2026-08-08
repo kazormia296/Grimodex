@@ -8,15 +8,17 @@ import {
 
 export const AOZORA_KANJI_CLASS = "一-鿿々〆〤ヶ";
 
-export const AOZORA_PIPE_RUBY_INPUT_RE = new RegExp(
-  `｜([^｜《》\\n]+)《([^《》\\n]+)》$`,
+const PIPE_RUBY_PATTERN = `｜([^｜《》\\n]+)《([^《》\\n]+)》`;
+const AUTO_RUBY_PATTERN = `([${AOZORA_KANJI_CLASS}]+)《([^《》\\n]+)》`;
+const EMPHASIS_DOTS_PATTERN = "《《([^《》\\n]+)》》";
+const TCY_RANGE_PATTERN = "［＃縦中横］([^［］\\n]+)［＃縦中横終わり］";
+
+export const AOZORA_PIPE_RUBY_INPUT_RE = new RegExp(`${PIPE_RUBY_PATTERN}$`);
+export const AOZORA_AUTO_RUBY_INPUT_RE = new RegExp(`${AUTO_RUBY_PATTERN}$`);
+export const AOZORA_EMPHASIS_DOTS_INPUT_RE = new RegExp(
+  `${EMPHASIS_DOTS_PATTERN}$`,
 );
-export const AOZORA_AUTO_RUBY_INPUT_RE = new RegExp(
-  `([${AOZORA_KANJI_CLASS}]+)《([^《》\\n]+)》$`,
-);
-export const AOZORA_EMPHASIS_DOTS_INPUT_RE = /《《([^《》\n]+)》》$/;
-export const AOZORA_TCY_RANGE_INPUT_RE =
-  /［＃縦中横］([^［］\n]+)［＃縦中横終わり］$/;
+export const AOZORA_TCY_RANGE_INPUT_RE = new RegExp(`${TCY_RANGE_PATTERN}$`);
 
 type AozoraInlineSegment =
   | { type: "text"; text: string }
@@ -25,10 +27,21 @@ type AozoraInlineSegment =
   | { type: "tcy"; text: string };
 
 const KANJI_CHAR_RE = new RegExp(`[${AOZORA_KANJI_CLASS}]`);
+const PIPE_RUBY_AT_RE = new RegExp(PIPE_RUBY_PATTERN, "y");
+const EMPHASIS_DOTS_AT_RE = new RegExp(EMPHASIS_DOTS_PATTERN, "y");
+const TCY_RANGE_AT_RE = new RegExp(TCY_RANGE_PATTERN, "y");
+const RUBY_ANNOTATION_AT_RE = /《([^《》\n]+)》/y;
 const EMPHASIS_OPEN = "《《";
-const EMPHASIS_CLOSE = "》》";
 const TCY_OPEN = "［＃縦中横］";
-const TCY_CLOSE = "［＃縦中横終わり］";
+
+function execAt(
+  pattern: RegExp,
+  text: string,
+  index: number,
+): RegExpExecArray | null {
+  pattern.lastIndex = index;
+  return pattern.exec(text);
+}
 
 function appendText(segments: AozoraInlineSegment[], text: string): void {
   if (!text) return;
@@ -58,65 +71,48 @@ function parseAozoraInline(text: string): AozoraInlineSegment[] {
 
   while (index < text.length) {
     if (text.startsWith(EMPHASIS_OPEN, index)) {
-      const close = text.indexOf(EMPHASIS_CLOSE, index + EMPHASIS_OPEN.length);
-      if (close !== -1) {
-        const value = text.slice(index + EMPHASIS_OPEN.length, close);
-        if (value && !/[《》\n]/.test(value)) {
-          segments.push({ type: "emphasisDots", text: value });
-          index = close + EMPHASIS_CLOSE.length;
-          continue;
-        }
+      const match = execAt(EMPHASIS_DOTS_AT_RE, text, index);
+      const value = match?.[1];
+      if (match && value) {
+        segments.push({ type: "emphasisDots", text: value });
+        index += match[0].length;
+        continue;
       }
     }
 
     if (text[index] === "｜") {
-      const open = text.indexOf("《", index + 1);
-      const close = open === -1 ? -1 : text.indexOf("》", open + 1);
-      if (open !== -1 && close !== -1) {
-        const base = text.slice(index + 1, open);
-        const annotation = text.slice(open + 1, close);
-        if (
-          base &&
-          annotation &&
-          !/[｜《》\n]/.test(base) &&
-          !/[《》\n]/.test(annotation)
-        ) {
-          segments.push({ type: "ruby", base, annotation });
-          index = close + 1;
-          continue;
-        }
+      const match = execAt(PIPE_RUBY_AT_RE, text, index);
+      const base = match?.[1];
+      const annotation = match?.[2];
+      if (match && base && annotation) {
+        segments.push({ type: "ruby", base, annotation });
+        index += match[0].length;
+        continue;
       }
     }
 
     if (text.startsWith(TCY_OPEN, index)) {
-      const close = text.indexOf(TCY_CLOSE, index + TCY_OPEN.length);
-      if (close !== -1) {
-        const value = text.slice(index + TCY_OPEN.length, close);
-        if (value && !/[［］\n]/.test(value)) {
-          segments.push({ type: "tcy", text: value });
-          index = close + TCY_CLOSE.length;
-          continue;
-        }
+      const match = execAt(TCY_RANGE_AT_RE, text, index);
+      const value = match?.[1];
+      if (match && value) {
+        segments.push({ type: "tcy", text: value });
+        index += match[0].length;
+        continue;
       }
     }
 
     if (text[index] === "《") {
-      const close = text.indexOf("》", index + 1);
-      if (close !== -1) {
-        const annotation = text.slice(index + 1, close);
+      const match = execAt(RUBY_ANNOTATION_AT_RE, text, index);
+      const annotation = match?.[1];
+      if (match && annotation) {
         let baseStart = index;
         while (baseStart > 0 && KANJI_CHAR_RE.test(text[baseStart - 1] ?? "")) {
           baseStart--;
         }
         const base = text.slice(baseStart, index);
-        if (
-          base &&
-          annotation &&
-          !/[《》\n]/.test(annotation) &&
-          trimTextSuffix(segments, base)
-        ) {
+        if (base && trimTextSuffix(segments, base)) {
           segments.push({ type: "ruby", base, annotation });
-          index = close + 1;
+          index += match[0].length;
           continue;
         }
       }

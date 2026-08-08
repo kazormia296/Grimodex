@@ -354,6 +354,29 @@ describe("insertPlainTextAsUnknown (任意エディタへのプレーン挿入)"
 });
 
 describe("pasteExternalText: コードブロック内は verbatim (変換しない)", () => {
+  function codeMarkedTextRange(editor: Editor): { from: number; to: number } {
+    let range: { from: number; to: number } | null = null;
+    editor.state.doc.descendants((node, pos) => {
+      if (
+        !range &&
+        node.isText &&
+        node.marks.some((mark) => mark.type.spec.code === true)
+      ) {
+        range = { from: pos, to: pos + node.nodeSize };
+      }
+    });
+    if (!range) throw new Error("code-marked text not found");
+    return range;
+  }
+
+  function hasRuby(editor: Editor): boolean {
+    let found = false;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "ruby") found = true;
+    });
+    return found;
+  }
+
   function codeBlockText(editor: Editor): string {
     let txt = "";
     editor.state.doc.descendants((node) => {
@@ -419,6 +442,46 @@ describe("pasteExternalText: コードブロック内は verbatim (変換しな�
       }
     });
     expect(hasBold).toBe(true);
+  });
+
+  it("既存inline code内のカーソルでは青空記法を逐語貼り付けする", () => {
+    editor.destroy();
+    editor = makeEditor("<p>前<code>既存コード</code>後</p>");
+    const codeRange = codeMarkedTextRange(editor);
+    editor.commands.setTextSelection(codeRange.from + 1);
+
+    pasteExternalText(editor, "｜漢字《かんじ》", () => {}, false);
+
+    expect(hasRuby(editor)).toBe(false);
+    let literalHasCodeMark = false;
+    editor.state.doc.descendants((node) => {
+      if (
+        node.isText &&
+        node.text?.includes("｜漢字《かんじ》") &&
+        node.marks.some((mark) => mark.type.spec.code === true)
+      ) {
+        literalHasCodeMark = true;
+      }
+    });
+    expect(literalHasCodeMark).toBe(true);
+  });
+
+  it("既存inline codeだけの非空選択も青空記法で逐語置換する", () => {
+    editor.destroy();
+    editor = makeEditor("<p>前<code>置換対象</code>後</p>");
+    const codeRange = codeMarkedTextRange(editor);
+    editor.commands.setTextSelection(codeRange);
+
+    pasteExternalText(editor, "｜漢字《かんじ》", () => {}, false);
+
+    expect(hasRuby(editor)).toBe(false);
+    expect(editor.state.doc.textContent).toBe("前｜漢字《かんじ》後");
+    const replacedRange = codeMarkedTextRange(editor);
+    const replacedText = editor.state.doc.textBetween(
+      replacedRange.from,
+      replacedRange.to,
+    );
+    expect(replacedText).toBe("｜漢字《かんじ》");
   });
 });
 
