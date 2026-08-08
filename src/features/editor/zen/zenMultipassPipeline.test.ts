@@ -78,9 +78,7 @@ void main() { fragColor = vec4(0.25); }`);
     expect(fragment).not.toContain(
       "guardedVisible - u_zenContrastBackdropColor",
     );
-    expect(fragment).toContain(
-      "maximumBackground * backgroundLuminance",
-    );
+    expect(fragment).toContain("maximumBackground * backgroundLuminance");
   });
 
   it("feeds one packed surface set to Glass and tool contrast", () => {
