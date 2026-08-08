@@ -380,6 +380,25 @@ vec3 zenGuardVisibleColor(
     linearColor,
     vec3(0.2126, 0.7152, 0.0722)
   );
+  float currentContrast =
+    (max(textLuminance, backgroundLuminance) + 0.05) /
+    (min(textLuminance, backgroundLuminance) + 0.05);
+  // Contrast-only paths must leave pixels that already meet the target alone.
+  // A forced UI direction remains a polarity constraint so a light surface
+  // cannot retain an isolated dark patch when its text is also dark.
+  bool followsCorrectionDirection = true;
+  if (correctionDirection > 0.5) {
+    followsCorrectionDirection = backgroundLuminance >= textLuminance;
+  } else if (correctionDirection < -0.5) {
+    followsCorrectionDirection = backgroundLuminance <= textLuminance;
+  }
+  if (
+    currentContrast >= u_zenContrastTarget &&
+    followsCorrectionDirection
+  ) {
+    return visibleColor;
+  }
+
   vec3 correctedLinear;
   float contrastAgainstBlack = (textLuminance + 0.05) / 0.05;
   float contrastAgainstWhite = 1.05 / (textLuminance + 0.05);

@@ -68,6 +68,9 @@ void main() { fragColor = vec4(0.25); }`);
     expect(fragment).toContain(
       "float paperMask = clamp(zenContrastColumnMask(), 0.0, 1.0)",
     );
+    expect(fragment).toContain("float currentContrast =");
+    expect(fragment).toContain("currentContrast >= u_zenContrastTarget &&");
+    expect(fragment).toContain("return visibleColor;");
     expect(fragment).toContain(
       "vec3 applyZenFinalContrast(vec3 composedColor, float uiMask)",
     );
