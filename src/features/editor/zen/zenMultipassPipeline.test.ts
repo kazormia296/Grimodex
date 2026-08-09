@@ -809,6 +809,34 @@ void main() { fragColor = vec4(0.25); }`);
     expect(uniforms.u_zenUiContrastParams).toEqual([0, 1, 0, 0.25]);
   });
 
+  it("matches WebGL float32 polarity at the black-white contrast tie", () => {
+    const boundaryColor = 0.46031331926280966;
+    const uniforms = buildZenMultipassCompositeUniforms(
+      config,
+      {
+        rect: [0, 0, 1, 1],
+        feather: [0, 0, 0, 0],
+        glassRect: [0, 0, 0, 0],
+        glassCornerRadius: 0,
+        textColor: [boundaryColor, boundaryColor, boundaryColor],
+        uiTextColor: [0, 0, 0],
+        backdropColor: [boundaryColor, boundaryColor, boundaryColor],
+      },
+      new ZenUiSurfaceUniformBuffer(1),
+    );
+
+    expect(uniforms.u_zenPaperContrastParams).toMatchObject({
+      1: 0,
+      2: 1,
+      3: 0,
+    });
+    expect(uniforms.u_zenUiContrastParams).toMatchObject({
+      1: 1,
+      2: 0,
+      3: 0.25,
+    });
+  });
+
   it("uses bounded high-water shader variants", () => {
     expect(zenMultipassSurfaceCapacity(0)).toBe(1);
     expect(zenMultipassSurfaceCapacity(5)).toBe(8);
