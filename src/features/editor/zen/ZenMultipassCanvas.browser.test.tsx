@@ -465,6 +465,7 @@ interface ZenBlurResearchOptions {
     seed: number;
   };
   gpuTiming: {
+    measurementMode: "pass-breakdown" | "frame" | "blur";
     sampleIntervalDraws: number;
     maxPendingSamples: number;
     maxRecordedSamples: number;
@@ -485,6 +486,7 @@ const DEFAULT_RESEARCH_OPTIONS: ZenBlurResearchOptions = {
   displayNoise: { mode: "none", strength: 0, seed: 0 },
   rgba8Dither: { strength: 0, seed: 0 },
   gpuTiming: {
+    measurementMode: "pass-breakdown",
     sampleIntervalDraws: 30,
     maxPendingSamples: 1,
     maxRecordedSamples: 600,
@@ -811,18 +813,30 @@ function blurPerformanceReport(ref: RefObject<PaperShaderElement | null>) {
   return mount.getPerformanceReport();
 }
 
+type TimedDrawOperation = "query-begin" | "draw" | "query-end";
+
 class ImmediateGpuTimerBackend implements ZenGpuTimerBackend<number> {
   private nextQuery = 0;
   disjointCheckCount = 0;
+
+  constructor(private readonly timedDrawOperations?: TimedDrawOperation[]) {}
+
+  get createdQueryCount() {
+    return this.nextQuery;
+  }
 
   createQuery() {
     this.nextQuery += 1;
     return this.nextQuery;
   }
 
-  beginQuery() {}
+  beginQuery() {
+    this.timedDrawOperations?.push("query-begin");
+  }
 
-  endQuery() {}
+  endQuery() {
+    this.timedDrawOperations?.push("query-end");
+  }
 
   isResultAvailable() {
     return true;
@@ -842,6 +856,17 @@ class ImmediateGpuTimerBackend implements ZenGpuTimerBackend<number> {
   isContextLost() {
     return false;
   }
+}
+
+function trackDrawOperations(
+  gl: WebGL2RenderingContext,
+  operations: TimedDrawOperation[],
+) {
+  const drawArrays = gl.drawArrays.bind(gl);
+  gl.drawArrays = (mode, first, count) => {
+    operations.push("draw");
+    drawArrays(mode, first, count);
+  };
 }
 
 async function loadVerticalStepImage() {
@@ -2519,6 +2544,150 @@ describe("ZenMultipassCanvas research options", () => {
     );
   });
 
+  it("measures every dirty draw with one frame-wide GPU query in frame mode", async () => {
+    const operations: TimedDrawOperation[] = [];
+    const timerBackend = new ImmediateGpuTimerBackend(operations);
+    _setZenMultipassFaultInjectionForTests({
+      createGpuTimerBackend: (gl) => {
+        trackDrawOperations(gl, operations);
+        return timerBackend;
+      },
+    });
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <DirectBlurProbe
+        name="research-frame-timing"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          gpuTiming: {
+            measurementMode: "frame",
+            sampleIntervalDraws: 1,
+            maxPendingSamples: 4,
+          },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(multipassPerformanceStats(ref).gpuTimingStatus).toBe("ready"),
+    );
+
+    expect(timerBackend.createdQueryCount).toBe(1);
+    expect(operations).toEqual([
+      "query-begin",
+      "draw",
+      "draw",
+      "draw",
+      "draw",
+      "draw",
+      "query-end",
+    ]);
+    expect(multipassPerformanceStats(ref)).toMatchObject({
+      drawCallCount: 5,
+      gpuTimeMs: 1,
+      gpuPassTimesMs: {
+        scene: 0,
+        downsample: 0,
+        gaussianHorizontal: 0,
+        gaussianVertical: 0,
+        kawaseDown: 0,
+        kawaseUp: 0,
+        composite: 0,
+      },
+    });
+    expect(blurPerformanceReport(ref).gpuBenchmark.samples).toEqual([
+      expect.objectContaining({
+        drawCount: 1,
+        gpuTimeMs: 1,
+        blurGpuTimeMs: 0,
+        gpuPassTimesMs: {
+          scene: 0,
+          downsample: 0,
+          gaussianHorizontal: 0,
+          gaussianVertical: 0,
+          kawaseDown: 0,
+          kawaseUp: 0,
+          composite: 0,
+        },
+      }),
+    ]);
+  });
+
+  it("measures the complete blur pipeline with one GPU query in blur mode", async () => {
+    const operations: TimedDrawOperation[] = [];
+    const timerBackend = new ImmediateGpuTimerBackend(operations);
+    _setZenMultipassFaultInjectionForTests({
+      createGpuTimerBackend: (gl) => {
+        trackDrawOperations(gl, operations);
+        return timerBackend;
+      },
+    });
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <DirectBlurProbe
+        name="research-blur-timing"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          gpuTiming: {
+            measurementMode: "blur",
+            sampleIntervalDraws: 1,
+            maxPendingSamples: 4,
+          },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(multipassPerformanceStats(ref).gpuTimingStatus).toBe("ready"),
+    );
+
+    expect(timerBackend.createdQueryCount).toBe(1);
+    expect(operations).toEqual([
+      "draw",
+      "query-begin",
+      "draw",
+      "draw",
+      "draw",
+      "query-end",
+      "draw",
+    ]);
+    expect(multipassPerformanceStats(ref)).toMatchObject({
+      drawCallCount: 5,
+      gpuTimeMs: 1,
+      gpuPassTimesMs: {
+        scene: 0,
+        downsample: 0,
+        gaussianHorizontal: 0,
+        gaussianVertical: 0,
+        kawaseDown: 0,
+        kawaseUp: 0,
+        composite: 0,
+      },
+    });
+    expect(blurPerformanceReport(ref).gpuBenchmark.samples).toEqual([
+      expect.objectContaining({
+        drawCount: 1,
+        gpuTimeMs: 1,
+        blurGpuTimeMs: 1,
+        gpuPassTimesMs: {
+          scene: 0,
+          downsample: 0,
+          gaussianHorizontal: 0,
+          gaussianVertical: 0,
+          kawaseDown: 0,
+          kawaseUp: 0,
+          composite: 0,
+        },
+      }),
+    ]);
+  });
+
   it("starts canonical Dual Kawase at scene resolution without the #489 prefilter", async () => {
     const ref = createRef<PaperShaderElement>();
     render(
@@ -2747,6 +2916,7 @@ describe("ZenMultipassCanvas research options", () => {
         mountRef={ref}
         researchOptions={zenBlurResearchOptions({
           gpuTiming: {
+            measurementMode: "pass-breakdown",
             sampleIntervalDraws: 1,
             maxPendingSamples: 4,
             maxRecordedSamples: 600,
@@ -2767,6 +2937,7 @@ describe("ZenMultipassCanvas research options", () => {
       researchOptions: {
         backend: "gaussian-current",
         gpuTiming: {
+          measurementMode: "pass-breakdown",
           sampleIntervalDraws: 1,
           maxPendingSamples: 4,
           maxRecordedSamples: 600,

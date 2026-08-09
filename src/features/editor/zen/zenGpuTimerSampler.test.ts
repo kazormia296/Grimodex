@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ZenGpuTimerSampler,
   type ZenGpuPass,
+  type ZenGpuTimingMode,
   type ZenGpuTimerBackend,
 } from "./zenGpuTimerSampler";
 
@@ -22,6 +23,22 @@ const ALL_PASSES = [
   "kawaseUp",
   "composite",
 ] as const satisfies readonly ZenGpuPass[];
+
+const GPU_TIMING_MODES = [
+  "pass-breakdown",
+  "frame",
+  "blur",
+] as const satisfies readonly ZenGpuTimingMode[];
+
+const ZERO_PASS_TIMES = {
+  scene: 0,
+  downsample: 0,
+  gaussianHorizontal: 0,
+  gaussianVertical: 0,
+  kawaseDown: 0,
+  kawaseUp: 0,
+  composite: 0,
+} as const;
 
 type FakeQuery = {
   readonly id: number;
@@ -126,6 +143,10 @@ function drawFrame(
 }
 
 describe("ZenGpuTimerSampler", () => {
+  it("defines pass-breakdown, frame, and blur measurement modes", () => {
+    expect(GPU_TIMING_MODES).toEqual(["pass-breakdown", "frame", "blur"]);
+  });
+
   it("reports unsupported null timing when no timer backend is available", () => {
     const sampler = new ZenGpuTimerSampler(null);
     const draw = vi.fn();
@@ -268,6 +289,99 @@ describe("ZenGpuTimerSampler", () => {
       gpuTimeMs: 29,
       blurGpuTimeMs: 17,
     });
+  });
+
+  it("records one frame-scope query as total GPU time without pass or blur attribution", () => {
+    const backend = new FakeZenGpuTimerBackend();
+    backend.queueResultsNs(17_000_000);
+    const sampler = new ZenGpuTimerSampler(backend.asBackend(), {
+      measurementMode: "frame",
+    });
+    const sceneDraw = vi.fn();
+    const compositeDraw = vi.fn();
+
+    sampler.beginFrame(41);
+    const result = sampler.measureScope("frame", () => {
+      sampler.measure("scene", sceneDraw);
+      sampler.measure("composite", compositeDraw);
+      return "frame-result";
+    });
+    sampler.endFrame();
+
+    expect(result).toBe("frame-result");
+    expect(sceneDraw).toHaveBeenCalledOnce();
+    expect(compositeDraw).toHaveBeenCalledOnce();
+    expect(backend.queries).toHaveLength(1);
+
+    backend.markAvailable();
+    sampler.poll();
+
+    expect(sampler.getSnapshot()).toMatchObject({
+      gpuTimeMs: 17,
+      gpuPassTimesMs: ZERO_PASS_TIMES,
+      gpuTimingStatus: "ready",
+      gpuTimingSampleCount: 1,
+      gpuTimingSampleDrawCount: 41,
+    });
+    expect(sampler.getBenchmarkReport().samples).toEqual([
+      {
+        drawCount: 41,
+        gpuTimeMs: 17,
+        blurGpuTimeMs: 0,
+        gpuPassTimesMs: ZERO_PASS_TIMES,
+      },
+    ]);
+  });
+
+  it("records one blur-scope query as both total and blur GPU time without pass attribution", () => {
+    const backend = new FakeZenGpuTimerBackend();
+    backend.queueResultsNs(23_000_000);
+    const sampler = new ZenGpuTimerSampler(backend.asBackend(), {
+      measurementMode: "blur",
+    });
+    const sceneDraw = vi.fn();
+    const downsampleDraw = vi.fn();
+    const horizontalDraw = vi.fn();
+    const verticalDraw = vi.fn();
+    const compositeDraw = vi.fn();
+
+    sampler.beginFrame(73);
+    sampler.measure("scene", sceneDraw);
+    const result = sampler.measureScope("blur", () => {
+      sampler.measure("downsample", downsampleDraw);
+      sampler.measure("gaussianHorizontal", horizontalDraw);
+      sampler.measure("gaussianVertical", verticalDraw);
+      return "blur-result";
+    });
+    sampler.measure("composite", compositeDraw);
+    sampler.endFrame();
+
+    expect(result).toBe("blur-result");
+    expect(sceneDraw).toHaveBeenCalledOnce();
+    expect(downsampleDraw).toHaveBeenCalledOnce();
+    expect(horizontalDraw).toHaveBeenCalledOnce();
+    expect(verticalDraw).toHaveBeenCalledOnce();
+    expect(compositeDraw).toHaveBeenCalledOnce();
+    expect(backend.queries).toHaveLength(1);
+
+    backend.markAvailable();
+    sampler.poll();
+
+    expect(sampler.getSnapshot()).toMatchObject({
+      gpuTimeMs: 23,
+      gpuPassTimesMs: ZERO_PASS_TIMES,
+      gpuTimingStatus: "ready",
+      gpuTimingSampleCount: 1,
+      gpuTimingSampleDrawCount: 73,
+    });
+    expect(sampler.getBenchmarkReport().samples).toEqual([
+      {
+        drawCount: 73,
+        gpuTimeMs: 23,
+        blurGpuTimeMs: 23,
+        gpuPassTimesMs: ZERO_PASS_TIMES,
+      },
+    ]);
   });
 
   it("samples the first frame and then every thirtieth draw", () => {

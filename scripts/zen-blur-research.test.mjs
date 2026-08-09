@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
   buildZenBlurResearchInvocation,
   parseZenBlurResearchArguments,
+  promoteZenBlurResearchArtifact,
 } from "./zen-blur-research.mjs";
 
 const argv = (...arguments_) => [
@@ -31,6 +35,8 @@ test("parseZenBlurResearchArguments applies deterministic benchmark defaults", (
       dither: 0,
       seed: 0,
       headed: false,
+      timing: "frame",
+      primeRuns: 1,
     },
   );
 });
@@ -68,6 +74,10 @@ test("parseZenBlurResearchArguments accepts every candidate option", () => {
         "--seed",
         "42",
         "--headed",
+        "--timing",
+        "pass-breakdown",
+        "--prime-runs",
+        "2",
       ),
     ),
     {
@@ -86,6 +96,8 @@ test("parseZenBlurResearchArguments accepts every candidate option", () => {
       dither: 0.002,
       seed: 42,
       headed: true,
+      timing: "pass-breakdown",
+      primeRuns: 2,
     },
   );
 });
@@ -188,6 +200,28 @@ test("parseZenBlurResearchArguments accepts documented enum and numeric boundari
       precision,
     );
   }
+
+  for (const timing of ["frame", "blur", "pass-breakdown"]) {
+    assert.equal(
+      parseZenBlurResearchArguments(
+        argv("--output", "result.json", "--timing", timing),
+      ).timing,
+      timing,
+    );
+  }
+
+  assert.equal(
+    parseZenBlurResearchArguments(
+      argv("--output", "result.json", "--prime-runs", "0"),
+    ).primeRuns,
+    0,
+  );
+  assert.equal(
+    parseZenBlurResearchArguments(
+      argv("--output", "result.json", "--seed", String(0xffff_ffff)),
+    ).seed,
+    0xffff_ffff,
+  );
 });
 
 test("parseZenBlurResearchArguments rejects missing output and unknown arguments", () => {
@@ -212,6 +246,20 @@ test("parseZenBlurResearchArguments rejects missing output and unknown arguments
         argv("--output", "result.json", "--headed", "false"),
       ),
     /unknown argument.*false/i,
+  );
+  assert.throws(
+    () =>
+      parseZenBlurResearchArguments(
+        argv("--output", "result.json", "--timing"),
+      ),
+    /timing/i,
+  );
+  assert.throws(
+    () =>
+      parseZenBlurResearchArguments(
+        argv("--output", "result.json", "--prime-runs"),
+      ),
+    /prime-runs|primeRuns/i,
   );
 });
 
@@ -240,6 +288,10 @@ test("parseZenBlurResearchArguments rejects invalid candidate values", () => {
     ["--dither", String(1 / 255 + 0.000_001), /dither/i],
     ["--seed", "-1", /seed/i],
     ["--seed", "1.5", /seed/i],
+    ["--seed", String(0x1_0000_0000), /seed/i],
+    ["--timing", "total", /timing/i],
+    ["--prime-runs", "-1", /prime-runs|primeRuns/i],
+    ["--prime-runs", "1.5", /prime-runs|primeRuns/i],
   ];
 
   for (const [option, value, expected] of invalid) {
@@ -286,6 +338,10 @@ test("buildZenBlurResearchInvocation isolates scenario and candidate inputs", ()
       "--seed",
       "17",
       "--headed",
+      "--timing",
+      "blur",
+      "--prime-runs",
+      "3",
     ),
   );
 
@@ -310,6 +366,8 @@ test("buildZenBlurResearchInvocation isolates scenario and candidate inputs", ()
           frames: 60,
           runs: 6,
           headed: true,
+          timing: "blur",
+          primeRuns: 3,
         }),
         VITE_ZEN_BLUR_BACKEND: "dual-kawase-canonical",
         VITE_ZEN_DUAL_KAWASE_PASSES: "2",
@@ -334,4 +392,62 @@ test("buildZenBlurResearchInvocation disables display noise exactly at zero", ()
   assert.equal(invocation.environment.VITE_ZEN_GLASS_NOISE_MODE, "none");
   assert.equal(invocation.environment.VITE_ZEN_GLASS_NOISE_STRENGTH, "0");
   assert.equal(invocation.environment.VITE_ZEN_RGBA8_DITHER_STRENGTH, "0");
+});
+
+async function withTemporaryDirectory(callback) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "zen-blur-promote-"));
+  try {
+    await callback(directory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("promoteZenBlurResearchArtifact replaces an existing artifact only after staging succeeds", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const stagedPath = path.join(directory, "candidate.staged.json");
+    const outputPath = path.join(directory, "candidate.json");
+    const previous = { schemaVersion: 1, candidate: "previous" };
+    const next = { schemaVersion: 1, candidate: "next" };
+    await writeFile(outputPath, JSON.stringify(previous), "utf8");
+    await writeFile(stagedPath, JSON.stringify(next), "utf8");
+
+    await promoteZenBlurResearchArtifact(stagedPath, outputPath);
+
+    assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), next);
+    await assert.rejects(() => readFile(stagedPath, "utf8"), /ENOENT/);
+  });
+});
+
+test("promoteZenBlurResearchArtifact preserves the previous artifact when staging is missing", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const stagedPath = path.join(directory, "missing.staged.json");
+    const outputPath = path.join(directory, "candidate.json");
+    const previous = { schemaVersion: 1, candidate: "previous" };
+    await writeFile(outputPath, JSON.stringify(previous), "utf8");
+
+    await assert.rejects(
+      async () => promoteZenBlurResearchArtifact(stagedPath, outputPath),
+      /ENOENT|staged/i,
+    );
+
+    assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), previous);
+  });
+});
+
+test("promoteZenBlurResearchArtifact preserves the previous artifact when promotion fails", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const stagedPath = path.join(directory, "invalid.staged.json");
+    const outputPath = path.join(directory, "candidate.json");
+    const previous = { schemaVersion: 1, candidate: "previous" };
+    await writeFile(outputPath, JSON.stringify(previous), "utf8");
+    await writeFile(stagedPath, "{not-valid-json", "utf8");
+
+    await assert.rejects(
+      async () => promoteZenBlurResearchArtifact(stagedPath, outputPath),
+      /JSON|artifact|staged/i,
+    );
+
+    assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), previous);
+  });
 });

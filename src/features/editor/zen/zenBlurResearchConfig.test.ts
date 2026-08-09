@@ -3,6 +3,13 @@ import {
   DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS,
   resolveZenBlurResearchOptions,
 } from "./zenBlurResearchConfig";
+import type { ZenGpuTimingMode } from "./zenGpuTimerSampler";
+
+const GPU_TIMING_MODES = [
+  "pass-breakdown",
+  "frame",
+  "blur",
+] as const satisfies readonly ZenGpuTimingMode[];
 
 describe("Zen blur research configuration", () => {
   it("keeps the production renderer on the current Gaussian path by default", () => {
@@ -15,6 +22,7 @@ describe("Zen blur research configuration", () => {
       displayNoise: { mode: "none", strength: 0, seed: 0 },
       rgba8Dither: { strength: 0, seed: 0 },
       gpuTiming: {
+        measurementMode: "pass-breakdown",
         sampleIntervalDraws: 30,
         maxPendingSamples: 1,
         maxRecordedSamples: 600,
@@ -31,17 +39,30 @@ describe("Zen blur research configuration", () => {
         VITE_ZEN_GPU_SAMPLE_INTERVAL_DRAWS: "1",
         VITE_ZEN_GPU_MAX_PENDING_SAMPLES: "8",
         VITE_ZEN_GPU_MAX_RECORDED_SAMPLES: "720",
+        VITE_ZEN_GPU_TIMING_MODE: "blur",
       }),
     ).toMatchObject({
       backend: "dual-kawase-planned",
       dualKawase: { passes: 4, offset: 2.5 },
       gpuTiming: {
+        measurementMode: "blur",
         sampleIntervalDraws: 1,
         maxPendingSamples: 8,
         maxRecordedSamples: 720,
       },
     });
   });
+
+  it.each(GPU_TIMING_MODES)(
+    "accepts the %s GPU timing mode from the research environment",
+    (measurementMode) => {
+      expect(
+        resolveZenBlurResearchOptions({
+          VITE_ZEN_GPU_TIMING_MODE: measurementMode,
+        }).gpuTiming.measurementMode,
+      ).toBe(measurementMode);
+    },
+  );
 
   it("keeps display noise and RGBA8 quantization dither independent", () => {
     const displayOnly = resolveZenBlurResearchOptions({
@@ -79,6 +100,7 @@ describe("Zen blur research configuration", () => {
         VITE_ZEN_GPU_SAMPLE_INTERVAL_DRAWS: "0",
         VITE_ZEN_GPU_MAX_PENDING_SAMPLES: "-2",
         VITE_ZEN_GPU_MAX_RECORDED_SAMPLES: "Infinity",
+        VITE_ZEN_GPU_TIMING_MODE: "total-frame",
       }),
     ).toEqual(DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS);
   });
