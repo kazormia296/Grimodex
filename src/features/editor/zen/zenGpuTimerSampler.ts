@@ -7,6 +7,9 @@ export type ZenGpuPass =
   | "kawaseUp"
   | "composite";
 
+export type ZenGpuTimingMode = "pass-breakdown" | "frame" | "blur";
+export type ZenGpuTimingScope = Exclude<ZenGpuTimingMode, "pass-breakdown">;
+
 export type ZenGpuTimingStatus =
   | "unsupported"
   | "idle"
@@ -35,6 +38,7 @@ export interface ZenGpuTimerSnapshot {
 }
 
 export interface ZenGpuTimerSamplerOptions {
+  readonly measurementMode?: ZenGpuTimingMode;
   readonly sampleIntervalDraws?: number;
   readonly maxPendingSamples?: number;
   readonly maxRecordedSamples?: number;
@@ -87,17 +91,20 @@ interface DisjointTimerQueryExtension {
   readonly GPU_DISJOINT_EXT: number;
 }
 
+type ZenGpuQueryBucket = ZenGpuPass | ZenGpuTimingScope;
+
 interface FrameSample {
   readonly drawCount: number;
-  readonly queries: Map<ZenGpuPass, ZenGpuTimerQuery[]>;
+  readonly queries: Map<ZenGpuQueryBucket, ZenGpuTimerQuery[]>;
   sampling: boolean;
 }
 
 interface PendingSample {
   readonly drawCount: number;
-  readonly queries: ReadonlyMap<ZenGpuPass, readonly ZenGpuTimerQuery[]>;
+  readonly queries: ReadonlyMap<ZenGpuQueryBucket, readonly ZenGpuTimerQuery[]>;
 }
 
+const DEFAULT_MEASUREMENT_MODE: ZenGpuTimingMode = "pass-breakdown";
 const DEFAULT_SAMPLE_INTERVAL_DRAWS = 30;
 const DEFAULT_MAX_PENDING_SAMPLES = 1;
 const DEFAULT_MAX_RECORDED_SAMPLES = 600;
@@ -118,6 +125,17 @@ const BLUR_GPU_PASSES: readonly ZenGpuPass[] = [
   "kawaseDown",
   "kawaseUp",
 ];
+
+const normalizeMeasurementMode = (
+  value: ZenGpuTimingMode | undefined,
+): ZenGpuTimingMode => {
+  const candidate = value ?? DEFAULT_MEASUREMENT_MODE;
+  return candidate === "frame" ||
+    candidate === "blur" ||
+    candidate === "pass-breakdown"
+    ? candidate
+    : DEFAULT_MEASUREMENT_MODE;
+};
 
 const emptyPassTimes = (): ZenGpuPassTimesMs => ({
   scene: 0,
@@ -217,6 +235,7 @@ export function createZenGpuTimerBackend(
 
 export class ZenGpuTimerSampler {
   private readonly backend: ZenGpuTimerBackend | null;
+  private readonly measurementMode: ZenGpuTimingMode;
   private readonly sampleIntervalDraws: number;
   private readonly maxPendingSamples: number;
   private readonly maxRecordedSamples: number;
@@ -236,6 +255,7 @@ export class ZenGpuTimerSampler {
     options: Readonly<ZenGpuTimerSamplerOptions> = {},
   ) {
     this.backend = backend;
+    this.measurementMode = normalizeMeasurementMode(options.measurementMode);
     this.sampleIntervalDraws = normalizePositiveInteger(
       options.sampleIntervalDraws,
       DEFAULT_SAMPLE_INTERVAL_DRAWS,
@@ -274,6 +294,19 @@ export class ZenGpuTimerSampler {
   }
 
   measure<Result>(pass: ZenGpuPass, draw: () => Result): Result {
+    if (this.measurementMode !== "pass-breakdown") return draw();
+    return this.measureQuery(pass, draw);
+  }
+
+  measureScope<Result>(scope: ZenGpuTimingScope, draw: () => Result): Result {
+    if (this.measurementMode !== scope) return draw();
+    return this.measureQuery(scope, draw);
+  }
+
+  private measureQuery<Result>(
+    bucket: ZenGpuQueryBucket,
+    draw: () => Result,
+  ): Result {
     const frame = this.currentFrame;
     const backend = this.backend;
     if (!frame?.sampling || !backend || this.disposed) return draw();
@@ -313,11 +346,11 @@ export class ZenGpuTimerSampler {
       return result;
     }
 
-    const passQueries = frame.queries.get(pass);
-    if (passQueries) {
-      passQueries.push(query);
+    const bucketQueries = frame.queries.get(bucket);
+    if (bucketQueries) {
+      bucketQueries.push(query);
     } else {
-      frame.queries.set(pass, [query]);
+      frame.queries.set(bucket, [query]);
     }
     return result;
   }
@@ -383,9 +416,10 @@ export class ZenGpuTimerSampler {
       }
 
       const passTimes = emptyPassTimes();
+      let scopeTimeMs = 0;
       try {
-        for (const [pass, passQueries] of pending.queries) {
-          for (const query of passQueries) {
+        for (const [bucket, bucketQueries] of pending.queries) {
+          for (const query of bucketQueries) {
             const elapsedNanoseconds = backend.getResult(query);
             if (
               !Number.isFinite(elapsedNanoseconds) ||
@@ -393,7 +427,13 @@ export class ZenGpuTimerSampler {
             ) {
               throw new Error("Invalid GPU timer result");
             }
-            passTimes[pass] += elapsedNanoseconds / NANOSECONDS_PER_MILLISECOND;
+            const elapsedMilliseconds =
+              elapsedNanoseconds / NANOSECONDS_PER_MILLISECOND;
+            if (bucket === "frame" || bucket === "blur") {
+              scopeTimeMs += elapsedMilliseconds;
+            } else {
+              passTimes[bucket] += elapsedMilliseconds;
+            }
           }
         }
       } catch {
@@ -410,14 +450,16 @@ export class ZenGpuTimerSampler {
         return;
       }
 
-      const gpuTimeMs = GPU_PASSES.reduce(
-        (total, pass) => total + passTimes[pass],
-        0,
-      );
-      const blurGpuTimeMs = BLUR_GPU_PASSES.reduce(
-        (total, pass) => total + passTimes[pass],
-        0,
-      );
+      const gpuTimeMs =
+        this.measurementMode === "pass-breakdown"
+          ? GPU_PASSES.reduce((total, pass) => total + passTimes[pass], 0)
+          : scopeTimeMs;
+      const blurGpuTimeMs =
+        this.measurementMode === "pass-breakdown"
+          ? BLUR_GPU_PASSES.reduce((total, pass) => total + passTimes[pass], 0)
+          : this.measurementMode === "blur"
+            ? scopeTimeMs
+            : 0;
 
       this.gpuPassTimesMs = passTimes;
       this.gpuTimeMs = gpuTimeMs;

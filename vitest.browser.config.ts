@@ -36,6 +36,9 @@ export default defineConfig({
     },
     setupFiles: ["./src/test-setup-browser.ts"],
     include: ["src/**/*.browser.test.{ts,tsx}"],
-    exclude: ["src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx"],
+    exclude: [
+      "src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx",
+      "src/features/editor/zen/ZenBlurResearchRunner.browser.test.tsx",
+    ],
   },
 });

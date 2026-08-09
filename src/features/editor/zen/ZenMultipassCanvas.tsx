@@ -35,6 +35,7 @@ import { createZenShaderFrameCadence } from "./zenShaderAnimation";
 import {
   createZenGpuTimerBackend,
   ZenGpuTimerSampler,
+  type ZenGpuTimingMode,
   type ZenGpuTimerBackend,
   type ZenGpuTimingStatus,
   type ZenGpuPassTimesMs,
@@ -292,6 +293,7 @@ export interface ZenMultipassPerformanceReport {
   schemaVersion: 1;
   capturedAtEpochMs: number;
   backend: ZenBlurResearchOptions["backend"];
+  gpuTimingMode: ZenGpuTimingMode;
   researchOptions: ZenBlurResearchOptions;
   gpuMetadata: ZenWebGlMetadata;
   performanceStats: ZenMultipassPerformanceStats;
@@ -796,6 +798,14 @@ class ZenMultipassRenderer {
     blurTargetPrecision: "auto" | "rgba8" = "auto",
     private readonly researchOptions: ZenBlurResearchOptions = DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS,
   ) {
+    this.researchOptions = {
+      ...researchOptions,
+      gpuTiming: {
+        ...researchOptions.gpuTiming,
+        measurementMode:
+          researchOptions.gpuTiming.measurementMode ?? "pass-breakdown",
+      },
+    };
     const gl = canvas.getContext("webgl2", contextAttributes);
     if (!gl)
       throw new Error("WebGL2 is unavailable for Zen multipass rendering");
@@ -810,7 +820,7 @@ class ZenMultipassRenderer {
     }
     this.gpuTimerSampler = new ZenGpuTimerSampler(
       gpuTimerBackend,
-      researchOptions.gpuTiming,
+      this.researchOptions.gpuTiming,
     );
     this.gpuMetadata = collectZenWebGlMetadata(
       gl,
@@ -838,7 +848,7 @@ class ZenMultipassRenderer {
       compositeFragment,
       sceneTargetFormat,
       this.blurTargetFormat,
-      researchOptions,
+      this.researchOptions,
     );
     this.sceneProgram = resources.sceneProgram;
     this.downsampleProgram = resources.downsampleProgram;
@@ -1660,6 +1670,193 @@ class ZenMultipassRenderer {
     this.drawCallCount += 1;
   }
 
+  private drawBlurPipeline(timingFrame: boolean) {
+    const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
+    const hasBlurPlan = this.prepareBlurPlan(
+      blurRadius,
+      this.activeGlassSurface,
+    );
+    this.blurredTexture = this.sceneTarget.texture;
+    const kawasePlan = this.activeKawasePlan;
+    if (hasBlurPlan && kawasePlan) {
+      const downsampleProgram = this.kawaseDownsampleProgram;
+      const upsampleProgram = this.kawaseUpsampleProgram;
+      if (!downsampleProgram || !upsampleProgram) {
+        throw new Error("Dual Kawase programs are unavailable");
+      }
+
+      if (kawasePlan.requiresPrefilter) {
+        const baseTarget = this.kawaseTargets[0];
+        if (!baseTarget)
+          throw new Error("Dual Kawase base target is unavailable");
+        const drawPrefilter = () =>
+          this.drawDownsamplePass(this.sceneTarget.texture, baseTarget);
+        if (timingFrame) {
+          this.gpuTimerSampler.measure("downsample", drawPrefilter);
+        } else {
+          drawPrefilter();
+        }
+      }
+
+      for (
+        let levelIndex = 1;
+        levelIndex <= kawasePlan.passes;
+        levelIndex += 1
+      ) {
+        const target = this.kawaseTargets[levelIndex];
+        const sourceTarget = this.kawaseTargets[levelIndex - 1];
+        if (!target || !sourceTarget) {
+          throw new Error("Dual Kawase downsample target is unavailable");
+        }
+        const sourceTexture =
+          levelIndex === 1 && !kawasePlan.requiresPrefilter
+            ? this.sceneTarget.texture
+            : sourceTarget.texture;
+        const sourceWidth =
+          levelIndex === 1 && !kawasePlan.requiresPrefilter
+            ? this.sceneTarget.width
+            : sourceTarget.width;
+        const sourceHeight =
+          levelIndex === 1 && !kawasePlan.requiresPrefilter
+            ? this.sceneTarget.height
+            : sourceTarget.height;
+        const drawKawaseDown = () =>
+          this.drawKawasePass(
+            downsampleProgram,
+            sourceTexture,
+            sourceWidth,
+            sourceHeight,
+            target,
+            10 + levelIndex,
+          );
+        if (timingFrame) {
+          this.gpuTimerSampler.measure("kawaseDown", drawKawaseDown);
+        } else {
+          drawKawaseDown();
+        }
+      }
+
+      for (
+        let levelIndex = kawasePlan.passes - 1;
+        levelIndex >= 0;
+        levelIndex -= 1
+      ) {
+        const sourceTarget = this.kawaseTargets[levelIndex + 1];
+        const target = this.kawaseTargets[levelIndex];
+        if (!sourceTarget || !target) {
+          throw new Error("Dual Kawase upsample target is unavailable");
+        }
+        const drawKawaseUp = () =>
+          this.drawKawasePass(
+            upsampleProgram,
+            sourceTarget.texture,
+            sourceTarget.width,
+            sourceTarget.height,
+            target,
+            20 + levelIndex,
+          );
+        if (timingFrame) {
+          this.gpuTimerSampler.measure("kawaseUp", drawKawaseUp);
+        } else {
+          drawKawaseUp();
+        }
+      }
+      const baseTarget = this.kawaseTargets[0];
+      if (!baseTarget)
+        throw new Error("Dual Kawase output target is unavailable");
+      this.blurredTexture = baseTarget.texture;
+    } else if (hasBlurPlan && this.activeBlurPlan) {
+      const plan = this.activeBlurPlan;
+      let horizontalSource = this.sceneTarget.texture;
+      let horizontalTarget = this.blurTargetA;
+      let verticalTarget = this.blurTargetB;
+      if (plan.requiresDownsample) {
+        if (timingFrame) {
+          this.gpuTimerSampler.measure("downsample", () =>
+            this.drawDownsamplePass(this.sceneTarget.texture, this.blurTargetA),
+          );
+        } else {
+          this.drawDownsamplePass(this.sceneTarget.texture, this.blurTargetA);
+        }
+        horizontalSource = this.blurTargetA.texture;
+        horizontalTarget = this.blurTargetB;
+        verticalTarget = this.blurTargetA;
+      }
+      if (timingFrame) {
+        this.gpuTimerSampler.measure("gaussianHorizontal", () =>
+          this.drawGaussianPass(
+            horizontalSource,
+            horizontalTarget,
+            1 / plan.targetWidth,
+            0,
+          ),
+        );
+        this.gpuTimerSampler.measure("gaussianVertical", () =>
+          this.drawGaussianPass(
+            horizontalTarget.texture,
+            verticalTarget,
+            0,
+            1 / plan.targetHeight,
+          ),
+        );
+      } else {
+        this.drawGaussianPass(
+          horizontalSource,
+          horizontalTarget,
+          1 / plan.targetWidth,
+          0,
+        );
+        this.drawGaussianPass(
+          horizontalTarget.texture,
+          verticalTarget,
+          0,
+          1 / plan.targetHeight,
+        );
+      }
+      this.blurredTexture = verticalTarget.texture;
+    }
+  }
+
+  private drawDirtyWork(timingFrame: boolean): boolean {
+    let rendered = false;
+    if (this.dirtyScene) {
+      if (timingFrame) {
+        this.gpuTimerSampler.measure("scene", () => this.drawScene());
+      } else {
+        this.drawScene();
+      }
+      this.dirtyScene = false;
+      this.dirtyBlur = true;
+      this.dirtyComposite = true;
+      rendered = true;
+    }
+
+    if (this.dirtyBlur) {
+      const drawBlur = () => this.drawBlurPipeline(timingFrame);
+      if (timingFrame) {
+        this.gpuTimerSampler.measureScope("blur", drawBlur);
+      } else {
+        drawBlur();
+      }
+      this.dirtyBlur = false;
+      this.dirtyComposite = true;
+      rendered = true;
+    }
+
+    if (this.dirtyComposite) {
+      if (timingFrame) {
+        this.gpuTimerSampler.measure("composite", () =>
+          this.drawComposite(this.blurredTexture),
+        );
+      } else {
+        this.drawComposite(this.blurredTexture);
+      }
+      this.dirtyComposite = false;
+      rendered = true;
+    }
+    return rendered;
+  }
+
   private draw() {
     if (
       this.disposed ||
@@ -1686,184 +1883,13 @@ class ZenMultipassRenderer {
     }
 
     try {
-      if (this.dirtyScene) {
-        if (timingFrame) {
-          this.gpuTimerSampler.measure("scene", () => this.drawScene());
-        } else {
-          this.drawScene();
-        }
-        this.dirtyScene = false;
-        this.dirtyBlur = true;
-        this.dirtyComposite = true;
-        rendered = true;
-      }
-
-      if (this.dirtyBlur) {
-        const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
-        const hasBlurPlan = this.prepareBlurPlan(
-          blurRadius,
-          this.activeGlassSurface,
-        );
-        this.blurredTexture = this.sceneTarget.texture;
-        const kawasePlan = this.activeKawasePlan;
-        if (hasBlurPlan && kawasePlan) {
-          const downsampleProgram = this.kawaseDownsampleProgram;
-          const upsampleProgram = this.kawaseUpsampleProgram;
-          if (!downsampleProgram || !upsampleProgram) {
-            throw new Error("Dual Kawase programs are unavailable");
-          }
-
-          if (kawasePlan.requiresPrefilter) {
-            const baseTarget = this.kawaseTargets[0];
-            if (!baseTarget)
-              throw new Error("Dual Kawase base target is unavailable");
-            const drawPrefilter = () =>
-              this.drawDownsamplePass(this.sceneTarget.texture, baseTarget);
-            if (timingFrame) {
-              this.gpuTimerSampler.measure("downsample", drawPrefilter);
-            } else {
-              drawPrefilter();
-            }
-          }
-
-          for (
-            let levelIndex = 1;
-            levelIndex <= kawasePlan.passes;
-            levelIndex += 1
-          ) {
-            const target = this.kawaseTargets[levelIndex];
-            const sourceTarget = this.kawaseTargets[levelIndex - 1];
-            if (!target || !sourceTarget) {
-              throw new Error("Dual Kawase downsample target is unavailable");
-            }
-            const sourceTexture =
-              levelIndex === 1 && !kawasePlan.requiresPrefilter
-                ? this.sceneTarget.texture
-                : sourceTarget.texture;
-            const sourceWidth =
-              levelIndex === 1 && !kawasePlan.requiresPrefilter
-                ? this.sceneTarget.width
-                : sourceTarget.width;
-            const sourceHeight =
-              levelIndex === 1 && !kawasePlan.requiresPrefilter
-                ? this.sceneTarget.height
-                : sourceTarget.height;
-            const drawKawaseDown = () =>
-              this.drawKawasePass(
-                downsampleProgram,
-                sourceTexture,
-                sourceWidth,
-                sourceHeight,
-                target,
-                10 + levelIndex,
-              );
-            if (timingFrame) {
-              this.gpuTimerSampler.measure("kawaseDown", drawKawaseDown);
-            } else {
-              drawKawaseDown();
-            }
-          }
-
-          for (
-            let levelIndex = kawasePlan.passes - 1;
-            levelIndex >= 0;
-            levelIndex -= 1
-          ) {
-            const sourceTarget = this.kawaseTargets[levelIndex + 1];
-            const target = this.kawaseTargets[levelIndex];
-            if (!sourceTarget || !target) {
-              throw new Error("Dual Kawase upsample target is unavailable");
-            }
-            const drawKawaseUp = () =>
-              this.drawKawasePass(
-                upsampleProgram,
-                sourceTarget.texture,
-                sourceTarget.width,
-                sourceTarget.height,
-                target,
-                20 + levelIndex,
-              );
-            if (timingFrame) {
-              this.gpuTimerSampler.measure("kawaseUp", drawKawaseUp);
-            } else {
-              drawKawaseUp();
-            }
-          }
-          const baseTarget = this.kawaseTargets[0];
-          if (!baseTarget)
-            throw new Error("Dual Kawase output target is unavailable");
-          this.blurredTexture = baseTarget.texture;
-        } else if (hasBlurPlan && this.activeBlurPlan) {
-          const plan = this.activeBlurPlan;
-          let horizontalSource = this.sceneTarget.texture;
-          let horizontalTarget = this.blurTargetA;
-          let verticalTarget = this.blurTargetB;
-          if (plan.requiresDownsample) {
-            if (timingFrame) {
-              this.gpuTimerSampler.measure("downsample", () =>
-                this.drawDownsamplePass(
-                  this.sceneTarget.texture,
-                  this.blurTargetA,
-                ),
-              );
-            } else {
-              this.drawDownsamplePass(
-                this.sceneTarget.texture,
-                this.blurTargetA,
-              );
-            }
-            horizontalSource = this.blurTargetA.texture;
-            horizontalTarget = this.blurTargetB;
-            verticalTarget = this.blurTargetA;
-          }
-          if (timingFrame) {
-            this.gpuTimerSampler.measure("gaussianHorizontal", () =>
-              this.drawGaussianPass(
-                horizontalSource,
-                horizontalTarget,
-                1 / plan.targetWidth,
-                0,
-              ),
-            );
-            this.gpuTimerSampler.measure("gaussianVertical", () =>
-              this.drawGaussianPass(
-                horizontalTarget.texture,
-                verticalTarget,
-                0,
-                1 / plan.targetHeight,
-              ),
-            );
-          } else {
-            this.drawGaussianPass(
-              horizontalSource,
-              horizontalTarget,
-              1 / plan.targetWidth,
-              0,
-            );
-            this.drawGaussianPass(
-              horizontalTarget.texture,
-              verticalTarget,
-              0,
-              1 / plan.targetHeight,
-            );
-          }
-          this.blurredTexture = verticalTarget.texture;
-        }
-        this.dirtyBlur = false;
-        this.dirtyComposite = true;
-        rendered = true;
-      }
-
-      if (this.dirtyComposite) {
-        if (timingFrame) {
-          this.gpuTimerSampler.measure("composite", () =>
-            this.drawComposite(this.blurredTexture),
-          );
-        } else {
-          this.drawComposite(this.blurredTexture);
-        }
-        this.dirtyComposite = false;
-        rendered = true;
+      const drawDirtyWork = () => {
+        rendered = this.drawDirtyWork(timingFrame);
+      };
+      if (timingFrame) {
+        this.gpuTimerSampler.measureScope("frame", drawDirtyWork);
+      } else {
+        drawDirtyWork();
       }
     } finally {
       if (timingFrame) this.gpuTimerSampler.endFrame();
@@ -2001,6 +2027,8 @@ class ZenMultipassRenderer {
     schemaVersion: 1,
     capturedAtEpochMs: Date.now(),
     backend: this.researchOptions.backend,
+    gpuTimingMode:
+      this.researchOptions.gpuTiming.measurementMode ?? "pass-breakdown",
     researchOptions: {
       ...this.researchOptions,
       dualKawase: { ...this.researchOptions.dualKawase },

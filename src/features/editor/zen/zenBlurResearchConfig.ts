@@ -1,4 +1,5 @@
 import type { ZenBlurBackend } from "./zenDualKawase";
+import type { ZenGpuTimingMode } from "./zenGpuTimerSampler";
 
 export type { ZenBlurBackend } from "./zenDualKawase";
 
@@ -20,6 +21,7 @@ export interface ZenBlurResearchOptions {
     seed: number;
   };
   gpuTiming: {
+    measurementMode?: ZenGpuTimingMode;
     sampleIntervalDraws: number;
     maxPendingSamples: number;
     maxRecordedSamples: number;
@@ -42,11 +44,18 @@ export const DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS: ZenBlurResearchOptions = {
     seed: 0,
   },
   gpuTiming: {
+    measurementMode: "pass-breakdown",
     sampleIntervalDraws: 30,
     maxPendingSamples: 1,
     maxRecordedSamples: 600,
   },
 };
+
+const ZEN_GPU_TIMING_MODES = [
+  "pass-breakdown",
+  "frame",
+  "blur",
+] as const satisfies readonly ZenGpuTimingMode[];
 
 type ZenBlurResearchEnvironment = Readonly<Record<string, unknown>>;
 
@@ -144,6 +153,11 @@ export function resolveZenBlurResearchOptions(
       ),
     },
     gpuTiming: {
+      measurementMode: enumValue(
+        environment.VITE_ZEN_GPU_TIMING_MODE,
+        ZEN_GPU_TIMING_MODES,
+        defaults.gpuTiming.measurementMode ?? "pass-breakdown",
+      ),
       sampleIntervalDraws: numericValue(
         environment.VITE_ZEN_GPU_SAMPLE_INTERVAL_DRAWS,
         defaults.gpuTiming.sampleIntervalDraws,
