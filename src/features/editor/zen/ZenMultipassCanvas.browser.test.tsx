@@ -1,18 +1,54 @@
 import { createRef, StrictMode, type RefObject } from "react";
 import { render, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   PaperShaderElement,
   ShaderMountUniforms,
 } from "@paper-design/shaders";
 import { ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
-import { ZenMultipassCanvas } from "./ZenMultipassCanvas";
+import {
+  _setZenMultipassFaultInjectionForTests,
+  ZenMultipassCanvas,
+} from "./ZenMultipassCanvas";
+import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenPostProcessRuntime } from "./zenPostProcessing";
+import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
 } from "./zenMultipassPipeline";
+
+const shaderLayouts = vi.hoisted(() => ({
+  current: {
+    surfaceSize: { width: 240, height: 160 },
+    contrast: { rect: [0, 0, 1, 1], feather: [0, 0, 0, 0] },
+    glass: {
+      rect: [0, 0, 1, 1],
+      feather: [0, 0, 0, 0],
+      cornerRadius: 16,
+    },
+    uiSurfaces: [],
+  } as ZenShaderLayouts,
+}));
+
+vi.mock("./useZenShaderLayouts", () => ({
+  useZenShaderLayouts: () => shaderLayouts.current,
+}));
+
+vi.mock("./zenThemePalette", () => ({
+  useZenThemePalette: () => ({
+    background: "#101318",
+    colors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
+    textColor: [0.9, 0.9, 0.9],
+    uiTextColor: [0.75, 0.75, 0.75],
+    backdropColor: [0.04, 0.05, 0.07],
+  }),
+}));
+
+afterEach(() => {
+  _setZenMultipassFaultInjectionForTests(null);
+});
 
 const SIZING_UNIFORMS: ShaderMountUniforms = {
   u_fit: 2,
@@ -395,6 +431,8 @@ function centralRedAmplitude(canvas: HTMLCanvasElement) {
 interface BlurPerformanceStats {
   drawCount: number;
   blurFormat: "rgba16f" | "rgba8";
+  blurTargetAFormat: "rgba16f" | "rgba8";
+  blurTargetBFormat: "rgba16f" | "rgba8";
   blurTargetWidth: number;
   blurTargetHeight: number;
   gaussianPairCount: number;
@@ -438,6 +476,9 @@ describe("ZenMultipassCanvas live updates", () => {
     const probes = [
       { name: "zero", blur: 0, renderScale: 1 },
       { name: "one", blur: 1, renderScale: 1 },
+      { name: "five-point-nine", blur: 5.9, renderScale: 1 },
+      { name: "six", blur: 6, renderScale: 1 },
+      { name: "six-point-one", blur: 6.1, renderScale: 1 },
       { name: "twenty-one", blur: 21, renderScale: 1 },
       { name: "twenty-two-full", blur: 22, renderScale: 1 },
       { name: "twenty-two-half", blur: 22, renderScale: 0.5 },
@@ -474,6 +515,13 @@ describe("ZenMultipassCanvas live updates", () => {
 
     const blur0 = effectiveHorizontalBlurSigma(canvasFor("zero"));
     const blur1 = effectiveHorizontalBlurSigma(canvasFor("one"));
+    const blur5Point9 = effectiveHorizontalBlurSigma(
+      canvasFor("five-point-nine"),
+    );
+    const blur6 = effectiveHorizontalBlurSigma(canvasFor("six"));
+    const blur6Point1 = effectiveHorizontalBlurSigma(
+      canvasFor("six-point-one"),
+    );
     const blur21 = effectiveHorizontalBlurSigma(canvasFor("twenty-one"));
     const blur22Full = effectiveHorizontalBlurSigma(
       canvasFor("twenty-two-full"),
@@ -500,6 +548,17 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(blur0).toBeLessThanOrEqual(1.5);
     expect(blur1).toBeGreaterThan(blur0);
     expect(blur1).toBeLessThan(4);
+    expect(blur5Point9).toBeGreaterThanOrEqual(5);
+    expect(blur6Point1).toBeLessThanOrEqual(7);
+    const lowerCostBoundaryIncrement = blur6 - blur5Point9;
+    const upperCostBoundaryIncrement = blur6Point1 - blur6;
+    expect(lowerCostBoundaryIncrement).toBeGreaterThan(0);
+    expect(lowerCostBoundaryIncrement).toBeLessThan(0.4);
+    expect(upperCostBoundaryIncrement).toBeGreaterThan(0);
+    expect(upperCostBoundaryIncrement).toBeLessThan(0.4);
+    expect(
+      Math.abs(lowerCostBoundaryIncrement - upperCostBoundaryIncrement),
+    ).toBeLessThan(0.25);
     const firstIncrement = blur22Full - blur21;
     const secondIncrement = blur23 - blur22Full;
     expect(firstIncrement).toBeGreaterThan(0.2);
@@ -508,6 +567,72 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(secondIncrement).toBeLessThan(1.8);
     expect(Math.abs(firstIncrement - secondIncrement)).toBeLessThan(0.8);
   }, 30_000);
+
+  it("keeps the blur cost root continuous across adjacent render-scale pixels", async () => {
+    const lowerRef = createRef<PaperShaderElement>();
+    const upperRef = createRef<PaperShaderElement>();
+    const probes = [
+      {
+        name: "cost-root-388",
+        renderScale: 388 / 512,
+        expectedWidth: 388,
+        mountRef: lowerRef,
+      },
+      {
+        name: "cost-root-389",
+        renderScale: 389 / 512,
+        expectedWidth: 389,
+        mountRef: upperRef,
+      },
+    ] as const;
+    const { container } = render(
+      <div>
+        {probes.map((probe) => (
+          <DirectBlurProbe
+            key={probe.name}
+            name={probe.name}
+            sceneFragment={BLUR_STEP_SCENE}
+            blur={2}
+            renderScale={probe.renderScale}
+            width={512}
+            height={128}
+            mountRef={probe.mountRef}
+          />
+        ))}
+      </div>,
+    );
+    const canvasFor = (name: string) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="direct-blur-${name}"]`,
+        ) ?? container,
+      );
+
+    await waitFor(() => {
+      expect(blurPerformanceStats(lowerRef).drawCount).toBeGreaterThan(0);
+      expect(blurPerformanceStats(upperRef).drawCount).toBeGreaterThan(0);
+    });
+
+    for (const probe of probes) {
+      const canvas = canvasFor(probe.name);
+      const stats = blurPerformanceStats(probe.mountRef);
+      expect(canvas.width).toBe(probe.expectedWidth);
+      expect(canvas.height).toBe(97);
+      expect(stats).toMatchObject({
+        blurTargetWidth: probe.expectedWidth,
+        blurTargetHeight: 97,
+        gaussianPairCount: 3,
+      });
+    }
+
+    const lowerSigma = effectiveHorizontalBlurSigma(canvasFor("cost-root-388"));
+    const upperSigma = effectiveHorizontalBlurSigma(canvasFor("cost-root-389"));
+    expect(lowerSigma).toBeGreaterThanOrEqual(1.5);
+    expect(lowerSigma).toBeLessThanOrEqual(2.5);
+    expect(upperSigma).toBeGreaterThanOrEqual(1.5);
+    expect(upperSigma).toBeLessThanOrEqual(2.5);
+    expect(Math.abs(lowerSigma - upperSigma)).toBeLessThanOrEqual(0.25);
+  });
 
   it("keeps the point-spread function radial without terraces or side peaks", async () => {
     const blur22HalfRef = createRef<PaperShaderElement>();
@@ -635,6 +760,225 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(fallbackStats.blurTargetWidth).toBe(64);
     expect(fallbackStats.blurTargetHeight).toBe(64);
   }, 30_000);
+
+  it("retries failed real-size RGBA16F blur targets as RGBA8", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const allocationAttempts: Array<"rgba16f" | "rgba8"> = [];
+    let rgba16fAttemptCount = 0;
+    _setZenMultipassFaultInjectionForTests({
+      initialBlurTargetPrecision: "rgba16f",
+      shouldFailBlurTargetAllocation: ({ precision }) => {
+        allocationAttempts.push(precision);
+        if (precision !== "rgba16f") return false;
+        rgba16fAttemptCount += 1;
+        return rgba16fAttemptCount === 2;
+      },
+    });
+    const { container } = render(
+      <DirectBlurProbe
+        name="allocation-rgba8-fallback"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={40}
+        mountRef={ref}
+      />,
+    );
+    const host = container.querySelector<HTMLElement>(
+      '[data-paper-shader="direct-blur-allocation-rgba8-fallback"]',
+    );
+    if (!host)
+      throw new Error("Blur allocation fallback probe was not mounted");
+    const contextLost = vi.fn();
+    host.addEventListener("webglcontextlost", contextLost);
+
+    await waitFor(() =>
+      expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+    );
+
+    expect(blurPerformanceStats(ref)).toMatchObject({
+      blurFormat: "rgba8",
+      blurTargetAFormat: "rgba8",
+      blurTargetBFormat: "rgba8",
+      blurTargetWidth: 64,
+      blurTargetHeight: 64,
+    });
+    expect(allocationAttempts).toEqual([
+      "rgba16f",
+      "rgba16f",
+      "rgba8",
+      "rgba8",
+    ]);
+    expect(contextLost).not.toHaveBeenCalled();
+  });
+
+  it("reports context loss when RGBA16F and RGBA8 blur targets both fail", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const allocationAttempts: Array<"rgba16f" | "rgba8"> = [];
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    _setZenMultipassFaultInjectionForTests({
+      initialBlurTargetPrecision: "rgba16f",
+      shouldFailBlurTargetAllocation: ({ precision }) => {
+        allocationAttempts.push(precision);
+        return true;
+      },
+    });
+
+    try {
+      const { container } = render(
+        <DirectBlurProbe
+          name="allocation-total-failure"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={40}
+          mountRef={ref}
+        />,
+      );
+      const host = container.querySelector<HTMLElement>(
+        '[data-paper-shader="direct-blur-allocation-total-failure"]',
+      );
+      if (!host)
+        throw new Error("Blur allocation failure probe was not mounted");
+      const contextLostEvents: Event[] = [];
+      host.addEventListener("webglcontextlost", (event) => {
+        contextLostEvents.push(event);
+      });
+
+      await waitFor(() => expect(contextLostEvents).toHaveLength(1));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      expect(contextLostEvents).toHaveLength(1);
+      expect(contextLostEvents[0]).toMatchObject({
+        bubbles: true,
+        cancelable: true,
+      });
+      expect(allocationAttempts).toEqual(["rgba16f", "rgba8"]);
+      expect(blurPerformanceStats(ref)).toMatchObject({
+        drawCount: 0,
+        blurFormat: "rgba8",
+        blurTargetWidth: 0,
+        blurTargetHeight: 0,
+        gaussianPairCount: 0,
+      });
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      const [label, error] = consoleError.mock.calls[0] ?? [];
+      expect(label).toBe("[zen-shader] multipass renderer failed");
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(
+        "RGBA16F and RGBA8 allocations failed",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("transitions the shader surface to CSS fallback after a fatal initialization failure", async () => {
+    const onRendererStatusChange = vi.fn();
+    const rollback = vi.fn();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    _setZenMultipassFaultInjectionForTests({
+      failInitializationAfterSetup: true,
+      onInitializationRollback: rollback,
+    });
+
+    try {
+      const { container } = render(
+        <div style={{ position: "relative", width: 240, height: 160 }}>
+          <ZenShaderSurface
+            config={ZEN_SHADER_DEFAULTS}
+            playing={false}
+            webGlSupported
+            webGlContextAttributes={WEBGL_ATTRIBUTES}
+            onRendererStatusChange={onRendererStatusChange}
+          />
+        </div>,
+      );
+
+      await waitFor(() =>
+        expect(onRendererStatusChange).toHaveBeenLastCalledWith(
+          "fallback-context-lost",
+        ),
+      );
+
+      const surface = container.querySelector<HTMLElement>(
+        "[data-zen-shader-surface]",
+      );
+      expect(surface).toHaveAttribute(
+        "data-zen-shader-renderer",
+        "fallback-context-lost",
+      );
+      expect(surface?.style.background).toContain("linear-gradient");
+      expect(container.querySelector("[data-paper-shader]")).toBeNull();
+      expect(container.querySelector("[data-zen-glass-compositor]")).toBeNull();
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reports one fatal failure when an asynchronous resize cannot reallocate the scene target", async () => {
+    const ref = createRef<PaperShaderElement>();
+    let failSceneAllocation = false;
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    _setZenMultipassFaultInjectionForTests({
+      shouldFailSceneTargetAllocation: () => failSceneAllocation,
+    });
+
+    try {
+      const { container } = render(
+        <ZenMultipassCanvas
+          ref={ref}
+          data-paper-shader="async-resize-failure"
+          sceneFragment={STATIC_SCENE}
+          sceneUniforms={SIZING_UNIFORMS}
+          compositeFragment={buildZenMultipassCompositeFragment(1)}
+          compositeUniforms={compositeUniforms(0, false)}
+          minPixelRatio={1}
+          maxPixelCount={128 * 128}
+          speed={0}
+          style={{ position: "relative", width: 64, height: 64 }}
+          webGlContextAttributes={WEBGL_ATTRIBUTES}
+        />,
+      );
+      const host = container.querySelector<HTMLElement>(
+        '[data-paper-shader="async-resize-failure"]',
+      );
+      if (!host) throw new Error("Async resize failure probe was not mounted");
+      const contextLostEvents: Event[] = [];
+      host.addEventListener("webglcontextlost", (event) => {
+        contextLostEvents.push(event);
+      });
+      await waitFor(() =>
+        expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+      );
+
+      failSceneAllocation = true;
+      host.style.width = "96px";
+      host.style.height = "96px";
+      window.dispatchEvent(new Event("resize"));
+
+      await waitFor(() => expect(contextLostEvents).toHaveLength(1));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      expect(contextLostEvents).toHaveLength(1);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      const error = consoleError.mock.calls[0]?.[1];
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "Unable to allocate Zen multipass scene target",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 
   it("attenuates sinusoidal gratings equally at 0, 45 and 90 degrees", async () => {
     const frequency = (Math.PI * 2) / 96;
@@ -799,6 +1143,70 @@ describe("ZenMultipassCanvas live updates", () => {
       ).toBeGreaterThan(0),
     );
     expect(readCenterRed(canvas)).toBeGreaterThan(0);
+  });
+
+  it("rolls back constructor resources and reports one failure when Strict Mode replays initialization", async () => {
+    const rollback = vi.fn();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame");
+    const disconnectObserver = vi.spyOn(ResizeObserver.prototype, "disconnect");
+    const removeWindowListener = vi.spyOn(window, "removeEventListener");
+    _setZenMultipassFaultInjectionForTests({
+      failInitializationAfterSetup: true,
+      onInitializationRollback: rollback,
+    });
+
+    try {
+      const { container } = render(
+        <StrictMode>
+          <ZenMultipassCanvas
+            data-paper-shader="strict-mode-constructor-failure"
+            sceneFragment={STATIC_SCENE}
+            sceneUniforms={SIZING_UNIFORMS}
+            compositeFragment={buildZenMultipassCompositeFragment(1)}
+            compositeUniforms={compositeUniforms(0, false)}
+            minPixelRatio={1}
+            maxPixelCount={64 * 64}
+            speed={0}
+            style={{ position: "relative", width: 64, height: 64 }}
+            webGlContextAttributes={WEBGL_ATTRIBUTES}
+          />
+        </StrictMode>,
+      );
+      const host = container.querySelector<PaperShaderElement>(
+        '[data-paper-shader="strict-mode-constructor-failure"]',
+      );
+      if (!host)
+        throw new Error(
+          "Strict Mode constructor failure probe was not mounted",
+        );
+      const contextLostEvents: Event[] = [];
+      host.addEventListener("webglcontextlost", (event) => {
+        contextLostEvents.push(event);
+      });
+
+      await waitFor(() => expect(contextLostEvents).toHaveLength(1));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      expect(rollback).toHaveBeenCalledTimes(2);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      expect(contextLostEvents).toHaveLength(1);
+      expect(host.paperShaderMount).toBeUndefined();
+      expect(cancelFrame.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(disconnectObserver.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(
+        removeWindowListener.mock.calls.filter(([type]) => type === "resize"),
+      ).toHaveLength(2);
+    } finally {
+      removeWindowListener.mockRestore();
+      disconnectObserver.mockRestore();
+      cancelFrame.mockRestore();
+      consoleError.mockRestore();
+    }
   });
 
   it("advances the Paper scene while speed is positive", async () => {

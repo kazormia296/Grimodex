@@ -23,6 +23,7 @@
     "test": "pnpm build:workspace:dependencies && vitest",
     "test:node": "pnpm build:workspace:dependencies && vitest --config vitest.config.ts",
     "test:browser": "vitest --config vitest.browser.config.ts",
+    "test:webgl": "vitest --config vitest.webgl.config.ts",
     "test:electron": "vitest --config vitest.electron.config.ts",
     "test:storybook": "vitest --config vitest.storybook.config.ts",
     "test:browser-ci": "node --test scripts/browser-ci-benchmark.test.mjs scripts/browser-ci-workflow.test.mjs scripts/check-performance-budgets.test.mjs scripts/runtime-performance-budget.test.mjs",

@@ -7,24 +7,306 @@ import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
 export const ZEN_MULTIPASS_MAX_TARGET_SIGMA = 6;
 export const ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS = 16;
+// This is below twice the legacy 7.5-fetch full-resolution-equivalent cost.
+// The planner applies it to a continuous upper envelope rather than the
+// discrete shader pair count, so crossing a pair or resize boundary cannot
+// force the target resolution to jump.
+export const ZEN_MULTIPASS_FETCH_BUDGET_PER_CSS_PIXEL = 14;
 
 const ZEN_MULTIPASS_MIN_CSS_SCALE = 0.25;
+const ZEN_MULTIPASS_DOWNSAMPLE_FETCHES_PER_TARGET_PIXEL = 9;
+const ZEN_MULTIPASS_COST_SEARCH_ITERATIONS = 48;
+const ZEN_MULTIPASS_VARIANCE_EPSILON = 1e-6;
 // A 3x3 tent sampled at +/- half a target pixel contributes 3/24 per-axis
 // variance. Linear reconstruction contributes another 4/24.
 const ZEN_MULTIPASS_RESAMPLING_VARIANCE = 7 / 24;
 
-export interface ZenMultipassBlurPlan {
+export interface ZenMultipassBlurFetchCost {
+  gaussianPairCount: number;
+  gaussianFetchesPerTargetPixel: number;
+  downsampleFetchesPerTargetPixel: number;
+  totalFetchesPerTargetPixel: number;
+  estimatedTextureFetches: number;
+  estimatedTextureFetchesPerCssPixel: number;
+}
+
+export interface ZenMultipassBlurFetchCostInput {
+  kernelSigmaInTargetPixels: number;
+  requiresDownsample: boolean;
+  targetWidth: number;
+  targetHeight: number;
+  cssWidth: number;
+  cssHeight: number;
+}
+
+export interface ZenMultipassBlurCostEnvelope {
+  gaussianPairCountUpperBound: number;
+  textureFetchesPerTargetPixelUpperBound: number;
+  estimatedTextureFetchesPerCssPixelUpperBound: number;
+}
+
+export interface ZenMultipassBlurCostEnvelopeInput {
+  blurCssPx: number;
+  blurCssScale: number;
+  cssWidth: number;
+  cssHeight: number;
+}
+
+export type ZenMultipassBlurBudgetMode = "bounded" | "best-effort-variance";
+
+export interface ZenMultipassBlurPlan extends ZenMultipassBlurFetchCost {
   blurCssScale: number;
   targetWidth: number;
   targetHeight: number;
   sigmaInTargetPixels: number;
   kernelSigmaInTargetPixels: number;
   resamplingVarianceInTargetPixels: number;
+  usesExplicitPrefilter: boolean;
   requiresDownsample: boolean;
+  gaussianPairCountUpperBound: number;
+  textureFetchesPerTargetPixelUpperBound: number;
+  estimatedTextureFetchesPerCssPixelUpperBound: number;
+  fetchBudgetMode: ZenMultipassBlurBudgetMode;
+  fetchBudgetExceeded: boolean;
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function resolveZenGaussianRadius(sigmaInTargetPixels: number) {
+  if (!Number.isFinite(sigmaInTargetPixels) || sigmaInTargetPixels <= 0) {
+    return 0;
+  }
+  return Math.min(
+    Math.ceil(sigmaInTargetPixels * 3),
+    ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS * 2,
+  );
+}
+
+function resolveZenGaussianPairCount(sigmaInTargetPixels: number) {
+  return Math.ceil(resolveZenGaussianRadius(sigmaInTargetPixels) / 2);
+}
+
+export function estimateZenMultipassBlurFetchCost({
+  kernelSigmaInTargetPixels,
+  requiresDownsample,
+  targetWidth,
+  targetHeight,
+  cssWidth,
+  cssHeight,
+}: ZenMultipassBlurFetchCostInput) {
+  const gaussianPairCount = resolveZenGaussianPairCount(
+    kernelSigmaInTargetPixels,
+  );
+  // Each Gaussian pass reads its center and both sides of every bilinear pair.
+  const gaussianFetchesPerTargetPixel = 2 * (1 + gaussianPairCount * 2);
+  const downsampleFetchesPerTargetPixel = requiresDownsample
+    ? ZEN_MULTIPASS_DOWNSAMPLE_FETCHES_PER_TARGET_PIXEL
+    : 0;
+  const totalFetchesPerTargetPixel =
+    gaussianFetchesPerTargetPixel + downsampleFetchesPerTargetPixel;
+  const targetPixelCount = targetWidth * targetHeight;
+  const cssPixelCount = cssWidth * cssHeight;
+  const estimatedTextureFetches = targetPixelCount * totalFetchesPerTargetPixel;
+
+  return {
+    gaussianPairCount,
+    gaussianFetchesPerTargetPixel,
+    downsampleFetchesPerTargetPixel,
+    totalFetchesPerTargetPixel,
+    estimatedTextureFetches,
+    estimatedTextureFetchesPerCssPixel:
+      cssPixelCount > 0 ? estimatedTextureFetches / cssPixelCount : 0,
+  } satisfies ZenMultipassBlurFetchCost;
+}
+
+export function estimateZenMultipassBlurCostEnvelope({
+  blurCssPx,
+  blurCssScale,
+  cssWidth,
+  cssHeight,
+}: ZenMultipassBlurCostEnvelopeInput) {
+  const sigmaInTargetPixels = blurCssPx * blurCssScale;
+  // pairCount = ceil(1.5 * kernelSigma). Since kernelSigma never exceeds the
+  // requested target sigma, 1 + 1.5 * targetSigma continuously bounds the
+  // discrete pair count. The cap meets that line continuously at sigma 10.
+  const gaussianPairCountUpperBound = Math.min(
+    ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS,
+    1 + 1.5 * sigmaInTargetPixels,
+  );
+  // Reserve the nine-tap prefilter independently of renderScale. A plan that
+  // lands exactly on the scene resolution therefore uses the same envelope
+  // as one infinitesimally below it, avoiding a planner discontinuity when the
+  // real pass switches on.
+  const textureFetchesPerTargetPixelUpperBound =
+    ZEN_MULTIPASS_DOWNSAMPLE_FETCHES_PER_TARGET_PIXEL +
+    2 * (1 + gaussianPairCountUpperBound * 2);
+  // round(cssSize * scale) is no greater than cssSize * scale + 0.5. Using
+  // that continuous upper bound keeps the budget conservative without making
+  // target-size rounding part of the scale-selection rule.
+  const targetWidthUpperBound = Math.max(1, cssWidth * blurCssScale + 0.5);
+  const targetHeightUpperBound = Math.max(1, cssHeight * blurCssScale + 0.5);
+  const cssPixelCount = cssWidth * cssHeight;
+  const estimatedTextureFetchesPerCssPixelUpperBound =
+    cssPixelCount > 0
+      ? (targetWidthUpperBound *
+          targetHeightUpperBound *
+          textureFetchesPerTargetPixelUpperBound) /
+        cssPixelCount
+      : 0;
+
+  return {
+    gaussianPairCountUpperBound,
+    textureFetchesPerTargetPixelUpperBound,
+    estimatedTextureFetchesPerCssPixelUpperBound,
+  } satisfies ZenMultipassBlurCostEnvelope;
+}
+
+function buildZenMultipassBlurPlanAtScale(
+  blurCssPx: number,
+  cssWidth: number,
+  cssHeight: number,
+  blurCssScale: number,
+  fetchBudgetMode: ZenMultipassBlurBudgetMode,
+  usesExplicitPrefilter: boolean,
+) {
+  const requiresDownsample = usesExplicitPrefilter;
+  const sigmaInTargetPixels = blurCssPx * blurCssScale;
+  const resamplingVarianceInTargetPixels = requiresDownsample
+    ? ZEN_MULTIPASS_RESAMPLING_VARIANCE
+    : 0;
+  const kernelVariance =
+    sigmaInTargetPixels * sigmaInTargetPixels -
+    resamplingVarianceInTargetPixels;
+  if (kernelVariance <= 0) return null;
+
+  const targetWidth = Math.max(1, Math.round(cssWidth * blurCssScale));
+  const targetHeight = Math.max(1, Math.round(cssHeight * blurCssScale));
+  const kernelSigmaInTargetPixels = Math.sqrt(kernelVariance);
+  const fetchCost = estimateZenMultipassBlurFetchCost({
+    kernelSigmaInTargetPixels,
+    requiresDownsample,
+    targetWidth,
+    targetHeight,
+    cssWidth,
+    cssHeight,
+  });
+
+  return {
+    blurCssScale,
+    targetWidth,
+    targetHeight,
+    sigmaInTargetPixels,
+    kernelSigmaInTargetPixels,
+    resamplingVarianceInTargetPixels,
+    usesExplicitPrefilter,
+    requiresDownsample,
+    ...fetchCost,
+    ...estimateZenMultipassBlurCostEnvelope({
+      blurCssPx,
+      blurCssScale,
+      cssWidth,
+      cssHeight,
+    }),
+    fetchBudgetMode,
+    fetchBudgetExceeded:
+      fetchCost.estimatedTextureFetchesPerCssPixel >
+      ZEN_MULTIPASS_FETCH_BUDGET_PER_CSS_PIXEL,
+  } satisfies ZenMultipassBlurPlan;
+}
+
+function resolveZenMultipassBudgetScale(
+  blurCssPx: number,
+  cssWidth: number,
+  cssHeight: number,
+  minCssScale: number,
+  preferredCssScale: number,
+) {
+  const preferredEnvelope = estimateZenMultipassBlurCostEnvelope({
+    blurCssPx,
+    blurCssScale: preferredCssScale,
+    cssWidth,
+    cssHeight,
+  });
+  if (
+    preferredEnvelope.estimatedTextureFetchesPerCssPixelUpperBound <=
+    ZEN_MULTIPASS_FETCH_BUDGET_PER_CSS_PIXEL
+  ) {
+    return {
+      blurCssScale: preferredCssScale,
+      fetchBudgetMode: "bounded",
+    } satisfies {
+      blurCssScale: number;
+      fetchBudgetMode: ZenMultipassBlurBudgetMode;
+    };
+  }
+
+  const zeroScaleEnvelope = estimateZenMultipassBlurCostEnvelope({
+    blurCssPx,
+    blurCssScale: 0,
+    cssWidth,
+    cssHeight,
+  });
+  if (
+    zeroScaleEnvelope.estimatedTextureFetchesPerCssPixelUpperBound >
+    ZEN_MULTIPASS_FETCH_BUDGET_PER_CSS_PIXEL
+  ) {
+    return {
+      blurCssScale: minCssScale,
+      fetchBudgetMode: "best-effort-variance",
+    } satisfies {
+      blurCssScale: number;
+      fetchBudgetMode: ZenMultipassBlurBudgetMode;
+    };
+  }
+
+  // The envelope is continuous and monotonic in scale, unlike the actual
+  // rounded target size and integer Gaussian pair count. Searching it cannot
+  // move those implementation steps into a target-resolution cliff. Use the
+  // same [0, 1] bracket for every renderScale so floating-point convergence is
+  // also independent of which side of a renderScale boundary requested it.
+  let affordableScale = 0;
+  let expensiveScale = 1;
+  for (
+    let iteration = 0;
+    iteration < ZEN_MULTIPASS_COST_SEARCH_ITERATIONS;
+    iteration += 1
+  ) {
+    const candidateScale = (affordableScale + expensiveScale) * 0.5;
+    const candidateEnvelope = estimateZenMultipassBlurCostEnvelope({
+      blurCssPx,
+      blurCssScale: candidateScale,
+      cssWidth,
+      cssHeight,
+    });
+    if (
+      candidateEnvelope.estimatedTextureFetchesPerCssPixelUpperBound <=
+      ZEN_MULTIPASS_FETCH_BUDGET_PER_CSS_PIXEL
+    ) {
+      affordableScale = candidateScale;
+    } else {
+      expensiveScale = candidateScale;
+    }
+  }
+
+  if (affordableScale < minCssScale) {
+    return {
+      blurCssScale: minCssScale,
+      fetchBudgetMode: "best-effort-variance",
+    } satisfies {
+      blurCssScale: number;
+      fetchBudgetMode: ZenMultipassBlurBudgetMode;
+    };
+  }
+
+  return {
+    blurCssScale: Math.min(preferredCssScale, affordableScale),
+    fetchBudgetMode: "bounded",
+  } satisfies {
+    blurCssScale: number;
+    fetchBudgetMode: ZenMultipassBlurBudgetMode;
+  };
 }
 
 export function resolveZenMultipassBlurPlan(
@@ -51,40 +333,52 @@ export function resolveZenMultipassBlurPlan(
     ZEN_MULTIPASS_MIN_CSS_SCALE,
     maxAvailableCssScale,
   );
-  let blurCssScale = clamp(
+  const preferredCssScale = clamp(
     ZEN_MULTIPASS_MAX_TARGET_SIGMA / blurCssPx,
     minCssScale,
     maxAvailableCssScale,
   );
-  let requiresDownsample = blurCssScale < renderScale - Number.EPSILON;
-  let sigmaInTargetPixels = blurCssPx * blurCssScale;
-  let resamplingVarianceInTargetPixels = requiresDownsample
-    ? ZEN_MULTIPASS_RESAMPLING_VARIANCE
-    : 0;
-  let kernelVariance =
-    sigmaInTargetPixels * sigmaInTargetPixels -
-    resamplingVarianceInTargetPixels;
+  const budgetScale = resolveZenMultipassBudgetScale(
+    blurCssPx,
+    cssWidth,
+    cssHeight,
+    minCssScale,
+    preferredCssScale,
+  );
+  const budgetedPlan = buildZenMultipassBlurPlanAtScale(
+    blurCssPx,
+    cssWidth,
+    cssHeight,
+    budgetScale.blurCssScale,
+    budgetScale.fetchBudgetMode,
+    true,
+  );
+  if (budgetedPlan) return budgetedPlan;
 
-  // Very small blur radii cannot donate more variance than resampling adds.
-  // In that case preserve the scene resolution and apply only the requested
-  // Gaussian instead of turning a resize filter into the visible blur.
-  if (kernelVariance <= 0 && requiresDownsample) {
-    blurCssScale = renderScale;
-    requiresDownsample = false;
-    sigmaInTargetPixels = blurCssPx * blurCssScale;
-    resamplingVarianceInTargetPixels = 0;
-    kernelVariance = sigmaInTargetPixels * sigmaInTargetPixels;
-  }
-
-  return {
-    blurCssScale,
-    targetWidth: Math.max(1, Math.round(cssWidth * blurCssScale)),
-    targetHeight: Math.max(1, Math.round(cssHeight * blurCssScale)),
-    sigmaInTargetPixels,
-    kernelSigmaInTargetPixels: Math.sqrt(kernelVariance),
-    resamplingVarianceInTargetPixels,
-    requiresDownsample,
-  } satisfies ZenMultipassBlurPlan;
+  // Below this scale the fixed prefilter contributes more variance than the
+  // requested blur. Approach the variance boundary from above when the scene
+  // has enough resolution; otherwise follow renderScale exactly. Both choices
+  // meet continuously where resampling first becomes feasible. They are
+  // explicitly best-effort because the quality floor can exceed the fetch
+  // budget (for example 0.5 CSS px at renderScale 2).
+  const varianceFloorScale =
+    Math.sqrt(ZEN_MULTIPASS_RESAMPLING_VARIANCE) / blurCssPx;
+  const usesExplicitPrefilter = varianceFloorScale < renderScale;
+  const bestEffortScale = usesExplicitPrefilter
+    ? varianceFloorScale +
+      Math.min(
+        varianceFloorScale * ZEN_MULTIPASS_VARIANCE_EPSILON,
+        (renderScale - varianceFloorScale) * 0.5,
+      )
+    : renderScale;
+  return buildZenMultipassBlurPlanAtScale(
+    blurCssPx,
+    cssWidth,
+    cssHeight,
+    bestEffortScale,
+    "best-effort-variance",
+    usesExplicitPrefilter,
+  );
 }
 
 export interface ZenGaussianKernel {
@@ -108,10 +402,7 @@ export function buildZenGaussianKernel(sigmaInTargetPixels: number) {
     } satisfies ZenGaussianKernel;
   }
 
-  const radius = Math.min(
-    Math.ceil(sigmaInTargetPixels * 3),
-    ZEN_MULTIPASS_MAX_GAUSSIAN_PAIRS * 2,
-  );
+  const radius = resolveZenGaussianRadius(sigmaInTargetPixels);
   const unnormalizedWeights = Array.from({ length: radius + 1 }, (_, index) =>
     Math.exp(
       -(index * index) / (2 * sigmaInTargetPixels * sigmaInTargetPixels),

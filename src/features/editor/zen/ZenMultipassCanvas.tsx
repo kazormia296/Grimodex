@@ -191,6 +191,34 @@ export interface ZenMultipassCanvasProps {
   "data-zen-glass-compositor"?: string;
 }
 
+interface ZenMultipassFaultInjection {
+  initialBlurTargetPrecision?: "rgba16f" | "rgba8";
+  failInitializationAfterSetup?: boolean;
+  onInitializationRollback?: () => void;
+  shouldFailSceneTargetAllocation?: (attempt: {
+    width: number;
+    height: number;
+  }) => boolean;
+  shouldFailBlurTargetAllocation?: (attempt: {
+    precision: "rgba16f" | "rgba8";
+    width: number;
+    height: number;
+  }) => boolean;
+}
+
+let activeZenMultipassFaultInjection: ZenMultipassFaultInjection | null = null;
+
+export function _setZenMultipassFaultInjectionForTests(
+  injection: ZenMultipassFaultInjection | null,
+) {
+  if (import.meta.env.MODE !== "test") {
+    throw new Error(
+      "Zen multipass fault injection is available only in test mode",
+    );
+  }
+  activeZenMultipassFaultInjection = injection;
+}
+
 function createRgba8TargetFormat(
   gl: WebGL2RenderingContext,
 ): RenderTargetFormat {
@@ -204,6 +232,24 @@ function createRgba8TargetFormat(
   };
 }
 
+function createRgba16fTargetFormat(
+  gl: WebGL2RenderingContext,
+): RenderTargetFormat {
+  return {
+    internalFormat: gl.RGBA16F,
+    format: gl.RGBA,
+    type: gl.HALF_FLOAT,
+    minFilter: gl.LINEAR,
+    magFilter: gl.LINEAR,
+    precision: "rgba16f",
+  };
+}
+
+function enableFloatColorBufferExtensions(gl: WebGL2RenderingContext) {
+  gl.getExtension("EXT_color_buffer_float");
+  gl.getExtension("EXT_color_buffer_half_float");
+}
+
 function resolveBlurTargetFormat(
   gl: WebGL2RenderingContext,
   precision: "auto" | "rgba8",
@@ -213,18 +259,14 @@ function resolveBlurTargetFormat(
 
   // Extension availability alone is not enough: verify that this exact
   // allocation can be attached to a complete framebuffer on the active GPU.
-  gl.getExtension("EXT_color_buffer_float");
-  gl.getExtension("EXT_color_buffer_half_float");
-  const texture = gl.createTexture();
-  const framebuffer = gl.createFramebuffer();
-  if (!texture || !framebuffer) {
-    if (texture) gl.deleteTexture(texture);
-    if (framebuffer) gl.deleteFramebuffer(framebuffer);
-    return fallback;
-  }
-
+  enableFloatColorBufferExtensions(gl);
+  let texture: WebGLTexture | null = null;
+  let framebuffer: WebGLFramebuffer | null = null;
   let complete: boolean;
   try {
+    texture = gl.createTexture();
+    framebuffer = gl.createFramebuffer();
+    if (!texture || !framebuffer) return fallback;
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -257,20 +299,11 @@ function resolveBlurTargetFormat(
   } finally {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    gl.deleteFramebuffer(framebuffer);
-    gl.deleteTexture(texture);
+    if (framebuffer) gl.deleteFramebuffer(framebuffer);
+    if (texture) gl.deleteTexture(texture);
   }
 
-  return complete
-    ? {
-        internalFormat: gl.RGBA16F,
-        format: gl.RGBA,
-        type: gl.HALF_FLOAT,
-        minFilter: gl.LINEAR,
-        magFilter: gl.LINEAR,
-        precision: "rgba16f",
-      }
-    : fallback;
+  return complete ? createRgba16fTargetFormat(gl) : fallback;
 }
 
 function numericUniformArray(value: unknown): number[] {
@@ -338,14 +371,18 @@ function compileShader(
 ) {
   const shader = gl.createShader(type);
   if (!shader) throw new Error("Unable to allocate WebGL shader");
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const log = gl.getShaderInfoLog(shader) ?? "Unknown shader compile error";
+  try {
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(shader) ?? "Unknown shader compile error";
+      throw new Error(log);
+    }
+    return shader;
+  } catch (error) {
     gl.deleteShader(shader);
-    throw new Error(log);
+    throw error;
   }
-  return shader;
 }
 
 function createProgram(
@@ -354,20 +391,27 @@ function createProgram(
   fragmentSource: string,
 ) {
   const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-  const program = gl.createProgram();
-  if (!program) throw new Error("Unable to allocate WebGL program");
-  gl.attachShader(program, vertex);
-  gl.attachShader(program, fragment);
-  gl.linkProgram(program);
-  gl.deleteShader(vertex);
-  gl.deleteShader(fragment);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const log = gl.getProgramInfoLog(program) ?? "Unknown shader link error";
-    gl.deleteProgram(program);
-    throw new Error(log);
+  let fragment: WebGLShader | null = null;
+  let program: WebGLProgram | null = null;
+  try {
+    fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+    program = gl.createProgram();
+    if (!program) throw new Error("Unable to allocate WebGL program");
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(program) ?? "Unknown shader link error";
+      throw new Error(log);
+    }
+    return program;
+  } catch (error) {
+    if (program) gl.deleteProgram(program);
+    throw error;
+  } finally {
+    gl.deleteShader(vertex);
+    if (fragment) gl.deleteShader(fragment);
   }
-  return program;
 }
 
 function createProgramBundle(
@@ -376,21 +420,152 @@ function createProgramBundle(
   fragmentSource: string,
 ): ProgramBundle {
   const program = createProgram(gl, vertexSource, fragmentSource);
-  const vao = gl.createVertexArray();
-  const buffer = gl.createBuffer();
-  if (!vao || !buffer) throw new Error("Unable to allocate WebGL geometry");
-  gl.bindVertexArray(vao);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(
-    gl.ARRAY_BUFFER,
-    new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
-    gl.STATIC_DRAW,
-  );
-  const position = gl.getAttribLocation(program, "a_position");
-  gl.enableVertexAttribArray(position);
-  gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-  gl.bindVertexArray(null);
-  return { program, vao, buffer };
+  let vao: WebGLVertexArrayObject | null = null;
+  let buffer: WebGLBuffer | null = null;
+  try {
+    vao = gl.createVertexArray();
+    buffer = gl.createBuffer();
+    if (!vao || !buffer) throw new Error("Unable to allocate WebGL geometry");
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+      gl.STATIC_DRAW,
+    );
+    const position = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    return { program, vao, buffer };
+  } catch (error) {
+    if (buffer) gl.deleteBuffer(buffer);
+    if (vao) gl.deleteVertexArray(vao);
+    gl.deleteProgram(program);
+    throw error;
+  }
+}
+
+function deleteProgramBundle(
+  gl: WebGL2RenderingContext,
+  bundle: ProgramBundle,
+) {
+  gl.deleteBuffer(bundle.buffer);
+  gl.deleteVertexArray(bundle.vao);
+  gl.deleteProgram(bundle.program);
+}
+
+function createRenderTarget(
+  gl: WebGL2RenderingContext,
+  format: RenderTargetFormat,
+): RenderTarget {
+  let framebuffer: WebGLFramebuffer | null = null;
+  let texture: WebGLTexture | null = null;
+  try {
+    framebuffer = gl.createFramebuffer();
+    texture = gl.createTexture();
+    if (!framebuffer || !texture) {
+      throw new Error("Unable to allocate Zen multipass render target");
+    }
+    return { framebuffer, texture, width: 0, height: 0, format };
+  } catch (error) {
+    if (framebuffer) gl.deleteFramebuffer(framebuffer);
+    if (texture) gl.deleteTexture(texture);
+    throw error;
+  }
+}
+
+function deleteRenderTarget(gl: WebGL2RenderingContext, target: RenderTarget) {
+  gl.deleteFramebuffer(target.framebuffer);
+  gl.deleteTexture(target.texture);
+}
+
+interface RendererResources {
+  sceneProgram: ProgramBundle;
+  downsampleProgram: ProgramBundle;
+  gaussianProgram: ProgramBundle;
+  compositeProgram: ProgramBundle;
+  sceneTarget: RenderTarget;
+  blurTargetA: RenderTarget;
+  blurTargetB: RenderTarget;
+}
+
+function deleteRendererResources(
+  gl: WebGL2RenderingContext,
+  resources: RendererResources,
+) {
+  for (const target of [
+    resources.sceneTarget,
+    resources.blurTargetA,
+    resources.blurTargetB,
+  ]) {
+    deleteRenderTarget(gl, target);
+  }
+  for (const bundle of [
+    resources.sceneProgram,
+    resources.downsampleProgram,
+    resources.gaussianProgram,
+    resources.compositeProgram,
+  ]) {
+    deleteProgramBundle(gl, bundle);
+  }
+}
+
+function createRendererResources(
+  gl: WebGL2RenderingContext,
+  sceneFragment: string,
+  compositeFragment: string,
+  sceneTargetFormat: RenderTargetFormat,
+  blurTargetFormat: RenderTargetFormat,
+): RendererResources {
+  const bundles: ProgramBundle[] = [];
+  const targets: RenderTarget[] = [];
+  try {
+    const sceneProgram = createProgramBundle(
+      gl,
+      PAPER_VERTEX_SHADER,
+      sceneFragment,
+    );
+    bundles.push(sceneProgram);
+    const downsampleProgram = createProgramBundle(
+      gl,
+      ZEN_MULTIPASS_FULLSCREEN_VERTEX,
+      ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT,
+    );
+    bundles.push(downsampleProgram);
+    const gaussianProgram = createProgramBundle(
+      gl,
+      ZEN_MULTIPASS_FULLSCREEN_VERTEX,
+      ZEN_MULTIPASS_GAUSSIAN_FRAGMENT,
+    );
+    bundles.push(gaussianProgram);
+    const compositeProgram = createProgramBundle(
+      gl,
+      ZEN_MULTIPASS_FULLSCREEN_VERTEX,
+      compositeFragment,
+    );
+    bundles.push(compositeProgram);
+
+    const sceneTarget = createRenderTarget(gl, sceneTargetFormat);
+    targets.push(sceneTarget);
+    const blurTargetA = createRenderTarget(gl, blurTargetFormat);
+    targets.push(blurTargetA);
+    const blurTargetB = createRenderTarget(gl, blurTargetFormat);
+    targets.push(blurTargetB);
+    return {
+      sceneProgram,
+      downsampleProgram,
+      gaussianProgram,
+      compositeProgram,
+      sceneTarget,
+      blurTargetA,
+      blurTargetB,
+    };
+  } catch (error) {
+    for (const target of targets.reverse()) deleteRenderTarget(gl, target);
+    for (const bundle of bundles.reverse()) deleteProgramBundle(gl, bundle);
+    throw error;
+  }
 }
 
 class ZenMultipassRenderer {
@@ -432,6 +607,8 @@ class ZenMultipassRenderer {
   private activeBlurPlan: ReturnType<typeof resolveZenMultipassBlurPlan> = null;
   private gaussianPairCount = 0;
   private activeGlassSurface = false;
+  private readonly faultInjection = activeZenMultipassFaultInjection;
+  private failed = false;
   private disposed = false;
 
   constructor(
@@ -445,6 +622,7 @@ class ZenMultipassRenderer {
     private readonly minPixelRatio: number,
     private readonly maxPixelCount: number,
     contextAttributes?: WebGLContextAttributes,
+    private readonly onFatalError: (error: unknown) => void = () => undefined,
     blurTargetPrecision: "auto" | "rgba8" = "auto",
   ) {
     const gl = canvas.getContext("webgl2", contextAttributes);
@@ -452,64 +630,81 @@ class ZenMultipassRenderer {
       throw new Error("WebGL2 is unavailable for Zen multipass rendering");
     this.gl = gl;
     const sceneTargetFormat = createRgba8TargetFormat(gl);
-    this.blurTargetFormat = resolveBlurTargetFormat(gl, blurTargetPrecision);
+    const initialBlurTargetPrecision =
+      this.faultInjection?.initialBlurTargetPrecision;
+    if (initialBlurTargetPrecision === "rgba16f") {
+      enableFloatColorBufferExtensions(gl);
+    }
+    this.blurTargetFormat =
+      initialBlurTargetPrecision === "rgba16f"
+        ? createRgba16fTargetFormat(gl)
+        : initialBlurTargetPrecision === "rgba8"
+          ? createRgba8TargetFormat(gl)
+          : resolveBlurTargetFormat(gl, blurTargetPrecision);
     this.sceneUniforms = sceneUniforms;
     this.compositeUniforms = compositeUniforms;
     this.activeGlassSurface = hasActiveGlassSurface(compositeUniforms);
     this.mipmaps = mipmaps;
-    this.sceneProgram = createProgramBundle(
+    const resources = createRendererResources(
       gl,
-      PAPER_VERTEX_SHADER,
       sceneFragment,
-    );
-    this.downsampleProgram = createProgramBundle(
-      gl,
-      ZEN_MULTIPASS_FULLSCREEN_VERTEX,
-      ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT,
-    );
-    this.gaussianProgram = createProgramBundle(
-      gl,
-      ZEN_MULTIPASS_FULLSCREEN_VERTEX,
-      ZEN_MULTIPASS_GAUSSIAN_FRAGMENT,
-    );
-    this.compositeProgram = createProgramBundle(
-      gl,
-      ZEN_MULTIPASS_FULLSCREEN_VERTEX,
       compositeFragment,
+      sceneTargetFormat,
+      this.blurTargetFormat,
     );
-    this.sceneTarget = this.createTarget(sceneTargetFormat);
-    this.blurTargetA = this.createTarget(this.blurTargetFormat);
-    this.blurTargetB = this.createTarget(this.blurTargetFormat);
+    this.sceneProgram = resources.sceneProgram;
+    this.downsampleProgram = resources.downsampleProgram;
+    this.gaussianProgram = resources.gaussianProgram;
+    this.compositeProgram = resources.compositeProgram;
+    this.sceneTarget = resources.sceneTarget;
+    this.blurTargetA = resources.blurTargetA;
+    this.blurTargetB = resources.blurTargetB;
     this.blurredTexture = this.sceneTarget.texture;
-    gl.disable(gl.BLEND);
+    try {
+      this.resizeObserver =
+        typeof ResizeObserver === "undefined"
+          ? null
+          : new ResizeObserver(() => this.resize());
+    } catch (error) {
+      deleteRendererResources(gl, resources);
+      this.faultInjection?.onInitializationRollback?.();
+      throw error;
+    }
 
-    this.useBundle(this.downsampleProgram);
-    gl.uniform1i(
-      this.uniformLocation(this.downsampleProgram.program, "u_sourceTexture"),
-      0,
-    );
-    this.useBundle(this.gaussianProgram);
-    gl.uniform1i(
-      this.uniformLocation(this.gaussianProgram.program, "u_sourceTexture"),
-      0,
-    );
-    this.useBundle(this.compositeProgram);
-    gl.uniform1i(
-      this.uniformLocation(this.compositeProgram.program, "u_sceneTexture"),
-      0,
-    );
-    gl.uniform1i(
-      this.uniformLocation(this.compositeProgram.program, "u_blurredTexture"),
-      1,
-    );
+    try {
+      gl.disable(gl.BLEND);
 
-    this.resizeObserver =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(() => this.resize());
-    this.resizeObserver?.observe(host);
-    host.ownerDocument.defaultView?.addEventListener("resize", this.resize);
-    this.resize();
+      this.useBundle(this.downsampleProgram);
+      gl.uniform1i(
+        this.uniformLocation(this.downsampleProgram.program, "u_sourceTexture"),
+        0,
+      );
+      this.useBundle(this.gaussianProgram);
+      gl.uniform1i(
+        this.uniformLocation(this.gaussianProgram.program, "u_sourceTexture"),
+        0,
+      );
+      this.useBundle(this.compositeProgram);
+      gl.uniform1i(
+        this.uniformLocation(this.compositeProgram.program, "u_sceneTexture"),
+        0,
+      );
+      gl.uniform1i(
+        this.uniformLocation(this.compositeProgram.program, "u_blurredTexture"),
+        1,
+      );
+
+      this.resizeObserver?.observe(host);
+      host.ownerDocument.defaultView?.addEventListener("resize", this.resize);
+      this.resizeTargets();
+      if (this.faultInjection?.failInitializationAfterSetup) {
+        throw new Error("Injected Zen multipass initialization failure");
+      }
+    } catch (error) {
+      this.dispose();
+      this.faultInjection?.onInitializationRollback?.();
+      throw error;
+    }
   }
 
   private readonly requestFrame = (callback: FrameRequestCallback) => {
@@ -535,15 +730,6 @@ class ZenMultipassRenderer {
     const location = this.gl.getUniformLocation(program, name);
     locations.set(name, location);
     return location;
-  }
-
-  private createTarget(format: RenderTargetFormat): RenderTarget {
-    const framebuffer = this.gl.createFramebuffer();
-    const texture = this.gl.createTexture();
-    if (!framebuffer || !texture) {
-      throw new Error("Unable to allocate Zen multipass render target");
-    }
-    return { framebuffer, texture, width: 0, height: 0, format };
   }
 
   private clearGlErrors() {
@@ -607,12 +793,49 @@ class ZenMultipassRenderer {
     }
   }
 
+  private allocateBlurTarget(
+    target: RenderTarget,
+    width: number,
+    height: number,
+  ) {
+    if (target.width === width && target.height === height) return true;
+    if (
+      this.faultInjection?.shouldFailBlurTargetAllocation?.({
+        precision: target.format.precision,
+        width,
+        height,
+      })
+    ) {
+      target.width = 0;
+      target.height = 0;
+      return false;
+    }
+    return this.allocateTarget(target, width, height);
+  }
+
+  private allocateSceneTarget(width: number, height: number) {
+    if (
+      (this.sceneTarget.width !== width ||
+        this.sceneTarget.height !== height) &&
+      this.faultInjection?.shouldFailSceneTargetAllocation?.({ width, height })
+    ) {
+      this.sceneTarget.width = 0;
+      this.sceneTarget.height = 0;
+      return false;
+    }
+    return this.allocateTarget(this.sceneTarget, width, height);
+  }
+
   private allocateBlurTargets(width: number, height: number) {
     const allocateBoth = () =>
-      this.allocateTarget(this.blurTargetA, width, height) &&
-      this.allocateTarget(this.blurTargetB, width, height);
-    if (allocateBoth()) return true;
-    if (this.blurTargetFormat.precision === "rgba8") return false;
+      this.allocateBlurTarget(this.blurTargetA, width, height) &&
+      this.allocateBlurTarget(this.blurTargetB, width, height);
+    if (allocateBoth()) return;
+    if (this.blurTargetFormat.precision === "rgba8") {
+      throw new Error(
+        `Unable to allocate Zen multipass blur targets at ${width}x${height}: RGBA8 allocation failed`,
+      );
+    }
 
     // A format can pass a small capability probe yet fail at the requested
     // dimensions. Downgrade both ping-pong targets together so passes never
@@ -624,10 +847,14 @@ class ZenMultipassRenderer {
     this.blurTargetA.height = 0;
     this.blurTargetB.width = 0;
     this.blurTargetB.height = 0;
-    return allocateBoth();
+    if (!allocateBoth()) {
+      throw new Error(
+        `Unable to allocate Zen multipass blur targets at ${width}x${height}: RGBA16F and RGBA8 allocations failed`,
+      );
+    }
   }
 
-  private readonly resize = () => {
+  private resizeTargets() {
     if (this.disposed) return;
     const rect = this.host.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
@@ -662,41 +889,67 @@ class ZenMultipassRenderer {
     }
     if (this.canvas.width !== width) this.canvas.width = width;
     if (this.canvas.height !== height) this.canvas.height = height;
-    if (!this.allocateTarget(this.sceneTarget, width, height)) {
+    if (!this.allocateSceneTarget(width, height)) {
       throw new Error("Unable to allocate Zen multipass scene target");
     }
     this.blurPlanKey = "";
     this.invalidateScene();
+  }
+
+  private readonly resize = () => {
+    if (this.disposed || this.failed) return;
+    try {
+      this.resizeTargets();
+    } catch (error) {
+      this.fail(error);
+    }
   };
 
+  private fail(error: unknown) {
+    if (this.disposed || this.failed) return;
+    this.failed = true;
+    this.animationSpeed = 0;
+    this.lastAnimationTimestamp = null;
+    this.needsDraw = false;
+    if (this.rafId !== null) {
+      this.cancelFrame(this.rafId);
+      this.rafId = null;
+    }
+    this.onFatalError(error);
+  }
+
   private scheduleFrame() {
-    if (this.disposed || this.rafId !== null) return;
+    if (this.disposed || this.failed || this.rafId !== null) return;
     this.rafId = this.requestFrame(this.flushFrame);
   }
 
   private readonly flushFrame = (timestamp: number) => {
     this.rafId = null;
-    if (this.disposed) return;
+    if (this.disposed || this.failed) return;
 
-    if (this.animationSpeed > 0) {
-      if (this.lastAnimationTimestamp !== null) {
-        this.frame +=
-          Math.max(0, timestamp - this.lastAnimationTimestamp) *
-          this.animationSpeed;
+    try {
+      if (this.animationSpeed > 0) {
+        if (this.lastAnimationTimestamp !== null) {
+          this.frame +=
+            Math.max(0, timestamp - this.lastAnimationTimestamp) *
+            this.animationSpeed;
+        }
+        this.lastAnimationTimestamp = timestamp;
+        this.dirtyScene = true;
+        this.dirtyBlur = true;
+        this.dirtyComposite = true;
+        this.needsDraw = true;
       }
-      this.lastAnimationTimestamp = timestamp;
-      this.dirtyScene = true;
-      this.dirtyBlur = true;
-      this.dirtyComposite = true;
-      this.needsDraw = true;
-    }
 
-    if (this.needsDraw) {
-      this.needsDraw = false;
-      this.draw();
-    }
+      if (this.needsDraw) {
+        this.needsDraw = false;
+        this.draw();
+      }
 
-    if (this.animationSpeed > 0) this.scheduleFrame();
+      if (this.animationSpeed > 0) this.scheduleFrame();
+    } catch (error) {
+      this.fail(error);
+    }
   };
 
   private requestDraw() {
@@ -861,6 +1114,8 @@ class ZenMultipassRenderer {
       ? `${blurRadius}:${this.renderScale}:${this.cssWidth}:${this.cssHeight}`
       : "inactive";
     if (key === this.blurPlanKey) return this.activeBlurPlan;
+    this.blurPlanKey = "";
+    this.activeBlurPlan = null;
     const plan = activeGlass
       ? resolveZenMultipassBlurPlan(
           blurRadius,
@@ -876,11 +1131,7 @@ class ZenMultipassRenderer {
       return null;
     }
 
-    if (!this.allocateBlurTargets(plan.targetWidth, plan.targetHeight)) {
-      this.blurPlanKey = key;
-      this.activeBlurPlan = null;
-      return null;
-    }
+    this.allocateBlurTargets(plan.targetWidth, plan.targetHeight);
     const kernel = buildZenGaussianKernel(plan.kernelSigmaInTargetPixels);
     this.gaussianPairCount = kernel.pairCount;
 
@@ -1084,6 +1335,8 @@ class ZenMultipassRenderer {
     isStaticFrameReady:
       this.drawCount > 0 && this.canvas.width > 0 && this.canvas.height > 0,
     blurFormat: this.blurTargetFormat.precision,
+    blurTargetAFormat: this.blurTargetA.format.precision,
+    blurTargetBFormat: this.blurTargetB.format.precision,
     blurTargetWidth: this.activeBlurPlan?.targetWidth ?? 0,
     blurTargetHeight: this.activeBlurPlan?.targetHeight ?? 0,
     gaussianPairCount: this.gaussianPairCount,
@@ -1097,7 +1350,11 @@ class ZenMultipassRenderer {
     this.disposed = true;
     this.animationSpeed = 0;
     this.lastAnimationTimestamp = null;
-    if (this.rafId !== null) this.cancelFrame(this.rafId);
+    this.needsDraw = false;
+    if (this.rafId !== null) {
+      this.cancelFrame(this.rafId);
+      this.rafId = null;
+    }
     this.resizeObserver?.disconnect();
     this.host.ownerDocument.defaultView?.removeEventListener(
       "resize",
@@ -1107,24 +1364,16 @@ class ZenMultipassRenderer {
     for (const stored of this.imageTextures.values()) {
       gl.deleteTexture(stored.texture);
     }
-    for (const target of [
-      this.sceneTarget,
-      this.blurTargetA,
-      this.blurTargetB,
-    ]) {
-      gl.deleteFramebuffer(target.framebuffer);
-      gl.deleteTexture(target.texture);
-    }
-    for (const bundle of [
-      this.sceneProgram,
-      this.downsampleProgram,
-      this.gaussianProgram,
-      this.compositeProgram,
-    ]) {
-      gl.deleteBuffer(bundle.buffer);
-      gl.deleteVertexArray(bundle.vao);
-      gl.deleteProgram(bundle.program);
-    }
+    this.imageTextures.clear();
+    deleteRendererResources(gl, {
+      sceneProgram: this.sceneProgram,
+      downsampleProgram: this.downsampleProgram,
+      gaussianProgram: this.gaussianProgram,
+      compositeProgram: this.compositeProgram,
+      sceneTarget: this.sceneTarget,
+      blurTargetA: this.blurTargetA,
+      blurTargetB: this.blurTargetB,
+    });
   }
 }
 
@@ -1153,6 +1402,8 @@ export const ZenMultipassCanvas = forwardRef<
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ZenMultipassRenderer | null>(null);
+  const failureReportedRef = useRef(false);
+  const failureTimerRef = useRef<number | null>(null);
 
   useImperativeHandle(
     forwardedRef,
@@ -1164,6 +1415,24 @@ export const ZenMultipassCanvas = forwardRef<
     const host = hostRef.current as unknown as PaperShaderElement | null;
     const canvas = canvasRef.current;
     if (!host || !canvas) return undefined;
+    const view = host.ownerDocument.defaultView;
+    const reportFailure = (error: unknown) => {
+      if (failureReportedRef.current) return;
+      failureReportedRef.current = true;
+      console.error("[zen-shader] multipass renderer failed", error);
+      failureTimerRef.current =
+        view?.setTimeout(() => {
+          failureTimerRef.current = null;
+          if (!host.isConnected) return;
+          const EventConstructor = view.Event;
+          host.dispatchEvent(
+            new EventConstructor("webglcontextlost", {
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        }, 0) ?? null;
+    };
     try {
       const renderer = new ZenMultipassRenderer(
         host,
@@ -1176,6 +1445,7 @@ export const ZenMultipassCanvas = forwardRef<
         minPixelRatio,
         maxPixelCount,
         webGlContextAttributes,
+        reportFailure,
         blurTargetPrecision,
       );
       rendererRef.current = renderer;
@@ -1191,20 +1461,8 @@ export const ZenMultipassCanvas = forwardRef<
         delete host.paperShaderMount;
       };
     } catch (error) {
-      console.error("[zen-shader] multipass renderer failed", error);
-      const view = host.ownerDocument.defaultView;
-      const timer = view?.setTimeout(() => {
-        const EventConstructor = view.Event;
-        host.dispatchEvent(
-          new EventConstructor("webglcontextlost", {
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-      }, 0);
-      return () => {
-        if (timer !== undefined) view?.clearTimeout(timer);
-      };
+      reportFailure(error);
+      return undefined;
     }
   }, [
     compositeFragment,
