@@ -3,6 +3,7 @@ import {
   buildZenPostProcessUniforms,
   type ZenPostProcessRuntime,
 } from "./zenPostProcessing";
+import { contrastTargetRatio } from "./zenContrastGuard";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
 export const ZEN_MULTIPASS_MAX_TARGET_SIGMA = 6;
@@ -620,6 +621,8 @@ uniform vec4 u_zenContrastRect;
 uniform vec4 u_zenContrastFeather;
 uniform vec3 u_zenContrastTextColor;
 uniform vec3 u_zenUiContrastTextColor;
+uniform vec4 u_zenPaperContrastParams;
+uniform vec4 u_zenUiContrastParams;
 uniform float u_zenUiContrastMix;
 uniform vec3 u_zenContrastBackdropColor;
 uniform float u_zenContrastSurfaceOpacity;
@@ -664,6 +667,15 @@ float zenSurfaceCorrectionDirection(vec3 surfaceColor) {
   float contrastAgainstBlack = (surfaceLuminance + 0.05) / 0.05;
   float contrastAgainstWhite = 1.05 / (surfaceLuminance + 0.05);
   return contrastAgainstBlack >= contrastAgainstWhite ? 1.0 : -1.0;
+}
+
+bool zenShouldDarken(vec3 textColor, float correctionDirection) {
+  if (correctionDirection < -0.5) return true;
+  if (correctionDirection > 0.5) return false;
+  float textLuminance = zenRelativeLuminance(textColor);
+  float contrastAgainstBlack = (textLuminance + 0.05) / 0.05;
+  float contrastAgainstWhite = 1.05 / (textLuminance + 0.05);
+  return contrastAgainstBlack >= contrastAgainstWhite;
 }
 
 float zenFadeFromStart(float value, float edge, float feather) {
@@ -759,13 +771,43 @@ vec2 zenGlassRegion(
     min(halfSize.x, halfSize.y)
   );
   vec2 point = gl_FragCoord.xy - center;
+  vec2 distanceToAabbEdge = halfSize - abs(point);
+  float interiorRequiredDepth = 2.0;
+  float glassEdgeWidth = 0.0;
+  float refractionDepth = 0.0;
+  if (collectGlass) {
+    glassEdgeWidth = max(1.0, 3.0 * u_pixelRatio);
+    interiorRequiredDepth = max(interiorRequiredDepth, glassEdgeWidth);
+    if (
+      u_zenGlassEnabled >= 0.5 &&
+      u_zenGlassRefraction > 0.00001
+    ) {
+      refractionDepth = min(
+        48.0 * max(u_pixelRatio, 0.0001),
+        max(size.x, size.y) * 0.25
+      );
+      interiorRequiredDepth = max(
+        interiorRequiredDepth,
+        refractionDepth
+      );
+    }
+  }
+  float interiorDistance = min(
+    distanceToAabbEdge.x,
+    distanceToAabbEdge.y
+  );
+  if (interiorDistance >= max(radius, interiorRequiredDepth)) {
+    surfaceMask = 1.0;
+    edgeMask = 0.0;
+    return vec2(0.0);
+  }
   float signedDistance = zenRoundedRectSignedDistance(point, halfSize, radius);
   vec2 outwardNormal = zenRoundedRectOutwardNormal(point, halfSize, radius);
   float antialias = max(abs(outwardNormal.x) + abs(outwardNormal.y), 0.75);
   surfaceMask = 1.0 - smoothstep(-antialias, antialias, signedDistance);
   if (!collectGlass) return vec2(0.0);
   edgeMask = surfaceMask * (
-    1.0 - smoothstep(0.0, max(1.0, 3.0 * u_pixelRatio), abs(signedDistance))
+    1.0 - smoothstep(0.0, glassEdgeWidth, abs(signedDistance))
   );
   if (
     signedDistance > 0.0 ||
@@ -776,10 +818,6 @@ vec2 zenGlassRegion(
   }
 
   float insideDistance = max(-signedDistance, 0.0);
-  float refractionDepth = min(
-    48.0 * max(u_pixelRatio, 0.0001),
-    max(size.x, size.y) * 0.25
-  );
   if (insideDistance >= refractionDepth) return vec2(0.0);
   float edgeProximity = 1.0 - clamp(
     insideDistance / max(refractionDepth, 0.0001),
@@ -851,15 +889,13 @@ void zenCollectSurfaceState(
 
 vec3 zenGuardVisibleColor(
   vec3 visibleColor,
-  vec3 textColor,
-  float correctionDirection
+  vec3 linearColor,
+  float backgroundLuminance,
+  vec4 contrastParams,
+  float correctionDirection,
+  bool shouldDarken
 ) {
-  float textLuminance = zenRelativeLuminance(textColor);
-  vec3 linearColor = zenSrgbToLinear(clamp(visibleColor, 0.0, 1.0));
-  float backgroundLuminance = dot(
-    linearColor,
-    vec3(0.2126, 0.7152, 0.0722)
-  );
+  float textLuminance = contrastParams.x;
   float currentContrast =
     (max(textLuminance, backgroundLuminance) + 0.05) /
     (min(textLuminance, backgroundLuminance) + 0.05);
@@ -880,20 +916,8 @@ vec3 zenGuardVisibleColor(
   }
 
   vec3 correctedLinear;
-  float contrastAgainstBlack = (textLuminance + 0.05) / 0.05;
-  float contrastAgainstWhite = 1.05 / (textLuminance + 0.05);
-  bool shouldDarken =
-    correctionDirection < -0.5 ||
-    (
-      abs(correctionDirection) <= 0.5 &&
-      contrastAgainstBlack >= contrastAgainstWhite
-    );
   if (shouldDarken) {
-    float maximumBackground = clamp(
-      (textLuminance + 0.05) / u_zenContrastTarget - 0.05,
-      0.0,
-      1.0
-    );
+    float maximumBackground = contrastParams.y;
     // Connect the failing-side correction to the identity path at the safe
     // ceiling. This preserves motion without introducing a dark contour when
     // a live pixel crosses the contrast threshold.
@@ -905,11 +929,7 @@ vec3 zenGuardVisibleColor(
     float scale = mappedLuminance / max(backgroundLuminance, 0.00001);
     correctedLinear = linearColor * clamp(scale, 0.0, 1.0);
   } else {
-    float minimumBackground = clamp(
-      u_zenContrastTarget * (textLuminance + 0.05) - 0.05,
-      0.0,
-      1.0
-    );
+    float minimumBackground = contrastParams.z;
     // Mirror the darkening curve around white so the correction is also
     // continuous at the minimum safe luminance. Recover the white mix from
     // the desired luminance to preserve the source hue.
@@ -939,27 +959,51 @@ vec3 applyZenFinalContrast(vec3 composedColor, float uiMask) {
 
   float paperMask = clamp(zenContrastColumnMask(), 0.0, 1.0);
   float uiWeight = clamp(uiMask, 0.0, 1.0);
-  if (paperMask <= 0.0 && uiWeight <= 0.0) return visibleColor;
-
-  // Paper and UI candidates must both start from the same final Glass color.
-  // UI owns overlap, avoiding a paper correction followed by a second UI pass.
-  vec3 paperCorrected = zenGuardVisibleColor(
-    visibleColor,
-    u_zenContrastTextColor,
-    0.0
-  );
-  vec3 uiCorrected = zenGuardVisibleColor(
-    visibleColor,
-    u_zenUiContrastTextColor,
-    zenSurfaceCorrectionDirection(u_zenContrastBackdropColor)
-  );
   float paperWeight = paperMask * (1.0 - uiWeight);
-  vec3 guardedColor = mix(visibleColor, paperCorrected, paperWeight);
-  return mix(
-    guardedColor,
-    uiCorrected,
-    uiWeight * clamp(u_zenUiContrastMix, 0.0, 1.0)
+  float uiBlendWeight =
+    uiWeight * clamp(u_zenUiContrastMix, 0.0, 1.0);
+  if (paperWeight <= 0.0 && uiBlendWeight <= 0.0) return visibleColor;
+
+  // Both candidates start from one final Glass color and one linearization.
+  // UI owns overlap, avoiding a Paper correction followed by a second pass.
+  vec3 linearColor = zenSrgbToLinear(clamp(visibleColor, 0.0, 1.0));
+  float backgroundLuminance = dot(
+    linearColor,
+    vec3(0.2126, 0.7152, 0.0722)
   );
+  vec3 guardedColor = visibleColor;
+  if (paperWeight > 0.0) {
+    bool paperShouldDarken = zenShouldDarken(
+      u_zenContrastTextColor,
+      0.0
+    );
+    vec3 paperCorrected = zenGuardVisibleColor(
+      visibleColor,
+      linearColor,
+      backgroundLuminance,
+      u_zenPaperContrastParams,
+      0.0,
+      paperShouldDarken
+    );
+    guardedColor = mix(guardedColor, paperCorrected, paperWeight);
+  }
+  if (uiBlendWeight > 0.0) {
+    float uiCorrectionDirection = zenSurfaceCorrectionDirection(u_zenContrastBackdropColor);
+    bool uiShouldDarken = zenShouldDarken(
+      u_zenUiContrastTextColor,
+      uiCorrectionDirection
+    );
+    vec3 uiCorrected = zenGuardVisibleColor(
+      visibleColor,
+      linearColor,
+      backgroundLuminance,
+      u_zenUiContrastParams,
+      uiCorrectionDirection,
+      uiShouldDarken
+    );
+    guardedColor = mix(guardedColor, uiCorrected, uiBlendWeight);
+  }
+  return guardedColor;
 }
 
 vec3 zenSaturate(vec3 color, float saturation) {
@@ -980,25 +1024,27 @@ void main() {
   );
 
   vec3 sceneColor = texture(u_sceneTexture, v_uv).rgb;
-  vec2 refractedUv = clamp(
-    v_uv + refractionOffset / max(u_resolution, vec2(1.0)),
-    vec2(0.0),
-    vec2(1.0)
-  );
-  vec3 blurredColor = texture(u_blurredTexture, refractedUv).rgb;
-  vec3 glassColor = zenSaturate(blurredColor, u_zenGlassSaturation);
-  glassColor = clamp((glassColor - 0.5) * 1.03 + 0.5, 0.0, 1.0);
-  glassColor = mix(
-    glassColor,
-    vec3(1.0),
-    shineMask * clamp(u_zenGlassShine, 0.0, 1.0) * 0.08
-  );
-
-  vec3 composedColor = mix(
-    sceneColor,
-    glassColor,
-    clamp(glassMask, 0.0, 1.0)
-  );
+  vec3 composedColor = sceneColor;
+  if (glassMask > 0.0) {
+    vec2 refractedUv = clamp(
+      v_uv + refractionOffset / max(u_resolution, vec2(1.0)),
+      vec2(0.0),
+      vec2(1.0)
+    );
+    vec3 blurredColor = texture(u_blurredTexture, refractedUv).rgb;
+    vec3 glassColor = zenSaturate(blurredColor, u_zenGlassSaturation);
+    glassColor = clamp((glassColor - 0.5) * 1.03 + 0.5, 0.0, 1.0);
+    glassColor = mix(
+      glassColor,
+      vec3(1.0),
+      shineMask * clamp(u_zenGlassShine, 0.0, 1.0) * 0.08
+    );
+    composedColor = mix(
+      sceneColor,
+      glassColor,
+      clamp(glassMask, 0.0, 1.0)
+    );
+  }
   composedColor = applyZenFinalContrast(composedColor, uiContrastMask);
   fragColor = vec4(composedColor, 1.0);
 }
@@ -1016,6 +1062,42 @@ export function buildZenMultipassCompositeFragment(surfaceCapacity = 32) {
   );
 }
 
+function zenSrgbToLinearChannel(value: number) {
+  // WebGL uploads numeric uniforms as float32 before the old GLSL path sees
+  // them. Quantize first so a black/white polarity tie cannot flip on the CPU.
+  const clamped = Math.fround(clamp(Math.fround(value), 0, 1));
+  return clamped <= 0.04045
+    ? clamped / 12.92
+    : ((clamped + 0.055) / 1.055) ** 2.4;
+}
+
+function zenRelativeLuminance(color: readonly number[]) {
+  return (
+    zenSrgbToLinearChannel(color[0] ?? 0) * 0.2126 +
+    zenSrgbToLinearChannel(color[1] ?? 0) * 0.7152 +
+    zenSrgbToLinearChannel(color[2] ?? 0) * 0.0722
+  );
+}
+
+function buildZenContrastParams(
+  textColor: readonly number[],
+  targetContrast: number,
+) {
+  const textLuminance = zenRelativeLuminance(textColor);
+  const shaderTargetContrast = Math.fround(targetContrast);
+  const darkBoundary = clamp(
+    (textLuminance + 0.05) / shaderTargetContrast - 0.05,
+    0,
+    1,
+  );
+  const lightBoundary = clamp(
+    shaderTargetContrast * (textLuminance + 0.05) - 0.05,
+    0,
+    1,
+  );
+  return [textLuminance, darkBoundary, lightBoundary, 0].map(Math.fround);
+}
+
 export function buildZenMultipassCompositeUniforms(
   config: ZenShaderConfig,
   runtime: ZenPostProcessRuntime,
@@ -1024,8 +1106,17 @@ export function buildZenMultipassCompositeUniforms(
   const configuredShine = (
     config.glass as typeof config.glass & { shine?: number }
   ).shine;
+  const targetContrast = contrastTargetRatio(config.contrastGuard.strength);
   return {
     ...buildZenPostProcessUniforms(config, runtime, surfaceBuffer),
+    u_zenPaperContrastParams: buildZenContrastParams(
+      runtime.textColor,
+      targetContrast,
+    ),
+    u_zenUiContrastParams: buildZenContrastParams(
+      runtime.uiTextColor ?? runtime.textColor,
+      targetContrast,
+    ),
     u_zenGlassEnabled: config.glass.enabled ? 1 : 0,
     u_zenGlassBlur: config.glass.enabled ? config.glass.blur : 0,
     u_zenGlassSaturation: config.glass.saturation,

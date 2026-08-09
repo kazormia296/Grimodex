@@ -13,6 +13,7 @@ import {
 } from "./ZenMultipassCanvas";
 import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenPostProcessRuntime } from "./zenPostProcessing";
+import type { ZenGpuTimerBackend } from "./zenGpuTimerSampler";
 import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 import {
   buildZenMultipassCompositeFragment,
@@ -99,6 +100,48 @@ precision highp float;
 out vec4 fragColor;
 void main() {
   fragColor = vec4(vec3(0.5), 1.0);
+}`;
+
+const STATIC_UNIFORM_SCENE = `#version 300 es
+precision highp float;
+uniform vec3 u_sceneTint;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(u_sceneTint, 1.0);
+}`;
+
+const STATIC_UNIFORM_COMPOSITE = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_sceneTexture;
+uniform vec3 u_compositeTint;
+void main() {
+  fragColor = vec4(
+    texture(u_sceneTexture, v_uv).rgb * u_compositeTint,
+    1.0
+  );
+}`;
+
+const IMAGE_SCENE = `#version 300 es
+precision highp float;
+in vec2 v_imageUV;
+out vec4 fragColor;
+uniform sampler2D u_image;
+void main() {
+  fragColor = texture(u_image, clamp(v_imageUV, vec2(0.0), vec2(1.0)));
+}`;
+
+const IMAGE_SPLIT_COMPOSITE = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_sceneTexture;
+uniform sampler2D u_image;
+void main() {
+  vec3 sceneColor = texture(u_sceneTexture, v_uv).rgb;
+  vec3 imageColor = texture(u_image, v_uv).rgb;
+  fragColor = vec4(v_uv.x < 0.5 ? sceneColor : imageColor, 1.0);
 }`;
 
 const BLUR_STEP_SCENE = `#version 300 es
@@ -382,6 +425,7 @@ function DirectBlurProbe({
   blurTargetPrecision = "auto",
   width = 256,
   height = 256,
+  speed = 0,
   mountRef,
 }: {
   name: string;
@@ -393,6 +437,7 @@ function DirectBlurProbe({
   blurTargetPrecision?: BlurTargetPrecision;
   width?: number;
   height?: number;
+  speed?: number;
   mountRef?: RefObject<PaperShaderElement | null>;
 }) {
   return (
@@ -412,7 +457,7 @@ function DirectBlurProbe({
       blurTargetPrecision={blurTargetPrecision}
       minPixelRatio={Math.max(1, renderScale)}
       maxPixelCount={width * height * renderScale * renderScale}
-      speed={0}
+      speed={speed}
       style={{ position: "relative", width, height }}
       webGlContextAttributes={WEBGL_ATTRIBUTES}
     />
@@ -553,12 +598,106 @@ interface BlurPerformanceStats {
   gaussianPairCount: number;
 }
 
+interface MultipassPerformanceStats extends BlurPerformanceStats {
+  drawCallCount: number;
+  gpuPassTimesMs: {
+    scene: number;
+    downsample: number;
+    gaussianHorizontal: number;
+    gaussianVertical: number;
+    composite: number;
+  } | null;
+  gpuTimingStatus: string;
+  gpuTimingSampleCount: number;
+  gpuTimingSampleDrawCount: number | null;
+  gpuTimeMs: number | null;
+  sceneTargetWidth: number;
+  sceneTargetHeight: number;
+}
+
 function blurPerformanceStats(ref: RefObject<PaperShaderElement | null>) {
   const stats = ref.current?.paperShaderMount?.getPerformanceStats();
   if (!stats)
     throw new Error("Zen multipass performance stats are unavailable");
   return stats as unknown as BlurPerformanceStats;
 }
+
+function multipassPerformanceStats(ref: RefObject<PaperShaderElement | null>) {
+  const stats = ref.current?.paperShaderMount?.getPerformanceStats();
+  if (!stats)
+    throw new Error("Zen multipass performance stats are unavailable");
+  return stats as unknown as MultipassPerformanceStats;
+}
+
+class ImmediateGpuTimerBackend implements ZenGpuTimerBackend<number> {
+  private nextQuery = 0;
+  disjointCheckCount = 0;
+
+  createQuery() {
+    this.nextQuery += 1;
+    return this.nextQuery;
+  }
+
+  beginQuery() {}
+
+  endQuery() {}
+
+  isResultAvailable() {
+    return true;
+  }
+
+  getResult(query: number) {
+    return query * 1_000_000;
+  }
+
+  isDisjoint() {
+    this.disjointCheckCount += 1;
+    return false;
+  }
+
+  deleteQuery() {}
+
+  isContextLost() {
+    return false;
+  }
+}
+
+async function loadVerticalStepImage() {
+  const image = new Image();
+  const loaded = new Promise<void>((resolve, reject) => {
+    image.addEventListener("load", () => resolve(), { once: true });
+    image.addEventListener("error", () => reject(new Error("image failed")), {
+      once: true,
+    });
+  });
+  image.src = `data:image/svg+xml,${encodeURIComponent(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+      <rect width="32" height="64" fill="black" />
+      <rect x="32" width="32" height="64" fill="white" />
+    </svg>
+  `)}`;
+  await loaded;
+  return image;
+}
+
+async function loadSolidImage(fill: string) {
+  const image = new Image();
+  const loaded = new Promise<void>((resolve, reject) => {
+    image.addEventListener("load", () => resolve(), { once: true });
+    image.addEventListener("error", () => reject(new Error("image failed")), {
+      once: true,
+    });
+  });
+  image.src = `data:image/svg+xml,${encodeURIComponent(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">
+      <rect width="8" height="8" fill="${fill}" />
+    </svg>
+  `)}`;
+  await loaded;
+  return image;
+}
+
+const NO_MIPMAPS: readonly string[] = [];
 
 function srgbLuminance(pixel: Uint8Array) {
   const linear = (channel: number) => {
@@ -1548,6 +1687,232 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(mount.getPerformanceStats().drawCount).toBe(1);
   });
 
+  it("uploads static uniforms only when their owning props change", () => {
+    const frames = new ManualAnimationFrames();
+    const applied: Array<"scene" | "composite"> = [];
+    _setZenMultipassFaultInjectionForTests({
+      animationFrameDriver: frames,
+      onStaticUniformsApplied: (pass) => applied.push(pass),
+    });
+    const sceneA = { ...SIZING_UNIFORMS, u_sceneTint: [0.8, 0.6, 0.4] };
+    const sceneB = { ...SIZING_UNIFORMS, u_sceneTint: [0.4, 0.6, 0.8] };
+    const compositeA = {
+      u_compositeTint: [1, 1, 1],
+      u_zenGlassEnabled: 0,
+      u_zenGlassBlur: 0,
+    };
+    const compositeB = {
+      u_compositeTint: [0.9, 1, 1],
+      u_zenGlassEnabled: 0,
+      u_zenGlassBlur: 0,
+    };
+    const ref = createRef<PaperShaderElement>();
+    const probe = (
+      sceneUniforms: ShaderMountUniforms,
+      compositeUniforms: ShaderMountUniforms,
+    ) => (
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="static-uniform-probe"
+        sceneFragment={STATIC_UNIFORM_SCENE}
+        sceneUniforms={sceneUniforms}
+        compositeFragment={STATIC_UNIFORM_COMPOSITE}
+        compositeUniforms={compositeUniforms}
+        mipmaps={NO_MIPMAPS}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={1}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />
+    );
+    const view = render(probe(sceneA, compositeA));
+
+    frames.step(0);
+    expect(applied).toEqual(["scene", "composite"]);
+    applied.length = 0;
+
+    frames.step(20);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats().drawCount).toBe(
+      2,
+    );
+    expect(applied).toEqual([]);
+
+    view.rerender(probe(sceneB, compositeA));
+    frames.step(25);
+    expect(applied).toEqual(["scene"]);
+    applied.length = 0;
+
+    view.rerender(probe(sceneB, compositeB));
+    frames.step(30);
+    expect(applied).toEqual(["composite"]);
+  });
+
+  it("keeps image texture bindings stable after blur target allocation", async () => {
+    const frames = new ManualAnimationFrames();
+    _setZenMultipassFaultInjectionForTests({ animationFrameDriver: frames });
+    const image = await loadVerticalStepImage();
+    const ref = createRef<PaperShaderElement>();
+    const { container } = render(
+      <DirectBlurProbe
+        name="image-binding"
+        sceneFragment={IMAGE_SCENE}
+        sceneUniforms={{ ...SIZING_UNIFORMS, u_image: image }}
+        blur={22}
+        speed={1}
+        mountRef={ref}
+      />,
+    );
+    const canvas = canvasFrom(container);
+
+    frames.step(0);
+    const first = readPixel(canvas, 160, 128)[0] ?? 0;
+    expect(first).toBeGreaterThan(128);
+
+    frames.step(20);
+    const second = readPixel(canvas, 160, 128)[0] ?? 0;
+    expect(Math.abs(second - first)).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps same-named image uniforms isolated between programs", async () => {
+    const frames = new ManualAnimationFrames();
+    _setZenMultipassFaultInjectionForTests({ animationFrameDriver: frames });
+    const [sceneImage, compositeImage] = await Promise.all([
+      loadSolidImage("red"),
+      loadSolidImage("blue"),
+    ]);
+    const { container } = render(
+      <ZenMultipassCanvas
+        data-paper-shader="program-image-isolation"
+        sceneFragment={IMAGE_SCENE}
+        sceneUniforms={{ ...SIZING_UNIFORMS, u_image: sceneImage }}
+        compositeFragment={IMAGE_SPLIT_COMPOSITE}
+        compositeUniforms={{
+          u_image: compositeImage,
+          u_zenGlassEnabled: 0,
+          u_zenGlassBlur: 0,
+        }}
+        mipmaps={NO_MIPMAPS}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={1}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    const canvas = canvasFrom(container);
+
+    frames.step(0);
+    expect(readPixel(canvas, 16, 32)).toEqual(new Uint8Array([255, 0, 0, 255]));
+    expect(readPixel(canvas, 48, 32)).toEqual(new Uint8Array([0, 0, 255, 255]));
+
+    frames.step(20);
+    expect(readPixel(canvas, 16, 32)).toEqual(new Uint8Array([255, 0, 0, 255]));
+    expect(readPixel(canvas, 48, 32)).toEqual(new Uint8Array([0, 0, 255, 255]));
+  });
+
+  it("does not clear the fully overwritten composite framebuffer", () => {
+    const frames = new ManualAnimationFrames();
+    _setZenMultipassFaultInjectionForTests({ animationFrameDriver: frames });
+    const clear = vi.spyOn(WebGL2RenderingContext.prototype, "clear");
+    try {
+      render(
+        <ZenMultipassCanvas
+          data-paper-shader="composite-clear-probe"
+          sceneFragment={STATIC_SCENE}
+          sceneUniforms={SIZING_UNIFORMS}
+          compositeFragment={STATIC_UNIFORM_COMPOSITE}
+          compositeUniforms={{
+            u_compositeTint: [1, 1, 1],
+            u_zenGlassEnabled: 0,
+            u_zenGlassBlur: 0,
+          }}
+          minPixelRatio={1}
+          maxPixelCount={64 * 64}
+          speed={0}
+          style={{ position: "relative", width: 64, height: 64 }}
+          webGlContextAttributes={WEBGL_ATTRIBUTES}
+        />,
+      );
+      frames.step(0);
+
+      // Scene may conservatively clear its FBO; Composite overwrites every
+      // default-framebuffer pixel and must not issue a second clear.
+      expect(clear).toHaveBeenCalledTimes(1);
+    } finally {
+      clear.mockRestore();
+    }
+  });
+
+  it("publishes one coherent GPU timing sample with actual draw calls", async () => {
+    const backend = new ImmediateGpuTimerBackend();
+    _setZenMultipassFaultInjectionForTests({
+      createGpuTimerBackend: () => backend,
+    });
+    const ref = createRef<PaperShaderElement>();
+    const { container } = render(
+      <DirectBlurProbe
+        name="gpu-timing"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        mountRef={ref}
+      />,
+    );
+    const canvas = canvasFrom(container);
+
+    await waitFor(() => expect(readCenterRed(canvas)).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(multipassPerformanceStats(ref).gpuTimingStatus).toBe("ready"),
+    );
+
+    expect(multipassPerformanceStats(ref)).toMatchObject({
+      drawCallCount: 5,
+      gpuTimeMs: 15,
+      gpuPassTimesMs: {
+        scene: 1,
+        downsample: 2,
+        gaussianHorizontal: 3,
+        gaussianVertical: 4,
+        composite: 5,
+      },
+      gpuTimingSampleCount: 1,
+      gpuTimingSampleDrawCount: 1,
+      sceneTargetWidth: 256,
+      sceneTargetHeight: 256,
+    });
+  });
+
+  it("polls the GPU timer only once when a sampled frame begins", () => {
+    const frames = new ManualAnimationFrames();
+    const backend = new ImmediateGpuTimerBackend();
+    _setZenMultipassFaultInjectionForTests({
+      animationFrameDriver: frames,
+      createGpuTimerBackend: () => backend,
+    });
+    render(
+      <ZenMultipassCanvas
+        data-paper-shader="gpu-timing-poll"
+        sceneFragment={STATIC_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={STATIC_UNIFORM_COMPOSITE}
+        compositeUniforms={{
+          u_compositeTint: [1, 1, 1],
+          u_zenGlassEnabled: 0,
+          u_zenGlassBlur: 0,
+        }}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={0}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+
+    frames.step(0);
+
+    expect(backend.disjointCheckCount).toBe(1);
+  });
+
   it("redraws the final pass when contrast strength changes", async () => {
     const view = render(
       <ZenMultipassCanvas
@@ -1585,6 +1950,48 @@ describe("ZenMultipassCanvas live updates", () => {
     );
 
     await waitFor(() => expect(readCenterRed(canvas)).toBeLessThan(wcagAa - 8));
+  });
+
+  it("keeps the legacy WebGL correction polarity at a float32 tie", async () => {
+    const boundaryColor: [number, number, number] = [
+      3 / 255,
+      137 / 255,
+      1 / 255,
+    ];
+    const ref = createRef<PaperShaderElement>();
+    const { container } = render(
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="contrast-polarity-tie"
+        sceneFragment={STATIC_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0.6, true, {
+          ...RUNTIME,
+          textColor: boundaryColor,
+        })}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={0}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    const canvas = canvasFrom(container);
+
+    await waitFor(() => expect(canvas.width).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(
+        ref.current?.paperShaderMount?.getPerformanceStats().isStaticFrameReady,
+      ).toBe(true),
+    );
+    await waitFor(() => {
+      const pixel = readCenterPixel(canvas);
+      expect(pixel[3]).toBe(255);
+      expect(
+        Math.max(pixel[0] ?? 0, pixel[1] ?? 0, pixel[2] ?? 0),
+      ).toBeLessThanOrEqual(1);
+    });
   });
 
   it("leaves a pixel that already meets the contrast target unchanged", async () => {

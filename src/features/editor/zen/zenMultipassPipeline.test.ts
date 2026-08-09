@@ -486,18 +486,30 @@ void main() { fragColor = vec4(0.25); }`);
     expect(fragment).not.toContain("u_blurredTexture");
   });
 
-  it("samples the blurred FBO before applying the shared final correction", () => {
+  it("samples the blurred FBO only inside Glass before final correction", () => {
     const fragment = buildZenMultipassCompositeFragment(7);
+    const main = fragment.slice(fragment.lastIndexOf("void main()"));
+    const composedColorIndex = main.indexOf("vec3 composedColor = sceneColor;");
+    const glassBranchIndex = main.indexOf("if (glassMask > 0.0) {");
+    const blurredSampleIndex = main.indexOf(
+      "texture(u_blurredTexture, refractedUv)",
+    );
+    const contrastIndex = main.indexOf(
+      "composedColor = applyZenFinalContrast(composedColor, uiContrastMask)",
+    );
 
     expect(fragment).toContain("u_zenUiSurfaceRects[8]");
-    expect(
-      fragment.indexOf("texture(u_blurredTexture, refractedUv)"),
-    ).toBeLessThan(fragment.indexOf("vec3 composedColor = mix("));
-    expect(fragment.indexOf("vec3 composedColor = mix(")).toBeLessThan(
-      fragment.indexOf(
-        "composedColor = applyZenFinalContrast(composedColor, uiContrastMask)",
-      ),
-    );
+    for (const anchor of [
+      composedColorIndex,
+      glassBranchIndex,
+      blurredSampleIndex,
+      contrastIndex,
+    ]) {
+      expect(anchor).toBeGreaterThanOrEqual(0);
+    }
+    expect(composedColorIndex).toBeLessThan(glassBranchIndex);
+    expect(glassBranchIndex).toBeLessThan(blurredSampleIndex);
+    expect(blurredSampleIndex).toBeLessThan(contrastIndex);
     expect(fragment).toContain(
       "float paperMask = clamp(zenContrastColumnMask(), 0.0, 1.0)",
     );
@@ -516,6 +528,53 @@ void main() { fragColor = vec4(0.25); }`);
     );
     expect(fragment).toContain("maximumBackground * maximumBackground /");
     expect(fragment).toContain("safeDistanceToWhite * safeDistanceToWhite");
+  });
+
+  it("runs only effective Paper and UI contrast branches with shared luminance", () => {
+    const fragment = buildZenMultipassCompositeFragment(7);
+    const contrast = fragment.slice(
+      fragment.indexOf("vec3 applyZenFinalContrast("),
+      fragment.indexOf("vec3 zenSaturate("),
+    );
+    const paperWeightIndex = contrast.indexOf("float paperWeight =");
+    const uiWeightIndex = contrast.indexOf("float uiBlendWeight =");
+    const linearColorIndex = contrast.indexOf(
+      "vec3 linearColor = zenSrgbToLinear(",
+    );
+    const paperBranchIndex = contrast.indexOf("if (paperWeight > 0.0) {");
+    const paperCallIndex = contrast.indexOf(
+      "u_zenPaperContrastParams",
+      paperBranchIndex,
+    );
+    const uiBranchIndex = contrast.indexOf("if (uiBlendWeight > 0.0) {");
+    const uiCallIndex = contrast.indexOf(
+      "u_zenUiContrastParams",
+      uiBranchIndex,
+    );
+
+    expect(fragment).toContain("uniform vec4 u_zenPaperContrastParams;");
+    expect(fragment).toContain("uniform vec4 u_zenUiContrastParams;");
+    expect(contrast).toContain(
+      "if (paperWeight <= 0.0 && uiBlendWeight <= 0.0)",
+    );
+    for (const anchor of [
+      paperWeightIndex,
+      uiWeightIndex,
+      linearColorIndex,
+      paperBranchIndex,
+      paperCallIndex,
+      uiBranchIndex,
+      uiCallIndex,
+    ]) {
+      expect(anchor).toBeGreaterThanOrEqual(0);
+    }
+    expect(paperWeightIndex).toBeLessThan(linearColorIndex);
+    expect(uiWeightIndex).toBeLessThan(linearColorIndex);
+    expect(linearColorIndex).toBeLessThan(paperBranchIndex);
+    expect(paperBranchIndex).toBeLessThan(paperCallIndex);
+    expect(paperCallIndex).toBeLessThan(uiBranchIndex);
+    expect(uiBranchIndex).toBeLessThan(uiCallIndex);
+    expect(contrast.match(/zenSrgbToLinear\(/g)).toHaveLength(1);
   });
 
   it("rejects fragments outside the padded surface AABB before SDF work", () => {
@@ -546,6 +605,60 @@ void main() { fragColor = vec4(0.25); }`);
     expect(aabbReturnIndex).toBeGreaterThan(aabbIndex);
     expect(aabbReturnIndex).toBeLessThan(signedDistanceIndex);
     expect(aabbIndex).toBeLessThan(signedDistanceIndex);
+  });
+
+  it("returns exact interior surface state before rounded-rect SDF work", () => {
+    const fragment = buildZenMultipassCompositeFragment(7);
+    const region = fragment.slice(
+      fragment.indexOf("vec2 zenGlassRegion("),
+      fragment.indexOf("void zenCollectSurfaceState("),
+    );
+    const distanceIndex = region.indexOf(
+      "vec2 distanceToAabbEdge = halfSize - abs(point);",
+    );
+    const requiredDepthIndex = region.indexOf(
+      "float interiorRequiredDepth = 2.0;",
+    );
+    const glassDepthIndex = region.indexOf(
+      "if (collectGlass) {",
+      requiredDepthIndex,
+    );
+    const guardIndex = region.indexOf(
+      "interiorDistance >= max(radius, interiorRequiredDepth)",
+    );
+    const fullMaskIndex = region.indexOf("surfaceMask = 1.0;", guardIndex);
+    const zeroEdgeIndex = region.indexOf("edgeMask = 0.0;", guardIndex);
+    const zeroOffsetIndex = region.indexOf("return vec2(0.0);", guardIndex);
+    const signedDistanceIndex = region.indexOf(
+      "float signedDistance = zenRoundedRectSignedDistance(",
+    );
+    const normalIndex = region.indexOf(
+      "vec2 outwardNormal = zenRoundedRectOutwardNormal(",
+    );
+
+    expect(region).toContain("refractionDepth = min(");
+    expect(region).toContain("interiorRequiredDepth = max(");
+    for (const anchor of [
+      distanceIndex,
+      requiredDepthIndex,
+      glassDepthIndex,
+      guardIndex,
+      fullMaskIndex,
+      zeroEdgeIndex,
+      zeroOffsetIndex,
+      signedDistanceIndex,
+      normalIndex,
+    ]) {
+      expect(anchor).toBeGreaterThanOrEqual(0);
+    }
+    expect(distanceIndex).toBeLessThan(requiredDepthIndex);
+    expect(requiredDepthIndex).toBeLessThan(glassDepthIndex);
+    expect(glassDepthIndex).toBeLessThan(guardIndex);
+    expect(guardIndex).toBeLessThan(fullMaskIndex);
+    expect(fullMaskIndex).toBeLessThan(signedDistanceIndex);
+    expect(zeroEdgeIndex).toBeLessThan(signedDistanceIndex);
+    expect(zeroOffsetIndex).toBeLessThan(signedDistanceIndex);
+    expect(guardIndex).toBeLessThan(normalIndex);
   });
 
   it("selects mask-only surface collection before calling the region helper", () => {
@@ -602,7 +715,7 @@ void main() { fragColor = vec4(0.25); }`);
       "if (!collectGlass) return vec2(0.0);",
     );
     const edgeMaskIndex = region.indexOf("edgeMask = surfaceMask * (");
-    const refractionIndex = region.indexOf("float refractionDepth = min(");
+    const refractionIndex = region.indexOf("float insideDistance =");
 
     expect(region).toContain("bool collectGlass");
     for (const anchor of [
@@ -675,6 +788,59 @@ void main() { fragColor = vec4(0.25); }`);
     expect(uniforms.u_zenUiSurfaceCount).toBe(1);
     expect(uniforms["u_zenUiSurfaceRects[0]"]).toBeInstanceOf(Float32Array);
     expect(uniforms["u_zenUiSurfaceParams[0]"]).toBeInstanceOf(Float32Array);
+  });
+
+  it("precomputes fixed Paper and UI contrast parameters on the CPU", () => {
+    const uniforms = buildZenMultipassCompositeUniforms(
+      config,
+      {
+        rect: [0, 0, 1, 1],
+        feather: [0, 0, 0, 0],
+        glassRect: [0, 0, 0, 0],
+        glassCornerRadius: 0,
+        textColor: [1, 1, 1],
+        uiTextColor: [0, 0, 0],
+        backdropColor: [1, 1, 1],
+      },
+      new ZenUiSurfaceUniformBuffer(1),
+    );
+
+    expect(uniforms.u_zenPaperContrastParams).toEqual([1, 0.125, 1, 0]);
+    expect(uniforms.u_zenUiContrastParams).toEqual([0, 0, 0.25, 0]);
+  });
+
+  it("leaves black-white polarity ties to the WebGL shader", () => {
+    const boundaryColor: [number, number, number] = [
+      3 / 255,
+      137 / 255,
+      1 / 255,
+    ];
+    const uniforms = buildZenMultipassCompositeUniforms(
+      config,
+      {
+        rect: [0, 0, 1, 1],
+        feather: [0, 0, 0, 0],
+        glassRect: [0, 0, 0, 0],
+        glassCornerRadius: 0,
+        textColor: boundaryColor,
+        uiTextColor: [0, 0, 0],
+        backdropColor: boundaryColor,
+      },
+      new ZenUiSurfaceUniformBuffer(1),
+    );
+
+    expect(uniforms.u_zenPaperContrastParams).toEqual([
+      0.1791287362575531, 0, 1, 0,
+    ]);
+    expect(uniforms.u_zenUiContrastParams).toEqual([0, 0, 0.25, 0]);
+
+    const fragment = buildZenMultipassCompositeFragment(1);
+    expect(fragment).toContain("uniform vec3 u_zenContrastTextColor;");
+    expect(fragment).toContain("uniform vec3 u_zenUiContrastTextColor;");
+    expect(fragment).toContain("bool zenShouldDarken(");
+    expect(fragment).toContain(
+      "zenSurfaceCorrectionDirection(u_zenContrastBackdropColor)",
+    );
   });
 
   it("uses bounded high-water shader variants", () => {
