@@ -15,7 +15,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const VALID_SUITES = new Set(["browser", "storybook"]);
+const VALID_SUITES = new Set(["browser", "storybook", "webgl"]);
 const DEFAULT_SAMPLE_INTERVAL_MS = 100;
 
 function positiveInteger(value, label) {
@@ -64,6 +64,16 @@ export function buildVitestCommand({
   if (shard !== undefined) args.push(`--shard=${shard}`);
 
   return { executable: "pnpm", args };
+}
+
+export function buildBenchmarkConfiguration(options) {
+  return {
+    fileParallelism: options.fileParallelism ?? "auto",
+    maxWorkers: options.maxWorkers ?? "auto",
+    shard: options.shard ?? null,
+    retry: 0,
+    collectPss: options.collectPss ?? false,
+  };
 }
 
 function selectProcessTree(records, rootPid) {
@@ -645,7 +655,7 @@ async function writeBenchmark(output, report) {
 function usage() {
   return [
     "Usage:",
-    "  pnpm benchmark:browser-ci -- --suite <browser|storybook> --runs <n> --output <path>",
+    "  pnpm benchmark:browser-ci -- --suite <browser|storybook|webgl> --runs <n> --output <path>",
     "",
     "Candidate options:",
     "  --max-workers <n>",
@@ -674,13 +684,7 @@ async function main() {
     schemaVersion: 1,
     suite: options.suite,
     candidate,
-    configuration: {
-      fileParallelism: options.fileParallelism ?? "auto",
-      maxWorkers: options.maxWorkers ?? "auto",
-      shard: options.shard ?? null,
-      retry: 0,
-      collectPss: options.collectPss ?? false,
-    },
+    configuration: buildBenchmarkConfiguration(options),
     environment: environmentMetadata(),
     runs: [],
   };

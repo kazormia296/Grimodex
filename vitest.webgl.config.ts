@@ -10,15 +10,10 @@ const alias = { "@": path.resolve(__dirname, "./src") };
 const dependencyRoot = realpathSync(path.resolve(__dirname, "node_modules"));
 
 export default defineConfig({
-  // Tailwind 4 は utilities を Vite plugin 経由で生成する。これが無いと
-  // browser test で `grid` `h-full` 等のクラスが no-op になり、layout が
-  // 全く効かない (shell が display:block に潰れる)。
   plugins: [react(), tailwindcss()],
   resolve: { alias },
   server: {
     fs: {
-      // Worktrees may reuse a dependency tree through a node_modules symlink.
-      // Fontsource URLs resolve to its real path during browser tests.
       allow: [...new Set([searchForWorkspaceRoot(__dirname), dependencyRoot])],
     },
   },
@@ -26,16 +21,25 @@ export default defineConfig({
     include: ["@tanstack/react-virtual"],
   },
   test: {
-    name: "browser",
+    name: "webgl",
     globals: true,
+    maxWorkers: 1,
     browser: {
       enabled: true,
-      provider: playwright(),
+      // Keep the GPU regression suite deterministic and isolated from browser
+      // tests that depend on hardware-accelerated animation scheduling.
+      api: { host: "127.0.0.1", port: 45123 },
+      connectTimeout: 180_000,
+      fileParallelism: false,
+      provider: playwright({
+        launchOptions: {
+          args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
+        },
+      }),
       headless: true,
       instances: [{ browser: "chromium" }],
     },
     setupFiles: ["./src/test-setup-browser.ts"],
-    include: ["src/**/*.browser.test.{ts,tsx}"],
-    exclude: ["src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx"],
+    include: ["src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx"],
   },
 });

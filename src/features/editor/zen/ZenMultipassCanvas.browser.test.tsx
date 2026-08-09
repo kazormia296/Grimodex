@@ -1,18 +1,54 @@
-import { createRef, StrictMode } from "react";
+import { createRef, StrictMode, type RefObject } from "react";
 import { render, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   PaperShaderElement,
   ShaderMountUniforms,
 } from "@paper-design/shaders";
 import { ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
-import { ZenMultipassCanvas } from "./ZenMultipassCanvas";
+import {
+  _setZenMultipassFaultInjectionForTests,
+  ZenMultipassCanvas,
+} from "./ZenMultipassCanvas";
+import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenPostProcessRuntime } from "./zenPostProcessing";
+import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
 } from "./zenMultipassPipeline";
+
+const shaderLayouts = vi.hoisted(() => ({
+  current: {
+    surfaceSize: { width: 240, height: 160 },
+    contrast: { rect: [0, 0, 1, 1], feather: [0, 0, 0, 0] },
+    glass: {
+      rect: [0, 0, 1, 1],
+      feather: [0, 0, 0, 0],
+      cornerRadius: 16,
+    },
+    uiSurfaces: [],
+  } as ZenShaderLayouts,
+}));
+
+vi.mock("./useZenShaderLayouts", () => ({
+  useZenShaderLayouts: () => shaderLayouts.current,
+}));
+
+vi.mock("./zenThemePalette", () => ({
+  useZenThemePalette: () => ({
+    background: "#101318",
+    colors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
+    textColor: [0.9, 0.9, 0.9],
+    uiTextColor: [0.75, 0.75, 0.75],
+    backdropColor: [0.04, 0.05, 0.07],
+  }),
+}));
+
+afterEach(() => {
+  _setZenMultipassFaultInjectionForTests(null);
+});
 
 const SIZING_UNIFORMS: ShaderMountUniforms = {
   u_fit: 2,
@@ -50,6 +86,43 @@ out vec4 fragColor;
 void main() {
   float value = step(u_resolution.x * 0.5, gl_FragCoord.x);
   fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BLUR_POINT_SCENE = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_pixelRatio;
+out vec4 fragColor;
+void main() {
+  vec2 point = gl_FragCoord.xy - u_resolution * 0.5;
+  // Eight CSS pixels keeps the RGBA8 fallback above its intermediate
+  // quantization floor while remaining small relative to 22/40px sigma.
+  float value = 1.0 - step(8.0 * u_pixelRatio, length(point));
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BLUR_GRATING_SCENE = `#version 300 es
+precision highp float;
+uniform float u_pixelRatio;
+uniform vec2 u_probeDirection;
+uniform float u_probeFrequency;
+out vec4 fragColor;
+void main() {
+  vec2 cssPosition = gl_FragCoord.xy / max(u_pixelRatio, 0.0001);
+  float value = 0.5 + 0.45 * cos(
+    dot(cssPosition, u_probeDirection) * u_probeFrequency
+  );
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
+const BLUR_PROBE_COMPOSITE = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_blurredTexture;
+uniform float u_probeGain;
+void main() {
+  fragColor = vec4(texture(u_blurredTexture, v_uv).rgb * u_probeGain, 1.0);
 }`;
 
 const BLUR_PROBE_WIDTH = 512;
@@ -167,7 +240,7 @@ function BlurProbe({
       sceneUniforms={SIZING_UNIFORMS}
       compositeFragment={buildZenMultipassCompositeFragment(1)}
       compositeUniforms={blurCompositeUniforms(blur)}
-      minPixelRatio={1}
+      minPixelRatio={Math.max(1, renderScale)}
       maxPixelCount={
         BLUR_PROBE_WIDTH * BLUR_PROBE_HEIGHT * renderScale * renderScale
       }
@@ -177,6 +250,55 @@ function BlurProbe({
         width: BLUR_PROBE_WIDTH,
         height: BLUR_PROBE_HEIGHT,
       }}
+      webGlContextAttributes={WEBGL_ATTRIBUTES}
+    />
+  );
+}
+
+type BlurTargetPrecision = "auto" | "rgba8";
+
+function DirectBlurProbe({
+  name,
+  sceneFragment,
+  sceneUniforms = SIZING_UNIFORMS,
+  blur,
+  gain = 1,
+  renderScale = 1,
+  blurTargetPrecision = "auto",
+  width = 256,
+  height = 256,
+  mountRef,
+}: {
+  name: string;
+  sceneFragment: string;
+  sceneUniforms?: ShaderMountUniforms;
+  blur: number;
+  gain?: number;
+  renderScale?: number;
+  blurTargetPrecision?: BlurTargetPrecision;
+  width?: number;
+  height?: number;
+  mountRef?: RefObject<PaperShaderElement | null>;
+}) {
+  return (
+    <ZenMultipassCanvas
+      ref={mountRef}
+      data-paper-shader={`direct-blur-${name}`}
+      sceneFragment={sceneFragment}
+      sceneUniforms={sceneUniforms}
+      compositeFragment={BLUR_PROBE_COMPOSITE}
+      compositeUniforms={{
+        u_probeGain: gain,
+        u_zenGlassBlur: blur,
+        u_zenGlassEnabled: 1,
+        u_zenGlassRect: [0, 0, 1, 1],
+        u_zenUiSurfaceCount: 0,
+      }}
+      blurTargetPrecision={blurTargetPrecision}
+      minPixelRatio={Math.max(1, renderScale)}
+      maxPixelCount={width * height * renderScale * renderScale}
+      speed={0}
+      style={{ position: "relative", width, height }}
       webGlContextAttributes={WEBGL_ATTRIBUTES}
     />
   );
@@ -241,6 +363,88 @@ function effectiveHorizontalBlurSigma(canvas: HTMLCanvasElement) {
   return Math.sqrt(variance / weight) / renderScale;
 }
 
+function angularRedSamples(canvas: HTMLCanvasElement, radiusCss: number) {
+  const cssWidth = canvas.getBoundingClientRect().width;
+  const renderScale = canvas.width / cssWidth;
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  return Array.from({ length: 16 }, (_, index) => {
+    const angle = (index * Math.PI * 2) / 16;
+    const x = Math.max(
+      0,
+      Math.min(
+        canvas.width - 1,
+        Math.round(centerX + Math.cos(angle) * radiusCss * renderScale - 0.5),
+      ),
+    );
+    const y = Math.max(
+      0,
+      Math.min(
+        canvas.height - 1,
+        Math.round(centerY + Math.sin(angle) * radiusCss * renderScale - 0.5),
+      ),
+    );
+    return readPixel(canvas, x, y)[0] ?? 0;
+  });
+}
+
+function angularAnisotropy(canvas: HTMLCanvasElement, radiusCss: number) {
+  const samples = angularRedSamples(canvas, radiusCss);
+  const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  return mean <= 0
+    ? Number.POSITIVE_INFINITY
+    : (Math.max(...samples) - Math.min(...samples)) / mean;
+}
+
+function meanAngularRed(canvas: HTMLCanvasElement, radiusCss: number) {
+  const samples = angularRedSamples(canvas, radiusCss);
+  return samples.reduce((sum, value) => sum + value, 0) / samples.length;
+}
+
+function centralRedAmplitude(canvas: HTMLCanvasElement) {
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 context is unavailable");
+  const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+  gl.readPixels(
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    pixels,
+  );
+  const marginX = Math.floor(canvas.width * 0.25);
+  const marginY = Math.floor(canvas.height * 0.25);
+  let minimum = 255;
+  let maximum = 0;
+  for (let y = marginY; y < canvas.height - marginY; y += 1) {
+    for (let x = marginX; x < canvas.width - marginX; x += 1) {
+      const red = pixels[(y * canvas.width + x) * 4] ?? 0;
+      minimum = Math.min(minimum, red);
+      maximum = Math.max(maximum, red);
+    }
+  }
+  return (maximum - minimum) / 2;
+}
+
+interface BlurPerformanceStats {
+  drawCount: number;
+  blurFormat: "rgba16f" | "rgba8";
+  blurTargetAFormat: "rgba16f" | "rgba8";
+  blurTargetBFormat: "rgba16f" | "rgba8";
+  blurTargetWidth: number;
+  blurTargetHeight: number;
+  gaussianPairCount: number;
+}
+
+function blurPerformanceStats(ref: RefObject<PaperShaderElement | null>) {
+  const stats = ref.current?.paperShaderMount?.getPerformanceStats();
+  if (!stats)
+    throw new Error("Zen multipass performance stats are unavailable");
+  return stats as unknown as BlurPerformanceStats;
+}
+
 function srgbLuminance(pixel: Uint8Array) {
   const linear = (channel: number) => {
     const value = channel / 255;
@@ -272,8 +476,14 @@ describe("ZenMultipassCanvas live updates", () => {
     const probes = [
       { name: "zero", blur: 0, renderScale: 1 },
       { name: "one", blur: 1, renderScale: 1 },
+      { name: "five-point-nine", blur: 5.9, renderScale: 1 },
+      { name: "six", blur: 6, renderScale: 1 },
+      { name: "six-point-one", blur: 6.1, renderScale: 1 },
+      { name: "twenty-one", blur: 21, renderScale: 1 },
       { name: "twenty-two-full", blur: 22, renderScale: 1 },
       { name: "twenty-two-half", blur: 22, renderScale: 0.5 },
+      { name: "twenty-two-double", blur: 22, renderScale: 2 },
+      { name: "twenty-three", blur: 23, renderScale: 1 },
       { name: "forty", blur: 40, renderScale: 1 },
     ] as const;
     const { container } = render(
@@ -305,12 +515,24 @@ describe("ZenMultipassCanvas live updates", () => {
 
     const blur0 = effectiveHorizontalBlurSigma(canvasFor("zero"));
     const blur1 = effectiveHorizontalBlurSigma(canvasFor("one"));
+    const blur5Point9 = effectiveHorizontalBlurSigma(
+      canvasFor("five-point-nine"),
+    );
+    const blur6 = effectiveHorizontalBlurSigma(canvasFor("six"));
+    const blur6Point1 = effectiveHorizontalBlurSigma(
+      canvasFor("six-point-one"),
+    );
+    const blur21 = effectiveHorizontalBlurSigma(canvasFor("twenty-one"));
     const blur22Full = effectiveHorizontalBlurSigma(
       canvasFor("twenty-two-full"),
     );
     const blur22Half = effectiveHorizontalBlurSigma(
       canvasFor("twenty-two-half"),
     );
+    const blur22Double = effectiveHorizontalBlurSigma(
+      canvasFor("twenty-two-double"),
+    );
+    const blur23 = effectiveHorizontalBlurSigma(canvasFor("twenty-three"));
     const blur40 = effectiveHorizontalBlurSigma(canvasFor("forty"));
 
     expect(blur22Full).toBeGreaterThanOrEqual(19.8);
@@ -318,12 +540,581 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(blur22Half).toBeGreaterThanOrEqual(19.8);
     expect(blur22Half).toBeLessThanOrEqual(24.2);
     expect(Math.abs(blur22Half - blur22Full)).toBeLessThanOrEqual(2);
+    expect(blur22Double).toBeGreaterThanOrEqual(19.8);
+    expect(blur22Double).toBeLessThanOrEqual(24.2);
+    expect(Math.abs(blur22Double - blur22Full)).toBeLessThanOrEqual(2);
     expect(blur40).toBeGreaterThanOrEqual(36);
     expect(blur40).toBeLessThanOrEqual(44);
     expect(blur0).toBeLessThanOrEqual(1.5);
     expect(blur1).toBeGreaterThan(blur0);
     expect(blur1).toBeLessThan(4);
+    expect(blur5Point9).toBeGreaterThanOrEqual(5);
+    expect(blur6Point1).toBeLessThanOrEqual(7);
+    const lowerCostBoundaryIncrement = blur6 - blur5Point9;
+    const upperCostBoundaryIncrement = blur6Point1 - blur6;
+    expect(lowerCostBoundaryIncrement).toBeGreaterThan(0);
+    expect(lowerCostBoundaryIncrement).toBeLessThan(0.4);
+    expect(upperCostBoundaryIncrement).toBeGreaterThan(0);
+    expect(upperCostBoundaryIncrement).toBeLessThan(0.4);
+    expect(
+      Math.abs(lowerCostBoundaryIncrement - upperCostBoundaryIncrement),
+    ).toBeLessThan(0.25);
+    const firstIncrement = blur22Full - blur21;
+    const secondIncrement = blur23 - blur22Full;
+    expect(firstIncrement).toBeGreaterThan(0.2);
+    expect(firstIncrement).toBeLessThan(1.8);
+    expect(secondIncrement).toBeGreaterThan(0.2);
+    expect(secondIncrement).toBeLessThan(1.8);
+    expect(Math.abs(firstIncrement - secondIncrement)).toBeLessThan(0.8);
   }, 30_000);
+
+  it("keeps the blur cost root continuous across adjacent render-scale pixels", async () => {
+    const lowerRef = createRef<PaperShaderElement>();
+    const upperRef = createRef<PaperShaderElement>();
+    const probes = [
+      {
+        name: "cost-root-388",
+        renderScale: 388 / 512,
+        expectedWidth: 388,
+        mountRef: lowerRef,
+      },
+      {
+        name: "cost-root-389",
+        renderScale: 389 / 512,
+        expectedWidth: 389,
+        mountRef: upperRef,
+      },
+    ] as const;
+    const { container } = render(
+      <div>
+        {probes.map((probe) => (
+          <DirectBlurProbe
+            key={probe.name}
+            name={probe.name}
+            sceneFragment={BLUR_STEP_SCENE}
+            blur={2}
+            renderScale={probe.renderScale}
+            width={512}
+            height={128}
+            mountRef={probe.mountRef}
+          />
+        ))}
+      </div>,
+    );
+    const canvasFor = (name: string) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="direct-blur-${name}"]`,
+        ) ?? container,
+      );
+
+    await waitFor(() => {
+      expect(blurPerformanceStats(lowerRef).drawCount).toBeGreaterThan(0);
+      expect(blurPerformanceStats(upperRef).drawCount).toBeGreaterThan(0);
+    });
+
+    for (const probe of probes) {
+      const canvas = canvasFor(probe.name);
+      const stats = blurPerformanceStats(probe.mountRef);
+      expect(canvas.width).toBe(probe.expectedWidth);
+      expect(canvas.height).toBe(97);
+      expect(stats).toMatchObject({
+        blurTargetWidth: probe.expectedWidth,
+        blurTargetHeight: 97,
+        gaussianPairCount: 3,
+      });
+    }
+
+    const lowerSigma = effectiveHorizontalBlurSigma(canvasFor("cost-root-388"));
+    const upperSigma = effectiveHorizontalBlurSigma(canvasFor("cost-root-389"));
+    expect(lowerSigma).toBeGreaterThanOrEqual(1.5);
+    expect(lowerSigma).toBeLessThanOrEqual(2.5);
+    expect(upperSigma).toBeGreaterThanOrEqual(1.5);
+    expect(upperSigma).toBeLessThanOrEqual(2.5);
+    expect(Math.abs(lowerSigma - upperSigma)).toBeLessThanOrEqual(0.25);
+  });
+
+  it("keeps the point-spread function radial without terraces or side peaks", async () => {
+    const blur22HalfRef = createRef<PaperShaderElement>();
+    const blur22FullRef = createRef<PaperShaderElement>();
+    const blur22DoubleRef = createRef<PaperShaderElement>();
+    const blur40Ref = createRef<PaperShaderElement>();
+    const fallbackRef = createRef<PaperShaderElement>();
+    const { container } = render(
+      <div>
+        <DirectBlurProbe
+          name="point-22-half"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          gain={8}
+          renderScale={0.5}
+          mountRef={blur22HalfRef}
+        />
+        <DirectBlurProbe
+          name="point-22-full"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          gain={8}
+          mountRef={blur22FullRef}
+        />
+        <DirectBlurProbe
+          name="point-22-double"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          gain={8}
+          renderScale={2}
+          mountRef={blur22DoubleRef}
+        />
+        <DirectBlurProbe
+          name="point-40-auto"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={40}
+          gain={8}
+          mountRef={blur40Ref}
+        />
+        <DirectBlurProbe
+          name="point-40-rgba8"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={40}
+          gain={8}
+          blurTargetPrecision="rgba8"
+          mountRef={fallbackRef}
+        />
+      </div>,
+    );
+    const canvasFor = (name: string) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="direct-blur-${name}"]`,
+        ) ?? container,
+      );
+
+    await waitFor(
+      () => {
+        expect(blurPerformanceStats(blur22HalfRef).drawCount).toBeGreaterThan(
+          0,
+        );
+        expect(blurPerformanceStats(blur22FullRef).drawCount).toBeGreaterThan(
+          0,
+        );
+        expect(blurPerformanceStats(blur22DoubleRef).drawCount).toBeGreaterThan(
+          0,
+        );
+        expect(blurPerformanceStats(blur40Ref).drawCount).toBeGreaterThan(0);
+        expect(blurPerformanceStats(fallbackRef).drawCount).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+
+    const blur22Canvases = [
+      canvasFor("point-22-half"),
+      canvasFor("point-22-full"),
+      canvasFor("point-22-double"),
+    ];
+    const blur40Canvas = canvasFor("point-40-auto");
+    const fallbackCanvas = canvasFor("point-40-rgba8");
+    const blur22Anisotropies = blur22Canvases.map((canvas) =>
+      angularAnisotropy(canvas, 22),
+    );
+    for (const anisotropy of blur22Anisotropies) {
+      expect(anisotropy).toBeLessThan(0.2);
+    }
+    expect(
+      Math.max(...blur22Anisotropies) - Math.min(...blur22Anisotropies),
+    ).toBeLessThan(0.1);
+    expect(angularAnisotropy(blur40Canvas, 40)).toBeLessThan(0.18);
+    expect(angularAnisotropy(fallbackCanvas, 40)).toBeLessThan(0.25);
+
+    for (const [canvas, blur] of [
+      ...blur22Canvases.map((canvas) => [canvas, 22] as const),
+      [blur40Canvas, 40],
+      [fallbackCanvas, 40],
+    ] as const) {
+      const radialProfile = [0.5, 0.75, 1, 1.25, 1.5].map((radius) =>
+        meanAngularRed(canvas, blur * radius),
+      );
+      expect(radialProfile[0]).toBeGreaterThan(radialProfile.at(-1) ?? 0);
+      for (let index = 1; index < radialProfile.length; index += 1) {
+        expect(radialProfile[index]).toBeLessThanOrEqual(
+          radialProfile[index - 1] + 2,
+        );
+      }
+    }
+
+    const blur22Stats = blurPerformanceStats(blur22FullRef);
+    const blur40Stats = blurPerformanceStats(blur40Ref);
+    const fallbackStats = blurPerformanceStats(fallbackRef);
+    expect(["rgba16f", "rgba8"]).toContain(blur22Stats.blurFormat);
+    expect(blur22Stats).toMatchObject({
+      blurTargetWidth: 70,
+      blurTargetHeight: 70,
+    });
+    expect(blur22Stats.gaussianPairCount).toBeGreaterThan(0);
+    expect(blur22Stats.gaussianPairCount).toBeLessThanOrEqual(16);
+    expect(blur40Stats).toMatchObject({
+      blurTargetWidth: 64,
+      blurTargetHeight: 64,
+    });
+    expect(blur40Stats.gaussianPairCount).toBe(15);
+    expect(fallbackStats.blurFormat).toBe("rgba8");
+    expect(fallbackStats.blurTargetWidth).toBe(64);
+    expect(fallbackStats.blurTargetHeight).toBe(64);
+  }, 30_000);
+
+  it("retries failed real-size RGBA16F blur targets as RGBA8", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const allocationAttempts: Array<"rgba16f" | "rgba8"> = [];
+    let rgba16fAttemptCount = 0;
+    _setZenMultipassFaultInjectionForTests({
+      initialBlurTargetPrecision: "rgba16f",
+      shouldFailBlurTargetAllocation: ({ precision }) => {
+        allocationAttempts.push(precision);
+        if (precision !== "rgba16f") return false;
+        rgba16fAttemptCount += 1;
+        return rgba16fAttemptCount === 2;
+      },
+    });
+    const { container } = render(
+      <DirectBlurProbe
+        name="allocation-rgba8-fallback"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={40}
+        mountRef={ref}
+      />,
+    );
+    const host = container.querySelector<HTMLElement>(
+      '[data-paper-shader="direct-blur-allocation-rgba8-fallback"]',
+    );
+    if (!host)
+      throw new Error("Blur allocation fallback probe was not mounted");
+    const contextLost = vi.fn();
+    host.addEventListener("webglcontextlost", contextLost);
+
+    await waitFor(() =>
+      expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+    );
+
+    expect(blurPerformanceStats(ref)).toMatchObject({
+      blurFormat: "rgba8",
+      blurTargetAFormat: "rgba8",
+      blurTargetBFormat: "rgba8",
+      blurTargetWidth: 64,
+      blurTargetHeight: 64,
+    });
+    expect(allocationAttempts).toEqual([
+      "rgba16f",
+      "rgba16f",
+      "rgba8",
+      "rgba8",
+    ]);
+    expect(contextLost).not.toHaveBeenCalled();
+  });
+
+  it("reports context loss when RGBA16F and RGBA8 blur targets both fail", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const allocationAttempts: Array<"rgba16f" | "rgba8"> = [];
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    _setZenMultipassFaultInjectionForTests({
+      initialBlurTargetPrecision: "rgba16f",
+      shouldFailBlurTargetAllocation: ({ precision }) => {
+        allocationAttempts.push(precision);
+        return true;
+      },
+    });
+
+    try {
+      const { container } = render(
+        <DirectBlurProbe
+          name="allocation-total-failure"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={40}
+          mountRef={ref}
+        />,
+      );
+      const host = container.querySelector<HTMLElement>(
+        '[data-paper-shader="direct-blur-allocation-total-failure"]',
+      );
+      if (!host)
+        throw new Error("Blur allocation failure probe was not mounted");
+      const contextLostEvents: Event[] = [];
+      host.addEventListener("webglcontextlost", (event) => {
+        contextLostEvents.push(event);
+      });
+
+      await waitFor(() => expect(contextLostEvents).toHaveLength(1));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      expect(contextLostEvents).toHaveLength(1);
+      expect(contextLostEvents[0]).toMatchObject({
+        bubbles: true,
+        cancelable: true,
+      });
+      expect(allocationAttempts).toEqual(["rgba16f", "rgba8"]);
+      expect(blurPerformanceStats(ref)).toMatchObject({
+        drawCount: 0,
+        blurFormat: "rgba8",
+        blurTargetWidth: 0,
+        blurTargetHeight: 0,
+        gaussianPairCount: 0,
+      });
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      const [label, error] = consoleError.mock.calls[0] ?? [];
+      expect(label).toBe("[zen-shader] multipass renderer failed");
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(
+        "RGBA16F and RGBA8 allocations failed",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("transitions the shader surface to CSS fallback after a fatal initialization failure", async () => {
+    const onRendererStatusChange = vi.fn();
+    const rollback = vi.fn();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    _setZenMultipassFaultInjectionForTests({
+      failInitializationAfterSetup: true,
+      onInitializationRollback: rollback,
+    });
+
+    try {
+      const { container } = render(
+        <div style={{ position: "relative", width: 240, height: 160 }}>
+          <ZenShaderSurface
+            config={ZEN_SHADER_DEFAULTS}
+            playing={false}
+            webGlSupported
+            webGlContextAttributes={WEBGL_ATTRIBUTES}
+            onRendererStatusChange={onRendererStatusChange}
+          />
+        </div>,
+      );
+
+      await waitFor(() =>
+        expect(onRendererStatusChange).toHaveBeenLastCalledWith(
+          "fallback-context-lost",
+        ),
+      );
+
+      const surface = container.querySelector<HTMLElement>(
+        "[data-zen-shader-surface]",
+      );
+      expect(surface).toHaveAttribute(
+        "data-zen-shader-renderer",
+        "fallback-context-lost",
+      );
+      expect(surface?.style.background).toContain("linear-gradient");
+      expect(container.querySelector("[data-paper-shader]")).toBeNull();
+      expect(container.querySelector("[data-zen-glass-compositor]")).toBeNull();
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reports one fatal failure when an asynchronous resize cannot reallocate the scene target", async () => {
+    const ref = createRef<PaperShaderElement>();
+    let failSceneAllocation = false;
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    _setZenMultipassFaultInjectionForTests({
+      shouldFailSceneTargetAllocation: () => failSceneAllocation,
+    });
+
+    try {
+      const { container } = render(
+        <ZenMultipassCanvas
+          ref={ref}
+          data-paper-shader="async-resize-failure"
+          sceneFragment={STATIC_SCENE}
+          sceneUniforms={SIZING_UNIFORMS}
+          compositeFragment={buildZenMultipassCompositeFragment(1)}
+          compositeUniforms={compositeUniforms(0, false)}
+          minPixelRatio={1}
+          maxPixelCount={128 * 128}
+          speed={0}
+          style={{ position: "relative", width: 64, height: 64 }}
+          webGlContextAttributes={WEBGL_ATTRIBUTES}
+        />,
+      );
+      const host = container.querySelector<HTMLElement>(
+        '[data-paper-shader="async-resize-failure"]',
+      );
+      if (!host) throw new Error("Async resize failure probe was not mounted");
+      const contextLostEvents: Event[] = [];
+      host.addEventListener("webglcontextlost", (event) => {
+        contextLostEvents.push(event);
+      });
+      await waitFor(() =>
+        expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+      );
+
+      failSceneAllocation = true;
+      host.style.width = "96px";
+      host.style.height = "96px";
+      window.dispatchEvent(new Event("resize"));
+
+      await waitFor(() => expect(contextLostEvents).toHaveLength(1));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      expect(contextLostEvents).toHaveLength(1);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      const error = consoleError.mock.calls[0]?.[1];
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "Unable to allocate Zen multipass scene target",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("attenuates sinusoidal gratings equally at 0, 45 and 90 degrees", async () => {
+    const frequency = (Math.PI * 2) / 96;
+    const scales = [
+      { name: "half", value: 0.5 },
+      { name: "full", value: 1 },
+      { name: "double", value: 2 },
+    ] as const;
+    const directions = [
+      { name: "0", value: [1, 0] },
+      { name: "45", value: [Math.SQRT1_2, Math.SQRT1_2] },
+      { name: "90", value: [0, 1] },
+    ] as const;
+    const { container } = render(
+      <div>
+        {scales.flatMap((scale) =>
+          directions.map((direction) => (
+            <DirectBlurProbe
+              key={`${scale.name}-${direction.name}`}
+              name={`grating-${scale.name}-${direction.name}`}
+              sceneFragment={BLUR_GRATING_SCENE}
+              sceneUniforms={{
+                ...SIZING_UNIFORMS,
+                u_probeDirection: Array.from(direction.value),
+                u_probeFrequency: frequency,
+              }}
+              blur={22}
+              renderScale={scale.value}
+            />
+          )),
+        )}
+      </div>,
+    );
+    const canvases = scales.map((scale) => ({
+      scale,
+      directions: directions.map((direction) =>
+        canvasFrom(
+          container.querySelector<HTMLElement>(
+            `[data-paper-shader="direct-blur-grating-${scale.name}-${direction.name}"]`,
+          ) ?? container,
+        ),
+      ),
+    }));
+
+    await waitFor(
+      () => {
+        for (const probe of canvases) {
+          for (const canvas of probe.directions) {
+            expect(canvas.width).toBe(256 * probe.scale.value);
+            expect(readCenterRed(canvas)).toBeGreaterThan(0);
+          }
+        }
+      },
+      { timeout: 5_000 },
+    );
+
+    const meanAmplitudes = canvases.map((probe) => {
+      const amplitudes = probe.directions.map(centralRedAmplitude);
+      const mean =
+        amplitudes.reduce((sum, amplitude) => sum + amplitude, 0) /
+        amplitudes.length;
+      expect(Math.min(...amplitudes)).toBeGreaterThan(3);
+      expect(
+        (Math.max(...amplitudes) - Math.min(...amplitudes)) / mean,
+      ).toBeLessThan(0.2);
+      return mean;
+    });
+    const crossScaleMean =
+      meanAmplitudes.reduce((sum, amplitude) => sum + amplitude, 0) /
+      meanAmplitudes.length;
+    expect(
+      (Math.max(...meanAmplitudes) - Math.min(...meanAmplitudes)) /
+        crossScaleMean,
+    ).toBeLessThan(0.25);
+  }, 30_000);
+
+  it("invalidates blur when a reused UI surface buffer starts refracting", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const surfaceBuffer = new ZenUiSurfaceUniformBuffer(1);
+    const uiSurface = {
+      rect: [0, 0, 1, 1] as [number, number, number, number],
+      feather: [0, 0, 0, 0] as [number, number, number, number],
+      cornerRadius: 0,
+    };
+    const compositeFor = (refracts: boolean) => {
+      const packed = surfaceBuffer.update([{ ...uiSurface, refracts }]);
+      return {
+        u_probeGain: 1,
+        u_zenGlassBlur: 22,
+        u_zenGlassEnabled: 1,
+        u_zenGlassRect: [0, 0, 0, 0],
+        u_zenUiSurfaceCount: packed.count,
+        "u_zenUiSurfaceRects[0]": packed.rects,
+        "u_zenUiSurfaceParams[0]": packed.params,
+      } satisfies ShaderMountUniforms;
+    };
+    const probe = (compositeUniforms: ShaderMountUniforms) => (
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="reused-surface-buffer-probe"
+        sceneFragment={BLUR_POINT_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={BLUR_PROBE_COMPOSITE}
+        compositeUniforms={compositeUniforms}
+        minPixelRatio={1}
+        maxPixelCount={256 * 256}
+        speed={0}
+        style={{ position: "relative", width: 256, height: 256 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />
+    );
+
+    const { container, rerender } = render(probe(compositeFor(false)));
+    const canvas = canvasFrom(container);
+    await waitFor(() =>
+      expect(
+        ref.current?.paperShaderMount?.getPerformanceStats(),
+      ).toMatchObject({
+        blurTargetWidth: 0,
+        gaussianPairCount: 0,
+      }),
+    );
+    const unblurredCenter = readCenterRed(canvas);
+    const previousDrawCount = blurPerformanceStats(ref).drawCount;
+
+    // `update` mutates the same Float32Arrays that the previous props hold.
+    // Blur invalidation must therefore compare against renderer-owned state.
+    rerender(probe(compositeFor(true)));
+    await waitFor(() => {
+      const stats = blurPerformanceStats(ref);
+      expect(stats.drawCount).toBeGreaterThan(previousDrawCount);
+      expect(stats.blurTargetWidth).toBeGreaterThan(0);
+      expect(stats.gaussianPairCount).toBeGreaterThan(0);
+    });
+    expect(readCenterRed(canvas)).toBeLessThan(unblurredCenter - 20);
+  });
 
   it("allocates fresh render targets when Strict Mode replays initialization", async () => {
     const ref = createRef<PaperShaderElement>();
@@ -352,6 +1143,70 @@ describe("ZenMultipassCanvas live updates", () => {
       ).toBeGreaterThan(0),
     );
     expect(readCenterRed(canvas)).toBeGreaterThan(0);
+  });
+
+  it("rolls back constructor resources and reports one failure when Strict Mode replays initialization", async () => {
+    const rollback = vi.fn();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame");
+    const disconnectObserver = vi.spyOn(ResizeObserver.prototype, "disconnect");
+    const removeWindowListener = vi.spyOn(window, "removeEventListener");
+    _setZenMultipassFaultInjectionForTests({
+      failInitializationAfterSetup: true,
+      onInitializationRollback: rollback,
+    });
+
+    try {
+      const { container } = render(
+        <StrictMode>
+          <ZenMultipassCanvas
+            data-paper-shader="strict-mode-constructor-failure"
+            sceneFragment={STATIC_SCENE}
+            sceneUniforms={SIZING_UNIFORMS}
+            compositeFragment={buildZenMultipassCompositeFragment(1)}
+            compositeUniforms={compositeUniforms(0, false)}
+            minPixelRatio={1}
+            maxPixelCount={64 * 64}
+            speed={0}
+            style={{ position: "relative", width: 64, height: 64 }}
+            webGlContextAttributes={WEBGL_ATTRIBUTES}
+          />
+        </StrictMode>,
+      );
+      const host = container.querySelector<PaperShaderElement>(
+        '[data-paper-shader="strict-mode-constructor-failure"]',
+      );
+      if (!host)
+        throw new Error(
+          "Strict Mode constructor failure probe was not mounted",
+        );
+      const contextLostEvents: Event[] = [];
+      host.addEventListener("webglcontextlost", (event) => {
+        contextLostEvents.push(event);
+      });
+
+      await waitFor(() => expect(contextLostEvents).toHaveLength(1));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      expect(rollback).toHaveBeenCalledTimes(2);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      expect(contextLostEvents).toHaveLength(1);
+      expect(host.paperShaderMount).toBeUndefined();
+      expect(cancelFrame.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(disconnectObserver.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(
+        removeWindowListener.mock.calls.filter(([type]) => type === "resize"),
+      ).toHaveLength(2);
+    } finally {
+      removeWindowListener.mockRestore();
+      disconnectObserver.mockRestore();
+      cancelFrame.mockRestore();
+      consoleError.mockRestore();
+    }
   });
 
   it("advances the Paper scene while speed is positive", async () => {

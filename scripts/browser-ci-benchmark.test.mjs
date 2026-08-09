@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   aggregateProcessTree,
+  buildBenchmarkConfiguration,
   buildVitestCommand,
   estimateSplitImpact,
   measureCommand,
@@ -36,6 +37,36 @@ test("buildVitestCommand keeps the baseline automatic and exposes measured candi
     executable: "pnpm",
     args: ["test:storybook", "--run", "--maxWorkers=2"],
   });
+  assert.deepEqual(
+    buildVitestCommand({
+      suite: "webgl",
+      fileParallelism: false,
+      maxWorkers: 1,
+    }),
+    {
+      executable: "pnpm",
+      args: [
+        "test:webgl",
+        "--run",
+        "--browser.fileParallelism=false",
+        "--maxWorkers=1",
+      ],
+    },
+  );
+
+  assert.deepEqual(
+    buildBenchmarkConfiguration({
+      fileParallelism: false,
+      maxWorkers: 1,
+    }),
+    {
+      fileParallelism: false,
+      maxWorkers: 1,
+      shard: null,
+      retry: 0,
+      collectPss: false,
+    },
+  );
 
   assert.throws(() => buildVitestCommand({ suite: "unit" }), /suite/);
   assert.throws(
