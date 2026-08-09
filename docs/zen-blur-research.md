@@ -1,8 +1,9 @@
 # Zen blur research runner
 
 This runner compares internal blur and noise candidates without exposing them
-as user settings. The normal renderer remains `gaussian-current` unless a
-research build or this dedicated command supplies another backend.
+as user settings. The normal renderer has a static Gaussian-only import graph;
+it does not read `VITE_ZEN_*` research settings and cannot select a rejected
+backend. Only this dedicated command mounts `ZenBlurResearchCanvas`.
 
 ## Run a candidate
 
@@ -49,6 +50,24 @@ candidate semantics, mismatched sample count, or non-JSON value fails the run
 instead of emitting partial data. A failed rerun leaves the previous output
 artifact intact; staged output is promoted only after the child succeeds and
 the JSON parses.
+
+## Runtime isolation
+
+Production `ZenShaderSurface` mounts `ZenMultipassCanvas`, which contains the
+current #489 Gaussian pipeline only. GPU timing is dormant by default:
+
+- no `EXT_disjoint_timer_query_webgl2` probe;
+- no `WEBGL_debug_renderer_info` probe;
+- no `ZenGpuTimerSampler` construction; and
+- no raw GPU or CPU timing-history arrays.
+
+An internal caller can explicitly supply `gpuTimingOptions` when diagnosing
+the production Gaussian pipeline. The application surface does not do so.
+`research:zen-blur` supplies an explicit non-off timing mode to the separate
+`ZenBlurResearchCanvas`, which owns Dual Kawase, display-noise, RGBA8-dither,
+GPU metadata, and raw-report code. The research canvas imports
+`zenBlurResearchPipeline`; production imports `zenMultipassPipeline`, whose
+GLSL contains none of the research noise or dither uniforms.
 
 ## Artifact contents
 

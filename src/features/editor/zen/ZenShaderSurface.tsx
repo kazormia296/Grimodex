@@ -19,16 +19,11 @@ import {
   buildZenMultipassSceneFragment,
   buildZenMultipassSceneUniforms,
 } from "./zenMultipassPipeline";
-import { resolveZenBlurResearchOptions } from "./zenBlurResearchConfig";
 
 const PREVIEW_PIXEL_BUDGET = 300_000;
 const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;
 const LIVE_BACKGROUND_MIN_PIXEL_RATIO = 1;
 const INITIAL_UI_SURFACE_CAPACITY = 16;
-const ZEN_BLUR_RESEARCH_OPTIONS = resolveZenBlurResearchOptions(
-  import.meta.env,
-);
-const ZEN_BLUR_RESEARCH_MOUNT_KEY = JSON.stringify(ZEN_BLUR_RESEARCH_OPTIONS);
 const LIVE_WEBGL_CONTEXT_ATTRIBUTES = {
   alpha: true,
   antialias: false,
@@ -122,7 +117,7 @@ export function ZenShaderSurface({
     [config, layouts, palette, surfaceUniformBuffer],
   );
 
-  const mountKey = `${config.shader}:${uiSurfaceCapacity}:${ZEN_BLUR_RESEARCH_MOUNT_KEY}`;
+  const mountKey = `${config.shader}:${uiSurfaceCapacity}`;
   const definition = getPaperShaderDefinition(config.shader);
   const [readyMountKey, setReadyMountKey] = useState<string | null>(null);
   const [lostMountKey, setLostMountKey] = useState<string | null>(null);
@@ -257,7 +252,6 @@ export function ZenShaderSurface({
           minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
           maxPixelCount={maxPixelCount}
           webGlContextAttributes={webGlContextAttributes}
-          researchOptions={ZEN_BLUR_RESEARCH_OPTIONS}
           className="pointer-events-none absolute inset-0 overflow-hidden"
         />
       )}

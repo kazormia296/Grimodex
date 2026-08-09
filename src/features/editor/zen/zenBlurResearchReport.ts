@@ -1,7 +1,7 @@
 import type {
   ZenMultipassPerformanceReport,
   ZenTimingPercentiles,
-} from "./ZenMultipassCanvas";
+} from "./ZenBlurResearchCanvas";
 import type { ZenGpuPass, ZenGpuPassTimingSummary } from "./zenGpuTimerSampler";
 import type { ZenWebGlMetadata } from "./zenWebGlDiagnostics";
 

@@ -7,8 +7,11 @@ export type ZenGpuPass =
   | "kawaseUp"
   | "composite";
 
-export type ZenGpuTimingMode = "pass-breakdown" | "frame" | "blur";
-export type ZenGpuTimingScope = Exclude<ZenGpuTimingMode, "pass-breakdown">;
+export type ZenGpuTimingMode = "off" | "pass-breakdown" | "frame" | "blur";
+export type ZenGpuTimingScope = Exclude<
+  ZenGpuTimingMode,
+  "off" | "pass-breakdown"
+>;
 
 export type ZenGpuTimingStatus =
   | "unsupported"
@@ -130,7 +133,8 @@ const normalizeMeasurementMode = (
   value: ZenGpuTimingMode | undefined,
 ): ZenGpuTimingMode => {
   const candidate = value ?? DEFAULT_MEASUREMENT_MODE;
-  return candidate === "frame" ||
+  return candidate === "off" ||
+    candidate === "frame" ||
     candidate === "blur" ||
     candidate === "pass-breakdown"
     ? candidate
@@ -272,7 +276,9 @@ export class ZenGpuTimerSampler {
   }
 
   beginFrame(drawCount: number): boolean {
-    if (this.disposed || !this.backend) return false;
+    if (this.measurementMode === "off" || this.disposed || !this.backend) {
+      return false;
+    }
 
     if (this.currentFrame) this.abandonCurrentFrame("error");
     if (this.pendingSamples.length > 0) this.poll();
