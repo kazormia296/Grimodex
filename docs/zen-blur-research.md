@@ -87,6 +87,25 @@ The output directory `.artifacts/` is intentionally ignored by Git. Attach raw
 artifacts to the research PR or benchmark record rather than committing several
 thousand frame samples to the repository.
 
+### PR evidence bundles
+
+The PR review evidence is packaged as two deterministic ZIP archives:
+
+- `zen-blur-pr-492-performance.zip` (597,946 bytes), SHA-256
+  `b97f755b4d460e6682255a60c1767b3b3caa6187b80342b9800f2c1ed3db9d22`.
+  It contains the 13 raw benchmark JSON artifacts (39,000 GPU and 39,000
+  CPU-submit samples), plus a manifest and per-entry checksums. The measurement
+  source revision is `bc7124862c73a7d7e5bd71c406554c704b456c1d`.
+- `zen-blur-pr-492-quality.zip` (101,819 bytes), SHA-256
+  `a5e08ab493847469aaa0194c4df451c45bcb7ef98c781ab095a2871f1c1c66f9`.
+  It contains all 78 quality-sweep rows as JSON and CSV, 390 radial-profile
+  rows, and four 256 x 256 PSF PNGs for the Gaussian and sigma-matched planned
+  Dual Kawase candidates at 22px and 40px. The production source revision is
+  `31efdd792d9bc7a417d19242112b43d16d5a2e5b` with no tracked dirty paths.
+
+Both archives use a fixed ZIP timestamp, sorted entries, and embedded SHA-256
+manifests. Rebuilding each archive twice produced byte-identical output.
+
 ## Verified RTX 2070 SUPER run — 2026-08-09
 
 Source revision: `bc7124862c73a7d7e5bd71c406554c704b456c1d`, with
@@ -127,14 +146,16 @@ quality gates:
 
 | Blur | Candidate       |  Sigma | Anisotropy (limit) | Side peak | Continuity                                        | Result |
 | ---: | --------------- | -----: | -----------------: | --------: | ------------------------------------------------- | ------ |
-|   22 | planned p1/o2.5 | 22.191 |       1.268 (0.20) |    +21.38 | 21/22/23px increments differ by 1.024 (limit 0.8) | Fail   |
-|   40 | planned p1/o4.0 | 38.857 |       3.318 (0.18) |    +18.75 | 39/40/41px sigma plateaus at 38.857               | Fail   |
+|   22 | planned p1/o2.5 | 22.191 |       1.268 (0.20) |   +36.625 | 21/22/23px increments differ by 1.024 (limit 0.8) | Fail   |
+|   40 | planned p1/o4.0 | 38.857 |       3.318 (0.18) |    +22.75 | 39/40/41px sigma plateaus at 38.857               | Fail   |
 
-Both candidates had non-monotonic radial profiles. The 40px candidate also
-produced a terrace. RGBA8 repeated the same failures (anisotropy 1.261 and
-3.313), showing that the artifact comes from the kernel rather than the
-intermediate texture precision. Matching sigma alone therefore does not make
-either candidate visually equivalent to the current Gaussian.
+Both candidates had non-monotonic radial profiles. The 40px continuity helper
+returns true only because all three radii produce exactly the same sigma; that
+plateau is a lack of response to the requested radius, not evidence of
+continuity. RGBA8 repeated the same failures (anisotropy 1.261 and 3.313),
+showing that the artifact comes from the kernel rather than the intermediate
+texture precision. Matching sigma alone therefore does not make either
+candidate visually equivalent to the current Gaussian.
 
 ### Dual Kawase diagnostic performance
 
