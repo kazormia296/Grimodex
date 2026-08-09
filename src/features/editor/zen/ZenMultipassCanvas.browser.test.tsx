@@ -11,14 +11,39 @@ import {
   _setZenMultipassFaultInjectionForTests,
   ZenMultipassCanvas,
 } from "./ZenMultipassCanvas";
+import { ZenBlurResearchCanvas } from "./ZenBlurResearchCanvas";
 import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenPostProcessRuntime } from "./zenPostProcessing";
-import type { ZenGpuTimerBackend } from "./zenGpuTimerSampler";
+import type {
+  ZenGpuTimerBackend,
+  ZenGpuTimerSamplerOptions,
+} from "./zenGpuTimerSampler";
 import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
 } from "./zenMultipassPipeline";
+import { buildZenMultipassCompositeFragment as buildZenBlurResearchCompositeFragment } from "./zenBlurResearchPipeline";
+
+const gpuTimerLifecycle = vi.hoisted(() => ({
+  samplerConstructionCount: 0,
+}));
+
+vi.mock("./zenGpuTimerSampler", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("./zenGpuTimerSampler")>();
+  return {
+    ...original,
+    ZenGpuTimerSampler: class extends original.ZenGpuTimerSampler {
+      constructor(
+        ...args: ConstructorParameters<typeof original.ZenGpuTimerSampler>
+      ) {
+        super(...args);
+        gpuTimerLifecycle.samplerConstructionCount += 1;
+      }
+    },
+  };
+});
 
 const shaderLayouts = vi.hoisted(() => ({
   current: {
@@ -49,6 +74,7 @@ vi.mock("./zenThemePalette", () => ({
 
 afterEach(() => {
   _setZenMultipassFaultInjectionForTests(null);
+  gpuTimerLifecycle.samplerConstructionCount = 0;
 });
 
 class ManualAnimationFrames {
@@ -239,6 +265,11 @@ const FULL_GLASS_RUNTIME: ZenPostProcessRuntime = {
   glassRect: [0, 0, 1, 1],
 } as const;
 
+const HALF_GLASS_RUNTIME: ZenPostProcessRuntime = {
+  ...RUNTIME,
+  glassRect: [0, 0, 0.5, 1],
+} as const;
+
 const SURFACE_PROBE_WIDTH = 256;
 const SURFACE_PROBE_HEIGHT = 128;
 const SURFACE_PROBE_RECT = [0.25, 0.2, 0.5, 0.8] as const;
@@ -382,6 +413,30 @@ function blurCompositeUniforms(blur: number) {
   );
 }
 
+function halfGlassCompositeUniforms() {
+  return buildZenMultipassCompositeUniforms(
+    {
+      ...ZEN_SHADER_DEFAULTS,
+      opacity: 100,
+      glass: {
+        ...ZEN_SHADER_DEFAULTS.glass,
+        enabled: true,
+        blur: 0,
+        saturation: 1,
+        refraction: 0,
+        shine: 0,
+      },
+      contrastGuard: {
+        mode: "none",
+        strength: 0,
+        toolMix: 0,
+      },
+    },
+    HALF_GLASS_RUNTIME,
+    new ZenUiSurfaceUniformBuffer(1),
+  );
+}
+
 function BlurProbe({
   name,
   blur,
@@ -415,6 +470,80 @@ function BlurProbe({
 
 type BlurTargetPrecision = "auto" | "rgba8";
 
+type ZenBlurBackend =
+  | "gaussian-current"
+  | "dual-kawase-canonical"
+  | "dual-kawase-planned";
+
+interface ZenBlurResearchOptions {
+  backend: ZenBlurBackend;
+  dualKawase: {
+    passes: number;
+    offset: number;
+  };
+  displayNoise: {
+    mode: "none" | "procedural-white";
+    strength: number;
+    seed: number;
+  };
+  rgba8Dither: {
+    strength: number;
+    seed: number;
+  };
+  gpuTiming: {
+    measurementMode: "off" | "pass-breakdown" | "frame" | "blur";
+    sampleIntervalDraws: number;
+    maxPendingSamples: number;
+    maxRecordedSamples: number;
+  };
+}
+
+type ZenBlurResearchOverrides = {
+  backend?: ZenBlurBackend;
+  dualKawase?: Partial<ZenBlurResearchOptions["dualKawase"]>;
+  displayNoise?: Partial<ZenBlurResearchOptions["displayNoise"]>;
+  rgba8Dither?: Partial<ZenBlurResearchOptions["rgba8Dither"]>;
+  gpuTiming?: Partial<ZenBlurResearchOptions["gpuTiming"]>;
+};
+
+const DEFAULT_RESEARCH_OPTIONS: ZenBlurResearchOptions = {
+  backend: "gaussian-current",
+  dualKawase: { passes: 3, offset: 3 },
+  displayNoise: { mode: "none", strength: 0, seed: 0 },
+  rgba8Dither: { strength: 0, seed: 0 },
+  gpuTiming: {
+    measurementMode: "off",
+    sampleIntervalDraws: 30,
+    maxPendingSamples: 1,
+    maxRecordedSamples: 600,
+  },
+};
+
+function zenBlurResearchOptions(
+  overrides: ZenBlurResearchOverrides = {},
+): ZenBlurResearchOptions {
+  return {
+    ...DEFAULT_RESEARCH_OPTIONS,
+    ...overrides,
+    dualKawase: {
+      ...DEFAULT_RESEARCH_OPTIONS.dualKawase,
+      ...overrides.dualKawase,
+    },
+    displayNoise: {
+      ...DEFAULT_RESEARCH_OPTIONS.displayNoise,
+      ...overrides.displayNoise,
+    },
+    rgba8Dither: {
+      ...DEFAULT_RESEARCH_OPTIONS.rgba8Dither,
+      ...overrides.rgba8Dither,
+    },
+    gpuTiming: {
+      ...DEFAULT_RESEARCH_OPTIONS.gpuTiming,
+      ...overrides.gpuTiming,
+    },
+  };
+}
+
 function DirectBlurProbe({
   name,
   sceneFragment,
@@ -427,6 +556,7 @@ function DirectBlurProbe({
   height = 256,
   speed = 0,
   mountRef,
+  gpuTimingOptions,
 }: {
   name: string;
   sceneFragment: string;
@@ -439,6 +569,7 @@ function DirectBlurProbe({
   height?: number;
   speed?: number;
   mountRef?: RefObject<PaperShaderElement | null>;
+  gpuTimingOptions?: ZenGpuTimerSamplerOptions;
 }) {
   return (
     <ZenMultipassCanvas
@@ -455,8 +586,61 @@ function DirectBlurProbe({
         u_zenUiSurfaceCount: 0,
       }}
       blurTargetPrecision={blurTargetPrecision}
+      gpuTimingOptions={gpuTimingOptions}
       minPixelRatio={Math.max(1, renderScale)}
       maxPixelCount={width * height * renderScale * renderScale}
+      speed={speed}
+      style={{ position: "relative", width, height }}
+      webGlContextAttributes={WEBGL_ATTRIBUTES}
+    />
+  );
+}
+
+function ResearchBlurProbe({
+  name,
+  sceneFragment,
+  sceneUniforms = SIZING_UNIFORMS,
+  blur,
+  gain = 1,
+  renderScale = 1,
+  blurTargetPrecision = "auto",
+  width = 256,
+  height = 256,
+  speed = 0,
+  mountRef,
+  researchOptions,
+}: {
+  name: string;
+  sceneFragment: string;
+  sceneUniforms?: ShaderMountUniforms;
+  blur: number;
+  gain?: number;
+  renderScale?: number;
+  blurTargetPrecision?: BlurTargetPrecision;
+  width?: number;
+  height?: number;
+  speed?: number;
+  mountRef?: RefObject<PaperShaderElement | null>;
+  researchOptions: ZenBlurResearchOptions;
+}) {
+  return (
+    <ZenBlurResearchCanvas
+      ref={mountRef}
+      data-paper-shader={`direct-blur-${name}`}
+      sceneFragment={sceneFragment}
+      sceneUniforms={sceneUniforms}
+      compositeFragment={BLUR_PROBE_COMPOSITE}
+      compositeUniforms={{
+        u_probeGain: gain,
+        u_zenGlassBlur: blur,
+        u_zenGlassEnabled: 1,
+        u_zenGlassRect: [0, 0, 1, 1],
+        u_zenUiSurfaceCount: 0,
+      }}
+      blurTargetPrecision={blurTargetPrecision}
+      minPixelRatio={Math.max(1, renderScale)}
+      maxPixelCount={width * height * renderScale * renderScale}
+      researchOptions={researchOptions}
       speed={speed}
       style={{ position: "relative", width, height }}
       webGlContextAttributes={WEBGL_ATTRIBUTES}
@@ -476,6 +660,22 @@ function readPixel(canvas: HTMLCanvasElement, x: number, y: number) {
   const pixel = new Uint8Array(4);
   gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
   return pixel;
+}
+
+function readCanvasPixels(canvas: HTMLCanvasElement) {
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 context is unavailable");
+  const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+  gl.readPixels(
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    pixels,
+  );
+  return pixels;
 }
 
 function readCenterPixel(canvas: HTMLCanvasElement) {
@@ -590,12 +790,25 @@ function centralRedAmplitude(canvas: HTMLCanvasElement) {
 
 interface BlurPerformanceStats {
   drawCount: number;
+  backend: ZenBlurBackend;
   blurFormat: "rgba16f" | "rgba8";
   blurTargetAFormat: "rgba16f" | "rgba8";
   blurTargetBFormat: "rgba16f" | "rgba8";
   blurTargetWidth: number;
   blurTargetHeight: number;
   gaussianPairCount: number;
+  kawaseDownsamplePassCount: number;
+  kawaseUpsamplePassCount: number;
+  blurTargetLevels: Array<{
+    level: number;
+    width: number;
+    height: number;
+    format: "rgba16f" | "rgba8";
+    bytes: number;
+  }>;
+  intermediateTextureBytes: number;
+  displayNoise: ZenBlurResearchOptions["displayNoise"];
+  rgba8Dither: ZenBlurResearchOptions["rgba8Dither"];
 }
 
 interface MultipassPerformanceStats extends BlurPerformanceStats {
@@ -605,6 +818,8 @@ interface MultipassPerformanceStats extends BlurPerformanceStats {
     downsample: number;
     gaussianHorizontal: number;
     gaussianVertical: number;
+    kawaseDown: number;
+    kawaseUp: number;
     composite: number;
   } | null;
   gpuTimingStatus: string;
@@ -613,6 +828,36 @@ interface MultipassPerformanceStats extends BlurPerformanceStats {
   gpuTimeMs: number | null;
   sceneTargetWidth: number;
   sceneTargetHeight: number;
+}
+
+interface ZenBlurPerformanceReport {
+  schemaVersion: 1;
+  capturedAtEpochMs: number;
+  backend: ZenBlurBackend;
+  gpuTimingMode: ZenBlurResearchOptions["gpuTiming"]["measurementMode"];
+  researchOptions: ZenBlurResearchOptions;
+  gpuMetadata: {
+    vendor: string | null;
+    renderer: string | null;
+    unmaskedVendor: string | null;
+    unmaskedRenderer: string | null;
+    version: string | null;
+    shadingLanguageVersion: string | null;
+    maxTextureSize: number | null;
+    maxTextureImageUnits: number | null;
+    userAgent: string | null;
+    platform: string | null;
+  };
+  performanceStats: BlurPerformanceStats;
+  gpuBenchmark: { samples: unknown[]; summary: unknown };
+  cpuSubmit: {
+    samples: Array<{
+      drawCount: number;
+      drawCallCount: number;
+      cpuSubmitTimeMs: number;
+    }>;
+    summary: null | { p50: number; p95: number; p99: number };
+  };
 }
 
 function blurPerformanceStats(ref: RefObject<PaperShaderElement | null>) {
@@ -629,18 +874,41 @@ function multipassPerformanceStats(ref: RefObject<PaperShaderElement | null>) {
   return stats as unknown as MultipassPerformanceStats;
 }
 
+function blurPerformanceReport(ref: RefObject<PaperShaderElement | null>) {
+  const mount = ref.current?.paperShaderMount as
+    | (NonNullable<PaperShaderElement["paperShaderMount"]> & {
+        getPerformanceReport(): ZenBlurPerformanceReport;
+      })
+    | undefined;
+  if (!mount)
+    throw new Error("Zen multipass performance report is unavailable");
+  return mount.getPerformanceReport();
+}
+
+type TimedDrawOperation = "query-begin" | "draw" | "query-end";
+
 class ImmediateGpuTimerBackend implements ZenGpuTimerBackend<number> {
   private nextQuery = 0;
   disjointCheckCount = 0;
+
+  constructor(private readonly timedDrawOperations?: TimedDrawOperation[]) {}
+
+  get createdQueryCount() {
+    return this.nextQuery;
+  }
 
   createQuery() {
     this.nextQuery += 1;
     return this.nextQuery;
   }
 
-  beginQuery() {}
+  beginQuery() {
+    this.timedDrawOperations?.push("query-begin");
+  }
 
-  endQuery() {}
+  endQuery() {
+    this.timedDrawOperations?.push("query-end");
+  }
 
   isResultAvailable() {
     return true;
@@ -660,6 +928,17 @@ class ImmediateGpuTimerBackend implements ZenGpuTimerBackend<number> {
   isContextLost() {
     return false;
   }
+}
+
+function trackDrawOperations(
+  gl: WebGL2RenderingContext,
+  operations: TimedDrawOperation[],
+) {
+  const drawArrays = gl.drawArrays.bind(gl);
+  gl.drawArrays = (mode, first, count) => {
+    operations.push("draw");
+    drawArrays(mode, first, count);
+  };
 }
 
 async function loadVerticalStepImage() {
@@ -1856,6 +2135,7 @@ describe("ZenMultipassCanvas live updates", () => {
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
         mountRef={ref}
+        gpuTimingOptions={{ measurementMode: "pass-breakdown" }}
       />,
     );
     const canvas = canvasFrom(container);
@@ -1902,6 +2182,7 @@ describe("ZenMultipassCanvas live updates", () => {
         }}
         minPixelRatio={1}
         maxPixelCount={64 * 64}
+        gpuTimingOptions={{ measurementMode: "pass-breakdown" }}
         speed={0}
         style={{ position: "relative", width: 64, height: 64 }}
         webGlContextAttributes={WEBGL_ATTRIBUTES}
@@ -2198,5 +2479,657 @@ describe("ZenMultipassCanvas live updates", () => {
         4.45 * 0.05,
       );
     });
+  });
+});
+
+function ResearchNoiseProbe({
+  name,
+  researchOptions,
+  mountRef,
+}: {
+  name: string;
+  researchOptions: ZenBlurResearchOptions;
+  mountRef: RefObject<PaperShaderElement | null>;
+}) {
+  return (
+    <ZenBlurResearchCanvas
+      ref={mountRef}
+      data-paper-shader={`research-noise-${name}`}
+      sceneFragment={STATIC_SCENE}
+      sceneUniforms={SIZING_UNIFORMS}
+      compositeFragment={buildZenBlurResearchCompositeFragment(1)}
+      compositeUniforms={halfGlassCompositeUniforms()}
+      blurTargetPrecision="rgba8"
+      minPixelRatio={1}
+      maxPixelCount={64 * 64}
+      researchOptions={researchOptions}
+      speed={0}
+      style={{ position: "relative", width: 64, height: 64 }}
+      webGlContextAttributes={WEBGL_ATTRIBUTES}
+    />
+  );
+}
+
+describe("ZenMultipassCanvas default diagnostics", () => {
+  it("does not create timing or unmasked-metadata diagnostics by default", async () => {
+    const extensionProbe = vi.spyOn(
+      WebGL2RenderingContext.prototype,
+      "getExtension",
+    );
+    const ref = createRef<PaperShaderElement>();
+    try {
+      render(
+        <DirectBlurProbe
+          name="normal-default"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          blurTargetPrecision="rgba8"
+          mountRef={ref}
+        />,
+      );
+
+      await waitFor(() =>
+        expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+      );
+
+      expect(gpuTimerLifecycle.samplerConstructionCount).toBe(0);
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("EXT_disjoint_timer_query_webgl2");
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("WEBGL_debug_renderer_info");
+      expect(multipassPerformanceStats(ref)).toMatchObject({
+        gpuTimeMs: null,
+        gpuPassTimesMs: null,
+        gpuTimingStatus: "idle",
+        gpuTimingSampleCount: 0,
+        gpuTimingSampleDrawCount: null,
+      });
+    } finally {
+      extensionProbe.mockRestore();
+    }
+  });
+});
+
+function expectKawaseLevelStats(
+  stats: BlurPerformanceStats,
+  expectedDimensions: ReadonlyArray<readonly [number, number]>,
+  format: "rgba16f" | "rgba8",
+) {
+  const bytesPerPixel = format === "rgba16f" ? 8 : 4;
+  expect(stats.blurTargetLevels).toHaveLength(expectedDimensions.length);
+  stats.blurTargetLevels.forEach((level, index) => {
+    const [width, height] = expectedDimensions[index] ?? [];
+    expect(level).toEqual({
+      level: index,
+      width,
+      height,
+      format,
+      bytes: (width ?? 0) * (height ?? 0) * bytesPerPixel,
+    });
+  });
+  expect(stats.intermediateTextureBytes).toBe(
+    expectedDimensions.reduce(
+      (total, [width, height]) => total + width * height * bytesPerPixel,
+      0,
+    ),
+  );
+}
+
+describe("ZenBlurResearchCanvas research options", () => {
+  it("keeps timing diagnostics dormant for explicit default research options", async () => {
+    const extensionProbe = vi.spyOn(
+      WebGL2RenderingContext.prototype,
+      "getExtension",
+    );
+    const ref = createRef<PaperShaderElement>();
+    try {
+      render(
+        <ResearchBlurProbe
+          name="research-default"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          blurTargetPrecision="rgba8"
+          mountRef={ref}
+          researchOptions={zenBlurResearchOptions()}
+        />,
+      );
+
+      await waitFor(() =>
+        expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+      );
+
+      expect(blurPerformanceStats(ref)).toMatchObject({
+        backend: "gaussian-current",
+        gaussianPairCount: 9,
+        kawaseDownsamplePassCount: 0,
+        kawaseUpsamplePassCount: 0,
+        displayNoise: { mode: "none", strength: 0, seed: 0 },
+        rgba8Dither: { strength: 0, seed: 0 },
+      });
+      expect(gpuTimerLifecycle.samplerConstructionCount).toBe(0);
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("EXT_disjoint_timer_query_webgl2");
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("WEBGL_debug_renderer_info");
+      expect(blurPerformanceReport(ref)).toMatchObject({
+        gpuTimingMode: "off",
+        researchOptions: { gpuTiming: { measurementMode: "off" } },
+        gpuMetadata: {
+          unmaskedVendor: null,
+          unmaskedRenderer: null,
+        },
+        gpuBenchmark: { samples: [], summary: null },
+      });
+    } finally {
+      extensionProbe.mockRestore();
+    }
+  });
+
+  it("runs planned Dual Kawase after one existing prefilter and aggregates level timings", async () => {
+    const timerBackend = new ImmediateGpuTimerBackend();
+    _setZenMultipassFaultInjectionForTests({
+      createGpuTimerBackend: () => timerBackend,
+    });
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <ResearchBlurProbe
+        name="research-kawase-planned"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          backend: "dual-kawase-planned",
+          dualKawase: { passes: 3, offset: 2.5 },
+          gpuTiming: { measurementMode: "pass-breakdown" },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(multipassPerformanceStats(ref).gpuTimingStatus).toBe("ready"),
+    );
+
+    const stats = multipassPerformanceStats(ref);
+    expect(stats).toMatchObject({
+      backend: "dual-kawase-planned",
+      drawCallCount: 9,
+      blurTargetWidth: 70,
+      blurTargetHeight: 70,
+      gaussianPairCount: 0,
+      kawaseDownsamplePassCount: 3,
+      kawaseUpsamplePassCount: 3,
+      gpuTimeMs: 45,
+      gpuPassTimesMs: {
+        scene: 1,
+        downsample: 2,
+        gaussianHorizontal: 0,
+        gaussianVertical: 0,
+        kawaseDown: 12,
+        kawaseUp: 21,
+        composite: 9,
+      },
+    });
+    expectKawaseLevelStats(
+      stats,
+      [
+        [70, 70],
+        [35, 35],
+        [18, 18],
+        [9, 9],
+      ],
+      "rgba8",
+    );
+  });
+
+  it("measures every dirty draw with one frame-wide GPU query in frame mode", async () => {
+    const operations: TimedDrawOperation[] = [];
+    const timerBackend = new ImmediateGpuTimerBackend(operations);
+    _setZenMultipassFaultInjectionForTests({
+      createGpuTimerBackend: (gl) => {
+        trackDrawOperations(gl, operations);
+        return timerBackend;
+      },
+    });
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <ResearchBlurProbe
+        name="research-frame-timing"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          gpuTiming: {
+            measurementMode: "frame",
+            sampleIntervalDraws: 1,
+            maxPendingSamples: 4,
+          },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(multipassPerformanceStats(ref).gpuTimingStatus).toBe("ready"),
+    );
+
+    expect(timerBackend.createdQueryCount).toBe(1);
+    expect(operations).toEqual([
+      "query-begin",
+      "draw",
+      "draw",
+      "draw",
+      "draw",
+      "draw",
+      "query-end",
+    ]);
+    expect(multipassPerformanceStats(ref)).toMatchObject({
+      drawCallCount: 5,
+      gpuTimeMs: 1,
+      gpuPassTimesMs: {
+        scene: 0,
+        downsample: 0,
+        gaussianHorizontal: 0,
+        gaussianVertical: 0,
+        kawaseDown: 0,
+        kawaseUp: 0,
+        composite: 0,
+      },
+    });
+    expect(blurPerformanceReport(ref).gpuBenchmark.samples).toEqual([
+      expect.objectContaining({
+        drawCount: 1,
+        gpuTimeMs: 1,
+        blurGpuTimeMs: 0,
+        gpuPassTimesMs: {
+          scene: 0,
+          downsample: 0,
+          gaussianHorizontal: 0,
+          gaussianVertical: 0,
+          kawaseDown: 0,
+          kawaseUp: 0,
+          composite: 0,
+        },
+      }),
+    ]);
+  });
+
+  it("measures the complete blur pipeline with one GPU query in blur mode", async () => {
+    const operations: TimedDrawOperation[] = [];
+    const timerBackend = new ImmediateGpuTimerBackend(operations);
+    _setZenMultipassFaultInjectionForTests({
+      createGpuTimerBackend: (gl) => {
+        trackDrawOperations(gl, operations);
+        return timerBackend;
+      },
+    });
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <ResearchBlurProbe
+        name="research-blur-timing"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          gpuTiming: {
+            measurementMode: "blur",
+            sampleIntervalDraws: 1,
+            maxPendingSamples: 4,
+          },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(multipassPerformanceStats(ref).gpuTimingStatus).toBe("ready"),
+    );
+
+    expect(timerBackend.createdQueryCount).toBe(1);
+    expect(operations).toEqual([
+      "draw",
+      "query-begin",
+      "draw",
+      "draw",
+      "draw",
+      "query-end",
+      "draw",
+    ]);
+    expect(multipassPerformanceStats(ref)).toMatchObject({
+      drawCallCount: 5,
+      gpuTimeMs: 1,
+      gpuPassTimesMs: {
+        scene: 0,
+        downsample: 0,
+        gaussianHorizontal: 0,
+        gaussianVertical: 0,
+        kawaseDown: 0,
+        kawaseUp: 0,
+        composite: 0,
+      },
+    });
+    expect(blurPerformanceReport(ref).gpuBenchmark.samples).toEqual([
+      expect.objectContaining({
+        drawCount: 1,
+        gpuTimeMs: 1,
+        blurGpuTimeMs: 1,
+        gpuPassTimesMs: {
+          scene: 0,
+          downsample: 0,
+          gaussianHorizontal: 0,
+          gaussianVertical: 0,
+          kawaseDown: 0,
+          kawaseUp: 0,
+          composite: 0,
+        },
+      }),
+    ]);
+  });
+
+  it("starts canonical Dual Kawase at scene resolution without the #489 prefilter", async () => {
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <ResearchBlurProbe
+        name="research-kawase-canonical"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          backend: "dual-kawase-canonical",
+          dualKawase: { passes: 3, offset: 3 },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+    );
+
+    const stats = multipassPerformanceStats(ref);
+    expect(stats).toMatchObject({
+      backend: "dual-kawase-canonical",
+      drawCallCount: 8,
+      blurTargetWidth: 256,
+      blurTargetHeight: 256,
+      gaussianPairCount: 0,
+      kawaseDownsamplePassCount: 3,
+      kawaseUpsamplePassCount: 3,
+    });
+    expectKawaseLevelStats(
+      stats,
+      [
+        [256, 256],
+        [128, 128],
+        [64, 64],
+        [32, 32],
+      ],
+      "rgba8",
+    );
+  });
+
+  it("downgrades every Dual Kawase pyramid level together after a real-size RGBA16F failure", async () => {
+    const ref = createRef<PaperShaderElement>();
+    const allocationAttempts: Array<{
+      precision: "rgba16f" | "rgba8";
+      width: number;
+      height: number;
+    }> = [];
+    let rgba16fAttemptCount = 0;
+    _setZenMultipassFaultInjectionForTests({
+      initialBlurTargetPrecision: "rgba16f",
+      shouldFailBlurTargetAllocation: (attempt) => {
+        allocationAttempts.push(attempt);
+        if (attempt.precision !== "rgba16f") return false;
+        rgba16fAttemptCount += 1;
+        return rgba16fAttemptCount === 3;
+      },
+    });
+
+    const { container } = render(
+      <ResearchBlurProbe
+        name="research-kawase-rgba8-fallback"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          backend: "dual-kawase-planned",
+          dualKawase: { passes: 3, offset: 3 },
+        })}
+      />,
+    );
+    const host = container.querySelector<HTMLElement>(
+      '[data-paper-shader="direct-blur-research-kawase-rgba8-fallback"]',
+    );
+    if (!host) throw new Error("Dual Kawase fallback probe was not mounted");
+    const contextLost = vi.fn();
+    host.addEventListener("webglcontextlost", contextLost);
+
+    await waitFor(() =>
+      expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+    );
+
+    const stats = blurPerformanceStats(ref);
+    expect(stats.backend).toBe("dual-kawase-planned");
+    expect(stats.blurFormat).toBe("rgba8");
+    expect(stats.blurTargetLevels).toHaveLength(4);
+    expect(
+      stats.blurTargetLevels.every((level) => level.format === "rgba8"),
+    ).toBe(true);
+    expect(
+      stats.blurTargetLevels.every(
+        (level) => level.bytes === level.width * level.height * 4,
+      ),
+    ).toBe(true);
+    expect(stats.intermediateTextureBytes).toBe(
+      stats.blurTargetLevels.reduce((total, level) => total + level.bytes, 0),
+    );
+    expect(
+      allocationAttempts.filter(({ precision }) => precision === "rgba16f"),
+    ).toHaveLength(3);
+    expect(
+      allocationAttempts.filter(({ precision }) => precision === "rgba8"),
+    ).toHaveLength(4);
+    expect(contextLost).not.toHaveBeenCalled();
+  });
+
+  it("keeps zero-strength procedural noise exact and changes pixels only inside Glass", async () => {
+    const controlRef = createRef<PaperShaderElement>();
+    const zeroRef = createRef<PaperShaderElement>();
+    const noisyRef = createRef<PaperShaderElement>();
+    const { container } = render(
+      <div>
+        <ResearchNoiseProbe
+          name="control"
+          mountRef={controlRef}
+          researchOptions={zenBlurResearchOptions()}
+        />
+        <ResearchNoiseProbe
+          name="zero"
+          mountRef={zeroRef}
+          researchOptions={zenBlurResearchOptions({
+            displayNoise: {
+              mode: "procedural-white",
+              strength: 0,
+              seed: 17,
+            },
+          })}
+        />
+        <ResearchNoiseProbe
+          name="nonzero"
+          mountRef={noisyRef}
+          researchOptions={zenBlurResearchOptions({
+            displayNoise: {
+              mode: "procedural-white",
+              strength: 0.1,
+              seed: 17,
+            },
+          })}
+        />
+      </div>,
+    );
+    const canvasFor = (name: string) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="research-noise-${name}"]`,
+        ) ?? container,
+      );
+
+    await waitFor(() => {
+      expect(blurPerformanceStats(controlRef).drawCount).toBeGreaterThan(0);
+      expect(blurPerformanceStats(zeroRef).drawCount).toBeGreaterThan(0);
+      expect(blurPerformanceStats(noisyRef).drawCount).toBeGreaterThan(0);
+    });
+
+    const control = readCanvasPixels(canvasFor("control"));
+    const zero = readCanvasPixels(canvasFor("zero"));
+    const noisy = readCanvasPixels(canvasFor("nonzero"));
+    expect(zero).toEqual(control);
+
+    let changedGlassChannels = 0;
+    for (let y = 0; y < 64; y += 1) {
+      for (let x = 0; x < 64; x += 1) {
+        const index = (y * 64 + x) * 4;
+        if (x >= 36) {
+          expect(noisy.slice(index, index + 4)).toEqual(
+            control.slice(index, index + 4),
+          );
+        } else if (x >= 4 && x < 28) {
+          for (let channel = 0; channel < 3; channel += 1) {
+            if (noisy[index + channel] !== control[index + channel]) {
+              changedGlassChannels += 1;
+            }
+          }
+        }
+        expect(noisy[index + 3]).toBe(control[index + 3]);
+      }
+    }
+    expect(changedGlassChannels).toBeGreaterThan(0);
+    expect(blurPerformanceStats(zeroRef)).toMatchObject({
+      displayNoise: { mode: "procedural-white", strength: 0, seed: 17 },
+      rgba8Dither: { strength: 0, seed: 0 },
+    });
+    expect(blurPerformanceStats(noisyRef)).toMatchObject({
+      displayNoise: { mode: "procedural-white", strength: 0.1, seed: 17 },
+      rgba8Dither: { strength: 0, seed: 0 },
+    });
+  });
+
+  it("reports RGBA8 quantization dither independently from display noise", async () => {
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <ResearchBlurProbe
+        name="research-rgba8-dither"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          backend: "dual-kawase-planned",
+          rgba8Dither: { strength: 1 / 255, seed: 29 },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+    );
+
+    expect(blurPerformanceStats(ref)).toMatchObject({
+      backend: "dual-kawase-planned",
+      blurFormat: "rgba8",
+      displayNoise: { mode: "none", strength: 0, seed: 0 },
+      rgba8Dither: { strength: 1 / 255, seed: 29 },
+    });
+  });
+
+  it("exports serializable GPU metadata, raw timings, percentiles, and CPU submit samples", async () => {
+    const timerBackend = new ImmediateGpuTimerBackend();
+    _setZenMultipassFaultInjectionForTests({
+      createGpuTimerBackend: () => timerBackend,
+    });
+    const ref = createRef<PaperShaderElement>();
+    render(
+      <ResearchBlurProbe
+        name="research-performance-report"
+        sceneFragment={BLUR_POINT_SCENE}
+        blur={22}
+        blurTargetPrecision="rgba8"
+        mountRef={ref}
+        researchOptions={zenBlurResearchOptions({
+          gpuTiming: {
+            measurementMode: "pass-breakdown",
+            sampleIntervalDraws: 1,
+            maxPendingSamples: 4,
+            maxRecordedSamples: 600,
+          },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(multipassPerformanceStats(ref).gpuTimingStatus).toBe("ready"),
+    );
+
+    const report = blurPerformanceReport(ref);
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      capturedAtEpochMs: expect.any(Number),
+      backend: "gaussian-current",
+      researchOptions: {
+        backend: "gaussian-current",
+        gpuTiming: {
+          measurementMode: "pass-breakdown",
+          sampleIntervalDraws: 1,
+          maxPendingSamples: 4,
+          maxRecordedSamples: 600,
+        },
+      },
+      gpuMetadata: {
+        vendor: expect.any(String),
+        renderer: expect.any(String),
+        maxTextureSize: expect.any(Number),
+        userAgent: expect.any(String),
+      },
+      performanceStats: {
+        backend: "gaussian-current",
+        blurFormat: "rgba8",
+      },
+      gpuBenchmark: {
+        samples: [
+          expect.objectContaining({
+            drawCount: 1,
+            gpuTimeMs: 15,
+            blurGpuTimeMs: 9,
+          }),
+        ],
+        summary: expect.objectContaining({
+          gpuTimeMs: { p50: 15, p95: 15, p99: 15 },
+          blurGpuTimeMs: { p50: 9, p95: 9, p99: 9 },
+        }),
+      },
+      cpuSubmit: {
+        samples: [
+          expect.objectContaining({
+            drawCount: 1,
+            drawCallCount: 5,
+            cpuSubmitTimeMs: expect.any(Number),
+          }),
+        ],
+        summary: {
+          p50: expect.any(Number),
+          p95: expect.any(Number),
+          p99: expect.any(Number),
+        },
+      },
+    });
+    expect(report.cpuSubmit.samples[0]?.cpuSubmitTimeMs).toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
   });
 });

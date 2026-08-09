@@ -30,6 +30,7 @@
     "test:electron-perf": "node --test scripts/electron-runtime-performance-workflow.test.mjs scripts/runtime-performance-fixture.test.mjs scripts/runtime-performance-budget.test.mjs scripts/runtime-performance-retry.test.mjs",
     "test:product-journey-contracts": "node --test scripts/impact/core.test.mjs scripts/product-journey-impact.test.mjs scripts/product-journey-ratchet-hardening.test.mjs scripts/product-journey-explicit-all.test.mjs scripts/product-journey-backlog.test.mjs scripts/product-journey-mcp-client.test.mjs scripts/electron-product-journey-results.test.mjs scripts/electron-product-journey-cleanup-results.test.mjs scripts/electron-product-journeys.test.mjs",
     "benchmark:browser-ci": "node scripts/browser-ci-benchmark.mjs",
+    "research:zen-blur": "node scripts/zen-blur-research.mjs",
     "perf:budget": "node scripts/check-performance-budgets.mjs",
     "validate:architecture": "node --test scripts/validate-architecture.test.mjs && node scripts/validate-architecture.mjs",
     "test:quality": "node --test scripts/quality/impact-map.test.mjs scripts/quality/eval-fixtures.test.mjs scripts/quality/quality-workflow.test.mjs",

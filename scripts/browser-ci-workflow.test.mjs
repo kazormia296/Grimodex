@@ -92,7 +92,7 @@ test("browser configs isolate deterministic WebGL from the normal suite", async 
   assert.match(browserConfig, /provider:\s*playwright\(\)/);
   assert.match(
     browserConfig,
-    /exclude:\s*\[\s*"src\/features\/editor\/zen\/ZenMultipassCanvas\.browser\.test\.tsx",?\s*\]/,
+    /exclude:\s*\[[\s\S]*?"src\/features\/editor\/zen\/ZenMultipassCanvas\.browser\.test\.tsx",?[\s\S]*?"src\/features\/editor\/zen\/ZenBlurResearchRunner\.browser\.test\.tsx",?[\s\S]*?\]/,
   );
   assert.doesNotMatch(browserConfig, /swiftshader/i);
   assert.doesNotMatch(browserConfig, /connectTimeout/);
