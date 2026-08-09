@@ -275,14 +275,22 @@ export class ZenGpuTimerSampler {
     if (this.disposed || !this.backend) return false;
 
     if (this.currentFrame) this.abandonCurrentFrame("error");
-    this.poll();
+    if (this.pendingSamples.length > 0) this.poll();
     if (this.disposed || this.pendingSamples.length >= this.maxPendingSamples) {
       return false;
     }
 
+    if (!this.canSample(drawCount)) return false;
+
     const contextState = this.readContextState();
     if (contextState !== "available") return false;
-    if (!this.canSample(drawCount)) return false;
+
+    const disjointState = this.readDisjointState();
+    if (disjointState !== "clear") {
+      if (disjointState === "error") this.clearPublishedTiming();
+      this.gpuTimingStatus = disjointState;
+      return false;
+    }
 
     this.lastSampleDrawCount = drawCount;
     this.currentFrame = {
@@ -378,18 +386,18 @@ export class ZenGpuTimerSampler {
     const backend = this.backend;
     if (this.disposed || !backend) return;
 
+    if (this.pendingSamples.length === 0) return;
+
     const contextState = this.readContextState();
     if (contextState !== "available") return;
 
-    let disjoint: boolean;
-    try {
-      disjoint = backend.isDisjoint();
-    } catch {
+    const disjointState = this.readDisjointState();
+    if (disjointState === "error") {
       this.failPendingSamples();
       return;
     }
 
-    if (disjoint) {
+    if (disjointState === "disjoint") {
       const pendingQueries = this.takePendingQueries();
       this.clearPublishedTiming();
       this.gpuTimingStatus = "disjoint";
@@ -553,6 +561,17 @@ export class ZenGpuTimerSampler {
     this.clearPublishedTiming();
     this.gpuTimingStatus = "context-lost";
     return "lost";
+  }
+
+  private readDisjointState(): "clear" | "disjoint" | "error" {
+    const backend = this.backend;
+    if (!backend) return "error";
+
+    try {
+      return backend.isDisjoint() ? "disjoint" : "clear";
+    } catch {
+      return "error";
+    }
   }
 
   private handleContextError(): void {

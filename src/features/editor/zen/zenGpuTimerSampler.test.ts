@@ -402,6 +402,84 @@ describe("ZenGpuTimerSampler", () => {
     expect(backend.queries).toHaveLength(10);
   });
 
+  it("does not poll WebGL state on non-sampled frames without pending queries", () => {
+    const backend = new FakeZenGpuTimerBackend();
+    const isContextLost = vi.spyOn(backend, "isContextLost");
+    const isDisjoint = vi.spyOn(backend, "isDisjoint");
+    backend.queueResultsNs(...Array<number>(5).fill(1_000_000));
+    const sampler = new ZenGpuTimerSampler(backend.asBackend());
+
+    drawFrame(sampler, 1);
+    backend.markAvailable();
+    sampler.poll();
+    const contextReadCount = isContextLost.mock.calls.length;
+    const disjointReadCount = isDisjoint.mock.calls.length;
+
+    for (let drawCount = 2; drawCount <= 30; drawCount += 1) {
+      drawFrame(sampler, drawCount);
+    }
+
+    expect(isContextLost).toHaveBeenCalledTimes(contextReadCount);
+    expect(isDisjoint).toHaveBeenCalledTimes(disjointReadCount);
+  });
+
+  it("keeps published timing when polling without pending queries", () => {
+    const backend = new FakeZenGpuTimerBackend();
+    const isContextLost = vi.spyOn(backend, "isContextLost");
+    const isDisjoint = vi.spyOn(backend, "isDisjoint");
+    backend.queueResultsNs(...Array<number>(5).fill(1_000_000));
+    const sampler = new ZenGpuTimerSampler(backend.asBackend());
+
+    drawFrame(sampler, 1);
+    backend.markAvailable();
+    sampler.poll();
+    const readySnapshot = sampler.getSnapshot();
+    const contextReadCount = isContextLost.mock.calls.length;
+    const disjointReadCount = isDisjoint.mock.calls.length;
+    backend.disjoint = true;
+
+    sampler.poll();
+
+    expect(isContextLost).toHaveBeenCalledTimes(contextReadCount);
+    expect(isDisjoint).toHaveBeenCalledTimes(disjointReadCount);
+    expect(sampler.getSnapshot()).toEqual(readySnapshot);
+  });
+
+  it("preserves the last result and retries when a new sample starts disjoint", () => {
+    const backend = new FakeZenGpuTimerBackend();
+    backend.queueResultsNs(...Array<number>(10).fill(1_000_000));
+    const sampler = new ZenGpuTimerSampler(backend.asBackend());
+
+    drawFrame(sampler, 1);
+    backend.markAvailable();
+    sampler.poll();
+
+    backend.disjoint = true;
+    drawFrame(sampler, 31);
+
+    expect(backend.queries).toHaveLength(5);
+    expect(sampler.getSnapshot()).toMatchObject({
+      gpuTimeMs: 5,
+      gpuTimingStatus: "disjoint",
+      gpuTimingSampleCount: 1,
+      gpuTimingSampleDrawCount: 1,
+    });
+
+    backend.disjoint = false;
+    drawFrame(sampler, 32);
+    const retryBatch = backend.queries.slice(5);
+    backend.markAvailable(retryBatch);
+    sampler.poll();
+
+    expect(retryBatch).toHaveLength(5);
+    expect(sampler.getSnapshot()).toMatchObject({
+      gpuTimeMs: 5,
+      gpuTimingStatus: "ready",
+      gpuTimingSampleCount: 2,
+      gpuTimingSampleDrawCount: 32,
+    });
+  });
+
   it("keeps at most one query batch pending", () => {
     const backend = new FakeZenGpuTimerBackend();
     backend.queueResultsNs(...Array<number>(10).fill(1_000_000));
