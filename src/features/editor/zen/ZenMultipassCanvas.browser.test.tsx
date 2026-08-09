@@ -50,6 +50,28 @@ afterEach(() => {
   _setZenMultipassFaultInjectionForTests(null);
 });
 
+class ManualAnimationFrames {
+  private nextHandle = 1;
+  private readonly callbacks = new Map<number, FrameRequestCallback>();
+
+  request = (callback: FrameRequestCallback) => {
+    const handle = this.nextHandle;
+    this.nextHandle += 1;
+    this.callbacks.set(handle, callback);
+    return handle;
+  };
+
+  cancel = (handle: number) => {
+    this.callbacks.delete(handle);
+  };
+
+  step(timestamp: number) {
+    const callbacks = [...this.callbacks.values()];
+    this.callbacks.clear();
+    callbacks.forEach((callback) => callback(timestamp));
+  }
+}
+
 const SIZING_UNIFORMS: ShaderMountUniforms = {
   u_fit: 2,
   u_scale: 1,
@@ -173,6 +195,99 @@ const FULL_GLASS_RUNTIME: ZenPostProcessRuntime = {
   ...RUNTIME,
   glassRect: [0, 0, 1, 1],
 } as const;
+
+const SURFACE_PROBE_WIDTH = 256;
+const SURFACE_PROBE_HEIGHT = 128;
+const SURFACE_PROBE_RECT = [0.25, 0.2, 0.5, 0.8] as const;
+
+function surfaceCompositeUniforms({
+  refracts,
+  refraction,
+  contrast,
+  editorMask,
+}: {
+  refracts: boolean;
+  refraction: number;
+  contrast: boolean;
+  editorMask: boolean;
+}) {
+  const runtime: ZenPostProcessRuntime = {
+    ...RUNTIME,
+    rect: [0, 0, 0, 0],
+    glassRect: editorMask ? [0, 0, 1, 1] : [0, 0, 0, 0],
+    uiSurfaces: [
+      {
+        rect: [...SURFACE_PROBE_RECT],
+        feather: [0, 0, 0, 0],
+        cornerRadius: 16,
+        refracts,
+      },
+    ],
+  };
+  return buildZenMultipassCompositeUniforms(
+    {
+      ...ZEN_SHADER_DEFAULTS,
+      opacity: 100,
+      glass: {
+        ...ZEN_SHADER_DEFAULTS.glass,
+        enabled: true,
+        blur: 0,
+        saturation: 1,
+        refraction,
+        shine: 0,
+      },
+      contrastGuard: {
+        mode: contrast ? "auto" : "none",
+        strength: 1,
+        toolMix: 1,
+      },
+    },
+    runtime,
+    new ZenUiSurfaceUniformBuffer(1),
+  );
+}
+
+function SurfaceCompositeProbe({
+  name,
+  refracts,
+  refraction,
+  contrast = false,
+  editorMask = false,
+}: {
+  name: string;
+  refracts: boolean;
+  refraction: number;
+  contrast?: boolean;
+  editorMask?: boolean;
+}) {
+  return (
+    <ZenMultipassCanvas
+      data-paper-shader={`surface-${name}`}
+      sceneFragment={BLUR_GRATING_SCENE}
+      sceneUniforms={{
+        ...SIZING_UNIFORMS,
+        u_probeDirection: [1, 0],
+        u_probeFrequency: (2 * Math.PI) / 32,
+      }}
+      compositeFragment={buildZenMultipassCompositeFragment(1)}
+      compositeUniforms={surfaceCompositeUniforms({
+        refracts,
+        refraction,
+        contrast,
+        editorMask,
+      })}
+      minPixelRatio={1}
+      maxPixelCount={SURFACE_PROBE_WIDTH * SURFACE_PROBE_HEIGHT}
+      speed={0}
+      style={{
+        position: "relative",
+        width: SURFACE_PROBE_WIDTH,
+        height: SURFACE_PROBE_HEIGHT,
+      }}
+      webGlContextAttributes={WEBGL_ATTRIBUTES}
+    />
+  );
+}
 
 function compositeUniforms(
   strength: number,
@@ -1116,6 +1231,109 @@ describe("ZenMultipassCanvas live updates", () => {
     expect(readCenterRed(canvas)).toBeLessThan(unblurredCenter - 20);
   });
 
+  it("refracts a partial rounded UI surface without changing its padded AABB exterior", async () => {
+    const { container } = render(
+      <div>
+        <SurfaceCompositeProbe name="rounded-flat" refracts refraction={0} />
+        <SurfaceCompositeProbe name="rounded-bent" refracts refraction={24} />
+      </div>,
+    );
+    const flat = canvasFrom(
+      container.querySelector<HTMLElement>(
+        '[data-paper-shader="surface-rounded-flat"]',
+      ) ?? container,
+    );
+    const bent = canvasFrom(
+      container.querySelector<HTMLElement>(
+        '[data-paper-shader="surface-rounded-bent"]',
+      ) ?? container,
+    );
+
+    await waitFor(() => {
+      expect(readPixel(flat, 160, 64)[3]).toBe(255);
+      expect(readPixel(bent, 160, 64)[3]).toBe(255);
+    });
+
+    expect(
+      Math.abs(
+        (readPixel(bent, 72, 64)[0] ?? 0) - (readPixel(flat, 72, 64)[0] ?? 0),
+      ),
+    ).toBeGreaterThan(10);
+    for (const x of [61, 160]) {
+      expect(
+        Math.abs(
+          (readPixel(bent, x, 64)[0] ?? 0) - (readPixel(flat, x, 64)[0] ?? 0),
+        ),
+      ).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("keeps contrast-only UI surfaces unrefracted while preserving their mask", async () => {
+    const { container } = render(
+      <div>
+        <SurfaceCompositeProbe
+          name="contrast-only-flat"
+          refracts={false}
+          refraction={0}
+        />
+        <SurfaceCompositeProbe
+          name="contrast-only-bent"
+          refracts={false}
+          refraction={24}
+        />
+        <SurfaceCompositeProbe
+          name="contrast-off"
+          refracts={false}
+          refraction={0}
+          editorMask
+        />
+        <SurfaceCompositeProbe
+          name="contrast-on"
+          refracts={false}
+          refraction={0}
+          contrast
+          editorMask
+        />
+      </div>,
+    );
+    const findCanvas = (name: string) =>
+      canvasFrom(
+        container.querySelector<HTMLElement>(
+          `[data-paper-shader="surface-${name}"]`,
+        ) ?? container,
+      );
+    const flat = findCanvas("contrast-only-flat");
+    const bent = findCanvas("contrast-only-bent");
+    const contrastOff = findCanvas("contrast-off");
+    const contrastOn = findCanvas("contrast-on");
+
+    await waitFor(() => {
+      for (const canvas of [flat, bent, contrastOff, contrastOn]) {
+        expect(readPixel(canvas, 160, 64)[3]).toBe(255);
+      }
+    });
+
+    for (const x of [72, 120]) {
+      expect(
+        Math.abs(
+          (readPixel(bent, x, 64)[0] ?? 0) - (readPixel(flat, x, 64)[0] ?? 0),
+        ),
+      ).toBeLessThanOrEqual(1);
+    }
+    expect(
+      Math.abs(
+        (readPixel(contrastOn, 96, 64)[0] ?? 0) -
+          (readPixel(contrastOff, 96, 64)[0] ?? 0),
+      ),
+    ).toBeGreaterThan(20);
+    expect(
+      Math.abs(
+        (readPixel(contrastOn, 160, 64)[0] ?? 0) -
+          (readPixel(contrastOff, 160, 64)[0] ?? 0),
+      ),
+    ).toBeLessThanOrEqual(1);
+  });
+
   it("allocates fresh render targets when Strict Mode replays initialization", async () => {
     const ref = createRef<PaperShaderElement>();
     const { container } = render(
@@ -1240,6 +1458,94 @@ describe("ZenMultipassCanvas live updates", () => {
       () => expect(Math.abs(readCenterRed(canvas) - first)).toBeGreaterThan(8),
       { timeout: 1_000 },
     );
+  });
+
+  it("caps renderer-owned animation draws at 60fps without slowing shader time", () => {
+    const frames = new ManualAnimationFrames();
+    _setZenMultipassFaultInjectionForTests({
+      animationFrameDriver: frames,
+    });
+    const ref = createRef<PaperShaderElement>();
+    const { container } = render(
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="capped-animation-probe"
+        sceneFragment={ANIMATED_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0, false)}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={1}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    const canvas = canvasFrom(container);
+    const mount = ref.current?.paperShaderMount;
+    if (!mount) throw new Error("Zen multipass mount was not initialized");
+
+    frames.step(0);
+    expect(mount.getPerformanceStats().drawCount).toBeGreaterThan(0);
+    mount.resetPerformanceStats();
+
+    for (let timestamp = 5; timestamp <= 1_000; timestamp += 5) {
+      frames.step(timestamp);
+    }
+
+    expect(mount.getPerformanceStats().drawCount).toBeGreaterThanOrEqual(58);
+    expect(mount.getPerformanceStats().drawCount).toBeLessThanOrEqual(60);
+    expect(mount.getCurrentFrame()).toBeCloseTo(1_000, 5);
+    expect(readCenterRed(canvas)).toBeGreaterThan(235);
+  });
+
+  it("draws an external invalidation before the animation interval elapses", () => {
+    const frames = new ManualAnimationFrames();
+    _setZenMultipassFaultInjectionForTests({
+      animationFrameDriver: frames,
+    });
+    const ref = createRef<PaperShaderElement>();
+    const view = render(
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="animation-invalidation-probe"
+        sceneFragment={STATIC_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0, false)}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={1}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    const mount = ref.current?.paperShaderMount;
+    if (!mount) throw new Error("Zen multipass mount was not initialized");
+
+    frames.step(0);
+    mount.resetPerformanceStats();
+    frames.step(5);
+    expect(mount.getPerformanceStats().drawCount).toBe(0);
+
+    view.rerender(
+      <ZenMultipassCanvas
+        ref={ref}
+        data-paper-shader="animation-invalidation-probe"
+        sceneFragment={STATIC_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(1, false)}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={1}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    frames.step(10);
+
+    expect(mount.getPerformanceStats().drawCount).toBe(1);
   });
 
   it("redraws the final pass when contrast strength changes", async () => {

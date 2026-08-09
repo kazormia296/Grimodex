@@ -17,6 +17,7 @@ import {
   buildZenGaussianKernel,
   resolveZenMultipassBlurPlan,
 } from "./zenMultipassPipeline";
+import { createZenShaderFrameCadence } from "./zenShaderAnimation";
 
 const ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT = 2;
 
@@ -195,6 +196,10 @@ interface ZenMultipassFaultInjection {
   initialBlurTargetPrecision?: "rgba16f" | "rgba8";
   failInitializationAfterSetup?: boolean;
   onInitializationRollback?: () => void;
+  animationFrameDriver?: {
+    request: (callback: FrameRequestCallback) => number;
+    cancel: (handle: number) => void;
+  };
   shouldFailSceneTargetAllocation?: (attempt: {
     width: number;
     height: number;
@@ -602,6 +607,7 @@ class ZenMultipassRenderer {
   private dirtyComposite = true;
   private animationSpeed = 0;
   private lastAnimationTimestamp: number | null = null;
+  private readonly animationCadence = createZenShaderFrameCadence();
   private blurredTexture: WebGLTexture;
   private blurPlanKey = "";
   private activeBlurPlan: ReturnType<typeof resolveZenMultipassBlurPlan> = null;
@@ -708,6 +714,8 @@ class ZenMultipassRenderer {
   }
 
   private readonly requestFrame = (callback: FrameRequestCallback) => {
+    const injectedDriver = this.faultInjection?.animationFrameDriver;
+    if (injectedDriver) return injectedDriver.request(callback);
     const view = this.host.ownerDocument.defaultView;
     return (
       view?.requestAnimationFrame(callback) ?? requestAnimationFrame(callback)
@@ -715,6 +723,11 @@ class ZenMultipassRenderer {
   };
 
   private readonly cancelFrame = (handle: number) => {
+    const injectedDriver = this.faultInjection?.animationFrameDriver;
+    if (injectedDriver) {
+      injectedDriver.cancel(handle);
+      return;
+    }
     const view = this.host.ownerDocument.defaultView;
     if (view) view.cancelAnimationFrame(handle);
     else cancelAnimationFrame(handle);
@@ -910,6 +923,7 @@ class ZenMultipassRenderer {
     this.failed = true;
     this.animationSpeed = 0;
     this.lastAnimationTimestamp = null;
+    this.animationCadence.reset();
     this.needsDraw = false;
     if (this.rafId !== null) {
       this.cancelFrame(this.rafId);
@@ -930,15 +944,16 @@ class ZenMultipassRenderer {
     try {
       if (this.animationSpeed > 0) {
         if (this.lastAnimationTimestamp !== null) {
-          this.frame +=
-            Math.max(0, timestamp - this.lastAnimationTimestamp) *
-            this.animationSpeed;
+          const elapsed = Math.max(0, timestamp - this.lastAnimationTimestamp);
+          this.frame += elapsed * this.animationSpeed;
+          if (this.animationCadence.advance(elapsed)) {
+            this.dirtyScene = true;
+            this.dirtyBlur = true;
+            this.dirtyComposite = true;
+            this.needsDraw = true;
+          }
         }
         this.lastAnimationTimestamp = timestamp;
-        this.dirtyScene = true;
-        this.dirtyBlur = true;
-        this.dirtyComposite = true;
-        this.needsDraw = true;
       }
 
       if (this.needsDraw) {
@@ -1303,6 +1318,7 @@ class ZenMultipassRenderer {
     if (nextSpeed === this.animationSpeed) return;
     this.animationSpeed = nextSpeed;
     this.lastAnimationTimestamp = null;
+    this.animationCadence.reset();
     if (nextSpeed > 0) this.scheduleFrame();
   };
 
@@ -1342,6 +1358,8 @@ class ZenMultipassRenderer {
     gaussianPairCount: this.gaussianPairCount,
   });
 
+  getCurrentFrame = () => this.frame;
+
   resetPerformanceStats = () => {
     this.drawCount = 0;
   };
@@ -1350,6 +1368,7 @@ class ZenMultipassRenderer {
     this.disposed = true;
     this.animationSpeed = 0;
     this.lastAnimationTimestamp = null;
+    this.animationCadence.reset();
     this.needsDraw = false;
     if (this.rafId !== null) {
       this.cancelFrame(this.rafId);
@@ -1452,6 +1471,7 @@ export const ZenMultipassCanvas = forwardRef<
       host.paperShaderMount = {
         setFrame: renderer.setFrame,
         setSpeed: renderer.setSpeed,
+        getCurrentFrame: renderer.getCurrentFrame,
         getPerformanceStats: renderer.getPerformanceStats,
         resetPerformanceStats: renderer.resetPerformanceStats,
       } as unknown as ShaderMount;
