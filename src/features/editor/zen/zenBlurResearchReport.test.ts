@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ZenMultipassPerformanceReport,
   ZenTimingPercentiles,
-} from "./ZenMultipassCanvas";
+} from "./ZenBlurResearchCanvas";
 import {
   DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS,
   type ZenBlurResearchOptions,

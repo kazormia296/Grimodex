@@ -7,7 +7,6 @@ import {
   resolveZenShaderAnimationSpeed,
   ZEN_SHADER_DEFAULTS,
 } from "./zenShaderConfig";
-import { DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS } from "./zenBlurResearchConfig";
 import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 
@@ -19,6 +18,8 @@ const shaderLifecycle = vi.hoisted(() => ({
   mountedUniformLengths: [] as number[],
   props: [] as Array<{ maxPixelCount: number; speed: number }>,
   researchOptions: [] as unknown[],
+  hasResearchOptions: [] as boolean[],
+  hasGpuTimingOptions: [] as boolean[],
   antiAliasing: [] as Array<{ minPixelRatio: number; antialias: boolean }>,
   drawCount: 1,
   staticFrameReady: true,
@@ -43,7 +44,8 @@ vi.mock("./ZenMultipassCanvas", () => ({
       webGlContextAttributes?: WebGLContextAttributes;
       compositeFragment: string;
       compositeUniforms: Record<string, unknown>;
-      researchOptions: unknown;
+      researchOptions?: unknown;
+      gpuTimingOptions?: unknown;
     }
   >(function MockZenMultipassCanvas(
     {
@@ -55,7 +57,7 @@ vi.mock("./ZenMultipassCanvas", () => ({
       webGlContextAttributes,
       compositeFragment,
       compositeUniforms,
-      researchOptions,
+      ...optionalProps
     },
     forwardedRef,
   ) {
@@ -70,7 +72,13 @@ vi.mock("./ZenMultipassCanvas", () => ({
         : 0,
     ).current;
     shaderLifecycle.props.push({ maxPixelCount, speed });
-    shaderLifecycle.researchOptions.push(researchOptions);
+    shaderLifecycle.researchOptions.push(optionalProps.researchOptions);
+    shaderLifecycle.hasResearchOptions.push(
+      Object.hasOwn(optionalProps, "researchOptions"),
+    );
+    shaderLifecycle.hasGpuTimingOptions.push(
+      Object.hasOwn(optionalProps, "gpuTimingOptions"),
+    );
     shaderLifecycle.antiAliasing.push({
       minPixelRatio,
       antialias: webGlContextAttributes?.antialias ?? false,
@@ -141,6 +149,8 @@ describe("ZenShaderSurface", () => {
     shaderLifecycle.mountedUniformLengths.length = 0;
     shaderLifecycle.props.length = 0;
     shaderLifecycle.researchOptions.length = 0;
+    shaderLifecycle.hasResearchOptions.length = 0;
+    shaderLifecycle.hasGpuTimingOptions.length = 0;
     shaderLifecycle.antiAliasing.length = 0;
     shaderLifecycle.drawCount = 1;
     shaderLifecycle.staticFrameReady = true;
@@ -284,12 +294,12 @@ describe("ZenShaderSurface", () => {
     });
   });
 
-  it("keeps internal blur experiments disabled for the normal renderer", () => {
+  it("does not pass research or timing options to the normal renderer", () => {
     render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
 
-    expect(shaderLifecycle.researchOptions.at(-1)).toEqual(
-      DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS,
-    );
+    expect(shaderLifecycle.hasResearchOptions.at(-1)).toBe(false);
+    expect(shaderLifecycle.hasGpuTimingOptions.at(-1)).toBe(false);
+    expect(shaderLifecycle.researchOptions.at(-1)).toBeUndefined();
   });
 
   it("changes speed range without remounting the Paper canvas", () => {

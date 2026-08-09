@@ -11,14 +11,39 @@ import {
   _setZenMultipassFaultInjectionForTests,
   ZenMultipassCanvas,
 } from "./ZenMultipassCanvas";
+import { ZenBlurResearchCanvas } from "./ZenBlurResearchCanvas";
 import { ZenShaderSurface } from "./ZenShaderSurface";
 import type { ZenPostProcessRuntime } from "./zenPostProcessing";
-import type { ZenGpuTimerBackend } from "./zenGpuTimerSampler";
+import type {
+  ZenGpuTimerBackend,
+  ZenGpuTimerSamplerOptions,
+} from "./zenGpuTimerSampler";
 import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
 } from "./zenMultipassPipeline";
+import { buildZenMultipassCompositeFragment as buildZenBlurResearchCompositeFragment } from "./zenBlurResearchPipeline";
+
+const gpuTimerLifecycle = vi.hoisted(() => ({
+  samplerConstructionCount: 0,
+}));
+
+vi.mock("./zenGpuTimerSampler", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("./zenGpuTimerSampler")>();
+  return {
+    ...original,
+    ZenGpuTimerSampler: class extends original.ZenGpuTimerSampler {
+      constructor(
+        ...args: ConstructorParameters<typeof original.ZenGpuTimerSampler>
+      ) {
+        super(...args);
+        gpuTimerLifecycle.samplerConstructionCount += 1;
+      }
+    },
+  };
+});
 
 const shaderLayouts = vi.hoisted(() => ({
   current: {
@@ -49,6 +74,7 @@ vi.mock("./zenThemePalette", () => ({
 
 afterEach(() => {
   _setZenMultipassFaultInjectionForTests(null);
+  gpuTimerLifecycle.samplerConstructionCount = 0;
 });
 
 class ManualAnimationFrames {
@@ -465,7 +491,7 @@ interface ZenBlurResearchOptions {
     seed: number;
   };
   gpuTiming: {
-    measurementMode: "pass-breakdown" | "frame" | "blur";
+    measurementMode: "off" | "pass-breakdown" | "frame" | "blur";
     sampleIntervalDraws: number;
     maxPendingSamples: number;
     maxRecordedSamples: number;
@@ -486,7 +512,7 @@ const DEFAULT_RESEARCH_OPTIONS: ZenBlurResearchOptions = {
   displayNoise: { mode: "none", strength: 0, seed: 0 },
   rgba8Dither: { strength: 0, seed: 0 },
   gpuTiming: {
-    measurementMode: "pass-breakdown",
+    measurementMode: "off",
     sampleIntervalDraws: 30,
     maxPendingSamples: 1,
     maxRecordedSamples: 600,
@@ -518,14 +544,59 @@ function zenBlurResearchOptions(
   };
 }
 
-// Keep this test compiling before the optional research prop exists in the
-// production component. JSX spreads preserve the runtime contract under test
-// without weakening ZenMultipassCanvas's other required props.
-function researchCanvasProps(researchOptions?: ZenBlurResearchOptions) {
-  return researchOptions ? { researchOptions } : {};
+function DirectBlurProbe({
+  name,
+  sceneFragment,
+  sceneUniforms = SIZING_UNIFORMS,
+  blur,
+  gain = 1,
+  renderScale = 1,
+  blurTargetPrecision = "auto",
+  width = 256,
+  height = 256,
+  speed = 0,
+  mountRef,
+  gpuTimingOptions,
+}: {
+  name: string;
+  sceneFragment: string;
+  sceneUniforms?: ShaderMountUniforms;
+  blur: number;
+  gain?: number;
+  renderScale?: number;
+  blurTargetPrecision?: BlurTargetPrecision;
+  width?: number;
+  height?: number;
+  speed?: number;
+  mountRef?: RefObject<PaperShaderElement | null>;
+  gpuTimingOptions?: ZenGpuTimerSamplerOptions;
+}) {
+  return (
+    <ZenMultipassCanvas
+      ref={mountRef}
+      data-paper-shader={`direct-blur-${name}`}
+      sceneFragment={sceneFragment}
+      sceneUniforms={sceneUniforms}
+      compositeFragment={BLUR_PROBE_COMPOSITE}
+      compositeUniforms={{
+        u_probeGain: gain,
+        u_zenGlassBlur: blur,
+        u_zenGlassEnabled: 1,
+        u_zenGlassRect: [0, 0, 1, 1],
+        u_zenUiSurfaceCount: 0,
+      }}
+      blurTargetPrecision={blurTargetPrecision}
+      gpuTimingOptions={gpuTimingOptions}
+      minPixelRatio={Math.max(1, renderScale)}
+      maxPixelCount={width * height * renderScale * renderScale}
+      speed={speed}
+      style={{ position: "relative", width, height }}
+      webGlContextAttributes={WEBGL_ATTRIBUTES}
+    />
+  );
 }
 
-function DirectBlurProbe({
+function ResearchBlurProbe({
   name,
   sceneFragment,
   sceneUniforms = SIZING_UNIFORMS,
@@ -550,11 +621,10 @@ function DirectBlurProbe({
   height?: number;
   speed?: number;
   mountRef?: RefObject<PaperShaderElement | null>;
-  researchOptions?: ZenBlurResearchOptions;
+  researchOptions: ZenBlurResearchOptions;
 }) {
   return (
-    <ZenMultipassCanvas
-      {...researchCanvasProps(researchOptions)}
+    <ZenBlurResearchCanvas
       ref={mountRef}
       data-paper-shader={`direct-blur-${name}`}
       sceneFragment={sceneFragment}
@@ -570,6 +640,7 @@ function DirectBlurProbe({
       blurTargetPrecision={blurTargetPrecision}
       minPixelRatio={Math.max(1, renderScale)}
       maxPixelCount={width * height * renderScale * renderScale}
+      researchOptions={researchOptions}
       speed={speed}
       style={{ position: "relative", width, height }}
       webGlContextAttributes={WEBGL_ATTRIBUTES}
@@ -763,6 +834,7 @@ interface ZenBlurPerformanceReport {
   schemaVersion: 1;
   capturedAtEpochMs: number;
   backend: ZenBlurBackend;
+  gpuTimingMode: ZenBlurResearchOptions["gpuTiming"]["measurementMode"];
   researchOptions: ZenBlurResearchOptions;
   gpuMetadata: {
     vendor: string | null;
@@ -2063,6 +2135,7 @@ describe("ZenMultipassCanvas live updates", () => {
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
         mountRef={ref}
+        gpuTimingOptions={{ measurementMode: "pass-breakdown" }}
       />,
     );
     const canvas = canvasFrom(container);
@@ -2109,6 +2182,7 @@ describe("ZenMultipassCanvas live updates", () => {
         }}
         minPixelRatio={1}
         maxPixelCount={64 * 64}
+        gpuTimingOptions={{ measurementMode: "pass-breakdown" }}
         speed={0}
         style={{ position: "relative", width: 64, height: 64 }}
         webGlContextAttributes={WEBGL_ATTRIBUTES}
@@ -2414,27 +2488,69 @@ function ResearchNoiseProbe({
   mountRef,
 }: {
   name: string;
-  researchOptions?: ZenBlurResearchOptions;
+  researchOptions: ZenBlurResearchOptions;
   mountRef: RefObject<PaperShaderElement | null>;
 }) {
   return (
-    <ZenMultipassCanvas
-      {...researchCanvasProps(researchOptions)}
+    <ZenBlurResearchCanvas
       ref={mountRef}
       data-paper-shader={`research-noise-${name}`}
       sceneFragment={STATIC_SCENE}
       sceneUniforms={SIZING_UNIFORMS}
-      compositeFragment={buildZenMultipassCompositeFragment(1)}
+      compositeFragment={buildZenBlurResearchCompositeFragment(1)}
       compositeUniforms={halfGlassCompositeUniforms()}
       blurTargetPrecision="rgba8"
       minPixelRatio={1}
       maxPixelCount={64 * 64}
+      researchOptions={researchOptions}
       speed={0}
       style={{ position: "relative", width: 64, height: 64 }}
       webGlContextAttributes={WEBGL_ATTRIBUTES}
     />
   );
 }
+
+describe("ZenMultipassCanvas default diagnostics", () => {
+  it("does not create timing or unmasked-metadata diagnostics by default", async () => {
+    const extensionProbe = vi.spyOn(
+      WebGL2RenderingContext.prototype,
+      "getExtension",
+    );
+    const ref = createRef<PaperShaderElement>();
+    try {
+      render(
+        <DirectBlurProbe
+          name="normal-default"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          blurTargetPrecision="rgba8"
+          mountRef={ref}
+        />,
+      );
+
+      await waitFor(() =>
+        expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+      );
+
+      expect(gpuTimerLifecycle.samplerConstructionCount).toBe(0);
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("EXT_disjoint_timer_query_webgl2");
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("WEBGL_debug_renderer_info");
+      expect(multipassPerformanceStats(ref)).toMatchObject({
+        gpuTimeMs: null,
+        gpuPassTimesMs: null,
+        gpuTimingStatus: "idle",
+        gpuTimingSampleCount: 0,
+        gpuTimingSampleDrawCount: null,
+      });
+    } finally {
+      extensionProbe.mockRestore();
+    }
+  });
+});
 
 function expectKawaseLevelStats(
   stats: BlurPerformanceStats,
@@ -2461,31 +2577,56 @@ function expectKawaseLevelStats(
   );
 }
 
-describe("ZenMultipassCanvas research options", () => {
-  it("keeps the current Gaussian renderer as the default", async () => {
+describe("ZenBlurResearchCanvas research options", () => {
+  it("keeps timing diagnostics dormant for explicit default research options", async () => {
+    const extensionProbe = vi.spyOn(
+      WebGL2RenderingContext.prototype,
+      "getExtension",
+    );
     const ref = createRef<PaperShaderElement>();
-    render(
-      <DirectBlurProbe
-        name="research-default"
-        sceneFragment={BLUR_POINT_SCENE}
-        blur={22}
-        blurTargetPrecision="rgba8"
-        mountRef={ref}
-      />,
-    );
+    try {
+      render(
+        <ResearchBlurProbe
+          name="research-default"
+          sceneFragment={BLUR_POINT_SCENE}
+          blur={22}
+          blurTargetPrecision="rgba8"
+          mountRef={ref}
+          researchOptions={zenBlurResearchOptions()}
+        />,
+      );
 
-    await waitFor(() =>
-      expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
-    );
+      await waitFor(() =>
+        expect(blurPerformanceStats(ref).drawCount).toBeGreaterThan(0),
+      );
 
-    expect(blurPerformanceStats(ref)).toMatchObject({
-      backend: "gaussian-current",
-      gaussianPairCount: 9,
-      kawaseDownsamplePassCount: 0,
-      kawaseUpsamplePassCount: 0,
-      displayNoise: { mode: "none", strength: 0, seed: 0 },
-      rgba8Dither: { strength: 0, seed: 0 },
-    });
+      expect(blurPerformanceStats(ref)).toMatchObject({
+        backend: "gaussian-current",
+        gaussianPairCount: 9,
+        kawaseDownsamplePassCount: 0,
+        kawaseUpsamplePassCount: 0,
+        displayNoise: { mode: "none", strength: 0, seed: 0 },
+        rgba8Dither: { strength: 0, seed: 0 },
+      });
+      expect(gpuTimerLifecycle.samplerConstructionCount).toBe(0);
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("EXT_disjoint_timer_query_webgl2");
+      expect(
+        extensionProbe.mock.calls.map(([extension]) => extension),
+      ).not.toContain("WEBGL_debug_renderer_info");
+      expect(blurPerformanceReport(ref)).toMatchObject({
+        gpuTimingMode: "off",
+        researchOptions: { gpuTiming: { measurementMode: "off" } },
+        gpuMetadata: {
+          unmaskedVendor: null,
+          unmaskedRenderer: null,
+        },
+        gpuBenchmark: { samples: [], summary: null },
+      });
+    } finally {
+      extensionProbe.mockRestore();
+    }
   });
 
   it("runs planned Dual Kawase after one existing prefilter and aggregates level timings", async () => {
@@ -2495,7 +2636,7 @@ describe("ZenMultipassCanvas research options", () => {
     });
     const ref = createRef<PaperShaderElement>();
     render(
-      <DirectBlurProbe
+      <ResearchBlurProbe
         name="research-kawase-planned"
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
@@ -2504,6 +2645,7 @@ describe("ZenMultipassCanvas research options", () => {
         researchOptions={zenBlurResearchOptions({
           backend: "dual-kawase-planned",
           dualKawase: { passes: 3, offset: 2.5 },
+          gpuTiming: { measurementMode: "pass-breakdown" },
         })}
       />,
     );
@@ -2555,7 +2697,7 @@ describe("ZenMultipassCanvas research options", () => {
     });
     const ref = createRef<PaperShaderElement>();
     render(
-      <DirectBlurProbe
+      <ResearchBlurProbe
         name="research-frame-timing"
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
@@ -2627,7 +2769,7 @@ describe("ZenMultipassCanvas research options", () => {
     });
     const ref = createRef<PaperShaderElement>();
     render(
-      <DirectBlurProbe
+      <ResearchBlurProbe
         name="research-blur-timing"
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
@@ -2691,7 +2833,7 @@ describe("ZenMultipassCanvas research options", () => {
   it("starts canonical Dual Kawase at scene resolution without the #489 prefilter", async () => {
     const ref = createRef<PaperShaderElement>();
     render(
-      <DirectBlurProbe
+      <ResearchBlurProbe
         name="research-kawase-canonical"
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
@@ -2749,7 +2891,7 @@ describe("ZenMultipassCanvas research options", () => {
     });
 
     const { container } = render(
-      <DirectBlurProbe
+      <ResearchBlurProbe
         name="research-kawase-rgba8-fallback"
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
@@ -2801,7 +2943,11 @@ describe("ZenMultipassCanvas research options", () => {
     const noisyRef = createRef<PaperShaderElement>();
     const { container } = render(
       <div>
-        <ResearchNoiseProbe name="control" mountRef={controlRef} />
+        <ResearchNoiseProbe
+          name="control"
+          mountRef={controlRef}
+          researchOptions={zenBlurResearchOptions()}
+        />
         <ResearchNoiseProbe
           name="zero"
           mountRef={zeroRef}
@@ -2876,7 +3022,7 @@ describe("ZenMultipassCanvas research options", () => {
   it("reports RGBA8 quantization dither independently from display noise", async () => {
     const ref = createRef<PaperShaderElement>();
     render(
-      <DirectBlurProbe
+      <ResearchBlurProbe
         name="research-rgba8-dither"
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}
@@ -2908,7 +3054,7 @@ describe("ZenMultipassCanvas research options", () => {
     });
     const ref = createRef<PaperShaderElement>();
     render(
-      <DirectBlurProbe
+      <ResearchBlurProbe
         name="research-performance-report"
         sceneFragment={BLUR_POINT_SCENE}
         blur={22}

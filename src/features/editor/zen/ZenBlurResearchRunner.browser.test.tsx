@@ -7,13 +7,13 @@ import type {
 } from "@paper-design/shaders";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  ZenMultipassCanvas,
+  ZenBlurResearchCanvas,
   type ZenMultipassPerformanceReport,
-} from "./ZenMultipassCanvas";
+} from "./ZenBlurResearchCanvas";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
-} from "./zenMultipassPipeline";
+} from "./zenBlurResearchPipeline";
 import {
   resolveZenBlurResearchOptions,
   type ZenBlurResearchOptions,
@@ -247,7 +247,7 @@ describe("Zen blur real-GPU research runner", () => {
     );
     const ref = createRef<PaperShaderElement>();
     render(
-      <ZenMultipassCanvas
+      <ZenBlurResearchCanvas
         ref={ref}
         data-paper-shader="zen-blur-real-gpu-research"
         sceneFragment={SCENE_FRAGMENT}

@@ -486,6 +486,17 @@ void main() { fragColor = vec4(0.25); }`);
     expect(fragment).not.toContain("u_blurredTexture");
   });
 
+  it("keeps research-only noise and quantization dither out of production shaders", () => {
+    const productionShaders = [
+      ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT,
+      ZEN_MULTIPASS_GAUSSIAN_FRAGMENT,
+      buildZenMultipassCompositeFragment(1),
+    ].join("\n");
+
+    expect(productionShaders).not.toContain("u_zenGlassNoise");
+    expect(productionShaders).not.toContain("u_quantizationDither");
+  });
+
   it("samples the blurred FBO only inside Glass before final correction", () => {
     const fragment = buildZenMultipassCompositeFragment(7);
     const main = fragment.slice(fragment.lastIndexOf("void main()"));

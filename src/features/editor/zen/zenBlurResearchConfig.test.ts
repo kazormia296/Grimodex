@@ -6,6 +6,7 @@ import {
 import type { ZenGpuTimingMode } from "./zenGpuTimerSampler";
 
 const GPU_TIMING_MODES = [
+  "off",
   "pass-breakdown",
   "frame",
   "blur",
@@ -22,7 +23,7 @@ describe("Zen blur research configuration", () => {
       displayNoise: { mode: "none", strength: 0, seed: 0 },
       rgba8Dither: { strength: 0, seed: 0 },
       gpuTiming: {
-        measurementMode: "pass-breakdown",
+        measurementMode: "off",
         sampleIntervalDraws: 30,
         maxPendingSamples: 1,
         maxRecordedSamples: 600,

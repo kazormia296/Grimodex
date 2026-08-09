@@ -25,6 +25,7 @@ const ALL_PASSES = [
 ] as const satisfies readonly ZenGpuPass[];
 
 const GPU_TIMING_MODES = [
+  "off",
   "pass-breakdown",
   "frame",
   "blur",
@@ -143,8 +144,42 @@ function drawFrame(
 }
 
 describe("ZenGpuTimerSampler", () => {
-  it("defines pass-breakdown, frame, and blur measurement modes", () => {
-    expect(GPU_TIMING_MODES).toEqual(["pass-breakdown", "frame", "blur"]);
+  it("defines off, pass-breakdown, frame, and blur measurement modes", () => {
+    expect(GPU_TIMING_MODES).toEqual([
+      "off",
+      "pass-breakdown",
+      "frame",
+      "blur",
+    ]);
+  });
+
+  it("does not allocate queries or timing history when measurement is off", () => {
+    const backend = new FakeZenGpuTimerBackend();
+    const disjointProbe = vi.spyOn(backend, "isDisjoint");
+    const sampler = new ZenGpuTimerSampler(backend.asBackend(), {
+      measurementMode: "off",
+    });
+    const draw = vi.fn();
+
+    sampler.beginFrame(1);
+    sampler.measure("scene", draw);
+    sampler.endFrame();
+    sampler.poll();
+
+    expect(draw).toHaveBeenCalledOnce();
+    expect(backend.queries).toEqual([]);
+    expect(disjointProbe).not.toHaveBeenCalled();
+    expect(sampler.getSnapshot()).toMatchObject({
+      gpuTimeMs: null,
+      gpuPassTimesMs: null,
+      gpuTimingStatus: "idle",
+      gpuTimingSampleCount: 0,
+      gpuTimingSampleDrawCount: null,
+    });
+    expect(sampler.getBenchmarkReport()).toEqual({
+      samples: [],
+      summary: null,
+    });
   });
 
   it("reports unsupported null timing when no timer backend is available", () => {
