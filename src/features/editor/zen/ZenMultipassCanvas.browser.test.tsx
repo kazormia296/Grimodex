@@ -1953,7 +1953,11 @@ describe("ZenMultipassCanvas live updates", () => {
   });
 
   it("keeps the legacy WebGL correction polarity at a float32 tie", async () => {
-    const boundaryColor = [3 / 255, 137 / 255, 1 / 255] as const;
+    const boundaryColor: [number, number, number] = [
+      3 / 255,
+      137 / 255,
+      1 / 255,
+    ];
     const ref = createRef<PaperShaderElement>();
     const { container } = render(
       <ZenMultipassCanvas

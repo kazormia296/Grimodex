@@ -810,7 +810,11 @@ void main() { fragColor = vec4(0.25); }`);
   });
 
   it("leaves black-white polarity ties to the WebGL shader", () => {
-    const boundaryColor = [3 / 255, 137 / 255, 1 / 255] as const;
+    const boundaryColor: [number, number, number] = [
+      3 / 255,
+      137 / 255,
+      1 / 255,
+    ];
     const uniforms = buildZenMultipassCompositeUniforms(
       config,
       {
