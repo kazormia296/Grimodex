@@ -805,12 +805,12 @@ void main() { fragColor = vec4(0.25); }`);
       new ZenUiSurfaceUniformBuffer(1),
     );
 
-    expect(uniforms.u_zenPaperContrastParams).toEqual([1, 0, 1, 0.125]);
-    expect(uniforms.u_zenUiContrastParams).toEqual([0, 1, 0, 0.25]);
+    expect(uniforms.u_zenPaperContrastParams).toEqual([1, 0.125, 1, 0]);
+    expect(uniforms.u_zenUiContrastParams).toEqual([0, 0, 0.25, 0]);
   });
 
-  it("matches WebGL float32 polarity at the black-white contrast tie", () => {
-    const boundaryColor = 0.46031331926280966;
+  it("leaves black-white polarity ties to the WebGL shader", () => {
+    const boundaryColor = [3 / 255, 137 / 255, 1 / 255] as const;
     const uniforms = buildZenMultipassCompositeUniforms(
       config,
       {
@@ -818,23 +818,25 @@ void main() { fragColor = vec4(0.25); }`);
         feather: [0, 0, 0, 0],
         glassRect: [0, 0, 0, 0],
         glassCornerRadius: 0,
-        textColor: [boundaryColor, boundaryColor, boundaryColor],
+        textColor: boundaryColor,
         uiTextColor: [0, 0, 0],
-        backdropColor: [boundaryColor, boundaryColor, boundaryColor],
+        backdropColor: boundaryColor,
       },
       new ZenUiSurfaceUniformBuffer(1),
     );
 
-    expect(uniforms.u_zenPaperContrastParams).toMatchObject({
-      1: 0,
-      2: 1,
-      3: 0,
-    });
-    expect(uniforms.u_zenUiContrastParams).toMatchObject({
-      1: 1,
-      2: 0,
-      3: 0.25,
-    });
+    expect(uniforms.u_zenPaperContrastParams).toEqual([
+      0.1791287362575531, 0, 1, 0,
+    ]);
+    expect(uniforms.u_zenUiContrastParams).toEqual([0, 0, 0.25, 0]);
+
+    const fragment = buildZenMultipassCompositeFragment(1);
+    expect(fragment).toContain("uniform vec3 u_zenContrastTextColor;");
+    expect(fragment).toContain("uniform vec3 u_zenUiContrastTextColor;");
+    expect(fragment).toContain("bool zenShouldDarken(");
+    expect(fragment).toContain(
+      "zenSurfaceCorrectionDirection(u_zenContrastBackdropColor)",
+    );
   });
 
   it("uses bounded high-water shader variants", () => {

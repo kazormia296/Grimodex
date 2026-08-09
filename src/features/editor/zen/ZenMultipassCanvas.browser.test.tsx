@@ -1803,20 +1803,12 @@ describe("ZenMultipassCanvas live updates", () => {
     const canvas = canvasFrom(container);
 
     frames.step(0);
-    expect(readPixel(canvas, 16, 32)).toEqual(
-      new Uint8Array([255, 0, 0, 255]),
-    );
-    expect(readPixel(canvas, 48, 32)).toEqual(
-      new Uint8Array([0, 0, 255, 255]),
-    );
+    expect(readPixel(canvas, 16, 32)).toEqual(new Uint8Array([255, 0, 0, 255]));
+    expect(readPixel(canvas, 48, 32)).toEqual(new Uint8Array([0, 0, 255, 255]));
 
     frames.step(20);
-    expect(readPixel(canvas, 16, 32)).toEqual(
-      new Uint8Array([255, 0, 0, 255]),
-    );
-    expect(readPixel(canvas, 48, 32)).toEqual(
-      new Uint8Array([0, 0, 255, 255]),
-    );
+    expect(readPixel(canvas, 16, 32)).toEqual(new Uint8Array([255, 0, 0, 255]));
+    expect(readPixel(canvas, 48, 32)).toEqual(new Uint8Array([0, 0, 255, 255]));
   });
 
   it("does not clear the fully overwritten composite framebuffer", () => {
@@ -1958,6 +1950,36 @@ describe("ZenMultipassCanvas live updates", () => {
     );
 
     await waitFor(() => expect(readCenterRed(canvas)).toBeLessThan(wcagAa - 8));
+  });
+
+  it("keeps the legacy WebGL correction polarity at a float32 tie", async () => {
+    const boundaryColor = [3 / 255, 137 / 255, 1 / 255] as const;
+    const { container } = render(
+      <ZenMultipassCanvas
+        data-paper-shader="contrast-polarity-tie"
+        sceneFragment={STATIC_SCENE}
+        sceneUniforms={SIZING_UNIFORMS}
+        compositeFragment={buildZenMultipassCompositeFragment(1)}
+        compositeUniforms={compositeUniforms(0.6, true, {
+          ...RUNTIME,
+          textColor: boundaryColor,
+        })}
+        minPixelRatio={1}
+        maxPixelCount={64 * 64}
+        speed={0}
+        style={{ position: "relative", width: 64, height: 64 }}
+        webGlContextAttributes={WEBGL_ATTRIBUTES}
+      />,
+    );
+    const canvas = canvasFrom(container);
+
+    await waitFor(() => expect(canvas.width).toBeGreaterThan(0));
+    await waitFor(() => {
+      const pixel = readCenterPixel(canvas);
+      expect(
+        Math.max(pixel[0] ?? 0, pixel[1] ?? 0, pixel[2] ?? 0),
+      ).toBeLessThanOrEqual(1);
+    });
   });
 
   it("leaves a pixel that already meets the contrast target unchanged", async () => {
