@@ -1954,8 +1954,10 @@ describe("ZenMultipassCanvas live updates", () => {
 
   it("keeps the legacy WebGL correction polarity at a float32 tie", async () => {
     const boundaryColor = [3 / 255, 137 / 255, 1 / 255] as const;
+    const ref = createRef<PaperShaderElement>();
     const { container } = render(
       <ZenMultipassCanvas
+        ref={ref}
         data-paper-shader="contrast-polarity-tie"
         sceneFragment={STATIC_SCENE}
         sceneUniforms={SIZING_UNIFORMS}
@@ -1974,8 +1976,14 @@ describe("ZenMultipassCanvas live updates", () => {
     const canvas = canvasFrom(container);
 
     await waitFor(() => expect(canvas.width).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(
+        ref.current?.paperShaderMount?.getPerformanceStats().isStaticFrameReady,
+      ).toBe(true),
+    );
     await waitFor(() => {
       const pixel = readCenterPixel(canvas);
+      expect(pixel[3]).toBe(255);
       expect(
         Math.max(pixel[0] ?? 0, pixel[1] ?? 0, pixel[2] ?? 0),
       ).toBeLessThanOrEqual(1);
