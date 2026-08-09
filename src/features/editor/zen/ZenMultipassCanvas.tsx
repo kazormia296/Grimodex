@@ -18,6 +18,13 @@ import {
   resolveZenMultipassBlurPlan,
 } from "./zenMultipassPipeline";
 import { createZenShaderFrameCadence } from "./zenShaderAnimation";
+import {
+  createZenGpuTimerBackend,
+  ZenGpuTimerSampler,
+  type ZenGpuTimerBackend,
+  type ZenGpuTimingStatus,
+  type ZenGpuPassTimesMs,
+} from "./zenGpuTimerSampler";
 
 const ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT = 2;
 
@@ -209,6 +216,29 @@ interface ZenMultipassFaultInjection {
     width: number;
     height: number;
   }) => boolean;
+  onStaticUniformsApplied?: (pass: "scene" | "composite") => void;
+  createGpuTimerBackend?: (
+    gl: WebGL2RenderingContext,
+  ) => ZenGpuTimerBackend | null;
+}
+
+export interface ZenMultipassPerformanceStats {
+  drawCount: number;
+  drawCallCount: number;
+  gpuTimeMs: number | null;
+  gpuPassTimesMs: ZenGpuPassTimesMs | null;
+  gpuTimingStatus: ZenGpuTimingStatus;
+  gpuTimingSampleCount: number;
+  gpuTimingSampleDrawCount: number | null;
+  isStaticFrameReady: boolean;
+  blurFormat: "rgba16f" | "rgba8";
+  blurTargetAFormat: "rgba16f" | "rgba8";
+  blurTargetBFormat: "rgba16f" | "rgba8";
+  sceneTargetWidth: number;
+  sceneTargetHeight: number;
+  blurTargetWidth: number;
+  blurTargetHeight: number;
+  gaussianPairCount: number;
 }
 
 let activeZenMultipassFaultInjection: ZenMultipassFaultInjection | null = null;
@@ -588,8 +618,11 @@ class ZenMultipassRenderer {
     Map<string, WebGLUniformLocation | null>
   >();
   private readonly imageTextures = new Map<
-    string,
-    { image: HTMLImageElement; texture: WebGLTexture; unit: number }
+    WebGLProgram,
+    Map<
+      string,
+      { image: HTMLImageElement; texture: WebGLTexture; unit: number }
+    >
   >();
   private readonly resizeObserver: ResizeObserver | null;
   private sceneUniforms: ShaderMountUniforms;
@@ -600,11 +633,14 @@ class ZenMultipassRenderer {
   private cssWidth = 0;
   private cssHeight = 0;
   private drawCount = 0;
+  private drawCallCount = 0;
   private rafId: number | null = null;
   private needsDraw = false;
   private dirtyScene = true;
   private dirtyBlur = true;
   private dirtyComposite = true;
+  private dirtySceneUniforms = true;
+  private dirtyCompositeUniforms = true;
   private animationSpeed = 0;
   private lastAnimationTimestamp: number | null = null;
   private readonly animationCadence = createZenShaderFrameCadence();
@@ -614,6 +650,7 @@ class ZenMultipassRenderer {
   private gaussianPairCount = 0;
   private activeGlassSurface = false;
   private readonly faultInjection = activeZenMultipassFaultInjection;
+  private readonly gpuTimerSampler: ZenGpuTimerSampler;
   private failed = false;
   private disposed = false;
 
@@ -635,6 +672,15 @@ class ZenMultipassRenderer {
     if (!gl)
       throw new Error("WebGL2 is unavailable for Zen multipass rendering");
     this.gl = gl;
+    let gpuTimerBackend: ZenGpuTimerBackend | null = null;
+    try {
+      gpuTimerBackend = this.faultInjection?.createGpuTimerBackend
+        ? this.faultInjection.createGpuTimerBackend(gl)
+        : createZenGpuTimerBackend(gl);
+    } catch {
+      // GPU timing is diagnostic only and must never prevent rendering.
+    }
+    this.gpuTimerSampler = new ZenGpuTimerSampler(gpuTimerBackend);
     const sceneTargetFormat = createRgba8TargetFormat(gl);
     const initialBlurTargetPrecision =
       this.faultInjection?.initialBlurTargetPrecision;
@@ -756,6 +802,9 @@ class ZenMultipassRenderer {
     const gl = this.gl;
     this.clearGlErrors();
     try {
+      // Internal targets own units 0/1. Never let allocation overwrite an
+      // image uniform that remains bound on unit 2 or above between frames.
+      gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, target.texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -921,6 +970,7 @@ class ZenMultipassRenderer {
   private fail(error: unknown) {
     if (this.disposed || this.failed) return;
     this.failed = true;
+    this.gpuTimerSampler.dispose();
     this.animationSpeed = 0;
     this.lastAnimationTimestamp = null;
     this.animationCadence.reset();
@@ -996,19 +1046,40 @@ class ZenMultipassRenderer {
     image: HTMLImageElement,
   ) {
     const gl = this.gl;
-    let stored = this.imageTextures.get(name);
+    const location = this.uniformLocation(program, name);
+    const aspectLocation = this.uniformLocation(program, `${name}AspectRatio`);
+    if (location === null) {
+      if (aspectLocation !== null) {
+        gl.uniform1f(aspectLocation, image.naturalWidth / image.naturalHeight);
+      }
+      return;
+    }
+    let programTextures = this.imageTextures.get(program);
+    if (!programTextures) {
+      programTextures = new Map();
+      this.imageTextures.set(program, programTextures);
+    }
+    let stored = programTextures.get(name);
     if (!stored || stored.image !== image) {
-      if (stored) gl.deleteTexture(stored.texture);
       const texture = gl.createTexture();
       if (!texture) return;
+      if (stored) gl.deleteTexture(stored.texture);
+      const unit =
+        stored?.unit ??
+        ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT + programTextures.size;
+      const maxCombinedTextureUnits = Number(
+        gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS),
+      );
+      if (unit >= maxCombinedTextureUnits) {
+        gl.deleteTexture(texture);
+        throw new Error("Zen multipass image texture unit limit exceeded");
+      }
       stored = {
         image,
         texture,
-        unit:
-          stored?.unit ??
-          ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT + this.imageTextures.size,
+        unit,
       };
-      this.imageTextures.set(name, stored);
+      programTextures.set(name, stored);
       gl.activeTexture(gl.TEXTURE0 + stored.unit);
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -1035,11 +1106,18 @@ class ZenMultipassRenderer {
     }
     gl.activeTexture(gl.TEXTURE0 + stored.unit);
     gl.bindTexture(gl.TEXTURE_2D, stored.texture);
-    const location = this.uniformLocation(program, name);
-    if (location !== null) gl.uniform1i(location, stored.unit);
-    const aspectLocation = this.uniformLocation(program, `${name}AspectRatio`);
+    gl.uniform1i(location, stored.unit);
     if (aspectLocation !== null) {
       gl.uniform1f(aspectLocation, image.naturalWidth / image.naturalHeight);
+    }
+  }
+
+  private bindImageTextures(program: WebGLProgram) {
+    const programTextures = this.imageTextures.get(program);
+    if (!programTextures) return;
+    for (const stored of programTextures.values()) {
+      this.gl.activeTexture(this.gl.TEXTURE0 + stored.unit);
+      this.gl.bindTexture(this.gl.TEXTURE_2D, stored.texture);
     }
   }
 
@@ -1104,7 +1182,12 @@ class ZenMultipassRenderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
     this.useBundle(this.sceneProgram);
     this.unbindIntermediateTextures();
-    this.applyUniforms(this.sceneProgram.program, this.sceneUniforms);
+    if (this.dirtySceneUniforms) {
+      this.applyUniforms(this.sceneProgram.program, this.sceneUniforms);
+      this.dirtySceneUniforms = false;
+      this.faultInjection?.onStaticUniformsApplied?.("scene");
+    }
+    this.bindImageTextures(this.sceneProgram.program);
     for (const name of ["u_paperResolution", "u_resolution"]) {
       const resolution = this.uniformLocation(this.sceneProgram.program, name);
       if (resolution !== null) {
@@ -1122,6 +1205,7 @@ class ZenMultipassRenderer {
     const time = this.uniformLocation(this.sceneProgram.program, "u_time");
     if (time !== null) gl.uniform1f(time, this.frame * 0.001);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    this.drawCallCount += 1;
   }
 
   private prepareBlurPlan(blurRadius: number, activeGlass: boolean) {
@@ -1201,6 +1285,7 @@ class ZenMultipassRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, source);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    this.drawCallCount += 1;
   }
 
   private drawGaussianPass(
@@ -1221,14 +1306,15 @@ class ZenMultipassRenderer {
       directionY,
     );
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    this.drawCallCount += 1;
   }
 
   private drawComposite(blurredTexture: WebGLTexture) {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    // The canonical Composite shader writes an opaque value for every pixel.
+    // Clearing the default framebuffer would duplicate a full-screen write.
     this.useBundle(this.compositeProgram);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.texture);
@@ -1243,8 +1329,14 @@ class ZenMultipassRenderer {
       this.uniformLocation(this.compositeProgram.program, "u_pixelRatio"),
       this.renderScale,
     );
-    this.applyUniforms(this.compositeProgram.program, this.compositeUniforms);
+    if (this.dirtyCompositeUniforms) {
+      this.applyUniforms(this.compositeProgram.program, this.compositeUniforms);
+      this.dirtyCompositeUniforms = false;
+      this.faultInjection?.onStaticUniformsApplied?.("composite");
+    }
+    this.bindImageTextures(this.compositeProgram.program);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    this.drawCallCount += 1;
   }
 
   private draw() {
@@ -1257,52 +1349,104 @@ class ZenMultipassRenderer {
       return;
     }
     let rendered = false;
-
+    let timingFrame = false;
     if (this.dirtyScene) {
-      this.drawScene();
-      this.dirtyScene = false;
-      this.dirtyBlur = true;
-      this.dirtyComposite = true;
-      rendered = true;
+      // beginFrame polls any prior batch before deciding whether to sample.
+      timingFrame = this.gpuTimerSampler.beginFrame(this.drawCount + 1);
+    } else {
+      this.gpuTimerSampler.poll();
     }
 
-    if (this.dirtyBlur) {
-      const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
-      const plan = this.prepareBlurPlan(blurRadius, this.activeGlassSurface);
-      this.blurredTexture = this.sceneTarget.texture;
-      if (plan) {
-        let horizontalSource = this.sceneTarget.texture;
-        let horizontalTarget = this.blurTargetA;
-        let verticalTarget = this.blurTargetB;
-        if (plan.requiresDownsample) {
-          this.drawDownsamplePass(this.sceneTarget.texture, this.blurTargetA);
-          horizontalSource = this.blurTargetA.texture;
-          horizontalTarget = this.blurTargetB;
-          verticalTarget = this.blurTargetA;
+    try {
+      if (this.dirtyScene) {
+        if (timingFrame) {
+          this.gpuTimerSampler.measure("scene", () => this.drawScene());
+        } else {
+          this.drawScene();
         }
-        this.drawGaussianPass(
-          horizontalSource,
-          horizontalTarget,
-          1 / plan.targetWidth,
-          0,
-        );
-        this.drawGaussianPass(
-          horizontalTarget.texture,
-          verticalTarget,
-          0,
-          1 / plan.targetHeight,
-        );
-        this.blurredTexture = verticalTarget.texture;
+        this.dirtyScene = false;
+        this.dirtyBlur = true;
+        this.dirtyComposite = true;
+        rendered = true;
       }
-      this.dirtyBlur = false;
-      this.dirtyComposite = true;
-      rendered = true;
-    }
 
-    if (this.dirtyComposite) {
-      this.drawComposite(this.blurredTexture);
-      this.dirtyComposite = false;
-      rendered = true;
+      if (this.dirtyBlur) {
+        const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
+        const plan = this.prepareBlurPlan(blurRadius, this.activeGlassSurface);
+        this.blurredTexture = this.sceneTarget.texture;
+        if (plan) {
+          let horizontalSource = this.sceneTarget.texture;
+          let horizontalTarget = this.blurTargetA;
+          let verticalTarget = this.blurTargetB;
+          if (plan.requiresDownsample) {
+            if (timingFrame) {
+              this.gpuTimerSampler.measure("downsample", () =>
+                this.drawDownsamplePass(
+                  this.sceneTarget.texture,
+                  this.blurTargetA,
+                ),
+              );
+            } else {
+              this.drawDownsamplePass(
+                this.sceneTarget.texture,
+                this.blurTargetA,
+              );
+            }
+            horizontalSource = this.blurTargetA.texture;
+            horizontalTarget = this.blurTargetB;
+            verticalTarget = this.blurTargetA;
+          }
+          if (timingFrame) {
+            this.gpuTimerSampler.measure("gaussianHorizontal", () =>
+              this.drawGaussianPass(
+                horizontalSource,
+                horizontalTarget,
+                1 / plan.targetWidth,
+                0,
+              ),
+            );
+            this.gpuTimerSampler.measure("gaussianVertical", () =>
+              this.drawGaussianPass(
+                horizontalTarget.texture,
+                verticalTarget,
+                0,
+                1 / plan.targetHeight,
+              ),
+            );
+          } else {
+            this.drawGaussianPass(
+              horizontalSource,
+              horizontalTarget,
+              1 / plan.targetWidth,
+              0,
+            );
+            this.drawGaussianPass(
+              horizontalTarget.texture,
+              verticalTarget,
+              0,
+              1 / plan.targetHeight,
+            );
+          }
+          this.blurredTexture = verticalTarget.texture;
+        }
+        this.dirtyBlur = false;
+        this.dirtyComposite = true;
+        rendered = true;
+      }
+
+      if (this.dirtyComposite) {
+        if (timingFrame) {
+          this.gpuTimerSampler.measure("composite", () =>
+            this.drawComposite(this.blurredTexture),
+          );
+        } else {
+          this.drawComposite(this.blurredTexture);
+        }
+        this.dirtyComposite = false;
+        rendered = true;
+      }
+    } finally {
+      if (timingFrame) this.gpuTimerSampler.endFrame();
     }
 
     if (rendered) this.drawCount += 1;
@@ -1328,6 +1472,7 @@ class ZenMultipassRenderer {
   ) {
     this.sceneUniforms = sceneUniforms;
     this.mipmaps = mipmaps;
+    this.dirtySceneUniforms = true;
     this.invalidateScene();
   }
 
@@ -1337,6 +1482,7 @@ class ZenMultipassRenderer {
     const previousActiveGlass = this.activeGlassSurface;
     const nextActiveGlass = hasActiveGlassSurface(compositeUniforms);
     this.compositeUniforms = compositeUniforms;
+    this.dirtyCompositeUniforms = true;
     this.activeGlassSurface = nextActiveGlass;
     if (previousBlur !== nextBlur || previousActiveGlass !== nextActiveGlass) {
       this.invalidateBlur();
@@ -1345,27 +1491,38 @@ class ZenMultipassRenderer {
     }
   }
 
-  getPerformanceStats = () => ({
-    drawCount: this.drawCount,
-    gpuTimeMs: null,
-    isStaticFrameReady:
-      this.drawCount > 0 && this.canvas.width > 0 && this.canvas.height > 0,
-    blurFormat: this.blurTargetFormat.precision,
-    blurTargetAFormat: this.blurTargetA.format.precision,
-    blurTargetBFormat: this.blurTargetB.format.precision,
-    blurTargetWidth: this.activeBlurPlan?.targetWidth ?? 0,
-    blurTargetHeight: this.activeBlurPlan?.targetHeight ?? 0,
-    gaussianPairCount: this.gaussianPairCount,
-  });
+  getPerformanceStats = (): ZenMultipassPerformanceStats => {
+    this.gpuTimerSampler.poll();
+    const gpuTiming = this.gpuTimerSampler.getSnapshot();
+    return {
+      drawCount: this.drawCount,
+      drawCallCount: this.drawCallCount,
+      ...gpuTiming,
+      isStaticFrameReady:
+        this.drawCount > 0 && this.canvas.width > 0 && this.canvas.height > 0,
+      blurFormat: this.blurTargetFormat.precision,
+      blurTargetAFormat: this.blurTargetA.format.precision,
+      blurTargetBFormat: this.blurTargetB.format.precision,
+      sceneTargetWidth: this.sceneTarget.width,
+      sceneTargetHeight: this.sceneTarget.height,
+      blurTargetWidth: this.activeBlurPlan?.targetWidth ?? 0,
+      blurTargetHeight: this.activeBlurPlan?.targetHeight ?? 0,
+      gaussianPairCount: this.gaussianPairCount,
+    };
+  };
 
   getCurrentFrame = () => this.frame;
 
   resetPerformanceStats = () => {
     this.drawCount = 0;
+    this.drawCallCount = 0;
+    this.gpuTimerSampler.reset();
   };
 
   dispose() {
+    if (this.disposed) return;
     this.disposed = true;
+    this.gpuTimerSampler.dispose();
     this.animationSpeed = 0;
     this.lastAnimationTimestamp = null;
     this.animationCadence.reset();
@@ -1380,8 +1537,10 @@ class ZenMultipassRenderer {
       this.resize,
     );
     const gl = this.gl;
-    for (const stored of this.imageTextures.values()) {
-      gl.deleteTexture(stored.texture);
+    for (const programTextures of this.imageTextures.values()) {
+      for (const stored of programTextures.values()) {
+        gl.deleteTexture(stored.texture);
+      }
     }
     this.imageTextures.clear();
     deleteRendererResources(gl, {
