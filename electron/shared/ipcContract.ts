@@ -191,6 +191,7 @@ export const IPC = {
   /** パネル別窓（§6.5）。main 側実装は S7（S4 は IPC_UNIMPLEMENTED スタブ）。 */
   panelOpen: "grim:panel-open",
   panelFocus: "grim:panel-focus-by-label",
+  panelExists: "grim:panel-exists-by-label",
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────

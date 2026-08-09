@@ -7,7 +7,7 @@ import { isTauri } from "./tauri";
  * 現に使われている操作（getByLabel / 生成 / setFocus）のみ公開する。
  *
  * Electron シェルでは main の panelWindow ブリッジへ写像する（設計書 §6.5。
- * main 側実体は electron/main/windows.ts の openPanelWindow / focusPanelWindow）。
+ * main 側実体は electron/main/windows.ts の open/focus/existence APIs）。
  */
 
 /** 抽象層が公開する別窓ハンドル。現に使う操作（setFocus）だけを持つ。 */
@@ -33,11 +33,10 @@ export async function getWebviewWindowByLabel(
     return WebviewWindow.getByLabel(label);
   }
   if (isElectron()) {
-    // 存在確認は focusByLabel（§6.5）。既存窓があれば focus 副作用込みで
-    // true が返る。呼び出し元（openPanelWindow / requestOpenInCodex）は
-    // 存在確認の直後に setFocus するため、この副作用は観測上同義。
     const bridge = electronBridge();
-    const found = await bridge.panelWindow.focusByLabel(label);
+    const found = bridge.panelWindow.existsByLabel
+      ? await bridge.panelWindow.existsByLabel(label)
+      : await bridge.panelWindow.focusByLabel(label);
     if (!found) return null;
     return {
       async setFocus() {

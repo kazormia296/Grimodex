@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { serializeProseMirrorDocument } from "./proseMirrorSerializer";
+import {
+  serializeProseMirrorDocument,
+  type PersistedProseMirrorSchema,
+} from "./proseMirrorSerializer";
 
 interface ProseMirrorJsonNode {
   type: string;
@@ -31,8 +34,11 @@ function text(
   };
 }
 
-function serializeSuccessfully(input: string) {
-  const result = serializeProseMirrorDocument(input);
+function serializeSuccessfully(
+  input: string,
+  schemaKind?: PersistedProseMirrorSchema,
+) {
+  const result = serializeProseMirrorDocument(input, schemaKind);
   expect(result).toMatchObject({ ok: true });
   if (!result.ok) {
     throw new Error(`expected serialization to succeed: ${result.diagnostics}`);
@@ -40,8 +46,11 @@ function serializeSuccessfully(input: string) {
   return result.canonical;
 }
 
-function expectFailClosed(input: string): void {
-  const result = serializeProseMirrorDocument(input);
+function expectFailClosed(
+  input: string,
+  schemaKind?: PersistedProseMirrorSchema,
+): void {
+  const result = serializeProseMirrorDocument(input, schemaKind);
   expect(result).toMatchObject({ ok: false });
   if (result.ok) {
     throw new Error("expected serialization to fail closed");
@@ -116,16 +125,29 @@ describe("serializeProseMirrorDocument", () => {
     );
     const marked = serializeSuccessfully(
       documentWith(
-        paragraph(
-          text("same text", [
-            { type: "bold" },
-            { type: "italic" },
-          ]),
-        ),
+        paragraph(text("same text", [{ type: "bold" }, { type: "italic" }])),
       ),
     );
 
     expect(marked).toEqual(plain);
+  });
+
+  it("normalizes omitted schema defaults before deriving semantic structure", () => {
+    const omitted = serializeSuccessfully(
+      documentWith({ type: "heading", content: [text("Title")] }),
+    );
+    const explicit = serializeSuccessfully(
+      documentWith({
+        type: "heading",
+        attrs: { level: 1 },
+        content: [text("Title")],
+      }),
+    );
+
+    expect(omitted).toEqual(explicit);
+    expect(omitted.blocks).toEqual([
+      expect.objectContaining({ attrs: { level: 1 } }),
+    ]);
   });
 
   it("counts astral characters in UTF-16 code units without rewriting them", () => {
@@ -155,9 +177,143 @@ describe("serializeProseMirrorDocument", () => {
   it.each(["\uD800", "\uDC00"])(
     "fails closed for an isolated UTF-16 surrogate (%s)",
     (isolatedSurrogate) => {
-      expectFailClosed(
-        documentWith(paragraph(text(isolatedSurrogate))),
-      );
+      expectFailClosed(documentWith(paragraph(text(isolatedSurrogate))));
     },
   );
+
+  it("records deterministic nested block spans and synthetic boundaries", () => {
+    const canonical = serializeSuccessfully(
+      documentWith(
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [paragraph(text("one"))],
+            },
+          ],
+        },
+        paragraph(text("tail")),
+      ),
+    );
+
+    expect(canonical.text).toBe("one\ntail");
+    expect(canonical.blocks).toEqual([
+      {
+        id: "B000001",
+        nodeType: "bulletList",
+        range: { from: 0, to: 3 },
+        depth: 0,
+      },
+      {
+        id: "B000002",
+        nodeType: "listItem",
+        range: { from: 0, to: 3 },
+        depth: 1,
+      },
+      {
+        id: "B000003",
+        nodeType: "paragraph",
+        range: { from: 0, to: 3 },
+        depth: 2,
+      },
+      {
+        id: "B000004",
+        nodeType: "paragraph",
+        range: { from: 4, to: 8 },
+        depth: 0,
+      },
+    ]);
+    expect(canonical.projection.segments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "synthetic-boundary",
+          canonical: { from: 3, to: 4 },
+          boundary: { leftPmPos: 6, rightPmPos: 10 },
+          reason: "block-boundary",
+        }),
+      ]),
+    );
+  });
+
+  it("represents a file-backed inline image without silently dropping it", () => {
+    const canonical = serializeSuccessfully(
+      documentWith(
+        paragraph(
+          text("before"),
+          { type: "image", attrs: { src: "asset.png" } },
+          text("after"),
+        ),
+      ),
+      "file-backed",
+    );
+
+    expect(canonical.text).toBe("before\uFFFCafter");
+    expect(canonical.projection.segments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "atomic", nodeType: "image" }),
+      ]),
+    );
+  });
+
+  it("rejects a container that violates its required content cardinality", () => {
+    expectFailClosed(
+      documentWith({ type: "generatedProseBlock", content: [] }),
+    );
+  });
+
+  it("rejects an empty top-level doc instead of sealing corrupt empty prose", () => {
+    expectFailClosed(documentWith());
+  });
+
+  it("rejects a root-level inline image in the file-backed schema", () => {
+    expectFailClosed(
+      documentWith({ type: "image", attrs: { src: "asset.png" } }),
+      "file-backed",
+    );
+  });
+
+  it("rejects nodes that belong only to the other persisted Scene schema", () => {
+    expectFailClosed(
+      documentWith({
+        type: "taskList",
+        content: [
+          {
+            type: "taskItem",
+            attrs: { checked: false },
+            content: [paragraph(text("task"))],
+          },
+        ],
+      }),
+      "database",
+    );
+    expectFailClosed(
+      documentWith({ type: "sceneBeat", content: [text("beat")] }),
+      "file-backed",
+    );
+  });
+
+  it("rejects structural nodes outside their real ProseMirror parent group", () => {
+    expectFailClosed(
+      documentWith({
+        type: "blockquote",
+        content: [
+          {
+            type: "listItem",
+            content: [paragraph(text("not a direct block child"))],
+          },
+        ],
+      }),
+    );
+  });
+
+  it("returns a recursively frozen canonical artifact", () => {
+    const canonical = serializeSuccessfully(
+      documentWith(paragraph(text("sealed"))),
+    );
+
+    expect(Object.isFrozen(canonical)).toBe(true);
+    expect(Object.isFrozen(canonical.blocks)).toBe(true);
+    expect(Object.isFrozen(canonical.projection.segments)).toBe(true);
+  });
 });

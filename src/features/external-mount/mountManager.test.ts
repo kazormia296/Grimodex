@@ -176,6 +176,7 @@ import {
   initializeExternalMounts,
   purgeExpiredArchives,
   resolveReloadConflict,
+  settleExternalMountMutationsForSourceUris,
   _resetMountAuthorityForTests,
   _resetPendingArchives,
   _resetRecentDeletes,
@@ -197,12 +198,21 @@ import {
   externalDocumentStateKey,
   useExternalWriteStore,
 } from "@/features/concurrency/externalWriteStore";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 beforeEach(() => {
   _resetMountAuthorityForTests();
+  _resetQuiescenceLeasesForTests();
   mockCurrentProject.id = "p1";
   mockWorkspaceIdentity.current = null;
   useExternalWriteStore.getState().clear();
+});
+
+afterEach(() => {
+  _resetQuiescenceLeasesForTests();
 });
 
 // listAllNodes は H4 projection で content / unplacedBeatsDoc を返さない
@@ -278,6 +288,24 @@ describe("buildDbByUriMap", () => {
       "dup",
       expect.objectContaining({ archivedAt: expect.any(String) }),
     );
+  });
+
+  it("excludes external folder nodes from file reconciliation", async () => {
+    const folderUri = "external-root://root-1/chapter";
+    const map = await buildDbByUriMap(
+      [
+        node({
+          id: "chapter-folder",
+          nodeType: "folder",
+          sourceUri: folderUri,
+        }),
+      ],
+      "external-root://root-1/",
+      "external-root://root-1/.mount",
+    );
+
+    expect(map.has(folderUri)).toBe(false);
+    expect(mockUpdateNode).not.toHaveBeenCalled();
   });
 });
 
@@ -549,6 +577,560 @@ describe("applyExternalContent — Codex body mention + chat refresh", () => {
   });
 });
 
+describe("handleFileEvent snapshot barriers", () => {
+  const selectedUri = buildSourceUri("root-1", "chapter/selected.md");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useExternalRootStore.setState({
+      roots: [{ id: "root-1", path: "/mnt", label: "M" }],
+      mutedWrites: [],
+      conflicts: [],
+    });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "scene-selected",
+        parentId: "mount-folder",
+        sourceUri: selectedUri,
+      }),
+    ]);
+    mockReadExternalFile.mockResolvedValue("external winner\n");
+    mockGetExternalFileMtime.mockResolvedValue("2026-05-24T12:00:00.000Z");
+    mockScanMount.mockReset().mockResolvedValue({
+      dirs: [{ relPath: "chapter", name: "chapter" }],
+      files: [
+        {
+          relPath: "chapter/selected.md",
+          content: "external winner\n",
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: "selected-hash",
+        },
+      ],
+    });
+  });
+
+  it("queues watcher facts behind every lifecycle lease instead of dropping them", async () => {
+    const lease = acquireQuiescenceLease("audit-export");
+    const changed = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/selected.md",
+      kind: "changed",
+    });
+
+    await Promise.resolve();
+    expect(mockReadExternalFile).not.toHaveBeenCalled();
+
+    lease.release();
+    await changed;
+    expect(mockReadExternalFile).toHaveBeenCalledWith(
+      "root-1",
+      "chapter/selected.md",
+    );
+  });
+
+  it("makes snapshot settlement fail fast for a watcher fact observed during its lease", async () => {
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+    const changed = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/selected.md",
+      kind: "changed",
+    });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).rejects.toThrow("changed during narrative snapshot");
+    expect(mockReadExternalFile).not.toHaveBeenCalled();
+
+    lease.release();
+    await changed;
+    expect(mockReadExternalFile).toHaveBeenCalledOnce();
+  });
+
+  it("permits same-root predecessors so a selected queued fact can settle", async () => {
+    const firstUri = buildSourceUri("root-1", "other/first.md");
+    const secondUri = buildSourceUri("root-1", "other/second.md");
+    mockListAllNodes.mockResolvedValue([
+      node({ id: "scene-first", sourceUri: firstUri }),
+      node({ id: "scene-second", sourceUri: secondUri }),
+      node({ id: "scene-selected", sourceUri: selectedUri }),
+    ]);
+    let releaseFirstRead!: (content: string) => void;
+    mockReadExternalFile.mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        releaseFirstRead = resolve;
+      }),
+    );
+
+    const first = handleFileEvent({
+      rootId: "root-1",
+      relPath: "other/first.md",
+      kind: "changed",
+    });
+    await vi.waitFor(() => expect(mockReadExternalFile).toHaveBeenCalledOnce());
+    const second = handleFileEvent({
+      rootId: "root-1",
+      relPath: "other/second.md",
+      kind: "changed",
+    });
+    const selected = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/selected.md",
+      kind: "changed",
+    });
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+    const settlement = settleExternalMountMutationsForSourceUris([selectedUri]);
+
+    releaseFirstRead("first external winner\n");
+    await Promise.all([first, second, selected, settlement]);
+    expect(mockReadExternalFile).toHaveBeenCalledTimes(3);
+    lease.release();
+  });
+
+  it("ignores a muted write-back echo before registering snapshot work", async () => {
+    useExternalRootStore.getState().mutePath("root-1", "chapter/selected.md");
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+    const echo = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/selected.md",
+      kind: "changed",
+    });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).resolves.toBeUndefined();
+    lease.release();
+    await echo;
+    expect(mockReadExternalFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects settlement while a selected source has an unresolved reload conflict", async () => {
+    useExternalRootStore.getState().enqueueConflict({
+      sceneId: "scene-selected",
+      rootId: "root-1",
+      relPath: "chapter/selected.md",
+      incomingContent: "external winner\n",
+      incomingMtime: "2026-05-24T12:00:00.000Z",
+    });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).rejects.toThrow("unresolved conflict");
+  });
+
+  it("rejects a disk change still hidden in the main-process debounce queue", async () => {
+    mockScanMount.mockResolvedValue({
+      dirs: [{ relPath: "chapter", name: "chapter" }],
+      files: [
+        {
+          relPath: "chapter/selected.md",
+          content: "disk changed before renderer notification\n",
+          mtime: "2026-05-24T12:00:01.000Z",
+          contentHash: "changed-hash",
+        },
+      ],
+    });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris(
+        [selectedUri],
+        [
+          {
+            sourceUri: selectedUri,
+            content: JSON.stringify(markdownToPmJson("persisted version\n")),
+          },
+        ],
+      ),
+    ).rejects.toThrow("differs from its persisted Scene");
+  });
+
+  it("rejects an unpersisted file discovered below the selected external folder", async () => {
+    const folderUri = buildSourceUri("root-1", "chapter");
+    mockScanMount.mockResolvedValue({
+      dirs: [{ relPath: "chapter", name: "chapter" }],
+      files: [
+        {
+          relPath: "chapter/selected.md",
+          content: "external winner\n",
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: "selected-hash",
+        },
+        {
+          relPath: "chapter/new.md",
+          content: "new file\n",
+          mtime: "2026-05-24T12:00:01.000Z",
+          contentHash: "new-hash",
+        },
+      ],
+    });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris(
+        [folderUri, selectedUri],
+        [
+          {
+            sourceUri: selectedUri,
+            content: JSON.stringify(markdownToPmJson("external winner\n")),
+          },
+        ],
+      ),
+    ).rejects.toThrow("unpersisted source");
+  });
+
+  it("rejects an empty selected external folder removed without a watcher event", async () => {
+    mockScanMount.mockResolvedValue({ dirs: [], files: [] });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris(
+        [buildSourceUri("root-1", "chapter")],
+        [],
+      ),
+    ).rejects.toThrow("source path is missing");
+  });
+
+  it("does not accept a file in place of a selected external folder", async () => {
+    mockScanMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "chapter",
+          content: "not a directory\n",
+          mtime: "2026-05-24T12:00:01.000Z",
+          contentHash: "replacement-hash",
+        },
+      ],
+    });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris(
+        [buildSourceUri("root-1", "chapter")],
+        [],
+      ),
+    ).rejects.toThrow("source path is missing");
+  });
+
+  it("checks file identity without comparing content during preflight", async () => {
+    await expect(
+      settleExternalMountMutationsForSourceUris(
+        [buildSourceUri("root-1", "chapter"), selectedUri],
+        [{ sourceUri: selectedUri }],
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a malformed external source URI instead of dropping its fence", async () => {
+    await expect(
+      settleExternalMountMutationsForSourceUris(["unknown://selected.md"]),
+    ).rejects.toThrow("source URI is invalid");
+    expect(mockScanMount).not.toHaveBeenCalled();
+  });
+
+  it("rejects multiple persisted Scenes that claim the same external source", async () => {
+    await expect(
+      settleExternalMountMutationsForSourceUris(
+        [selectedUri],
+        [
+          {
+            sourceUri: selectedUri,
+            content: JSON.stringify(markdownToPmJson("first\n")),
+          },
+          {
+            sourceUri: selectedUri,
+            content: JSON.stringify(markdownToPmJson("second\n")),
+          },
+        ],
+      ),
+    ).rejects.toThrow("share an external source");
+  });
+
+  it("tracks an added event as root-wide while reconciliation is in flight", async () => {
+    const scan = {
+      dirs: [],
+      files: [
+        {
+          relPath: "chapter/selected.md",
+          content: "selected\n",
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: "selected-hash",
+        },
+        {
+          relPath: "chapter/new.md",
+          content: "new\n",
+          mtime: "2026-05-24T12:00:01.000Z",
+          contentHash: "new-hash",
+        },
+      ],
+    };
+    let releaseScan!: () => void;
+    const pendingScan = new Promise<typeof scan>((resolve) => {
+      releaseScan = () => resolve(scan);
+    });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "mount-folder",
+        nodeType: "folder",
+        sourceUri: buildMountFolderUri("root-1"),
+      }),
+      node({
+        id: "scene-selected",
+        parentId: "mount-folder",
+        sourceUri: selectedUri,
+      }),
+    ]);
+    mockScanMount.mockReturnValueOnce(pendingScan);
+    mockCreateNode.mockResolvedValue(
+      node({
+        id: "scene-new",
+        parentId: "mount-folder",
+        sourceUri: buildSourceUri("root-1", "chapter/new.md"),
+      }),
+    );
+    const added = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/new.md",
+      kind: "added",
+    });
+    await vi.waitFor(() => expect(mockScanMount).toHaveBeenCalledOnce());
+
+    let settled = false;
+    const drain = settleExternalMountMutationsForSourceUris([selectedUri]).then(
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseScan();
+    await Promise.all([added, drain]);
+    expect(settled).toBe(true);
+  });
+
+  it("keeps an added-event scan failure sticky for the whole root", async () => {
+    mockScanMount.mockRejectedValueOnce(new Error("scan failed"));
+
+    await expect(
+      handleFileEvent({
+        rootId: "root-1",
+        relPath: "chapter/new.md",
+        kind: "added",
+      }),
+    ).rejects.toThrow("scan failed");
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).rejects.toThrow("previously failed");
+  });
+
+  it("recovers a root-wide scan failure through a successful rename reconciliation", async () => {
+    const oldUri = buildSourceUri("root-1", "chapter/old.md");
+    const newUri = buildSourceUri("root-1", "chapter/new.md");
+    const movedContent = JSON.stringify(markdownToPmJson("Moved.\n"));
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "mount-folder",
+        nodeType: "folder",
+        sourceUri: buildMountFolderUri("root-1"),
+      }),
+      node({ id: "scene-selected", sourceUri: selectedUri }),
+      node({ id: "scene-old", sourceUri: oldUri }),
+    ]);
+    mockLoadSceneContent.mockResolvedValueOnce(movedContent);
+    mockLoadSceneContents.mockResolvedValue(
+      new Map([["scene-old", movedContent]]),
+    );
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/old.md",
+      kind: "removed",
+    });
+    mockScanMount.mockRejectedValueOnce(new Error("scan failed"));
+    await expect(
+      handleFileEvent({
+        rootId: "root-1",
+        relPath: "chapter/new.md",
+        kind: "added",
+      }),
+    ).rejects.toThrow("scan failed");
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).rejects.toThrow("previously failed");
+
+    mockScanMount.mockResolvedValueOnce({
+      dirs: [{ relPath: "chapter", name: "chapter" }],
+      files: [
+        {
+          relPath: "chapter/selected.md",
+          content: "selected\n",
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: "selected-hash",
+        },
+        {
+          relPath: "chapter/new.md",
+          content: "Moved.\n",
+          mtime: "2026-05-24T12:00:01.000Z",
+          contentHash: "moved-hash",
+        },
+      ],
+    });
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/new.md",
+      kind: "added",
+    });
+
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).resolves.toBeUndefined();
+    expect(mockUpdateNode).toHaveBeenCalledWith(
+      "scene-old",
+      expect.objectContaining({ sourceUri: newUri }),
+    );
+  });
+
+  it("keeps a root-wide reconciliation failure sticky for another source path", async () => {
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "mount-folder",
+        nodeType: "folder",
+        sourceUri: buildMountFolderUri("root-1"),
+      }),
+      node({
+        id: "scene-selected",
+        parentId: "mount-folder",
+        sourceUri: selectedUri,
+      }),
+    ]);
+    mockScanMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "chapter/selected.md",
+          content: "selected\n",
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: "selected-hash",
+        },
+        {
+          relPath: "chapter/new.md",
+          content: "new\n",
+          mtime: "2026-05-24T12:00:01.000Z",
+          contentHash: "new-hash",
+        },
+      ],
+    });
+    mockSaveSceneContent.mockRejectedValueOnce(
+      new Error("root reconciliation failed"),
+    );
+
+    await expect(
+      handleFileEvent({
+        rootId: "root-1",
+        relPath: "chapter/new.md",
+        kind: "added",
+      }),
+    ).rejects.toThrow("root reconciliation failed");
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).rejects.toThrow("previously failed");
+  });
+
+  it("clears a path-scoped rename failure without poisoning its whole root", async () => {
+    const oldUri = buildSourceUri("root-1", "chapter/old.md");
+    const newUri = buildSourceUri("root-1", "chapter/new.md");
+    mockListAllNodes.mockResolvedValue([
+      node({ id: "scene-old", sourceUri: oldUri }),
+      node({ id: "scene-selected", sourceUri: selectedUri }),
+    ]);
+    mockUpdateNode.mockRejectedValueOnce(new Error("rename failed"));
+
+    const renameEvent = {
+      rootId: "root-1",
+      oldRelPath: "chapter/old.md",
+      relPath: "chapter/new.md",
+      kind: "renamed" as const,
+    };
+    await expect(handleFileEvent(renameEvent)).rejects.toThrow("rename failed");
+    await expect(
+      settleExternalMountMutationsForSourceUris([selectedUri]),
+    ).resolves.toBeUndefined();
+    await expect(
+      settleExternalMountMutationsForSourceUris([oldUri, newUri]),
+    ).rejects.toThrow("previously failed");
+    await expect(
+      settleExternalMountMutationsForSourceUris([
+        buildSourceUri("root-1", "chapter"),
+      ]),
+    ).rejects.toThrow("previously failed");
+
+    await handleFileEvent(renameEvent);
+    await expect(
+      settleExternalMountMutationsForSourceUris([oldUri, newUri]),
+    ).resolves.toBeUndefined();
+  });
+
+  it("lets a queued retry clear the failure emitted by the preceding event", async () => {
+    const oldUri = buildSourceUri("root-1", "chapter/old.md");
+    const newUri = buildSourceUri("root-1", "chapter/new.md");
+    mockListAllNodes.mockResolvedValue([
+      node({ id: "scene-old", sourceUri: oldUri }),
+    ]);
+    let rejectFirst!: (error: Error) => void;
+    mockUpdateNode.mockReturnValueOnce(
+      new Promise<void>((_resolve, reject) => {
+        rejectFirst = reject;
+      }),
+    );
+    const event = {
+      rootId: "root-1",
+      oldRelPath: "chapter/old.md",
+      relPath: "chapter/new.md",
+      kind: "renamed" as const,
+    };
+
+    const first = handleFileEvent(event);
+    await vi.waitFor(() => expect(mockUpdateNode).toHaveBeenCalledOnce());
+    const retry = handleFileEvent(event);
+    rejectFirst(new Error("first rename failed"));
+
+    await expect(first).rejects.toThrow("first rename failed");
+    await retry;
+    await expect(
+      settleExternalMountMutationsForSourceUris([oldUri, newUri]),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not carry a delayed failure into a newer mount authority", async () => {
+    let releaseMetadataWrite!: () => void;
+    const metadataWrite = new Promise<void>((resolve) => {
+      releaseMetadataWrite = resolve;
+    });
+    mockUpdateNode.mockImplementationOnce(async () => {
+      await metadataWrite;
+      throw new Error("old authority failed late");
+    });
+
+    const oldEvent = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/selected.md",
+      kind: "changed",
+    });
+    await vi.waitFor(() => expect(mockUpdateNode).toHaveBeenCalledOnce());
+
+    mockCurrentProject.id = "p2";
+    mockGetProjectSetting.mockResolvedValue(null);
+    mockListAllNodes.mockResolvedValue([]);
+    await initializeExternalMounts({
+      projectId: "p2",
+      workspaceOpenRevision: 2,
+    });
+    mockCurrentProject.id = "p1";
+    const currentAuthorityDrain = settleExternalMountMutationsForSourceUris([
+      selectedUri,
+    ]);
+    releaseMetadataWrite();
+    await expect(oldEvent).rejects.toThrow("old authority failed late");
+    await expect(currentAuthorityDrain).resolves.toBeUndefined();
+  });
+});
+
 describe("handleFileEvent removed deferral", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -598,6 +1180,113 @@ describe("handleFileEvent removed deferral", () => {
       expect.objectContaining({ archivedAt: expect.any(String) }),
     );
 
+    vi.useRealTimers();
+  });
+
+  it("lets a muted self-write echo cancel a pending external archive", async () => {
+    vi.useFakeTimers();
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "removed",
+    });
+    useExternalRootStore.getState().mutePath("root-1", "chapter/01.md");
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "added",
+    });
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(mockUpdateNode).not.toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
+    vi.useRealTimers();
+  });
+
+  it("lets a muted re-materialization overtake neither an in-flight removal nor its archive", async () => {
+    vi.useFakeTimers();
+    let releaseContent!: (content: string) => void;
+    mockLoadSceneContent.mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        releaseContent = resolve;
+      }),
+    );
+    const removed = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "removed",
+    });
+    await vi.waitFor(() => expect(mockLoadSceneContent).toHaveBeenCalledOnce());
+    useExternalRootStore.getState().mutePath("root-1", "chapter/01.md");
+    const added = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "added",
+    });
+
+    await Promise.resolve();
+    expect(mockScanMount).not.toHaveBeenCalled();
+    releaseContent(JSON.stringify(markdownToPmJson("Hello.\n")));
+    await Promise.all([removed, added]);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(mockUpdateNode).not.toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
+    expect(mockScanMount).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("serializes a re-add behind an archive task whose timer already fired", async () => {
+    vi.useFakeTimers();
+    let releaseArchive!: () => void;
+    mockUpdateNode.mockImplementationOnce(async (_id, patch) => {
+      if (patch.archivedAt) {
+        await new Promise<void>((resolve) => {
+          releaseArchive = resolve;
+        });
+      }
+    });
+    mockScanMount.mockResolvedValueOnce({
+      dirs: [],
+      files: [
+        {
+          relPath: "chapter/01.md",
+          content: "Hello.\n",
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: "hash",
+        },
+      ],
+    });
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "removed",
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.waitFor(() =>
+      expect(mockUpdateNode).toHaveBeenCalledWith(
+        "scene-1",
+        expect.objectContaining({ archivedAt: expect.any(String) }),
+      ),
+    );
+
+    const added = handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "added",
+    });
+    await Promise.resolve();
+    expect(mockScanMount).not.toHaveBeenCalled();
+
+    releaseArchive();
+    await added;
+    expect(mockScanMount).toHaveBeenCalledOnce();
     vi.useRealTimers();
   });
 
@@ -685,6 +1374,62 @@ describe("handleFileEvent rename detection (removed → added)", () => {
     expect(mockUpdateNode).not.toHaveBeenCalledWith(
       "scene-1",
       expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
+  });
+
+  it("moves an inferred rename into the persisted destination folder", async () => {
+    const markdown = "Hello.\n";
+    const oldUri = buildSourceUri("root-1", "old/01.md");
+    const newUri = buildSourceUri("root-1", "selected/01.md");
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "old-folder",
+        nodeType: "folder",
+        sourceUri: buildSourceUri("root-1", "old"),
+      }),
+      node({
+        id: "selected-folder",
+        nodeType: "folder",
+        sourceUri: buildSourceUri("root-1", "selected"),
+      }),
+      node({
+        id: "scene-1",
+        parentId: "old-folder",
+        sourceUri: oldUri,
+      }),
+    ]);
+    mockLoadSceneContent.mockResolvedValue(
+      JSON.stringify(markdownToPmJson(markdown)),
+    );
+    mockScanMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "selected/01.md",
+          content: markdown,
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: await contentHash(markdown),
+        },
+      ],
+    });
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "old/01.md",
+      kind: "removed",
+    });
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "selected/01.md",
+      kind: "added",
+    });
+
+    expect(mockUpdateNode).toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({
+        sourceUri: newUri,
+        parentId: "selected-folder",
+      }),
     );
   });
 });
@@ -804,6 +1549,32 @@ describe("initializeExternalMounts", () => {
     });
 
     expect(mockLoadTree).toHaveBeenCalledWith("p1", 27);
+  });
+
+  it("archives external folders that disappeared from the latest directory scan", async () => {
+    const root = { id: "root-1", path: "/mnt", label: "M" };
+    mockGetProjectSetting.mockResolvedValue(JSON.stringify([root]));
+    mockScanMount.mockResolvedValue({ dirs: [], files: [] });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "mount-folder",
+        nodeType: "folder",
+        sourceUri: buildMountFolderUri(root.id),
+      }),
+      node({
+        id: "missing-folder",
+        nodeType: "folder",
+        parentId: "mount-folder",
+        sourceUri: buildSourceUri(root.id, "removed"),
+      }),
+    ]);
+
+    await initializeExternalMounts();
+
+    expect(mockUpdateNode).toHaveBeenCalledWith(
+      "missing-folder",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
   });
 
   it("reuses the scoped critical Tree when mounts and archive purge made no changes", async () => {
@@ -1297,6 +2068,10 @@ describe("reload conflict queue", () => {
         kind: "changed",
       }),
     ).rejects.toThrow("metadata update failed");
+    const sourceUri = buildSourceUri("root-1", "chapter/01.md");
+    await expect(
+      settleExternalMountMutationsForSourceUris([sourceUri]),
+    ).rejects.toThrow("previously failed");
 
     expect(
       useExternalWriteStore.getState().reloadNonce[
@@ -1311,6 +2086,15 @@ describe("reload conflict queue", () => {
       }),
     ).rejects.toBeInstanceOf(StaleRetiredDocumentSaveError);
     expect(staleRetry).not.toHaveBeenCalled();
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "changed",
+    });
+    await expect(
+      settleExternalMountMutationsForSourceUris([sourceUri]),
+    ).resolves.toBeUndefined();
   });
 
   it("publishes the chosen disk version before explicit Reload side effects", async () => {

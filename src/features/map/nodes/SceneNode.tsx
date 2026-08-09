@@ -419,6 +419,7 @@ function TitleEditor({
 
   useQuiescentDraftParticipant({
     id: `map-scene-title:${nodeId}`,
+    scope: { kind: "tree-node", entityId: nodeId },
     enabled: true,
     isDirty: () => editingRef.current && titleController.dirty,
     flush: (options) => commit(onFinish, options),

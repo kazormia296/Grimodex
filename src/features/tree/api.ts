@@ -6,6 +6,7 @@ import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/place
 import {
   trackSceneContentWrite,
   awaitPendingSceneContentWrite,
+  awaitPendingSceneWriteStrict,
   serializeSceneWrite,
 } from "@/features/tree/pendingSceneWrites";
 import { debugLog } from "@/lib/debugLog";
@@ -14,6 +15,7 @@ import {
   nextTreeNodeMutationTimestamp,
   publishTreeNodeMutation,
 } from "@/lib/treeNodeMutationRegistry";
+import type { ProjectNarrativeSourceRow } from "@/features/narrative-extraction/source/types";
 import type { WorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 function publishPersistedTreeNodeMutation(
@@ -207,6 +209,68 @@ export async function listProjectSceneDocuments(
     .where(
       and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
     );
+}
+
+/**
+ * Load the persisted Scene rows used to build an immutable narrative corpus.
+ *
+ * The caller supplies the already-resolved DFS order. One Project-scoped
+ * SELECT provides a single SQLite statement snapshot and the function fails
+ * closed instead of splitting a corpus above its safe parameter bound.
+ * `sortOrder` is only meaningful among siblings, so requested rows are
+ * reassembled against the input order here. Missing, foreign-Project,
+ * non-Scene, and archived IDs are omitted.
+ */
+export async function loadProjectNarrativeSourceRows(
+  projectId: string,
+  orderedSceneIds: readonly string[],
+): Promise<ProjectNarrativeSourceRow[]> {
+  if (orderedSceneIds.length === 0) return [];
+  // Keep one statement below SQLite's historical 999-bound-variable limit.
+  // Larger corpora fail closed until the native snapshot reader lands.
+  const MAX_SINGLE_SNAPSHOT_SCENES = 900;
+  if (orderedSceneIds.length > MAX_SINGLE_SNAPSHOT_SCENES) {
+    throw new RangeError(
+      `Narrative corpus exceeds the ${MAX_SINGLE_SNAPSHOT_SCENES}-Scene single-read limit`,
+    );
+  }
+
+  await Promise.all(
+    orderedSceneIds.map((sceneId) => awaitPendingSceneWriteStrict(sceneId)),
+  );
+
+  const rows = await db
+    .select({
+      nodeId: treeNodes.id,
+      parentId: treeNodes.parentId,
+      title: treeNodes.title,
+      content: treeNodes.content,
+      sortOrder: treeNodes.sortOrder,
+      version: treeNodes.version,
+      updatedAt: treeNodes.updatedAt,
+      sourceUri: treeNodes.sourceUri,
+    })
+    .from(treeNodes)
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        eq(treeNodes.nodeType, "scene"),
+        isNull(treeNodes.archivedAt),
+        inArray(treeNodes.id, [...orderedSceneIds]),
+      ),
+    );
+  const rowsById = new Map<
+    string,
+    Omit<ProjectNarrativeSourceRow, "orderIndex">
+  >();
+  for (const row of rows) rowsById.set(row.nodeId, row);
+
+  const orderedRows: ProjectNarrativeSourceRow[] = [];
+  orderedSceneIds.forEach((nodeId, orderIndex) => {
+    const row = rowsById.get(nodeId);
+    if (row) orderedRows.push({ ...row, orderIndex });
+  });
+  return orderedRows;
 }
 
 export async function getNode(id: string): Promise<TreeNode | undefined> {

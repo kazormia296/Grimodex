@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { serializeProseMirrorDocument } from "../source/proseMirrorSerializer";
+import { buildNarrativeSourceView } from "../source/sourceView";
 import type {
   NarrativeCorpusDocument,
   NarrativeCorpusSnapshot,
   NarrativeSourceView,
+  Sha256Digest,
 } from "../source/types";
 import { resolveEvidenceReference } from "./resolveEvidence";
 import type { RawEvidenceReference } from "./types";
@@ -14,10 +16,11 @@ interface ProseMirrorJsonNode {
   content?: ProseMirrorJsonNode[];
 }
 
-const SNAPSHOT_DIGEST = `sha256:${"1".repeat(64)}`;
-const CONTENT_DIGEST = `sha256:${"2".repeat(64)}`;
-const DOCUMENT_DIGEST = `sha256:${"3".repeat(64)}`;
-const SOURCE_DIGEST = `sha256:${"4".repeat(64)}`;
+const SNAPSHOT_DIGEST = `sha256:${"1".repeat(64)}` as Sha256Digest;
+const CONTENT_DIGEST = `sha256:${"2".repeat(64)}` as Sha256Digest;
+const DOCUMENT_DIGEST = `sha256:${"3".repeat(64)}` as Sha256Digest;
+const SOURCE_DIGEST = `sha256:${"4".repeat(64)}` as Sha256Digest;
+const ARTIFACT_DIGEST = `sha256:${"5".repeat(64)}` as Sha256Digest;
 
 function paragraph(text: string): ProseMirrorJsonNode {
   return {
@@ -40,11 +43,13 @@ function canonicalFromParagraphs(...paragraphs: string[]) {
   return result.canonical;
 }
 
-function fixture(...paragraphs: string[]): {
+interface EvidenceFixture {
   snapshot: NarrativeCorpusSnapshot;
   document: NarrativeCorpusDocument;
   sourceView: NarrativeSourceView;
-} {
+}
+
+async function fixture(...paragraphs: string[]): Promise<EvidenceFixture> {
   const canonical = canonicalFromParagraphs(...paragraphs);
   const document = {
     ref: "D000001",
@@ -55,6 +60,7 @@ function fixture(...paragraphs: string[]): {
     canonical,
     contentDigest: CONTENT_DIGEST,
     documentDigest: DOCUMENT_DIGEST,
+    artifactDigest: ARTIFACT_DIGEST,
     origin: {
       kind: "project-node",
       projectId: "project-a",
@@ -75,14 +81,13 @@ function fixture(...paragraphs: string[]): {
     documents: [document],
     omissions: [],
     digest: SNAPSHOT_DIGEST,
+    artifactDigest: ARTIFACT_DIGEST,
   } as NarrativeCorpusSnapshot;
-  const sourceView = {
+  const sourceView = await buildNarrativeSourceView({
     ref: "S0001",
-    documentRef: document.ref,
+    document,
     documentRange: { start: 0, end: canonical.text.length },
-    text: canonical.text,
-    digest: SOURCE_DIGEST,
-  } as NarrativeSourceView;
+  });
   return { snapshot, document, sourceView };
 }
 
@@ -97,7 +102,7 @@ function raw(
 }
 
 function context(
-  source: ReturnType<typeof fixture>,
+  source: EvidenceFixture,
   overrides: Partial<{
     contextRadius: number;
     maxQuoteLength: number;
@@ -113,7 +118,7 @@ function context(
 
 describe("resolveEvidenceReference", () => {
   it("resolves one exact quote to a canonical and ProseMirror anchor", async () => {
-    const source = fixture("序章。鐘が鳴った。終章。");
+    const source = await fixture("序章。鐘が鳴った。終章。");
     const ctx = context(source);
 
     const result = await resolveEvidenceReference(raw(), ctx);
@@ -131,7 +136,7 @@ describe("resolveEvidenceReference", () => {
         initialMatchCount: 1,
         snapshotDigest: SNAPSHOT_DIGEST,
         documentDigest: DOCUMENT_DIGEST,
-        sourceDigest: SOURCE_DIGEST,
+        sourceDigest: source.sourceView.digest,
         quoteDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       }),
     );
@@ -151,7 +156,7 @@ describe("resolveEvidenceReference", () => {
   });
 
   it("returns not-found when the quote has no exact occurrence", async () => {
-    const source = fixture("鐘が鳴った。");
+    const source = await fixture("鐘が鳴った。");
     const ctx = context(source);
 
     const result = await resolveEvidenceReference(
@@ -164,7 +169,7 @@ describe("resolveEvidenceReference", () => {
   });
 
   it("returns ambiguous for two exact occurrences instead of adopting the first", async () => {
-    const source = fixture("東門が開いた朝。西門が開いた夜。");
+    const source = await fixture("東門が開いた朝。西門が開いた夜。");
     const ctx = context(source);
 
     const result = await resolveEvidenceReference(
@@ -178,7 +183,7 @@ describe("resolveEvidenceReference", () => {
   });
 
   it("uses exact prefix and suffix context to make a duplicate quote unique", async () => {
-    const source = fixture("東門が開いた朝。西門が開いた夜。");
+    const source = await fixture("東門が開いた朝。西門が開いた夜。");
     const ctx = context(source);
 
     const result = await resolveEvidenceReference(
@@ -198,7 +203,7 @@ describe("resolveEvidenceReference", () => {
   });
 
   it("rejects an unknown source reference as invalid", async () => {
-    const source = fixture("鐘が鳴った。");
+    const source = await fixture("鐘が鳴った。");
     const ctx = context(source);
 
     const result = await resolveEvidenceReference(
@@ -224,7 +229,7 @@ describe("resolveEvidenceReference", () => {
       maxQuoteLength: undefined,
     },
   ])("rejects an $name quote as invalid", async ({ quote, maxQuoteLength }) => {
-    const source = fixture("鐘が鳴った。12345");
+    const source = await fixture("鐘が鳴った。12345");
     const ctx = context(
       source,
       maxQuoteLength === undefined ? {} : { maxQuoteLength },
@@ -237,7 +242,7 @@ describe("resolveEvidenceReference", () => {
   });
 
   it("keeps a paragraph-spanning exact quote resolved with fragmented projection", async () => {
-    const source = fixture("第一段", "第二段");
+    const source = await fixture("第一段", "第二段");
     const ctx = context(source);
 
     const result = await resolveEvidenceReference(
@@ -267,6 +272,94 @@ describe("resolveEvidenceReference", () => {
         },
       ],
       enclosingRange: { from: 2, to: 8 },
+    });
+  });
+
+  it("keeps bounded context on complete UTF-16 scalar boundaries", async () => {
+    const source = await fixture("😀A😀");
+    const ctx = context(source, { contextRadius: 1 });
+
+    const result = await resolveEvidenceReference(raw({ quote: "A" }), ctx);
+
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.anchor.context).toEqual({ prefix: "😀", suffix: "😀" });
+  });
+
+  it("freezes untrusted reference values before awaiting its digest", async () => {
+    const source = await fixture("before target after");
+    const ctx = context(source);
+    const reference = raw({ quote: "target" }) as {
+      sourceRef: string;
+      quote: string;
+    };
+
+    const pending = resolveEvidenceReference(reference, ctx);
+    reference.sourceRef = "S-mutated";
+    reference.quote = "mutated";
+    const result = await pending;
+
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.anchor.sourceRef).toBe("S0001");
+    expect(result.anchor.quote).toBe("target");
+  });
+
+  it("rejects a Source View whose manifest digest does not match its sealed slice", async () => {
+    const source = await fixture("before target after");
+    const sourceView = { ...source.sourceView, digest: SOURCE_DIGEST };
+
+    const result = await resolveEvidenceReference(
+      raw({ quote: "target" }),
+      context({ ...source, sourceView }),
+    );
+
+    expect(result).toMatchObject({
+      status: "invalid",
+      reason: "source-view-digest-mismatch",
+    });
+  });
+
+  it("projects against the artifact-sealed projection instead of its compatibility alias", async () => {
+    const source = await fixture("before target after");
+    const document = {
+      ...source.document,
+      canonical: {
+        ...source.document.canonical,
+        projectionMap: {
+          schemaVersion: 1 as const,
+          unit: "utf16" as const,
+          canonicalLength: source.document.canonical.text.length,
+          segments: [],
+        },
+      },
+    };
+    const snapshot = { ...source.snapshot, documents: [document] };
+
+    const result = await resolveEvidenceReference(
+      raw({ quote: "target" }),
+      context({ ...source, document, snapshot }),
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.anchor.projection.status).toBe("exact");
+  });
+
+  it("rejects a source view whose range splits a surrogate pair", async () => {
+    const source = await fixture("😀A");
+    const splitView = {
+      ...source.sourceView,
+      documentRange: { start: 1, end: source.document.canonical.text.length },
+      text: source.document.canonical.text.slice(1),
+    };
+    const ctx = context({ ...source, sourceView: splitView });
+
+    const result = await resolveEvidenceReference(raw({ quote: "A" }), ctx);
+
+    expect(result).toMatchObject({
+      status: "invalid",
+      reason: "invalid-source-view",
     });
   });
 });

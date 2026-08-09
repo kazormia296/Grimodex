@@ -18,6 +18,7 @@ import {
   type EntityBaselineRef,
 } from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 import {
   emptySkipReport,
   fullRestoreScopeSet,
@@ -951,6 +952,16 @@ async function recordRestoreAndRebaseline(
 }
 
 export async function restoreProjectSnapshot(
+  snapshotId: string,
+  snapshotName: string,
+  options: RestoreOptions = {},
+): Promise<RestoreResult> {
+  return runTreeTopologyMutation(() =>
+    restoreProjectSnapshotWithAuthority(snapshotId, snapshotName, options),
+  );
+}
+
+async function restoreProjectSnapshotWithAuthority(
   snapshotId: string,
   snapshotName: string,
   options: RestoreOptions = {},

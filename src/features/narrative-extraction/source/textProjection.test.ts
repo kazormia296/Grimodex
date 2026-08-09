@@ -147,4 +147,63 @@ describe("projectCanonicalRange", () => {
       ],
     });
   });
+
+  it("fails closed when a persisted projection map contains overlaps", () => {
+    const canonical = serializeSuccessfully(
+      documentWith(paragraph(text("abcd"))),
+    );
+    const first = canonical.projection.segments[0];
+    expect(first).toBeDefined();
+    if (!first) return;
+
+    expect(
+      projectCanonicalRange(
+        {
+          ...canonical.projection,
+          segments: [first, { ...first }],
+        },
+        { start: 0, end: 2 },
+      ),
+    ).toEqual({ status: "unmapped", fragments: [] });
+  });
+
+  it("fails closed for unknown, incomplete, or PM-reversing segments", () => {
+    const canonical = serializeSuccessfully(
+      documentWith(
+        paragraph(
+          text("A"),
+          { type: "ruby", attrs: { base: "B", annotation: "b" } },
+          text("C"),
+        ),
+      ),
+    );
+    const baseMap = canonical.projection;
+    const unknownKind = {
+      ...baseMap,
+      segments: [{ ...baseMap.segments[0], kind: "future-kind" }],
+    } as never;
+    const missingCanonical = {
+      ...baseMap,
+      segments: [{ kind: "linear", canonicalStart: 0, canonicalEnd: 1 }],
+    } as never;
+    const reversing = JSON.parse(JSON.stringify(baseMap)) as typeof baseMap;
+    const second = reversing.segments[1];
+    if (second && second.kind !== "synthetic-boundary") {
+      Object.assign(second, {
+        from: 0,
+        to: 1,
+        source: { kind: "prosemirror", fromPos: 0, toPos: 1 },
+      });
+    }
+
+    for (const map of [unknownKind, missingCanonical, reversing]) {
+      expect(() =>
+        projectCanonicalRange(map, { start: 0, end: 1 }),
+      ).not.toThrow();
+      expect(projectCanonicalRange(map, { start: 0, end: 1 })).toEqual({
+        status: "unmapped",
+        fragments: [],
+      });
+    }
+  });
 });

@@ -14,6 +14,18 @@ function prose(text: string): string {
   });
 }
 
+function rubyProse(base: string): string {
+  return JSON.stringify({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "ruby", attrs: { base, annotation: "reading" } }],
+      },
+    ],
+  });
+}
+
 function input(
   overrides: Partial<NarrativeSnapshotBuildInput> = {},
 ): NarrativeSnapshotBuildInput {
@@ -118,6 +130,90 @@ describe("buildNarrativeCorpusSnapshot", () => {
     );
   });
 
+  it("keeps semantic digests independent of source freshness metadata", async () => {
+    const first = await buildNarrativeCorpusSnapshot(input());
+    const refreshed = await buildNarrativeCorpusSnapshot(
+      input({
+        documents: input().documents.map((document) => ({
+          ...document,
+          origin: {
+            ...document.origin,
+            sourceVersion: document.origin.sourceVersion + 10,
+            sourceUpdatedAt: "2026-08-12T00:00:00.000Z",
+          },
+        })),
+      }),
+    );
+
+    expect(first.ok && refreshed.ok).toBe(true);
+    if (!first.ok || !refreshed.ok) return;
+    expect(refreshed.snapshot.digest).toBe(first.snapshot.digest);
+    expect(refreshed.snapshot.documents[0].documentDigest).toBe(
+      first.snapshot.documents[0].documentDigest,
+    );
+    expect(refreshed.snapshot.documents[0].artifactDigest).not.toBe(
+      first.snapshot.documents[0].artifactDigest,
+    );
+    expect(refreshed.snapshot.artifactDigest).not.toBe(
+      first.snapshot.artifactDigest,
+    );
+  });
+
+  it("seals projection differences separately from semantic cache digests", async () => {
+    const plainDocument = {
+      ...input().documents[0],
+      proseMirrorJson: prose("same"),
+    };
+    const rubyDocument = {
+      ...plainDocument,
+      proseMirrorJson: rubyProse("same"),
+    };
+    const plain = await buildNarrativeCorpusSnapshot(
+      input({ documents: [plainDocument] }),
+    );
+    const ruby = await buildNarrativeCorpusSnapshot(
+      input({ documents: [rubyDocument] }),
+    );
+
+    expect(plain.ok && ruby.ok).toBe(true);
+    if (!plain.ok || !ruby.ok) return;
+    expect(ruby.snapshot.digest).toBe(plain.snapshot.digest);
+    expect(ruby.snapshot.documents[0].documentDigest).toBe(
+      plain.snapshot.documents[0].documentDigest,
+    );
+    expect(ruby.snapshot.documents[0].artifactDigest).not.toBe(
+      plain.snapshot.documents[0].artifactDigest,
+    );
+    expect(ruby.snapshot.artifactDigest).not.toBe(
+      plain.snapshot.artifactDigest,
+    );
+  });
+
+  it("copies inputs before hashing and recursively freezes the sealed snapshot", async () => {
+    const mutable = input() as unknown as {
+      documents: Array<{
+        title: string;
+        origin: { sourceVersion: number };
+      }>;
+    } & NarrativeSnapshotBuildInput;
+    const expectedTitle = mutable.documents[0]?.title;
+
+    const pending = buildNarrativeCorpusSnapshot(mutable);
+    if (mutable.documents[0]) {
+      mutable.documents[0].title = "mutated after build started";
+      mutable.documents[0].origin.sourceVersion = 999;
+    }
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.documents[0].title).toBe(expectedTitle);
+    expect(result.snapshot.documents[0].origin.sourceVersion).not.toBe(999);
+    expect(Object.isFrozen(result.snapshot)).toBe(true);
+    expect(Object.isFrozen(result.snapshot.documents)).toBe(true);
+    expect(Object.isFrozen(result.snapshot.documents[0].canonical)).toBe(true);
+  });
+
   it("includes explicit omissions in the snapshot digest", async () => {
     const complete = await buildNarrativeCorpusSnapshot(input());
     const omitted = await buildNarrativeCorpusSnapshot(
@@ -157,15 +253,18 @@ describe("buildNarrativeCorpusSnapshot", () => {
       ],
       code: "SNAPSHOT_UNKNOWN_PM_NODE",
     },
-  ])("does not seal $name as an empty document", async ({ documents, code }) => {
-    const result = await buildNarrativeCorpusSnapshot(input({ documents }));
+  ])(
+    "does not seal $name as an empty document",
+    async ({ documents, code }) => {
+      const result = await buildNarrativeCorpusSnapshot(input({ documents }));
 
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.diagnostics).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code })]),
-    );
-  });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.diagnostics).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code })]),
+      );
+    },
+  );
 
   it("rejects duplicate stable source keys", async () => {
     const result = await buildNarrativeCorpusSnapshot(
@@ -182,6 +281,32 @@ describe("buildNarrativeCorpusSnapshot", () => {
     expect(result.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: "SNAPSHOT_DUPLICATE_SOURCE_KEY" }),
+      ]),
+    );
+  });
+
+  it("rejects a document origin from another Project", async () => {
+    const result = await buildNarrativeCorpusSnapshot(
+      input({
+        documents: [
+          {
+            ...input().documents[0],
+            origin: {
+              ...input().documents[0].origin,
+              projectId: "project-foreign",
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "SNAPSHOT_DOCUMENT_ORIGIN_MISMATCH",
+        }),
       ]),
     );
   });

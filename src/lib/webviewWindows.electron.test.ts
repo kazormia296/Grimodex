@@ -1,17 +1,18 @@
 // @vitest-environment happy-dom
 /**
  * webviewWindows の Electron 分岐（設計書 §6.5）:
- * getWebviewWindowByLabel は focusByLabel を存在確認に使い、
+ * getWebviewWindowByLabel は read-only existence probe を使い、
  * createWebviewWindow は width/height/title のみを main に渡す
  * （URL は main が label から組み立てる — renderer 供給 URL を渡さない）。
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createWebviewWindow, getWebviewWindowByLabel } from "./webviewWindows";
 
-function installBridge(focusResult: boolean) {
+function installBridge(existsResult: boolean) {
   const panelWindow = {
     open: vi.fn().mockResolvedValue(undefined),
-    focusByLabel: vi.fn().mockResolvedValue(focusResult),
+    focusByLabel: vi.fn().mockResolvedValue(existsResult),
+    existsByLabel: vi.fn().mockResolvedValue(existsResult),
   };
   (window as unknown as Record<string, unknown>).grimodex = {
     shell: "electron",
@@ -25,18 +26,20 @@ afterEach(() => {
 });
 
 describe("getWebviewWindowByLabel electron 分岐", () => {
-  it("窓が在れば handle を返し、setFocus は focusByLabel を再度呼ぶ", async () => {
+  it("窓が在れば focus せず handle を返し、setFocus だけが focus する", async () => {
     const panelWindow = installBridge(true);
     const handle = await getWebviewWindowByLabel("panel-codex");
     expect(handle).not.toBeNull();
-    expect(panelWindow.focusByLabel).toHaveBeenCalledWith("panel-codex");
+    expect(panelWindow.existsByLabel).toHaveBeenCalledWith("panel-codex");
+    expect(panelWindow.focusByLabel).not.toHaveBeenCalled();
     await handle!.setFocus();
-    expect(panelWindow.focusByLabel).toHaveBeenCalledTimes(2);
+    expect(panelWindow.focusByLabel).toHaveBeenCalledOnce();
   });
 
   it("窓が無ければ null", async () => {
-    installBridge(false);
+    const panelWindow = installBridge(false);
     await expect(getWebviewWindowByLabel("panel-codex")).resolves.toBeNull();
+    expect(panelWindow.focusByLabel).not.toHaveBeenCalled();
   });
 });
 

@@ -314,7 +314,7 @@ describe("loadProjectNarrativeSourceRows", () => {
     ).resolves.toEqual([]);
   });
 
-  it("loads 501 scenes across the SQLite parameter chunk boundary", async () => {
+  it("loads 501 scenes without splitting the corpus into query snapshots", async () => {
     const now = "2026-08-03T00:00:00.000Z";
     const sceneIds = Array.from(
       { length: 501 },
@@ -336,10 +336,7 @@ describe("loadProjectNarrativeSourceRows", () => {
     }
     const requestedIds = [...sceneIds].reverse();
 
-    const rows = await loadProjectNarrativeSourceRows(
-      PROJECT_ID,
-      requestedIds,
-    );
+    const rows = await loadProjectNarrativeSourceRows(PROJECT_ID, requestedIds);
 
     expect(rows).toHaveLength(501);
     expect(rows.map((row) => row.nodeId)).toEqual(requestedIds);
@@ -356,5 +353,16 @@ describe("loadProjectNarrativeSourceRows", () => {
       orderIndex: 500,
       version: 0,
     });
+  });
+
+  it("fails closed before reading a corpus above the single-statement limit", async () => {
+    const sceneIds = Array.from(
+      { length: 901 },
+      (_, index) => `oversized-source-${index}`,
+    );
+
+    await expect(
+      loadProjectNarrativeSourceRows(PROJECT_ID, sceneIds),
+    ).rejects.toThrow("single-read limit");
   });
 });
