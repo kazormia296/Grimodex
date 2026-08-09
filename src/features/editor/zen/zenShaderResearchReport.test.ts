@@ -83,6 +83,9 @@ function report({
     performanceStats: {
       drawCount: 1,
       drawCallCount,
+      clearCallCount: 1,
+      sceneDrawCallCount: 1,
+      compositeDrawCallCount: 1,
       renderPipeline: "multipass",
       renderWidth: 1_920,
       renderHeight: 1_080,

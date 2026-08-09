@@ -122,6 +122,9 @@ function benchmarkRun({
     performanceStats: {
       drawCount: gpuSamples.length,
       drawCallCount,
+      clearCallCount: gpuSamples.length,
+      sceneDrawCallCount: gpuSamples.length,
+      compositeDrawCallCount: gpuSamples.length,
       renderPipeline: "multipass",
       renderWidth: 1_920,
       renderHeight: 1_080,

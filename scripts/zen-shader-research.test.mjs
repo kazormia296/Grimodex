@@ -19,8 +19,15 @@ test("parseZenShaderResearchArguments applies deterministic Full HD ranking defa
     ),
     {
       outputPath: "artifacts/zen-shaders.json",
+      experiment: "pipeline",
       shader: "all",
       pipeline: "full",
+      workload: "all",
+      resolutions: [],
+      cadence: "all",
+      durationMs: 2_000,
+      cycles: 6,
+      sequenceStart: "abba",
       dither: false,
       ditherStrength: 0.45,
       halftone: false,
@@ -89,8 +96,15 @@ test("parseZenShaderResearchArguments accepts a single shader and every ablation
     ),
     {
       outputPath: "results/spiral-scene.json",
+      experiment: "pipeline",
       shader: "spiral",
       pipeline: "full",
+      workload: "all",
+      resolutions: [],
+      cadence: "all",
+      durationMs: 2_000,
+      cycles: 6,
+      sequenceStart: "abba",
       dither: true,
       ditherStrength: 0.6,
       halftone: true,
@@ -112,11 +126,125 @@ test("parseZenShaderResearchArguments accepts a single shader and every ablation
   );
 });
 
+test("parseZenShaderResearchArguments builds a headed cadence experiment", () => {
+  assert.deepEqual(
+    parseZenShaderResearchArguments(
+      argv(
+        "--output",
+        "results/cadence.json",
+        "--experiment",
+        "cadence",
+        "--shader",
+        "mesh-gradient",
+        "--cadence",
+        "all",
+        "--duration-ms",
+        "2500",
+        "--runs",
+        "5",
+        "--headed",
+      ),
+    ),
+    {
+      outputPath: "results/cadence.json",
+      experiment: "cadence",
+      shader: "mesh-gradient",
+      pipeline: "full",
+      workload: "all",
+      resolutions: [],
+      cadence: "all",
+      durationMs: 2_500,
+      cycles: 6,
+      sequenceStart: "abba",
+      dither: false,
+      ditherStrength: 0.45,
+      halftone: false,
+      halftoneStrength: 0.3,
+      contrast: false,
+      glass: false,
+      blur: 22,
+      width: 1_920,
+      height: 1_080,
+      warmup: 30,
+      frames: 60,
+      runs: 5,
+      primeRuns: 1,
+      frame: 1_000,
+      orderSeed: 492,
+      timing: "frame",
+      headed: true,
+    },
+  );
+});
+
+test("parseZenShaderResearchArguments builds a counterbalanced baseline resolution sweep", () => {
+  const parsed = parseZenShaderResearchArguments(
+    argv(
+      "--output",
+      "results/baselines.json",
+      "--experiment",
+      "baselines",
+      "--shader",
+      "representative",
+      "--workload",
+      "all",
+      "--resolution",
+      "960x540",
+      "--resolution",
+      "1920x1080",
+      "--resolution",
+      "960x540",
+    ),
+  );
+
+  assert.equal(parsed.experiment, "baselines");
+  assert.equal(parsed.shader, "representative");
+  assert.equal(parsed.workload, "all");
+  assert.equal(parsed.runs, 4);
+  assert.deepEqual(parsed.resolutions, [
+    { width: 960, height: 540 },
+    { width: 1_920, height: 1_080 },
+  ]);
+});
+
+test("parseZenShaderResearchArguments builds a fixed ABBA experiment", () => {
+  const parsed = parseZenShaderResearchArguments(
+    argv(
+      "--output",
+      "results/abba.json",
+      "--experiment",
+      "abba",
+      "--shader",
+      "representative",
+      "--cycles",
+      "8",
+      "--sequence-start",
+      "baab",
+      "--frames",
+      "48",
+    ),
+  );
+
+  assert.equal(parsed.experiment, "abba");
+  assert.equal(parsed.shader, "representative");
+  assert.equal(parsed.cycles, 8);
+  assert.equal(parsed.sequenceStart, "baab");
+  assert.equal(parsed.frames, 48);
+  assert.equal(parsed.timing, "frame");
+});
+
 test("parseZenShaderResearchArguments rejects invalid paths and values", () => {
   assert.throws(() => parseZenShaderResearchArguments(argv()), /output/i);
 
   for (const [option, value, expected] of [
     ["--pipeline", "copy", /pipeline/i],
+    ["--experiment", "unknown", /experiment/i],
+    ["--workload", "clear", /workload/i],
+    ["--resolution", "1920", /resolution/i],
+    ["--cadence", "fast", /cadence/i],
+    ["--duration-ms", "0", /duration/i],
+    ["--cycles", "3", /cycles|even/i],
+    ["--sequence-start", "abab", /sequence/i],
     ["--dither", "maybe", /dither/i],
     ["--dither-strength", "1.1", /dither-strength/i],
     ["--halftone", "1", /halftone/i],
@@ -150,6 +278,85 @@ test("parseZenShaderResearchArguments rejects invalid paths and values", () => {
       ),
     /glass|full|pipeline/i,
   );
+
+  assert.throws(
+    () =>
+      parseZenShaderResearchArguments(
+        argv(
+          "--output",
+          "result.json",
+          "--experiment",
+          "cadence",
+          "--shader",
+          "spiral",
+        ),
+      ),
+    /headed/i,
+  );
+  assert.throws(
+    () =>
+      parseZenShaderResearchArguments(
+        argv(
+          "--output",
+          "result.json",
+          "--experiment",
+          "abba",
+          "--frames",
+          "65",
+        ),
+      ),
+    /frames|64/i,
+  );
+  assert.throws(
+    () =>
+      parseZenShaderResearchArguments(
+        argv(
+          "--output",
+          "result.json",
+          "--experiment",
+          "abba",
+          "--contrast",
+          "on",
+        ),
+      ),
+    /contrast|abba/i,
+  );
+
+  for (const [experiment, experimentArguments, expected] of [
+    ["pipeline", ["--duration-ms", "1000"], /duration|pipeline/i],
+    ["cadence", ["--headed", "--cycles", "8"], /cycles|cadence/i],
+    ["baselines", ["--cadence", "native-raf"], /cadence|baseline/i],
+    ["abba", ["--resolution", "960x540"], /resolution|abba/i],
+  ]) {
+    assert.throws(
+      () =>
+        parseZenShaderResearchArguments(
+          argv(
+            "--output",
+            "result.json",
+            "--experiment",
+            experiment,
+            ...experimentArguments,
+          ),
+        ),
+      expected,
+    );
+  }
+
+  assert.throws(
+    () =>
+      parseZenShaderResearchArguments(
+        argv(
+          "--output",
+          "result.json",
+          "--experiment",
+          "baselines",
+          "--runs",
+          "3",
+        ),
+      ),
+    /runs|balanced|cycle|6/i,
+  );
 });
 
 test("buildZenShaderResearchInvocation isolates the dedicated real-GPU runner", () => {
@@ -182,8 +389,15 @@ test("buildZenShaderResearchInvocation isolates the dedicated real-GPU runner", 
       environment: {
         GRIMODEX_ZEN_SHADER_RESEARCH_OUTPUT: "C:/results/spiral.json",
         GRIMODEX_ZEN_SHADER_RESEARCH_SCENARIO: JSON.stringify({
+          experiment: "pipeline",
           shader: "spiral",
           pipeline: "raw",
+          workload: "all",
+          resolutions: [],
+          cadence: "all",
+          durationMs: 2_000,
+          cycles: 6,
+          sequenceStart: "abba",
           dither: true,
           ditherStrength: 0.45,
           halftone: false,

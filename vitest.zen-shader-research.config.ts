@@ -12,10 +12,28 @@ import { playwright } from "@vitest/browser-playwright";
 const REPORT_ENDPOINT = "/__zen-shader-research-report";
 const MAX_REPORT_BYTES = 64 * 1024 * 1024;
 const PAPER_SHADER_COUNT = 29;
+const REPRESENTATIVE_SHADER_COUNT = 5;
 
 interface ZenShaderResearchScenarioEnvironment {
+  experiment: "pipeline" | "cadence" | "baselines" | "abba";
   shader: string;
   pipeline: "raw" | "scene" | "full";
+  workload:
+    | "all"
+    | "paper"
+    | "clear-only"
+    | "solid-fullscreen"
+    | "texture-copy";
+  resolutions: Array<{ width: number; height: number }>;
+  cadence:
+    | "all"
+    | "native-raf"
+    | "timer-60"
+    | "raf-skip-60"
+    | "stopped-retained";
+  durationMs: number;
+  cycles: number;
+  sequenceStart: "abba" | "baab";
   dither: boolean;
   ditherStrength: number;
   halftone: boolean;
@@ -219,14 +237,58 @@ const dependencyRoot = realpathSync(path.resolve(__dirname, "node_modules"));
 const launchArguments = [
   ...(process.platform === "win32" ? ["--use-angle=d3d11"] : []),
   "--disable-software-rasterizer",
+  ...(scenario.headed
+    ? [`--window-size=${scenario.width},${scenario.height}`]
+    : []),
 ];
-const shaderCount = scenario.shader === "all" ? PAPER_SHADER_COUNT : 1;
+const shaderCount =
+  scenario.shader === "all"
+    ? PAPER_SHADER_COUNT
+    : scenario.shader === "representative"
+      ? REPRESENTATIVE_SHADER_COUNT
+      : 1;
 const timingModeCount = scenario.timing === "both" ? 2 : 1;
-const expectedFrameCount =
+const pipelineFrameCount =
   (scenario.warmup + scenario.frames) *
   (scenario.primeRuns + scenario.runs) *
   shaderCount *
   timingModeCount;
+const baselineWorkloadCount =
+  scenario.workload === "all"
+    ? 3 + shaderCount * 2
+    : scenario.workload === "paper"
+      ? shaderCount * 2
+      : 1;
+const baselineFrameCount =
+  (scenario.warmup + scenario.frames) *
+  (scenario.primeRuns + scenario.runs) *
+  Math.max(1, scenario.resolutions.length) *
+  baselineWorkloadCount *
+  timingModeCount;
+const cadenceModeCount = scenario.cadence === "all" ? 4 : 1;
+const cadenceDurationMs =
+  scenario.durationMs * scenario.runs * shaderCount * cadenceModeCount;
+const abbaFrameCount =
+  (scenario.warmup + scenario.frames) * scenario.cycles * 4 * shaderCount;
+const testTimeout =
+  scenario.experiment === "cadence"
+    ? Math.max(120_000, cadenceDurationMs * 2 + 60_000)
+    : Math.max(
+        120_000,
+        (scenario.experiment === "baselines"
+          ? baselineFrameCount
+          : scenario.experiment === "abba"
+            ? abbaFrameCount
+            : pipelineFrameCount) * 100,
+      );
+const runnerByExperiment = {
+  pipeline: "src/features/editor/zen/ZenShaderResearchRunner.browser.test.tsx",
+  cadence:
+    "src/features/editor/zen/ZenShaderCadenceResearchRunner.browser.test.tsx",
+  baselines:
+    "src/features/editor/zen/ZenShaderBaselineResearchRunner.browser.test.tsx",
+  abba: "src/features/editor/zen/ZenShaderAbbaResearchRunner.browser.test.tsx",
+} as const;
 
 export default defineConfig({
   plugins: [
@@ -253,9 +315,10 @@ export default defineConfig({
     name: "zen-shader-research",
     globals: true,
     maxWorkers: 1,
-    testTimeout: Math.max(120_000, expectedFrameCount * 100),
+    testTimeout,
     browser: {
       enabled: true,
+      ui: false,
       api: { host: "127.0.0.1", port: 45125 },
       connectTimeout: 180_000,
       fileParallelism: false,
@@ -270,8 +333,6 @@ export default defineConfig({
       instances: [{ browser: "chromium" }],
     },
     setupFiles: ["./src/test-setup-browser.ts"],
-    include: [
-      "src/features/editor/zen/ZenShaderResearchRunner.browser.test.tsx",
-    ],
+    include: [runnerByExperiment[scenario.experiment]],
   },
 });

@@ -129,5 +129,92 @@ stops their animation loop. Chromium/Electron compositor cost and Task Manager
 GPU percentage are outside WebGL timer scope and should be recorded separately
 as reference observations when making an adoption decision.
 
+## Follow-up experiments
+
+The same command now owns three research-only follow-ups. None of them enables a
+new production render path.
+
+### Display cadence
+
+The cadence experiment compares four schedulers on the same retained canvas:
+
+| Mode               | Scheduling contract                                      |
+| ------------------ | -------------------------------------------------------- |
+| `native-raf`       | Redraw on every display `requestAnimationFrame` callback |
+| `timer-60`         | Wake on corrected 60 Hz timer deadlines, then redraw     |
+| `raf-skip-60`      | Receive display rAF callbacks but cap redraws at 60 FPS  |
+| `stopped-retained` | Keep the final canvas/context and issue no further draw  |
+
+`raf-skip-60` represents the current product cadence. The experiment records
+display-rAF intervals, scheduler wakeups, actual draw intervals, skipped rAFs,
+and shader-time drift. It deliberately leaves GPU timer queries off because it
+measures wall-clock scheduling rather than per-draw GPU cost.
+
+Cadence research must run headed on the real display; headless Chromium does not
+provide a meaningful high-refresh comparison:
+
+```powershell
+pnpm research:zen-shader-cadence --output .artifacts/zen-shaders/cadence.json `
+  --headed --shader representative --cadence all --duration-ms 2000 --runs 5
+```
+
+The window must remain visible and focused for every recorded block. The runner
+fails instead of silently accepting a hidden or unfocused sample.
+
+### Trivial baselines and resolution scaling
+
+The baseline experiment separates fixed WebGL cost from pixel and shader work:
+
+| Workload           | Per-frame work                                               |
+| ------------------ | ------------------------------------------------------------ |
+| `clear-only`       | Clear the default framebuffer; zero fullscreen draws         |
+| `solid-fullscreen` | Clear plus one constant-color fullscreen draw                |
+| `texture-copy`     | Clear an RGBA8 Scene FBO and copy it with one Composite draw |
+| `paper`            | Each selected Paper Shader through both `raw` and `scene`    |
+
+Resolution order is counterbalanced by forward rotations followed by reversed
+rotations. A workload keeps one WebGL context and a fixed maximum pixel budget
+while the canvas is resized, then drains old queries, warms up, resets counters,
+and records the next cell. Recorded runs default to one complete `2 × resolution
+count` cycle (six runs for the default three resolutions); explicit run counts
+must contain a whole cycle.
+
+```powershell
+pnpm research:zen-shader-baselines --output .artifacts/zen-shaders/baselines.json `
+  --workload all --shader representative `
+  --resolution 960x540 --resolution 1280x720 --resolution 1920x1080
+```
+
+The artifact stores requested and observed dimensions, execution order, exact
+draw topology, Scene target bytes, raw samples, and per-resolution results. The
+default representative set is the five provisional heavy shaders from the
+first ranking.
+
+### Same-context ABBA fast-path comparison
+
+The ABBA experiment compiles and allocates the full path first, then switches
+between `raw` and Glass-off/Contrast-off `full` without replacing the canvas,
+WebGL context, programs, or resident Scene texture:
+
+```text
+ABBA, BAAB, ABBA, BAAB, ...
+```
+
+Each run averages its two blocks per variant and treats the paired `full - raw`
+difference as the statistical unit. The summary reports the median paired p50
+and p95 deltas, deterministic paired-bootstrap confidence intervals, and sign
+counts. Pooled frame samples are retained as evidence but are not the primary
+decision metric.
+
+```powershell
+pnpm research:zen-shader-abba --output .artifacts/zen-shaders/abba.json `
+  --shader representative --cycles 6 --frames 60
+```
+
+The runner rejects a context ID or resource epoch change between blocks and
+requires the expected `raw=1 draw` and `full=2 draws` topology. Glass and
+Contrast Guard are fixed off so this experiment isolates only the intermediate
+RGBA8 Scene FBO plus pass-through Composite.
+
 The `.artifacts/` directory is ignored by Git. Attach the raw JSON artifacts to
 the research PR or benchmark record rather than committing them.

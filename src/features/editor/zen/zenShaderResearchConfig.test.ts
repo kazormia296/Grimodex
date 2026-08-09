@@ -27,6 +27,16 @@ describe("Zen shader research configuration", () => {
     );
   });
 
+  it("resolves the fixed five-shader representative research set", () => {
+    expect(resolveZenShaderResearchShaderIds("representative", 492)).toEqual([
+      "halftone-cmyk",
+      "halftone-dots",
+      "smoke-ring",
+      "gem-smoke",
+      "color-panels",
+    ]);
+  });
+
   it("builds explicit non-zero Scene ablations at a fixed frame", () => {
     const config = buildZenShaderResearchConfig("spiral", {
       dither: true,

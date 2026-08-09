@@ -7,6 +7,7 @@ import {
 import {
   ZenBlurResearchCanvas,
   type ZenResearchRenderPipeline,
+  type ZenResearchSceneOperation,
 } from "./ZenBlurResearchCanvas";
 import type { ZenBlurResearchOptions } from "./zenBlurResearchConfig";
 import {
@@ -55,6 +56,8 @@ export interface ZenShaderResearchSurfaceProps {
   frame: number;
   width: number;
   height: number;
+  pixelBudget?: number;
+  sceneOperation?: ZenResearchSceneOperation;
   researchOptions: ZenBlurResearchOptions;
 }
 
@@ -75,6 +78,8 @@ export const ZenShaderResearchSurface = forwardRef<
     frame,
     width,
     height,
+    pixelBudget,
+    sceneOperation,
     researchOptions,
   },
   forwardedRef,
@@ -171,10 +176,11 @@ export const ZenShaderResearchSurface = forwardRef<
       compositeUniforms={compositeUniforms}
       mipmaps={resolved.mipmaps}
       minPixelRatio={1}
-      maxPixelCount={width * height}
+      maxPixelCount={pixelBudget ?? width * height}
       webGlContextAttributes={RESEARCH_WEBGL_CONTEXT_ATTRIBUTES}
       researchOptions={researchOptions}
       renderPipeline={renderPipeline}
+      sceneOperation={sceneOperation}
       speed={0}
       style={{ position: "relative", width, height }}
       data-zen-glass-compositor={

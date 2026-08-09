@@ -10,6 +10,14 @@ export const ZEN_SHADER_RESEARCH_PALETTE: ZenResolvedPalette = {
   colors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
 };
 
+export const ZEN_SHADER_RESEARCH_REPRESENTATIVE_IDS = [
+  "halftone-cmyk",
+  "halftone-dots",
+  "smoke-ring",
+  "gem-smoke",
+  "color-panels",
+] as const satisfies readonly PaperShaderId[];
+
 export interface ZenShaderResearchConfigInput {
   dither: boolean;
   ditherStrength: number;
@@ -50,6 +58,10 @@ export function resolveZenShaderResearchShaderIds(
   requested: string,
   orderSeed: number,
 ): PaperShaderId[] {
+  if (requested === "representative") {
+    return [...ZEN_SHADER_RESEARCH_REPRESENTATIVE_IDS];
+  }
+
   if (requested !== "all") {
     if (!PAPER_SHADER_IDS.includes(requested as PaperShaderId)) {
       throw new TypeError(`Unknown Paper shader: ${requested}`);
