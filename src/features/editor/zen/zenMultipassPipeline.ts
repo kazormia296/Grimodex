@@ -545,6 +545,26 @@ void main() {
   gl_Position = vec4(a_position, 0.0, 1.0);
 }`;
 
+const ZEN_QUANTIZATION_DITHER_GLSL = `
+uniform float u_quantizationDitherStrength;
+uniform float u_quantizationDitherSeed;
+
+float zenQuantizationWhiteNoise(vec2 pixel, float seed) {
+  vec2 seededPixel = pixel + vec2(seed * 17.0, seed * 131.0);
+  return fract(
+    sin(dot(seededPixel, vec2(12.9898, 78.233))) * 43758.5453
+  );
+}
+
+vec4 zenApplyQuantizationDither(vec4 color) {
+  if (u_quantizationDitherStrength <= 0.0) return color;
+  float noise =
+    zenQuantizationWhiteNoise(gl_FragCoord.xy, u_quantizationDitherSeed) - 0.5;
+  color.rgb += vec3(noise * u_quantizationDitherStrength);
+  return color;
+}
+`;
+
 export const ZEN_MULTIPASS_DOWNSAMPLE_FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -552,6 +572,7 @@ out vec4 fragColor;
 uniform sampler2D u_sourceTexture;
 uniform vec2 u_sourceTexelSize;
 uniform vec2 u_sourceToTargetScale;
+${ZEN_QUANTIZATION_DITHER_GLSL}
 void main() {
   // A separable 3x3 tent sampled at +/- half of the source footprint. The
   // symmetric nine taps preserve rotational balance during arbitrary resize.
@@ -572,7 +593,7 @@ void main() {
     u_sourceTexture,
     v_uv + vec2(-halfFootprint.x, halfFootprint.y)
   ) * 0.0625;
-  fragColor = color;
+  fragColor = zenApplyQuantizationDither(color);
 }`;
 
 export const ZEN_MULTIPASS_GAUSSIAN_FRAGMENT = `#version 300 es
@@ -585,6 +606,7 @@ uniform float u_centerWeight;
 uniform float u_pairOffsets[16];
 uniform float u_pairWeights[16];
 uniform int u_pairCount;
+${ZEN_QUANTIZATION_DITHER_GLSL}
 void main() {
   vec4 color = texture(u_sourceTexture, v_uv) * u_centerWeight;
   for (int index = 0; index < 16; index += 1) {
@@ -594,7 +616,7 @@ void main() {
     color += texture(u_sourceTexture, v_uv + offset) * weight;
     color += texture(u_sourceTexture, v_uv - offset) * weight;
   }
-  fragColor = color;
+  fragColor = zenApplyQuantizationDither(color);
 }`;
 
 const ZEN_MULTIPASS_COMPOSITE_TEMPLATE = String.raw`#version 300 es
@@ -610,6 +632,8 @@ uniform float u_zenGlassBlur;
 uniform float u_zenGlassRefraction;
 uniform float u_zenGlassSaturation;
 uniform float u_zenGlassShine;
+uniform float u_zenGlassNoiseStrength;
+uniform float u_zenGlassNoiseSeed;
 uniform vec4 u_zenGlassRect;
 uniform float u_zenGlassCornerRadius;
 uniform float u_zenUiSurfaceCount;
@@ -1011,6 +1035,20 @@ vec3 zenSaturate(vec3 color, float saturation) {
   return mix(vec3(luminance), color, max(0.0, saturation));
 }
 
+float zenGlassWhiteNoise(vec2 pixel, float seed) {
+  vec2 seededPixel = pixel + vec2(seed * 17.0, seed * 131.0);
+  return fract(
+    sin(dot(seededPixel, vec2(12.9898, 78.233))) * 43758.5453
+  );
+}
+
+vec3 zenApplyGlassNoise(vec3 glassColor) {
+  if (u_zenGlassNoiseStrength <= 0.0) return glassColor;
+  float noise =
+    zenGlassWhiteNoise(gl_FragCoord.xy, u_zenGlassNoiseSeed) - 0.5;
+  return glassColor + vec3(noise * u_zenGlassNoiseStrength);
+}
+
 void main() {
   vec2 refractionOffset;
   float glassMask;
@@ -1039,6 +1077,7 @@ void main() {
       vec3(1.0),
       shineMask * clamp(u_zenGlassShine, 0.0, 1.0) * 0.08
     );
+    glassColor = zenApplyGlassNoise(glassColor);
     composedColor = mix(
       sceneColor,
       glassColor,

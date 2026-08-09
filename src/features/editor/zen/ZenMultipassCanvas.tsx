@@ -17,6 +17,20 @@ import {
   buildZenGaussianKernel,
   resolveZenMultipassBlurPlan,
 } from "./zenMultipassPipeline";
+import {
+  ZEN_DUAL_KAWASE_DOWNSAMPLE_FRAGMENT,
+  ZEN_DUAL_KAWASE_UPSAMPLE_FRAGMENT,
+  resolveZenDualKawasePlan,
+  type ZenDualKawasePlan,
+} from "./zenDualKawase";
+import {
+  DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS,
+  type ZenBlurResearchOptions,
+} from "./zenBlurResearchConfig";
+import {
+  collectZenWebGlMetadata,
+  type ZenWebGlMetadata,
+} from "./zenWebGlDiagnostics";
 import { createZenShaderFrameCadence } from "./zenShaderAnimation";
 import {
   createZenGpuTimerBackend,
@@ -27,6 +41,7 @@ import {
 } from "./zenGpuTimerSampler";
 
 const ZEN_INTERMEDIATE_TEXTURE_UNIT_COUNT = 2;
+const EMPTY_ZEN_MIPMAPS: readonly string[] = [];
 
 const PAPER_VERTEX_SHADER = `#version 300 es
 precision mediump float;
@@ -192,6 +207,7 @@ export interface ZenMultipassCanvasProps {
   maxPixelCount: number;
   webGlContextAttributes?: WebGLContextAttributes;
   blurTargetPrecision?: "auto" | "rgba8";
+  researchOptions?: ZenBlurResearchOptions;
   speed?: number;
   className?: string;
   style?: CSSProperties;
@@ -225,6 +241,7 @@ interface ZenMultipassFaultInjection {
 export interface ZenMultipassPerformanceStats {
   drawCount: number;
   drawCallCount: number;
+  backend: ZenBlurResearchOptions["backend"];
   gpuTimeMs: number | null;
   gpuPassTimesMs: ZenGpuPassTimesMs | null;
   gpuTimingStatus: ZenGpuTimingStatus;
@@ -239,6 +256,50 @@ export interface ZenMultipassPerformanceStats {
   blurTargetWidth: number;
   blurTargetHeight: number;
   gaussianPairCount: number;
+  kawaseDownsamplePassCount: number;
+  kawaseUpsamplePassCount: number;
+  blurTargetLevels: ZenBlurTargetLevelStats[];
+  intermediateTextureBytes: number;
+  blurTargetReallocationCount: number;
+  cpuSubmitTimeMs: number | null;
+  cpuSubmitSampleCount: number;
+  cpuSubmitSummary: ZenTimingPercentiles | null;
+  displayNoise: ZenBlurResearchOptions["displayNoise"];
+  rgba8Dither: ZenBlurResearchOptions["rgba8Dither"];
+}
+
+export interface ZenBlurTargetLevelStats {
+  level: number;
+  width: number;
+  height: number;
+  format: "rgba16f" | "rgba8";
+  bytes: number;
+}
+
+export interface ZenTimingPercentiles {
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+export interface ZenCpuSubmitSample {
+  drawCount: number;
+  drawCallCount: number;
+  cpuSubmitTimeMs: number;
+}
+
+export interface ZenMultipassPerformanceReport {
+  schemaVersion: 1;
+  capturedAtEpochMs: number;
+  backend: ZenBlurResearchOptions["backend"];
+  researchOptions: ZenBlurResearchOptions;
+  gpuMetadata: ZenWebGlMetadata;
+  performanceStats: ZenMultipassPerformanceStats;
+  gpuBenchmark: ReturnType<ZenGpuTimerSampler["getBenchmarkReport"]>;
+  cpuSubmit: {
+    samples: ZenCpuSubmitSample[];
+    summary: ZenTimingPercentiles | null;
+  };
 }
 
 let activeZenMultipassFaultInjection: ZenMultipassFaultInjection | null = null;
@@ -339,6 +400,29 @@ function resolveBlurTargetFormat(
   }
 
   return complete ? createRgba16fTargetFormat(gl) : fallback;
+}
+
+function renderTargetBytes(target: RenderTarget) {
+  const bytesPerPixel = target.format.precision === "rgba16f" ? 8 : 4;
+  return target.width * target.height * bytesPerPixel;
+}
+
+function nearestRankPercentile(values: readonly number[], percentile: number) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const rank = Math.max(1, Math.ceil(percentile * sorted.length));
+  return sorted[Math.min(sorted.length - 1, rank - 1)] ?? 0;
+}
+
+function timingPercentiles(
+  values: readonly number[],
+): ZenTimingPercentiles | null {
+  if (values.length === 0) return null;
+  return {
+    p50: nearestRankPercentile(values, 0.5),
+    p95: nearestRankPercentile(values, 0.95),
+    p99: nearestRankPercentile(values, 0.99),
+  };
 }
 
 function numericUniformArray(value: unknown): number[] {
@@ -519,10 +603,13 @@ interface RendererResources {
   sceneProgram: ProgramBundle;
   downsampleProgram: ProgramBundle;
   gaussianProgram: ProgramBundle;
+  kawaseDownsampleProgram: ProgramBundle | null;
+  kawaseUpsampleProgram: ProgramBundle | null;
   compositeProgram: ProgramBundle;
   sceneTarget: RenderTarget;
   blurTargetA: RenderTarget;
   blurTargetB: RenderTarget;
+  kawaseTargets: RenderTarget[];
 }
 
 function deleteRendererResources(
@@ -533,6 +620,7 @@ function deleteRendererResources(
     resources.sceneTarget,
     resources.blurTargetA,
     resources.blurTargetB,
+    ...resources.kawaseTargets,
   ]) {
     deleteRenderTarget(gl, target);
   }
@@ -540,9 +628,11 @@ function deleteRendererResources(
     resources.sceneProgram,
     resources.downsampleProgram,
     resources.gaussianProgram,
+    resources.kawaseDownsampleProgram,
+    resources.kawaseUpsampleProgram,
     resources.compositeProgram,
   ]) {
-    deleteProgramBundle(gl, bundle);
+    if (bundle) deleteProgramBundle(gl, bundle);
   }
 }
 
@@ -552,6 +642,7 @@ function createRendererResources(
   compositeFragment: string,
   sceneTargetFormat: RenderTargetFormat,
   blurTargetFormat: RenderTargetFormat,
+  researchOptions: ZenBlurResearchOptions,
 ): RendererResources {
   const bundles: ProgramBundle[] = [];
   const targets: RenderTarget[] = [];
@@ -574,6 +665,23 @@ function createRendererResources(
       ZEN_MULTIPASS_GAUSSIAN_FRAGMENT,
     );
     bundles.push(gaussianProgram);
+    const usesDualKawase = researchOptions.backend !== "gaussian-current";
+    const kawaseDownsampleProgram = usesDualKawase
+      ? createProgramBundle(
+          gl,
+          ZEN_MULTIPASS_FULLSCREEN_VERTEX,
+          ZEN_DUAL_KAWASE_DOWNSAMPLE_FRAGMENT,
+        )
+      : null;
+    if (kawaseDownsampleProgram) bundles.push(kawaseDownsampleProgram);
+    const kawaseUpsampleProgram = usesDualKawase
+      ? createProgramBundle(
+          gl,
+          ZEN_MULTIPASS_FULLSCREEN_VERTEX,
+          ZEN_DUAL_KAWASE_UPSAMPLE_FRAGMENT,
+        )
+      : null;
+    if (kawaseUpsampleProgram) bundles.push(kawaseUpsampleProgram);
     const compositeProgram = createProgramBundle(
       gl,
       ZEN_MULTIPASS_FULLSCREEN_VERTEX,
@@ -587,14 +695,24 @@ function createRendererResources(
     targets.push(blurTargetA);
     const blurTargetB = createRenderTarget(gl, blurTargetFormat);
     targets.push(blurTargetB);
+    const kawaseTargets = usesDualKawase
+      ? Array.from({ length: researchOptions.dualKawase.passes + 1 }, () => {
+          const target = createRenderTarget(gl, blurTargetFormat);
+          targets.push(target);
+          return target;
+        })
+      : [];
     return {
       sceneProgram,
       downsampleProgram,
       gaussianProgram,
+      kawaseDownsampleProgram,
+      kawaseUpsampleProgram,
       compositeProgram,
       sceneTarget,
       blurTargetA,
       blurTargetB,
+      kawaseTargets,
     };
   } catch (error) {
     for (const target of targets.reverse()) deleteRenderTarget(gl, target);
@@ -608,10 +726,13 @@ class ZenMultipassRenderer {
   private readonly sceneProgram: ProgramBundle;
   private readonly downsampleProgram: ProgramBundle;
   private readonly gaussianProgram: ProgramBundle;
+  private readonly kawaseDownsampleProgram: ProgramBundle | null;
+  private readonly kawaseUpsampleProgram: ProgramBundle | null;
   private readonly compositeProgram: ProgramBundle;
   private readonly sceneTarget: RenderTarget;
   private readonly blurTargetA: RenderTarget;
   private readonly blurTargetB: RenderTarget;
+  private readonly kawaseTargets: RenderTarget[];
   private blurTargetFormat: RenderTargetFormat;
   private readonly uniformLocations = new WeakMap<
     WebGLProgram,
@@ -647,10 +768,16 @@ class ZenMultipassRenderer {
   private blurredTexture: WebGLTexture;
   private blurPlanKey = "";
   private activeBlurPlan: ReturnType<typeof resolveZenMultipassBlurPlan> = null;
+  private activeKawasePlan: ZenDualKawasePlan | null = null;
   private gaussianPairCount = 0;
+  private blurTargetReallocationCount = 0;
+  private cpuSubmitSamples: ZenCpuSubmitSample[] = [];
+  private cpuSubmitTimeMs: number | null = null;
+  private hasRenderedFrame = false;
   private activeGlassSurface = false;
   private readonly faultInjection = activeZenMultipassFaultInjection;
   private readonly gpuTimerSampler: ZenGpuTimerSampler;
+  private readonly gpuMetadata: ZenWebGlMetadata;
   private failed = false;
   private disposed = false;
 
@@ -667,6 +794,7 @@ class ZenMultipassRenderer {
     contextAttributes?: WebGLContextAttributes,
     private readonly onFatalError: (error: unknown) => void = () => undefined,
     blurTargetPrecision: "auto" | "rgba8" = "auto",
+    private readonly researchOptions: ZenBlurResearchOptions = DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS,
   ) {
     const gl = canvas.getContext("webgl2", contextAttributes);
     if (!gl)
@@ -680,7 +808,14 @@ class ZenMultipassRenderer {
     } catch {
       // GPU timing is diagnostic only and must never prevent rendering.
     }
-    this.gpuTimerSampler = new ZenGpuTimerSampler(gpuTimerBackend);
+    this.gpuTimerSampler = new ZenGpuTimerSampler(
+      gpuTimerBackend,
+      researchOptions.gpuTiming,
+    );
+    this.gpuMetadata = collectZenWebGlMetadata(
+      gl,
+      canvas.ownerDocument.defaultView?.navigator,
+    );
     const sceneTargetFormat = createRgba8TargetFormat(gl);
     const initialBlurTargetPrecision =
       this.faultInjection?.initialBlurTargetPrecision;
@@ -703,14 +838,18 @@ class ZenMultipassRenderer {
       compositeFragment,
       sceneTargetFormat,
       this.blurTargetFormat,
+      researchOptions,
     );
     this.sceneProgram = resources.sceneProgram;
     this.downsampleProgram = resources.downsampleProgram;
     this.gaussianProgram = resources.gaussianProgram;
+    this.kawaseDownsampleProgram = resources.kawaseDownsampleProgram;
+    this.kawaseUpsampleProgram = resources.kawaseUpsampleProgram;
     this.compositeProgram = resources.compositeProgram;
     this.sceneTarget = resources.sceneTarget;
     this.blurTargetA = resources.blurTargetA;
     this.blurTargetB = resources.blurTargetB;
+    this.kawaseTargets = resources.kawaseTargets;
     this.blurredTexture = this.sceneTarget.texture;
     try {
       this.resizeObserver =
@@ -736,6 +875,17 @@ class ZenMultipassRenderer {
         this.uniformLocation(this.gaussianProgram.program, "u_sourceTexture"),
         0,
       );
+      for (const program of [
+        this.kawaseDownsampleProgram,
+        this.kawaseUpsampleProgram,
+      ]) {
+        if (!program) continue;
+        this.useBundle(program);
+        gl.uniform1i(
+          this.uniformLocation(program.program, "u_sourceTexture"),
+          0,
+        );
+      }
       this.useBundle(this.compositeProgram);
       gl.uniform1i(
         this.uniformLocation(this.compositeProgram.program, "u_sceneTexture"),
@@ -888,14 +1038,39 @@ class ZenMultipassRenderer {
     return this.allocateTarget(this.sceneTarget, width, height);
   }
 
-  private allocateBlurTargets(width: number, height: number) {
-    const allocateBoth = () =>
-      this.allocateBlurTarget(this.blurTargetA, width, height) &&
-      this.allocateBlurTarget(this.blurTargetB, width, height);
-    if (allocateBoth()) return;
+  private allocateBlurTargetSet(
+    targets: readonly RenderTarget[],
+    dimensions: readonly { width: number; height: number }[],
+  ) {
+    const requiresAllocation = targets.some((target, index) => {
+      const size = dimensions[index];
+      return (
+        !size || target.width !== size.width || target.height !== size.height
+      );
+    });
+    if (!requiresAllocation) return;
+    const reallocatesExistingTargets = targets.some(
+      (target) => target.width > 0 && target.height > 0,
+    );
+    const allocateAll = () => {
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        const size = dimensions[index];
+        if (!target || !size) return false;
+        if (!this.allocateBlurTarget(target, size.width, size.height)) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (allocateAll()) {
+      if (reallocatesExistingTargets) this.blurTargetReallocationCount += 1;
+      return;
+    }
+    const largest = dimensions[0] ?? { width: 0, height: 0 };
     if (this.blurTargetFormat.precision === "rgba8") {
       throw new Error(
-        `Unable to allocate Zen multipass blur targets at ${width}x${height}: RGBA8 allocation failed`,
+        `Unable to allocate Zen multipass blur targets at ${largest.width}x${largest.height}: RGBA8 allocation failed`,
       );
     }
 
@@ -903,17 +1078,35 @@ class ZenMultipassRenderer {
     // dimensions. Downgrade both ping-pong targets together so passes never
     // mix precisions, then retry the real allocation once.
     this.blurTargetFormat = createRgba8TargetFormat(this.gl);
-    this.blurTargetA.format = this.blurTargetFormat;
-    this.blurTargetB.format = this.blurTargetFormat;
-    this.blurTargetA.width = 0;
-    this.blurTargetA.height = 0;
-    this.blurTargetB.width = 0;
-    this.blurTargetB.height = 0;
-    if (!allocateBoth()) {
+    for (const target of [
+      this.blurTargetA,
+      this.blurTargetB,
+      ...this.kawaseTargets,
+    ]) {
+      target.format = this.blurTargetFormat;
+      target.width = 0;
+      target.height = 0;
+    }
+    if (!allocateAll()) {
       throw new Error(
-        `Unable to allocate Zen multipass blur targets at ${width}x${height}: RGBA16F and RGBA8 allocations failed`,
+        `Unable to allocate Zen multipass blur targets at ${largest.width}x${largest.height}: RGBA16F and RGBA8 allocations failed`,
       );
     }
+    if (reallocatesExistingTargets) this.blurTargetReallocationCount += 1;
+  }
+
+  private allocateBlurTargets(width: number, height: number) {
+    this.allocateBlurTargetSet(
+      [this.blurTargetA, this.blurTargetB],
+      [
+        { width, height },
+        { width, height },
+      ],
+    );
+  }
+
+  private allocateKawaseTargets(plan: ZenDualKawasePlan) {
+    this.allocateBlurTargetSet(this.kawaseTargets, plan.levels);
   }
 
   private resizeTargets() {
@@ -1210,12 +1403,23 @@ class ZenMultipassRenderer {
 
   private prepareBlurPlan(blurRadius: number, activeGlass: boolean) {
     const key = activeGlass
-      ? `${blurRadius}:${this.renderScale}:${this.cssWidth}:${this.cssHeight}`
+      ? [
+          this.researchOptions.backend,
+          blurRadius,
+          this.renderScale,
+          this.cssWidth,
+          this.cssHeight,
+          this.researchOptions.dualKawase.passes,
+          this.researchOptions.dualKawase.offset,
+        ].join(":")
       : "inactive";
-    if (key === this.blurPlanKey) return this.activeBlurPlan;
+    if (key === this.blurPlanKey) {
+      return this.activeBlurPlan !== null || this.activeKawasePlan !== null;
+    }
     this.blurPlanKey = "";
     this.activeBlurPlan = null;
-    const plan = activeGlass
+    this.activeKawasePlan = null;
+    const gaussianPlan = activeGlass
       ? resolveZenMultipassBlurPlan(
           blurRadius,
           this.renderScale,
@@ -1224,14 +1428,67 @@ class ZenMultipassRenderer {
         )
       : null;
     this.gaussianPairCount = 0;
-    if (!plan) {
+    if (!gaussianPlan) {
       this.blurPlanKey = key;
-      this.activeBlurPlan = null;
-      return null;
+      return false;
     }
 
-    this.allocateBlurTargets(plan.targetWidth, plan.targetHeight);
-    const kernel = buildZenGaussianKernel(plan.kernelSigmaInTargetPixels);
+    if (this.researchOptions.backend !== "gaussian-current") {
+      const kawasePlan = resolveZenDualKawasePlan({
+        backend: this.researchOptions.backend,
+        sceneWidth: this.sceneTarget.width,
+        sceneHeight: this.sceneTarget.height,
+        baseWidth:
+          this.researchOptions.backend === "dual-kawase-planned"
+            ? gaussianPlan.targetWidth
+            : undefined,
+        baseHeight:
+          this.researchOptions.backend === "dual-kawase-planned"
+            ? gaussianPlan.targetHeight
+            : undefined,
+        passes: this.researchOptions.dualKawase.passes,
+        offset: this.researchOptions.dualKawase.offset,
+        textureFormat: this.blurTargetFormat.precision,
+      });
+      if (!kawasePlan) {
+        this.blurPlanKey = key;
+        return false;
+      }
+      this.allocateKawaseTargets(kawasePlan);
+
+      if (kawasePlan.requiresPrefilter) {
+        const gl = this.gl;
+        this.useBundle(this.downsampleProgram);
+        gl.uniform2f(
+          this.uniformLocation(
+            this.downsampleProgram.program,
+            "u_sourceTexelSize",
+          ),
+          1 / this.sceneTarget.width,
+          1 / this.sceneTarget.height,
+        );
+        gl.uniform2f(
+          this.uniformLocation(
+            this.downsampleProgram.program,
+            "u_sourceToTargetScale",
+          ),
+          this.sceneTarget.width / kawasePlan.baseWidth,
+          this.sceneTarget.height / kawasePlan.baseHeight,
+        );
+      }
+      this.blurPlanKey = key;
+      this.activeBlurPlan = gaussianPlan;
+      this.activeKawasePlan = kawasePlan;
+      return true;
+    }
+
+    this.allocateBlurTargets(
+      gaussianPlan.targetWidth,
+      gaussianPlan.targetHeight,
+    );
+    const kernel = buildZenGaussianKernel(
+      gaussianPlan.kernelSigmaInTargetPixels,
+    );
     this.gaussianPairCount = kernel.pairCount;
 
     const gl = this.gl;
@@ -1253,7 +1510,7 @@ class ZenMultipassRenderer {
       kernel.pairCount,
     );
 
-    if (plan.requiresDownsample) {
+    if (gaussianPlan.requiresDownsample) {
       this.useBundle(this.downsampleProgram);
       gl.uniform2f(
         this.uniformLocation(
@@ -1268,13 +1525,29 @@ class ZenMultipassRenderer {
           this.downsampleProgram.program,
           "u_sourceToTargetScale",
         ),
-        this.sceneTarget.width / plan.targetWidth,
-        this.sceneTarget.height / plan.targetHeight,
+        this.sceneTarget.width / gaussianPlan.targetWidth,
+        this.sceneTarget.height / gaussianPlan.targetHeight,
       );
     }
     this.blurPlanKey = key;
-    this.activeBlurPlan = plan;
-    return plan;
+    this.activeBlurPlan = gaussianPlan;
+    return true;
+  }
+
+  private applyQuantizationDither(program: WebGLProgram, passSeed: number) {
+    const gl = this.gl;
+    const strength =
+      this.blurTargetFormat.precision === "rgba8"
+        ? this.researchOptions.rgba8Dither.strength
+        : 0;
+    gl.uniform1f(
+      this.uniformLocation(program, "u_quantizationDitherStrength"),
+      strength,
+    );
+    gl.uniform1f(
+      this.uniformLocation(program, "u_quantizationDitherSeed"),
+      this.researchOptions.rgba8Dither.seed + passSeed,
+    );
   }
 
   private drawDownsamplePass(source: WebGLTexture, target: RenderTarget) {
@@ -1284,6 +1557,7 @@ class ZenMultipassRenderer {
     this.useBundle(this.downsampleProgram);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, source);
+    this.applyQuantizationDither(this.downsampleProgram.program, 1);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     this.drawCallCount += 1;
   }
@@ -1305,6 +1579,38 @@ class ZenMultipassRenderer {
       directionX,
       directionY,
     );
+    this.applyQuantizationDither(
+      this.gaussianProgram.program,
+      directionX === 0 ? 3 : 2,
+    );
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    this.drawCallCount += 1;
+  }
+
+  private drawKawasePass(
+    program: ProgramBundle,
+    source: WebGLTexture,
+    sourceWidth: number,
+    sourceHeight: number,
+    target: RenderTarget,
+    passSeed: number,
+  ) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+    gl.viewport(0, 0, target.width, target.height);
+    this.useBundle(program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, source);
+    gl.uniform2f(
+      this.uniformLocation(program.program, "u_sourceTexelSize"),
+      1 / sourceWidth,
+      1 / sourceHeight,
+    );
+    gl.uniform1f(
+      this.uniformLocation(program.program, "u_offset"),
+      this.researchOptions.dualKawase.offset,
+    );
+    this.applyQuantizationDither(program.program, passSeed);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     this.drawCallCount += 1;
   }
@@ -1334,6 +1640,21 @@ class ZenMultipassRenderer {
       this.dirtyCompositeUniforms = false;
       this.faultInjection?.onStaticUniformsApplied?.("composite");
     }
+    const displayNoise = this.researchOptions.displayNoise;
+    gl.uniform1f(
+      this.uniformLocation(
+        this.compositeProgram.program,
+        "u_zenGlassNoiseStrength",
+      ),
+      displayNoise.mode === "procedural-white" ? displayNoise.strength : 0,
+    );
+    gl.uniform1f(
+      this.uniformLocation(
+        this.compositeProgram.program,
+        "u_zenGlassNoiseSeed",
+      ),
+      displayNoise.seed,
+    );
     this.bindImageTextures(this.compositeProgram.program);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     this.drawCallCount += 1;
@@ -1348,9 +1669,16 @@ class ZenMultipassRenderer {
     ) {
       return;
     }
+    const hasDirtyWork =
+      this.dirtyScene || this.dirtyBlur || this.dirtyComposite;
+    const viewPerformance = this.host.ownerDocument.defaultView?.performance;
+    const submitStartedAt = hasDirtyWork
+      ? (viewPerformance?.now() ?? Date.now())
+      : null;
+    const submitDrawCallStart = this.drawCallCount;
     let rendered = false;
     let timingFrame = false;
-    if (this.dirtyScene) {
+    if (hasDirtyWork) {
       // beginFrame polls any prior batch before deciding whether to sample.
       timingFrame = this.gpuTimerSampler.beginFrame(this.drawCount + 1);
     } else {
@@ -1372,9 +1700,101 @@ class ZenMultipassRenderer {
 
       if (this.dirtyBlur) {
         const blurRadius = Number(this.compositeUniforms.u_zenGlassBlur ?? 0);
-        const plan = this.prepareBlurPlan(blurRadius, this.activeGlassSurface);
+        const hasBlurPlan = this.prepareBlurPlan(
+          blurRadius,
+          this.activeGlassSurface,
+        );
         this.blurredTexture = this.sceneTarget.texture;
-        if (plan) {
+        const kawasePlan = this.activeKawasePlan;
+        if (hasBlurPlan && kawasePlan) {
+          const downsampleProgram = this.kawaseDownsampleProgram;
+          const upsampleProgram = this.kawaseUpsampleProgram;
+          if (!downsampleProgram || !upsampleProgram) {
+            throw new Error("Dual Kawase programs are unavailable");
+          }
+
+          if (kawasePlan.requiresPrefilter) {
+            const baseTarget = this.kawaseTargets[0];
+            if (!baseTarget)
+              throw new Error("Dual Kawase base target is unavailable");
+            const drawPrefilter = () =>
+              this.drawDownsamplePass(this.sceneTarget.texture, baseTarget);
+            if (timingFrame) {
+              this.gpuTimerSampler.measure("downsample", drawPrefilter);
+            } else {
+              drawPrefilter();
+            }
+          }
+
+          for (
+            let levelIndex = 1;
+            levelIndex <= kawasePlan.passes;
+            levelIndex += 1
+          ) {
+            const target = this.kawaseTargets[levelIndex];
+            const sourceTarget = this.kawaseTargets[levelIndex - 1];
+            if (!target || !sourceTarget) {
+              throw new Error("Dual Kawase downsample target is unavailable");
+            }
+            const sourceTexture =
+              levelIndex === 1 && !kawasePlan.requiresPrefilter
+                ? this.sceneTarget.texture
+                : sourceTarget.texture;
+            const sourceWidth =
+              levelIndex === 1 && !kawasePlan.requiresPrefilter
+                ? this.sceneTarget.width
+                : sourceTarget.width;
+            const sourceHeight =
+              levelIndex === 1 && !kawasePlan.requiresPrefilter
+                ? this.sceneTarget.height
+                : sourceTarget.height;
+            const drawKawaseDown = () =>
+              this.drawKawasePass(
+                downsampleProgram,
+                sourceTexture,
+                sourceWidth,
+                sourceHeight,
+                target,
+                10 + levelIndex,
+              );
+            if (timingFrame) {
+              this.gpuTimerSampler.measure("kawaseDown", drawKawaseDown);
+            } else {
+              drawKawaseDown();
+            }
+          }
+
+          for (
+            let levelIndex = kawasePlan.passes - 1;
+            levelIndex >= 0;
+            levelIndex -= 1
+          ) {
+            const sourceTarget = this.kawaseTargets[levelIndex + 1];
+            const target = this.kawaseTargets[levelIndex];
+            if (!sourceTarget || !target) {
+              throw new Error("Dual Kawase upsample target is unavailable");
+            }
+            const drawKawaseUp = () =>
+              this.drawKawasePass(
+                upsampleProgram,
+                sourceTarget.texture,
+                sourceTarget.width,
+                sourceTarget.height,
+                target,
+                20 + levelIndex,
+              );
+            if (timingFrame) {
+              this.gpuTimerSampler.measure("kawaseUp", drawKawaseUp);
+            } else {
+              drawKawaseUp();
+            }
+          }
+          const baseTarget = this.kawaseTargets[0];
+          if (!baseTarget)
+            throw new Error("Dual Kawase output target is unavailable");
+          this.blurredTexture = baseTarget.texture;
+        } else if (hasBlurPlan && this.activeBlurPlan) {
+          const plan = this.activeBlurPlan;
           let horizontalSource = this.sceneTarget.texture;
           let horizontalTarget = this.blurTargetA;
           let verticalTarget = this.blurTargetB;
@@ -1449,7 +1869,32 @@ class ZenMultipassRenderer {
       if (timingFrame) this.gpuTimerSampler.endFrame();
     }
 
-    if (rendered) this.drawCount += 1;
+    if (rendered) {
+      this.drawCount += 1;
+      this.hasRenderedFrame = true;
+      const submittedAt = viewPerformance?.now() ?? Date.now();
+      const cpuSubmitTimeMs = Math.max(
+        0,
+        submittedAt - (submitStartedAt ?? submittedAt),
+      );
+      const sample = {
+        drawCount: this.drawCount,
+        drawCallCount: this.drawCallCount - submitDrawCallStart,
+        cpuSubmitTimeMs,
+      } satisfies ZenCpuSubmitSample;
+      this.cpuSubmitTimeMs = cpuSubmitTimeMs;
+      this.cpuSubmitSamples.push(sample);
+      if (
+        this.cpuSubmitSamples.length >
+        this.researchOptions.gpuTiming.maxRecordedSamples
+      ) {
+        this.cpuSubmitSamples.splice(
+          0,
+          this.cpuSubmitSamples.length -
+            this.researchOptions.gpuTiming.maxRecordedSamples,
+        );
+      }
+    }
   }
 
   setFrame = (frame: number) => {
@@ -1494,28 +1939,94 @@ class ZenMultipassRenderer {
   getPerformanceStats = (): ZenMultipassPerformanceStats => {
     this.gpuTimerSampler.poll();
     const gpuTiming = this.gpuTimerSampler.getSnapshot();
+    const kawaseLevels = this.kawaseTargets.filter(
+      (target) => target.width > 0 && target.height > 0,
+    );
+    const blurTargets =
+      this.researchOptions.backend !== "gaussian-current"
+        ? kawaseLevels
+        : [this.blurTargetA, this.blurTargetB].filter(
+            (target) => target.width > 0 && target.height > 0,
+          );
+    const blurTargetLevels = blurTargets.map((target, level) => ({
+      level,
+      width: target.width,
+      height: target.height,
+      format: target.format.precision,
+      bytes: renderTargetBytes(target),
+    }));
+    const blurBase = blurTargets[0];
+    const cpuSubmitSummary = timingPercentiles(
+      this.cpuSubmitSamples.map(({ cpuSubmitTimeMs }) => cpuSubmitTimeMs),
+    );
     return {
       drawCount: this.drawCount,
       drawCallCount: this.drawCallCount,
+      backend: this.researchOptions.backend,
       ...gpuTiming,
       isStaticFrameReady:
-        this.drawCount > 0 && this.canvas.width > 0 && this.canvas.height > 0,
+        this.hasRenderedFrame &&
+        !this.dirtyScene &&
+        !this.dirtyBlur &&
+        !this.dirtyComposite &&
+        !this.failed &&
+        this.canvas.width > 0 &&
+        this.canvas.height > 0,
       blurFormat: this.blurTargetFormat.precision,
       blurTargetAFormat: this.blurTargetA.format.precision,
       blurTargetBFormat: this.blurTargetB.format.precision,
       sceneTargetWidth: this.sceneTarget.width,
       sceneTargetHeight: this.sceneTarget.height,
-      blurTargetWidth: this.activeBlurPlan?.targetWidth ?? 0,
-      blurTargetHeight: this.activeBlurPlan?.targetHeight ?? 0,
+      blurTargetWidth: blurBase?.width ?? 0,
+      blurTargetHeight: blurBase?.height ?? 0,
       gaussianPairCount: this.gaussianPairCount,
+      kawaseDownsamplePassCount:
+        this.activeKawasePlan?.downsamplePassCount ?? 0,
+      kawaseUpsamplePassCount: this.activeKawasePlan?.upsamplePassCount ?? 0,
+      blurTargetLevels,
+      intermediateTextureBytes: blurTargetLevels.reduce(
+        (total, level) => total + level.bytes,
+        0,
+      ),
+      blurTargetReallocationCount: this.blurTargetReallocationCount,
+      cpuSubmitTimeMs: this.cpuSubmitTimeMs,
+      cpuSubmitSampleCount: this.cpuSubmitSamples.length,
+      cpuSubmitSummary,
+      displayNoise: { ...this.researchOptions.displayNoise },
+      rgba8Dither: { ...this.researchOptions.rgba8Dither },
     };
   };
+
+  getPerformanceReport = (): ZenMultipassPerformanceReport => ({
+    schemaVersion: 1,
+    capturedAtEpochMs: Date.now(),
+    backend: this.researchOptions.backend,
+    researchOptions: {
+      ...this.researchOptions,
+      dualKawase: { ...this.researchOptions.dualKawase },
+      displayNoise: { ...this.researchOptions.displayNoise },
+      rgba8Dither: { ...this.researchOptions.rgba8Dither },
+      gpuTiming: { ...this.researchOptions.gpuTiming },
+    },
+    gpuMetadata: { ...this.gpuMetadata },
+    performanceStats: this.getPerformanceStats(),
+    gpuBenchmark: this.gpuTimerSampler.getBenchmarkReport(),
+    cpuSubmit: {
+      samples: this.cpuSubmitSamples.map((sample) => ({ ...sample })),
+      summary: timingPercentiles(
+        this.cpuSubmitSamples.map(({ cpuSubmitTimeMs }) => cpuSubmitTimeMs),
+      ),
+    },
+  });
 
   getCurrentFrame = () => this.frame;
 
   resetPerformanceStats = () => {
     this.drawCount = 0;
     this.drawCallCount = 0;
+    this.blurTargetReallocationCount = 0;
+    this.cpuSubmitSamples = [];
+    this.cpuSubmitTimeMs = null;
     this.gpuTimerSampler.reset();
   };
 
@@ -1547,10 +2058,13 @@ class ZenMultipassRenderer {
       sceneProgram: this.sceneProgram,
       downsampleProgram: this.downsampleProgram,
       gaussianProgram: this.gaussianProgram,
+      kawaseDownsampleProgram: this.kawaseDownsampleProgram,
+      kawaseUpsampleProgram: this.kawaseUpsampleProgram,
       compositeProgram: this.compositeProgram,
       sceneTarget: this.sceneTarget,
       blurTargetA: this.blurTargetA,
       blurTargetB: this.blurTargetB,
+      kawaseTargets: this.kawaseTargets,
     });
   }
 }
@@ -1564,11 +2078,12 @@ export const ZenMultipassCanvas = forwardRef<
     sceneUniforms,
     compositeFragment,
     compositeUniforms,
-    mipmaps = [],
+    mipmaps = EMPTY_ZEN_MIPMAPS,
     minPixelRatio,
     maxPixelCount,
     webGlContextAttributes,
     blurTargetPrecision = "auto",
+    researchOptions = DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS,
     speed = 0,
     className,
     style,
@@ -1580,8 +2095,21 @@ export const ZenMultipassCanvas = forwardRef<
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ZenMultipassRenderer | null>(null);
-  const failureReportedRef = useRef(false);
+  const failureLoggedRef = useRef(false);
   const failureTimerRef = useRef<number | null>(null);
+  const setupGenerationRef = useRef(0);
+  const latestRendererInputsRef = useRef({
+    sceneUniforms,
+    compositeUniforms,
+    mipmaps,
+    speed,
+  });
+  latestRendererInputsRef.current = {
+    sceneUniforms,
+    compositeUniforms,
+    mipmaps,
+    speed,
+  };
 
   useImperativeHandle(
     forwardedRef,
@@ -1594,13 +2122,34 @@ export const ZenMultipassCanvas = forwardRef<
     const canvas = canvasRef.current;
     if (!host || !canvas) return undefined;
     const view = host.ownerDocument.defaultView;
+    const setupGeneration = setupGenerationRef.current + 1;
+    setupGenerationRef.current = setupGeneration;
+    if (failureTimerRef.current !== null) {
+      view?.clearTimeout(failureTimerRef.current);
+      failureTimerRef.current = null;
+    }
+    let failureReported = false;
+    const cancelFailureTimer = () => {
+      if (failureTimerRef.current === null) return;
+      view?.clearTimeout(failureTimerRef.current);
+      failureTimerRef.current = null;
+    };
     const reportFailure = (error: unknown) => {
-      if (failureReportedRef.current) return;
-      failureReportedRef.current = true;
-      console.error("[zen-shader] multipass renderer failed", error);
-      failureTimerRef.current =
+      if (setupGenerationRef.current !== setupGeneration || failureReported) {
+        return;
+      }
+      failureReported = true;
+      if (!failureLoggedRef.current) {
+        failureLoggedRef.current = true;
+        console.error("[zen-shader] multipass renderer failed", error);
+      }
+      let timerId: number | null = null;
+      timerId =
         view?.setTimeout(() => {
-          failureTimerRef.current = null;
+          if (failureTimerRef.current === timerId) {
+            failureTimerRef.current = null;
+          }
+          if (setupGenerationRef.current !== setupGeneration) return;
           if (!host.isConnected) return;
           const EventConstructor = view.Event;
           host.dispatchEvent(
@@ -1610,44 +2159,52 @@ export const ZenMultipassCanvas = forwardRef<
             }),
           );
         }, 0) ?? null;
+      failureTimerRef.current = timerId;
     };
     try {
+      const latestInputs = latestRendererInputsRef.current;
       const renderer = new ZenMultipassRenderer(
         host,
         canvas,
         sceneFragment,
-        {},
+        latestInputs.sceneUniforms,
         compositeFragment,
-        {},
-        [],
+        latestInputs.compositeUniforms,
+        latestInputs.mipmaps,
         minPixelRatio,
         maxPixelCount,
         webGlContextAttributes,
         reportFailure,
         blurTargetPrecision,
+        researchOptions,
       );
+      failureLoggedRef.current = false;
+      renderer.setSpeed(latestInputs.speed);
       rendererRef.current = renderer;
       host.paperShaderMount = {
         setFrame: renderer.setFrame,
         setSpeed: renderer.setSpeed,
         getCurrentFrame: renderer.getCurrentFrame,
         getPerformanceStats: renderer.getPerformanceStats,
+        getPerformanceReport: renderer.getPerformanceReport,
         resetPerformanceStats: renderer.resetPerformanceStats,
       } as unknown as ShaderMount;
       return () => {
+        cancelFailureTimer();
         renderer.dispose();
         rendererRef.current = null;
         delete host.paperShaderMount;
       };
     } catch (error) {
       reportFailure(error);
-      return undefined;
+      return cancelFailureTimer;
     }
   }, [
     compositeFragment,
     blurTargetPrecision,
     maxPixelCount,
     minPixelRatio,
+    researchOptions,
     sceneFragment,
     webGlContextAttributes,
   ]);
