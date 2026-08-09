@@ -122,6 +122,9 @@ function benchmarkRun({
     performanceStats: {
       drawCount: gpuSamples.length,
       drawCallCount,
+      renderPipeline: "multipass",
+      renderWidth: 1_920,
+      renderHeight: 1_080,
       backend: options.backend,
       gpuTimeMs: lastGpuSample?.gpuTimeMs ?? null,
       gpuPassTimesMs: lastGpuSample?.gpuPassTimesMs ?? null,
@@ -149,6 +152,10 @@ function benchmarkRun({
         },
       ],
       intermediateTextureBytes,
+      sceneTargetBytes: 1_920 * 1_080 * 4,
+      totalIntermediateTextureBytes:
+        1_920 * 1_080 * 4 + intermediateTextureBytes,
+      imageTextureCount: 0,
       blurTargetReallocationCount: reallocationCount,
       cpuSubmitTimeMs: lastCpuSample?.cpuSubmitTimeMs ?? null,
       cpuSubmitSampleCount: cpuSamples.length,
