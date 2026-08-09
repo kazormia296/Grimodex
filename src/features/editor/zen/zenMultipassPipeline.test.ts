@@ -518,6 +518,132 @@ void main() { fragColor = vec4(0.25); }`);
     expect(fragment).toContain("safeDistanceToWhite * safeDistanceToWhite");
   });
 
+  it("rejects fragments outside the padded surface AABB before SDF work", () => {
+    const fragment = buildZenMultipassCompositeFragment(7);
+    const region = fragment.slice(
+      fragment.indexOf("vec2 zenGlassRegion("),
+      fragment.indexOf("void zenCollectSurfaceState("),
+    );
+    const rectMaxIndex = region.indexOf("vec2 rectMax = rect.zw * resolution;");
+    const aabbIndex = region.indexOf("vec2 aabbPadding = vec2(2.0);");
+    const aabbReturnIndex = region.indexOf("return vec2(0.0);", aabbIndex);
+    const signedDistanceIndex = region.indexOf(
+      "float signedDistance = zenRoundedRectSignedDistance(",
+    );
+
+    expect(region).toContain("sqrt(2)");
+    expect(region).toContain(
+      "lessThan(gl_FragCoord.xy, rectMin - aabbPadding)",
+    );
+    expect(region).toContain(
+      "greaterThan(gl_FragCoord.xy, rectMax + aabbPadding)",
+    );
+    expect(rectMaxIndex).toBeGreaterThanOrEqual(0);
+    expect(aabbIndex).toBeGreaterThanOrEqual(0);
+    expect(aabbReturnIndex).toBeGreaterThanOrEqual(0);
+    expect(signedDistanceIndex).toBeGreaterThanOrEqual(0);
+    expect(aabbIndex).toBeGreaterThan(rectMaxIndex);
+    expect(aabbReturnIndex).toBeGreaterThan(aabbIndex);
+    expect(aabbReturnIndex).toBeLessThan(signedDistanceIndex);
+    expect(aabbIndex).toBeLessThan(signedDistanceIndex);
+  });
+
+  it("selects mask-only surface collection before calling the region helper", () => {
+    const fragment = buildZenMultipassCompositeFragment(7);
+    const collector = fragment.slice(
+      fragment.indexOf("void zenCollectSurfaceState("),
+      fragment.indexOf("vec3 zenGuardVisibleColor("),
+    );
+    const editorCallIndex = collector.indexOf(
+      "refractionOffset = zenGlassRegion(",
+    );
+    const loopIndex = collector.indexOf(
+      "for (int index = 0; index < 8; index += 1)",
+    );
+    const candidateCallIndex = collector.indexOf(
+      "vec2 candidateOffset = zenGlassRegion(",
+      loopIndex,
+    );
+    const glassEnabledIndex = collector.indexOf("bool glassEnabled =");
+    const refractsIndex = collector.indexOf("bool refracts =", loopIndex);
+    const collectGlassIndex = collector.indexOf(
+      "bool collectGlass =",
+      loopIndex,
+    );
+
+    for (const anchor of [
+      glassEnabledIndex,
+      editorCallIndex,
+      loopIndex,
+      refractsIndex,
+      collectGlassIndex,
+      candidateCallIndex,
+    ]) {
+      expect(anchor).toBeGreaterThanOrEqual(0);
+    }
+    expect(glassEnabledIndex).toBeLessThan(editorCallIndex);
+    expect(refractsIndex).toBeLessThan(candidateCallIndex);
+    expect(collectGlassIndex).toBeLessThan(candidateCallIndex);
+    expect(collector).toContain(
+      "bool collectGlass = refracts && glassEnabled;",
+    );
+  });
+
+  it("returns mask-only regions before edge and refraction calculations", () => {
+    const fragment = buildZenMultipassCompositeFragment(7);
+    const region = fragment.slice(
+      fragment.indexOf("vec2 zenGlassRegion("),
+      fragment.indexOf("void zenCollectSurfaceState("),
+    );
+    const surfaceMaskIndex = region.indexOf(
+      "surfaceMask = 1.0 - smoothstep(-antialias, antialias, signedDistance);",
+    );
+    const maskOnlyReturnIndex = region.indexOf(
+      "if (!collectGlass) return vec2(0.0);",
+    );
+    const edgeMaskIndex = region.indexOf("edgeMask = surfaceMask * (");
+    const refractionIndex = region.indexOf("float refractionDepth = min(");
+
+    expect(region).toContain("bool collectGlass");
+    for (const anchor of [
+      surfaceMaskIndex,
+      maskOnlyReturnIndex,
+      edgeMaskIndex,
+      refractionIndex,
+    ]) {
+      expect(anchor).toBeGreaterThanOrEqual(0);
+    }
+    expect(maskOnlyReturnIndex).toBeGreaterThan(surfaceMaskIndex);
+    expect(maskOnlyReturnIndex).toBeLessThan(edgeMaskIndex);
+    expect(maskOnlyReturnIndex).toBeLessThan(refractionIndex);
+  });
+
+  it("preserves visible masks while skipping disabled Glass work", () => {
+    const fragment = buildZenMultipassCompositeFragment(7);
+    const collector = fragment.slice(
+      fragment.indexOf("void zenCollectSurfaceState("),
+      fragment.indexOf("vec3 zenGuardVisibleColor("),
+    );
+    const skipIndex = collector.indexOf("if (!collectGlass) continue;");
+    const glassUpdateIndex = collector.indexOf(
+      "glassMask = max(glassMask, candidateMask);",
+    );
+    const contrastUpdateIndex = collector.indexOf(
+      "uiContrastMask = max(uiContrastMask, visibleUiMask);",
+    );
+
+    expect(collector).toContain("glassEnabled,\n    editorMask,");
+    expect(collector).toContain("collectGlass,\n      candidateMask,");
+    expect(collector).toContain(
+      "float visibleUiMask = refracts\n      ? candidateMask\n      : candidateMask * editorMask;",
+    );
+    for (const anchor of [contrastUpdateIndex, skipIndex, glassUpdateIndex]) {
+      expect(anchor).toBeGreaterThanOrEqual(0);
+    }
+    expect(skipIndex).toBeGreaterThan(contrastUpdateIndex);
+    expect(skipIndex).toBeLessThan(glassUpdateIndex);
+  });
+
   it("feeds one packed surface set to Glass and tool contrast", () => {
     const buffer = new ZenUiSurfaceUniformBuffer(4);
     const uniforms = buildZenMultipassCompositeUniforms(

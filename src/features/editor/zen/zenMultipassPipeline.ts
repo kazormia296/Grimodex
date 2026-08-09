@@ -731,6 +731,7 @@ vec2 zenRoundedRectOutwardNormal(
 vec2 zenGlassRegion(
   vec4 rect,
   float cornerRadius,
+  bool collectGlass,
   out float surfaceMask,
   out float edgeMask
 ) {
@@ -741,6 +742,15 @@ vec2 zenGlassRegion(
   vec2 resolution = max(u_resolution, vec2(1.0));
   vec2 rectMin = rect.xy * resolution;
   vec2 rectMax = rect.zw * resolution;
+  // Rounded-rect AA reaches at most sqrt(2) framebuffer pixels, so this
+  // 2 px guard preserves every non-zero mask sample.
+  vec2 aabbPadding = vec2(2.0);
+  if (
+    any(lessThan(gl_FragCoord.xy, rectMin - aabbPadding)) ||
+    any(greaterThan(gl_FragCoord.xy, rectMax + aabbPadding))
+  ) {
+    return vec2(0.0);
+  }
   vec2 size = rectMax - rectMin;
   vec2 center = (rectMin + rectMax) * 0.5;
   vec2 halfSize = size * 0.5;
@@ -753,6 +763,7 @@ vec2 zenGlassRegion(
   vec2 outwardNormal = zenRoundedRectOutwardNormal(point, halfSize, radius);
   float antialias = max(abs(outwardNormal.x) + abs(outwardNormal.y), 0.75);
   surfaceMask = 1.0 - smoothstep(-antialias, antialias, signedDistance);
+  if (!collectGlass) return vec2(0.0);
   edgeMask = surfaceMask * (
     1.0 - smoothstep(0.0, max(1.0, 3.0 * u_pixelRatio), abs(signedDistance))
   );
@@ -795,39 +806,41 @@ void zenCollectSurfaceState(
   out float uiContrastMask,
   out float shineMask
 ) {
+  bool glassEnabled = u_zenGlassEnabled >= 0.5;
   float editorMask;
   float editorEdge;
   refractionOffset = zenGlassRegion(
     u_zenGlassRect,
     u_zenGlassCornerRadius,
+    glassEnabled,
     editorMask,
     editorEdge
   );
   float strongestLength = dot(refractionOffset, refractionOffset);
-  glassMask = u_zenGlassEnabled >= 0.5 ? editorMask : 0.0;
+  glassMask = glassEnabled ? editorMask : 0.0;
   uiContrastMask = 0.0;
   shineMask = editorEdge;
 
   for (int index = 0; index < __ZEN_UI_SURFACE_CAPACITY__; index += 1) {
     if (float(index) >= u_zenUiSurfaceCount) break;
+    bool refracts = u_zenUiSurfaceParams[index].y >= 0.5;
+    bool collectGlass = refracts && glassEnabled;
     float candidateMask;
     float candidateEdge;
     vec2 candidateOffset = zenGlassRegion(
       u_zenUiSurfaceRects[index],
       u_zenUiSurfaceParams[index].x,
+      collectGlass,
       candidateMask,
       candidateEdge
     );
-    bool refracts = u_zenUiSurfaceParams[index].y >= 0.5;
     float visibleUiMask = refracts
       ? candidateMask
       : candidateMask * editorMask;
     uiContrastMask = max(uiContrastMask, visibleUiMask);
-    if (!refracts) continue;
-    if (u_zenGlassEnabled >= 0.5) {
-      glassMask = max(glassMask, candidateMask);
-      shineMask = max(shineMask, candidateEdge);
-    }
+    if (!collectGlass) continue;
+    glassMask = max(glassMask, candidateMask);
+    shineMask = max(shineMask, candidateEdge);
     float candidateLength = dot(candidateOffset, candidateOffset);
     if (candidateLength > strongestLength) {
       refractionOffset = candidateOffset;
