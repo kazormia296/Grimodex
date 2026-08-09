@@ -1,13 +1,14 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
 import { db } from "@/db/client";
-import { treeNodes } from "@/db/schema";
+import { projects, treeNodes } from "@/db/schema";
 import {
   listNodes,
   listAllNodes,
   listExpiredArchivedNodeIds,
   listNoteContents,
   listProjectSceneDocuments,
+  loadProjectNarrativeSourceRows,
   loadSceneContents,
   saveSceneContent,
   updateNode,
@@ -206,5 +207,154 @@ describe("loadSceneContents", () => {
   it("空配列では空 Map を返す", async () => {
     const map = await loadSceneContents([]);
     expect(map.size).toBe(0);
+  });
+});
+
+describe("loadProjectNarrativeSourceRows", () => {
+  it("returns the authoritative source projection in requested order with stable orderIndex", async () => {
+    await insertNode({ id: "source-folder", nodeType: "folder" });
+    await insertNode({
+      id: "source-a",
+      parentId: "source-folder",
+      nodeType: "scene",
+      title: "First source",
+      content: SCENE_DOC,
+      sortOrder: "a1",
+      version: 3,
+      updatedAt: "2026-08-01T00:00:00.003Z",
+      sourceUri: "external-root://drafts/first.md",
+    });
+    await insertNode({
+      id: "source-b",
+      parentId: "source-folder",
+      nodeType: "scene",
+      title: "Second source",
+      content: SCENE_DOC_2,
+      sortOrder: "a2",
+      version: 7,
+      updatedAt: "2026-08-01T00:00:00.007Z",
+      sourceUri: null,
+    });
+
+    await expect(
+      loadProjectNarrativeSourceRows(PROJECT_ID, ["source-b", "source-a"]),
+    ).resolves.toEqual([
+      {
+        nodeId: "source-b",
+        parentId: "source-folder",
+        title: "Second source",
+        content: SCENE_DOC_2,
+        sortOrder: "a2",
+        orderIndex: 0,
+        version: 7,
+        updatedAt: "2026-08-01T00:00:00.007Z",
+        sourceUri: null,
+      },
+      {
+        nodeId: "source-a",
+        parentId: "source-folder",
+        title: "First source",
+        content: SCENE_DOC,
+        sortOrder: "a1",
+        orderIndex: 1,
+        version: 3,
+        updatedAt: "2026-08-01T00:00:00.003Z",
+        sourceUri: "external-root://drafts/first.md",
+      },
+    ]);
+  });
+
+  it("returns only live scenes owned by the requested project", async () => {
+    const otherProjectId = "narrative-source-other-project";
+    const now = "2026-08-02T00:00:00.000Z";
+    await db
+      .insert(projects)
+      .values({
+        id: otherProjectId,
+        title: "Other project",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing();
+    await insertNode({ id: "source-live", nodeType: "scene", updatedAt: now });
+    await insertNode({
+      id: "source-foreign",
+      projectId: otherProjectId,
+      nodeType: "scene",
+      updatedAt: now,
+    });
+    await insertNode({ id: "source-note", nodeType: "note", updatedAt: now });
+    await insertNode({
+      id: "source-archived",
+      nodeType: "scene",
+      archivedAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: now,
+    });
+
+    const rows = await loadProjectNarrativeSourceRows(PROJECT_ID, [
+      "source-missing",
+      "source-foreign",
+      "source-note",
+      "source-archived",
+      "source-live",
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      nodeId: "source-live",
+      orderIndex: 4,
+      version: 0,
+      updatedAt: now,
+    });
+  });
+
+  it("returns an empty array for an empty request", async () => {
+    await expect(
+      loadProjectNarrativeSourceRows(PROJECT_ID, []),
+    ).resolves.toEqual([]);
+  });
+
+  it("loads 501 scenes across the SQLite parameter chunk boundary", async () => {
+    const now = "2026-08-03T00:00:00.000Z";
+    const sceneIds = Array.from(
+      { length: 501 },
+      (_, index) => `source-chunk-${String(index).padStart(3, "0")}`,
+    );
+    const inserts = sceneIds.map((id, index) => ({
+      id,
+      projectId: PROJECT_ID,
+      nodeType: "scene",
+      title: id,
+      content: "{}",
+      sortOrder: `a${index}`,
+      version: index,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    for (let index = 0; index < inserts.length; index += 100) {
+      await db.insert(treeNodes).values(inserts.slice(index, index + 100));
+    }
+    const requestedIds = [...sceneIds].reverse();
+
+    const rows = await loadProjectNarrativeSourceRows(
+      PROJECT_ID,
+      requestedIds,
+    );
+
+    expect(rows).toHaveLength(501);
+    expect(rows.map((row) => row.nodeId)).toEqual(requestedIds);
+    expect(rows.map((row) => row.orderIndex)).toEqual(
+      Array.from({ length: 501 }, (_, index) => index),
+    );
+    expect(rows[499]).toMatchObject({
+      nodeId: requestedIds[499],
+      orderIndex: 499,
+      version: 1,
+    });
+    expect(rows[500]).toMatchObject({
+      nodeId: requestedIds[500],
+      orderIndex: 500,
+      version: 0,
+    });
   });
 });
