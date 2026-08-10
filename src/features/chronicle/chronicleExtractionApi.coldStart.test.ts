@@ -3,17 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/application/narrative-extraction/nativeApi", async (importOriginal) => {
-  const actual =
-    await importOriginal<
-      typeof import("@/application/narrative-extraction/nativeApi")
-    >();
-  return {
-    ...actual,
-    narrativeExtractionGetRunReviewBundle: getRunReviewBundleMock,
-    narrativeExtractionGetRun: getRunMock,
-  };
-});
+vi.mock(
+  "@/application/narrative-extraction/nativeApi",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/application/narrative-extraction/nativeApi")
+      >();
+    return {
+      ...actual,
+      narrativeExtractionGetRunReviewBundle: getRunReviewBundleMock,
+      narrativeExtractionGetRun: getRunMock,
+    };
+  },
+);
 
 vi.mock("@/application/narrative-extraction/runRepository", () => ({
   getRun: (...args: unknown[]) => getRunMock(...args),
@@ -198,7 +201,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
             proposalId: nativeProposalId,
             revisionId: nativeRevisionId,
             decision: "approved",
-            decisionJson: {},
+            decisionJson: { probableDuplicateChoice: "create-as-new" },
             createdAt: "2026-01-01T00:00:50.000Z",
             createdBy: "reviewer",
           },
@@ -225,6 +228,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
     expect(row.proposalId).not.toMatch(/^local-proposal-/);
     expect(row.status).toBe("approved");
     expect(row.displayTitle).toBe("Cold start event");
+    expect(row.probableDuplicateChoice).toBe("create-as-new");
     expect(row.evidence[0]?.quote).toBe("quoted text");
   });
 

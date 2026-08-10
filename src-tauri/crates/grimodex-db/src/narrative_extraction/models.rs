@@ -176,7 +176,8 @@ pub struct PrepareCommitPayload {
     #[serde(default)]
     pub surface: Option<String>,
     pub operations: Vec<CommitOperation>,
-    #[serde(default)]
+    /// Required 1:1 with `operations` — Native is mutation authority and must
+    /// not accept proposal-free apply payloads.
     pub applications: Vec<CommitApplicationRef>,
     /// Compiler-observed tail ordinal (`null` when the project had no events).
     #[serde(default)]
@@ -198,7 +199,6 @@ pub struct ApplyCommitPayload {
     #[serde(default)]
     pub surface: Option<String>,
     pub operations: Vec<CommitOperation>,
-    #[serde(default)]
     pub applications: Vec<CommitApplicationRef>,
     #[serde(default)]
     pub expected_tail_ordinal: Option<String>,
@@ -211,10 +211,18 @@ pub struct ApplyCommitPayload {
 pub struct CommitOperation {
     pub kind: String,
     pub payload: Value,
+    pub proposal_id: String,
+    pub revision_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListResumableRunsPayload {
+    pub project_id: String,
     #[serde(default)]
-    pub proposal_id: Option<String>,
+    pub surface_path_id: Option<String>,
     #[serde(default)]
-    pub revision_id: Option<String>,
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

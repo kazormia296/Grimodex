@@ -14,7 +14,8 @@ pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
-    PrepareCommitPayload, ProposalSeed, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, RunRefPayload,
+    SaveProposalSetPayload, UndoCommitPayload,
 };
 pub use repository::ensure_test_schema;
 
@@ -35,6 +36,13 @@ pub fn narrative_extraction_get_run(
     project_id: String,
 ) -> anyhow::Result<Value> {
     repository::get_run(db, run_id, project_id)
+}
+
+pub fn narrative_extraction_list_resumable_runs(
+    db: &Database,
+    payload: ListResumableRunsPayload,
+) -> anyhow::Result<Value> {
+    repository::list_resumable_runs(db, payload)
 }
 
 pub fn narrative_extraction_cancel_run(

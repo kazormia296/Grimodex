@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use super::models::{
     AppendDecisionPayload, AppendRevisionPayload, ArtifactInput, CreateRunPayload,
-    CreateTaskSeed, FailTaskPayload, FinishTaskPayload, ProposalSeed, SaveProposalSetPayload,
-    default_object_json,
+    CreateTaskSeed, FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload, ProposalSeed,
+    SaveProposalSetPayload, default_object_json,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -218,6 +218,60 @@ pub fn get_run(db: &Database, run_id: String, project_id: String) -> anyhow::Res
             "tasks": tasks,
             "taskCounts": counts,
         }))
+    })
+}
+
+/// List runs that can still be resumed for review / apply after process restart.
+/// Excludes cancelled/failed runs and completed runs whose proposals are already
+/// applied (or only rejected).
+pub fn list_resumable_runs(
+    db: &Database,
+    payload: ListResumableRunsPayload,
+) -> anyhow::Result<Value> {
+    let limit = payload.limit.unwrap_or(20).clamp(1, 100);
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT r.id, r.project_id, r.surface_path_id, r.status, r.snapshot_digest,
+                    r.created_at, r.started_at, r.completed_at
+               FROM narrative_extraction_runs r
+              WHERE r.project_id = ?1
+                AND (?2 IS NULL OR r.surface_path_id = ?2)
+                AND r.status IN ('pending', 'running', 'completed')
+                AND (
+                  r.status IN ('pending', 'running')
+                  OR EXISTS (
+                    SELECT 1
+                      FROM narrative_proposal_sets ps
+                      JOIN narrative_proposals p ON p.proposal_set_id = ps.id
+                     WHERE ps.run_id = r.id
+                       AND ps.project_id = r.project_id
+                       AND p.status IN ('unreviewed', 'approved', 'held', 'deferred')
+                       AND NOT EXISTS (
+                         SELECT 1
+                           FROM narrative_proposal_applications a
+                          WHERE a.proposal_id = p.id
+                       )
+                  )
+                )
+              ORDER BY COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
+                       r.id DESC
+              LIMIT ?3",
+        )?;
+        let surface = payload.surface_path_id.as_deref();
+        let rows = stmt.query_map(params![payload.project_id, surface, limit], |row| {
+            Ok(json!({
+                "runId": row.get::<_, String>(0)?,
+                "projectId": row.get::<_, String>(1)?,
+                "surfacePathId": row.get::<_, String>(2)?,
+                "status": row.get::<_, String>(3)?,
+                "snapshotDigest": row.get::<_, Option<String>>(4)?,
+                "createdAt": row.get::<_, String>(5)?,
+                "startedAt": row.get::<_, Option<String>>(6)?,
+                "completedAt": row.get::<_, Option<String>>(7)?,
+            }))
+        })?;
+        let summaries: Vec<Value> = rows.collect::<Result<_, _>>()?;
+        Ok(json!(summaries))
     })
 }
 

@@ -548,6 +548,7 @@ export declare class Backend {
   agentEventRelationRemove(payload: any): Promise<string>
   narrativeExtractionCreateRun(payload: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
+  narrativeExtractionListResumableRuns(payload: any): Promise<string>
   narrativeExtractionCancelRun(payload: any): Promise<string>
   narrativeExtractionClaimTask(payload: any): Promise<string>
   narrativeExtractionFinishTask(payload: any): Promise<string>

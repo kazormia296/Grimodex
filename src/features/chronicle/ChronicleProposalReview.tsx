@@ -3,6 +3,7 @@ import { ChronicleEvidencePane } from "./ChronicleEvidencePane";
 import { ChronicleProposalCard } from "./ChronicleProposalCard";
 import {
   bulkApproveSafeChronicleProposals,
+  decideChronicleProbableDuplicate,
   decideChronicleProposal,
   reviseChronicleProposal,
 } from "./chronicleExtractionApi";
@@ -41,9 +42,6 @@ export function ChronicleProposalReview({
     (s) => s.selectedProposalId,
   );
   const selectProposal = useChronicleExtractionStore((s) => s.selectProposal);
-  const setProbableDuplicateChoice = useChronicleExtractionStore(
-    (s) => s.setProbableDuplicateChoice,
-  );
 
   const proposals = useMemo(
     () => proposalsProp ?? storeProjection?.proposals ?? EMPTY_PROPOSALS,
@@ -109,12 +107,7 @@ export function ChronicleProposalReview({
   ) => {
     if (!boundToStore) return;
     void runPersist(async () => {
-      if (choice === "hold") {
-        await decideChronicleProposal({ proposalId, status: "held" });
-      } else if (choice === "skip-as-same") {
-        await decideChronicleProposal({ proposalId, status: "rejected" });
-      }
-      setProbableDuplicateChoice(proposalId, choice);
+      await decideChronicleProbableDuplicate({ proposalId, choice });
     });
   };
 

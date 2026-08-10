@@ -58,7 +58,7 @@ use grimodex_db::lint_terms::{
     self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
-use grimodex_db::narrative_extraction::{self, RunRefPayload};
+use grimodex_db::narrative_extraction::{self, ListResumableRunsPayload, RunRefPayload};
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
     NativeWorkspaceOpenTrace,
@@ -4068,6 +4068,23 @@ impl Backend {
                     dto.run_id,
                     dto.project_id,
                 )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_list_resumable_runs(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: ListResumableRunsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_list_resumable_runs(db, dto)?,
+                )?)
             })
         })
         .await

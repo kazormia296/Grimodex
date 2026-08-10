@@ -226,8 +226,8 @@ export interface CommitApplicationRef {
 export interface CommitOperation {
   readonly kind: string;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly proposalId?: string;
-  readonly revisionId?: string;
+  readonly proposalId: string;
+  readonly revisionId: string;
 }
 
 export interface EntityBindingSeed {
@@ -245,7 +245,7 @@ export interface PrepareCommitPayload {
   readonly sessionId: string;
   readonly surface?: string;
   readonly operations: readonly CommitOperation[];
-  readonly applications?: readonly CommitApplicationRef[];
+  readonly applications: readonly CommitApplicationRef[];
   readonly expectedTailOrdinal?: string | null;
   readonly entityBindings?: readonly EntityBindingSeed[];
 }
@@ -334,7 +334,9 @@ export interface ResumableRunSummary {
 export async function narrativeExtractionCreateRun(
   payload: CreateRunPayload,
 ): Promise<CreateRunResult> {
-  return invoke<CreateRunResult>("narrative_extraction_create_run", { payload });
+  return invoke<CreateRunResult>("narrative_extraction_create_run", {
+    payload,
+  });
 }
 
 export async function narrativeExtractionGetRun(
@@ -374,7 +376,9 @@ export async function narrativeExtractionFinishTask(
 export async function narrativeExtractionFailTask(
   payload: FailTaskPayload,
 ): Promise<FinishTaskResult> {
-  return invoke<FinishTaskResult>("narrative_extraction_fail_task", { payload });
+  return invoke<FinishTaskResult>("narrative_extraction_fail_task", {
+    payload,
+  });
 }
 
 export async function narrativeExtractionSaveProposalSet(
@@ -398,19 +402,17 @@ export async function narrativeExtractionGetRunReviewBundle(
 export async function narrativeExtractionAppendRevision(
   payload: AppendRevisionPayload,
 ): Promise<AppendRevisionResult> {
-  return invoke<AppendRevisionResult>(
-    "narrative_extraction_append_revision",
-    { payload },
-  );
+  return invoke<AppendRevisionResult>("narrative_extraction_append_revision", {
+    payload,
+  });
 }
 
 export async function narrativeExtractionAppendDecision(
   payload: AppendDecisionPayload,
 ): Promise<AppendDecisionResult> {
-  return invoke<AppendDecisionResult>(
-    "narrative_extraction_append_decision",
-    { payload },
-  );
+  return invoke<AppendDecisionResult>("narrative_extraction_append_decision", {
+    payload,
+  });
 }
 
 export async function narrativeExtractionPrepareCommit(
