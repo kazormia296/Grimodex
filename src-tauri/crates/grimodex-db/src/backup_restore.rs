@@ -34,6 +34,29 @@ pub struct InstallStagedOptions<'a> {
     pub publish_workspace_authority: bool,
     pub on_reopened: Option<Box<dyn FnOnce() + 'a>>,
     pub exclusive_lease: Option<workspace_lease::WorkspaceLease>,
+    #[cfg(feature = "test-failpoints")]
+    pub failpoint: Option<RestoreFailpoint>,
+}
+
+#[cfg(feature = "test-failpoints")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreFailpoint {
+    AfterRollbackSnapshot,
+    AfterReplace,
+    BeforeLiveVerify,
+    LiveVerifyFailure,
+}
+
+#[cfg(feature = "test-failpoints")]
+impl RestoreFailpoint {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterRollbackSnapshot => "restore.after_rollback_snapshot",
+            Self::AfterReplace => "restore.after_replace",
+            Self::BeforeLiveVerify => "restore.before_live_verify",
+            Self::LiveVerifyFailure => "restore.live_verify_failure",
+        }
+    }
 }
 
 impl<'a> InstallStagedOptions<'a> {
@@ -43,6 +66,8 @@ impl<'a> InstallStagedOptions<'a> {
             publish_workspace_authority: true,
             on_reopened: Some(Box::new(on_reopened)),
             exclusive_lease: None,
+            #[cfg(feature = "test-failpoints")]
+            failpoint: None,
         }
     }
 
@@ -52,6 +77,22 @@ impl<'a> InstallStagedOptions<'a> {
             publish_workspace_authority: false,
             on_reopened: None,
             exclusive_lease: Some(exclusive_lease),
+            #[cfg(feature = "test-failpoints")]
+            failpoint: None,
+        }
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    pub fn safe_mode_with_failpoint(
+        exclusive_lease: workspace_lease::WorkspaceLease,
+        failpoint: RestoreFailpoint,
+    ) -> Self {
+        Self {
+            detach_active_workspace: false,
+            publish_workspace_authority: false,
+            on_reopened: None,
+            exclusive_lease: Some(exclusive_lease),
+            failpoint: Some(failpoint),
         }
     }
 }
@@ -352,13 +393,28 @@ pub fn install_staged_workspace_db(
         (None, None)
     };
 
+    #[cfg(feature = "test-failpoints")]
+    if options.failpoint == Some(RestoreFailpoint::AfterRollbackSnapshot) {
+        drop(exclusive_lease);
+        return Err(abort_install(
+            ws_state,
+            &db_path,
+            ws_path,
+            detached_active,
+            anyhow::anyhow!(
+                "RESTORE_FAILPOINT: {}",
+                RestoreFailpoint::AfterRollbackSnapshot.as_str()
+            ),
+        ));
+    }
+
     // Seal the staged candidate and capture its digest *before* live replace so
     // Windows (and all platforms) never need a post-replace seal just to CAS.
     let installed =
         match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
-            crate::migration_supervisor::seal_sqlite_image(&staged_plain)?;
+            crate::migration_supervisor::seal_sqlite_image(staged_plain)?;
             crate::migration_supervisor::installed_image_token_from_sealed(
-                &staged_plain,
+                staged_plain,
                 grimodex_core::SCHEMA_VERSION,
                 None,
             )
@@ -378,7 +434,7 @@ pub fn install_staged_workspace_db(
             }
         };
 
-    if let Err(error) = atomic_replace(&staged_plain, &db_path) {
+    if let Err(error) = atomic_replace(staged_plain, &db_path) {
         let primary = anyhow::anyhow!("復元DBの適用に失敗しました: {error}");
         drop(exclusive_lease);
         if !detached_active {
@@ -398,6 +454,24 @@ pub fn install_staged_workspace_db(
             .into());
         }
         return Err(primary.into());
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    if options.failpoint == Some(RestoreFailpoint::AfterReplace)
+        || options.failpoint == Some(RestoreFailpoint::BeforeLiveVerify)
+        || options.failpoint == Some(RestoreFailpoint::LiveVerifyFailure)
+    {
+        let code = options.failpoint.expect("failpoint set").as_str();
+        drop(exclusive_lease);
+        return restore_rollback_error(
+            ws_path,
+            &db_path,
+            rollback_path.as_deref(),
+            rollback_cleanup.as_mut(),
+            &installed,
+            "RESTORE_FAILPOINT",
+            &format!("RESTORE_FAILPOINT: {code}"),
+        );
     }
 
     match crate::migration_supervisor::installed_image_unchanged(&db_path, &installed) {

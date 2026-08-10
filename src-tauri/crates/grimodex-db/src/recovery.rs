@@ -899,6 +899,98 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_gzip_backup_candidate_is_rejected() {
+        let ws = temp_ws("verify-corrupt-gzip");
+        fs::write(ws.join("backups/grimodex-auto.db.gz"), b"not-gzip-payload")
+            .expect("write corrupt gzip");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db.gz");
+
+        let err = verify_safe_mode_candidate(&state, &candidate_id)
+            .expect_err("corrupt gzip must fail verify");
+        assert!(
+            err.to_string().contains("gzip")
+                || err.to_string().contains("materialize")
+                || err.to_string().contains("SQLite")
+                || err.to_string().contains("corrupt")
+                || err.to_string().contains("failed"),
+            "err={err}"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn safe_mode_restore_after_replace_failpoint_rolls_back_live() {
+        use crate::backup_restore::{
+            install_staged_workspace_db, InstallStagedOptions, RestoreFailpoint,
+        };
+        use crate::workspace_lease;
+
+        let ws = temp_ws("restore-fp-replace");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+
+        let staged = ws.join("staged-restore.db");
+        fs::copy(ws.join("backups/grimodex-auto.db"), &staged).expect("stage");
+        let exclusive = workspace_lease::acquire_exclusive_for_migration(&ws).expect("lease");
+
+        let err = install_staged_workspace_db(
+            &state,
+            &ws,
+            &staged,
+            InstallStagedOptions::safe_mode_with_failpoint(
+                exclusive,
+                RestoreFailpoint::AfterReplace,
+            ),
+        )
+        .expect_err("after_replace must fail closed");
+        assert!(
+            err.to_string().contains("RESTORE_FAILPOINT")
+                || err.to_string().contains("restore.after_replace"),
+            "err={err}"
+        );
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "live");
+        assert!(state.safe_mode.is_active());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn safe_mode_restore_after_rollback_snapshot_failpoint_leaves_live() {
+        use crate::backup_restore::{
+            install_staged_workspace_db, InstallStagedOptions, RestoreFailpoint,
+        };
+        use crate::workspace_lease;
+
+        let ws = temp_ws("restore-fp-snap");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+        let staged = ws.join("staged-restore.db");
+        fs::copy(ws.join("backups/grimodex-auto.db"), &staged).expect("stage");
+        let exclusive = workspace_lease::acquire_exclusive_for_migration(&ws).expect("lease");
+
+        let err = install_staged_workspace_db(
+            &state,
+            &ws,
+            &staged,
+            InstallStagedOptions::safe_mode_with_failpoint(
+                exclusive,
+                RestoreFailpoint::AfterRollbackSnapshot,
+            ),
+        )
+        .expect_err("pre-replace failpoint must abort");
+        assert!(
+            err.to_string().contains("restore.after_rollback_snapshot"),
+            "err={err}"
+        );
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "live");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
     fn safe_mode_restore_aborts_on_live_sidecar_remove_failure_before_replace() {
         let ws = temp_ws("sidecar-abort");
         create_migrated_db(&ws.join("grimodex.db"), "live");

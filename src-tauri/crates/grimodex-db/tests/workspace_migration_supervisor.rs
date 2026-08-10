@@ -12,13 +12,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "test-failpoints")]
-use grimodex_db::migration_supervisor::{Failpoint, MigrationSupervisorError};
+use grimodex_db::migration_supervisor::Failpoint;
 
 fn temp_workspace(label: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "grimodex-mig-sup-{label}-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("grimodex-mig-sup-{label}-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).expect("create workspace");
     root
 }
@@ -49,10 +47,8 @@ fn seed_legacy_db(path: &Path, user_version: i32) {
 
 fn live_user_version(ws: &Path) -> i32 {
     let db = Database::new(&ws.join("grimodex.db")).expect("open live");
-    db.with_conn(|conn| {
-        Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
-    })
-    .expect("read version")
+    db.with_conn(|conn| Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?))
+        .expect("read version")
 }
 
 #[test]
@@ -131,12 +127,7 @@ fn legacy_schema_shadow_migrates_and_keeps_snapshot() {
     let snaps = fs::read_dir(ws.join("backups/migrations"))
         .expect("migrations dir")
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|x| x.to_str())
-                == Some("db")
-        })
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("db"))
         .count();
     assert!(snaps >= 1, "migration snapshot must remain");
 }
@@ -187,240 +178,263 @@ fn current_marker_missing_invariants_uses_shadow_path() {
     assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
 }
 
-
 #[test]
 fn prepare_database_refuses_safe_mode_authority() {
     let newer_ws = temp_workspace("prep-newer");
     seed_legacy_db(&newer_ws.join("grimodex.db"), SCHEMA_VERSION + 3);
     let err = migration_supervisor::prepare_database_for_open(&newer_ws).expect_err("safe mode");
-    assert!(
-        err.to_string().contains("WORKSPACE_SAFE_MODE"),
-        "err={err}"
-    );
+    assert!(err.to_string().contains("WORKSPACE_SAFE_MODE"), "err={err}");
 }
-
 
 #[cfg(feature = "test-failpoints")]
 mod failpoint_tests {
     use super::*;
 
-#[test]
-fn failpoint_after_snapshot_leaves_live_unchanged() {
-    let ws = temp_workspace("fp-snapshot");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
-    let before = sha256_file(&db_path);
+    #[test]
+    fn failpoint_after_snapshot_enters_safe_mode_with_snapshot() {
+        let ws = temp_workspace("fp-snapshot");
+        let db_path = ws.join("grimodex.db");
+        seed_legacy_db(&db_path, 0);
+        let before = sha256_file(&db_path);
 
-    let err = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-        &ws,
-        Some(Failpoint::AfterSnapshot),
-    )
-    .expect_err("failpoint must abort");
-    assert!(
-        matches!(err, MigrationSupervisorError::Failpoint(Failpoint::AfterSnapshot))
-            || err.to_string().contains("migration.after_snapshot"),
-        "err={err}"
-    );
-    assert_eq!(sha256_file(&db_path), before);
-    assert_eq!(live_user_version(&ws), 0);
-}
-
-#[test]
-fn failpoint_after_migrate_leaves_live_unchanged() {
-    let ws = temp_workspace("fp-migrate");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
-    let before = sha256_file(&db_path);
-
-    let err = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-        &ws,
-        Some(Failpoint::AfterMigrate),
-    )
-    .expect_err("failpoint must abort");
-    assert!(
-        err.to_string().contains("migration.after_migrate")
-            || matches!(err, MigrationSupervisorError::Failpoint(Failpoint::AfterMigrate)),
-        "err={err}"
-    );
-    assert_eq!(sha256_file(&db_path), before);
-    assert_eq!(live_user_version(&ws), 0);
-}
-
-#[test]
-fn failpoint_after_replace_rolls_back_to_recovery_required() {
-    let ws = temp_workspace("fp-replace");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
-
-    let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-        &ws,
-        Some(Failpoint::AfterReplace),
-    )
-    .expect("recovery outcome");
-    match outcome {
-        WorkspaceOpenDbOutcome::RecoveryRequired {
-            error_code,
-            snapshot_path,
-            ..
-        } => {
-            assert_eq!(error_code, "MIGRATION_AFTER_REPLACE_FAILED");
-            assert!(snapshot_path.exists(), "snapshot must be preserved");
+        let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws,
+            Some(Failpoint::AfterSnapshot),
+        )
+        .expect("structured safe mode");
+        match outcome {
+            WorkspaceOpenDbOutcome::SafeMode {
+                reason,
+                available_backups,
+            } => {
+                assert!(
+                    reason.contains("WORKSPACE_SAFE_MODE")
+                        && (reason.contains("migration.after_snapshot")
+                            || reason.contains("AfterSnapshot")
+                            || reason.contains("snapshot=")),
+                    "reason={reason}"
+                );
+                assert!(
+                    available_backups.iter().any(|b| b.format == "migration-db"),
+                    "snapshot should be listed: {available_backups:?}"
+                );
+            }
+            other => panic!("expected SafeMode, got {other:?}"),
         }
-        other => panic!("expected RecoveryRequired, got {other:?}"),
+        assert_eq!(sha256_file(&db_path), before);
+        assert_eq!(live_user_version(&ws), 0);
+        assert!(
+            snapshot_still_present(&ws),
+            "migration snapshot must survive AfterSnapshot failpoint"
+        );
     }
-    assert_eq!(live_user_version(&ws), 0);
-    // Rollback restores the verified VACUUM INTO snapshot (logically equivalent,
-    // not necessarily byte-identical to the pre-migration main file).
-    assert!(
-        snapshot_still_present(&ws),
-        "migration snapshot must survive post-replace rollback"
-    );
-}
 
-fn snapshot_still_present(ws: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(ws.join("backups/migrations")) else {
-        return false;
-    };
-    entries.flatten().any(|e| {
-        e.path()
-            .extension()
-            .and_then(|x| x.to_str())
-            == Some("db")
-    })
-}
+    #[test]
+    fn failpoint_after_migrate_enters_safe_mode_with_snapshot() {
+        let ws = temp_workspace("fp-migrate");
+        let db_path = ws.join("grimodex.db");
+        seed_legacy_db(&db_path, 0);
+        let before = sha256_file(&db_path);
 
-#[test]
-fn failpoint_before_reopen_rolls_back_to_recovery_required() {
-    let ws = temp_workspace("fp-before-reopen");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
-
-    let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-        &ws,
-        Some(Failpoint::BeforeReopen),
-    )
-    .expect("recovery outcome");
-    match outcome {
-        WorkspaceOpenDbOutcome::RecoveryRequired {
-            error_code,
-            snapshot_path,
-            ..
-        } => {
-            assert_eq!(error_code, "MIGRATION_BEFORE_REOPEN_FAILED");
-            assert!(snapshot_path.exists(), "snapshot must be preserved");
+        let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws,
+            Some(Failpoint::AfterMigrate),
+        )
+        .expect("structured safe mode");
+        match outcome {
+            WorkspaceOpenDbOutcome::SafeMode {
+                reason,
+                available_backups,
+            } => {
+                assert!(
+                    reason.contains("WORKSPACE_SAFE_MODE")
+                        && (reason.contains("migration.after_migrate")
+                            || reason.contains("AfterMigrate")
+                            || reason.contains("snapshot=")),
+                    "reason={reason}"
+                );
+                assert!(
+                    available_backups.iter().any(|b| b.format == "migration-db"),
+                    "snapshot should be listed: {available_backups:?}"
+                );
+            }
+            other => panic!("expected SafeMode, got {other:?}"),
         }
-        other => panic!("expected RecoveryRequired, got {other:?}"),
+        assert_eq!(sha256_file(&db_path), before);
+        assert_eq!(live_user_version(&ws), 0);
+        assert!(
+            snapshot_still_present(&ws),
+            "migration snapshot must survive AfterMigrate failpoint"
+        );
     }
-    assert_eq!(live_user_version(&ws), 0);
-    assert!(snapshot_still_present(&ws));
-}
 
-#[test]
-fn failpoint_reopen_failure_restores_without_publishing_database() {
-    let ws = temp_workspace("fp-reopen");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
+    #[test]
+    fn failpoint_after_replace_rolls_back_to_recovery_required() {
+        let ws = temp_workspace("fp-replace");
+        let db_path = ws.join("grimodex.db");
+        seed_legacy_db(&db_path, 0);
 
-    let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-        &ws,
-        Some(Failpoint::ReopenFailure),
-    )
-    .expect("recovery outcome");
-    match outcome {
-        WorkspaceOpenDbOutcome::RecoveryRequired {
-            error_code,
-            snapshot_path,
-            available_backups,
-            ..
-        } => {
-            assert_eq!(error_code, "MIGRATION_REOPEN_FAILED");
-            assert!(snapshot_path.exists());
-            assert!(
-                available_backups
-                    .iter()
-                    .any(|b| b.format == "migration-db"),
-                "migration snapshots must be recovery candidates: {available_backups:?}"
-            );
+        let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws,
+            Some(Failpoint::AfterReplace),
+        )
+        .expect("recovery outcome");
+        match outcome {
+            WorkspaceOpenDbOutcome::RecoveryRequired {
+                error_code,
+                snapshot_path,
+                ..
+            } => {
+                assert_eq!(error_code, "MIGRATION_AFTER_REPLACE_FAILED");
+                assert!(snapshot_path.exists(), "snapshot must be preserved");
+            }
+            other => panic!("expected RecoveryRequired, got {other:?}"),
         }
-        other => panic!("expected RecoveryRequired, got {other:?}"),
+        assert_eq!(live_user_version(&ws), 0);
+        // Rollback restores the verified VACUUM INTO snapshot (logically equivalent,
+        // not necessarily byte-identical to the pre-migration main file).
+        assert!(
+            snapshot_still_present(&ws),
+            "migration snapshot must survive post-replace rollback"
+        );
     }
-    assert_eq!(live_user_version(&ws), 0);
-    assert!(snapshot_still_present(&ws));
-}
 
-#[test]
-fn failpoint_shared_handoff_busy_keeps_verified_migrated_live() {
-    let ws = temp_workspace("fp-handoff-busy");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
+    fn snapshot_still_present(ws: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(ws.join("backups/migrations")) else {
+            return false;
+        };
+        entries
+            .flatten()
+            .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("db"))
+    }
 
-    let err = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-        &ws,
-        Some(Failpoint::SharedHandoffBusy),
-    )
-    .expect_err("handoff busy must not roll back");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("MIGRATION_HANDOFF_BUSY"),
-        "msg={msg}"
-    );
-    // Verified migration must remain published on disk — no blind snapshot restore.
-    assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
-    assert!(snapshot_still_present(&ws));
-}
+    #[test]
+    fn failpoint_before_reopen_rolls_back_to_recovery_required() {
+        let ws = temp_workspace("fp-before-reopen");
+        let db_path = ws.join("grimodex.db");
+        seed_legacy_db(&db_path, 0);
 
-#[test]
-fn handoff_busy_race_does_not_clobber_foreign_live_update() {
-    use std::sync::{Arc, Barrier};
-    use std::thread;
-    use std::time::Duration;
+        let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws,
+            Some(Failpoint::BeforeReopen),
+        )
+        .expect("recovery outcome");
+        match outcome {
+            WorkspaceOpenDbOutcome::RecoveryRequired {
+                error_code,
+                snapshot_path,
+                ..
+            } => {
+                assert_eq!(error_code, "MIGRATION_BEFORE_REOPEN_FAILED");
+                assert!(snapshot_path.exists(), "snapshot must be preserved");
+            }
+            other => panic!("expected RecoveryRequired, got {other:?}"),
+        }
+        assert_eq!(live_user_version(&ws), 0);
+        assert!(snapshot_still_present(&ws));
+    }
 
-    let ws = temp_workspace("handoff-race");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
+    #[test]
+    fn failpoint_reopen_failure_restores_without_publishing_database() {
+        let ws = temp_workspace("fp-reopen");
+        let db_path = ws.join("grimodex.db");
+        seed_legacy_db(&db_path, 0);
 
-    // Thread A migrates then hits SharedHandoffBusy after exclusive drop.
-    // Thread B installs a distinct live image under exclusive in that gap.
-    // A must not roll the pre-migration snapshot over B's completed update.
-    let barrier = Arc::new(Barrier::new(2));
-    let ws_a = ws.clone();
-    let ws_b = ws.clone();
-    let db_b = db_path.clone();
-    let barrier_a = Arc::clone(&barrier);
-    let barrier_b = Arc::clone(&barrier);
+        let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws,
+            Some(Failpoint::ReopenFailure),
+        )
+        .expect("recovery outcome");
+        match outcome {
+            WorkspaceOpenDbOutcome::RecoveryRequired {
+                error_code,
+                snapshot_path,
+                available_backups,
+                ..
+            } => {
+                assert_eq!(error_code, "MIGRATION_REOPEN_FAILED");
+                assert!(snapshot_path.exists());
+                assert!(
+                    available_backups.iter().any(|b| b.format == "migration-db"),
+                    "migration snapshots must be recovery candidates: {available_backups:?}"
+                );
+            }
+            other => panic!("expected RecoveryRequired, got {other:?}"),
+        }
+        assert_eq!(live_user_version(&ws), 0);
+        assert!(snapshot_still_present(&ws));
+    }
 
-    let a = thread::spawn(move || {
-        barrier_a.wait();
-        migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-            &ws_a,
+    #[test]
+    fn failpoint_shared_handoff_busy_keeps_verified_migrated_live() {
+        let ws = temp_workspace("fp-handoff-busy");
+        let db_path = ws.join("grimodex.db");
+        seed_legacy_db(&db_path, 0);
+
+        let err = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws,
             Some(Failpoint::SharedHandoffBusy),
         )
-    });
+        .expect_err("handoff busy must not roll back");
+        let msg = err.to_string();
+        assert!(msg.contains("MIGRATION_HANDOFF_BUSY"), "msg={msg}");
+        // Verified migration must remain published on disk — no blind snapshot restore.
+        assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
+        assert!(snapshot_still_present(&ws));
+    }
 
-    let b = thread::spawn(move || {
-        barrier_b.wait();
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            if db_b.exists() {
-                if let Ok(db) = Database::new(&db_b) {
-                    if let Ok(version) = db.with_conn(|conn| {
-                        Ok(conn.pragma_query_value(None, "user_version", |row| {
-                            row.get::<_, i32>(0)
-                        })?)
-                    }) {
-                        if version == SCHEMA_VERSION {
-                            drop(db);
-                            if let Ok(exclusive) =
-                                grimodex_db::workspace_lease::acquire_exclusive(
-                                    &ws_b,
-                                    Duration::from_secs(5),
-                                )
-                            {
-                                let foreign = ws_b.join("foreign.db");
+    #[test]
+    fn handoff_busy_race_does_not_clobber_foreign_live_update() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Duration;
+
+        let ws = temp_workspace("handoff-race");
+        let db_path = ws.join("grimodex.db");
+        seed_legacy_db(&db_path, 0);
+
+        // Thread A migrates then hits SharedHandoffBusy after exclusive drop.
+        // Thread B installs a distinct live image under exclusive in that gap.
+        // A must not roll the pre-migration snapshot over B's completed update.
+        let barrier = Arc::new(Barrier::new(2));
+        let ws_a = ws.clone();
+        let ws_b = ws.clone();
+        let db_b = db_path.clone();
+        let barrier_a = Arc::clone(&barrier);
+        let barrier_b = Arc::clone(&barrier);
+
+        let a = thread::spawn(move || {
+            barrier_a.wait();
+            migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+                &ws_a,
+                Some(Failpoint::SharedHandoffBusy),
+            )
+        });
+
+        let b = thread::spawn(move || {
+            barrier_b.wait();
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                if db_b.exists() {
+                    if let Ok(db) = Database::new(&db_b) {
+                        if let Ok(version) = db.with_conn(|conn| {
+                            Ok(conn.pragma_query_value(None, "user_version", |row| {
+                                row.get::<_, i32>(0)
+                            })?)
+                        }) {
+                            if version == SCHEMA_VERSION {
+                                drop(db);
+                                if let Ok(exclusive) =
+                                    grimodex_db::workspace_lease::acquire_exclusive(
+                                        &ws_b,
+                                        Duration::from_secs(5),
+                                    )
                                 {
-                                    let fdb = Database::new(&foreign).expect("foreign");
-                                    fdb.migrate().expect("migrate foreign");
-                                    fdb.with_conn(|conn| {
+                                    let foreign = ws_b.join("foreign.db");
+                                    {
+                                        let fdb = Database::new(&foreign).expect("foreign");
+                                        fdb.migrate().expect("migrate foreign");
+                                        fdb.with_conn(|conn| {
                                         conn.execute(
                                             "INSERT INTO projects (id, title, language) VALUES (?1, 'Foreign', 'ja')",
                                             ["project-foreign"],
@@ -428,52 +442,50 @@ fn handoff_busy_race_does_not_clobber_foreign_live_update() {
                                         Ok(())
                                     })
                                     .expect("seed foreign");
+                                    }
+                                    migration_supervisor::seal_sqlite_image(&foreign)
+                                        .expect("seal foreign");
+                                    fs::copy(&foreign, &db_b).expect("install foreign live");
+                                    migration_supervisor::seal_sqlite_image(&db_b).expect("reseal");
+                                    drop(exclusive);
+                                    return;
                                 }
-                                migration_supervisor::seal_sqlite_image(&foreign)
-                                    .expect("seal foreign");
-                                fs::copy(&foreign, &db_b).expect("install foreign live");
-                                migration_supervisor::seal_sqlite_image(&db_b)
-                                    .expect("reseal");
-                                drop(exclusive);
-                                return;
                             }
                         }
                     }
                 }
+                if std::time::Instant::now() >= deadline {
+                    panic!("timed out waiting for migrated live DB");
+                }
+                thread::sleep(Duration::from_millis(20));
             }
-            if std::time::Instant::now() >= deadline {
-                panic!("timed out waiting for migrated live DB");
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-    });
+        });
 
-    let a_result = a.join().expect("thread A");
-    b.join().expect("thread B");
+        let a_result = a.join().expect("thread A");
+        b.join().expect("thread B");
 
-    let err = a_result.expect_err("A must not blind-rollback after handoff busy");
-    assert!(
-        err.to_string().contains("MIGRATION_HANDOFF_BUSY"),
-        "err={}",
-        err
-    );
+        let err = a_result.expect_err("A must not blind-rollback after handoff busy");
+        assert!(
+            err.to_string().contains("MIGRATION_HANDOFF_BUSY"),
+            "err={}",
+            err
+        );
 
-    let db = Database::new(&db_path).expect("open final live");
-    let count: i64 = db
-        .with_conn(|conn| {
-            Ok(conn.query_row(
-                "SELECT COUNT(*) FROM projects WHERE id = 'project-foreign'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .expect("count foreign");
-    assert_eq!(
-        count, 1,
-        "Process B's completed update must survive A's handoff failure"
-    );
-}
-
+        let db = Database::new(&db_path).expect("open final live");
+        let count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM projects WHERE id = 'project-foreign'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("count foreign");
+        assert_eq!(
+            count, 1,
+            "Process B's completed update must survive A's handoff failure"
+        );
+    }
 }
 
 #[test]
@@ -522,10 +534,7 @@ fn rollback_cas_refuses_when_live_image_changed() {
     )
     .expect_err("must refuse overwrite");
     let msg = err.to_string();
-    assert!(
-        msg.contains("MIGRATION_HANDOFF_CONFLICT"),
-        "msg={msg}"
-    );
+    assert!(msg.contains("MIGRATION_HANDOFF_CONFLICT"), "msg={msg}");
 
     // Live still has Process B's project row.
     let db = Database::new(&db_path).expect("open live");
@@ -557,12 +566,8 @@ fn rollback_cas_applies_when_live_image_unchanged() {
         })
         .expect("seed installed");
     }
-    let installed = migration_supervisor::capture_installed_image(
-        &db_path,
-        SCHEMA_VERSION,
-        None,
-    )
-    .expect("capture");
+    let installed = migration_supervisor::capture_installed_image(&db_path, SCHEMA_VERSION, None)
+        .expect("capture");
 
     let rollback = ws.join("rollback.db");
     {
@@ -635,8 +640,7 @@ fn reopen_existing_current_authority_is_ddl_free_ready() {
         let db = Database::new(&db_path).expect("new");
         db.migrate().expect("migrate");
     }
-    let opened =
-        migration_supervisor::reopen_existing_current_authority(&ws).expect("reopen");
+    let opened = migration_supervisor::reopen_existing_current_authority(&ws).expect("reopen");
     assert_eq!(
         opened.lease.mode(),
         grimodex_db::workspace_lease::LeaseMode::Shared
@@ -651,11 +655,9 @@ fn exclusive_lease_contention_does_not_touch_live() {
     seed_legacy_db(&db_path, 0);
     let before = sha256_file(&db_path);
 
-    let _holder = grimodex_db::workspace_lease::acquire_exclusive(
-        &ws,
-        std::time::Duration::from_millis(50),
-    )
-    .expect("hold exclusive");
+    let _holder =
+        grimodex_db::workspace_lease::acquire_exclusive(&ws, std::time::Duration::from_millis(50))
+            .expect("hold exclusive");
 
     let err = migration_supervisor::open_or_migrate_workspace_db(&ws).expect_err("busy");
     let msg = err.to_string();

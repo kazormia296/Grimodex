@@ -264,3 +264,143 @@ fn safe_mode_restore_by_opaque_id_then_reopen_ready() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn corrupt_live_db_open_returns_structured_safe_mode_without_authority() {
+    let root = temp_dir("corrupt-open");
+    let ws = root.join("workspace");
+    fs::create_dir_all(&ws).expect("ws");
+    fs::write(ws.join("grimodex.db"), b"not a sqlite database at all")
+        .expect("write corrupt live db");
+
+    let ws_state = workspace_state();
+    let gs_path = GlobalSettingsPath {
+        path: root.join("global-settings.json"),
+        write_lock: Mutex::new(()),
+    };
+    let mut on_swapped = 0u32;
+    let mut hook = || on_swapped += 1;
+    let mut deps = OpenDeps {
+        gs_path: &gs_path,
+        on_swapped: &mut hook,
+    };
+
+    let outcome = open_workspace_sync(&ws_state, &mut deps, &ws.to_string_lossy())
+        .expect("corrupt live db must surface as Safe Mode outcome");
+    match outcome {
+        WorkspaceOpenOutcome::SafeMode { reason, .. } => {
+            assert!(reason.contains("WORKSPACE_SAFE_MODE"), "reason={reason}");
+        }
+        other => panic!("expected SafeMode, got {other:?}"),
+    }
+    assert_eq!(on_swapped, 0);
+    assert!(ws_state.safe_mode.is_active());
+    let err = with_db_state(&ws_state, |_db| Ok(())).expect_err("no authority");
+    assert!(err.to_string().contains("WORKSPACE_SAFE_MODE"), "err={err}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn after_snapshot_failpoint_open_workspace_enters_safe_mode_with_candidates() {
+    use grimodex_db::migration_supervisor::{self, Failpoint, WorkspaceOpenDbOutcome};
+
+    let root = temp_dir("after-snapshot-open");
+    let ws = root.join("workspace");
+    fs::create_dir_all(ws.join("backups/migrations")).expect("dirs");
+    {
+        let conn = rusqlite::Connection::open(ws.join("grimodex.db")).expect("open");
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .expect("wal");
+        conn.pragma_update(None, "user_version", 0)
+            .expect("version");
+    }
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+        &ws,
+        Some(Failpoint::AfterSnapshot),
+    )
+    .expect("safe mode");
+    let WorkspaceOpenDbOutcome::SafeMode {
+        reason,
+        available_backups,
+    } = outcome
+    else {
+        panic!("expected SafeMode, got {outcome:?}");
+    };
+    assert!(reason.contains("WORKSPACE_SAFE_MODE"), "reason={reason}");
+    assert!(
+        available_backups.iter().any(|b| b.format == "migration-db"),
+        "snapshot candidate required: {available_backups:?}"
+    );
+
+    // Wire the same outcome through open_workspace_sync's session path.
+    let ws_state = workspace_state();
+    let session = grimodex_db::recovery::session_from_db_outcome(
+        &ws,
+        &WorkspaceOpenDbOutcome::SafeMode {
+            reason: reason.clone(),
+            available_backups: available_backups.clone(),
+        },
+    )
+    .expect("session")
+    .expect("safe mode session");
+    ws_state.safe_mode.enter(session).expect("enter");
+    assert!(ws_state.safe_mode.is_active());
+    let listed = list_safe_mode_candidates(&ws_state).expect("list");
+    assert!(
+        listed
+            .iter()
+            .any(|c| c.kind == RecoveryCandidateKind::MigrationSnapshot),
+        "listed={listed:?}"
+    );
+    let err = with_db_state(&ws_state, |_db| Ok(())).expect_err("no authority");
+    assert!(err.to_string().contains("WORKSPACE_SAFE_MODE"), "err={err}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn after_migrate_failpoint_open_keeps_snapshot_for_recovery_shell() {
+    use grimodex_db::migration_supervisor::{self, Failpoint, WorkspaceOpenDbOutcome};
+
+    let root = temp_dir("after-migrate-open");
+    let ws = root.join("workspace");
+    fs::create_dir_all(ws.join("backups/migrations")).expect("dirs");
+    {
+        let conn = rusqlite::Connection::open(ws.join("grimodex.db")).expect("open");
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .expect("wal");
+        conn.pragma_update(None, "user_version", 0)
+            .expect("version");
+    }
+    let before = fs::read(ws.join("grimodex.db")).expect("read live");
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+        &ws,
+        Some(Failpoint::AfterMigrate),
+    )
+    .expect("safe mode");
+    match outcome {
+        WorkspaceOpenDbOutcome::SafeMode {
+            reason,
+            available_backups,
+        } => {
+            assert!(reason.contains("snapshot="), "reason={reason}");
+            assert!(
+                available_backups.iter().any(|b| b.format == "migration-db"),
+                "{available_backups:?}"
+            );
+        }
+        other => panic!("expected SafeMode, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read(ws.join("grimodex.db")).expect("read after"),
+        before,
+        "live DB must remain unchanged before replace"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

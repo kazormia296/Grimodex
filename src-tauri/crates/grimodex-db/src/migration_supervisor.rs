@@ -230,7 +230,13 @@ pub fn open_or_migrate_workspace_db_with_failpoint(
     // before exclusive acquisition (caller must already have quiesced any
     // in-process ActiveWorkspace for this path).
     let shared = workspace_lease::try_acquire_shared(workspace)?;
-    let inspection = inspect_workspace_schema(workspace, &db_path)?;
+    let inspection = match inspect_workspace_schema(workspace, &db_path) {
+        Ok(inspection) => inspection,
+        Err(error) => {
+            drop(shared);
+            return disposition_pre_replace_failure(workspace, error);
+        }
+    };
     if inspection.current_schema_version > inspection.target_schema_version {
         drop(shared);
         return Ok(WorkspaceOpenDbOutcome::SafeMode {
@@ -242,9 +248,17 @@ pub fn open_or_migrate_workspace_db_with_failpoint(
         });
     }
 
+    let invariants = match live_invariants_ok(&db_path) {
+        Ok(ok) => ok,
+        Err(error) => {
+            drop(shared);
+            return disposition_pre_replace_failure(workspace, error);
+        }
+    };
+
     if inspection.current_schema_version == inspection.target_schema_version
         && inspection.quick_check_ok
-        && live_invariants_ok(&db_path)?
+        && invariants
     {
         return open_same_schema_fast_path(shared, &db_path, &inspection);
     }
@@ -305,7 +319,13 @@ fn shadow_migrate(
     let exclusive = workspace_lease::acquire_exclusive_for_migration(workspace)?;
 
     // Exclusive 取得後に再検査 — inspect→exclusive の間に状態が変わり得る。
-    let inspection = inspect_workspace_schema(workspace, db_path)?;
+    let inspection = match inspect_workspace_schema(workspace, db_path) {
+        Ok(inspection) => inspection,
+        Err(error) => {
+            drop(exclusive);
+            return disposition_pre_replace_failure(workspace, error);
+        }
+    };
     if inspection.current_schema_version > inspection.target_schema_version {
         drop(exclusive);
         return Ok(WorkspaceOpenDbOutcome::SafeMode {
@@ -316,53 +336,107 @@ fn shadow_migrate(
             available_backups: list_recovery_candidates(workspace),
         });
     }
+    let invariants_ok = match live_invariants_ok(db_path) {
+        Ok(ok) => ok,
+        Err(error) => {
+            drop(exclusive);
+            return disposition_pre_replace_failure(workspace, error);
+        }
+    };
     if inspection.current_schema_version == inspection.target_schema_version
         && inspection.quick_check_ok
-        && live_invariants_ok(db_path)?
+        && invariants_ok
     {
         drop(exclusive);
         let shared = workspace_lease::try_acquire_shared(workspace)?;
         return open_same_schema_fast_path(shared, db_path, &inspection);
     }
 
-    ensure_disk_budget(workspace, &inspection, failpoint)?;
+    if let Err(error) = ensure_disk_budget(workspace, &inspection, failpoint) {
+        drop(exclusive);
+        return Err(error);
+    }
 
-    let snapshot = create_migration_snapshot(workspace, db_path, &inspection)?;
-    hit_failpoint(failpoint, Failpoint::AfterSnapshot)?;
+    let snapshot = match create_migration_snapshot(workspace, db_path, &inspection) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            drop(exclusive);
+            return disposition_pre_replace_failure(workspace, error);
+        }
+    };
+    if let Err(error) = hit_failpoint(failpoint, Failpoint::AfterSnapshot) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+    }
 
     if failpoint == Some(Failpoint::ChecksumMismatch) {
-        return Err(MigrationSupervisorError::Failpoint(Failpoint::ChecksumMismatch));
+        drop(exclusive);
+        return Ok(WorkspaceOpenDbOutcome::SafeMode {
+            reason: format!(
+                "WORKSPACE_SAFE_MODE: MIGRATION_SNAPSHOT_CHECKSUM_FAILED; snapshot={}",
+                snapshot.db_path.display()
+            ),
+            available_backups: list_recovery_candidates(workspace),
+        });
     }
-    verify_snapshot_checksum(&snapshot)?;
+    if let Err(error) = verify_snapshot_checksum(&snapshot) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+    }
 
     let staged = sibling(db_path, &format!(".migration-{}", Uuid::new_v4()));
     let mut staged_cleanup = Cleanup::new(staged.clone());
-    fs::copy(&snapshot.db_path, &staged)?;
-    remove_db_sidecars(&staged)?;
-    hit_failpoint(failpoint, Failpoint::AfterStagedCopy)?;
+    if let Err(error) = fs::copy(&snapshot.db_path, &staged) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+    }
+    if let Err(error) = remove_db_sidecars(&staged) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+    }
+    if let Err(error) = hit_failpoint(failpoint, Failpoint::AfterStagedCopy) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+    }
 
-    {
+    let migrate_result = (|| -> Result<InstalledImageToken, MigrationSupervisorError> {
         let db = Database::new(&staged)?;
         db.migrate_for_restore_preflight()?;
         verify_migrated_db(&staged)?;
         // Seal staged before publish so live replace never carries WAL/SHM.
         drop(db);
         seal_sqlite_image(&staged)?;
+        // Capture CAS token from the sealed staged image *before* live replace so
+        // post-replace seal/sync is not required to know what we installed.
+        installed_image_token_from_sealed(
+            &staged,
+            SCHEMA_VERSION,
+            Some(snapshot.migration_id.clone()),
+        )
+    })();
+    let installed = match migrate_result {
+        Ok(token) => token,
+        Err(error) => {
+            drop(exclusive);
+            return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+        }
+    };
+    if let Err(error) = hit_failpoint(failpoint, Failpoint::AfterMigrate) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
     }
-    // Capture CAS token from the sealed staged image *before* live replace so
-    // post-replace seal/sync is not required to know what we installed.
-    let installed = installed_image_token_from_sealed(
-        &staged,
-        SCHEMA_VERSION,
-        Some(snapshot.migration_id.clone()),
-    )?;
-    hit_failpoint(failpoint, Failpoint::AfterMigrate)?;
 
     // Seal live image before any replacement. Rollback source is the verified
     // migration snapshot (not a raw main-file copy that can omit WAL frames).
-    seal_sqlite_image(db_path)?;
+    if let Err(error) = seal_sqlite_image(db_path) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+    }
 
-    atomic_replace(&staged, db_path)?;
+    if let Err(error) = atomic_replace(&staged, db_path) {
+        drop(exclusive);
+        return safe_mode_after_snapshot(workspace, &snapshot, error.to_string());
+    }
     staged_cleanup.disarm();
 
     // --- LiveReplaced: failures while exclusive is still held roll back from
@@ -376,6 +450,70 @@ fn shadow_migrate(
         exclusive,
         failpoint,
     )
+}
+
+/// Pre-replace failures that indicate the live DB / migration pipeline cannot
+/// proceed safely → structured Safe Mode (Recovery Shell). Retryable I/O /
+/// lease / path errors stay as `Err`.
+fn disposition_pre_replace_failure(
+    workspace: &Path,
+    error: MigrationSupervisorError,
+) -> Result<WorkspaceOpenDbOutcome, MigrationSupervisorError> {
+    if is_retryable_non_safe_mode_error(&error) {
+        return Err(error);
+    }
+    Ok(WorkspaceOpenDbOutcome::SafeMode {
+        reason: format!("WORKSPACE_SAFE_MODE: {error}"),
+        available_backups: list_recovery_candidates(workspace),
+    })
+}
+
+fn safe_mode_after_snapshot(
+    workspace: &Path,
+    snapshot: &SnapshotArtifacts,
+    detail: String,
+) -> Result<WorkspaceOpenDbOutcome, MigrationSupervisorError> {
+    Ok(WorkspaceOpenDbOutcome::SafeMode {
+        reason: format!(
+            "WORKSPACE_SAFE_MODE: {detail}; snapshot={}",
+            snapshot.db_path.display()
+        ),
+        available_backups: list_recovery_candidates(workspace),
+    })
+}
+
+fn is_retryable_non_safe_mode_error(error: &MigrationSupervisorError) -> bool {
+    match error {
+        MigrationSupervisorError::Lease(lease) => matches!(
+            lease,
+            crate::workspace_lease::LeaseError::Busy { .. }
+                | crate::workspace_lease::LeaseError::Io(_)
+        ),
+        MigrationSupervisorError::Io(io_error) => matches!(
+            io_error.kind(),
+            io::ErrorKind::PermissionDenied
+                | io::ErrorKind::NotFound
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::Interrupted
+        ),
+        MigrationSupervisorError::Message(message) => {
+            let upper = message.to_uppercase();
+            upper.contains("PERMISSION")
+                || upper.contains("ACCESS DENIED")
+                || upper.contains("WORKSPACE_PATH")
+                || upper.contains("INVALID WORKSPACE")
+                || upper.contains("INSUFFICIENT DISK")
+                || upper.contains("DISK_FULL")
+                || upper.contains("DISK SPACE")
+                || (upper.contains("LEASE")
+                    && (upper.contains("BUSY") || upper.contains("TIMEOUT")))
+        }
+        MigrationSupervisorError::Failpoint(Failpoint::DiskFull) => true,
+        MigrationSupervisorError::Failpoint(_) => false,
+        // Integrity / schema / sqlite open failures → Safe Mode.
+        MigrationSupervisorError::Anyhow(_) | MigrationSupervisorError::Sqlite(_) => false,
+    }
 }
 
 fn finish_after_live_replaced(
@@ -441,12 +579,8 @@ fn finish_after_live_replaced(
 
     // Shared-lease failure after verified install must NOT blind-rollback:
     // another process may have completed restore/migration in the gap.
-    match handoff_verified_live_to_shared(
-        workspace,
-        exclusive,
-        "MIGRATION_HANDOFF_BUSY",
-        failpoint,
-    ) {
+    match handoff_verified_live_to_shared(workspace, exclusive, "MIGRATION_HANDOFF_BUSY", failpoint)
+    {
         Ok(opened) => Ok(WorkspaceOpenDbOutcome::Migrated {
             opened,
             from_schema: inspection.current_schema_version,
@@ -622,9 +756,7 @@ pub fn reopen_existing_current_authority(
         ))
     })?;
     reinspect_current_authority(&database).map_err(|error| {
-        MigrationSupervisorError::Message(format!(
-            "WORKSPACE_REACTIVATION_FAILED: {error}"
-        ))
+        MigrationSupervisorError::Message(format!("WORKSPACE_REACTIVATION_FAILED: {error}"))
     })?;
     database
         .recover_open_time_state_without_schema_ddl()
@@ -637,9 +769,8 @@ pub fn reopen_existing_current_authority(
 }
 
 fn reinspect_current_authority(database: &Database) -> Result<(), MigrationSupervisorError> {
-    let version: i32 = database.with_conn(|conn| {
-        Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
-    })?;
+    let version: i32 = database
+        .with_conn(|conn| Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?))?;
     if version != SCHEMA_VERSION {
         return Err(MigrationSupervisorError::Message(format!(
             "WORKSPACE_SAFE_MODE: reopened db user_version {version} != {SCHEMA_VERSION}"
@@ -671,8 +802,7 @@ fn rollback_after_live_replaced(
     let restore_result = (|| -> Result<(), MigrationSupervisorError> {
         // Drop any WAL/SHM created by a failed reopen before restoring.
         remove_db_sidecars(db_path)?;
-        let staged_rollback =
-            sibling(db_path, &format!(".migration-rollback-{}", Uuid::new_v4()));
+        let staged_rollback = sibling(db_path, &format!(".migration-rollback-{}", Uuid::new_v4()));
         let mut staged_cleanup = Cleanup::new(staged_rollback.clone());
         fs::copy(&snapshot.db_path, &staged_rollback)?;
         remove_db_sidecars(&staged_rollback)?;
@@ -722,9 +852,7 @@ fn create_migration_snapshot(
     fs::create_dir_all(&migrations_dir)?;
     let probe = migrations_dir.join(format!(".write-probe-{}", Uuid::new_v4()));
     File::create(&probe).map_err(|e| {
-        MigrationSupervisorError::Message(format!(
-            "MIGRATION_BACKUP_DIRECTORY_UNWRITABLE: {e}"
-        ))
+        MigrationSupervisorError::Message(format!("MIGRATION_BACKUP_DIRECTORY_UNWRITABLE: {e}"))
     })?;
     let _ = fs::remove_file(&probe);
 
@@ -741,11 +869,10 @@ fn create_migration_snapshot(
     // legacy schemas may lack derived tables that slim expects.
     {
         let conn = rusqlite::Connection::open(db_path)?;
-        let (busy, _, _): (i64, i64, i64) = conn.query_row(
-            "PRAGMA wal_checkpoint(TRUNCATE)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+        let (busy, _, _): (i64, i64, i64) =
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
         if busy != 0 {
             return Err(MigrationSupervisorError::Message(format!(
                 "MIGRATION_WAL_SEAL_FAILED: snapshot checkpoint busy={busy}"
@@ -795,9 +922,7 @@ fn create_migration_snapshot(
     })
 }
 
-fn verify_snapshot_checksum(
-    snapshot: &SnapshotArtifacts,
-) -> Result<(), MigrationSupervisorError> {
+fn verify_snapshot_checksum(snapshot: &SnapshotArtifacts) -> Result<(), MigrationSupervisorError> {
     let actual = sha256_file(&snapshot.db_path)?;
     if actual != snapshot.sha256 {
         return Err(MigrationSupervisorError::Message(
@@ -855,10 +980,8 @@ pub fn inspect_workspace_schema(
     let wal_size = fs::metadata(sidecar(db_path, "-wal"))
         .map(|m| m.len())
         .unwrap_or(0);
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let quick: String = conn
         .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
@@ -878,18 +1001,15 @@ pub fn inspect_workspace_schema(
 }
 
 fn live_invariants_ok(db_path: &Path) -> Result<bool, MigrationSupervisorError> {
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     Ok(has_current_schema_checkpoint_invariants(&conn)?)
 }
 
 fn verify_migrated_db(path: &Path) -> anyhow::Result<()> {
     let db = Database::new(path)?;
-    let version: i32 = db.with_conn(|conn| {
-        Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
-    })?;
+    let version: i32 =
+        db.with_conn(|conn| Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?))?;
     anyhow::ensure!(
         version == SCHEMA_VERSION,
         "migrated db user_version {version} != {SCHEMA_VERSION}"
@@ -962,12 +1082,7 @@ fn available_bytes(path: &Path) -> Option<u64> {
         let mut total_free: u64 = 0;
         // SAFETY: wide is NUL-terminated; out pointers are stack locals.
         let ok = unsafe {
-            GetDiskFreeSpaceExW(
-                wide.as_ptr(),
-                &mut free_bytes,
-                &mut total,
-                &mut total_free,
-            )
+            GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_bytes, &mut total, &mut total_free)
         };
         if ok != 0 {
             Some(free_bytes)
@@ -987,11 +1102,10 @@ fn available_bytes(path: &Path) -> Option<u64> {
 pub fn seal_sqlite_image(db_path: &Path) -> Result<(), MigrationSupervisorError> {
     {
         let conn = rusqlite::Connection::open(db_path)?;
-        let (busy, _log, _checkpointed): (i64, i64, i64) = conn.query_row(
-            "PRAGMA wal_checkpoint(TRUNCATE)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+        let (busy, _log, _checkpointed): (i64, i64, i64) =
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
         if busy != 0 {
             return Err(MigrationSupervisorError::Message(format!(
                 "MIGRATION_WAL_SEAL_FAILED: wal_checkpoint busy={busy}"
@@ -1059,10 +1173,7 @@ fn sha256_file(path: &Path) -> io::Result<String> {
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> io::Result<()> {
     let tmp = sibling(path, &format!(".tmp-{}", Uuid::new_v4()));
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         serde_json::to_writer_pretty(&mut file, value).map_err(io::Error::other)?;
         file.sync_all()?;
     }
