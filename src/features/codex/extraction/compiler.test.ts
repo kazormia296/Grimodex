@@ -7,6 +7,16 @@ import {
   registerCreatedBinding,
   registerExistingBinding,
 } from "./compiler";
+import { compileSetCodexBaseDetailOperation } from "./detailCompiler";
+import {
+  compileCreateCodexPhaseOperation,
+  compilePatchCodexPhaseOperation,
+} from "./phaseCompiler";
+import { createSetCodexBaseDetailProposal } from "@/features/narrative-extraction/proposals/setCodexBaseDetailProposal";
+import {
+  bindExistingCodexPhaseProposal,
+  createNewBindCodexPhaseProposal,
+} from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
 
 describe("codex extraction compiler", () => {
   it("compiles create with parentId null and empty content", () => {
@@ -81,5 +91,117 @@ describe("codex extraction compiler", () => {
     expect(() => registerCreatedBinding(map, "ent:a", "codex-created")).toThrow(
       /NEX_COMMIT_MAP_CONFLICT/,
     );
+  });
+});
+
+describe("detailCompiler / phaseCompiler", () => {
+  it("compiles base detail set with absent OCC via CommitMap", () => {
+    let map = emptyCommitMap();
+    map = registerCreatedBinding(map, "ent:alice", "entry-a");
+    const proposal = createSetCodexBaseDetailProposal({
+      narrativeEntityId: "ent:alice",
+      definitionRef: "def:age",
+      facetKey: "age",
+      value: { kind: "text", text: "17" },
+      temporalEligibility: "timeless",
+      createId: () => "prop-base",
+    });
+    expect(proposal).not.toBeNull();
+    const op = compileSetCodexBaseDetailOperation({
+      proposal: proposal!,
+      commitMap: map,
+      resolveDefinitionId: (ref) => ref.replace("def:", "def-"),
+      encodeValue: (value) => (value.kind === "text" ? value.text : null),
+    });
+    expect(op.kind).toBe("codex.detail.value.set");
+    expect(op.payload.entryId).toBe("entry-a");
+    expect(op.payload.definitionId).toBe("def-age");
+    expect(op.payload.occ).toEqual({ kind: "absent" });
+    expect(op.payload.value).toBe("17");
+  });
+
+  it("compiles phase create without content/context overrides", () => {
+    let map = emptyCommitMap();
+    map = registerExistingBinding(map, "ent:alice", "entry-a");
+    const proposal = createNewBindCodexPhaseProposal(
+      {
+        narrativeEntityId: "ent:alice",
+        anchorDocumentRef: "D000001",
+        labelSuggestion: "開幕",
+        detailOverrides: [
+          {
+            definitionRef: "def:role",
+            write: { kind: "set", value: { kind: "text", text: "監察官" } },
+          },
+        ],
+        binding: {
+          kind: "create-new",
+          phase: { label: "開幕", anchorDocumentRef: "D000001" },
+        },
+      },
+      { createId: () => "prop-phase" },
+    );
+    const op = compileCreateCodexPhaseOperation({
+      proposal,
+      commitMap: map,
+      phaseId: "phase-1",
+      resolveDefinitionId: (ref) => ref.replace("def:", "def-"),
+      encodeWrite: (_id, write) =>
+        write.kind === "set" && write.value.kind === "text"
+          ? write.value.text
+          : null,
+    });
+    expect(op.kind).toBe("codex.phase.create");
+    expect(op.payload.label).toBe("開幕");
+    expect(op.payload.detailOverrides).toEqual([
+      { definitionId: "def-role", value: "監察官" },
+    ]);
+    expect(
+      Object.prototype.hasOwnProperty.call(op.payload, "contentOverride"),
+    ).toBe(false);
+  });
+
+  it("compiles phase patch as exact-after aggregate", () => {
+    const proposal = bindExistingCodexPhaseProposal(
+      {
+        narrativeEntityId: "ent:alice",
+        anchorDocumentRef: "D000001",
+        labelSuggestion: "更新",
+        detailOverrides: [
+          {
+            definitionRef: "def:role",
+            write: { kind: "set", value: { kind: "text", text: "新役割" } },
+          },
+          { definitionRef: "def:old", write: { kind: "inherit" } },
+        ],
+        binding: {
+          kind: "bind-existing",
+          phaseRef: "phase-existing",
+          expectedVersion: 4,
+        },
+      },
+      { createId: () => "prop-patch" },
+    );
+    const op = compilePatchCodexPhaseOperation({
+      proposal,
+      phaseId: "phase-existing",
+      baseVersion: 4,
+      existingOverrides: [
+        { definitionId: "def-role", value: "旧" },
+        { definitionId: "def-old", value: "消す" },
+      ],
+      resolveDefinitionId: (ref) => ref.replace("def:", "def-"),
+      encodeWrite: (_id, write) =>
+        write.kind === "set" && write.value.kind === "text"
+          ? write.value.text
+          : write.kind === "clear"
+            ? null
+            : undefined,
+    });
+    expect(op.kind).toBe("codex.phase.patch");
+    expect(op.payload.baseVersion).toBe(4);
+    expect(op.payload.detailOverrides).toEqual([
+      { definitionId: "def-role", value: "新役割" },
+    ]);
   });
 });

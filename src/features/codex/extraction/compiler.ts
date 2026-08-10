@@ -4,12 +4,21 @@ import type {
   CreateCodexRelationProposal,
   CreateCodexRelationProposalPayload,
 } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import type { SetCodexDetailValueOperationV1 } from "./detailCompiler";
+import type {
+  CreateCodexPhaseOperationV1,
+  PatchCodexPhaseOperationV1,
+} from "./phaseCompiler";
 
 export type CodexDomainOperationKind =
   | "codex.entry.create"
   | "codex.entry.patch"
   | "codex.entity.bind-existing"
-  | "codex.relation.create";
+  | "codex.relation.create";  | "codex.relation.create"
+  | "codex.detail.value.set"
+  | "codex.phase.create"
+  | "codex.phase.patch"
+  | "codex.semantic_binding.upsert";>>>>>>> 83db4ffb (feat(codex): add State Track, Phase Boundary, and Detail projection extractors)
 
 export interface DomainOperationBase<TKind extends string, TPayload> {
   readonly kind: TKind;
@@ -90,7 +99,10 @@ export type CodexDomainOperationV1 =
   | CreateCodexEntryOperationV1
   | PatchCodexEntryOperationV1
   | BindExistingCodexEntityOperationV1
-  | CreateCodexRelationOperationV1;
+  | CreateCodexRelationOperationV1;  | CreateCodexRelationOperationV1
+  | SetCodexDetailValueOperationV1
+  | CreateCodexPhaseOperationV1
+  | PatchCodexPhaseOperationV1;>>>>>>> 83db4ffb (feat(codex): add State Track, Phase Boundary, and Detail projection extractors)
 
 export interface CodexEntityBinding {
   readonly narrativeEntityId: NarrativeEntityId;
