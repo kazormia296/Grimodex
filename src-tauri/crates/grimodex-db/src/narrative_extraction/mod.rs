@@ -10,6 +10,8 @@ mod models;
 mod phase_operations;
 mod phase_snapshots;
 mod phase_undo;
+mod plot_thread_operations;
+mod plot_thread_undo;
 mod repository;
 mod semantic_bindings;
 mod task_leases;

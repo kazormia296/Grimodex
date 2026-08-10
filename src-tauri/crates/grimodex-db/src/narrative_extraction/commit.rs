@@ -15,7 +15,7 @@ use super::codex_operations::{
     ensure_entry_id_available, ensure_entry_version, ensure_operation_kind, is_chronicle_op,
     parse_entry_create_payload, parse_entry_patch_payload, parse_relation_create_payload,
     CodexEntityBinding, CommitMap, OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH,
-    OP_KIND_EVENT_CREATE, OP_KIND_RELATION_CREATE,
+    OP_KIND_EVENT_CREATE, OP_KIND_RELATION_CREATE, PlotThreadBinding,
 };
 use super::detail_operations::{
     apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
@@ -23,6 +23,14 @@ use super::detail_operations::{
 use super::phase_operations::{
     apply_phase_create_in_tx, apply_phase_patch_in_tx, parse_phase_create_payload,
     parse_phase_patch_payload, OP_KIND_PHASE_CREATE, OP_KIND_PHASE_PATCH,
+};
+use super::plot_thread_operations::{
+    apply_plot_branch_create_in_tx, apply_plot_marker_create_in_tx,
+    apply_plot_thread_create_in_tx, apply_plot_thread_patch_in_tx,
+    ensure_branch_id_available, ensure_marker_id_available, ensure_thread_id_available,
+    ensure_thread_version, parse_plot_branch_create_payload, parse_plot_marker_create_payload,
+    parse_plot_thread_create_payload, parse_plot_thread_patch_payload, OP_KIND_PLOT_BRANCH_CREATE,
+    OP_KIND_PLOT_MARKER_CREATE, OP_KIND_PLOT_THREAD_CREATE, OP_KIND_PLOT_THREAD_PATCH,
 };
 use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
@@ -444,6 +452,90 @@ pub fn narrative_extraction_apply_commit(
                                 )?;
                                 (
                                     "temporal_projection",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    result.before_snapshot,
+                                    result.op_kind,
+                                )
+                            }
+                            OP_KIND_PLOT_THREAD_CREATE => {
+                                let thread_payload =
+                                    parse_plot_thread_create_payload(&op.payload)?;
+                                let result = apply_plot_thread_create_in_tx(
+                                    conn,
+                                    &payload.project_id,
+                                    &thread_payload,
+                                    &now,
+                                )?;
+                                commit_map.insert_plot_thread_binding(PlotThreadBinding {
+                                    hypothesis_id: thread_payload.hypothesis_id.clone(),
+                                    plot_thread_id: result.entity_id.clone(),
+                                    source: "created".to_string(),
+                                });
+                                (
+                                    "plot_thread",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    result.before_snapshot,
+                                    result.op_kind,
+                                )
+                            }
+                            OP_KIND_PLOT_THREAD_PATCH => {
+                                let thread_payload =
+                                    parse_plot_thread_patch_payload(&op.payload)?;
+                                let result = apply_plot_thread_patch_in_tx(
+                                    conn,
+                                    &payload.project_id,
+                                    &thread_payload,
+                                    &now,
+                                )?;
+                                commit_map.insert_plot_thread_binding(PlotThreadBinding {
+                                    hypothesis_id: thread_payload.hypothesis_id.clone(),
+                                    plot_thread_id: result.entity_id.clone(),
+                                    source: "existing".to_string(),
+                                });
+                                (
+                                    "plot_thread",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    result.before_snapshot,
+                                    result.op_kind,
+                                )
+                            }
+                            OP_KIND_PLOT_MARKER_CREATE => {
+                                let marker_payload =
+                                    parse_plot_marker_create_payload(&op.payload)?;
+                                let result = apply_plot_marker_create_in_tx(
+                                    conn,
+                                    &payload.project_id,
+                                    &marker_payload,
+                                    &commit_map,
+                                    &now,
+                                )?;
+                                (
+                                    "plot_thread_marker",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    result.before_snapshot,
+                                    result.op_kind,
+                                )
+                            }
+                            OP_KIND_PLOT_BRANCH_CREATE => {
+                                let branch_payload =
+                                    parse_plot_branch_create_payload(&op.payload)?;
+                                let result = apply_plot_branch_create_in_tx(
+                                    conn,
+                                    &payload.project_id,
+                                    &branch_payload,
+                                    &commit_map,
+                                    &now,
+                                )?;
+                                (
+                                    "plot_thread_branch",
                                     result.entity_id,
                                     result.version,
                                     result.after_snapshot,
@@ -898,6 +990,27 @@ fn validate_commit_plan(
             }
             OP_KIND_PROJECTION_RECORD => {
                 let _ = parse_projection_record_payload(&op.payload)?;
+            }
+            OP_KIND_PLOT_THREAD_CREATE => {
+                let payload = parse_plot_thread_create_payload(&op.payload)?;
+                ensure_thread_id_available(conn, project_id, &payload.thread_id)?;
+            }
+            OP_KIND_PLOT_THREAD_PATCH => {
+                let payload = parse_plot_thread_patch_payload(&op.payload)?;
+                ensure_thread_version(
+                    conn,
+                    project_id,
+                    &payload.thread_id,
+                    payload.base_version,
+                )?;
+            }
+            OP_KIND_PLOT_MARKER_CREATE => {
+                let payload = parse_plot_marker_create_payload(&op.payload)?;
+                ensure_marker_id_available(conn, &payload.marker_id)?;
+            }
+            OP_KIND_PLOT_BRANCH_CREATE => {
+                let payload = parse_plot_branch_create_payload(&op.payload)?;
+                ensure_branch_id_available(conn, &payload.branch_id)?;
             }
             other => anyhow::bail!("unsupported commit operation kind: {other}"),
         }

@@ -15,6 +15,11 @@ use super::phase_undo::{
     restore_semantic_binding_patch, undo_created_detail_value, undo_created_phase,
     undo_created_semantic_binding,
 };
+use super::plot_thread_undo::{
+    reapply_plot_branch_create_snapshot, reapply_plot_marker_create_snapshot,
+    reapply_plot_thread_create_snapshot, restore_plot_thread_patch, undo_created_plot_branch,
+    undo_created_plot_marker, undo_created_plot_thread,
+};
 use super::temporal_undo::{
     reapply_constraint_create_snapshot, reapply_node_ensure_snapshot,
     reapply_projection_create_snapshot, restore_event_chronicle_patch,
@@ -514,6 +519,62 @@ fn mutate_commit(
                                     )?
                                 }
                             }
+                            "plot_thread" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                if op_kind == "patch" {
+                                    let live_version: i64 = conn.query_row(
+                                        "SELECT version FROM plot_threads WHERE id = ?1 AND project_id = ?2",
+                                        params![entity_id, payload.project_id],
+                                        |row| row.get(0),
+                                    )?;
+                                    let description = snapshot
+                                        .get("description")
+                                        .and_then(Value::as_str);
+                                    let next = live_version
+                                        .checked_add(1)
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!(
+                                                "plot thread version overflow during redo"
+                                            )
+                                        })?;
+                                    let updated = conn.execute(
+                                        "UPDATE plot_threads
+                                            SET description = ?1,
+                                                version = ?2,
+                                                updated_at = ?3
+                                          WHERE id = ?4 AND project_id = ?5 AND version = ?6",
+                                        params![
+                                            description,
+                                            next,
+                                            now,
+                                            entity_id,
+                                            payload.project_id,
+                                            live_version
+                                        ],
+                                    )?;
+                                    anyhow::ensure!(
+                                        updated == 1,
+                                        "NEX_COMMIT_PLOT_THREAD_EDITED: thread '{entity_id}' redo conflict"
+                                    );
+                                    next
+                                } else {
+                                    reapply_plot_thread_create_snapshot(
+                                        conn,
+                                        &payload.project_id,
+                                        &snapshot,
+                                        &now,
+                                    )?
+                                }
+                            }
+                            "plot_thread_marker" => {
+                                reapply_plot_marker_create_snapshot(conn, &snapshot, &now)?
+                            }
+                            "plot_thread_branch" => {
+                                reapply_plot_branch_create_snapshot(conn, &snapshot, &now)?
+                            }
                             other => anyhow::bail!("unsupported journal entity kind '{other}'"),
                         };
                         restored.push(json!({
@@ -766,6 +827,73 @@ fn preflight_undo_entity(
                 );
             }
         }
+        "plot_thread" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM plot_threads WHERE id = ?1 AND project_id = ?2",
+                params![entity_id, project_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_PLOT_THREAD_EDITED: thread '{entity_id}' was modified after commit"
+                );
+            }
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "create" {
+                super::plot_thread_undo::ensure_no_external_plot_thread_dependencies(
+                    conn, entity_id,
+                )?;
+            }
+        }
+        "plot_thread_marker" => {
+            let expected = entity
+                .get("snapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+            let expected_version = expected.get("version").and_then(Value::as_i64).unwrap_or(0);
+            let expected_semantic_key = expected
+                .get("semanticKey")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let current =
+                super::plot_thread_operations::collect_plot_marker_snapshot(conn, entity_id)?;
+            if current.get("version") != expected.get("version")
+                || current.get("semanticKey").and_then(Value::as_str).unwrap_or("")
+                    != expected_semantic_key
+            {
+                anyhow::bail!(
+                    "NEX_COMMIT_PLOT_MARKER_EDITED: marker '{entity_id}' was modified after commit"
+                );
+            }
+            let _ = expected_version;
+        }
+        "plot_thread_branch" => {
+            let expected = entity
+                .get("snapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+            let expected_semantic_key = expected
+                .get("semanticKey")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let current =
+                super::plot_thread_operations::collect_plot_branch_snapshot(conn, entity_id)?;
+            if current.get("version") != expected.get("version")
+                || current.get("semanticKey").and_then(Value::as_str).unwrap_or("")
+                    != expected_semantic_key
+            {
+                anyhow::bail!(
+                    "NEX_COMMIT_PLOT_BRANCH_EDITED: branch '{entity_id}' was modified after commit"
+                );
+            }
+        }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),
     }
     Ok(())
@@ -989,6 +1117,67 @@ fn undo_one_entity(
                     .unwrap_or(0);
                 undo_created_projection(conn, entity_id, expected_version)?;
             }
+        }
+        "plot_thread" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let before = entity
+                    .get("beforeSnapshot")
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("plot thread patch journal missing beforeSnapshot")
+                    })?;
+                let expected_after_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                restore_plot_thread_patch(
+                    conn,
+                    entity_id,
+                    &before,
+                    expected_after_version,
+                    now,
+                )?;
+            } else {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                undo_created_plot_thread(conn, entity_id, expected_version)?;
+            }
+        }
+        "plot_thread_marker" => {
+            let snapshot = entity
+                .get("snapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let semantic_key = snapshot
+                .get("semanticKey")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            undo_created_plot_marker(conn, entity_id, expected_version, semantic_key)?;
+        }
+        "plot_thread_branch" => {
+            let snapshot = entity
+                .get("snapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let semantic_key = snapshot
+                .get("semanticKey")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            undo_created_plot_branch(conn, entity_id, expected_version, semantic_key)?;
         }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),
     }

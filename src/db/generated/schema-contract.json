@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 9,
+  "schemaVersion": 10,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6323,7 +6323,7 @@
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 6,
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -6357,6 +6357,13 @@
           "default": null,
           "primaryKey": 0
         },
+        "semantic_key": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "to_thread_id": {
           "ordinal": 3,
           "declaredType": "TEXT",
@@ -6365,10 +6372,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 7,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -6415,13 +6429,13 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE plot_thread_branches ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, to_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, at_node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('branch','merge')), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE plot_thread_branches ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, to_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, at_node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('branch','merge')), semantic_key TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "plot_thread_scene_links": {
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 6,
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -6455,6 +6469,13 @@
           "default": null,
           "primaryKey": 0
         },
+        "semantic_key": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "sort_order": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -6470,10 +6491,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 7,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -6500,7 +6528,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE plot_thread_scene_links ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, phase_type TEXT NOT NULL CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')), note TEXT, sort_order TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE plot_thread_scene_links ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, phase_type TEXT NOT NULL CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')), note TEXT, sort_order TEXT, semantic_key TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "plot_threads": {
       "kind": "table",
@@ -6513,7 +6541,7 @@
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 8,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -6569,10 +6597,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 9,
+          "ordinal": 10,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -6609,7 +6644,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE plot_threads ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL DEFAULT '', color TEXT, description TEXT, sort_order TEXT NOT NULL DEFAULT 'a0', -- 束ねレイアウトの生存スパン明示指定 (NULL=最初/最後のマーカーから導出)。 -- シーン削除で ON DELETE SET NULL → override 解除 (スレッド自体は残る)。 start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, end_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE plot_threads ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL DEFAULT '', color TEXT, description TEXT, sort_order TEXT NOT NULL DEFAULT 'a0', -- 束ねレイアウトの生存スパン明示指定 (NULL=最初/最後のマーカーから導出)。 -- シーン削除で ON DELETE SET NULL → override 解除 (スレッド自体は残る)。 start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, end_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "post_effect_annotation_relations": {
       "kind": "table",
@@ -11007,6 +11042,18 @@
       ],
       "createSql": "CREATE INDEX idx_plot_thread_branches_project ON plot_thread_branches(project_id)"
     },
+    "idx_plot_thread_branches_semantic_key": {
+      "table": "plot_thread_branches",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_plot_thread_branches_semantic_key ON plot_thread_branches(semantic_key)"
+    },
     "idx_plot_thread_branches_to": {
       "table": "plot_thread_branches",
       "unique": false,
@@ -11030,6 +11077,18 @@
         }
       ],
       "createSql": "CREATE INDEX idx_plot_thread_links_node ON plot_thread_scene_links(node_id)"
+    },
+    "idx_plot_thread_links_semantic_key": {
+      "table": "plot_thread_scene_links",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_plot_thread_links_semantic_key ON plot_thread_scene_links(semantic_key)"
     },
     "idx_plot_thread_links_thread": {
       "table": "plot_thread_scene_links",
@@ -11810,6 +11869,30 @@
         }
       ],
       "createSql": "CREATE UNIQUE INDEX uq_narrative_temporal_projections_target ON narrative_temporal_projections(project_id, target_kind, target_id)"
+    },
+    "uq_plot_thread_branches_semantic_key": {
+      "table": "plot_thread_branches",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_plot_thread_branches_semantic_key ON plot_thread_branches(semantic_key)"
+    },
+    "uq_plot_thread_links_semantic_key": {
+      "table": "plot_thread_scene_links",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_plot_thread_links_semantic_key ON plot_thread_scene_links(semantic_key)"
     },
     "uq_scene_chunks_scene_index": {
       "table": "scene_chunks",

@@ -38,6 +38,10 @@ const SURFACE_KEYS = {
   narrative_temporal_attach: true,
   narrative_temporal_synthesize: true,
   narrative_structured_repair: true,
+  narrative_plot_thread_synthesize: true,
+  narrative_plot_development_classify: true,
+  narrative_plot_marker_assign: true,
+  narrative_plot_relation_synthesize: true,
 } satisfies Record<AiUsageSurface, true>;
 
 export const KNOWN_SURFACES = Object.keys(SURFACE_KEYS) as AiUsageSurface[];

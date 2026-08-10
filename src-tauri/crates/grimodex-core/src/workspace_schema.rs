@@ -369,6 +369,12 @@ fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
     })
 }
 
+fn has_text_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name && column.declared_type == "TEXT" && column.not_null
+    })
+}
+
 /// Whether the physical schema satisfies the historical v8 checkpoint.
 /// Version 8 adds Detail Definition / Detail Value OCC columns on top of
 /// every v7 invariant.
@@ -392,13 +398,9 @@ pub fn has_v8_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     )
 }
 
-/// Whether the physical schema satisfies the checkpoint represented by the
-/// current workspace version. Version 9 adds the Temporal Constraint Graph
-/// persistence tables (`narrative_temporal_nodes`,
-/// `narrative_temporal_constraints`, `narrative_temporal_projections`) on top
-/// of every v8 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 9 || !has_v8_checkpoint_invariants(conn)? {
+/// Version 9 Temporal Constraint Graph tables on top of v8.
+pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v8_checkpoint_invariants(conn)? {
         return Ok(false);
     }
     for table in [
@@ -423,6 +425,26 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
             && has_occ_integer_column(&projections, "version")
             && has_timestamp_text_column(&projections, "created_at")
             && has_timestamp_text_column(&projections, "updated_at"),
+    )
+}
+
+/// Whether the physical schema satisfies the checkpoint represented by the
+/// current workspace version. Version 10 adds Plot Thread OCC
+/// (`plot_threads.version`, marker/branch `version` + `semantic_key`) on top
+/// of every v9 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 10 || !has_v9_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    let threads = table_columns(conn, "plot_threads")?;
+    let links = table_columns(conn, "plot_thread_scene_links")?;
+    let branches = table_columns(conn, "plot_thread_branches")?;
+    Ok(
+        has_occ_integer_column(&threads, "version")
+            && has_occ_integer_column(&links, "version")
+            && has_text_column(&links, "semantic_key")
+            && has_occ_integer_column(&branches, "version")
+            && has_text_column(&branches, "semantic_key"),
     )
 }
 

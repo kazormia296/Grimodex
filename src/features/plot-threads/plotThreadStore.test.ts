@@ -98,6 +98,7 @@ const row = (
   sortOrder,
   startNodeId: null,
   endNodeId: null,
+  version: 0,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-02T00:00:00.000Z",
 });
@@ -109,6 +110,8 @@ const linkRow = (id: string): PlotThreadLinkRow => ({
   phaseType: "develop",
   note: null,
   sortOrder: null,
+  semanticKey: "",
+  version: 0,
   createdAt: "2026-01-01T01:00:00.000Z",
   updatedAt: "2026-01-02T01:00:00.000Z",
 });
@@ -124,6 +127,8 @@ const branchRow = (
   toThreadId,
   atNodeId: "s1",
   kind: "branch",
+  semanticKey: "",
+  version: 0,
   createdAt: "2026-01-01T02:00:00.000Z",
   updatedAt: "2026-01-02T02:00:00.000Z",
 });
@@ -331,6 +336,8 @@ describe("plotThreadStore", () => {
           phaseType: "introduce",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1369,6 +1376,8 @@ describe("plotThreadStore", () => {
           phaseType: data.phaseType,
           note: data.note ?? null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         }),
@@ -1631,6 +1640,8 @@ describe("plotThreadStore", () => {
             phaseType: data.phaseType,
             note: null,
             sortOrder: null,
+            semanticKey: "",
+            version: 0,
             createdAt: "",
             updatedAt: "",
           };
