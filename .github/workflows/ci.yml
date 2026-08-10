@@ -913,6 +913,7 @@ jobs:
           -p grimodex-db
           --features test-failpoints
           --test migration_subprocess_crash
+          --test restore_subprocess_crash
 
       - name: Safe Mode IPC contract
         run: pnpm test:electron --run electron/shared/ipcContract.test.ts

@@ -1048,6 +1048,98 @@ mod tests {
 
     #[cfg(feature = "test-failpoints")]
     #[test]
+    fn safe_mode_restore_after_live_seal_failpoint_keeps_wal_commits_and_marker() {
+        use crate::backup_restore::{
+            install_staged_workspace_db, read_incomplete_restore_session, InstallStagedOptions,
+            RestoreFailpoint,
+        };
+        use crate::migration_supervisor;
+        use crate::workspace_lease;
+
+        let ws = temp_ws("restore-fp-live-seal");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        commit_wal_only_marker(&ws.join("grimodex.db"));
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+        let staged = ws.join("staged-restore.db");
+        fs::copy(ws.join("backups/grimodex-auto.db"), &staged).expect("stage");
+        let exclusive = workspace_lease::acquire_exclusive_for_migration(&ws).expect("lease");
+
+        let err = install_staged_workspace_db(
+            &state,
+            &ws,
+            &staged,
+            InstallStagedOptions::safe_mode_with_failpoint(
+                exclusive,
+                RestoreFailpoint::AfterLiveSeal,
+            ),
+        )
+        .expect_err("after_live_seal must abort");
+        assert!(
+            err.to_string().contains("restore.after_live_seal"),
+            "err={err}"
+        );
+        assert_eq!(
+            wal_only_marker_at(&ws.join("grimodex.db")),
+            "committed only in wal"
+        );
+        let marker = read_incomplete_restore_session(&ws)
+            .expect("marker read")
+            .expect("marker present");
+        assert_eq!(marker.phase, "live-sealed");
+
+        let reopen = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("reopen");
+        assert!(
+            matches!(
+                reopen,
+                crate::migration_supervisor::WorkspaceOpenDbOutcome::SafeMode { .. }
+            ),
+            "got {reopen:?}"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn forensic_post_replace_failure_requires_recovery_not_main_only_success() {
+        use crate::backup_restore::{
+            install_staged_workspace_db, InstallStagedOptions, RestoreFailpoint,
+        };
+        use crate::workspace_lease;
+
+        let ws = temp_ws("forensic-rollback");
+        // Garbage live forces forensic safety artifact (VACUUM INTO fails).
+        fs::write(ws.join("grimodex.db"), b"not-a-sqlite-database").expect("main");
+        fs::write(ws.join("grimodex.db-wal"), b"wal-only-bytes").expect("wal");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+        let staged = ws.join("staged-restore.db");
+        fs::copy(ws.join("backups/grimodex-auto.db"), &staged).expect("stage");
+        let exclusive = workspace_lease::acquire_exclusive_for_migration(&ws).expect("lease");
+
+        let err = install_staged_workspace_db(
+            &state,
+            &ws,
+            &staged,
+            InstallStagedOptions::safe_mode_with_failpoint(
+                exclusive,
+                RestoreFailpoint::AfterReplace,
+            ),
+        )
+        .expect_err("forensic post-replace must fail closed");
+        assert!(
+            err.to_string().contains("RESTORE_FORENSIC_RECOVERY_REQUIRED"),
+            "err={err}"
+        );
+        assert!(
+            !err.to_string().contains("元のDBへ戻しました"),
+            "must not claim logical rollback success: {err}"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
     fn safe_mode_restore_after_replace_failpoint_rolls_back_live() {
         use crate::backup_restore::{
             install_staged_workspace_db, InstallStagedOptions, RestoreFailpoint,

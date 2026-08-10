@@ -4,7 +4,7 @@
 //! post-reopen cache invalidation through `restore_backup_core`'s callback.
 
 use flate2::read::GzDecoder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,8 @@ pub struct InstallStagedOptions<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreFailpoint {
     AfterRollbackSnapshot,
+    /// After live seal (checkpoint + sidecar removal) and before atomic replace.
+    AfterLiveSeal,
     AfterReplace,
     BeforeLiveVerify,
     LiveVerifyFailure,
@@ -49,9 +51,10 @@ pub enum RestoreFailpoint {
 
 #[cfg(feature = "test-failpoints")]
 impl RestoreFailpoint {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::AfterRollbackSnapshot => "restore.after_rollback_snapshot",
+            Self::AfterLiveSeal => "restore.after_live_seal",
             Self::AfterReplace => "restore.after_replace",
             Self::BeforeLiveVerify => "restore.before_live_verify",
             Self::LiveVerifyFailure => "restore.live_verify_failure",
@@ -227,6 +230,17 @@ pub enum LiveSafetyArtifact {
     ForensicBundle { dir: PathBuf },
 }
 
+#[derive(Debug, Clone)]
+enum RestoreRollbackSource {
+    LogicalImage(PathBuf),
+    ForensicImage {
+        dir: PathBuf,
+        main: PathBuf,
+        wal: Option<PathBuf>,
+        shm: Option<PathBuf>,
+    },
+}
+
 impl LiveSafetyArtifact {
     pub fn retained_path(&self) -> &Path {
         match self {
@@ -235,12 +249,100 @@ impl LiveSafetyArtifact {
         }
     }
 
-    fn rollback_source_db(&self) -> PathBuf {
+    fn kind_str(&self) -> &'static str {
         match self {
-            Self::LogicalDb { path } => path.clone(),
-            Self::ForensicBundle { dir } => dir.join("grimodex.db"),
+            Self::LogicalDb { .. } => "logical",
+            Self::ForensicBundle { .. } => "forensic",
         }
     }
+
+    fn rollback_source(&self) -> RestoreRollbackSource {
+        match self {
+            Self::LogicalDb { path } => RestoreRollbackSource::LogicalImage(path.clone()),
+            Self::ForensicBundle { dir } => {
+                let main = dir.join("grimodex.db");
+                let wal = optional_regular_file(&dir.join("grimodex.db-wal"));
+                let shm = optional_regular_file(&dir.join("grimodex.db-shm"));
+                RestoreRollbackSource::ForensicImage {
+                    dir: dir.clone(),
+                    main,
+                    wal,
+                    shm,
+                }
+            }
+        }
+    }
+}
+
+fn optional_regular_file(path: &Path) -> Option<PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() => Some(path.to_path_buf()),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSessionMarker {
+    pub version: u32,
+    pub phase: String,
+    pub safety_artifact: String,
+    pub safety_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_artifact: Option<String>,
+    pub installed_digest: String,
+    pub workspace_identity: String,
+}
+
+pub fn restore_session_marker_path(workspace: &Path) -> PathBuf {
+    workspace.join("backups").join(".restore-session.json")
+}
+
+/// Incomplete restore session left on disk — open must not publish authority.
+pub fn read_incomplete_restore_session(
+    workspace: &Path,
+) -> AppResult<Option<RestoreSessionMarker>> {
+    let path = restore_session_marker_path(workspace);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let marker: RestoreSessionMarker = serde_json::from_slice(&bytes)
+                .map_err(|error| anyhow::anyhow!("RESTORE_SESSION_MARKER_INVALID: {error}"))?;
+            Ok(Some(marker))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(anyhow::anyhow!("RESTORE_SESSION_MARKER_READ_FAILED: {error}").into()),
+    }
+}
+
+pub fn clear_restore_session_marker(workspace: &Path) -> AppResult<()> {
+    let path = restore_session_marker_path(workspace);
+    match remove_path_no_follow(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(anyhow::anyhow!("RESTORE_SESSION_MARKER_CLEAR_FAILED: {error}").into()),
+    }
+}
+
+fn write_restore_session_marker(workspace: &Path, marker: &RestoreSessionMarker) -> AppResult<()> {
+    let backups = workspace.join("backups");
+    std::fs::create_dir_all(&backups).map_err(anyhow::Error::from)?;
+    let path = restore_session_marker_path(workspace);
+    let tmp = backups.join(format!(".restore-session-{}.tmp", uuid::Uuid::new_v4()));
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(anyhow::Error::from)?;
+        serde_json::to_writer_pretty(&mut file, marker).map_err(anyhow::Error::from)?;
+        file.sync_all().map_err(anyhow::Error::from)?;
+    }
+    std::fs::rename(&tmp, &path).map_err(anyhow::Error::from)?;
+    // Best-effort directory fsync so the rename is durable across crash.
+    if let Ok(dir) = File::open(&backups) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 /// Capture a persistent pre-restore safety artifact **before** mutating live
@@ -517,90 +619,197 @@ pub fn install_staged_workspace_db(
         ));
     }
 
-    // 3) Mandatory rollback image for CAS (from safety artifact — not a
-    // post-WAL-delete main-file copy).
-    let (rollback_path, mut rollback_cleanup) = if let Some(artifact) = safety_artifact.as_ref() {
-        let (rollback_path, mut rollback_output) = match create_unique_sidecar(&db_path, "rollback")
-        {
-            Ok(created) => created,
-            Err(error) => {
+    // 3) Prepare rollback source from the retained safety artifact.
+    let rollback_source = safety_artifact
+        .as_ref()
+        .map(|artifact| artifact.rollback_source());
+    let (rollback_path, mut rollback_cleanup) =
+        if let Some(RestoreRollbackSource::LogicalImage(source)) = rollback_source.as_ref() {
+            let (rollback_path, mut rollback_output) =
+                match create_unique_sidecar(&db_path, "rollback") {
+                    Ok(created) => created,
+                    Err(error) => {
+                        drop(exclusive_lease);
+                        return Err(abort_install(
+                            ws_state,
+                            &db_path,
+                            ws_path,
+                            detached_active,
+                            anyhow::anyhow!("{error}"),
+                        ));
+                    }
+                };
+            let rollback_cleanup = CleanupPath::new(rollback_path.clone());
+            if let Err(error) = copy_path_into(source, &mut rollback_output) {
+                drop(rollback_output);
                 drop(exclusive_lease);
                 return Err(abort_install(
                     ws_state,
                     &db_path,
                     ws_path,
                     detached_active,
-                    anyhow::anyhow!("{error}"),
+                    anyhow::anyhow!("復元ロールバック用DBの作成に失敗しました: {error}"),
                 ));
             }
+            if let Err(error) = rollback_output.sync_all() {
+                drop(rollback_output);
+                drop(exclusive_lease);
+                return Err(abort_install(
+                    ws_state,
+                    &db_path,
+                    ws_path,
+                    detached_active,
+                    anyhow::anyhow!("復元ロールバック用DBの同期に失敗しました: {error}"),
+                ));
+            }
+            drop(rollback_output);
+            (Some(rollback_path), Some(rollback_cleanup))
+        } else {
+            (None, None)
         };
-        let rollback_cleanup = CleanupPath::new(rollback_path.clone());
-        let source = artifact.rollback_source_db();
-        if let Err(error) = copy_path_into(&source, &mut rollback_output) {
-            drop(rollback_output);
-            drop(exclusive_lease);
-            return Err(abort_install(
-                ws_state,
-                &db_path,
-                ws_path,
-                detached_active,
-                anyhow::anyhow!("復元ロールバック用DBの作成に失敗しました: {error}"),
-            ));
-        }
-        if let Err(error) = rollback_output.sync_all() {
-            drop(rollback_output);
-            drop(exclusive_lease);
-            return Err(abort_install(
-                ws_state,
-                &db_path,
-                ws_path,
-                detached_active,
-                anyhow::anyhow!("復元ロールバック用DBの同期に失敗しました: {error}"),
-            ));
-        }
-        drop(rollback_output);
-        (Some(rollback_path), Some(rollback_cleanup))
-    } else {
-        (None, None)
-    };
 
-    // 4) Only now is it safe to drop live WAL/SHM — frames are in the retained
-    // safety artifact (and rollback copy).
-    if let Err(error) = remove_db_sidecars(&db_path) {
+    // 4) Durable restore session marker *before* live seal / sidecar mutation.
+    if let Some(artifact) = safety_artifact.as_ref() {
+        let marker = RestoreSessionMarker {
+            version: 1,
+            phase: "live-sealed".to_string(),
+            safety_artifact: artifact.retained_path().display().to_string(),
+            safety_kind: artifact.kind_str().to_string(),
+            rollback_artifact: rollback_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            installed_digest: installed.digest.clone(),
+            workspace_identity: crate::migration_supervisor::workspace_identity(ws_path),
+        };
+        if let Err(error) = write_restore_session_marker(ws_path, &marker) {
+            drop(exclusive_lease);
+            return Err(abort_install(
+                ws_state,
+                &db_path,
+                ws_path,
+                detached_active,
+                anyhow::anyhow!("RESTORE_SESSION_MARKER_WRITE_FAILED: {error}"),
+            ));
+        }
+    }
+
+    // 5) Seal readable live (checkpoint WAL into main) or fail-closed sidecar
+    // removal for forensic-only images.
+    if live_exists {
+        match safety_artifact.as_ref() {
+            Some(LiveSafetyArtifact::LogicalDb { .. }) => {
+                if let Err(error) = crate::migration_supervisor::seal_sqlite_image(&db_path)
+                    .map_err(|e| anyhow::anyhow!("RESTORE_LIVE_SEAL_FAILED: {e}"))
+                {
+                    drop(exclusive_lease);
+                    return Err(abort_install(
+                        ws_state,
+                        &db_path,
+                        ws_path,
+                        detached_active,
+                        error,
+                    ));
+                }
+            }
+            Some(LiveSafetyArtifact::ForensicBundle { .. }) | None => {
+                if let Err(error) = remove_db_sidecars(&db_path) {
+                    drop(exclusive_lease);
+                    return Err(abort_install(
+                        ws_state,
+                        &db_path,
+                        ws_path,
+                        detached_active,
+                        anyhow::anyhow!(
+                            "復元前のSQLite sidecar削除に失敗したため中止しました: {error}"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    if let Err(error) = hit_restore_failpoint(options.failpoint, RestoreFailpoint::AfterLiveSeal) {
         drop(exclusive_lease);
         return Err(abort_install(
             ws_state,
             &db_path,
             ws_path,
             detached_active,
-            anyhow::anyhow!("復元前のSQLite sidecar削除に失敗したため中止しました: {error}"),
+            anyhow::anyhow!("{error}"),
         ));
     }
 
     if let Err(error) = atomic_replace(staged_plain, &db_path) {
-        let primary = anyhow::anyhow!("復元DBの適用に失敗しました: {error}");
-        drop(exclusive_lease);
-        if !detached_active {
-            return Err(primary.into());
-        }
-        if let Err(reactivate_error) = reactivate_workspace(ws_state, &db_path, ws_path) {
-            if let Some(cleanup) = rollback_cleanup.as_mut() {
-                cleanup.disarm();
+        let primary_msg = format!("復元DBの適用に失敗しました: {error}");
+        let rollback_result: AppResult<()> = match rollback_source.as_ref() {
+            Some(RestoreRollbackSource::LogicalImage(_)) => {
+                if let Some(path) = rollback_path.as_deref() {
+                    match crate::migration_supervisor::rollback_if_installed_image_unchanged(
+                        ws_path,
+                        &db_path,
+                        path,
+                        &installed,
+                        "RESTORE_REPLACE_FAILED",
+                    ) {
+                        Ok(exclusive) => {
+                            drop(exclusive);
+                            if let Some(cleanup) = rollback_cleanup.as_mut() {
+                                cleanup.disarm();
+                            }
+                            let _ = clear_restore_session_marker(ws_path);
+                            Err(anyhow::anyhow!("{primary_msg}; 元のDBへ戻しました").into())
+                        }
+                        Err(conflict) => {
+                            if let Some(cleanup) = rollback_cleanup.as_mut() {
+                                cleanup.disarm();
+                            }
+                            Err(anyhow::anyhow!(
+                                "RESTORE_SESSION_LOST: {primary_msg}; rollback={conflict}"
+                            )
+                            .into())
+                        }
+                    }
+                } else {
+                    Err(anyhow::anyhow!("{primary_msg}").into())
+                }
             }
-            let rollback_detail = rollback_path
-                .as_ref()
-                .map(|path| format!("ロールバック用DBは {path:?} に保持しています"))
-                .unwrap_or_else(|| "ロールバック用DBは作成されていません".to_string());
-            return Err(anyhow::anyhow!(
-                "RESTORE_SESSION_LOST: {primary}; 元DBの再オープンにも失敗しました。{rollback_detail}: {reactivate_error}"
+            Some(RestoreRollbackSource::ForensicImage { .. }) => {
+                if let Some(cleanup) = rollback_cleanup.as_mut() {
+                    cleanup.disarm();
+                }
+                Err(anyhow::anyhow!(
+                    "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary_msg}; forensic artifact retained at {:?}",
+                    safety_artifact.as_ref().map(|a| a.retained_path())
+                )
+                .into())
+            }
+            None => Err(anyhow::anyhow!("{primary_msg}").into()),
+        };
+        drop(exclusive_lease);
+        // Safe Mode: never re-publish. Normal restore: only re-publish after
+        // logical rollback restored a sealed complete image.
+        if detached_active
+            && matches!(
+                rollback_source.as_ref(),
+                Some(RestoreRollbackSource::LogicalImage(_))
             )
-            .into());
+            && rollback_result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("元のDBへ戻しました"))
+        {
+            if let Err(reactivate_error) = reactivate_workspace(ws_state, &db_path, ws_path) {
+                return Err(anyhow::anyhow!(
+                    "RESTORE_SESSION_LOST: {primary_msg}; 元DBの再オープンにも失敗しました: {reactivate_error}"
+                )
+                .into());
+            }
         }
-        return Err(primary.into());
+        return rollback_result;
     }
 
-    // Retained pre-restore artifact must outlive success (Safe Mode + normal).
-    let _retained_safety = safety_artifact;
+    let retained_safety = safety_artifact;
 
     #[cfg(feature = "test-failpoints")]
     if options.failpoint == Some(RestoreFailpoint::AfterReplace)
@@ -608,45 +817,56 @@ pub fn install_staged_workspace_db(
         || options.failpoint == Some(RestoreFailpoint::LiveVerifyFailure)
     {
         let code = options.failpoint.expect("failpoint set").as_str();
+        let primary = format!("RESTORE_FAILPOINT: {code}");
         drop(exclusive_lease);
-        return restore_rollback_error(
+        return restore_rollback_error(RestoreRollbackArgs {
             ws_path,
-            &db_path,
-            rollback_path.as_deref(),
-            rollback_cleanup.as_mut(),
-            &installed,
-            "RESTORE_FAILPOINT",
-            &format!("RESTORE_FAILPOINT: {code}"),
-        );
+            db_path: &db_path,
+            rollback_path: rollback_path.as_deref(),
+            rollback_cleanup: rollback_cleanup.as_mut(),
+            rollback_source: rollback_source.as_ref(),
+            safety_artifact: retained_safety.as_ref(),
+            installed: &installed,
+            conflict_code: "RESTORE_FAILPOINT",
+            primary: &primary,
+        });
     }
 
     match crate::migration_supervisor::installed_image_unchanged(&db_path, &installed) {
         Ok(true) => {}
         Ok(false) => {
             drop(exclusive_lease);
-            return restore_rollback_error(
+            return restore_rollback_error(RestoreRollbackArgs {
                 ws_path,
-                &db_path,
-                rollback_path.as_deref(),
-                rollback_cleanup.as_mut(),
-                &installed,
-                "RESTORE_DIGEST_CONFLICT",
-                "復元DBのdigest検証に失敗しました",
-            );
+                db_path: &db_path,
+                rollback_path: rollback_path.as_deref(),
+                rollback_cleanup: rollback_cleanup.as_mut(),
+                rollback_source: rollback_source.as_ref(),
+                safety_artifact: retained_safety.as_ref(),
+                installed: &installed,
+                conflict_code: "RESTORE_DIGEST_CONFLICT",
+                primary: "復元DBのdigest検証に失敗しました",
+            });
         }
         Err(error) => {
+            let primary = format!("復元DBのdigest検証に失敗しました: {error}");
             drop(exclusive_lease);
-            return restore_rollback_error(
+            return restore_rollback_error(RestoreRollbackArgs {
                 ws_path,
-                &db_path,
-                rollback_path.as_deref(),
-                rollback_cleanup.as_mut(),
-                &installed,
-                "RESTORE_DIGEST_CONFLICT",
-                &format!("復元DBのdigest検証に失敗しました: {error}"),
-            );
+                db_path: &db_path,
+                rollback_path: rollback_path.as_deref(),
+                rollback_cleanup: rollback_cleanup.as_mut(),
+                rollback_source: rollback_source.as_ref(),
+                safety_artifact: retained_safety.as_ref(),
+                installed: &installed,
+                conflict_code: "RESTORE_DIGEST_CONFLICT",
+                primary: &primary,
+            });
         }
     }
+
+    let _ = clear_restore_session_marker(ws_path);
+    let _ = retained_safety;
 
     if !options.publish_workspace_authority {
         drop(exclusive_lease);
@@ -662,54 +882,65 @@ pub fn install_staged_workspace_db(
         }
         Err(restore_error) => {
             let restore_error_msg = restore_error.to_string();
-            let Some(rollback_path) = rollback_path.as_deref() else {
-                return Err(anyhow::anyhow!(
-                    "RESTORE_SESSION_LOST: 復元DBを再オープンできず、live DB不在のためロールバック用DBもありません: restore={restore_error_msg}"
-                )
-                .into());
-            };
-            match crate::migration_supervisor::rollback_if_installed_image_unchanged(
-                ws_path,
-                &db_path,
-                rollback_path,
-                &installed,
-                "RESTORE_HANDOFF_CONFLICT",
-            ) {
-                Ok(exclusive) => {
+            match rollback_source.as_ref() {
+                Some(RestoreRollbackSource::LogicalImage(_)) => {
+                    let Some(rollback_path) = rollback_path.as_deref() else {
+                        return Err(anyhow::anyhow!(
+                            "RESTORE_SESSION_LOST: 復元DBを再オープンできず、live DB不在のためロールバック用DBもありません: restore={restore_error_msg}"
+                        )
+                        .into());
+                    };
+                    match crate::migration_supervisor::rollback_if_installed_image_unchanged(
+                        ws_path,
+                        &db_path,
+                        rollback_path,
+                        &installed,
+                        "RESTORE_HANDOFF_CONFLICT",
+                    ) {
+                        Ok(exclusive) => {
+                            if let Some(cleanup) = rollback_cleanup.as_mut() {
+                                cleanup.disarm();
+                            }
+                            let _ = clear_restore_session_marker(ws_path);
+                            match publish_active_workspace(
+                                ws_state,
+                                ws_path.to_path_buf(),
+                                exclusive,
+                            ) {
+                                Ok(()) => Err(anyhow::anyhow!(
+                                    "復元DBを再オープンできなかったため元のDBへ戻しました: {restore_error_msg}"
+                                )
+                                .into()),
+                                Err(reactivate_error) => Err(anyhow::anyhow!(
+                                    "RESTORE_SESSION_LOST: 復元DBの適用失敗後、元のDBも再オープンできませんでした: restore={restore_error_msg}; rollback={reactivate_error}"
+                                )
+                                .into()),
+                            }
+                        }
+                        Err(conflict) => {
+                            if let Some(cleanup) = rollback_cleanup.as_mut() {
+                                cleanup.disarm();
+                            }
+                            Err(anyhow::anyhow!(
+                                "RESTORE_SESSION_LOST: 復元DBを再オープンできず、CASロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error_msg}; rollback={conflict}"
+                            )
+                            .into())
+                        }
+                    }
+                }
+                Some(RestoreRollbackSource::ForensicImage { .. }) => {
                     if let Some(cleanup) = rollback_cleanup.as_mut() {
                         cleanup.disarm();
                     }
-                    match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive) {
-                        Ok(()) => Err(anyhow::anyhow!(
-                            "復元DBを再オープンできなかったため元のDBへ戻しました: {restore_error_msg}"
-                        )
-                        .into()),
-                        Err(reactivate_error) => Err(anyhow::anyhow!(
-                            "RESTORE_SESSION_LOST: 復元DBの適用失敗後、元のDBも再オープンできませんでした: restore={restore_error_msg}; rollback={reactivate_error}"
-                        )
-                        .into()),
-                    }
+                    Err(anyhow::anyhow!(
+                        "RESTORE_FORENSIC_RECOVERY_REQUIRED: publish failed ({restore_error_msg}); forensic artifact retained"
+                    )
+                    .into())
                 }
-                Err(conflict) => {
-                    let conflict_msg = conflict.to_string();
-                    if conflict_msg.contains("RESTORE_HANDOFF_CONFLICT") {
-                        if let Some(cleanup) = rollback_cleanup.as_mut() {
-                            cleanup.disarm();
-                        }
-                        Err(anyhow::anyhow!(
-                            "{conflict_msg}; originalPublishError={restore_error_msg}"
-                        )
-                        .into())
-                    } else {
-                        if let Some(cleanup) = rollback_cleanup.as_mut() {
-                            cleanup.disarm();
-                        }
-                        Err(anyhow::anyhow!(
-                            "RESTORE_SESSION_LOST: 復元DBを再オープンできず、CASロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error_msg}; rollback={conflict_msg}"
-                        )
-                        .into())
-                    }
-                }
+                None => Err(anyhow::anyhow!(
+                    "RESTORE_SESSION_LOST: 復元DBを再オープンできず、ロールバック用DBもありません: restore={restore_error_msg}"
+                )
+                .into()),
             }
         }
     }
@@ -729,44 +960,144 @@ fn abort_install(
     }
 }
 
-fn restore_rollback_error(
-    ws_path: &Path,
-    db_path: &Path,
-    rollback_path: Option<&Path>,
-    rollback_cleanup: Option<&mut CleanupPath>,
-    installed: &crate::migration_supervisor::InstalledImageToken,
-    conflict_code: &str,
-    primary: &str,
-) -> AppResult<()> {
-    let Some(rollback_path) = rollback_path else {
-        return Err(anyhow::anyhow!(
-            "RESTORE_SESSION_LOST: {primary}; live DB不在のためロールバック用DBもありません"
-        )
-        .into());
-    };
-    match crate::migration_supervisor::rollback_if_installed_image_unchanged(
+struct RestoreRollbackArgs<'a> {
+    ws_path: &'a Path,
+    db_path: &'a Path,
+    rollback_path: Option<&'a Path>,
+    rollback_cleanup: Option<&'a mut CleanupPath>,
+    rollback_source: Option<&'a RestoreRollbackSource>,
+    safety_artifact: Option<&'a LiveSafetyArtifact>,
+    installed: &'a crate::migration_supervisor::InstalledImageToken,
+    conflict_code: &'a str,
+    primary: &'a str,
+}
+
+fn restore_rollback_error(args: RestoreRollbackArgs<'_>) -> AppResult<()> {
+    let RestoreRollbackArgs {
         ws_path,
         db_path,
         rollback_path,
+        rollback_cleanup,
+        rollback_source,
+        safety_artifact,
         installed,
         conflict_code,
-    ) {
-        Ok(exclusive) => {
-            drop(exclusive);
-            if let Some(cleanup) = rollback_cleanup {
-                cleanup.disarm();
+        primary,
+    } = args;
+    match rollback_source {
+        Some(RestoreRollbackSource::ForensicImage {
+            dir,
+            main,
+            wal,
+            shm,
+        }) => {
+            match restore_forensic_bundle_to_live(db_path, main, wal.as_deref(), shm.as_deref()) {
+                Ok(()) => {
+                    if let Some(cleanup) = rollback_cleanup {
+                        cleanup.disarm();
+                    }
+                    Err(anyhow::anyhow!(
+                        "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary}; forensic bundle restored to live from {dir:?} — remain in Safe Mode"
+                    )
+                    .into())
+                }
+                Err(error) => {
+                    if let Some(cleanup) = rollback_cleanup {
+                        cleanup.disarm();
+                    }
+                    Err(anyhow::anyhow!(
+                        "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary}; forensic auto-rollback failed ({error}); artifact retained at {dir:?}"
+                    )
+                    .into())
+                }
             }
-            Err(anyhow::anyhow!("{primary}; 元のDBへ戻しました").into())
         }
-        Err(error) => {
-            if let Some(cleanup) = rollback_cleanup {
-                cleanup.disarm();
+        Some(RestoreRollbackSource::LogicalImage(_)) | None => {
+            let _ = safety_artifact;
+            let Some(rollback_path) = rollback_path else {
+                return Err(anyhow::anyhow!(
+                    "RESTORE_SESSION_LOST: {primary}; live DB不在のためロールバック用DBもありません"
+                )
+                .into());
+            };
+            match crate::migration_supervisor::rollback_if_installed_image_unchanged(
+                ws_path,
+                db_path,
+                rollback_path,
+                installed,
+                conflict_code,
+            ) {
+                Ok(exclusive) => {
+                    drop(exclusive);
+                    if let Some(cleanup) = rollback_cleanup {
+                        cleanup.disarm();
+                    }
+                    let _ = clear_restore_session_marker(ws_path);
+                    Err(anyhow::anyhow!("{primary}; 元のDBへ戻しました").into())
+                }
+                Err(error) => {
+                    if let Some(cleanup) = rollback_cleanup {
+                        cleanup.disarm();
+                    }
+                    Err(anyhow::anyhow!(
+                        "RESTORE_SESSION_LOST: {primary}; CASロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: {error}"
+                    )
+                    .into())
+                }
             }
-            Err(anyhow::anyhow!(
-                "RESTORE_SESSION_LOST: {primary}; CASロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: {error}"
-            )
-            .into())
         }
+    }
+}
+
+fn restore_forensic_bundle_to_live(
+    db_path: &Path,
+    main: &Path,
+    wal: Option<&Path>,
+    shm: Option<&Path>,
+) -> AppResult<()> {
+    remove_db_sidecars(db_path)
+        .map_err(|e| anyhow::anyhow!("forensic rollback sidecar cleanup failed: {e}"))?;
+    let (staged, mut staged_out) = create_unique_sidecar(db_path, "forensic-rollback")?;
+    let mut staged_cleanup = CleanupPath::new(staged.clone());
+    copy_path_into(main, &mut staged_out).map_err(anyhow::Error::from)?;
+    staged_out.sync_all().map_err(anyhow::Error::from)?;
+    drop(staged_out);
+    atomic_replace(&staged, db_path).map_err(anyhow::Error::from)?;
+    staged_cleanup.disarm();
+    if let Some(wal) = wal {
+        std::fs::copy(wal, sidecar(db_path, "-wal")).map_err(anyhow::Error::from)?;
+        sync_path(&sidecar(db_path, "-wal"))?;
+    }
+    if let Some(shm) = shm {
+        std::fs::copy(shm, sidecar(db_path, "-shm")).map_err(anyhow::Error::from)?;
+        sync_path(&sidecar(db_path, "-shm"))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-failpoints")]
+fn hit_restore_failpoint(
+    configured: Option<RestoreFailpoint>,
+    point: RestoreFailpoint,
+) -> AppResult<()> {
+    if configured == Some(point) {
+        park_restore_failpoint_if_requested(point)?;
+        return Err(anyhow::anyhow!("RESTORE_FAILPOINT: {}", point.as_str()).into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-failpoints")]
+fn park_restore_failpoint_if_requested(point: RestoreFailpoint) -> AppResult<()> {
+    use std::time::Duration;
+    let Some(ready_path) = std::env::var_os("GRIMODEX_RESTORE_FAILPOINT_READY_PATH") else {
+        return Ok(());
+    };
+    let ready_path = PathBuf::from(ready_path);
+    std::fs::write(&ready_path, format!("{}\n", point.as_str())).map_err(anyhow::Error::from)?;
+    sync_path(&ready_path)?;
+    loop {
+        std::thread::park_timeout(Duration::from_secs(3600));
     }
 }
 

@@ -226,6 +226,17 @@ pub fn open_or_migrate_workspace_db_with_failpoint(
         return create_fresh_workspace_db(workspace, &db_path, failpoint);
     }
 
+    // Incomplete restore session must not publish authority — Recovery Shell only.
+    if let Ok(Some(marker)) = crate::backup_restore::read_incomplete_restore_session(workspace) {
+        return Ok(WorkspaceOpenDbOutcome::SafeMode {
+            reason: format!(
+                "WORKSPACE_SAFE_MODE: RESTORE_SESSION_INCOMPLETE: phase={} safetyKind={} safety={}",
+                marker.phase, marker.safety_kind, marker.safety_artifact
+            ),
+            available_backups: list_recovery_candidates(workspace),
+        });
+    }
+
     // Shared lease covers inspect + same-schema authority. Upgrade drops it
     // before exclusive acquisition (caller must already have quiesced any
     // in-process ActiveWorkspace for this path).
