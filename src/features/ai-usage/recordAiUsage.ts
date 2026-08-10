@@ -42,7 +42,11 @@ export type AiUsageSurface =
   | "narrative_foreshadow_signal_synthesize"
   | "narrative_setup_payoff_link"
   | "narrative_foreshadow_global_reconcile"
-  | "narrative_foreshadow_quality_evaluate";
+  | "narrative_foreshadow_quality_evaluate"
+  | "generic_import_role_classify"
+  | "generic_import_document_partition"
+  | "generic_import_custom_extract"
+  | "generic_import_record_reconcile";
 
 export interface RecordAiUsageInput {
   surface: AiUsageSurface;

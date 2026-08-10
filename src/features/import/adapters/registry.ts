@@ -3,6 +3,7 @@ import { adapterKey } from "./adapterTypes";
 import { scanImportAdapter } from "./scan/scanImportAdapter";
 import { novelcrafterImportAdapter } from "./novelcrafter/novelcrafterImportAdapter";
 import { markdownImportAdapter } from "./markdown/markdownImportAdapter";
+import { genericImportAdapter } from "./generic/genericImportAdapter";
 
 const registry = new Map<string, ImportAdapter>();
 
@@ -34,6 +35,7 @@ export function registerDefaultImportAdapters(): void {
   registerImportAdapter(scanImportAdapter);
   registerImportAdapter(novelcrafterImportAdapter);
   registerImportAdapter(markdownImportAdapter);
+  registerImportAdapter(genericImportAdapter);
 }
 
 registerDefaultImportAdapters();

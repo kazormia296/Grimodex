@@ -20,6 +20,7 @@ import { ImportExtractionStep } from "./ImportExtractionStep";
 import { ImportCommitPreviewStep } from "./ImportCommitPreviewStep";
 import type { ImportTargetSpec } from "../core/importTargetSpec";
 import { markdownImportAdapter } from "../adapters/markdown/markdownImportAdapter";
+import { GenericImportWizardPreview } from "./generic/GenericImportWizardPreview";
 
 interface Props {
   readonly onClose: () => void;
@@ -73,6 +74,11 @@ export function ImportWizard({ onClose }: Props) {
   }, [step]);
 
   const stepIndex = IMPORT_WIZARD_STEPS.findIndex((s) => s.id === step);
+  const isGenericAdapter = selectedAdapterId === "generic";
+
+  if (isGenericAdapter && step === "source") {
+    return <GenericImportWizardPreview onClose={onClose} />;
+  }
 
   return (
     <div

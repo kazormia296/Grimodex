@@ -46,6 +46,10 @@ const SURFACE_KEYS = {
   narrative_setup_payoff_link: true,
   narrative_foreshadow_global_reconcile: true,
   narrative_foreshadow_quality_evaluate: true,
+  generic_import_role_classify: true,
+  generic_import_document_partition: true,
+  generic_import_custom_extract: true,
+  generic_import_record_reconcile: true,
 } satisfies Record<AiUsageSurface, true>;
 
 export const KNOWN_SURFACES = Object.keys(SURFACE_KEYS) as AiUsageSurface[];

@@ -432,7 +432,7 @@ pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
 /// Version 10 adds Plot Thread OCC (`plot_threads.version`, marker/branch
 /// `version` + `semantic_key`) on top of every v9 invariant.
 pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 10 && SCHEMA_VERSION != 11 && SCHEMA_VERSION != 12
+    if SCHEMA_VERSION != 10 && SCHEMA_VERSION != 11 && SCHEMA_VERSION != 12 && SCHEMA_VERSION != 13
         || !has_v9_checkpoint_invariants(conn)?
     {
         return Ok(false);
@@ -509,10 +509,10 @@ pub fn has_v11_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     )
 }
 
-/// Whether the physical schema satisfies the current v12 checkpoint. Version
-/// 12 adds durable Import Session and Native import commit persistence.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 12 || !has_v11_checkpoint_invariants(conn)? {
+/// Whether the physical schema satisfies the historical v12 checkpoint.
+/// Version 12 adds durable Import Session and Native import commit persistence.
+pub fn has_v12_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v11_checkpoint_invariants(conn)? {
         return Ok(false);
     }
     if !table_exists(conn, "import_sessions")? {
@@ -531,6 +531,17 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
     ]
     .iter()
     .all(|name| columns.iter().any(|column| column.name == *name)))
+}
+
+/// Whether the physical schema satisfies the current v13 checkpoint. Version
+/// 13 adds durable Import Capture inventories, blobs, decoded resources, and
+/// generic extraction schema revisions.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    Ok(
+        SCHEMA_VERSION == 13
+            && has_v12_checkpoint_invariants(conn)?
+            && table_exists(conn, "import_captures")?,
+    )
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
