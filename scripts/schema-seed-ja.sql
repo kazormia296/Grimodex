@@ -863,6 +863,7 @@ CREATE TABLE IF NOT EXISTS project_calendar (
     reform              TEXT NOT NULL DEFAULT 'null',
     timezone            TEXT NOT NULL DEFAULT 'null',
     lunar_tz_minutes    INTEGER NOT NULL DEFAULT 480,
+    version             INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );

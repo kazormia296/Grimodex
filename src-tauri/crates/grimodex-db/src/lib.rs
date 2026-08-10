@@ -557,6 +557,7 @@ mod integrity;
 pub mod lint_ignores;
 pub mod lint_terms;
 pub mod map_writes;
+pub mod narrative_extraction;
 mod migrate;
 pub mod plot_threads;
 pub mod post_effect;

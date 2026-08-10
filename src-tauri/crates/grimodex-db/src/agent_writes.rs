@@ -2815,6 +2815,183 @@ fn ensure_scene_in_project(
     Ok(())
 }
 
+/// Inputs for the shared in-transaction event create primitive.
+/// Used by both `agent_event_create_impl` and narrative commit apply.
+#[derive(Debug, Clone)]
+pub(crate) struct EventCreateTxInput<'a> {
+    pub project_id: &'a str,
+    pub session_id: &'a str,
+    pub surface: Option<&'a str>,
+    pub event_id: &'a str,
+    pub undo_id: &'a str,
+    pub event_uid: &'a str,
+    pub title: &'a str,
+    pub note: Option<&'a str>,
+    pub detail: Option<&'a str>,
+    pub ordinal: &'a str,
+    pub primary_codex_id: Option<&'a str>,
+    pub lane_group: Option<&'a str>,
+    pub location_codex_id: Option<&'a str>,
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
+    pub start_minute: Option<i64>,
+    pub end_minute: Option<i64>,
+    pub start_granularity: &'a str,
+    pub end_granularity: &'a str,
+    pub precision: &'a str,
+    pub kind: &'a str,
+    pub secret: bool,
+    pub reveal_scene_id: Option<&'a str>,
+    pub participants: &'a [String],
+    pub scene_ids: &'a [String],
+    pub request_hash: Option<&'a str>,
+    pub now: &'a str,
+    pub timestamp: i64,
+    pub write_undo_journal: bool,
+    pub write_change_event: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EventCreateTxResult {
+    pub entity_id: String,
+    pub version: i64,
+    pub change_event_uid: String,
+    pub undo_journal_id: String,
+    pub after_snapshot: Value,
+}
+
+/// Shared event-create body that runs inside a caller-owned transaction.
+pub(crate) fn apply_event_create_in_tx(
+    conn: &rusqlite::Connection,
+    input: EventCreateTxInput<'_>,
+) -> anyhow::Result<EventCreateTxResult> {
+    let canonical_start = normalize_chronicle_timestamp(ChronicleTimestamp {
+        day: input.start_time,
+        minute: input.start_minute,
+        granularity: input.start_granularity,
+    });
+    let canonical_end = normalize_chronicle_timestamp(ChronicleTimestamp {
+        day: input.end_time,
+        minute: input.end_minute,
+        granularity: input.end_granularity,
+    });
+    validate_canonical_chronicle_date_range(ChronicleDateRange {
+        start: canonical_start,
+        end: canonical_end,
+    })?;
+    if let Some(codex_id) = input.primary_codex_id {
+        ensure_codex_in_project(conn, input.project_id, codex_id)?;
+    }
+    if let Some(codex_id) = input.location_codex_id {
+        ensure_codex_in_project(conn, input.project_id, codex_id)?;
+    }
+    if let Some(scene_id) = input.reveal_scene_id {
+        ensure_scene_in_project(conn, input.project_id, scene_id)?;
+    }
+
+    conn.execute(
+        "INSERT INTO events
+         (id, project_id, title, note, detail, ordinal, primary_codex_id,
+          location_codex_id, start_time, end_time, start_minute, end_minute,
+          start_granularity, end_granularity, precision, kind,
+          secret, reveal_scene_id, lane_group, created_at, updated_at, version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20, 1)",
+        rusqlite::params![
+            input.event_id,
+            input.project_id,
+            input.title,
+            input.note,
+            input.detail,
+            input.ordinal,
+            input.primary_codex_id,
+            input.location_codex_id,
+            canonical_start.day,
+            canonical_end.day,
+            canonical_start.minute,
+            canonical_end.minute,
+            input.start_granularity,
+            input.end_granularity,
+            input.precision,
+            input.kind,
+            input.secret,
+            input.reveal_scene_id,
+            input.lane_group,
+            input.now,
+        ],
+    )?;
+
+    for codex_id in input.participants {
+        // Scope guard: reject participants from another project so the
+        // event↔codex link can never cross the project boundary. The
+        // transaction rolls back the already-inserted event row on bail.
+        ensure_codex_in_project(conn, input.project_id, codex_id)?;
+    }
+    for scene_id in input.scene_ids {
+        // Scope guard: reject scenes from another project (see above).
+        ensure_scene_in_project(conn, input.project_id, scene_id)?;
+    }
+    let participant_rows: Vec<(&str, Option<&str>)> = input
+        .participants
+        .iter()
+        .map(|c| (c.as_str(), None))
+        .collect();
+    batch_insert_event_participants(conn, input.event_id, &participant_rows)?;
+    let scene_id_refs: Vec<&str> = input.scene_ids.iter().map(String::as_str).collect();
+    batch_insert_scene_events(conn, input.event_id, &scene_id_refs)?;
+
+    let after_snapshot = collect_event_snapshot(conn, input.event_id)?;
+    let after = after_snapshot.to_string();
+
+    if input.write_undo_journal {
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: input.undo_id,
+                project_id: input.project_id,
+                surface: input.surface.unwrap_or("in-app-agent"),
+                entity_kind: "event",
+                entity_id: input.event_id,
+                op_kind: "create",
+                before_json: None,
+                after_json: Some(&after),
+                base_version: 0,
+                result_version: 1,
+                change_event_uid: Some(input.event_uid),
+            },
+        )?;
+    }
+
+    if input.write_change_event {
+        let mut change_payload = json!({ "title": input.title, "kind": input.kind });
+        if let Some(request_hash) = input.request_hash {
+            change_payload["requestHash"] = Value::String(request_hash.to_string());
+        }
+        append_change_events_in_tx(
+            conn,
+            input.project_id,
+            input.session_id,
+            &[AppendChangeEvent {
+                event_uid: input.event_uid.to_string(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.create".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(input.event_id.to_string()),
+                payload: change_payload.to_string(),
+                timestamp: input.timestamp,
+            }],
+        )?;
+    }
+
+    Ok(EventCreateTxResult {
+        entity_id: input.event_id.to_string(),
+        version: 1,
+        change_event_uid: input.event_uid.to_string(),
+        undo_journal_id: input.undo_id.to_string(),
+        after_snapshot,
+    })
+}
+
 pub fn agent_event_create_impl(
     db: &Database,
     payload: AgentEventCreatePayload,
@@ -2836,10 +3013,16 @@ pub fn agent_event_create_impl(
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    let title = payload.title.unwrap_or_default();
-    let ordinal = payload.ordinal.unwrap_or_else(|| "a0".to_string());
-    let precision = payload.precision.unwrap_or_else(|| "exact".to_string());
-    let kind = payload.kind.unwrap_or_else(|| "generic".to_string());
+    let title = payload.title.clone().unwrap_or_default();
+    let ordinal = payload
+        .ordinal
+        .clone()
+        .unwrap_or_else(|| "a0".to_string());
+    let precision = payload
+        .precision
+        .clone()
+        .unwrap_or_else(|| "exact".to_string());
+    let kind = payload.kind.clone().unwrap_or_else(|| "generic".to_string());
     let start_granularity = resolve_chronicle_granularity(
         payload.start_granularity.as_deref(),
         "none",
@@ -2854,15 +3037,14 @@ pub fn agent_event_create_impl(
         payload.end_minute.is_some(),
     )
     .to_string();
-    let participants = payload.participant_codex_ids.unwrap_or_default();
-    let scene_ids = payload.scene_ids.unwrap_or_default();
+    let participants = payload.participant_codex_ids.clone().unwrap_or_default();
+    let scene_ids = payload.scene_ids.clone().unwrap_or_default();
     let secret = payload.secret.unwrap_or(false);
     // 空文字の reveal は NULL（自動導出/恒久秘匿）に正規化。
-    let reveal_scene_id = payload.reveal_scene_id.filter(|s| !s.is_empty());
-    let mut change_payload = json!({ "title": title, "kind": kind });
-    if request_id.is_some() {
-        change_payload["requestHash"] = Value::String(request_hash.clone());
-    }
+    let reveal_scene_id = payload
+        .reveal_scene_id
+        .clone()
+        .filter(|s| !s.is_empty());
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -2891,117 +3073,48 @@ pub fn agent_event_create_impl(
                     return Ok(existing);
                 }
             }
-            let canonical_start = normalize_chronicle_timestamp(ChronicleTimestamp {
-                day: payload.start_time,
-                minute: payload.start_minute,
-                granularity: &start_granularity,
-            });
-            let canonical_end = normalize_chronicle_timestamp(ChronicleTimestamp {
-                day: payload.end_time,
-                minute: payload.end_minute,
-                granularity: &end_granularity,
-            });
-            validate_canonical_chronicle_date_range(ChronicleDateRange {
-                start: canonical_start,
-                end: canonical_end,
-            })?;
-            if let Some(codex_id) = payload.primary_codex_id.as_deref() {
-                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
-            }
-            if let Some(codex_id) = payload.location_codex_id.as_deref() {
-                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
-            }
-            if let Some(scene_id) = reveal_scene_id.as_deref() {
-                ensure_scene_in_project(conn, &payload.project_id, scene_id)?;
-            }
 
-            conn.execute(
-                "INSERT INTO events
-                 (id, project_id, title, note, detail, ordinal, primary_codex_id,
-                  location_codex_id, start_time, end_time, start_minute, end_minute,
-                  start_granularity, end_granularity, precision, kind,
-                  secret, reveal_scene_id, lane_group, created_at, updated_at, version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20, 1)",
-                rusqlite::params![
-                    event_id,
-                    payload.project_id,
-                    title,
-                    payload.note,
-                    payload.detail,
-                    ordinal,
-                    payload.primary_codex_id,
-                    payload.location_codex_id,
-                    canonical_start.day,
-                    canonical_end.day,
-                    canonical_start.minute,
-                    canonical_end.minute,
-                    start_granularity,
-                    end_granularity,
-                    precision,
-                    kind,
-                    secret,
-                    reveal_scene_id,
-                    payload.lane_group,
-                    now,
-                ],
-            )?;
-
-            for codex_id in &participants {
-                // Scope guard: reject participants from another project so the
-                // event↔codex link can never cross the project boundary. The
-                // transaction rolls back the already-inserted event row on bail.
-                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
-            }
-            for scene_id in &scene_ids {
-                // Scope guard: reject scenes from another project (see above).
-                ensure_scene_in_project(conn, &payload.project_id, scene_id)?;
-            }
-            let participant_rows: Vec<(&str, Option<&str>)> =
-                participants.iter().map(|c| (c.as_str(), None)).collect();
-            batch_insert_event_participants(conn, &event_id, &participant_rows)?;
-            let scene_id_refs: Vec<&str> = scene_ids.iter().map(String::as_str).collect();
-            batch_insert_scene_events(conn, &event_id, &scene_id_refs)?;
-
-            let after = collect_event_snapshot(conn, &event_id)?.to_string();
-
-            insert_undo_journal_in_tx(
+            let created = apply_event_create_in_tx(
                 conn,
-                UndoJournalInsert {
-                    id: &undo_id,
+                EventCreateTxInput {
                     project_id: &payload.project_id,
-                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
-                    entity_kind: "event",
-                    entity_id: &event_id,
-                    op_kind: "create",
-                    before_json: None,
-                    after_json: Some(&after),
-                    base_version: 0,
-                    result_version: 1,
-                    change_event_uid: Some(&event_uid),
+                    session_id: &payload.session_id,
+                    surface: payload.surface.as_deref(),
+                    event_id: &event_id,
+                    undo_id: &undo_id,
+                    event_uid: &event_uid,
+                    title: &title,
+                    note: payload.note.as_deref(),
+                    detail: payload.detail.as_deref(),
+                    ordinal: &ordinal,
+                    primary_codex_id: payload.primary_codex_id.as_deref(),
+                    lane_group: payload.lane_group.as_deref(),
+                    location_codex_id: payload.location_codex_id.as_deref(),
+                    start_time: payload.start_time,
+                    end_time: payload.end_time,
+                    start_minute: payload.start_minute,
+                    end_minute: payload.end_minute,
+                    start_granularity: &start_granularity,
+                    end_granularity: &end_granularity,
+                    precision: &precision,
+                    kind: &kind,
+                    secret,
+                    reveal_scene_id: reveal_scene_id.as_deref(),
+                    participants: &participants,
+                    scene_ids: &scene_ids,
+                    request_hash: request_id.as_ref().map(|_| request_hash.as_str()),
+                    now: &now,
+                    timestamp,
+                    write_undo_journal: true,
+                    write_change_event: true,
                 },
             )?;
 
-            append_change_events_in_tx(
-                conn,
-                &payload.project_id,
-                &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "event".to_string(),
-                    op_type: "event.create".to_string(),
-                    entity_type: Some("event".to_string()),
-                    entity_id: Some(event_id.clone()),
-                    payload: change_payload.to_string(),
-                    timestamp,
-                }],
-            )?;
-
             Ok(AgentWriteResult {
-                entity_id: event_id.clone(),
-                version: 1,
-                change_event_uid: event_uid,
-                undo_journal_id: undo_id,
+                entity_id: created.entity_id,
+                version: created.version,
+                change_event_uid: created.change_event_uid,
+                undo_journal_id: created.undo_journal_id,
             })
         })();
 

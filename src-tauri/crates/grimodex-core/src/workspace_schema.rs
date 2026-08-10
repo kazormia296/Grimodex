@@ -1,12 +1,11 @@
 //! Read-only compatibility probes shared by desktop workspace open and MCP.
 //!
-//! Schema version 2 was already released when the live-comment metadata repair
-//! and the complete AI audit ledger were added. Consequently, version 2 alone
-//! cannot prove that a workspace has converged to the schema represented by
-//! version 3. This module checks only those post-v2 invariants; it deliberately
-//! avoids exact whole-schema comparison because legitimate upgraded databases
-//! can differ from a freshly-created database in column order and normalized
-//! DDL while remaining compatible.
+//! Historical checkpoints cover the live-comment/audit repairs in v3,
+//! durable Detail semantic bindings in v4, and Calendar OCC in v5. The current
+//! checkpoint extends them with Narrative Extraction persistence tables. These
+//! probes deliberately avoid exact whole-schema comparison because legitimate
+//! upgraded databases can differ from fresh databases in column order and
+//! normalized DDL while remaining compatible.
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -58,16 +57,16 @@ const AI_AUDIT_INDEXES: &[(&str, bool, &[&str])] = &[
     ),
 ];
 
-/// Whether a released v2 workspace already satisfies every migration added
-/// after v2 and can therefore use the v3 open fast path without a schema write.
+/// Whether a workspace carrying the immediately previous marker already
+/// satisfies every current physical invariant and can therefore retain write
+/// access while the desktop has not yet advanced the marker.
 ///
 /// This function never mutates the connection. A `false` result asks the
 /// caller to run the full idempotent migration; query failures remain errors so
 /// corruption is not mistaken for an old-but-repairable schema.
-pub fn is_converged_v2_workspace_schema(conn: &Connection) -> anyhow::Result<bool> {
-    // Fail closed after the next schema bump. The invariants below prove only
-    // the explicit v2 -> v3 marker-only transition and must be revisited for a
-    // different target schema.
+pub fn is_previous_workspace_schema_write_compatible(conn: &Connection) -> anyhow::Result<bool> {
+    // Fail closed after the next schema bump. The compatibility predicate must
+    // always be reviewed together with the new physical checkpoint.
     if SCHEMA_VERSION != PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION {
         return Ok(false);
     }
@@ -76,20 +75,16 @@ pub fn is_converged_v2_workspace_schema(conn: &Connection) -> anyhow::Result<boo
         return Ok(false);
     }
 
-    has_v3_checkpoint_invariants(conn)
+    has_current_schema_checkpoint_invariants(conn)
 }
 
 /// Whether the physical schema and data repairs introduced after v2 satisfy
 /// the checkpoint represented by schema version 3.
 ///
-/// Unlike [`is_converged_v2_workspace_schema`], this does not inspect
+/// Unlike [`is_previous_workspace_schema_write_compatible`], this does not inspect
 /// `user_version`; the full migrator uses it immediately before stamping v3 so
 /// malformed same-name tables or indexes cannot be advertised as current.
 pub fn has_v3_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION {
-        return Ok(false);
-    }
-
     for table in [
         "ai_audit_events",
         "post_effect_runs",
@@ -184,6 +179,145 @@ pub fn has_v3_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     )?;
 
     Ok(!has_unrepaired_live_comment)
+}
+
+/// Whether the physical schema satisfies the historical v4 checkpoint.
+/// Version 4 adds durable Detail semantic bindings on top of every v3
+/// invariant. Keeping this probe independent of the current marker lets v5
+/// verify and safely migrate released v4 workspaces.
+pub fn has_v4_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v3_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_detail_semantic_bindings")? {
+        return Ok(false);
+    }
+
+    let columns = table_columns(conn, "codex_detail_semantic_bindings")?;
+    let expected = [
+        ("id", "TEXT", false, None, 1),
+        ("project_id", "TEXT", true, None, 0),
+        ("definition_id", "TEXT", true, None, 0),
+        ("facet_key", "TEXT", true, None, 0),
+        ("projection_kind", "TEXT", true, None, 0),
+        ("temporal_policy", "TEXT", true, None, 0),
+        ("source", "TEXT", true, None, 0),
+        ("confirmed", "INTEGER", true, Some("0"), 0),
+        ("version", "INTEGER", true, Some("0"), 0),
+        ("created_at", "TEXT", true, Some("datetime('now')"), 0),
+        ("updated_at", "TEXT", true, Some("datetime('now')"), 0),
+    ];
+    if columns.len() != expected.len()
+        || columns.iter().zip(expected).any(|(actual, expected)| {
+            actual.name != expected.0
+                || actual.declared_type != expected.1
+                || actual.not_null != expected.2
+                || actual.default.as_deref() != expected.3
+                || actual.primary_key != expected.4
+        })
+    {
+        return Ok(false);
+    }
+
+    for (name, unique, expected_columns) in [
+        (
+            "uq_codex_detail_semantic_binding_definition_facet",
+            true,
+            &["definition_id", "facet_key"][..],
+        ),
+        (
+            "idx_codex_detail_semantic_bindings_project_facet",
+            false,
+            &["project_id", "facet_key"][..],
+        ),
+    ] {
+        let properties = conn
+            .query_row(
+                "SELECT \"unique\", partial
+                   FROM pragma_index_list('codex_detail_semantic_bindings')
+                  WHERE name = ?1",
+                [name],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .optional()?;
+        if properties != Some((unique, false)) || index_columns(conn, name)? != expected_columns {
+            return Ok(false);
+        }
+    }
+
+    let owner_index = conn
+        .query_row(
+            "SELECT \"unique\", partial
+               FROM pragma_index_list('codex_detail_definitions')
+              WHERE name = 'uq_codex_detail_defs_project_id'",
+            [],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()?;
+    if owner_index != Some((true, false))
+        || index_columns(conn, "uq_codex_detail_defs_project_id")? != ["project_id", "id"]
+    {
+        return Ok(false);
+    }
+
+    let create_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'table' AND name = 'codex_detail_semantic_bindings'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )?
+        .unwrap_or_default();
+    let compact = compact_sql(&create_sql);
+    for required in [
+        "check(projection_kindin('scalar-text','summary-text','enum','entity-reference'))",
+        "check(temporal_policyin('base-only','phase-on-durable-change','base-and-phase','derived','manual-only'))",
+        "check(sourcein('preset','user','reviewed-ai'))",
+        "check(confirmedin(0,1))",
+        "check(version>=0)",
+        "project_idtextnotnullreferencesprojects(id)ondeletecascade",
+        "foreignkey(project_id,definition_id)referencescodex_detail_definitions(project_id,id)ondeletecascade",
+    ] {
+        if !compact.contains(required) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+/// Whether the physical schema satisfies the historical v5 checkpoint.
+/// Version 5 adds the Calendar OCC token on top of every v4 invariant. Keeping
+/// this probe independent of the current marker lets v6 verify and safely
+/// migrate released v5 workspaces.
+pub fn has_v5_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v4_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "project_calendar")? {
+        return Ok(false);
+    }
+
+    let columns = table_columns(conn, "project_calendar")?;
+    Ok(columns.iter().any(|column| {
+        column.name == "version"
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("0")
+            && column.primary_key == 0
+    }))
+}
+
+/// Whether the physical schema satisfies the checkpoint represented by the
+/// current workspace version. Version 6 adds Narrative Extraction persistence
+/// tables on top of every v5 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 6 || !has_v5_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    Ok(table_exists(conn, "narrative_extraction_runs")?
+        && table_exists(conn, "narrative_proposals")?
+        && table_exists(conn, "narrative_apply_commits")?)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
@@ -304,13 +438,15 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_converged_v2_schema() {
+    fn recognizes_the_historical_v3_checkpoint_but_does_not_skip_v4() {
         let conn = converged_v2_connection();
-        assert!(is_converged_v2_workspace_schema(&conn).expect("inspect fixture"));
+        assert!(has_v3_checkpoint_invariants(&conn).expect("inspect v3 fixture"));
+        assert!(!is_previous_workspace_schema_write_compatible(&conn)
+            .expect("inspect v4 compatibility"));
 
         conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")
             .expect("remove required index");
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect partial fixture"));
+        assert!(!has_v3_checkpoint_invariants(&conn).expect("inspect partial fixture"));
     }
 
     #[test]
@@ -329,7 +465,9 @@ mod tests {
         )
         .expect("insert unrepaired annotation");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect legacy metadata"));
+        assert!(
+            !is_previous_workspace_schema_write_compatible(&conn).expect("inspect legacy metadata")
+        );
     }
 
     #[test]
@@ -338,7 +476,8 @@ mod tests {
         conn.execute_batch("DROP TABLE editor_stickies")
             .expect("remove editor sticky invariant");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect missing stickies"));
+        assert!(!is_previous_workspace_schema_write_compatible(&conn)
+            .expect("inspect missing stickies"));
     }
 
     #[test]
@@ -352,7 +491,9 @@ mod tests {
         )
         .expect("replace required index with partial index");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect partial index"));
+        assert!(
+            !is_previous_workspace_schema_write_compatible(&conn).expect("inspect partial index")
+        );
     }
 
     #[test]
@@ -381,6 +522,8 @@ mod tests {
         )
         .expect("replace audit table without CHECK");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect missing CHECK"));
+        assert!(
+            !is_previous_workspace_schema_write_compatible(&conn).expect("inspect missing CHECK")
+        );
     }
 }

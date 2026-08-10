@@ -211,6 +211,35 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '[{"surface":"京都","lemma":"京都","count":2,"firstSceneId":"s1","context":"京都へ行った。"}]',
       ),
     ) as never,
+    extractCodexEntitySeeds: record(
+      "extractCodexEntitySeeds",
+      Promise.resolve(
+        JSON.stringify({
+          schemaVersion: 1,
+          seeds: [
+            {
+              seedId: "CES1-deadbeef",
+              surface: "京都",
+              normalizedSurface: "京都",
+              occurrences: [
+                {
+                  sourceRef: "S000001",
+                  quote: "京都",
+                  canonicalRange: { start: 2, end: 4 },
+                  context: { prefix: "🎉", suffix: "へ行った。" },
+                },
+              ],
+              features: {
+                occurrenceCount: 1,
+                appearsAsProperName: true,
+                appearsInDialogue: false,
+                appearsInNarration: true,
+              },
+            },
+          ],
+        }),
+      ),
+    ) as never,
     // plot_threads 8 コマンド（Phase 3 バッチ1 — napi は SELECT * の生行 =
     // snake_case 列名 / Vec<Value> を返す）
     plotThreadCreate: record(
@@ -412,6 +441,74 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     agentEventRelationRemove: record(
       "agentEventRelationRemove",
       AGENT_WRITE_RESULT,
+    ) as never,
+    narrativeExtractionCreateRun: record(
+      "narrativeExtractionCreateRun",
+      Promise.resolve('{"runId":"r1","status":"running","taskIds":[]}'),
+    ) as never,
+    narrativeExtractionGetRun: record(
+      "narrativeExtractionGetRun",
+      Promise.resolve('{"run":{"runId":"r1"},"tasks":[],"taskCounts":{}}'),
+    ) as never,
+    narrativeExtractionCancelRun: record(
+      "narrativeExtractionCancelRun",
+      Promise.resolve('{"runId":"r1","status":"cancelled"}'),
+    ) as never,
+    narrativeExtractionClaimTask: record(
+      "narrativeExtractionClaimTask",
+      Promise.resolve('{"claimed":false}'),
+    ) as never,
+    narrativeExtractionFinishTask: record(
+      "narrativeExtractionFinishTask",
+      Promise.resolve('{"taskId":"t1","attemptId":"a1","status":"completed"}'),
+    ) as never,
+    narrativeExtractionFailTask: record(
+      "narrativeExtractionFailTask",
+      Promise.resolve('{"taskId":"t1","attemptId":"a1","status":"failed"}'),
+    ) as never,
+    narrativeExtractionSaveProposalSet: record(
+      "narrativeExtractionSaveProposalSet",
+      Promise.resolve('{"proposalSetId":"ps1","proposals":[]}'),
+    ) as never,
+    narrativeExtractionAppendRevision: record(
+      "narrativeExtractionAppendRevision",
+      Promise.resolve(
+        '{"proposalId":"p1","revisionId":"rv1","revisionNumber":2,"status":"unreviewed"}',
+      ),
+    ) as never,
+    narrativeExtractionAppendDecision: record(
+      "narrativeExtractionAppendDecision",
+      Promise.resolve(
+        '{"decisionId":"d1","proposalId":"p1","revisionId":"rv1","decision":"approved","status":"approved"}',
+      ),
+    ) as never,
+    narrativeExtractionPrepareCommit: record(
+      "narrativeExtractionPrepareCommit",
+      Promise.resolve(
+        '{"ok":true,"requestId":"req1","planDigest":"d1","operationCount":1}',
+      ),
+    ) as never,
+    narrativeExtractionApplyCommit: record(
+      "narrativeExtractionApplyCommit",
+      Promise.resolve(
+        '{"commitId":"c1","requestId":"req1","planDigest":"d1","status":"applied"}',
+      ),
+    ) as never,
+    narrativeExtractionGetCommitStatus: record(
+      "narrativeExtractionGetCommitStatus",
+      Promise.resolve('{"found":true,"status":"applied"}'),
+    ) as never,
+    narrativeExtractionUndoCommit: record(
+      "narrativeExtractionUndoCommit",
+      Promise.resolve(
+        '{"commitId":"c1","requestId":"req1","planDigest":"d1","status":"undone"}',
+      ),
+    ) as never,
+    narrativeExtractionRedoCommit: record(
+      "narrativeExtractionRedoCommit",
+      Promise.resolve(
+        '{"commitId":"c1","requestId":"req1","planDigest":"d1","status":"redone"}',
+      ),
     ) as never,
     // post_effect pure-db 7 コマンド
     listPostEffectRuns: record(
@@ -1117,9 +1214,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   it.each([
     ["semantic_search", "semanticSearch", { query: "storm", limit: 5 }],
     ["semantic_reindex_all", "semanticReindexAll", {}],
-    ["codex_semantic_search", "codexSemanticSearch", { query: "hero", limit: 5 }],
+    [
+      "codex_semantic_search",
+      "codexSemanticSearch",
+      { query: "hero", limit: 5 },
+    ],
     ["codex_reindex_all", "codexReindexAll", {}],
-    ["events_semantic_search", "eventsSemanticSearch", { query: "storm", limit: 5 }],
+    [
+      "events_semantic_search",
+      "eventsSemanticSearch",
+      { query: "storm", limit: 5 },
+    ],
     ["events_reindex_all", "eventsReindexAll", {}],
     ["chat_message_search", "chatMessageSearch", { query: "memory", limit: 5 }],
     ["chat_reindex_all", "chatReindexAll", {}],
@@ -2820,6 +2925,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "events_reindex_all",
       "events_semantic_search",
       "extract_codex_candidates",
+      "extract_codex_entity_seeds",
       "foreshadow_create",
       "foreshadow_delete",
       "foreshadow_get",
@@ -2874,6 +2980,20 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_scene_lens_for_project",
       "list_system_fonts",
       "map_write_bundle",
+      "narrative_extraction_append_decision",
+      "narrative_extraction_append_revision",
+      "narrative_extraction_apply_commit",
+      "narrative_extraction_cancel_run",
+      "narrative_extraction_claim_task",
+      "narrative_extraction_create_run",
+      "narrative_extraction_fail_task",
+      "narrative_extraction_finish_task",
+      "narrative_extraction_get_commit_status",
+      "narrative_extraction_get_run",
+      "narrative_extraction_prepare_commit",
+      "narrative_extraction_redo_commit",
+      "narrative_extraction_save_proposal_set",
+      "narrative_extraction_undo_commit",
       "open_workspace",
       "plot_thread_branch_create",
       "plot_thread_create",
@@ -3314,6 +3434,164 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       expect(calls).toHaveLength(0);
     },
   );
+
+  const validEntitySeedRequest = () => ({
+    schemaVersion: 1,
+    normalizerVersion: "gdx-canonical-text/1",
+    language: "ja",
+    minimumOccurrenceCount: 1,
+    sources: [
+      {
+        sourceRef: "S000001",
+        documentRef: "D000001",
+        documentRange: { start: 0, end: 9 },
+        text: "🎉京都へ行った。",
+      },
+    ],
+  });
+
+  it("extract_codex_entity_seeds はCanonical Source View requestを検証してnativeへ写像する", async () => {
+    const { backend, calls } = fakeBackend();
+    const request = validEntitySeedRequest();
+    const env = await dispatchInvoke(
+      "extract_codex_entity_seeds",
+      { request },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        schemaVersion: 1,
+        seeds: [expect.objectContaining({ seedId: "CES1-deadbeef" })],
+      }),
+    });
+    expect(calls).toEqual([
+      { method: "extractCodexEntitySeeds", args: [request] },
+    ]);
+  });
+
+  it.each([
+    ["unknown top-level field", { extra: true }],
+    ["unknown schema", { schemaVersion: 2 }],
+    ["invalid minimum", { minimumOccurrenceCount: 0 }],
+  ])(
+    "extract_codex_entity_seeds は%sをnative前に拒否する",
+    async (_label, patch) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "extract_codex_entity_seeds",
+        { request: { ...validEntitySeedRequest(), ...patch } },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it("extract_codex_entity_seeds は重複SourceRefをnative前に拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const source = validEntitySeedRequest().sources[0];
+    const env = await dispatchInvoke(
+      "extract_codex_entity_seeds",
+      {
+        request: {
+          ...validEntitySeedRequest(),
+          sources: [source, { ...source }],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      documentRange: { start: 0, end: 8 },
+      text: "🎉京都へ行った。",
+    },
+    {
+      documentRange: { start: 0, end: 1 },
+      text: "\ud800",
+    },
+    {
+      documentRange: { start: 0, end: 0 },
+      text: "",
+      extra: true,
+    },
+  ])(
+    "extract_codex_entity_seeds は不正source %# をnative前に拒否する",
+    async (sourcePatch) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "extract_codex_entity_seeds",
+        {
+          request: {
+            ...validEntitySeedRequest(),
+            sources: [
+              {
+                ...validEntitySeedRequest().sources[0],
+                ...sourcePatch,
+              },
+            ],
+          },
+        },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it("extract_codex_entity_seeds は8 MiB超payloadをnative前に拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const text = "語".repeat(3_000_000);
+    const env = await dispatchInvoke(
+      "extract_codex_entity_seeds",
+      {
+        request: {
+          ...validEntitySeedRequest(),
+          sources: [
+            {
+              ...validEntitySeedRequest().sources[0],
+              documentRange: { start: 0, end: text.length },
+              text,
+            },
+          ],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("extract_codex_entity_seeds は8 MiB超responseをJSON parse前に拒否する", async () => {
+    const oversizedWire = JSON.stringify({
+      schemaVersion: 1,
+      seeds: [],
+      padding: "x".repeat(8 * 1024 * 1024),
+    });
+    const { backend } = fakeBackend({
+      extractCodexEntitySeeds: () => Promise.resolve(oversizedWire),
+    });
+
+    const env = await dispatchInvoke(
+      "extract_codex_entity_seeds",
+      validEntitySeedRequest(),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: "entity seed response exceeds the 8 MiB wire budget",
+    });
+  });
 
   it("lint_text は引数を写像し LintResponse を parse して返す", async () => {
     const { backend, calls } = fakeBackend();
@@ -5650,11 +5928,11 @@ describe("Post-effect Phase 3d コマンド", () => {
         endpoint_id_override: "role-endpoint",
       };
 
-      const env = await dispatchInvoke(
-        cmd,
-        startArgs(args),
-        { backend, shell: noShell, secrets: keyStore },
-      );
+      const env = await dispatchInvoke(cmd, startArgs(args), {
+        backend,
+        shell: noShell,
+        secrets: keyStore,
+      });
 
       expect(env.ok).toBe(true);
       expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
@@ -5867,11 +6145,10 @@ describe("Post-effect Phase 3d コマンド", () => {
     async (cmd) => {
       const { backend, methods } = makeBackend();
       const invokeArgs = cmd.endsWith("_multi") ? multiArgs : singleArgs;
-      const env = await dispatchInvoke(
-        cmd,
-        startArgs(invokeArgs),
-        { backend, shell: noShell },
-      );
+      const env = await dispatchInvoke(cmd, startArgs(invokeArgs), {
+        backend,
+        shell: noShell,
+      });
 
       expect(env).toMatchObject({
         ok: false,

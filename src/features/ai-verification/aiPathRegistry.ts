@@ -216,6 +216,27 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
     auditProperty: "pathId",
   },
   {
+    pathId: "narrative_observation_extract",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
+    pathId: "narrative_event_synthesize",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
+    pathId: "narrative_structured_repair",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
     pathId: "beat_role",
     sourceRef: "src/features/editor/beat/inferMentionRoles.ts",
     dispatchCall: "sendChatMessageWithThinking",
@@ -497,7 +518,7 @@ export const AI_PATHS: AiPathEntry[] = [
   },
   {
     id: "chronicle_extract",
-    label: "作中年表イベント抽出",
+    label: "作中年表イベント抽出（Run surface / compatibility）",
     surface: "chronicle/extractEventsApi.ts proposeEvents",
     layer: "single-shot",
     transport: "send_chat_message",
@@ -508,7 +529,56 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "contract",
     testRef: SINGLE_SHOT_AUDIT_TEST,
     testName: "AI audit path: chronicle_extract",
-    note: "Chronicle 固有の system/user payload と構造化応答を単発監査契約で固定する。",
+    note:
+      "Run surface / 旧一括抽出 façade。Stage AI は narrative_observation_extract / narrative_event_synthesize / narrative_structured_repair。cutover まで compatibility callsite を残す。",
+  },
+  {
+    id: "narrative_observation_extract",
+    label: "Narrative Observation 抽出",
+    surface:
+      "narrative-extraction/aiTasks/runObservationExtractionTask.ts runObservationExtractionTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_observation_extract",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_observation_extract",
+    note: "Window 単位の Event Observation。Source View ref（S0001…）のみ渡し、Project/Scene/Event DB ID は送らない。",
+  },
+  {
+    id: "narrative_event_synthesize",
+    label: "Narrative Event Synthesis",
+    surface:
+      "narrative-extraction/aiTasks/runEventSynthesisTask.ts runEventSynthesisTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_event_synthesize",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_event_synthesize",
+    note: "Cluster 単位の Event Hypothesis 合成。Observation ref と短い Evidence 表示のみ。",
+  },
+  {
+    id: "narrative_structured_repair",
+    label: "Narrative Structured JSON Repair",
+    surface:
+      "narrative-extraction/aiTasks/runStructuredRepairTask.ts runStructuredRepairTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_structured_repair",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_structured_repair",
+    note: "Observation／Synthesis の JSON 失敗時に最大 1 回だけ呼ぶ構造化修復 Path。",
   },
   {
     id: "foreshadow_propose_past_setups",

@@ -62,7 +62,16 @@ import {
 
 type BrowserSchemaTable = {
   kind: string;
-  columns: Record<string, { ordinal: number }>;
+  columns: Record<
+    string,
+    {
+      ordinal: number;
+      declaredType: string;
+      notNull: boolean;
+      default: string | null;
+      primaryKey: number;
+    }
+  >;
   createSql: string;
 };
 
@@ -1339,6 +1348,221 @@ function browserTableColumns(db: Database, table: string): string[] {
   return result.values.map((row) => String(row[nameIndex]));
 }
 
+function browserTableMatchesContract(db: Database, table: string): boolean {
+  const result = db.exec(`PRAGMA table_info(${table})`)[0];
+  const expectedTable = (schemaContract as BrowserSchemaContract).tables[table];
+  if (!result || !expectedTable) return false;
+  const nameIndex = result.columns.indexOf("name");
+  const typeIndex = result.columns.indexOf("type");
+  const notNullIndex = result.columns.indexOf("notnull");
+  const defaultIndex = result.columns.indexOf("dflt_value");
+  const primaryKeyIndex = result.columns.indexOf("pk");
+  const expectedColumns = Object.entries(expectedTable.columns).sort(
+    (left, right) => left[1].ordinal - right[1].ordinal,
+  );
+  return (
+    result.values.length === expectedColumns.length &&
+    result.values.every((row, index) => {
+      const [expectedName, expected] = expectedColumns[index];
+      const actualDefault =
+        row[defaultIndex] === null ? null : String(row[defaultIndex]);
+      return (
+        String(row[nameIndex]) === expectedName &&
+        String(row[typeIndex]).toUpperCase() === expected.declaredType &&
+        Boolean(Number(row[notNullIndex])) === expected.notNull &&
+        actualDefault === expected.default &&
+        Number(row[primaryKeyIndex]) === expected.primaryKey
+      );
+    })
+  );
+}
+
+function browserCompactSql(sql: string): string {
+  return sql.toLowerCase().replace(/\s+/gu, "");
+}
+
+function browserIndexMatches(
+  db: Database,
+  table: string,
+  indexName: string,
+  unique: boolean,
+  columns: readonly string[],
+): boolean {
+  const list = db.exec(`PRAGMA index_list(${table})`)[0];
+  if (!list) return false;
+  const nameIndex = list.columns.indexOf("name");
+  const uniqueIndex = list.columns.indexOf("unique");
+  const partialIndex = list.columns.indexOf("partial");
+  const row = list.values.find(
+    (candidate) => String(candidate[nameIndex]) === indexName,
+  );
+  if (
+    !row ||
+    Boolean(Number(row[uniqueIndex])) !== unique ||
+    Number(row[partialIndex]) !== 0
+  ) {
+    return false;
+  }
+  const info = db.exec(`PRAGMA index_info(${indexName})`)[0];
+  if (!info) return false;
+  const columnNameIndex = info.columns.indexOf("name");
+  const actual = info.values.map((candidate) =>
+    String(candidate[columnNameIndex]),
+  );
+  return (
+    actual.length === columns.length &&
+    actual.every((column, index) => column === columns[index])
+  );
+}
+
+function browserSemanticBindingsSchemaIsValid(db: Database): boolean {
+  if (!browserTableMatchesContract(db, "codex_detail_semantic_bindings")) {
+    return false;
+  }
+  if (
+    !browserIndexMatches(
+      db,
+      "codex_detail_definitions",
+      "uq_codex_detail_defs_project_id",
+      true,
+      ["project_id", "id"],
+    ) ||
+    !browserIndexMatches(
+      db,
+      "codex_detail_semantic_bindings",
+      "uq_codex_detail_semantic_binding_definition_facet",
+      true,
+      ["definition_id", "facet_key"],
+    ) ||
+    !browserIndexMatches(
+      db,
+      "codex_detail_semantic_bindings",
+      "idx_codex_detail_semantic_bindings_project_facet",
+      false,
+      ["project_id", "facet_key"],
+    )
+  ) {
+    return false;
+  }
+
+  const foreignKeys = db.exec(
+    "PRAGMA foreign_key_list(codex_detail_semantic_bindings)",
+  )[0];
+  if (!foreignKeys) return false;
+  const idIndex = foreignKeys.columns.indexOf("id");
+  const sequenceIndex = foreignKeys.columns.indexOf("seq");
+  const tableIndex = foreignKeys.columns.indexOf("table");
+  const fromIndex = foreignKeys.columns.indexOf("from");
+  const toIndex = foreignKeys.columns.indexOf("to");
+  const deleteIndex = foreignKeys.columns.indexOf("on_delete");
+  const groups = new Map<number, SqlValue[][]>();
+  for (const row of foreignKeys.values) {
+    const id = Number(row[idIndex]);
+    const group = groups.get(id) ?? [];
+    group.push(row);
+    groups.set(id, group);
+  }
+  const foreignKeyGroups = [...groups.values()];
+  const hasDefinitionOwner = foreignKeyGroups.some((group) => {
+    const ordered = [...group].sort(
+      (left, right) =>
+        Number(left[sequenceIndex]) - Number(right[sequenceIndex]),
+    );
+    return (
+      ordered.length === 2 &&
+      ordered.every(
+        (row) =>
+          String(row[tableIndex]) === "codex_detail_definitions" &&
+          String(row[deleteIndex]).toUpperCase() === "CASCADE",
+      ) &&
+      String(ordered[0][fromIndex]) === "project_id" &&
+      String(ordered[0][toIndex]) === "project_id" &&
+      String(ordered[1][fromIndex]) === "definition_id" &&
+      String(ordered[1][toIndex]) === "id"
+    );
+  });
+  const hasProjectOwner = foreignKeyGroups.some(
+    (group) =>
+      group.length === 1 &&
+      String(group[0][tableIndex]) === "projects" &&
+      String(group[0][fromIndex]) === "project_id" &&
+      String(group[0][toIndex]) === "id" &&
+      String(group[0][deleteIndex]).toUpperCase() === "CASCADE",
+  );
+  if (
+    foreignKeyGroups.length !== 2 ||
+    !hasDefinitionOwner ||
+    !hasProjectOwner
+  ) {
+    return false;
+  }
+
+  const tableSqlResult = db.exec(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'codex_detail_semantic_bindings'",
+  )[0];
+  if (!tableSqlResult || tableSqlResult.values.length !== 1) return false;
+  const sqlIndex = tableSqlResult.columns.indexOf("sql");
+  const compact = browserCompactSql(String(tableSqlResult.values[0][sqlIndex]));
+  return [
+    "check(projection_kindin('scalar-text','summary-text','enum','entity-reference'))",
+    "check(temporal_policyin('base-only','phase-on-durable-change','base-and-phase','derived','manual-only'))",
+    "check(sourcein('preset','user','reviewed-ai'))",
+    "check(confirmedin(0,1))",
+    "check(version>=0)",
+  ].every((required) => compact.includes(required));
+}
+
+function browserProjectCalendarVersionIsValid(db: Database): boolean {
+  const info = db.exec("PRAGMA table_info(project_calendar)")[0];
+  if (!info) return false;
+  const nameIndex = info.columns.indexOf("name");
+  const typeIndex = info.columns.indexOf("type");
+  const notNullIndex = info.columns.indexOf("notnull");
+  const defaultIndex = info.columns.indexOf("dflt_value");
+  const primaryKeyIndex = info.columns.indexOf("pk");
+  const version = info.values.find(
+    (column) => String(column[nameIndex]) === "version",
+  );
+  return (
+    version !== undefined &&
+    String(version[typeIndex]).toUpperCase() === "INTEGER" &&
+    Boolean(Number(version[notNullIndex])) &&
+    String(version[defaultIndex]) === "0" &&
+    Number(version[primaryKeyIndex]) === 0
+  );
+}
+
+function migrateBrowserProjectCalendarVersion(db: Database): boolean {
+  const columns = browserTableColumns(db, "project_calendar");
+  if (columns.length === 0) {
+    db.run(
+      buildBrowserTableDdl(
+        schemaContract as unknown as BrowserSchemaContract,
+        "project_calendar",
+      ),
+    );
+    if (!browserProjectCalendarVersionIsValid(db)) {
+      throw new Error("Project Calendar browser schema migration failed");
+    }
+    return true;
+  }
+  if (!columns.includes("version")) {
+    db.run(
+      "ALTER TABLE project_calendar ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+    );
+    if (!browserProjectCalendarVersionIsValid(db)) {
+      throw new Error("Project Calendar browser schema migration failed");
+    }
+    return true;
+  }
+  if (!browserProjectCalendarVersionIsValid(db)) {
+    throw new Error(
+      "Unsupported prerelease project_calendar.version schema; export with the originating build before upgrading",
+    );
+  }
+  return false;
+}
+
 function browserAiAuditHasProjectForeignKey(db: Database): boolean {
   const result = db.exec("PRAGMA foreign_key_list(ai_audit_events)")[0];
   if (!result) return false;
@@ -1484,6 +1708,59 @@ export async function createBrowserMock(
     // Persisted Browser workspaces predate the durable create ledger. Keep
     // this migration content-free and idempotent, mirroring native migrate.rs.
     db.run(IDEMPOTENCY_LEDGER_MIGRATION_DDL);
+    options.onDatabaseDirty?.();
+  }
+  const semanticBindingsTableExists =
+    db.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_detail_semantic_bindings'",
+    ).length > 0;
+  if (semanticBindingsTableExists) {
+    if (!browserSemanticBindingsSchemaIsValid(db)) {
+      throw new Error(
+        "Unsupported prerelease codex_detail_semantic_bindings schema; export with the originating build before upgrading",
+      );
+    }
+  } else {
+    const definitionOwnerIndex = (schemaContract as BrowserSchemaContract)
+      .indexes.uq_codex_detail_defs_project_id;
+    if (!definitionOwnerIndex) {
+      throw new Error(
+        "canonical browser schema is missing the Detail definition owner index",
+      );
+    }
+    const definitionOwnerIndexExists =
+      db.exec(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'uq_codex_detail_defs_project_id'",
+      ).length > 0;
+    if (
+      definitionOwnerIndexExists &&
+      !browserIndexMatches(
+        db,
+        "codex_detail_definitions",
+        "uq_codex_detail_defs_project_id",
+        true,
+        ["project_id", "id"],
+      )
+    ) {
+      throw new Error(
+        "Unsupported prerelease Detail definition owner index; export with the originating build before upgrading",
+      );
+    }
+    if (!definitionOwnerIndexExists) {
+      db.run(`${definitionOwnerIndex.createSql};`);
+    }
+    db.run(
+      buildBrowserTableDdl(
+        schemaContract as BrowserSchemaContract,
+        "codex_detail_semantic_bindings",
+      ),
+    );
+    if (!browserSemanticBindingsSchemaIsValid(db)) {
+      throw new Error("Detail semantic binding browser migration failed");
+    }
+    options.onDatabaseDirty?.();
+  }
+  if (migrateBrowserProjectCalendarVersion(db)) {
     options.onDatabaseDirty?.();
   }
   if (migrateBrowserAiAuditLedger(db)) {
@@ -4218,6 +4495,72 @@ export async function createBrowserMock(
       throw new Error("legacy project snapshots cannot use structural restore");
     }
 
+    const restoresCalendar = (payload.inserts as Array<{ table: string }>).some(
+      (insert) => insert.table === "project_calendar",
+    );
+    let calendarRestoreVersion: number | null = null;
+    let calendarRestoreUpdatedAt: string | null = null;
+    if (scopes.has("body") && restoresCalendar) {
+      const liveCalendar = queryOne(
+        "SELECT version FROM project_calendar WHERE project_id = ?",
+        [projectId],
+      );
+      const snapshotCalendar = queryOne(
+        `SELECT payload_json FROM project_snapshot_aux
+          WHERE snapshot_id = ? AND scope = 'project_calendar'`,
+        [snapshotId],
+      );
+      const checkedVersion = (
+        value: unknown,
+        source: "live" | "snapshot",
+      ): number => {
+        if (
+          typeof value !== "number" ||
+          !Number.isSafeInteger(value) ||
+          value < 0
+        ) {
+          throw new Error(
+            `${source} project_calendar version must be a non-negative safe integer`,
+          );
+        }
+        return value;
+      };
+      const liveVersion = liveCalendar
+        ? checkedVersion(liveCalendar.version, "live")
+        : null;
+      let snapshotVersion: number | null = null;
+      if (snapshotCalendar) {
+        const parsed = JSON.parse(String(snapshotCalendar.payload_json)) as {
+          rows?: Array<Record<string, unknown>>;
+        };
+        if (!Array.isArray(parsed.rows)) {
+          throw new Error("project_calendar snapshot payload has no rows");
+        }
+        const snapshotRow = parsed.rows.find(
+          (row) => row.project_id === projectId,
+        );
+        if (!snapshotRow) {
+          throw new Error("project_calendar snapshot has no project row");
+        }
+        // Pre-OCC structural snapshots omit version and represent generation
+        // zero. A present malformed version is rejected by checkedVersion.
+        snapshotVersion =
+          snapshotRow.version === undefined
+            ? 0
+            : checkedVersion(snapshotRow.version, "snapshot");
+      }
+      const baseline = Math.max(
+        -1,
+        ...(liveVersion === null ? [] : [liveVersion]),
+        ...(snapshotVersion === null ? [] : [snapshotVersion]),
+      );
+      if (baseline >= Number.MAX_SAFE_INTEGER) {
+        throw new Error("project_calendar version overflow during restore");
+      }
+      calendarRestoreVersion = baseline + 1;
+      calendarRestoreUpdatedAt = new Date().toISOString();
+    }
+
     const treePrefix = `__grimodex_snapshot_tree_${snapshotId}__`;
     const codexPrefix = `__grimodex_snapshot_codex_${snapshotId}__`;
     const statements: Array<{
@@ -4372,8 +4715,16 @@ export async function createBrowserMock(
           "project snapshot replace mode is only valid for codex_types",
         );
       }
+      const row =
+        insert.table === "project_calendar"
+          ? {
+              ...insert.row,
+              version: calendarRestoreVersion,
+              updated_at: calendarRestoreUpdatedAt,
+            }
+          : insert.row;
       statements.push(
-        browserSnapshotInsertStatement(insert.table, insert.row, insert.mode),
+        browserSnapshotInsertStatement(insert.table, row, insert.mode),
       );
     }
 

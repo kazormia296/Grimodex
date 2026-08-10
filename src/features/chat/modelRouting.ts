@@ -153,7 +153,12 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   foreshadow_propose_past_setups: "structured",
   foreshadow_evaluate_setup_strength: "structured",
   plot_thread_propose: "structured",
+  // chronicle_extract: Run surface / compatibility façade（旧一括抽出）。
+  // Stage AI は narrative_* 三 Path。cutover まで callsite は extractEventsApi に残る。
   chronicle_extract: "structured",
+  narrative_observation_extract: "structured",
+  narrative_event_synthesize: "structured",
+  narrative_structured_repair: "structured",
   map_branch: "structured",
   tree_scaffold: "structured",
   codex_judgment: "structured",
