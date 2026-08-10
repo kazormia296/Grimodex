@@ -112,8 +112,17 @@ interface OpenRouterChoiceMessage {
   }[];
 }
 export interface OpenRouterResponse {
+  id?: string;
+  model?: string;
+  provider?: string;
+  created?: number;
   choices?: { message?: OpenRouterChoiceMessage; finish_reason?: string }[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cost?: number;
+  };
   error?: { message?: string };
 }
 
@@ -153,6 +162,14 @@ export interface OpenRouterSendOptions {
   temperature?: number;
   maxTokens?: number;
   endpoint?: string;
+  /** OpenRouter reasoning controls used by supported models. */
+  reasoning?: {
+    effort: "minimal" | "low" | "medium" | "high";
+  };
+  /** Deterministic seed when the selected provider/model supports it. */
+  seed?: number;
+  /** OpenAI-compatible structured output contract. */
+  responseFormat?: Readonly<Record<string, unknown>>;
   /** 最初の呼び出しだけ tool_choice を上書き（強制委譲・上限経路の決定的再現用）。 */
   firstToolChoice?: ToolChoice;
   /** 2 回目以降の tool_choice（既定 "auto"）。 */
@@ -163,6 +180,16 @@ export interface OpenRouterSendOptions {
     messages: AgentMessagePayload[];
     tools: AgentToolDefinition[];
     response: AgentLLMResponse;
+  }) => void;
+  /**
+   * Sanitized provider exchange for replay/provenance. The request deliberately
+   * excludes authorization headers and credentials.
+   */
+  onRawExchange?: (info: {
+    call: number;
+    request: Readonly<Record<string, unknown>>;
+    response: OpenRouterResponse;
+    elapsedMs: number;
   }) => void;
 }
 
@@ -184,6 +211,19 @@ export function createOpenRouterSendToLLM(
       call === 1
         ? (opts.firstToolChoice ?? "auto")
         : (opts.restToolChoice ?? "auto");
+    const request = {
+      model,
+      messages: toOpenAIMessages(msgs),
+      ...(tools.length > 0
+        ? { tools: toOpenAITools(tools), tool_choice: toolChoice }
+        : {}),
+      temperature: opts.temperature ?? 0,
+      max_tokens: opts.maxTokens ?? DEFAULT_LIVE_MAX_TOKENS,
+      ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+      ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+      ...(opts.responseFormat ? { response_format: opts.responseFormat } : {}),
+    } satisfies Record<string, unknown>;
+    const startedAt = performance.now();
     const res = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -192,20 +232,18 @@ export function createOpenRouterSendToLLM(
         "HTTP-Referer": "https://github.com/kazormia296/Grimodex",
         "X-Title": "Grimodex AI live harness",
       },
-      body: JSON.stringify({
-        model,
-        messages: toOpenAIMessages(msgs),
-        ...(tools.length > 0
-          ? { tools: toOpenAITools(tools), tool_choice: toolChoice }
-          : {}),
-        temperature: opts.temperature ?? 0,
-        max_tokens: opts.maxTokens ?? DEFAULT_LIVE_MAX_TOKENS,
-      }),
+      body: JSON.stringify(request),
     });
     if (!res.ok) {
       throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
     }
     const data = (await res.json()) as OpenRouterResponse;
+    opts.onRawExchange?.({
+      call,
+      request,
+      response: data,
+      elapsedMs: performance.now() - startedAt,
+    });
     const parsed = fromOpenAIResponse(data);
     opts.onExchange?.({ call, messages: msgs, tools, response: parsed });
     return parsed;

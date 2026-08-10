@@ -145,7 +145,7 @@ fn schema_allows_writes(conn: &rusqlite::Connection, user_version: i32) -> anyho
     if user_version != grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION {
         return Ok(false);
     }
-    grimodex_core::workspace_schema::is_converged_v2_workspace_schema(conn)
+    grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(conn)
 }
 
 /// Synchronous wrapper for callers without an async runtime: the standalone

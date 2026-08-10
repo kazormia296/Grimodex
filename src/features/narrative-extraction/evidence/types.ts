@@ -15,6 +15,16 @@ export interface RawEvidenceReference {
   readonly suffix?: string;
 }
 
+/**
+ * Deterministic evidence coordinates emitted by a trusted, range-producing
+ * extractor. The range is document-global and measured in UTF-16 code units.
+ */
+export interface DeterministicEvidenceReference {
+  readonly sourceRef: NarrativeSourceView["ref"];
+  readonly quote: string;
+  readonly canonicalRange: CanonicalRange;
+}
+
 export type EvidenceResolutionMethod = "exact" | "exact-with-context";
 
 export interface EvidenceAnchorContext {
@@ -63,6 +73,7 @@ export type InvalidEvidenceReason =
   | "invalid-source-view"
   | "source-view-mismatch"
   | "source-view-digest-mismatch"
+  | "range-mismatch"
   | "unmapped-projection";
 
 export type EvidenceResolutionResult =

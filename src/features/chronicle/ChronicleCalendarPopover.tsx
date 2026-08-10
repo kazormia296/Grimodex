@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { useCallback, useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
@@ -9,8 +10,9 @@ export interface ChronicleCalendarPopoverProps {
   triggerRef: RefObject<HTMLElement | null>;
   open: boolean;
   initial: ChronicleCalendar | null;
-  onSave: (cal: ChronicleCalendar) => void;
+  onSave: (cal: ChronicleCalendar) => void | Promise<void>;
   onClose: () => void;
+  onSavingChange?: (saving: boolean) => void;
 }
 
 /**
@@ -24,12 +26,30 @@ export function ChronicleCalendarPopover({
   initial,
   onSave,
   onClose,
+  onSavingChange,
 }: ChronicleCalendarPopoverProps) {
   const { t } = useTranslation();
+  const savingRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      savingRef.current = false;
+      onSavingChange?.(false);
+    }
+  }, [onSavingChange, open]);
+  const handleSavingChange = useCallback(
+    (saving: boolean) => {
+      savingRef.current = saving;
+      onSavingChange?.(saving);
+    },
+    [onSavingChange],
+  );
+  const requestClose = useCallback(() => {
+    if (!savingRef.current) onClose();
+  }, [onClose]);
   const { popoverRef, style, maxHeight } = useAnchoredPopover(
     triggerRef,
     open,
-    onClose,
+    requestClose,
     "bottom-start",
   );
   if (!open || !style) return null;
@@ -45,7 +65,8 @@ export function ChronicleCalendarPopover({
       <ChronicleCalendarEditor
         initial={initial}
         onSave={onSave}
-        onClose={onClose}
+        onClose={requestClose}
+        onSavingChange={handleSavingChange}
       />
     </div>,
     document.body,

@@ -334,6 +334,12 @@ export declare class Backend {
    */
   codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>
   /**
+   * Canonical Source View から決定的な Entity Seed を抽出する。
+   * workspace/DB 状態を一切参照せず、strict DTO validation 後に blocking pool で
+   * UniDic 解析を行う。返り値は camelCase Entity Seed response の JSON 文字列。
+   */
+  extractCodexEntitySeeds(request: object): Promise<string>
+  /**
    * 本文から未知の固有名詞候補を抽出する
    * (`grimodex_semantic::codex_candidates` を Tauri と共用)。
    *

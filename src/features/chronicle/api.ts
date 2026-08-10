@@ -17,6 +17,7 @@ import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { EventVersionConflictError } from "./eventOcc";
+import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 
 /**
  * Timelapse record for a chronicle (作中年表) mutation. Uses the SAME `event`
@@ -574,6 +575,8 @@ export interface CalendarRow {
   timezone: string;
   /** 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。 */
   lunarTzMinutes: number;
+  /** Calendar aggregate OCC generation. */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -603,26 +606,30 @@ export async function getProjectCalendar(
     reform: s(r.reform, "null"),
     timezone: s(r.timezone, "null"),
     lunarTzMinutes: Number(r.lunarTzMinutes ?? r.lunar_tz_minutes ?? 480),
+    version: Number(r.version ?? 0),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
 }
 
-export async function upsertProjectCalendar(data: {
-  projectId: string;
-  daysPerYear: number;
-  seasonBoundaries: string;
-  startYear?: number;
-  months?: string;
-  weekdayNames?: string;
-  weekdayStartIndex?: number;
-  leapRule?: string;
-  ageReckoning?: string;
-  eras?: string;
-  reform?: string;
-  timezone?: string;
-  lunarTzMinutes?: number;
-}): Promise<void> {
+export async function upsertProjectCalendar(
+  data: {
+    projectId: string;
+    daysPerYear: number;
+    seasonBoundaries: string;
+    startYear?: number;
+    months?: string;
+    weekdayNames?: string;
+    weekdayStartIndex?: number;
+    leapRule?: string;
+    ageReckoning?: string;
+    eras?: string;
+    reform?: string;
+    timezone?: string;
+    lunarTzMinutes?: number;
+  },
+  options: { baseVersion: number | null },
+): Promise<CalendarRow> {
   const now = new Date().toISOString();
   const startYear = data.startYear ?? 0;
   const months = data.months ?? "[]";
@@ -634,48 +641,77 @@ export async function upsertProjectCalendar(data: {
   const reform = data.reform ?? "null";
   const timezone = data.timezone ?? "null";
   const lunarTzMinutes = data.lunarTzMinutes ?? 480;
-  await db
-    .insert(projectCalendar)
-    .values({
-      projectId: data.projectId,
-      daysPerYear: data.daysPerYear,
-      seasonBoundaries: data.seasonBoundaries,
-      startYear,
-      months,
-      weekdayNames,
-      weekdayStartIndex,
-      leapRule,
-      ageReckoning,
-      eras,
-      reform,
-      timezone,
-      lunarTzMinutes,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: projectCalendar.projectId,
-      set: {
-        daysPerYear: data.daysPerYear,
-        seasonBoundaries: data.seasonBoundaries,
-        startYear,
-        months,
-        weekdayNames,
-        weekdayStartIndex,
-        leapRule,
-        ageReckoning,
-        eras,
-        reform,
-        timezone,
-        lunarTzMinutes,
-        updatedAt: now,
-      },
-    });
+  const values = {
+    projectId: data.projectId,
+    daysPerYear: data.daysPerYear,
+    seasonBoundaries: data.seasonBoundaries,
+    startYear,
+    months,
+    weekdayNames,
+    weekdayStartIndex,
+    leapRule,
+    ageReckoning,
+    eras,
+    reform,
+    timezone,
+    lunarTzMinutes,
+  };
+  const [persisted] =
+    options.baseVersion === null
+      ? await db
+          .insert(projectCalendar)
+          .values({
+            ...values,
+            version: 0,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoNothing({ target: projectCalendar.projectId })
+          .returning()
+      : await db
+          .update(projectCalendar)
+          .set({
+            ...values,
+            version: options.baseVersion + 1,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(projectCalendar.projectId, data.projectId),
+              eq(projectCalendar.version, options.baseVersion),
+            ),
+          )
+          .returning();
+  if (!persisted) {
+    throw new ProjectCalendarVersionConflictError(data.projectId);
+  }
   bumpChronicleRevision();
   recordEvent(data.projectId, "calendar.update", null, {
     projectId: data.projectId,
     daysPerYear: data.daysPerYear,
+    version: persisted.version,
   });
+  const r = persisted as Record<string, unknown>;
+  return {
+    projectId: s(r.projectId ?? r.project_id),
+    daysPerYear: Number(r.daysPerYear ?? r.days_per_year ?? 360),
+    seasonBoundaries: s(r.seasonBoundaries ?? r.season_boundaries, "[]"),
+    startYear: Number(r.startYear ?? r.start_year ?? 0),
+    months: s(r.months, "[]"),
+    weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
+    weekdayStartIndex: Number(
+      r.weekdayStartIndex ?? r.weekday_start_index ?? 0,
+    ),
+    leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
+    ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
+    eras: s(r.eras, "[]"),
+    reform: s(r.reform, "null"),
+    timezone: s(r.timezone, "null"),
+    lunarTzMinutes: Number(r.lunarTzMinutes ?? r.lunar_tz_minutes ?? 480),
+    version: Number(r.version),
+    createdAt: s(r.createdAt ?? r.created_at),
+    updatedAt: s(r.updatedAt ?? r.updated_at),
+  };
 }
 
 // ───────── event_relations（因果エッジ） ─────────

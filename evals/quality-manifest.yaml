@@ -12,6 +12,7 @@ lightSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
+  - narrative-extraction
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -296,6 +297,158 @@ requirements:
       - eval-policy-create-snippet
       - eval-policy-apply-tree
       - eval-prompt-post-effect-json
+  - id: GDX-NARR-EVAL-001
+    title: Narrative evaluations preserve versioned Human Gold, replay provenance, and failure state.
+    definedIn: policies/quality/iron-laws.md#GDX-NARR-EVAL-001
+    implementedBy:
+      - src/features/narrative-extraction/eval/caseSchema.ts
+      - src/features/narrative-extraction/eval/replay.ts
+      - src/features/narrative-extraction/eval/liveRunner.ts
+      - evals/narrative/manifest.yaml
+    lightTests:
+      - src/features/narrative-extraction/eval/caseSchema.test.ts
+      - src/features/narrative-extraction/eval/replay.test.ts
+      - src/features/narrative-extraction/eval/liveRunner.test.ts
+      - src/features/narrative-extraction/eval/corpusContract.test.ts
+    heavyTests:
+      - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+    evaluatedBy:
+      - eval-narrative-replay-provenance
+  - id: GDX-NARR-EVIDENCE-001
+    title: Narrative Evidence resolves exact immutable quotes without model offsets.
+    definedIn: policies/quality/iron-laws.md#GDX-NARR-EVIDENCE-001
+    implementedBy:
+      - src/features/narrative-extraction/evidence/resolveEvidence.ts
+      - src/features/narrative-extraction/eval/fixtureSnapshot.ts
+      - src/features/narrative-extraction/eval/caseSchema.ts
+    lightTests:
+      - src/features/narrative-extraction/evidence/resolveEvidence.test.ts
+      - src/features/narrative-extraction/eval/fixtureSnapshot.test.ts
+      - src/features/narrative-extraction/eval/corpusContract.test.ts
+    heavyTests:
+      - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+    evaluatedBy:
+      - eval-narrative-exact-evidence
+  - id: GDX-NARR-SEMANTIC-001
+    title: Narrative assertion dimensions remain independent and missing dimensions never pass.
+    definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-001
+    implementedBy:
+      - src/features/narrative-extraction/eval/types.ts
+      - src/features/narrative-extraction/eval/scorer.ts
+      - src/features/narrative-extraction/eval/legacyChronicleAdapter.ts
+    lightTests:
+      - src/features/narrative-extraction/eval/scorer.test.ts
+      - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
+      - src/features/narrative-extraction/eval/corpusContract.test.ts
+    heavyTests:
+      - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+    evaluatedBy:
+      - eval-narrative-semantic-frame
+  - id: GDX-NARR-COVERAGE-001
+    title: Partial Narrative coverage cannot support absence or completion claims.
+    definedIn: policies/quality/iron-laws.md#GDX-NARR-COVERAGE-001
+    implementedBy:
+      - src/features/narrative-extraction/eval/types.ts
+      - src/features/narrative-extraction/eval/scorer.ts
+      - evals/narrative/cases/chronicle-micro-v1.yaml
+    lightTests:
+      - src/features/narrative-extraction/eval/caseSchema.test.ts
+      - src/features/narrative-extraction/eval/scorer.test.ts
+      - src/features/narrative-extraction/eval/corpusContract.test.ts
+    heavyTests:
+      - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+    evaluatedBy:
+      - eval-narrative-partial-coverage
+  - id: GDX-NARR-DETAIL-001
+    title: Narrative Detail projection uses stable bindings and type-safe canonical values.
+    definedIn: policies/quality/iron-laws.md#GDX-NARR-DETAIL-001
+    implementedBy:
+      - src/features/codex/details/semanticBindingTypes.ts
+      - src/features/codex/details/detailDefinitionCatalog.ts
+      - src/features/codex/details/semanticBindingResolver.ts
+      - src/features/codex/details/detailValueCodec.ts
+      - src/features/codex/details/presetSemanticBindings.ts
+      - src/features/codex/detailPresets.ts
+      - src/db/schema.ts
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/src/project_snapshots.rs
+      - src/features/revision/projectSnapshotApi.ts
+    lightTests:
+      - src/features/codex/details/semanticBindingTypes.test.ts
+      - src/features/codex/details/detailDefinitionCatalog.test.ts
+      - src/features/codex/details/semanticBindingResolver.test.ts
+      - src/features/codex/details/detailValueCodec.test.ts
+      - src/features/codex/details/presetSemanticBindings.test.ts
+      - src/features/codex/detailPresets.test.ts
+      - src/features/codex/detailPresets.semantic.test.ts
+      - src/db/detailSemanticBindingSchema.test.ts
+      - src/features/revision/detailSemanticBindingSnapshot.test.ts
+      - src/lib/browser-mock.persistence-contract.test.ts
+    heavyTests:
+      - src/db/schema.contract.test.ts
+      - src-tauri/crates/grimodex-db/tests/detail_semantic_bindings.rs
+      - electron/shared/detailSemanticBindingSnapshot.test.ts
+    evaluatedBy:
+      - eval-narrative-detail-contract
+  - id: GDX-NARR-TEMPORAL-001
+    title: Narrative time preserves separate axes, deterministic calendar authority, and virtual constraint provenance.
+    definedIn: policies/quality/iron-laws.md#GDX-NARR-TEMPORAL-001
+    implementedBy:
+      - src/features/narrative-extraction/temporal/timeline.ts
+      - src/features/narrative-extraction/temporal/nodes.ts
+      - src/features/narrative-extraction/temporal/constraints.ts
+      - src/features/narrative-extraction/temporal/resolution.ts
+      - src/features/narrative-extraction/temporal/graph.ts
+      - src/features/chronicle/calendar/extractionCalendarSnapshot.ts
+      - src/features/chronicle/calendar/calendarCatalog.ts
+      - src/application/narrative-extraction/temporal/sceneTemporalAdapter.ts
+      - src/application/narrative-extraction/temporal/eventTemporalAdapter.ts
+      - src/application/narrative-extraction/temporal/storyOrderAdapter.ts
+      - src/application/narrative-extraction/temporal/eventRelationAdapter.ts
+      - src/application/narrative-extraction/temporal/projectionAdapter.ts
+      - src/application/narrative-extraction/temporal/adapterTypes.ts
+      - src/application/narrative-extraction/temporal/domainAdapterHelpers.ts
+      - src/features/chronicle/api.ts
+      - src/features/chronicle/calendarOcc.ts
+      - src/features/chronicle/useSeasonConflicts.ts
+      - src/features/chronicle/ChronicleCalendarEditor.tsx
+      - src/features/chronicle/ChronicleCalendarPopover.tsx
+      - src/features/chronicle/ChronicleToolbar.tsx
+      - src/features/chronicle/ChroniclePanel.tsx
+      - src/features/revision/projectSnapshotApi.ts
+      - src/features/revision/projectSnapshotNative.ts
+      - src/features/revision/projectSnapshotScopes.ts
+      - src/db/schema.ts
+      - src/lib/browser-mock.ts
+      - src-tauri/crates/grimodex-core/src/workspace_schema.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/src/project_snapshots.rs
+    lightTests:
+      - src/features/narrative-extraction/temporal/timeline.test.ts
+      - src/features/narrative-extraction/temporal/nodes.test.ts
+      - src/features/narrative-extraction/temporal/constraints.test.ts
+      - src/features/narrative-extraction/temporal/graph.test.ts
+      - src/features/chronicle/calendar/extractionCalendarSnapshot.test.ts
+      - src/features/chronicle/calendar/calendarCatalog.test.ts
+      - src/application/narrative-extraction/temporal/sceneTemporalAdapter.test.ts
+      - src/application/narrative-extraction/temporal/eventTemporalAdapter.test.ts
+      - src/application/narrative-extraction/temporal/storyOrderAdapter.test.ts
+      - src/application/narrative-extraction/temporal/eventRelationAdapter.test.ts
+      - src/application/narrative-extraction/temporal/projectionAdapter.test.ts
+      - src/application/narrative-extraction/temporal/domainAdapters.integration.test.ts
+      - src/features/chronicle/api.calendarOcc.test.ts
+      - src/features/chronicle/useSeasonConflicts.hook.test.tsx
+      - src/features/chronicle/ChronicleCalendarEditor.test.tsx
+      - src/features/chronicle/ChronicleCalendarPopover.test.tsx
+      - src/features/chronicle/ChronicleToolbar.test.tsx
+      - src/features/revision/projectSnapshotApi.test.ts
+      - src/db/projectCalendarSchema.test.ts
+      - src/lib/browser-mock.persistence-contract.test.ts
+    heavyTests:
+      - src/db/schema.contract.test.ts
+      - src-tauri/crates/grimodex-db/tests/project_calendar_version.rs
+    evaluatedBy:
+      - eval-narrative-temporal-contract
   - id: GDX-ISOLATION-001
     title: Evaluation cases own independent context, state, artifacts, and teardown.
     definedIn: policies/quality/iron-laws.md#GDX-ISOLATION-001
@@ -382,6 +535,10 @@ heavyEvaluations:
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
     reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
+  - id: heavy-narrative-chronicle-legacy-baseline
+    suiteId: narrative-extraction
+    command: OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live
+    reason: Measures the current production Chronicle Prompt and Parser against Human Gold with billed OpenRouter access; the legacy schema lacks exact Evidence and semantic dimensions, so completion is explicitly not certification.
 blockedEvaluations:
   - id: blocked-impact-gate4-fresh-holdout
     suiteId: retrieval-grounding
@@ -391,3 +548,7 @@ blockedEvaluations:
     suiteId: tool-policy
     reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, and teardown against a real user-selected HTTP Local LLM or BYOK provider.
     requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.
+  - id: blocked-narrative-chronicle-certification
+    suiteId: narrative-extraction
+    reason: The production Chronicle route still emits legacy title and Scene-ID proposals without exact quotes, actuality, attribution, narrative frame, significance, or Proposal gating.
+    requiredAction: Implement the production observation Prompt, response schema, parser, Evidence normalization, and Proposal gate, then run the same Human Gold corpus through that shared production seam.

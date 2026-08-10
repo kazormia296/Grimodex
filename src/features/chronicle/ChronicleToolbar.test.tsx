@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import {
   ChronicleToolbar,
   type ChronicleToolbarProps,
@@ -39,6 +39,29 @@ function makeProps(
 }
 
 describe("ChronicleToolbar", () => {
+  it("keeps the Calendar editor mounted when its trigger is clicked during a pending save", async () => {
+    let resolveSave: (() => void) | undefined;
+    const onSaveCalendar = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const { getByTestId, getByText, queryByRole } = render(
+      <ChronicleToolbar {...makeProps({ onSaveCalendar })} />,
+    );
+
+    fireEvent.click(getByTestId("toolbar-calendar"));
+    fireEvent.click(getByText("保存"));
+    expect(onSaveCalendar).toHaveBeenCalledOnce();
+
+    fireEvent.click(getByTestId("toolbar-calendar"));
+    expect(queryByRole("dialog")).toBeTruthy();
+
+    resolveSave?.();
+    await waitFor(() => expect(queryByRole("dialog")).toBeNull());
+  });
+
   it("密度ボタンにアイコンが付く（従来テキストのみ→アイコン追加）", () => {
     const { getByTestId } = render(<ChronicleToolbar {...makeProps()} />);
     expect(getByTestId("toolbar-density").querySelector("svg")).toBeTruthy();

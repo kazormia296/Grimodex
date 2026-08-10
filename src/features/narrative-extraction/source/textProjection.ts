@@ -21,7 +21,31 @@ function isNonNegativeSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
-function isValidProjectionMap(map: TextProjectionMap): boolean {
+const validFrozenProjectionMaps = new WeakSet<object>();
+const invalidFrozenProjectionMaps = new WeakSet<object>();
+
+function isDeeplyFrozenProjectionMap(map: TextProjectionMap): boolean {
+  try {
+    return (
+      Object.isFrozen(map) &&
+      Object.isFrozen(map.segments) &&
+      map.segments.every(
+        (segment) =>
+          typeof segment === "object" &&
+          segment !== null &&
+          Object.isFrozen(segment) &&
+          Object.isFrozen(segment.canonical) &&
+          (segment.kind === "synthetic-boundary"
+            ? Object.isFrozen(segment.boundary)
+            : Object.isFrozen(segment.source)),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function computeIsValidProjectionMap(map: TextProjectionMap): boolean {
   try {
     if (
       map.schemaVersion !== 1 ||
@@ -105,6 +129,36 @@ function isValidProjectionMap(map: TextProjectionMap): boolean {
   }
 }
 
+function isValidProjectionMap(map: TextProjectionMap): boolean {
+  if (validFrozenProjectionMaps.has(map)) return true;
+  if (invalidFrozenProjectionMaps.has(map)) return false;
+
+  const cacheable = isDeeplyFrozenProjectionMap(map);
+  const valid = computeIsValidProjectionMap(map);
+  if (cacheable) {
+    (valid ? validFrozenProjectionMaps : invalidFrozenProjectionMaps).add(map);
+  }
+  return valid;
+}
+
+function firstIntersectingSegmentIndex(
+  map: TextProjectionMap,
+  canonicalStart: number,
+): number {
+  let low = 0;
+  let high = map.segments.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const segment = map.segments[middle];
+    if (segment && segment.canonicalEnd <= canonicalStart) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
 function projectIntersection(
   segment: MappedProjectionSegment,
   canonicalStart: number,
@@ -162,8 +216,13 @@ export function projectCanonicalRange(
   const fragments: TextProjectionFragment[] = [];
   let mappedLength = 0;
 
-  for (const segment of map.segments) {
-    if (segment.canonicalEnd <= range.start) continue;
+  for (
+    let index = firstIntersectingSegmentIndex(map, range.start);
+    index < map.segments.length;
+    index += 1
+  ) {
+    const segment = map.segments[index];
+    if (!segment) break;
     if (segment.canonicalStart >= range.end) break;
 
     if (segment.kind === "synthetic-boundary") continue;

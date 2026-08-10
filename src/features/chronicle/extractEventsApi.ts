@@ -25,25 +25,53 @@ export interface EventProposal {
   note?: string;
 }
 
+export type EventProposalParseDiagnostic =
+  | {
+      readonly code: "unknown-scene-reference";
+      readonly eventIndex: number;
+      readonly value: string;
+    }
+  | {
+      readonly code: "missing-evidence";
+      readonly eventIndex: number;
+    };
+
+export type EventProposalParseResult =
+  | {
+      readonly status: "parsed";
+      readonly proposals: readonly EventProposal[];
+      readonly diagnostics: readonly EventProposalParseDiagnostic[];
+    }
+  | {
+      readonly status: "invalid";
+      readonly reason:
+        | "json-not-found"
+        | "json-parse-failed"
+        | "events-not-array";
+    };
+
 /**
  * LLM 応答テキストから出来事候補を抽出・検証する純関数。
  * 許可 sceneId 外（ハルシネーション）は落とす。title 空 / events 非配列は除外。
  */
-export function parseEventProposals(
+export function parseEventProposalsResult(
   responseText: string,
   allowedSceneIds: Set<string>,
-): EventProposal[] {
+): EventProposalParseResult {
   const jsonText = extractJsonObject(responseText);
-  if (!jsonText) return [];
+  if (!jsonText) return { status: "invalid", reason: "json-not-found" };
   let parsed: { events?: unknown };
   try {
     parsed = JSON.parse(jsonText) as { events?: unknown };
   } catch {
-    return [];
+    return { status: "invalid", reason: "json-parse-failed" };
   }
-  if (!Array.isArray(parsed.events)) return [];
+  if (!Array.isArray(parsed.events)) {
+    return { status: "invalid", reason: "events-not-array" };
+  }
   const out: EventProposal[] = [];
-  for (const raw of parsed.events) {
+  const diagnostics: EventProposalParseDiagnostic[] = [];
+  for (const [eventIndex, raw] of parsed.events.entries()) {
     if (typeof raw !== "object" || raw === null) continue;
     const o = raw as Record<string, unknown>;
     const title = typeof o.title === "string" ? o.title.trim() : "";
@@ -53,10 +81,20 @@ export function parseEventProposals(
     const evidenceSceneIds: string[] = [];
     for (const id of ids) {
       if (typeof id !== "string") continue;
-      if (!allowedSceneIds.has(id)) continue;
+      if (!allowedSceneIds.has(id)) {
+        diagnostics.push({
+          code: "unknown-scene-reference",
+          eventIndex,
+          value: id,
+        });
+        continue;
+      }
       if (seen.has(id)) continue;
       seen.add(id);
       evidenceSceneIds.push(id);
+    }
+    if (evidenceSceneIds.length === 0) {
+      diagnostics.push({ code: "missing-evidence", eventIndex });
     }
     const note =
       typeof o.note === "string" ? o.note.trim() || undefined : undefined;
@@ -64,7 +102,15 @@ export function parseEventProposals(
       note ? { title, evidenceSceneIds, note } : { title, evidenceSceneIds },
     );
   }
-  return out;
+  return { status: "parsed", proposals: out, diagnostics };
+}
+
+export function parseEventProposals(
+  responseText: string,
+  allowedSceneIds: Set<string>,
+): EventProposal[] {
+  const result = parseEventProposalsResult(responseText, allowedSceneIds);
+  return result.status === "parsed" ? [...result.proposals] : [];
 }
 
 /** 出来事抽出プロンプトを組む純関数（catalog に依らずローカル定義）。 */

@@ -97,4 +97,46 @@ describe("createOpenRouterSendToLLM — 既定 max_tokens", () => {
     const body = JSON.parse(init.body) as { max_tokens?: number };
     expect(body.max_tokens).toBe(256);
   });
+
+  it("reasoning effort と raw exchange を資格情報なしで観測できる", async () => {
+    const fetchMock = mockFetchOnce({
+      id: "gen-1",
+      model: "openai/gpt-5.6-luna-20260709",
+      provider: "OpenAI",
+      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 4, completion_tokens: 5, cost: 0.001 },
+    });
+    const exchanges: unknown[] = [];
+
+    await runLiveSingleShot("hi", {
+      send: {
+        apiKey: "sk-test",
+        reasoning: { effort: "medium" },
+        onRawExchange: (exchange) => exchanges.push(exchange),
+      },
+    });
+
+    const init = fetchMock.mock.calls[0][1] as unknown as {
+      body: string;
+      headers: Record<string, string>;
+    };
+    expect(JSON.parse(init.body)).toMatchObject({
+      reasoning: { effort: "medium" },
+    });
+    expect(exchanges).toEqual([
+      expect.objectContaining({
+        call: 1,
+        elapsedMs: expect.any(Number),
+        request: expect.not.objectContaining({
+          apiKey: expect.anything(),
+          authorization: expect.anything(),
+        }),
+        response: expect.objectContaining({
+          id: "gen-1",
+          model: "openai/gpt-5.6-luna-20260709",
+          provider: "OpenAI",
+        }),
+      }),
+    ]);
+  });
 });

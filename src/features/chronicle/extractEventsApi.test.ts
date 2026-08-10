@@ -36,6 +36,7 @@ vi.mock("./api", () => ({
 
 import {
   parseEventProposals,
+  parseEventProposalsResult,
   buildExtractEventsPrompt,
   proposeEvents,
   importExtractedEvents,
@@ -73,6 +74,42 @@ describe("parseEventProposals", () => {
 
   it("壊れた JSON は空", () => {
     expect(parseEventProposals("not json", allowed)).toEqual([]);
+  });
+
+  it("評価経路では正常0件と parse failure を区別する", () => {
+    expect(parseEventProposalsResult('{"events":[]}', allowed)).toEqual({
+      status: "parsed",
+      proposals: [],
+      diagnostics: [],
+    });
+    expect(parseEventProposalsResult("not json", allowed)).toEqual({
+      status: "invalid",
+      reason: "json-not-found",
+    });
+    expect(parseEventProposalsResult('{"events":"x"}', allowed)).toEqual({
+      status: "invalid",
+      reason: "events-not-array",
+    });
+  });
+
+  it("評価経路では未知 scene と evidence 全滅を診断する", () => {
+    expect(
+      parseEventProposalsResult(
+        '{"events":[{"title":"会議","evidenceSceneIds":["ghost"]}]}',
+        allowed,
+      ),
+    ).toEqual({
+      status: "parsed",
+      proposals: [{ title: "会議", evidenceSceneIds: [] }],
+      diagnostics: [
+        {
+          code: "unknown-scene-reference",
+          eventIndex: 0,
+          value: "ghost",
+        },
+        { code: "missing-evidence", eventIndex: 0 },
+      ],
+    });
   });
 });
 

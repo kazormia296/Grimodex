@@ -206,4 +206,34 @@ describe("projectCanonicalRange", () => {
       });
     }
   });
+
+  it("reuses validation for a deeply frozen projection map", () => {
+    const canonical = serializeSuccessfully(
+      documentWith(
+        ...Array.from({ length: 64 }, (_, index) =>
+          paragraph(text(String.fromCharCode(65 + (index % 26)))),
+        ),
+      ),
+    );
+    const lastIndex = canonical.projection.segments.length - 1;
+    let lastSegmentReads = 0;
+    const segments = new Proxy(canonical.projection.segments, {
+      get(target, property, receiver) {
+        if (property === String(lastIndex)) lastSegmentReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const map = Object.freeze({ ...canonical.projection, segments });
+
+    expect(projectCanonicalRange(map, { start: 0, end: 1 }).status).toBe(
+      "exact",
+    );
+    expect(lastSegmentReads).toBeGreaterThan(0);
+    lastSegmentReads = 0;
+
+    expect(projectCanonicalRange(map, { start: 0, end: 1 }).status).toBe(
+      "exact",
+    );
+    expect(lastSegmentReads).toBe(0);
+  });
 });

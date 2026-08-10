@@ -320,6 +320,10 @@ export const codexDetailDefinitions = sqliteTable(
       table.typeSlug,
       table.name,
     ),
+    uniqueIndex("uq_codex_detail_defs_project_id").on(
+      table.projectId,
+      table.id,
+    ),
     index("idx_codex_detail_defs").on(
       table.projectId,
       table.typeSlug,
@@ -332,6 +336,57 @@ export const codexDetailDefinitions = sqliteTable(
     })
       .onUpdate("cascade")
       .onDelete("restrict"),
+  ],
+);
+
+export const codexDetailSemanticBindings = sqliteTable(
+  "codex_detail_semantic_bindings",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    definitionId: text("definition_id").notNull(),
+    facetKey: text("facet_key").notNull(),
+    projectionKind: text("projection_kind", {
+      enum: ["scalar-text", "summary-text", "enum", "entity-reference"],
+    }).notNull(),
+    temporalPolicy: text("temporal_policy", {
+      enum: [
+        "base-only",
+        "phase-on-durable-change",
+        "base-and-phase",
+        "derived",
+        "manual-only",
+      ],
+    }).notNull(),
+    source: text("source", {
+      enum: ["preset", "user", "reviewed-ai"],
+    }).notNull(),
+    confirmed: integer("confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.definitionId],
+      foreignColumns: [
+        codexDetailDefinitions.projectId,
+        codexDetailDefinitions.id,
+      ],
+      name: "codex_detail_semantic_bindings_definition_fkey",
+    }).onDelete("cascade"),
+    uniqueIndex("uq_codex_detail_semantic_binding_definition_facet").on(
+      table.definitionId,
+      table.facetKey,
+    ),
+    index("idx_codex_detail_semantic_bindings_project_facet").on(
+      table.projectId,
+      table.facetKey,
+    ),
   ],
 );
 
@@ -1534,6 +1589,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   timezone: text("timezone").notNull().default("null"),
   // 旧暦の節気判定 UTC オフセット分。480=中国農暦(既定) / 540=日本。節気のみ再ビン。
   lunarTzMinutes: integer("lunar_tz_minutes").notNull().default(480),
+  // Calendar snapshot / editor OCC generation. Successful writes increment it.
+  version: integer("version").notNull().default(0),
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
@@ -2405,6 +2462,10 @@ export type NewCodexTag = typeof codexTags.$inferInsert;
 export type CodexDetailDefinition = typeof codexDetailDefinitions.$inferSelect;
 export type NewCodexDetailDefinition =
   typeof codexDetailDefinitions.$inferInsert;
+export type CodexDetailSemanticBinding =
+  typeof codexDetailSemanticBindings.$inferSelect;
+export type NewCodexDetailSemanticBinding =
+  typeof codexDetailSemanticBindings.$inferInsert;
 export type CodexDetailValue = typeof codexDetailValues.$inferSelect;
 export type NewCodexDetailValue = typeof codexDetailValues.$inferInsert;
 export type CodexContextMode = "always" | "mentioned" | "suppress" | "hidden";

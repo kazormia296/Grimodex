@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::Database;
 
-enum ConvergedV2Finalize {
+enum ConvergedPreviousFinalize {
     Finalized,
     Busy,
     NeedsFullMigration,
@@ -32,11 +32,13 @@ impl Database {
         );
         if !force_full {
             if current == SCHEMA_VERSION {
-                // Editor-only visual stickies were added after the v3 schema
-                // marker. Keep the current marker stable, but do not let an
-                // older v3 workspace take the healthy read-only fast path
-                // without this additive table.
-                if !Self::has_editor_stickies_table(&conn)? {
+                // A current marker is not sufficient when an interrupted or
+                // prerelease migration left required physical objects absent.
+                // The checkpoint is read-only, so a healthy workspace retains
+                // the non-blocking open path.
+                if !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                    &conn,
+                )? {
                     // Fall through to the idempotent DDL below.
                 } else {
                     // Crash recovery is an open-time operational invariant, not a
@@ -49,26 +51,26 @@ impl Database {
             }
 
             if current == grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
-                && grimodex_core::workspace_schema::is_converged_v2_workspace_schema(&conn)?
+                && grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    &conn,
+                )?
             {
-                // Version 3 introduced the read-only open fast path, not new
-                // DDL. A v2 database that already satisfies every post-v2
-                // invariant must not replay the full idempotent migration just
-                // to write the marker. Finalization rechecks the invariant
-                // under a zero-wait write reservation so an older v2 process
-                // cannot add unrepaired data between the probe and the stamp.
-                // If another writer is active, retain v2 and let a later open
-                // retry instead of blocking input-ready.
+                // The immediately previous marker may already carry every
+                // current physical invariant after a prerelease/interrupted
+                // marker update. Avoid replaying the full migration merely to
+                // advance the marker. Finalization rechecks the invariant under
+                // a zero-wait write reservation so an older process cannot
+                // mutate the schema between the probe and stamp.
                 let recovery_required = Self::has_interrupted_post_effect_runs(&conn)?;
-                match Self::try_finalize_converged_v2_without_wait(&conn, SCHEMA_VERSION)? {
-                    ConvergedV2Finalize::Finalized => return Ok(()),
-                    ConvergedV2Finalize::Busy if !recovery_required => return Ok(()),
-                    ConvergedV2Finalize::Busy => {
+                match Self::try_finalize_previous_schema_without_wait(&conn, SCHEMA_VERSION)? {
+                    ConvergedPreviousFinalize::Finalized => return Ok(()),
+                    ConvergedPreviousFinalize::Busy if !recovery_required => return Ok(()),
+                    ConvergedPreviousFinalize::Busy => {
                         anyhow::bail!(
                             "workspace crash recovery is blocked by another SQLite writer; retry after it finishes"
                         )
                     }
-                    ConvergedV2Finalize::NeedsFullMigration => {}
+                    ConvergedPreviousFinalize::NeedsFullMigration => {}
                 }
             }
         }
@@ -254,6 +256,34 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
                 ON codex_detail_definitions(project_id, type_slug, sort_order);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_codex_detail_defs_project_id
+                ON codex_detail_definitions(project_id, id);
+
+            CREATE TABLE IF NOT EXISTS codex_detail_semantic_bindings (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                definition_id     TEXT NOT NULL,
+                facet_key         TEXT NOT NULL,
+                projection_kind   TEXT NOT NULL
+                                    CHECK(projection_kind IN ('scalar-text', 'summary-text', 'enum', 'entity-reference')),
+                temporal_policy   TEXT NOT NULL
+                                    CHECK(temporal_policy IN ('base-only', 'phase-on-durable-change', 'base-and-phase', 'derived', 'manual-only')),
+                source            TEXT NOT NULL
+                                    CHECK(source IN ('preset', 'user', 'reviewed-ai')),
+                confirmed         INTEGER NOT NULL DEFAULT 0
+                                    CHECK(confirmed IN (0, 1)),
+                version           INTEGER NOT NULL DEFAULT 0
+                                    CHECK(version >= 0),
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id, definition_id)
+                  REFERENCES codex_detail_definitions(project_id, id)
+                  ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_detail_semantic_bindings_project_facet
+                ON codex_detail_semantic_bindings(project_id, facet_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_codex_detail_semantic_binding_definition_facet
+                ON codex_detail_semantic_bindings(definition_id, facet_key);
 
             CREATE TABLE IF NOT EXISTS codex_detail_values (
                 id            TEXT PRIMARY KEY,
@@ -2051,6 +2081,7 @@ impl Database {
                 reform            TEXT NOT NULL DEFAULT 'null',
                 timezone          TEXT NOT NULL DEFAULT 'null',
                 lunar_tz_minutes  INTEGER NOT NULL DEFAULT 480,
+                version           INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
@@ -2123,6 +2154,14 @@ impl Database {
             "lunar_tz_minutes",
             "INTEGER NOT NULL DEFAULT 480",
         )?;
+        // Temporal extraction snapshots and Calendar Editor writes use this
+        // generation token for compare-and-swap and stale-artifact detection.
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。
         // src/db/schema.ts の eventRelations とミラー。event 削除で CASCADE。
@@ -2178,8 +2217,8 @@ impl Database {
         // could make a partially migrated database look compatible after a
         // crash or later migration failure.
         anyhow::ensure!(
-            grimodex_core::workspace_schema::has_v3_checkpoint_invariants(&conn)?,
-            "workspace schema did not satisfy version 3 invariants after migration"
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
+            "workspace schema did not satisfy current invariants after migration"
         );
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
@@ -2205,17 +2244,6 @@ impl Database {
         Ok(())
     }
 
-    fn has_editor_stickies_table(conn: &Connection) -> anyhow::Result<bool> {
-        Ok(conn.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM sqlite_master
-                 WHERE type = 'table' AND name = 'editor_stickies'
-            )",
-            [],
-            |row| row.get(0),
-        )?)
-    }
-
     fn has_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<bool> {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM post_effect_runs WHERE status = 'running' LIMIT 1)",
@@ -2229,13 +2257,13 @@ impl Database {
     /// revision without ever waiting for another SQLite writer.
     ///
     /// The compatibility probe is repeated after `BEGIN IMMEDIATE`; otherwise
-    /// an older v2 process could commit unrepaired data between the initial
-    /// read probe and the v3 stamp. SQLITE_BUSY/LOCKED leaves both data and the
-    /// previous marker untouched. All other failures remain fatal.
-    fn try_finalize_converged_v2_without_wait(
+    /// an older process could mutate the schema between the initial read probe
+    /// and marker stamp. SQLITE_BUSY/LOCKED leaves both data and the previous
+    /// marker untouched. All other failures remain fatal.
+    fn try_finalize_previous_schema_without_wait(
         conn: &Connection,
         schema_version: i32,
-    ) -> anyhow::Result<ConvergedV2Finalize> {
+    ) -> anyhow::Result<ConvergedPreviousFinalize> {
         let original_timeout_ms: i64 =
             conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
         anyhow::ensure!(
@@ -2247,14 +2275,14 @@ impl Database {
         let finalize_result = match conn.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {
                 let transaction_result = (|| {
-                    if !grimodex_core::workspace_schema::is_converged_v2_workspace_schema(conn)? {
+                    if !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(conn)? {
                         conn.execute_batch("ROLLBACK")?;
-                        return Ok(ConvergedV2Finalize::NeedsFullMigration);
+                        return Ok(ConvergedPreviousFinalize::NeedsFullMigration);
                     }
                     Self::recover_interrupted_post_effect_runs(conn)?;
                     conn.pragma_update(None, "user_version", schema_version)?;
                     grimodex_core::commit_or_rollback(conn)?;
-                    Ok(ConvergedV2Finalize::Finalized)
+                    Ok(ConvergedPreviousFinalize::Finalized)
                 })();
                 if transaction_result.is_err() && !conn.is_autocommit() {
                     let _ = conn.execute_batch("ROLLBACK");
@@ -2267,7 +2295,7 @@ impl Database {
                     Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
                 ) =>
             {
-                Ok(ConvergedV2Finalize::Busy)
+                Ok(ConvergedPreviousFinalize::Busy)
             }
             Err(error) => Err(error.into()),
         };
@@ -3792,10 +3820,14 @@ mod tests {
         let db = Database::new(&path).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             Ok(())
         })
-        .expect("mark database as schema version 2");
+        .expect("mark database as the previous schema version");
 
         let locker = Connection::open(&path).expect("open competing connection");
         locker
@@ -3807,10 +3839,10 @@ mod tests {
 
         let started = Instant::now();
         db.migrate()
-            .expect("converged version 2 must use the non-blocking fast path");
+            .expect("converged previous schema must use the non-blocking fast path");
         assert!(
             started.elapsed() < Duration::from_secs(1),
-            "converged version 2 waited behind an unrelated writer"
+            "converged previous schema waited behind an unrelated writer"
         );
         let version_while_locked: i32 = db
             .with_conn(|conn| {
@@ -3818,7 +3850,10 @@ mod tests {
                     .map_err(Into::into)
             })
             .expect("read version after failed migration");
-        assert_eq!(version_while_locked, 2);
+        assert_eq!(
+            version_while_locked,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
         let restored_timeout_ms: i64 = db
             .with_conn(|conn| {
                 conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
@@ -3849,13 +3884,15 @@ mod tests {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.execute_batch(
-                "DROP TABLE editor_stickies;
-                 PRAGMA user_version = 2;",
+            conn.execute_batch("DROP TABLE editor_stickies;")?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
             )?;
             Ok(())
         })
-        .expect("simulate converged v2 workspace missing sticky table");
+        .expect("simulate previous workspace missing sticky table");
 
         db.migrate()
             .expect("one migration must recreate editor stickies");
@@ -3882,7 +3919,11 @@ mod tests {
             Database::new(std::path::Path::new(":memory:")).expect("open crash recovery fixture");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             conn.execute(
                 "INSERT INTO post_effect_runs
                     (id, project_id, effect_type, scope_type, model, prompt_version, status)
@@ -3892,7 +3933,7 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("create interrupted v2 run");
+        .expect("create interrupted previous-schema run");
 
         db.migrate()
             .expect("recover interrupted run before marker finalization");
@@ -3912,11 +3953,15 @@ mod tests {
 
     #[test]
     fn converged_previous_schema_reports_blocked_recovery_without_waiting() {
-        let path = temp_database_path("blocked-v2-crash-recovery");
+        let path = temp_database_path("blocked-previous-crash-recovery");
         let db = Database::new(&path).expect("open crash recovery fixture");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             conn.execute(
                 "INSERT INTO post_effect_runs
                     (id, project_id, effect_type, scope_type, model, prompt_version, status)
@@ -3926,7 +3971,7 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("create interrupted v2 run");
+        .expect("create interrupted previous-schema run");
 
         let locker = Connection::open(&path).expect("open competing connection");
         locker
@@ -3952,7 +3997,7 @@ mod tests {
                 [],
                 |row| row.get(0),
             )?;
-            assert_eq!(version, 2);
+            assert_eq!(version, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,);
             assert_eq!(status, "running");
             Ok(())
         })
@@ -3972,11 +4017,15 @@ mod tests {
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
             conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")?;
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             conn.busy_timeout(Duration::from_millis(50))?;
             Ok(())
         })
-        .expect("create incomplete schema version 2");
+        .expect("create incomplete previous schema");
 
         let locker = Connection::open(&path).expect("open competing connection");
         locker
@@ -3988,7 +4037,7 @@ mod tests {
 
         let error = db
             .migrate()
-            .expect_err("incomplete version 2 must retain the full migration");
+            .expect_err("incomplete previous schema must retain the full migration");
         assert!(
             error.to_string().contains("database is locked"),
             "expected SQLITE_BUSY from the migration write, got {error:#}"
@@ -3999,7 +4048,10 @@ mod tests {
                     .map_err(Into::into)
             })
             .expect("read version after blocked full migration");
-        assert_eq!(version_while_locked, 2);
+        assert_eq!(
+            version_while_locked,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
 
         locker.execute_batch("ROLLBACK").expect("release writer");
         db.migrate().expect("repair incomplete schema after retry");
@@ -4037,7 +4089,11 @@ mod tests {
                     SELECT * FROM ai_audit_events_valid;
                  DROP TABLE ai_audit_events_valid;",
             )?;
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             Ok(())
         })
         .expect("replace audit ledger with malformed same-name table");
@@ -4048,7 +4104,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("did not satisfy version 3 invariants"),
+                .contains("did not satisfy current invariants"),
             "unexpected migration error: {error:#}"
         );
         let retained_version: i32 = db
@@ -4057,7 +4113,10 @@ mod tests {
                     .map_err(Into::into)
             })
             .expect("read retained schema version");
-        assert_eq!(retained_version, 2);
+        assert_eq!(
+            retained_version,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
     }
 
     #[test]

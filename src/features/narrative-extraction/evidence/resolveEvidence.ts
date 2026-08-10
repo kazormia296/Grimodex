@@ -6,8 +6,10 @@ import type {
   CanonicalRange,
   NarrativeCorpusDocument,
   NarrativeSourceView,
+  Sha256Digest,
 } from "../source/types";
 import type {
+  DeterministicEvidenceReference,
   EvidenceResolutionContext,
   EvidenceResolutionResult,
   InvalidEvidenceReason,
@@ -16,10 +18,93 @@ import type {
 
 const DEFAULT_CONTEXT_RADIUS = 64;
 const DEFAULT_MAX_QUOTE_LENGTH = 4_096;
+const verifiedSourceViewPairs = new WeakMap<object, WeakSet<object>>();
 
 interface ExactMatch {
   readonly start: number;
   readonly end: number;
+}
+
+interface DeterministicEvidenceIndex {
+  readonly sourceViews: ReadonlyMap<string, NarrativeSourceView | null>;
+  readonly documents: ReadonlyMap<string, NarrativeCorpusDocument | null>;
+  readonly quoteDigests: Map<string, Promise<Sha256Digest>>;
+  readonly preparedSources: Map<string, Promise<PreparedDeterministicSource>>;
+  readonly documentHasLoneSurrogate: Map<string, boolean>;
+  readonly snapshotDigest: Sha256Digest;
+  readonly createAnchorId: () => string;
+  readonly contextRadius: number;
+  readonly maxQuoteLength: number;
+}
+
+type PreparedDeterministicSource =
+  | {
+      readonly ok: true;
+      readonly sourceView: NarrativeSourceView;
+      readonly document: NarrativeCorpusDocument;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: InvalidEvidenceReason;
+    };
+
+export type DeterministicEvidenceResolver = (
+  raw: DeterministicEvidenceReference,
+) => Promise<EvidenceResolutionResult>;
+
+function uniqueRefIndex<T extends { readonly ref: string }>(
+  values: readonly T[],
+): Map<string, T | null> {
+  const index = new Map<string, T | null>();
+  for (const value of values) {
+    index.set(value.ref, index.has(value.ref) ? null : value);
+  }
+  return index;
+}
+
+function buildDeterministicEvidenceIndex(
+  context: EvidenceResolutionContext,
+): DeterministicEvidenceIndex {
+  const snapshot = context.snapshot;
+  const createAnchorId = context.createAnchorId;
+  return {
+    sourceViews: uniqueRefIndex(context.sourceViews),
+    documents: uniqueRefIndex(snapshot.documents),
+    quoteDigests: new Map(),
+    preparedSources: new Map(),
+    documentHasLoneSurrogate: new Map(),
+    snapshotDigest: snapshot.digest,
+    createAnchorId,
+    contextRadius: context.contextRadius ?? DEFAULT_CONTEXT_RADIUS,
+    maxQuoteLength: context.maxQuoteLength ?? DEFAULT_MAX_QUOTE_LENGTH,
+  };
+}
+
+function canCachePreparedSource(
+  source: NarrativeSourceView,
+  index: DeterministicEvidenceIndex,
+): boolean {
+  const document = index.documents.get(source.documentRef);
+  return (
+    Object.isFrozen(source) &&
+    Object.isFrozen(source.documentRange) &&
+    document !== undefined &&
+    document !== null &&
+    Object.isFrozen(document) &&
+    Object.isFrozen(document.canonical)
+  );
+}
+
+function invalidDeterministic(
+  reason: InvalidEvidenceReason,
+  raw?: Partial<DeterministicEvidenceReference> | null,
+): EvidenceResolutionResult {
+  return freezeDeep({
+    status: "invalid",
+    reason,
+    ...(typeof raw?.sourceRef === "string" ? { sourceRef: raw.sourceRef } : {}),
+    ...(typeof raw?.quote === "string" ? { quote: raw.quote } : {}),
+  });
 }
 
 function invalid(
@@ -90,6 +175,7 @@ function findUniqueByRef<T extends { readonly ref: string }>(
 function validateSourceView(
   sourceView: NarrativeSourceView,
   document: NarrativeCorpusDocument,
+  documentHasInvalidUnicode = hasLoneSurrogate(document.canonical.text),
 ): InvalidEvidenceReason | null {
   const range = sourceView.documentRange;
   if (
@@ -99,7 +185,7 @@ function validateSourceView(
     range.end < range.start ||
     range.end > document.canonical.text.length ||
     typeof sourceView.text !== "string" ||
-    hasLoneSurrogate(document.canonical.text) ||
+    documentHasInvalidUnicode ||
     hasLoneSurrogate(sourceView.text) ||
     !isUtf16Boundary(document.canonical.text, range.start) ||
     !isUtf16Boundary(document.canonical.text, range.end)
@@ -112,6 +198,98 @@ function validateSourceView(
     return "source-view-mismatch";
   }
   return null;
+}
+
+async function prepareDeterministicSource(
+  sourceRef: string,
+  source: NarrativeSourceView,
+  index: DeterministicEvidenceIndex,
+): Promise<PreparedDeterministicSource> {
+  let sourceView: NarrativeSourceView;
+  try {
+    sourceView = freezeDeep({
+      ref: source.ref,
+      documentRef: source.documentRef,
+      documentRange: {
+        start: source.documentRange.start,
+        end: source.documentRange.end,
+      },
+      text: source.text,
+      digest: source.digest,
+    });
+  } catch {
+    return { ok: false, reason: "invalid-source-view" };
+  }
+  const indexedDocument = index.documents.get(sourceView.documentRef);
+  if (indexedDocument === undefined) {
+    return { ok: false, reason: "unknown-document-ref" };
+  }
+  if (indexedDocument === null) {
+    return { ok: false, reason: "duplicate-document-ref" };
+  }
+  const cacheDocumentUnicode =
+    Object.isFrozen(indexedDocument) &&
+    Object.isFrozen(indexedDocument.canonical);
+  let documentHasInvalidUnicode = cacheDocumentUnicode
+    ? index.documentHasLoneSurrogate.get(indexedDocument.ref)
+    : undefined;
+  if (documentHasInvalidUnicode === undefined) {
+    documentHasInvalidUnicode = hasLoneSurrogate(
+      indexedDocument.canonical.text,
+    );
+    if (cacheDocumentUnicode) {
+      index.documentHasLoneSurrogate.set(
+        indexedDocument.ref,
+        documentHasInvalidUnicode,
+      );
+    }
+  }
+  const invalidSourceReason = validateSourceView(
+    sourceView,
+    indexedDocument,
+    documentHasInvalidUnicode,
+  );
+  if (invalidSourceReason) return { ok: false, reason: invalidSourceReason };
+  if (!(await sourceViewDigestMatches(sourceView, source, indexedDocument))) {
+    return { ok: false, reason: "source-view-digest-mismatch" };
+  }
+  // `sourceRef` is the stable cache key. Referencing it here makes accidental
+  // cross-key preparation visible to static review and future assertions.
+  if (sourceView.ref !== sourceRef) {
+    return { ok: false, reason: "source-view-mismatch" };
+  }
+  return { ok: true, sourceView, document: indexedDocument };
+}
+
+async function sourceViewDigestMatches(
+  sourceView: NarrativeSourceView,
+  originalSourceView: NarrativeSourceView,
+  document: NarrativeCorpusDocument,
+): Promise<boolean> {
+  const cacheable =
+    Object.isFrozen(originalSourceView) &&
+    Object.isFrozen(originalSourceView.documentRange) &&
+    Object.isFrozen(document);
+  if (
+    cacheable &&
+    verifiedSourceViewPairs.get(originalSourceView)?.has(document)
+  ) {
+    return true;
+  }
+  const expected = await computeNarrativeSourceViewDigest(
+    sourceView,
+    document.artifactDigest,
+  );
+  if (sourceView.digest !== expected) return false;
+  if (cacheable) {
+    let documents = verifiedSourceViewPairs.get(originalSourceView);
+    if (!documents) {
+      documents = new WeakSet<object>();
+      verifiedSourceViewPairs.set(originalSourceView, documents);
+    }
+    documents.add(document);
+  }
+  return true;
 }
 
 function isHighSurrogate(codeUnit: number): boolean {
@@ -263,11 +441,12 @@ export async function resolveEvidenceReference(
 
   const invalidSourceReason = validateSourceView(sourceView, document);
   if (invalidSourceReason) return invalid(invalidSourceReason, reference);
-  const expectedSourceDigest = await computeNarrativeSourceViewDigest(
+  const sourceDigestMatches = await sourceViewDigestMatches(
     sourceView,
-    documentArtifactDigest,
+    sourceLookup.value,
+    document,
   );
-  if (sourceView.digest !== expectedSourceDigest) {
+  if (!sourceDigestMatches) {
     return invalid("source-view-digest-mismatch", reference);
   }
 
@@ -348,4 +527,164 @@ export async function resolveEvidenceReference(
       sourceDigest,
     },
   });
+}
+
+/**
+ * Verify an extractor-supplied document-global range without searching for a
+ * nearby occurrence. Duplicate quotes therefore remain independent and a
+ * forged range is rejected instead of being silently relocated.
+ */
+async function resolveDeterministicEvidenceReferenceWithIndex(
+  raw: DeterministicEvidenceReference,
+  index: DeterministicEvidenceIndex,
+): Promise<EvidenceResolutionResult> {
+  let reference: DeterministicEvidenceReference;
+  try {
+    reference = {
+      sourceRef: raw.sourceRef,
+      quote: raw.quote,
+      canonicalRange: {
+        start: raw.canonicalRange.start,
+        end: raw.canonicalRange.end,
+      },
+    };
+  } catch {
+    return invalidDeterministic("invalid-reference");
+  }
+
+  const { contextRadius, maxQuoteLength } = index;
+  if (
+    !isNonNegativeInteger(contextRadius) ||
+    !Number.isSafeInteger(maxQuoteLength) ||
+    maxQuoteLength <= 0
+  ) {
+    return invalidDeterministic("invalid-options", reference);
+  }
+
+  const basicReason = validRawReference(
+    { sourceRef: reference.sourceRef, quote: reference.quote },
+    maxQuoteLength,
+  );
+  if (basicReason) return invalidDeterministic(basicReason, reference);
+  const suppliedRange = reference.canonicalRange;
+  if (
+    !suppliedRange ||
+    !isNonNegativeInteger(suppliedRange.start) ||
+    !isNonNegativeInteger(suppliedRange.end) ||
+    suppliedRange.end < suppliedRange.start
+  ) {
+    return invalidDeterministic("invalid-reference", reference);
+  }
+
+  const indexedSource = index.sourceViews.get(reference.sourceRef);
+  if (indexedSource === undefined) {
+    return invalidDeterministic("unknown-source-ref", reference);
+  }
+  if (indexedSource === null) {
+    return invalidDeterministic("duplicate-source-ref", reference);
+  }
+
+  const cachePrepared = canCachePreparedSource(indexedSource, index);
+  let preparedPromise = cachePrepared
+    ? index.preparedSources.get(reference.sourceRef)
+    : undefined;
+  if (!preparedPromise) {
+    preparedPromise = prepareDeterministicSource(
+      reference.sourceRef,
+      indexedSource,
+      index,
+    );
+    if (cachePrepared) {
+      index.preparedSources.set(reference.sourceRef, preparedPromise);
+    }
+  }
+  const prepared = await preparedPromise;
+  if (!prepared.ok) {
+    return invalidDeterministic(prepared.reason, reference);
+  }
+  const { sourceView, document } = prepared;
+
+  if (
+    suppliedRange.start < sourceView.documentRange.start ||
+    suppliedRange.end > sourceView.documentRange.end ||
+    !isUtf16Boundary(document.canonical.text, suppliedRange.start) ||
+    !isUtf16Boundary(document.canonical.text, suppliedRange.end)
+  ) {
+    return invalidDeterministic("range-mismatch", reference);
+  }
+  const match: ExactMatch = {
+    start: suppliedRange.start - sourceView.documentRange.start,
+    end: suppliedRange.end - sourceView.documentRange.start,
+  };
+  if (
+    match.end - match.start !== reference.quote.length ||
+    sourceView.text.slice(match.start, match.end) !== reference.quote
+  ) {
+    return invalidDeterministic("range-mismatch", reference);
+  }
+
+  const projection = projectCanonicalRange(
+    document.canonical.projection,
+    suppliedRange,
+  );
+  if (projection.status === "unmapped") {
+    return invalidDeterministic("unmapped-projection", reference);
+  }
+
+  const anchorContext = boundedContext(sourceView.text, match, contextRadius);
+  const documentRef = document.ref;
+  const snapshotDigest = index.snapshotDigest;
+  const contentDigest = document.contentDigest;
+  const documentDigest = document.documentDigest;
+  const documentArtifactDigest = document.artifactDigest;
+  const sourceDigest = sourceView.digest;
+  const anchorId = index.createAnchorId();
+  let quoteDigestPromise = index.quoteDigests.get(reference.quote);
+  if (!quoteDigestPromise) {
+    quoteDigestPromise = sha256Digest(reference.quote);
+    index.quoteDigests.set(reference.quote, quoteDigestPromise);
+  }
+  const quoteDigest = await quoteDigestPromise;
+  return freezeDeep({
+    status: "resolved",
+    anchor: {
+      id: anchorId,
+      sourceRef: reference.sourceRef,
+      documentRef,
+      quote: reference.quote,
+      sourceRange: match,
+      canonicalRange: suppliedRange,
+      projection,
+      context: anchorContext,
+      method: "exact",
+      // This path verifies one supplied coordinate and deliberately performs
+      // no whole-view occurrence search (which would be quadratic for dense
+      // deterministic seed output).
+      initialMatchCount: 1,
+      quoteDigest,
+      snapshotDigest,
+      contentDigest,
+      documentDigest,
+      documentArtifactDigest,
+      sourceDigest,
+    },
+  });
+}
+
+/** Build one indexed resolver for a run with many deterministic occurrences. */
+export function createDeterministicEvidenceResolver(
+  context: EvidenceResolutionContext,
+): DeterministicEvidenceResolver {
+  const index = buildDeterministicEvidenceIndex(context);
+  return (raw) => resolveDeterministicEvidenceReferenceWithIndex(raw, index);
+}
+
+export function resolveDeterministicEvidenceReference(
+  raw: DeterministicEvidenceReference,
+  context: EvidenceResolutionContext,
+): Promise<EvidenceResolutionResult> {
+  return resolveDeterministicEvidenceReferenceWithIndex(
+    raw,
+    buildDeterministicEvidenceIndex(context),
+  );
 }

@@ -7,7 +7,11 @@ import type {
   NarrativeSourceView,
   Sha256Digest,
 } from "../source/types";
-import { resolveEvidenceReference } from "./resolveEvidence";
+import {
+  createDeterministicEvidenceResolver,
+  resolveDeterministicEvidenceReference,
+  resolveEvidenceReference,
+} from "./resolveEvidence";
 import type { RawEvidenceReference } from "./types";
 
 interface ProseMirrorJsonNode {
@@ -361,5 +365,127 @@ describe("resolveEvidenceReference", () => {
       status: "invalid",
       reason: "invalid-source-view",
     });
+  });
+});
+
+describe("resolveDeterministicEvidenceReference", () => {
+  it("resolves two identical quotes independently from their exact document-global ranges", async () => {
+    const source = await fixture("ライカが来た。ライカが去った。");
+    let anchorIndex = 0;
+    const ctx = {
+      ...context(source),
+      createAnchorId: vi.fn(
+        () => `EA${String(++anchorIndex).padStart(6, "0")}`,
+      ),
+    };
+
+    const first = await resolveDeterministicEvidenceReference(
+      {
+        sourceRef: "S0001",
+        quote: "ライカ",
+        canonicalRange: { start: 0, end: 3 },
+      },
+      ctx,
+    );
+    const second = await resolveDeterministicEvidenceReference(
+      {
+        sourceRef: "S0001",
+        quote: "ライカ",
+        canonicalRange: { start: 7, end: 10 },
+      },
+      ctx,
+    );
+
+    expect(first.status).toBe("resolved");
+    expect(second.status).toBe("resolved");
+    if (first.status !== "resolved" || second.status !== "resolved") return;
+    expect(first.anchor.canonicalRange).toEqual({ start: 0, end: 3 });
+    expect(second.anchor.canonicalRange).toEqual({ start: 7, end: 10 });
+    expect(first.anchor.id).not.toBe(second.anchor.id);
+  });
+
+  it("rejects a forged range even when the quoted text exists elsewhere in the Source View", async () => {
+    const source = await fixture("序章。ライカが来た。");
+    const ctx = context(source);
+
+    const result = await resolveDeterministicEvidenceReference(
+      {
+        sourceRef: "S0001",
+        quote: "ライカ",
+        canonicalRange: { start: 0, end: 3 },
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      status: "invalid",
+      reason: "range-mismatch",
+    });
+    expect(ctx.createAnchorId).not.toHaveBeenCalled();
+  });
+
+  it("treats deterministic ranges as UTF-16 code units at astral boundaries", async () => {
+    const source = await fixture("🎉ライカが来た。");
+    const ctx = context(source);
+
+    const result = await resolveDeterministicEvidenceReference(
+      {
+        sourceRef: "S0001",
+        quote: "ライカ",
+        canonicalRange: { start: 2, end: 5 },
+      },
+      ctx,
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.anchor.canonicalRange).toEqual({ start: 2, end: 5 });
+    expect(result.anchor.projection).toMatchObject({ status: "exact" });
+  });
+
+  it("captures deterministic anchor digests before an id callback can swap the context generation", async () => {
+    const source = await fixture("ライカが来た。");
+    const ctx = context(source);
+    ctx.createAnchorId.mockImplementation(() => {
+      ctx.snapshot = {
+        ...ctx.snapshot,
+        digest: `sha256:${"9".repeat(64)}` as Sha256Digest,
+      };
+      return "EA000002";
+    });
+
+    const result = await resolveDeterministicEvidenceReference(
+      {
+        sourceRef: "S0001",
+        quote: "ライカ",
+        canonicalRange: { start: 0, end: 3 },
+      },
+      ctx,
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.anchor.snapshotDigest).toBe(SNAPSHOT_DIGEST);
+  });
+
+  it("captures an indexed resolver generation before its first async digest completes", async () => {
+    const source = await fixture("ライカが来た。");
+    const ctx = context(source);
+    const resolve = createDeterministicEvidenceResolver(ctx);
+
+    const pending = resolve({
+      sourceRef: "S0001",
+      quote: "ライカ",
+      canonicalRange: { start: 0, end: 3 },
+    });
+    ctx.snapshot = {
+      ...ctx.snapshot,
+      digest: `sha256:${"8".repeat(64)}` as Sha256Digest,
+    };
+    const result = await pending;
+
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.anchor.snapshotDigest).toBe(SNAPSHOT_DIGEST);
   });
 });
