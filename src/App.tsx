@@ -17,6 +17,7 @@ import { LifecycleStatus } from "@/application/lifecycle/LifecycleStatus";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { ApplicationBootstrapHost } from "@/application/bootstrap/ApplicationBootstrapHost";
 import { EditorWorkspaceController } from "@/features/editor/EditorWorkspaceController";
+import { RecoveryShell } from "@/features/workspace/recovery/RecoveryShell";
 
 const WebEditorWorkspaceImportDialog = lazy(() =>
   import("@/features/import/WebEditorWorkspaceImportDialog").then((m) => ({
@@ -30,6 +31,11 @@ function App() {
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const revision = useWorkspaceStore((s) => s.workspaceOpenRevision);
+  const recoveryShell = useWorkspaceStore((s) => s.recoveryShell);
+  const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
+  const setRecoveryCandidates = useWorkspaceStore(
+    (s) => s.setRecoveryCandidates,
+  );
   const { t } = useTranslation();
   const [showWebEditorImport, setShowWebEditorImport] = useState(false);
   const requestWebEditorImport = useCallback(
@@ -58,6 +64,15 @@ function App() {
       )}
       {view === "welcome" && <WelcomeScreen />}
       {view === "launcher" && <LauncherScreen />}
+      {view === "recovery" && (
+        <RecoveryShell
+          recovery={recoveryShell}
+          onCandidatesUpdated={setRecoveryCandidates}
+          onRetryOpen={(workspacePath) =>
+            openWorkspace(workspacePath, "direct")
+          }
+        />
+      )}
       {view === "editor" && (
         <EditorWorkspaceController key={`${activeWorkspacePath}:${revision}`} />
       )}

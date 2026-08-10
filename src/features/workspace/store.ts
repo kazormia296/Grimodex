@@ -36,7 +36,7 @@ import { cancelWorkspaceScopedSchedules } from "@/application/workspace/workspac
 import {
   beginWorkspaceOpenRequest,
   runWorkspaceOpenRequest,
-  type WorkspaceOpenOutcome,
+  type WorkspaceOpenRequestOutcome,
 } from "./workspaceOpenRequest";
 import {
   beginWorkspaceOpenTrace,
@@ -50,22 +50,28 @@ import {
   setWorkspaceOpenTraceTarget,
   startRuntimeCompositionTrace,
 } from "./workspaceOpenTraceIntegration";
+import {
+  normalizeNativeWorkspaceOpenOutcome,
+  type NativeWorkspaceOpenOutcome,
+  type NativeWorkspacePayload,
+  type RecoveryCandidate,
+  type RecoveryShellState,
+} from "./recovery/types";
 
 export type {
   GlobalSettings,
   RecentWorkspace,
 } from "@/lib/globalSettings/GlobalSettings";
 
-export type AppView = "loading" | "welcome" | "launcher" | "editor";
+export type AppView =
+  | "loading"
+  | "welcome"
+  | "launcher"
+  | "editor"
+  | "recovery";
 
-export type { WorkspaceOpenOutcome } from "./workspaceOpenRequest";
-
-interface OpenWorkspaceResult {
-  name: string;
-  isExisting: boolean;
-  /** Stable UUID from `.grimodex/workspace.json` (missing only on an old backend). */
-  workspaceId?: string;
-}
+export type { WorkspaceOpenRequestOutcome } from "./workspaceOpenRequest";
+export type { RecoveryCandidate, RecoveryShellState } from "./recovery/types";
 
 export interface WorkspaceState {
   view: AppView;
@@ -90,12 +96,13 @@ export interface WorkspaceState {
   pendingTrustPath: string | null;
   /** In-memory only — not persisted. True while SampleTour should be shown. */
   showSampleTour: boolean;
+  recoveryShell: RecoveryShellState | null;
 
   initialize: () => Promise<void>;
   openWorkspace: (
     path: string,
     source?: WorkspaceOpenTraceSource,
-  ) => Promise<WorkspaceOpenOutcome>;
+  ) => Promise<WorkspaceOpenRequestOutcome>;
   requestOpenWorkspace: (
     path: string,
     source?: WorkspaceOpenTraceSource,
@@ -114,6 +121,7 @@ export interface WorkspaceState {
   showLauncher: () => void;
   clearError: () => void;
   setShowSampleTour: (show: boolean) => void;
+  setRecoveryCandidates: (candidates: RecoveryCandidate[]) => void;
   /** Seed sample workspace, open it, and flag tour to show. */
   seedAndOpenSample: (language: string, aiPolicy: string) => Promise<void>;
 }
@@ -133,6 +141,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   error: null,
   pendingTrustPath: null,
   showSampleTour: false,
+  recoveryShell: null,
 
   initialize: () => initializeWorkspaceStore(get, set),
 
@@ -159,7 +168,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     const previousImeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
     const previousProjectId = getCurrentProjectId();
     let swapDone = false;
-    let openResult: OpenWorkspaceResult | null = null;
+    let openResult: NativeWorkspacePayload | null = null;
     let targetOpenRevision: number | null = null;
     let targetSettings: GlobalSettings | null = null;
     let projectLoadLease: WorkspaceProjectLoadLease | null = null;
@@ -237,11 +246,45 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         performance.mark("grimodex.workspaceOpen.start");
         const compositionReady = startRuntimeCompositionTrace(trace);
         void compositionReady.catch(() => undefined);
-        openResult = await runWorkspaceOpenTraceStep(trace, "native-ipc", () =>
-          invoke<OpenWorkspaceResult>("open_workspace", {
-            path,
-          }),
+        const nativeOpenOutcome = normalizeNativeWorkspaceOpenOutcome(
+          await runWorkspaceOpenTraceStep(trace, "native-ipc", () =>
+            invoke<NativeWorkspaceOpenOutcome | NativeWorkspacePayload>(
+              "open_workspace",
+              {
+                path,
+              },
+            ),
+          ),
         );
+        if (
+          nativeOpenOutcome.status === "safe-mode" ||
+          nativeOpenOutcome.status === "recovery-required"
+        ) {
+          swapDone = true;
+          set({
+            view: "recovery",
+            activeWorkspacePath: null,
+            activeWorkspaceId: null,
+            activeWorkspaceName: null,
+            error: null,
+            workspaceHydrated: false,
+            recoveryShell: {
+              mode: nativeOpenOutcome.status,
+              workspacePath: path,
+              reason: nativeOpenOutcome.reason,
+              ...(nativeOpenOutcome.status === "recovery-required"
+                ? { errorCode: nativeOpenOutcome.errorCode }
+                : {}),
+              ...(nativeOpenOutcome.status === "recovery-required" &&
+              nativeOpenOutcome.snapshotId
+                ? { snapshotId: nativeOpenOutcome.snapshotId }
+                : {}),
+              candidates: nativeOpenOutcome.candidates,
+            },
+          });
+          return nativeOpenOutcome.status;
+        }
+        openResult = nativeOpenOutcome.workspace;
         swapDone = true;
         targetOpenRevision = get().workspaceOpenRevision + 1;
         await compositionReady;
@@ -324,6 +367,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         activeWorkspaceName: result.name,
         globalSettings: settings,
         workspaceHydrated: false,
+        recoveryShell: null,
       });
       quiescenceLease.transition?.advance("authority-commit");
       set({
@@ -356,6 +400,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           ...(targetSettings ? { globalSettings: targetSettings } : {}),
           error,
           workspaceHydrated: false,
+          recoveryShell: null,
         });
       } else {
         // Native open rejected before swap: the previous DB/UI binding remains
@@ -507,7 +552,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   },
 
   showLauncher: () => {
-    set({ view: "launcher" });
+    set({ view: "launcher", recoveryShell: null });
   },
 
   clearError: () => {
@@ -516,6 +561,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
 
   setShowSampleTour: (show: boolean) => {
     set({ showSampleTour: show });
+  },
+
+  setRecoveryCandidates: (candidates: RecoveryCandidate[]) => {
+    const recoveryShell = get().recoveryShell;
+    if (!recoveryShell) return;
+    set({ recoveryShell: { ...recoveryShell, candidates } });
   },
 
   async seedAndOpenSample(language: string, aiPolicy: string) {

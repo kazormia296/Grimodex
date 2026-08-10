@@ -8,11 +8,13 @@ import {
   type WorkspaceOpenTraceSource,
 } from "./workspaceOpenTrace";
 
-export type WorkspaceOpenOutcome =
+export type WorkspaceOpenRequestOutcome =
   | "opened"
   | "blocked"
   | "failed"
-  | "in-progress";
+  | "in-progress"
+  | "safe-mode"
+  | "recovery-required";
 
 type WorkspaceStoreGetter = () => WorkspaceState;
 type WorkspaceStoreSetter = (partial: Partial<WorkspaceState>) => void;
@@ -49,7 +51,7 @@ async function openValidatedWorkspace(
   isExisting: boolean,
   get: WorkspaceStoreGetter,
   set: WorkspaceStoreSetter,
-): Promise<WorkspaceOpenOutcome | "trust-required"> {
+): Promise<WorkspaceOpenRequestOutcome | "trust-required"> {
   if (!isExisting) {
     const outcome = await get().openWorkspace(path);
     if (outcome !== "opened") return outcome;
