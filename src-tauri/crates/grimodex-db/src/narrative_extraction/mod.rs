@@ -1,6 +1,9 @@
-//! Persistent run runtime for Narrative Extraction (Chronicle Vertical Slice PR2+PR5).
+//! Persistent run runtime for Narrative Extraction (Chronicle + Codex Vertical Slice).
 
 mod chronicle_operations;
+mod codex_operations;
+mod codex_snapshots;
+mod codex_undo;
 mod commit;
 mod models;
 mod repository;
@@ -10,8 +13,8 @@ mod undo;
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
-    FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload, PrepareCommitPayload, ProposalSeed,
-    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
+    PrepareCommitPayload, ProposalSeed, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 pub use repository::ensure_test_schema;
 

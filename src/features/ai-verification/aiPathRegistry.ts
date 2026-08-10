@@ -230,6 +230,20 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
     auditProperty: "pathId",
   },
   {
+    pathId: "narrative_entity_resolve",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runEntityResolutionTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
+    pathId: "narrative_relation_synthesize",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runRelationSynthesisTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
     pathId: "narrative_structured_repair",
     sourceRef:
       "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
@@ -239,12 +253,6 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
   {
     pathId: "beat_role",
     sourceRef: "src/features/editor/beat/inferMentionRoles.ts",
-    dispatchCall: "sendChatMessageWithThinking",
-    auditProperty: "pathId",
-  },
-  {
-    pathId: "codex_judgment",
-    sourceRef: "src/features/codex/candidateJudgment.ts",
     dispatchCall: "sendChatMessageWithThinking",
     auditProperty: "pathId",
   },
@@ -350,8 +358,6 @@ const AGENT_LOOP_TEST = "src/features/chat/agent/agentToolCall.live.test.ts";
 const SINGLE_SHOT_TEST = "src/features/ai-verification/singleShot.live.test.ts";
 const RELATION_EVAL_TEST =
   "src/features/codex/relationInjectionEval.live.test.ts";
-const CANDIDATE_JUDGMENT_TEST =
-  "src/features/codex/candidateJudgment.live.test.ts";
 const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
 const BROWSER_BYOK_CONTRACT_TEST = "src/lib/browser-ai.test.ts";
@@ -565,6 +571,39 @@ export const AI_PATHS: AiPathEntry[] = [
     note: "Cluster 単位の Event Hypothesis 合成。Observation ref と短い Evidence 表示のみ。",
   },
   {
+    id: "narrative_entity_resolve",
+    label: "Narrative Entity Resolution",
+    surface:
+      "narrative-extraction/aiTasks/runEntityResolutionTask.ts runEntityResolutionTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_entity_resolve",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_entity_resolve",
+    note:
+      "Codex Entity Cluster の同定。不透明 Type／Entry Catalog Ref（T####／K####）と Source View Ref のみ渡し、実 DB Entry ID は送らない。",
+  },
+  {
+    id: "narrative_relation_synthesize",
+    label: "Narrative Relation Synthesis",
+    surface:
+      "narrative-extraction/aiTasks/runRelationSynthesisTask.ts runRelationSynthesisTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_relation_synthesize",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_relation_synthesize",
+    note: "Candidate Entity ペアの Relation Hypothesis 合成。Narrative Entity ID と Observation ref のみ。実 Codex Entry ID は送らない。",
+  },
+  {
     id: "narrative_structured_repair",
     label: "Narrative Structured JSON Repair",
     surface:
@@ -627,18 +666,16 @@ export const AI_PATHS: AiPathEntry[] = [
   },
   {
     id: "codex_judgment",
-    label: "Codex 候補の LLM 判定（種別/要約/別名）",
-    surface: "codex/candidateJudgment.ts judgeCandidates",
+    label: "Codex 候補の LLM 判定（退役）",
+    surface: "codex/candidateJudgment.ts judgeCandidates (retired)",
     layer: "single-shot",
     transport: "send_chat_message",
-    auditOwner: "renderer-single-shot",
-    captureLevel: "full-observable",
-    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
-    auditTestName: "AI audit path: codex_judgment",
-    verifier: "js-live",
-    testRef: CANDIDATE_JUDGMENT_TEST,
-    testName: "codex candidate judgment live E2E",
-    note: "本番ビルダー codexJudgment.buildCandidateJudgmentPrompt + 本番パーサ parseJudgmentResponse + runLiveSingleShot。形態素×LLM の LLM 半分（種別分類/別名検出）を実モデルで検証。",
+    auditOwner: "none",
+    captureLevel: "not-applicable",
+    auditTestRef: null,
+    verifier: "stub",
+    testRef: null,
+    note: "PR6 cutover: 固定4種／実DB ID／mergeTargetId 経路を退役。代替は narrative_entity_resolve + CodexStructureExtractDialog。judgeCandidates はモデルを呼ばず reject する。",
   },
   {
     id: "codex_yomi",

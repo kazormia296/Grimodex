@@ -110,7 +110,7 @@ export async function runObservationExtractionTask(
         ov.endpointId,
       );
   void recordAiUsage({
-    surface: "chronicle_extract",
+    surface: "narrative_observation_extract",
     model: ov.model,
     provider: ov.provider,
     tokensIn: response.inputTokens,

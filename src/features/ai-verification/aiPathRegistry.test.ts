@@ -54,6 +54,8 @@ const REQUIRED_AUDITED_PATH_IDS = [
   "chronicle_extract",
   "narrative_observation_extract",
   "narrative_event_synthesize",
+  "narrative_entity_resolve",
+  "narrative_relation_synthesize",
   "narrative_structured_repair",
   "beat_role",
   "codex_judgment",

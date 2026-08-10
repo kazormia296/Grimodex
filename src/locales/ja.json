@@ -1493,7 +1493,12 @@
         "codex_judgment": "固有名詞候補の判定",
         "codex_yomi": "読み推定",
         "plot_thread_extract": "プロットスレッド抽出",
-        "chronicle_extract": "作中年表 出来事抽出"
+        "chronicle_extract": "作中年表 出来事抽出",
+        "narrative_observation_extract": "Narrative Observation 抽出",
+        "narrative_event_synthesize": "Narrative Event 統合",
+        "narrative_entity_resolve": "Narrative Entity 解決",
+        "narrative_relation_synthesize": "Narrative Relation 統合",
+        "narrative_structured_repair": "Narrative JSON 修復"
       }
     }
   },

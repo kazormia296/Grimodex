@@ -7,14 +7,20 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::chronicle_operations::{
-    apply_chronicle_event_create, ChronicleEventCreateContext, ensure_event_id_available,
-    ensure_operation_kind,
-    ensure_order_neighbor, ensure_scene_versions, generate_append_ordinals,
-    parse_event_create_payload,
+    apply_chronicle_event_create, ensure_event_id_available, ensure_order_neighbor,
+    ensure_scene_versions, generate_append_ordinals, parse_event_create_payload,
+    ChronicleEventCreateContext,
+};
+use super::codex_operations::{
+    apply_codex_entry_create, apply_codex_entry_patch, apply_codex_relation_create_in_tx,
+    ensure_entry_id_available, ensure_entry_version, ensure_operation_kind, is_chronicle_op,
+    parse_entry_create_payload, parse_entry_patch_payload, parse_relation_create_payload,
+    CodexEntityBinding, CommitMap, OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH,
+    OP_KIND_EVENT_CREATE, OP_KIND_RELATION_CREATE,
 };
 use super::models::{
-    ApplyCommitPayload, CommitApplicationRef, CommitOperation, GetCommitStatusPayload,
-    PrepareCommitPayload,
+    ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
+    GetCommitStatusPayload, PrepareCommitPayload,
 };
 use super::repository::ensure_run_project;
 use super::task_leases::with_immediate_transaction;
@@ -40,6 +46,7 @@ pub fn narrative_extraction_prepare_commit(
                 &payload.operations,
                 &payload.applications,
                 payload.expected_tail_ordinal.as_deref(),
+                &payload.entity_bindings,
             )?;
             Ok(json!({
                 "ok": true,
@@ -78,6 +85,7 @@ pub fn narrative_extraction_apply_commit(
                 &payload.operations,
                 &payload.applications,
                 payload.expected_tail_ordinal.as_deref(),
+                &payload.entity_bindings,
             )?;
 
             conn.execute(
@@ -96,179 +104,305 @@ pub fn narrative_extraction_apply_commit(
                 ],
             )?;
 
-            let parsed: Vec<_> = payload
-                .operations
-                .iter()
-                .map(|op| {
+            let mut commit_map = CommitMap::new();
+                for seed in &payload.entity_bindings {
+                    commit_map.insert_binding(CodexEntityBinding {
+                        narrative_entity_id: seed.narrative_entity_id.clone(),
+                        codex_entry_id: seed.codex_entry_id.clone(),
+                        source: if seed.source.is_empty() {
+                            "existing".to_string()
+                        } else {
+                            seed.source.clone()
+                        },
+                    });
+                }
+
+                let chronicle_count = payload
+                    .operations
+                    .iter()
+                    .filter(|op| is_chronicle_op(&op.kind))
+                    .count();
+                let ordinals = if chronicle_count > 0 {
+                    generate_append_ordinals(
+                        payload.expected_tail_ordinal.as_deref(),
+                        chronicle_count,
+                    )?
+                } else {
+                    Vec::new()
+                };
+                let mut ordinal_index = 0usize;
+
+                let mut created = Vec::new();
+                let mut after_snapshots = Vec::new();
+
+                for (index, op) in payload.operations.iter().enumerate() {
                     ensure_operation_kind(&op.kind)?;
-                    parse_event_create_payload(&op.payload)
-                })
-                .collect::<anyhow::Result<_>>()?;
+                    let (entity_kind, entity_id, version, snapshot, before_snapshot, op_kind) =
+                        match op.kind.as_str() {
+                            OP_KIND_EVENT_CREATE => {
+                                let event_payload = parse_event_create_payload(&op.payload)?;
+                                let ordinal = &ordinals[ordinal_index];
+                                ordinal_index += 1;
+                                let result = apply_chronicle_event_create(ChronicleEventCreateContext {
+                                    conn,
+                                    project_id: &payload.project_id,
+                                    session_id: &payload.session_id,
+                                    surface: payload.surface.as_deref(),
+                                    payload: &event_payload,
+                                    ordinal,
+                                    now: &now,
+                                    timestamp,
+                                })?;
+                                (
+                                    "event",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    None,
+                                    "create",
+                                )
+                            }
+                            OP_KIND_ENTRY_CREATE => {
+                                let entry_payload = parse_entry_create_payload(&op.payload)?;
+                                let result = apply_codex_entry_create(
+                                    conn,
+                                    &payload.project_id,
+                                    &payload.session_id,
+                                    payload.surface.as_deref(),
+                                    &entry_payload,
+                                    &now,
+                                    timestamp,
+                                )?;
+                                if let Some(narrative_entity_id) =
+                                    entry_payload.narrative_entity_id.as_ref()
+                                {
+                                    commit_map.insert_binding(CodexEntityBinding {
+                                        narrative_entity_id: narrative_entity_id.clone(),
+                                        codex_entry_id: result.entity_id.clone(),
+                                        source: "created".to_string(),
+                                    });
+                                }
+                                (
+                                    "codex_entry",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    None,
+                                    "create",
+                                )
+                            }
+                            OP_KIND_ENTRY_PATCH => {
+                                let patch_payload = parse_entry_patch_payload(&op.payload)?;
+                                let result = apply_codex_entry_patch(
+                                    conn,
+                                    &payload.project_id,
+                                    &payload.session_id,
+                                    payload.surface.as_deref(),
+                                    &patch_payload,
+                                    &now,
+                                    timestamp,
+                                )?;
+                                if let Some(narrative_entity_id) =
+                                    patch_payload.narrative_entity_id.as_ref()
+                                {
+                                    commit_map.insert_binding(CodexEntityBinding {
+                                        narrative_entity_id: narrative_entity_id.clone(),
+                                        codex_entry_id: result.entity_id.clone(),
+                                        source: "existing".to_string(),
+                                    });
+                                }
+                                (
+                                    "codex_entry",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    Some(result.before_snapshot),
+                                    "patch",
+                                )
+                            }
+                            OP_KIND_RELATION_CREATE => {
+                                let relation_payload =
+                                    parse_relation_create_payload(&op.payload)?;
+                                let result = apply_codex_relation_create_in_tx(
+                                    conn,
+                                    &payload.project_id,
+                                    &relation_payload,
+                                    &commit_map,
+                                    &now,
+                                )?;
+                                (
+                                    "codex_relation",
+                                    result.entity_id,
+                                    result.version,
+                                    result.after_snapshot,
+                                    None,
+                                    "create",
+                                )
+                            }
+                            other => anyhow::bail!("unsupported commit operation kind: {other}"),
+                        };
 
-            let ordinals = generate_append_ordinals(
-                payload.expected_tail_ordinal.as_deref(),
-                parsed.len(),
-            )?;
+                    conn.execute(
+                        "INSERT INTO narrative_apply_operations
+                            (id, commit_id, operation_index, operation_kind, payload_json,
+                             result_entity_kind, result_entity_id, status, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'applied', ?8)",
+                        params![
+                            Uuid::new_v4().to_string(),
+                            commit_id,
+                            index as i64,
+                            op.kind,
+                            serde_json::to_string(&op.payload)?,
+                            entity_kind,
+                            entity_id,
+                            now,
+                        ],
+                    )?;
 
-            let mut created = Vec::new();
-            let mut after_snapshots = Vec::new();
-            for (index, (op, event_payload)) in
-                payload.operations.iter().zip(parsed.iter()).enumerate()
-            {
-                let ordinal = &ordinals[index];
-                let result = apply_chronicle_event_create(ChronicleEventCreateContext {
-                    conn,
-                    project_id: &payload.project_id,
-                    session_id: &payload.session_id,
-                    surface: payload.surface.as_deref(),
-                    payload: event_payload,
-                    ordinal,
-                    now: &now,
-                    timestamp,
-                })?;
+                    let mut entity_row = json!({
+                        "entityKind": entity_kind,
+                        "entityId": entity_id,
+                        "version": version,
+                        "opKind": op_kind,
+                        "snapshot": snapshot,
+                    });
+                    if let Some(before) = before_snapshot {
+                        entity_row["beforeSnapshot"] = before;
+                    }
+                    after_snapshots.push(entity_row);
+                    created.push(json!({
+                        "operationIndex": index,
+                        "entityKind": entity_kind,
+                        "entityId": entity_id,
+                        "version": version,
+                        "proposalId": op.proposal_id,
+                        "revisionId": op.revision_id,
+                    }));
+                }
 
-                conn.execute(
-                    "INSERT INTO narrative_apply_operations
-                        (id, commit_id, operation_index, operation_kind, payload_json,
-                         result_entity_kind, result_entity_id, status, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'event', ?6, 'applied', ?7)",
-                    params![
-                        Uuid::new_v4().to_string(),
-                        commit_id,
-                        index as i64,
-                        op.kind,
-                        serde_json::to_string(&op.payload)?,
-                        result.entity_id,
-                        now,
-                    ],
-                )?;
-
-                after_snapshots.push(json!({
-                    "entityKind": "event",
-                    "entityId": result.entity_id,
-                    "version": result.version,
-                    "snapshot": result.after_snapshot,
-                }));
-                created.push(json!({
-                    "operationIndex": index,
-                    "entityKind": "event",
-                    "entityId": result.entity_id,
-                    "version": result.version,
-                    "proposalId": op.proposal_id,
-                    "revisionId": op.revision_id,
-                }));
-            }
-
-            for (index, application) in payload.applications.iter().enumerate() {
-                let entity_id = created
-                    .get(index)
-                    .and_then(|row| row.get("entityId"))
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
+                for (index, application) in payload.applications.iter().enumerate() {
+                    let created_row = created.get(index).ok_or_else(|| {
                         anyhow::anyhow!("application[{index}] has no matching created entity")
                     })?;
+                    let entity_id = created_row
+                        .get("entityId")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("application[{index}] missing entityId")
+                        })?;
+                    let entity_kind = created_row
+                        .get("entityKind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("event");
+                    conn.execute(
+                        "INSERT INTO narrative_proposal_applications
+                            (id, commit_id, proposal_id, revision_id,
+                             applied_entity_kind, applied_entity_id, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![
+                            Uuid::new_v4().to_string(),
+                            commit_id,
+                            application.proposal_id,
+                            application.revision_id,
+                            entity_kind,
+                            entity_id,
+                            now,
+                        ],
+                    )?;
+                }
+
+                if payload.applications.is_empty() {
+                    for (index, op) in payload.operations.iter().enumerate() {
+                        if let (Some(proposal_id), Some(revision_id)) =
+                            (op.proposal_id.as_ref(), op.revision_id.as_ref())
+                        {
+                            let entity_id = created[index]["entityId"]
+                                .as_str()
+                                .expect("entity id");
+                            let entity_kind = created[index]["entityKind"]
+                                .as_str()
+                                .unwrap_or("event");
+                            conn.execute(
+                                "INSERT INTO narrative_proposal_applications
+                                    (id, commit_id, proposal_id, revision_id,
+                                     applied_entity_kind, applied_entity_id, created_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                params![
+                                    Uuid::new_v4().to_string(),
+                                    commit_id,
+                                    proposal_id,
+                                    revision_id,
+                                    entity_kind,
+                                    entity_id,
+                                    now,
+                                ],
+                            )?;
+                        }
+                    }
+                }
+
+                let after_json = json!({
+                    "entities": after_snapshots,
+                    "entityBindings": commit_map.to_json(),
+                });
+                let journal_id = Uuid::new_v4().to_string();
                 conn.execute(
-                    "INSERT INTO narrative_proposal_applications
-                        (id, commit_id, proposal_id, revision_id,
-                         applied_entity_kind, applied_entity_id, created_at)
-                     VALUES (?1, ?2, ?3, ?4, 'event', ?5, ?6)",
+                    "INSERT INTO narrative_commit_journals
+                        (id, commit_id, project_id, before_json, after_json, created_at)
+                     VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
                     params![
-                        Uuid::new_v4().to_string(),
+                        journal_id,
                         commit_id,
-                        application.proposal_id,
-                        application.revision_id,
-                        entity_id,
+                        payload.project_id,
+                        after_json.to_string(),
                         now,
                     ],
                 )?;
-            }
 
-            // Also bind proposal/revision from operations when applications omitted.
-            if payload.applications.is_empty() {
-                for (index, op) in payload.operations.iter().enumerate() {
-                    if let (Some(proposal_id), Some(revision_id)) =
-                        (op.proposal_id.as_ref(), op.revision_id.as_ref())
-                    {
-                        let entity_id = created[index]["entityId"]
-                            .as_str()
-                            .expect("entity id");
-                        conn.execute(
-                            "INSERT INTO narrative_proposal_applications
-                                (id, commit_id, proposal_id, revision_id,
-                                 applied_entity_kind, applied_entity_id, created_at)
-                             VALUES (?1, ?2, ?3, ?4, 'event', ?5, ?6)",
-                            params![
-                                Uuid::new_v4().to_string(),
-                                commit_id,
-                                proposal_id,
-                                revision_id,
-                                entity_id,
-                                now,
-                            ],
-                        )?;
-                    }
-                }
-            }
+                let change_uid = Uuid::new_v4().to_string();
+                let change_payload = json!({
+                    "commitId": commit_id,
+                    "requestId": payload.request_id,
+                    "planDigest": payload.plan_digest,
+                    "entityIds": created.iter().map(|row| row["entityId"].clone()).collect::<Vec<_>>(),
+                    "entityBindings": commit_map.to_json(),
+                });
+                append_change_events_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.session_id,
+                    &[AppendChangeEvent {
+                        event_uid: change_uid.clone(),
+                        scene_id: None,
+                        domain: "narrative".to_string(),
+                        op_type: "narrative.commit.apply".to_string(),
+                        entity_type: Some("narrative_apply_commit".to_string()),
+                        entity_id: Some(commit_id.clone()),
+                        payload: change_payload.to_string(),
+                        timestamp,
+                    }],
+                )?;
 
-            let after_json = json!({
-                "entities": after_snapshots,
-            });
-            let journal_id = Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO narrative_commit_journals
-                    (id, commit_id, project_id, before_json, after_json, created_at)
-                 VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-                params![
-                    journal_id,
-                    commit_id,
-                    payload.project_id,
-                    after_json.to_string(),
-                    now,
-                ],
-            )?;
+                let receipt = json!({
+                    "commitId": commit_id,
+                    "requestId": payload.request_id,
+                    "planDigest": payload.plan_digest,
+                    "status": STATUS_APPLIED,
+                    "journalId": journal_id,
+                    "changeEventUid": change_uid,
+                    "created": created,
+                    "entityBindings": commit_map.to_json(),
+                });
 
-            let change_uid = Uuid::new_v4().to_string();
-            let change_payload = json!({
-                "commitId": commit_id,
-                "requestId": payload.request_id,
-                "planDigest": payload.plan_digest,
-                "entityIds": created.iter().map(|row| row["entityId"].clone()).collect::<Vec<_>>(),
-            });
-            append_change_events_in_tx(
-                conn,
-                &payload.project_id,
-                &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: change_uid.clone(),
-                    scene_id: None,
-                    domain: "narrative".to_string(),
-                    op_type: "narrative.commit.apply".to_string(),
-                    entity_type: Some("narrative_apply_commit".to_string()),
-                    entity_id: Some(commit_id.clone()),
-                    payload: change_payload.to_string(),
-                    timestamp,
-                }],
-            )?;
-
-            let receipt = json!({
-                "commitId": commit_id,
-                "requestId": payload.request_id,
-                "planDigest": payload.plan_digest,
-                "status": STATUS_APPLIED,
-                "journalId": journal_id,
-                "changeEventUid": change_uid,
-                "created": created,
-            });
-
-            conn.execute(
-                "UPDATE narrative_apply_commits
-                    SET status = ?1,
-                        receipt_json = ?2,
-                        completed_at = ?3,
-                        version = version + 1
-                  WHERE id = ?4",
-                params![STATUS_APPLIED, receipt.to_string(), now, commit_id],
-            )?;
+                conn.execute(
+                    "UPDATE narrative_apply_commits
+                        SET status = ?1,
+                            receipt_json = ?2,
+                            completed_at = ?3,
+                            version = version + 1
+                      WHERE id = ?4",
+                    params![STATUS_APPLIED, receipt.to_string(), now, commit_id],
+                )?;
 
             Ok(receipt)
         })
@@ -460,6 +594,7 @@ fn validate_commit_plan(
     operations: &[CommitOperation],
     applications: &[CommitApplicationRef],
     expected_tail_ordinal: Option<&str>,
+    entity_bindings: &[EntityBindingSeed],
 ) -> anyhow::Result<()> {
     anyhow::ensure!(!operations.is_empty(), "commit requires at least one operation");
     ensure_run_project(conn, run_id, project_id)?;
@@ -472,13 +607,50 @@ fn validate_commit_plan(
     )?;
     anyhow::ensure!(set_ok == 1, "proposal set not found for run/project");
 
-    ensure_order_neighbor(conn, project_id, expected_tail_ordinal)?;
+    let has_chronicle = operations.iter().any(|op| is_chronicle_op(&op.kind));
+    if has_chronicle {
+        ensure_order_neighbor(conn, project_id, expected_tail_ordinal)?;
+    }
+
+    for seed in entity_bindings {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            params![seed.codex_entry_id, project_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            exists == 1,
+            "entity binding codex entry '{}' not found in project '{}'",
+            seed.codex_entry_id,
+            project_id
+        );
+    }
 
     for op in operations {
         ensure_operation_kind(&op.kind)?;
-        let payload = parse_event_create_payload(&op.payload)?;
-        ensure_event_id_available(conn, project_id, &payload.event_id)?;
-        ensure_scene_versions(conn, project_id, &payload.evidence_scene_links)?;
+        match op.kind.as_str() {
+            OP_KIND_EVENT_CREATE => {
+                let payload = parse_event_create_payload(&op.payload)?;
+                ensure_event_id_available(conn, project_id, &payload.event_id)?;
+                ensure_scene_versions(conn, project_id, &payload.evidence_scene_links)?;
+            }
+            OP_KIND_ENTRY_CREATE => {
+                let payload = parse_entry_create_payload(&op.payload)?;
+                anyhow::ensure!(
+                    payload.parent_id.is_none(),
+                    "NEX_CODEX_PARENT_ID_FORBIDDEN: kinship must not be projected onto parentId"
+                );
+                ensure_entry_id_available(conn, project_id, &payload.entry_id)?;
+            }
+            OP_KIND_ENTRY_PATCH => {
+                let payload = parse_entry_patch_payload(&op.payload)?;
+                ensure_entry_version(conn, project_id, &payload.entry_id, payload.base_version)?;
+            }
+            OP_KIND_RELATION_CREATE => {
+                let _ = parse_relation_create_payload(&op.payload)?;
+            }
+            other => anyhow::bail!("unsupported commit operation kind: {other}"),
+        }
 
         if let Some(proposal_id) = op.proposal_id.as_deref() {
             ensure_proposal_approved(conn, proposal_set_id, proposal_id, op.revision_id.as_deref())?;

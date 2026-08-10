@@ -28,6 +28,11 @@ const SURFACE_KEYS = {
   codex_yomi: true,
   plot_thread_extract: true,
   chronicle_extract: true,
+  narrative_observation_extract: true,
+  narrative_event_synthesize: true,
+  narrative_entity_resolve: true,
+  narrative_relation_synthesize: true,
+  narrative_structured_repair: true,
 } satisfies Record<AiUsageSurface, true>;
 
 export const KNOWN_SURFACES = Object.keys(SURFACE_KEYS) as AiUsageSurface[];
