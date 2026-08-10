@@ -1015,6 +1015,7 @@ fn hit_failpoint(
     #[cfg(feature = "test-failpoints")]
     {
         if configured == Some(point) {
+            park_subprocess_failpoint_if_requested(point)?;
             return Err(MigrationSupervisorError::Failpoint(point));
         }
         Ok(())
@@ -1023,6 +1024,21 @@ fn hit_failpoint(
     {
         let _ = (configured, point);
         Ok(())
+    }
+}
+
+#[cfg(feature = "test-failpoints")]
+fn park_subprocess_failpoint_if_requested(
+    point: Failpoint,
+) -> Result<(), MigrationSupervisorError> {
+    let Some(ready_path) = std::env::var_os("GRIMODEX_MIGRATION_FAILPOINT_READY_PATH") else {
+        return Ok(());
+    };
+    let ready_path = PathBuf::from(ready_path);
+    fs::write(&ready_path, format!("{}\n", point.as_str()))?;
+    sync_file(&ready_path)?;
+    loop {
+        std::thread::park_timeout(Duration::from_secs(3600));
     }
 }
 
