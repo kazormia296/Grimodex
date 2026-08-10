@@ -18,6 +18,7 @@ import { captureMutationAuthority } from "@/features/concurrency/mutationAuthori
 import { CodexStructureExtractionProgress } from "./CodexStructureExtractionProgress";
 import { CodexEntityProposalReview } from "./CodexEntityProposalReview";
 import { CodexRelationProposalReview } from "./CodexRelationProposalReview";
+import { CodexStatePhaseReview } from "./extraction-ui/CodexStatePhaseReview";
 import { useCodexStructureExtractionStore } from "./codexStructureExtractionStore";
 import {
   applyCodexStructureExtractionReview,
@@ -64,7 +65,9 @@ export function CodexStructureExtractDialog({
   const [analyzing, setAnalyzing] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reviewTab, setReviewTab] = useState<"entity" | "relation">("entity");
+  const [reviewTab, setReviewTab] = useState<"entity" | "relation" | "states">(
+    "entity",
+  );
   const generationRef = useRef(0);
 
   useEffect(() => {
@@ -309,11 +312,28 @@ export function CodexStructureExtractDialog({
                 >
                   Relation ({projection.relationCount})
                 </button>
+                <button
+                  type="button"
+                  className={`rounded px-2 py-1 text-xs ${
+                    reviewTab === "states"
+                      ? "bg-accent font-medium"
+                      : "text-muted-foreground hover:bg-accent/50"
+                  }`}
+                  onClick={() => setReviewTab("states")}
+                  data-testid="codex-structure-tab-states"
+                >
+                  States & Phases (
+                  {(projection.baseDetailCount ?? 0) +
+                    (projection.phaseCount ?? 0)}
+                  )
+                </button>
               </div>
               {reviewTab === "entity" ? (
-                <CodexEntityProposalReview />
+                <CodexEntityProposalReview boundToStore />
+              ) : reviewTab === "relation" ? (
+                <CodexRelationProposalReview boundToStore />
               ) : (
-                <CodexRelationProposalReview />
+                <CodexStatePhaseReview boundToStore />
               )}
             </>
           )}

@@ -15,6 +15,10 @@ use crate::codex_relation_keys::{
     build_codex_relation_semantic_key, normalize_relation_label,
 };
 
+use super::detail_operations::OP_KIND_DETAIL_VALUE_SET;
+use super::phase_operations::{OP_KIND_PHASE_CREATE, OP_KIND_PHASE_PATCH};
+use super::semantic_bindings::OP_KIND_SEMANTIC_BINDING_UPSERT;
+
 pub(crate) const OP_KIND_EVENT_CREATE: &str = "chronicle.event.create";
 pub(crate) const OP_KIND_ENTRY_CREATE: &str = "codex.entry.create";
 pub(crate) const OP_KIND_ENTRY_PATCH: &str = "codex.entry.patch";
@@ -183,6 +187,10 @@ pub(crate) fn ensure_operation_kind(kind: &str) -> anyhow::Result<()> {
                 | OP_KIND_ENTRY_PATCH
                 | OP_KIND_ENTITY_BIND_EXISTING
                 | OP_KIND_RELATION_CREATE
+                | OP_KIND_DETAIL_VALUE_SET
+                | OP_KIND_PHASE_CREATE
+                | OP_KIND_PHASE_PATCH
+                | OP_KIND_SEMANTIC_BINDING_UPSERT
         ),
         "unsupported commit operation kind: {kind}"
     );

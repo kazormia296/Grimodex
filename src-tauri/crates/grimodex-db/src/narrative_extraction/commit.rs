@@ -19,6 +19,17 @@ use super::codex_operations::{
     CommitMap, OP_KIND_ENTITY_BIND_EXISTING, OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH,
     OP_KIND_EVENT_CREATE, OP_KIND_RELATION_CREATE,
 };
+use super::detail_operations::{
+    apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
+};
+use super::phase_operations::{
+    apply_phase_create_in_tx, apply_phase_patch_in_tx, parse_phase_create_payload,
+    parse_phase_patch_payload, OP_KIND_PHASE_CREATE, OP_KIND_PHASE_PATCH,
+};
+use super::semantic_bindings::{
+    apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
+    OP_KIND_SEMANTIC_BINDING_UPSERT,
+};
 use super::models::{
     ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
     GetCommitStatusPayload, PrepareCommitPayload,
@@ -272,6 +283,77 @@ pub fn narrative_extraction_apply_commit(
                                 result.after_snapshot,
                                 None,
                                 "create",
+                            )
+                        }
+                        OP_KIND_DETAIL_VALUE_SET => {
+                            let detail_payload = parse_detail_value_set_payload(&op.payload)?;
+                            let result = apply_detail_value_set_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &detail_payload,
+                                &commit_map,
+                                &now,
+                            )?;
+                            (
+                                "codex_detail_value",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                result.before_snapshot,
+                                result.op_kind,
+                            )
+                        }
+                        OP_KIND_PHASE_CREATE => {
+                            let phase_payload = parse_phase_create_payload(&op.payload)?;
+                            let result = apply_phase_create_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &phase_payload,
+                                &commit_map,
+                                &now,
+                            )?;
+                            (
+                                "codex_phase",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                result.before_snapshot,
+                                result.op_kind,
+                            )
+                        }
+                        OP_KIND_PHASE_PATCH => {
+                            let phase_payload = parse_phase_patch_payload(&op.payload)?;
+                            let result = apply_phase_patch_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &phase_payload,
+                                &now,
+                            )?;
+                            (
+                                "codex_phase",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                result.before_snapshot,
+                                result.op_kind,
+                            )
+                        }
+                        OP_KIND_SEMANTIC_BINDING_UPSERT => {
+                            let binding_payload =
+                                parse_semantic_binding_upsert_payload(&op.payload)?;
+                            let result = apply_semantic_binding_upsert_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &binding_payload,
+                                &now,
+                            )?;
+                            (
+                                "codex_semantic_binding",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                result.before_snapshot,
+                                result.op_kind,
                             )
                         }
                         other => anyhow::bail!("unsupported commit operation kind: {other}"),
@@ -665,6 +747,46 @@ fn validate_commit_plan(
             }
             OP_KIND_RELATION_CREATE => {
                 let _ = parse_relation_create_payload(&op.payload)?;
+            }
+            OP_KIND_DETAIL_VALUE_SET => {
+                let _ = parse_detail_value_set_payload(&op.payload)?;
+            }
+            OP_KIND_PHASE_CREATE => {
+                let payload = parse_phase_create_payload(&op.payload)?;
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM codex_entry_phases WHERE id = ?1",
+                    params![payload.phase_id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(
+                    exists == 0,
+                    "codex phase '{}' already exists",
+                    payload.phase_id
+                );
+            }
+            OP_KIND_PHASE_PATCH => {
+                let payload = parse_phase_patch_payload(&op.payload)?;
+                let version: Option<i64> = conn
+                    .query_row(
+                        "SELECT version FROM codex_entry_phases WHERE id = ?1",
+                        params![payload.phase_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(version) = version else {
+                    anyhow::bail!("codex phase '{}' not found", payload.phase_id);
+                };
+                if version != payload.base_version {
+                    anyhow::bail!(
+                        "NEX_PHASE_VERSION_MISMATCH: phase '{}' expected version {}, found {}",
+                        payload.phase_id,
+                        payload.base_version,
+                        version
+                    );
+                }
+            }
+            OP_KIND_SEMANTIC_BINDING_UPSERT => {
+                let _ = parse_semantic_binding_upsert_payload(&op.payload)?;
             }
             other => anyhow::bail!("unsupported commit operation kind: {other}"),
         }

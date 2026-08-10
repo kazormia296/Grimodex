@@ -10,6 +10,12 @@ use super::codex_undo::{
     reapply_codex_entry_create_snapshot, reapply_codex_relation_snapshot, restore_codex_entry_patch,
     undo_created_codex_entry,
 };
+use super::phase_undo::{
+    reapply_detail_value_create_snapshot, reapply_phase_create_snapshot,
+    reapply_semantic_binding_create_snapshot, restore_detail_value_patch, restore_phase_patch,
+    restore_semantic_binding_patch, undo_created_detail_value, undo_created_phase,
+    undo_created_semantic_binding,
+};
 use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
 use super::models::UndoCommitPayload;
 use super::task_leases::with_immediate_transaction;
@@ -272,6 +278,202 @@ fn mutate_commit(
                                 &snapshot,
                                 &now,
                             )?,
+                            "codex_detail_value" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                if op_kind == "patch" {
+                                    let live_version: i64 = conn.query_row(
+                                        "SELECT version FROM codex_detail_values WHERE id = ?1",
+                                        params![entity_id],
+                                        |row| row.get(0),
+                                    )?;
+                                    let value = snapshot.get("value").and_then(Value::as_str);
+                                    let next = live_version
+                                        .checked_add(1)
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!(
+                                                "detail value version overflow during redo"
+                                            )
+                                        })?;
+                                    let updated = conn.execute(
+                                        "UPDATE codex_detail_values
+                                            SET value = ?1,
+                                                version = ?2,
+                                                updated_at = ?3
+                                          WHERE id = ?4 AND version = ?5",
+                                        params![value, next, now, entity_id, live_version],
+                                    )?;
+                                    anyhow::ensure!(
+                                        updated == 1,
+                                        "NEX_COMMIT_DETAIL_EDITED: detail value '{entity_id}' redo conflict"
+                                    );
+                                    next
+                                } else {
+                                    reapply_detail_value_create_snapshot(conn, &snapshot, &now)?
+                                }
+                            }
+                            "codex_phase" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                if op_kind == "patch" {
+                                    let live_version: i64 = conn.query_row(
+                                        "SELECT version FROM codex_entry_phases WHERE id = ?1",
+                                        params![entity_id],
+                                        |row| row.get(0),
+                                    )?;
+                                    let label = snapshot
+                                        .get("label")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let summary =
+                                        snapshot.get("summaryOverride").and_then(Value::as_str);
+                                    let content =
+                                        snapshot.get("contentOverride").and_then(Value::as_str);
+                                    let context_mode = snapshot
+                                        .get("contextModeOverride")
+                                        .and_then(Value::as_str);
+                                    let next = live_version
+                                        .checked_add(1)
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("phase version overflow during redo")
+                                        })?;
+                                    let updated = conn.execute(
+                                        "UPDATE codex_entry_phases
+                                            SET label = ?1,
+                                                summary_override = ?2,
+                                                content_override = ?3,
+                                                context_mode_override = ?4,
+                                                version = ?5,
+                                                updated_at = ?6
+                                          WHERE id = ?7 AND version = ?8",
+                                        params![
+                                            label,
+                                            summary,
+                                            content,
+                                            context_mode,
+                                            next,
+                                            now,
+                                            entity_id,
+                                            live_version
+                                        ],
+                                    )?;
+                                    anyhow::ensure!(
+                                        updated == 1,
+                                        "NEX_COMMIT_PHASE_EDITED: phase '{entity_id}' redo conflict"
+                                    );
+                                    conn.execute(
+                                        "DELETE FROM codex_phase_detail_overrides WHERE phase_id = ?1",
+                                        params![entity_id],
+                                    )?;
+                                    if let Some(overrides) = snapshot
+                                        .get("detailOverrides")
+                                        .and_then(Value::as_array)
+                                    {
+                                        for item in overrides {
+                                            let definition_id = item
+                                                .get("definitionId")
+                                                .and_then(Value::as_str)
+                                                .ok_or_else(|| {
+                                                    anyhow::anyhow!("override missing definitionId")
+                                                })?;
+                                            let value = item.get("value").and_then(Value::as_str);
+                                            conn.execute(
+                                                "INSERT INTO codex_phase_detail_overrides
+                                                    (phase_id, definition_id, value)
+                                                 VALUES (?1, ?2, ?3)",
+                                                params![entity_id, definition_id, value],
+                                            )?;
+                                        }
+                                    }
+                                    next
+                                } else {
+                                    reapply_phase_create_snapshot(conn, &snapshot, &now)?
+                                }
+                            }
+                            "codex_semantic_binding" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                if op_kind == "patch" {
+                                    let live_version: i64 = conn.query_row(
+                                        "SELECT version FROM codex_detail_semantic_bindings WHERE id = ?1",
+                                        params![entity_id],
+                                        |row| row.get(0),
+                                    )?;
+                                    let definition_id = snapshot
+                                        .get("definitionId")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let facet_key = snapshot
+                                        .get("facetKey")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let projection_kind = snapshot
+                                        .get("projectionKind")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("scalar-text");
+                                    let temporal_policy = snapshot
+                                        .get("temporalPolicy")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("base-only");
+                                    let source = snapshot
+                                        .get("source")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("reviewed-ai");
+                                    let confirmed = snapshot
+                                        .get("confirmed")
+                                        .and_then(Value::as_i64)
+                                        .unwrap_or(0);
+                                    let next = live_version
+                                        .checked_add(1)
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!(
+                                                "semantic binding version overflow during redo"
+                                            )
+                                        })?;
+                                    let updated = conn.execute(
+                                        "UPDATE codex_detail_semantic_bindings
+                                            SET definition_id = ?1,
+                                                facet_key = ?2,
+                                                projection_kind = ?3,
+                                                temporal_policy = ?4,
+                                                source = ?5,
+                                                confirmed = ?6,
+                                                version = ?7,
+                                                updated_at = ?8
+                                          WHERE id = ?9 AND version = ?10",
+                                        params![
+                                            definition_id,
+                                            facet_key,
+                                            projection_kind,
+                                            temporal_policy,
+                                            source,
+                                            confirmed,
+                                            next,
+                                            now,
+                                            entity_id,
+                                            live_version
+                                        ],
+                                    )?;
+                                    anyhow::ensure!(
+                                        updated == 1,
+                                        "NEX_COMMIT_BINDING_EDITED: binding '{entity_id}' redo conflict"
+                                    );
+                                    next
+                                } else {
+                                    reapply_semantic_binding_create_snapshot(
+                                        conn,
+                                        &payload.project_id,
+                                        &snapshot,
+                                        &now,
+                                    )?
+                                }
+                            }
                             other => anyhow::bail!("unsupported journal entity kind '{other}'"),
                         };
 
@@ -386,6 +588,62 @@ fn preflight_undo_entity(
             {
                 anyhow::bail!(
                     "NEX_COMMIT_RELATION_EDITED: relation '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        "codex_detail_value" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(1);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM codex_detail_values WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_DETAIL_EDITED: detail value '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        "codex_phase" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM codex_entry_phases WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_PHASE_EDITED: phase '{entity_id}' was modified after commit"
+                );
+            }
+            // Sticky / authorship preflight for create undo.
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "create" {
+                super::phase_undo::ensure_no_external_phase_dependencies(conn, entity_id)?;
+            }
+        }
+        "codex_semantic_binding" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM codex_detail_semantic_bindings WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_BINDING_EDITED: semantic binding '{entity_id}' was modified after commit"
                 );
             }
         }
@@ -506,6 +764,95 @@ fn undo_one_entity(
                     .and_then(Value::as_i64)
                     .ok_or_else(|| anyhow::anyhow!("journal create missing version"))?;
                 undo_created_codex_entry(conn, project_id, entity_id, expected_version)?;
+            }
+        }
+        "codex_detail_value" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let before = entity
+                    .get("beforeSnapshot")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("detail patch journal missing beforeSnapshot"))?;
+                let expected_after_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1);
+                restore_detail_value_patch(
+                    conn,
+                    entity_id,
+                    &before,
+                    expected_after_version,
+                    now,
+                )?;
+            } else {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1);
+                undo_created_detail_value(conn, entity_id, expected_version)?;
+            }
+        }
+        "codex_phase" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let before = entity
+                    .get("beforeSnapshot")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("phase patch journal missing beforeSnapshot"))?;
+                let expected_after_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                restore_phase_patch(
+                    conn,
+                    entity_id,
+                    &before,
+                    expected_after_version,
+                    now,
+                )?;
+            } else {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                undo_created_phase(conn, entity_id, expected_version)?;
+            }
+        }
+        "codex_semantic_binding" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let before = entity
+                    .get("beforeSnapshot")
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("binding patch journal missing beforeSnapshot")
+                    })?;
+                let expected_after_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                restore_semantic_binding_patch(
+                    conn,
+                    entity_id,
+                    &before,
+                    expected_after_version,
+                    now,
+                )?;
+            } else {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                undo_created_semantic_binding(conn, entity_id, expected_version)?;
             }
         }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),

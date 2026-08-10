@@ -5,8 +5,13 @@ mod codex_operations;
 mod codex_snapshots;
 mod codex_undo;
 mod commit;
+mod detail_operations;
 mod models;
+mod phase_operations;
+mod phase_snapshots;
+mod phase_undo;
 mod repository;
+mod semantic_bindings;
 mod task_leases;
 mod undo;
 
