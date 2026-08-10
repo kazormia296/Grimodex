@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AppError, AppResult};
+use crate::workspace_lease::WorkspaceLease;
 use crate::Database;
 
 /// Holds the currently-open workspace's DB.
@@ -18,9 +19,13 @@ use crate::Database;
 /// コマンドは pre-swap で clone した Arc (旧 DB) に着弾するので、新 DB への
 /// 混入は起きない (open_workspace の swap 不変条件と両立)。実際の DB 直列化は
 /// Database 内部の conn: Mutex<Connection> が引き続き担う。
+///
+/// `lease` は cross-process shared file lock。Authority が生きている間は保持し、
+/// migration / restore の exclusive 取得前に DB handle と一緒に解放する。
 pub struct ActiveWorkspace {
     pub db: Arc<Database>,
     pub path: PathBuf,
+    pub lease: Arc<WorkspaceLease>,
 }
 
 pub struct WorkspaceState {
@@ -128,11 +133,20 @@ mod tests {
     use std::path::Path;
 
     fn workspace_state_with_db() -> WorkspaceState {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-state-test-ws-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).expect("create test workspace");
+        let lease = Arc::new(
+            crate::workspace_lease::try_acquire_shared(&path).expect("test shared lease"),
+        );
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace {
                 db: Arc::new(db),
-                path: PathBuf::from("/tmp/test-ws"),
+                path,
+                lease,
             })),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
@@ -227,9 +241,12 @@ mod tests {
     #[test]
     fn active_workspace_path_returns_the_pinned_directory() {
         let state = workspace_state_with_db();
+        let expected = active_workspace_snapshot(&state)
+            .expect("snapshot")
+            .path;
         assert_eq!(
             active_workspace_path(&state).expect("workspace path"),
-            PathBuf::from("/tmp/test-ws")
+            expected
         );
     }
 
@@ -247,14 +264,25 @@ mod tests {
     fn active_workspace_snapshot_pins_database_and_path_from_one_workspace() {
         let state = workspace_state_with_db();
         let snapshot = active_workspace_snapshot(&state).expect("workspace snapshot");
+        let original_path = snapshot.path.clone();
 
+        let replacement_path = std::env::temp_dir().join(format!(
+            "grimodex-state-replacement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&replacement_path).expect("create replacement workspace");
+        let replacement_lease = Arc::new(
+            crate::workspace_lease::try_acquire_shared(&replacement_path)
+                .expect("replacement lease"),
+        );
         let replacement = Database::new(Path::new(":memory:")).expect("replacement db");
         *state.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
             db: Arc::new(replacement),
-            path: PathBuf::from("/tmp/replacement-ws"),
+            path: replacement_path,
+            lease: replacement_lease,
         });
 
-        assert_eq!(snapshot.path, PathBuf::from("/tmp/test-ws"));
+        assert_eq!(snapshot.path, original_path);
         assert!(!Arc::ptr_eq(
             &snapshot.db,
             &active_workspace_snapshot(&state)

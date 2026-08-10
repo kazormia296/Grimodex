@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::error::{AppError, AppResult};
 use crate::open::{claim_workspace_maintenance_exclusive, SwitchingGuard};
 use crate::state::{ActiveWorkspace, WorkspaceState};
+use crate::workspace_lease;
 use crate::Database;
 
 /// One restore candidate under `<workspace>/backups`.
@@ -173,12 +174,24 @@ pub fn restore_backup_core(
         }
     }
 
-    // Drop the last Database owner so Windows releases the live file handle.
+    // Drop the last Database owner so Windows releases the live file handle,
+    // and release the shared workspace lease before exclusive replace work.
     drop(old);
+
+    let exclusive_lease = workspace_lease::acquire_exclusive_for_migration(&ws_path)
+        .map_err(|error| {
+            abort_after_detach(
+                ws_state,
+                &db_path,
+                &ws_path,
+                anyhow::anyhow!("復元用 exclusive lease を取得できませんでした: {error}"),
+            )
+        })?;
 
     // A stale WAL can replay frames from the old DB into the restored main
     // file. Failure to remove either sidecar is therefore fatal, not a warning.
     if let Err(error) = remove_db_sidecars(&db_path) {
+        drop(exclusive_lease);
         return Err(abort_after_detach(
             ws_state,
             &db_path,
@@ -193,6 +206,7 @@ pub fn restore_backup_core(
     let (rollback_path, mut rollback_output) = match create_unique_sidecar(&db_path, "rollback") {
         Ok(created) => created,
         Err(error) => {
+            drop(exclusive_lease);
             return Err(abort_after_detach(
                 ws_state,
                 &db_path,
@@ -204,6 +218,7 @@ pub fn restore_backup_core(
     let mut rollback_cleanup = CleanupPath::new(rollback_path.clone());
     if let Err(error) = copy_path_into(&db_path, &mut rollback_output) {
         drop(rollback_output);
+        drop(exclusive_lease);
         return Err(abort_after_detach(
             ws_state,
             &db_path,
@@ -213,6 +228,7 @@ pub fn restore_backup_core(
     }
     if let Err(error) = rollback_output.sync_all() {
         drop(rollback_output);
+        drop(exclusive_lease);
         return Err(abort_after_detach(
             ws_state,
             &db_path,
@@ -224,6 +240,7 @@ pub fn restore_backup_core(
 
     if let Err(error) = atomic_replace(&staged_plain, &db_path) {
         let primary = anyhow::anyhow!("復元DBの適用に失敗しました: {error}");
+        drop(exclusive_lease);
         if let Err(reactivate_error) = reactivate_workspace(ws_state, &db_path, &ws_path) {
             rollback_cleanup.disarm();
             return Err(anyhow::anyhow!(
@@ -241,11 +258,7 @@ pub fn restore_backup_core(
                 tracing::warn!("restore: fts rebuild after restore failed: {error}");
             }
             on_reopened();
-            let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-            *inner = Some(ActiveWorkspace {
-                db: Arc::new(database),
-                path: ws_path,
-            });
+            publish_active_workspace(ws_state, database, ws_path, exclusive_lease)?;
             Ok(())
         }
         Err(restore_error) => {
@@ -253,6 +266,7 @@ pub fn restore_backup_core(
             // They must not be replayed into the original DB during rollback.
             if let Err(sidecar_error) = remove_db_sidecars(&db_path) {
                 rollback_cleanup.disarm();
+                drop(exclusive_lease);
                 return Err(anyhow::anyhow!(
                     "RESTORE_SESSION_LOST: 復元DBを再オープンできず、sidecar削除にも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error}; sidecar={sidecar_error}"
                 )
@@ -264,27 +278,29 @@ pub fn restore_backup_core(
                     rollback_cleanup.disarm();
                     match open_active(&db_path) {
                         Ok(database) => {
-                            let mut inner = ws_state
-                                .inner
-                                .lock()
-                                .map_err(|e| anyhow::anyhow!("{e}"))?;
-                            *inner = Some(ActiveWorkspace {
-                                db: Arc::new(database),
-                                path: ws_path,
-                            });
+                            publish_active_workspace(
+                                ws_state,
+                                database,
+                                ws_path,
+                                exclusive_lease,
+                            )?;
                             Err(anyhow::anyhow!(
                                 "復元DBを再オープンできなかったため元のDBへ戻しました: {restore_error}"
                             )
                             .into())
                         }
-                        Err(reactivate_error) => Err(anyhow::anyhow!(
-                            "RESTORE_SESSION_LOST: 復元DBの適用失敗後、元のDBも再オープンできませんでした: restore={restore_error}; rollback={reactivate_error}"
-                        )
-                        .into()),
+                        Err(reactivate_error) => {
+                            drop(exclusive_lease);
+                            Err(anyhow::anyhow!(
+                                "RESTORE_SESSION_LOST: 復元DBの適用失敗後、元のDBも再オープンできませんでした: restore={restore_error}; rollback={reactivate_error}"
+                            )
+                            .into())
+                        }
                     }
                 }
                 Err(rollback_error) => {
                     rollback_cleanup.disarm();
+                    drop(exclusive_lease);
                     Err(anyhow::anyhow!(
                         "RESTORE_SESSION_LOST: 復元DBを再オープンできず、元のDBへのロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error}; rollback={rollback_error}"
                     )
@@ -293,6 +309,26 @@ pub fn restore_backup_core(
             }
         }
     }
+}
+
+fn publish_active_workspace(
+    ws_state: &WorkspaceState,
+    database: Database,
+    ws_path: PathBuf,
+    exclusive: workspace_lease::WorkspaceLease,
+) -> AppResult<()> {
+    drop(exclusive);
+    let lease = Arc::new(
+        workspace_lease::try_acquire_shared(&ws_path)
+            .map_err(|error| anyhow::anyhow!("workspace shared lease after restore: {error}"))?,
+    );
+    let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    *inner = Some(ActiveWorkspace {
+        db: Arc::new(database),
+        path: ws_path,
+        lease,
+    });
+    Ok(())
 }
 
 fn open_active(db_path: &Path) -> anyhow::Result<Database> {
@@ -310,10 +346,12 @@ fn reactivate_workspace(
     ws_path: &Path,
 ) -> anyhow::Result<()> {
     let database = open_active(db_path)?;
+    let lease = Arc::new(workspace_lease::try_acquire_shared(ws_path)?);
     let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     *inner = Some(ActiveWorkspace {
         db: Arc::new(database),
         path: ws_path.to_path_buf(),
+        lease,
     });
     Ok(())
 }
@@ -546,7 +584,7 @@ fn verify_sqlite_ok(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn wait_for_sole_owner(db: &Arc<Database>) -> AppResult<()> {
+pub(crate) fn wait_for_sole_owner(db: &Arc<Database>) -> AppResult<()> {
     for _ in 0..1000 {
         if Arc::strong_count(db) == 1 {
             return Ok(());
@@ -578,10 +616,14 @@ mod tests {
         std::fs::create_dir_all(dir.join("backups")).expect("create fixture");
         let db = Database::new(&dir.join("grimodex.db")).expect("open fixture db");
         db.migrate().expect("migrate fixture db");
+        let lease = Arc::new(
+            crate::workspace_lease::try_acquire_shared(&dir).expect("fixture shared lease"),
+        );
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace {
                 db: Arc::new(db),
                 path: dir.clone(),
+                lease,
             })),
             switching: AtomicBool::new(false),
             open_lock: std::sync::Mutex::new(()),

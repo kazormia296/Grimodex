@@ -5280,9 +5280,14 @@ mod ime_workspace_tests {
         let workspace_path = dir.join("workspace-a");
         std::fs::create_dir_all(&workspace_path).expect("workspace dir");
         let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        let lease = Arc::new(
+            grimodex_db::workspace_lease::try_acquire_shared(&workspace_path)
+                .expect("shared lease"),
+        );
         *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
             db: Arc::new(db),
             path: workspace_path.clone(),
+            lease,
         });
         let options = ImeExportOptions {
             mode: ImeIntegrationMode::On,
@@ -5324,9 +5329,14 @@ mod ime_workspace_tests {
         let nested = workspace_path.join("nested");
         std::fs::create_dir_all(&nested).expect("workspace dirs");
         let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        let lease = Arc::new(
+            grimodex_db::workspace_lease::try_acquire_shared(&workspace_path)
+                .expect("shared lease"),
+        );
         *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
             db: Arc::new(db),
             path: workspace_path.clone(),
+            lease,
         });
         let snapshot = active_workspace_snapshot(&state.ws).expect("workspace snapshot");
         let equivalent_but_noncanonical = nested.join("..");
@@ -5421,9 +5431,14 @@ mod semantic_reranker_lane_tests {
         let resources = dir.join("missing-semantic-resources");
         let state =
             AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
+        let lease = Arc::new(
+            grimodex_db::workspace_lease::try_acquire_shared(&workspace_path)
+                .expect("shared lease"),
+        );
         *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
             db: Arc::clone(&database),
             path: workspace_path,
+            lease,
         });
         let backend = Backend {
             state: Arc::new(state),

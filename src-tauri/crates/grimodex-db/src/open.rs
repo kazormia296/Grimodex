@@ -636,6 +636,50 @@ fn is_system_directory(path: &Path) -> bool {
 /// `backup_restore::restore_backup_core` も同じガードを使う。
 pub struct SwitchingGuard<'a>(pub &'a std::sync::atomic::AtomicBool);
 
+/// Drop the in-process ActiveWorkspace for `ws_path` (if any) so exclusive
+/// migration / restore can acquire the cross-process file lease and so no live
+/// SQLite handle survives an atomic replace of that path.
+fn quiesce_active_workspace_if_same_path(
+    ws_state: &WorkspaceState,
+    ws_path: &Path,
+) -> Result<(), AppError> {
+    let old = {
+        let mut inner = ws_state
+            .inner
+            .lock()
+            .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+        match inner.as_ref() {
+            Some(active) if paths_equal_for_workspace(&active.path, ws_path) => inner.take(),
+            _ => None,
+        }
+    };
+    let Some(old) = old else {
+        return Ok(());
+    };
+    if let Err(error) = crate::backup_restore::wait_for_sole_owner(&old.db) {
+        // Put the authority back — exclusive migration must not proceed while
+        // another in-process handle still owns the live DB.
+        let mut inner = ws_state
+            .inner
+            .lock()
+            .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+        *inner = Some(old);
+        return Err(error);
+    }
+    drop(old);
+    Ok(())
+}
+
+fn paths_equal_for_workspace(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 impl Drop for SwitchingGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -710,6 +754,14 @@ fn open_workspace_sync_impl(
             Ok::<_, AppError>((ws_path, is_existing, workspace_meta))
         })?;
 
+    // Same-path reopen: quiesce the live authority (DB handle + shared lease)
+    // before the supervisor may take an exclusive migration lease. Otherwise the
+    // process would hold its own shared lock forever and block upgrades, or keep
+    // writing to a pre-replace inode after a successful shadow migration.
+    trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
+        quiesce_active_workspace_if_same_path(ws_state, &ws_path)
+    })?;
+
     // Open database via transactional migration supervisor (Release Gate A).
     // Schema upgrades never run DDL on the live grimodex.db; they shadow-migrate
     // a staged copy and atomically replace under an exclusive workspace lease.
@@ -717,25 +769,20 @@ fn open_workspace_sync_impl(
     let _ = db_path; // reserved for future open-span attribution / diagnostics
     let maintenance_workspace_path = ws_path.clone();
     let maintenance_settings_path = gs_path.path.clone();
-    let (database, migration_info) =
+    let (opened, migration_info) =
         trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
             crate::migration_supervisor::prepare_database_for_open(&ws_path)
         })?;
     if let Some(info) = migration_info.as_ref() {
-        if info.recovered {
-            tracing::warn!(
-                "workspace migration recovered to previous DB: {:?}",
-                info.error_code
-            );
-        } else {
-            tracing::info!(
-                "workspace migrated schema {} -> {} (receipt={})",
-                info.from_schema,
-                info.to_schema,
-                info.receipt_path
-            );
-        }
+        tracing::info!(
+            "workspace migrated schema {} -> {} (receipt={})",
+            info.from_schema,
+            info.to_schema,
+            info.receipt_path
+        );
     }
+    let database = opened.database;
+    let workspace_lease = std::sync::Arc::new(opened.lease);
     if let Err(error) = trace.record_result(NativeWorkspaceOpenSpanName::Optimize, || {
         database.optimize_without_wait()
     }) {
@@ -776,6 +823,7 @@ fn open_workspace_sync_impl(
     *inner = Some(ActiveWorkspace {
         db: database,
         path: ws_path,
+        lease: workspace_lease,
     });
     // Shell swap hooks may wait for other subsystem writers (IME snapshot
     // barrier, semantic epoch rotation). Do not retain the workspace mutex
@@ -1174,10 +1222,14 @@ mod tests {
             .expect("seed maintenance fixture");
         let previous_weak = Arc::downgrade(&previous_database);
 
+        let previous_lease = Arc::new(
+            crate::workspace_lease::try_acquire_shared(&ws_dir).expect("previous shared lease"),
+        );
         let ws_state = Arc::new(WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace {
                 db: previous_database,
                 path: ws_dir.clone(),
+                lease: previous_lease,
             })),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),

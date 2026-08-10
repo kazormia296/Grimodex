@@ -79,6 +79,19 @@ pub fn is_converged_v2_workspace_schema(conn: &Connection) -> anyhow::Result<boo
     has_v3_checkpoint_invariants(conn)
 }
 
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Schema PRs must update this function (or the helpers it
+/// calls) when they introduce new tables / indexes that the open fast path must
+/// prove before skipping shadow migration.
+///
+/// On SCHEMA 3 this is exactly [`has_v3_checkpoint_invariants`]. Later restacks
+/// layer v4 / v5 / … checks here so Gate A never hard-codes a stale checkpoint.
+pub fn has_current_schema_checkpoint_invariants(
+    conn: &Connection,
+) -> anyhow::Result<bool> {
+    has_v3_checkpoint_invariants(conn)
+}
+
 /// Whether the physical schema and data repairs introduced after v2 satisfy
 /// the checkpoint represented by schema version 3.
 ///

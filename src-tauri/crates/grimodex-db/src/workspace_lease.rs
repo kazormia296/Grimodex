@@ -44,6 +44,7 @@ fn open_lock_file(workspace: &Path) -> io::Result<File> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(lock_path(workspace))
 }
 

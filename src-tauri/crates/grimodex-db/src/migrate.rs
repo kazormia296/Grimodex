@@ -14,6 +14,15 @@ impl Database {
         self.migrate_impl(false)
     }
 
+    /// Open-time operational recovery for a DB that already satisfies the
+    /// current schema checkpoint. Must not run schema DDL — Gate A requires
+    /// upgrades to go through the shadow migration supervisor instead.
+    pub(crate) fn recover_open_time_state_without_schema_ddl(&self) -> anyhow::Result<()> {
+        let conn = self.lock_conn()?;
+        Self::recover_interrupted_post_effect_runs(&conn)?;
+        Ok(())
+    }
+
     /// Restore preflight operates on a disposable copy and must retain the
     /// historical full idempotent migration as its schema-compatibility probe.
     /// Normal workspace open uses `migrate()` so current schemas stay on the

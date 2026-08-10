@@ -736,7 +736,7 @@ let cachedVersion: string | null = null;
  * リポジトリルートの package.json（Electron版バージョンの唯一の正本）へフォールバックする。
  * パッケージ配布（Phase 4）では app.getVersion() がそのまま正になる。
  */
-function resolveAppVersion(): string {
+export function resolveAppVersion(): string {
   if (cachedVersion !== null) return cachedVersion;
   let version = app.getVersion();
   if (!app.isPackaged && version === "0.0") {
