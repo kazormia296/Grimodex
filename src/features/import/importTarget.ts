@@ -14,6 +14,11 @@ export function defaultImportTarget(
   return "newProject";
 }
 
+/** Opt-in flag for the new import session wizard pipeline. */
+export function isNewImportSessionPipelinePreferred(): boolean {
+  return import.meta.env.VITE_GRIMODEX_IMPORT_SESSION_PIPELINE === "new";
+}
+
 export interface PrepareImportTargetMeta {
   title: string;
   genre?: string;

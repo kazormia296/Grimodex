@@ -483,13 +483,9 @@ pub fn has_v11_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     )
 }
 
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 12 adds Foreshadow Setup/Payoff aggregate tables
-/// with root OCC on top of every v11 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 12 || !has_v3_physical_invariants(conn)? {
-        return Ok(false);
-    }
+/// SCHEMA 12 checkpoint: Foreshadow Setup/Payoff aggregate tables with root OCC
+/// on top of every v11 invariant.
+pub fn has_v12_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     if !has_v11_checkpoint_invariants(conn)? {
         return Ok(false);
     }
@@ -551,6 +547,35 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
             .all(|name| links.iter().any(|column| column.name == *name)),
     )
 }
+
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 13 adds Import Session persistence on top of
+/// every v12 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 13 || !has_v3_physical_invariants(conn)? {
+        return Ok(false);
+    }
+    if !has_v12_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "import_sessions")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "import_sessions")?;
+    Ok([
+        "id",
+        "state",
+        "target_json",
+        "extraction_run_ids_json",
+        "proposal_set_ids_json",
+        "version",
+        "created_at",
+        "updated_at",
+    ]
+    .iter()
+    .all(|name| columns.iter().any(|column| column.name == *name)))
+}
+
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
     columns.iter().any(|column| {
