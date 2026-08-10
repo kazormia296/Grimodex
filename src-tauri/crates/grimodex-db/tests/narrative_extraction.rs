@@ -1983,3 +1983,124 @@ fn distinct_client_proposal_ids_persist_across_consecutive_runs() {
         "22222222-2222-4222-8222-222222222222"
     );
 }
+
+fn seed_deferred_proposal_with_decision(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    proposal_id: &str,
+    decision_json: Value,
+) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create run");
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(proposal_set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: format!("{proposal_id}-key"),
+                kind: "chronicle.event.create@1".to_string(),
+                payload_json: json!({ "title": "Deferred proposal" }),
+            }],
+        },
+    )
+    .expect("save proposal set");
+
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    narrative_extraction::narrative_extraction_append_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.to_string(),
+            revision_id,
+            decision: "deferred".to_string(),
+            decision_json: Some(decision_json),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("defer");
+}
+
+#[test]
+fn list_resumable_runs_excludes_already_satisfied_deferred_only() {
+    let db = migrated_db();
+
+    seed_deferred_proposal_with_decision(
+        &db,
+        "run-deferred-satisfied",
+        "set-deferred-satisfied",
+        "prop-deferred-satisfied",
+        json!({ "reason": "already-satisfied" }),
+    );
+    db.execute(
+        "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+        &[Value::String("run-deferred-satisfied".to_string())],
+        "run",
+    )
+    .expect("mark completed");
+
+    seed_deferred_proposal_with_decision(
+        &db,
+        "run-deferred-open",
+        "set-deferred-open",
+        "prop-deferred-open",
+        json!({ "reason": "needs-more-context" }),
+    );
+    db.execute(
+        "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+        &[Value::String("run-deferred-open".to_string())],
+        "run",
+    )
+    .expect("mark completed");
+
+    let listed = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("list");
+    let ids: Vec<&str> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["runId"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        !ids.contains(&"run-deferred-satisfied"),
+        "already-satisfied deferred alone must not keep run resumable"
+    );
+    assert!(
+        ids.contains(&"run-deferred-open"),
+        "deferred without already-satisfied must remain resumable"
+    );
+}

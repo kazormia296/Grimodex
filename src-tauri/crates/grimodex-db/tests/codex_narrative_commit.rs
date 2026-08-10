@@ -1,6 +1,7 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, EntityBindingSeed, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
+    CreateRunPayload, EntityBindingSeed, ListResumableRunsPayload, PrepareCommitPayload,
+    ProposalSeed, ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -162,6 +163,68 @@ fn build_apply(
         expected_tail_ordinal: None,
         entity_bindings,
     }
+}
+
+fn codex_review_envelope(review_payload: Value, kind: &str, operation_payload: Value) -> Value {
+    json!({
+        "version": 1,
+        "reviewPayload": review_payload,
+        "compiledOperation": {
+            "kind": kind,
+            "payload": operation_payload
+        }
+    })
+}
+
+fn seed_single_codex_proposal(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    proposal_id: &str,
+    kind: &str,
+    payload: Value,
+) -> (String, String) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "codex.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "codex" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create run");
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(proposal_set_id.to_string()),
+            set_kind: "codex.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: format!("{proposal_id}-key"),
+                kind: kind.to_string(),
+                payload_json: payload,
+            }],
+        },
+    )
+    .expect("save proposal set");
+
+    let proposal = &saved["proposals"][0];
+    (
+        proposal["proposalId"].as_str().unwrap().to_string(),
+        proposal["revisionId"].as_str().unwrap().to_string(),
+    )
 }
 
 fn ops_from_pairs(
@@ -831,4 +894,250 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
     )
     .expect("final undo after redo cycles");
     assert_eq!(undone_final["status"], "undone");
+}
+
+#[test]
+fn envelope_revise_and_decide_prepare_apply_succeeds() {
+    let db = migrated_db();
+    let initial_payload = entry_create("entry-env", "Envelope Hero", "ent:env");
+    let (proposal_id, rev1) = seed_single_codex_proposal(
+        &db,
+        "run-env-apply",
+        "set-env-apply",
+        "prop-env-apply",
+        "codex.entry.create",
+        initial_payload.clone(),
+    );
+
+    let compiled_payload = entry_create("entry-env", "Envelope Hero", "ent:env");
+    let envelope = codex_review_envelope(
+        json!({ "editorNotes": "approved via envelope" }),
+        "codex.entry.create",
+        compiled_payload.clone(),
+    );
+
+    let revised = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-env-apply".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: envelope,
+            expected_current_revision_id: rev1,
+            decision: "approved".to_string(),
+            decision_json: Some(json!({ "source": "envelope-test" })),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("revise and decide");
+    let revision_id = revised["revisionId"].as_str().unwrap().to_string();
+    assert_eq!(revised["decision"], "approved");
+
+    let ops = vec![(
+        proposal_id.clone(),
+        revision_id.clone(),
+        "codex.entry.create".to_string(),
+        compiled_payload,
+    )];
+    let apply_payload = build_apply(
+        "req-env-apply",
+        "digest-env-apply",
+        "set-env-apply",
+        "run-env-apply",
+        ops,
+        vec![],
+    );
+
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        PrepareCommitPayload {
+            project_id: apply_payload.project_id.clone(),
+            run_id: apply_payload.run_id.clone(),
+            proposal_set_id: apply_payload.proposal_set_id.clone(),
+            request_id: apply_payload.request_id.clone(),
+            plan_digest: apply_payload.plan_digest.clone(),
+            session_id: apply_payload.session_id.clone(),
+            surface: apply_payload.surface.clone(),
+            operations: apply_payload.operations.clone(),
+            applications: apply_payload.applications.clone(),
+            expected_tail_ordinal: None,
+            entity_bindings: vec![],
+        },
+    )
+    .expect("prepare");
+    assert_eq!(prepared["ok"], true);
+
+    let applied =
+        narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload).expect("apply");
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["created"].as_array().unwrap().len(), 1);
+    assert_eq!(applied["created"][0]["entityId"], "entry-env");
+
+    let entry_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM codex_entries WHERE id = 'entry-env'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(entry_count, 1);
+}
+
+#[test]
+fn envelope_revision_rejects_operation_payload_mismatch() {
+    let db = migrated_db();
+    let initial_payload = entry_create("entry-mismatch-env", "Seed", "ent:mismatch-env");
+    let (proposal_id, rev1) = seed_single_codex_proposal(
+        &db,
+        "run-env-mismatch",
+        "set-env-mismatch",
+        "prop-env-mismatch",
+        "codex.entry.create",
+        initial_payload,
+    );
+
+    let compiled_payload = entry_create("entry-mismatch-env", "Compiled", "ent:mismatch-env");
+    let envelope = codex_review_envelope(
+        json!({ "note": "stored compiled payload" }),
+        "codex.entry.create",
+        compiled_payload,
+    );
+
+    let revised = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-env-mismatch".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: envelope,
+            expected_current_revision_id: rev1,
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("revise and decide");
+    let revision_id = revised["revisionId"].as_str().unwrap().to_string();
+
+    let mismatched_ops = vec![(
+        proposal_id,
+        revision_id,
+        "codex.entry.create".to_string(),
+        entry_create("entry-mismatch-env", "Different", "ent:mismatch-env"),
+    )];
+    let err = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-env-mismatch",
+            "digest-env-mismatch",
+            "set-env-mismatch",
+            "run-env-mismatch",
+            mismatched_ops,
+            vec![],
+        ),
+    )
+    .expect_err("envelope vs operation payload mismatch");
+    assert!(
+        err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn partial_apply_review_bundle_and_resumable_runs() {
+    let db = migrated_db();
+    let items = [
+        (
+            "codex.entry.create",
+            entry_create("entry-partial-a", "Alice", "ent:partial-a"),
+        ),
+        (
+            "codex.entry.create",
+            entry_create("entry-partial-b", "Bob", "ent:partial-b"),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-partial", "set-partial", &items);
+    let proposal_a = pairs[0].0.clone();
+    let proposal_b = pairs[1].0.clone();
+
+    let applied_a = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-partial-a",
+            "digest-partial-a",
+            "set-partial",
+            "run-partial",
+            ops_from_pairs(&pairs[0..1], &items[0..1]),
+            vec![],
+        ),
+    )
+    .expect("apply A");
+    assert_eq!(applied_a["status"], "applied");
+
+    let bundle = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: "run-partial".to_string(),
+            project_id: "project-1".to_string(),
+        },
+    )
+    .expect("review bundle");
+
+    let proposals = bundle["proposals"].as_array().expect("proposals");
+    assert_eq!(proposals.len(), 2);
+
+    let row_a = proposals
+        .iter()
+        .find(|row| row["proposalId"] == proposal_a)
+        .expect("proposal A");
+    let row_b = proposals
+        .iter()
+        .find(|row| row["proposalId"] == proposal_b)
+        .expect("proposal B");
+
+    assert!(row_a["application"].is_object());
+    assert_eq!(row_a["application"]["appliedEntityId"], "entry-partial-a");
+    assert!(row_b["application"].is_null());
+
+    let listed = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("codex.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("list resumable");
+    let run_ids: Vec<&str> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["runId"].as_str().unwrap())
+        .collect();
+    assert!(run_ids.contains(&"run-partial"));
+
+    let applied_b = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-partial-b",
+            "digest-partial-b",
+            "set-partial",
+            "run-partial",
+            ops_from_pairs(&pairs[1..2], &items[1..2]),
+            vec![],
+        ),
+    )
+    .expect("apply B only");
+    assert_eq!(applied_b["status"], "applied");
+    assert_eq!(applied_b["created"].as_array().unwrap().len(), 1);
+    assert_eq!(applied_b["created"][0]["entityId"], "entry-partial-b");
+
+    let entry_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM codex_entries", [], |r| r.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(entry_count, 2);
 }
