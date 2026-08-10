@@ -2,19 +2,16 @@ import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { toast } from "sonner";
-import type { WorkspaceState } from "./store";
+import type {
+  WorkspaceOpenRequestOutcome,
+  WorkspaceState,
+} from "./workspaceState";
 import {
   beginWorkspaceOpenTrace,
   type WorkspaceOpenTraceSource,
 } from "./workspaceOpenTrace";
 
-export type WorkspaceOpenRequestOutcome =
-  | "opened"
-  | "blocked"
-  | "failed"
-  | "in-progress"
-  | "safe-mode"
-  | "recovery-required";
+export type { WorkspaceOpenRequestOutcome } from "./workspaceState";
 
 type WorkspaceStoreGetter = () => WorkspaceState;
 type WorkspaceStoreSetter = (partial: Partial<WorkspaceState>) => void;

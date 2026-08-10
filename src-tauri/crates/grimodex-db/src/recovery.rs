@@ -267,14 +267,16 @@ pub fn build_candidate_registry(
         push_record(
             &mut records,
             workspace,
-            absolute,
-            backup.file_name.clone(),
-            kind,
-            backup.size_bytes,
-            backup.modified_ms,
-            None,
-            None,
-            ChecksumStatus::Unverified,
+            RecoveryCandidateSeed {
+                absolute_path: absolute,
+                relative_key: backup.file_name.clone(),
+                kind,
+                size_bytes: backup.size_bytes,
+                modified_ms: backup.modified_ms,
+                schema_version: None,
+                app_version: None,
+                checksum_status: ChecksumStatus::Unverified,
+            },
         )?;
     }
 
@@ -303,23 +305,23 @@ pub fn build_candidate_registry(
             push_record(
                 &mut records,
                 workspace,
-                absolute,
-                format!("migrations/{name}"),
-                RecoveryCandidateKind::MigrationSnapshot,
-                meta.len(),
-                modified_ms,
-                schema_version,
-                app_version,
-                checksum_status,
+                RecoveryCandidateSeed {
+                    absolute_path: absolute,
+                    relative_key: format!("migrations/{name}"),
+                    kind: RecoveryCandidateKind::MigrationSnapshot,
+                    size_bytes: meta.len(),
+                    modified_ms,
+                    schema_version,
+                    app_version,
+                    checksum_status,
+                },
             )?;
         }
     }
     Ok(records)
 }
 
-fn push_record(
-    records: &mut HashMap<String, RecoveryCandidateRecord>,
-    workspace: &Path,
+struct RecoveryCandidateSeed {
     absolute_path: PathBuf,
     relative_key: String,
     kind: RecoveryCandidateKind,
@@ -328,29 +330,35 @@ fn push_record(
     schema_version: Option<i32>,
     app_version: Option<String>,
     checksum_status: ChecksumStatus,
+}
+
+fn push_record(
+    records: &mut HashMap<String, RecoveryCandidateRecord>,
+    workspace: &Path,
+    seed: RecoveryCandidateSeed,
 ) -> AppResult<()> {
-    ensure_path_inside_workspace(workspace, &absolute_path)?;
-    let id = opaque_id_for(&relative_key);
+    ensure_path_inside_workspace(workspace, &seed.absolute_path)?;
+    let id = opaque_id_for(&seed.relative_key);
     let created_at = Utc
-        .timestamp_millis_opt(modified_ms as i64)
+        .timestamp_millis_opt(seed.modified_ms as i64)
         .single()
         .unwrap_or_else(Utc::now)
         .to_rfc3339();
     let candidate = RecoveryCandidate {
         id: id.clone(),
-        kind,
+        kind: seed.kind,
         created_at,
-        schema_version,
-        app_version,
-        size_bytes,
-        checksum_status,
+        schema_version: seed.schema_version,
+        app_version: seed.app_version,
+        size_bytes: seed.size_bytes,
+        checksum_status: seed.checksum_status,
     };
     records.insert(
         id,
         RecoveryCandidateRecord {
             candidate,
-            absolute_path,
-            relative_key,
+            absolute_path: seed.absolute_path,
+            relative_key: seed.relative_key,
         },
     );
     Ok(())
