@@ -40,6 +40,21 @@ pub struct ProtectedWriterEntry {
     pub enforcement: WriterEnforcement,
 }
 
+impl ProtectedWriterEntry {
+    fn effective_protected_columns(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.columns.iter().map(String::as_str).collect();
+        if let Some(version) = self.version_column.as_deref() {
+            if !names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(version))
+            {
+                names.push(version);
+            }
+        }
+        names
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ProtectedWriterRegistry {
     by_table: HashMap<String, ProtectedWriterEntry>,
@@ -94,11 +109,14 @@ pub fn untrusted_mutation_rejection(
             entry.table, entry.writer
         )),
         WriterProtection::Columns => {
+            // Shared tables: untrusted INSERT/DELETE can still rewrite protected
+            // columns via DEFAULT values or INSERT OR REPLACE. Fail closed and
+            // require typed Native writers for structural changes.
             if is_delete {
-                // Shared-table deletes are allowed unless a protected column
-                // classifier is supplied separately; domain cutovers should
-                // prefer typed writers for structural deletes.
-                return None;
+                return Some(format!(
+                    "delete from protected shared table {} (writer {})",
+                    entry.table, entry.writer
+                ));
             }
             if is_insert {
                 let Some(columns) = insert_columns else {
@@ -107,9 +125,9 @@ pub fn untrusted_mutation_rejection(
                         entry.table, entry.writer
                     ));
                 };
+                let protected_names = entry.effective_protected_columns();
                 let hits_protected = columns.iter().any(|column_name| {
-                    entry
-                        .columns
+                    protected_names
                         .iter()
                         .any(|protected| protected.eq_ignore_ascii_case(column_name))
                 });
@@ -119,11 +137,17 @@ pub fn untrusted_mutation_rejection(
                         entry.table, entry.writer
                     ));
                 }
-                return None;
+                // Even when the explicit column list omits protected fields,
+                // SQLite may fill them from DEFAULT. Untrusted INSERT is
+                // therefore denied for column-protected shared tables.
+                return Some(format!(
+                    "insert into protected shared table {} (writer {})",
+                    entry.table, entry.writer
+                ));
             }
             let column_name = column?;
             if entry
-                .columns
+                .effective_protected_columns()
                 .iter()
                 .any(|protected| protected.eq_ignore_ascii_case(column_name))
             {
@@ -141,6 +165,14 @@ pub fn untrusted_mutation_rejection(
 /// Fail closed (returns None) when the statement cannot be classified.
 pub fn classify_insert_columns(sql: &str) -> Option<Vec<String>> {
     let lowered = sql.to_ascii_lowercase();
+    // INSERT OR REPLACE / REPLACE INTO rewrite whole rows and can reset
+    // DEFAULT-backed protected columns even when they are omitted.
+    if lowered.trim_start().starts_with("replace")
+        || lowered.contains(" insert or replace ")
+        || lowered.trim_start().starts_with("insert or replace")
+    {
+        return None;
+    }
     let insert_idx = lowered.find("insert")?;
     let into_idx = lowered[insert_idx..].find("into").map(|i| insert_idx + i)?;
     let after_into = sql[into_idx + 4..].trim_start();
@@ -214,6 +246,16 @@ mod tests {
         );
         assert!(denied.unwrap().contains("protected column"));
 
+        let version_denied = untrusted_mutation_rejection(
+            registry,
+            "narrative_protected_shared_fixture",
+            Some("version"),
+            false,
+            false,
+            None,
+        );
+        assert!(version_denied.unwrap().contains("protected column"));
+
         let allowed = untrusted_mutation_rejection(
             registry,
             "narrative_protected_shared_fixture",
@@ -223,6 +265,38 @@ mod tests {
             None,
         );
         assert!(allowed.is_none());
+    }
+
+    #[test]
+    fn shared_table_insert_and_delete_fail_closed() {
+        let registry = bundled_protected_writer_registry();
+        let insert = untrusted_mutation_rejection(
+            registry,
+            "narrative_protected_shared_fixture",
+            None,
+            true,
+            false,
+            Some(&["id".into(), "title".into()]),
+        );
+        assert!(insert.unwrap().contains("insert into protected shared table"));
+
+        let delete = untrusted_mutation_rejection(
+            registry,
+            "narrative_protected_shared_fixture",
+            None,
+            false,
+            true,
+            None,
+        );
+        assert!(delete.unwrap().contains("delete from protected shared table"));
+    }
+
+    #[test]
+    fn insert_or_replace_is_unclassified() {
+        assert!(classify_insert_columns(
+            "INSERT OR REPLACE INTO narrative_protected_shared_fixture (id, title) VALUES (?, ?)",
+        )
+        .is_none());
     }
 
     #[test]

@@ -295,7 +295,12 @@ pub fn require_background_ai_allowed(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Native-side manual apply gate. Renderer `userInitiated` is never trusted alone.
+/// Native-side consistency check for already-loaded apply authority.
+///
+/// This does **not** read proposal / decision rows from the database. Callers
+/// (Narrative Extraction Native apply) must load the exact ProposalSet,
+/// current revision, and latest decision from DB, then pass those facts here.
+/// Treating renderer-supplied values as authoritative is a security bug.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManualApplyAuthority {
     pub proposal_set_id: String,

@@ -1107,40 +1107,66 @@ mod tests {
     }
 
     #[test]
-    fn renderer_rejects_protected_shared_columns_and_allows_other_columns() {
+    fn renderer_rejects_protected_shared_columns_and_structural_writes() {
         let db = test_db();
         db.execute(
             "CREATE TABLE narrative_protected_shared_fixture (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                protected_col TEXT,
+                protected_col TEXT DEFAULT 'from-default',
                 version INTEGER NOT NULL DEFAULT 1
              )",
             &[],
             "run",
         )
         .expect("trusted shared fixture");
-
-        db.execute_renderer(
-            "INSERT INTO narrative_protected_shared_fixture (id, title) VALUES ('a', 'ok')",
+        db.execute(
+            "INSERT INTO narrative_protected_shared_fixture (id, title, protected_col, version)
+             VALUES ('a', 'old', 'secret', 9)",
             &[],
             "run",
         )
-        .expect("non-protected columns may be inserted");
+        .expect("trusted seed");
 
-        let protected_insert = db
+        let insert_error = db
             .execute_renderer(
-                "INSERT INTO narrative_protected_shared_fixture (id, title, protected_col)
-                 VALUES ('b', 'x', 'secret')",
+                "INSERT INTO narrative_protected_shared_fixture (id, title) VALUES ('b', 'ok')",
                 &[],
                 "run",
             )
-            .expect_err("protected column insert denied");
+            .expect_err("shared-table insert must fail closed");
         assert!(
-            protected_insert
+            insert_error
                 .to_string()
-                .contains("PROTECTED_WRITER_SQL: denied insert into protected columns"),
-            "unexpected error: {protected_insert}"
+                .contains("PROTECTED_WRITER_SQL: denied insert into protected shared table"),
+            "unexpected error: {insert_error}"
+        );
+
+        let replace_error = db
+            .execute_renderer(
+                "INSERT OR REPLACE INTO narrative_protected_shared_fixture (id, title)
+                 VALUES ('a', 'new')",
+                &[],
+                "run",
+            )
+            .expect_err("INSERT OR REPLACE must fail closed");
+        assert!(
+            replace_error.to_string().contains("PROTECTED_WRITER_SQL"),
+            "unexpected error: {replace_error}"
+        );
+
+        let delete_error = db
+            .execute_renderer(
+                "DELETE FROM narrative_protected_shared_fixture WHERE id = 'a'",
+                &[],
+                "run",
+            )
+            .expect_err("shared-table delete must fail closed");
+        assert!(
+            delete_error
+                .to_string()
+                .contains("PROTECTED_WRITER_SQL: denied delete from protected shared table"),
+            "unexpected error: {delete_error}"
         );
 
         let protected_update = db
@@ -1157,12 +1183,35 @@ mod tests {
             "unexpected error: {protected_update}"
         );
 
+        let version_update = db
+            .execute_renderer(
+                "UPDATE narrative_protected_shared_fixture SET version = 99 WHERE id = 'a'",
+                &[],
+                "run",
+            )
+            .expect_err("version column update denied");
+        assert!(
+            version_update.to_string().contains("PROTECTED_WRITER_SQL"),
+            "unexpected error: {version_update}"
+        );
+
         db.execute_renderer(
             "UPDATE narrative_protected_shared_fixture SET title = 'later' WHERE id = 'a'",
             &[],
             "run",
         )
         .expect("unprotected column update remains available");
+
+        let rows = db
+            .execute(
+                "SELECT title, protected_col, version FROM narrative_protected_shared_fixture WHERE id = 'a'",
+                &[],
+                "get",
+            )
+            .expect("read preserved protected values");
+        assert_eq!(rows[0]["title"], Value::from("later"));
+        assert_eq!(rows[0]["protected_col"], Value::from("secret"));
+        assert_eq!(rows[0]["version"], Value::from(9));
     }
 
     #[test]
