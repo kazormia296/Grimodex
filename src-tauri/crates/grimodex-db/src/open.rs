@@ -539,6 +539,8 @@ pub struct OpenWorkspaceResult {
     name: String,
     is_existing: bool,
     workspace_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    migration: Option<crate::migration_supervisor::OpenMigrationInfo>,
 }
 
 /// `open_workspace` は renderer 供給のパスにディレクトリ + SQLite DB を作成する。
@@ -708,16 +710,32 @@ fn open_workspace_sync_impl(
             Ok::<_, AppError>((ws_path, is_existing, workspace_meta))
         })?;
 
-    // Open database
+    // Open database via transactional migration supervisor (Release Gate A).
+    // Schema upgrades never run DDL on the live grimodex.db; they shadow-migrate
+    // a staged copy and atomically replace under an exclusive workspace lease.
     let db_path = ws_path.join("grimodex.db");
-    let database = trace.record_result(NativeWorkspaceOpenSpanName::DatabaseOpen, || {
-        Database::new(&db_path).map_err(AppError::from)
-    })?;
+    let _ = db_path; // reserved for future open-span attribution / diagnostics
     let maintenance_workspace_path = ws_path.clone();
     let maintenance_settings_path = gs_path.path.clone();
-    trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
-        database.migrate().map_err(AppError::from)
-    })?;
+    let (database, migration_info) =
+        trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
+            crate::migration_supervisor::prepare_database_for_open(&ws_path)
+        })?;
+    if let Some(info) = migration_info.as_ref() {
+        if info.recovered {
+            tracing::warn!(
+                "workspace migration recovered to previous DB: {:?}",
+                info.error_code
+            );
+        } else {
+            tracing::info!(
+                "workspace migrated schema {} -> {} (receipt={})",
+                info.from_schema,
+                info.to_schema,
+                info.receipt_path
+            );
+        }
+    }
     if let Err(error) = trace.record_result(NativeWorkspaceOpenSpanName::Optimize, || {
         database.optimize_without_wait()
     }) {
@@ -823,6 +841,7 @@ fn open_workspace_sync_impl(
         name,
         is_existing,
         workspace_id: workspace_meta.id,
+        migration: migration_info,
     })
 }
 
