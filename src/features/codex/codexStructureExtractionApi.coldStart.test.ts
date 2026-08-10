@@ -33,6 +33,7 @@ import {
   CODEX_RELATION_CREATE_PROPOSAL_KIND,
   type CreateCodexRelationProposal,
 } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import { buildCodexReviewRevisionEnvelope } from "./extraction/reviewRevisionEnvelope";
 import {
   CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
   CODEX_STRUCTURE_PROPOSAL_SET_KIND,
@@ -42,8 +43,8 @@ import {
   restoreCodexStructureExtractionReview,
 } from "./codexStructureExtractionApi";
 import {
-  buildCodexEntityProposalSafetyFlags,
   resetCodexStructureExtractionStoreForTests,
+  useCodexStructureExtractionStore,
 } from "./codexStructureExtractionStore";
 
 function sampleEntityProposal(proposalId = "prop-entity-1") {
@@ -103,7 +104,7 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     listResumableRunsMock.mockReset();
   });
 
-  it("hydrates Map from Native bundle and restores proposals with evidence + deps", async () => {
+  it("hydrates from Native envelopes + evidence artifact without publishing store", async () => {
     const entity = sampleEntityProposal("prop-entity-cold");
     const relation = sampleRelationProposal("prop-rel-cold", [
       "prop-entity-cold",
@@ -116,14 +117,6 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
         method: "exact" as const,
       },
     ];
-    const safety = buildCodexEntityProposalSafetyFlags({
-      bindingKind: "create-new",
-      typeStatus: "resolved",
-      evidenceMethods: ["exact"],
-      hasExistingCandidates: false,
-      hasProperNameMention: true,
-      aliasesAllExplicit: true,
-    });
 
     getRunMock.mockResolvedValue({
       run: {
@@ -173,34 +166,16 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
           payloadStorage: "inline-json",
           payloadJson: {
             proposalSetId: "set-cold-1",
-            entities: [
-              {
-                proposalId: "prop-entity-cold",
-                proposalKey: "ne-1",
-                proposal: entity,
-                evidence,
-                safety,
-                applicability: "applicable",
-                displayTitle: "ライカ",
-                hypothesisId: "ne-1",
-              },
-            ],
-            relations: [
-              {
-                proposalId: "prop-rel-cold",
-                proposalKey: "rel-ne-1-ne-2",
-                proposal: {
-                  ...relation,
-                  dependencies: [],
-                },
-                evidence,
+            evidenceByProposalId: {
+              "prop-entity-cold": evidence,
+              "prop-rel-cold": evidence,
+            },
+            relationLabelsByProposalId: {
+              "prop-rel-cold": {
                 subjectLabel: "ライカ",
                 objectLabel: "ベルカ",
-                applicability: "applicable",
-                displayTitle: "友人",
-                hypothesisId: "hyp-rel-1",
               },
-            ],
+            },
           },
           payloadRef: null,
           payloadDigest: null,
@@ -226,6 +201,7 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
               },
             ],
           },
+          existingRelations: [],
           relationDependencies: {
             "prop-rel-cold": [
               {
@@ -246,16 +222,22 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
           proposalKey: "ne-1",
           kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
           status: "approved",
-          payloadJson: {
-            entryId: "entry-locked-1",
-            typeSlug: "character",
-            name: "ライカ",
-            summary: null,
-            aliases: [],
-            parentId: null,
-            content: '{"type":"doc","content":[]}',
-            narrativeEntityId: "ne-1",
-          },
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entity.payload,
+            compiledOperation: {
+              kind: "codex.entry.create",
+              payload: {
+                entryId: "entry-locked-1",
+                typeSlug: "character",
+                name: "ライカ",
+                summary: null,
+                aliases: [],
+                parentId: null,
+                content: '{"type":"doc","content":[]}',
+                narrativeEntityId: "ne-1",
+              },
+            },
+          }) as unknown as Record<string, unknown>,
           currentRevisionId: "rev-entity-native",
           createdAt: "2026-01-01T00:00:40.000Z",
           updatedAt: "2026-01-01T00:00:50.000Z",
@@ -275,7 +257,9 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
           proposalKey: "rel-ne-1-ne-2",
           kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
           status: "unreviewed",
-          payloadJson: relation.payload as unknown as Record<string, unknown>,
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: relation.payload,
+          }) as unknown as Record<string, unknown>,
           currentRevisionId: "rev-rel-native",
           createdAt: "2026-01-01T00:00:40.000Z",
           updatedAt: "2026-01-01T00:00:40.000Z",
@@ -288,54 +272,37 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
       projectId: "project-cold",
       workspacePath: "/ws/cold",
       openRevision: 3,
+      folderId: "folder-cold",
     });
 
-    expect(getRunReviewBundleMock).toHaveBeenCalledWith({
-      runId: "run-cold-1",
-      projectId: "project-cold",
-    });
+    expect(useCodexStructureExtractionStore.getState().projection).toBeNull();
     expect(restored.proposalSetId).toBe("set-cold-1");
     expect(restored.folderId).toBe("folder-cold");
-    expect(restored.proposals).toHaveLength(1);
-    expect(restored.relationProposals).toHaveLength(1);
-
-    const [entityRow] = restored.proposals;
-    expect(entityRow.proposalId).toBe("prop-entity-cold");
-    expect(entityRow.revisionId).toBe("rev-entity-native");
-    expect(entityRow.status).toBe("approved");
-    expect(entityRow.evidence[0]?.quote).toBe("ライカは友人だ");
-    expect(entityRow.proposal.payload.canonicalName).toBe("ライカ");
-    expect(entityRow.compiledOperation?.kind).toBe("codex.entry.create");
-    expect(entityRow.compiledOperation?.payload.entryId).toBe("entry-locked-1");
-
-    const [relRow] = restored.relationProposals;
-    expect(relRow.proposalId).toBe("prop-rel-cold");
-    expect(relRow.revisionId).toBe("rev-rel-native");
-    expect(relRow.subjectLabel).toBe("ライカ");
-    expect(relRow.proposal.dependencies).toEqual([
+    expect(restored.proposals[0]?.compiledOperation?.kind).toBe(
+      "codex.entry.create",
+    );
+    expect(restored.proposals[0]?.evidence[0]?.quote).toBe("ライカは友人だ");
+    expect(restored.relationProposals[0]?.proposal.dependencies).toEqual([
       { kind: "requires-resolution", proposalId: "prop-entity-cold" },
     ]);
   });
 
-  it("fails closed when Native proposal set is missing", async () => {
+  it("rejects folder mismatch before hydrate", async () => {
     getRunMock.mockResolvedValue({
       run: {
-        runId: "run-cold-empty",
+        runId: "run-other-folder",
         projectId: "project-cold",
         surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
-        scopeJson: {},
-        specJson: {},
-        specDigest: "spec",
-        snapshotDigest: null,
-        catalogDigest: null,
-        registryDigest: null,
+        scopeJson: { folderId: "folder-b" },
         status: "completed",
         coverageJson: {},
-        outcomeSummaryJson: null,
-        createdAt: "2026-01-01T00:00:00.000Z",
-        startedAt: null,
-        completedAt: null,
-        version: 0,
+        taskCounts: {
+          queued: 0,
+          running: 0,
+          completed: 0,
+          failed: 0,
+          cancelled: 0,
+        },
       },
       tasks: [],
       taskCounts: {
@@ -346,25 +313,20 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
         cancelled: 0,
       },
     });
-    getRunReviewBundleMock.mockResolvedValue({
-      runId: "run-cold-empty",
-      projectId: "project-cold",
-      artifacts: [],
-      proposalSet: null,
-      proposals: [],
-    });
 
     await expect(
-      getCodexStructureExtractionReview("run-cold-empty", {
+      getCodexStructureExtractionReview("run-other-folder", {
         projectId: "project-cold",
         workspacePath: "/ws",
         openRevision: 1,
+        folderId: "folder-a",
       }),
-    ).rejects.toThrow(/no Native proposal set/);
+    ).rejects.toThrow(/folder mismatch/);
+    expect(getRunReviewBundleMock).not.toHaveBeenCalled();
   });
 });
 
-describe("restoreCodexStructureExtractionReview candidate fallback", () => {
+describe("restoreCodexStructureExtractionReview folder + candidate fallback", () => {
   beforeEach(() => {
     resetNarrativeArtifactIndexForTests();
     resetCodexStructureExtractionStoreForTests();
@@ -374,13 +336,23 @@ describe("restoreCodexStructureExtractionReview candidate fallback", () => {
     listResumableRunsMock.mockReset();
   });
 
-  it("skips a newer running run without ProposalSet and restores the older review", async () => {
+  it("skips other-folder and broken runs, restores matching folder review", async () => {
     listResumableRunsMock.mockResolvedValue([
+      {
+        run: {
+          runId: "run-other-folder",
+          projectId: "project-cold",
+          surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+          scopeJson: { folderId: "folder-b" },
+          status: "completed",
+        },
+      },
       {
         run: {
           runId: "run-crash",
           projectId: "project-cold",
           surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+          scopeJson: { folderId: "folder-a" },
           status: "running",
         },
       },
@@ -389,6 +361,7 @@ describe("restoreCodexStructureExtractionReview candidate fallback", () => {
           runId: "run-old-review",
           projectId: "project-cold",
           surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+          scopeJson: { folderId: "folder-a" },
           status: "completed",
         },
       },
@@ -399,12 +372,9 @@ describe("restoreCodexStructureExtractionReview candidate fallback", () => {
         runId,
         projectId: "project-cold",
         surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
-        scopeJson: { folderId: "folder-old" },
-        specJson: {},
-        specDigest: "spec",
-        snapshotDigest: null,
-        catalogDigest: null,
-        registryDigest: null,
+        scopeJson: {
+          folderId: runId === "run-other-folder" ? "folder-b" : "folder-a",
+        },
         status: runId === "run-crash" ? "running" : "completed",
         coverageJson: {},
         outcomeSummaryJson: null,
@@ -448,32 +418,17 @@ describe("restoreCodexStructureExtractionReview candidate fallback", () => {
               payloadStorage: "inline-json",
               payloadJson: {
                 proposalSetId: "set-old",
-                entities: [
-                  {
-                    proposalId: "prop-old",
-                    proposalKey: "ne-1",
-                    proposal: entity,
-                    evidence: [
-                      {
-                        anchorId: "a1",
-                        quote: "old quote",
-                        documentRef: "doc:1",
-                        method: "exact",
-                      },
-                    ],
-                    safety: buildCodexEntityProposalSafetyFlags({
-                      bindingKind: "create-new",
-                      typeStatus: "resolved",
-                      evidenceMethods: ["exact"],
-                      hasExistingCandidates: false,
-                      hasProperNameMention: true,
-                      aliasesAllExplicit: true,
-                    }),
-                    applicability: "applicable",
-                    displayTitle: "Older entity",
-                  },
-                ],
-                relations: [],
+                evidenceByProposalId: {
+                  "prop-old": [
+                    {
+                      anchorId: "a1",
+                      quote: "old quote",
+                      documentRef: "doc:1",
+                      method: "exact",
+                    },
+                  ],
+                },
+                relationLabelsByProposalId: {},
               },
               payloadRef: null,
               payloadDigest: null,
@@ -488,6 +443,7 @@ describe("restoreCodexStructureExtractionReview candidate fallback", () => {
             status: "draft",
             summaryJson: {
               catalog: { entities: [], types: [] },
+              existingRelations: [],
               relationDependencies: {},
             },
             createdAt: "2026-01-01T00:00:40.000Z",
@@ -501,7 +457,9 @@ describe("restoreCodexStructureExtractionReview candidate fallback", () => {
               proposalKey: "ne-1",
               kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
               status: "approved",
-              payloadJson: entity.payload as unknown as Record<string, unknown>,
+              payloadJson: buildCodexReviewRevisionEnvelope({
+                reviewPayload: entity.payload,
+              }) as unknown as Record<string, unknown>,
               currentRevisionId: "rev-old",
               createdAt: "2026-01-01T00:00:40.000Z",
               updatedAt: "2026-01-01T00:00:50.000Z",
@@ -516,10 +474,11 @@ describe("restoreCodexStructureExtractionReview candidate fallback", () => {
       projectId: "project-cold",
       workspacePath: "/ws/cold",
       openRevision: 3,
+      folderId: "folder-a",
     });
 
     expect(restored?.runId).toBe("run-old-review");
-    expect(restored?.proposals[0]?.displayTitle).toBe("Older entity");
-    expect(restored?.folderId).toBe("folder-old");
+    expect(restored?.folderId).toBe("folder-a");
+    expect(useCodexStructureExtractionStore.getState().projection).toBeNull();
   });
 });

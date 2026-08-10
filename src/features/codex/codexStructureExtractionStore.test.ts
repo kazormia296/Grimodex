@@ -88,6 +88,7 @@ function projection(
     unresolvedCount: proposals.filter((p) => p.status === "unreviewed").length,
     approvedCount: proposals.filter((p) => p.status === "approved").length,
     catalog: null,
+    existingRelations: [],
   };
 }
 

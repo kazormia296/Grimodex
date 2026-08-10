@@ -125,6 +125,7 @@ function projection(
     unresolvedCount: 1,
     approvedCount: 0,
     catalog: null,
+    existingRelations: [],
   };
 }
 

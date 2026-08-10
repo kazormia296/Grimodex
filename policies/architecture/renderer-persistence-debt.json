@@ -28,7 +28,6 @@
         "src/features/chronicle/api.ts:drizzle-delete:sceneEvents": 1,
         "src/features/chronicle/api.ts:drizzle-insert:eventRelations": 1,
         "src/features/chronicle/api.ts:drizzle-insert:events": 1,
-        "src/features/chronicle/api.ts:drizzle-insert:projectCalendar": 1,
         "src/features/chronicle/api.ts:drizzle-insert:sceneEvents": 2,
         "src/features/chronicle/api.ts:drizzle-update:events": 1,
         "src/features/codex/api.ts:drizzle-delete:codexEntries": 1,

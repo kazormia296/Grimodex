@@ -1,8 +1,22 @@
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { db } from "@/db/client";
-import { projectCalendar, projects } from "@/db/schema";
-import { getProjectCalendar, upsertProjectCalendar } from "./api";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const invokeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/tauri", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock("./chronicleStore", () => ({
+  useChronicleStore: {
+    getState: () => ({ bumpRevision: vi.fn() }),
+  },
+}));
+
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: vi.fn(),
+}));
+
+import { upsertProjectCalendar } from "./api";
 import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 
 const PROJECT_ID = "calendar-occ-project";
@@ -23,75 +37,66 @@ const calendarInput = {
   lunarTzMinutes: 480,
 };
 
-beforeAll(async () => {
-  await db.insert(projects).values({ id: PROJECT_ID, title: PROJECT_ID });
-});
+function row(version: number) {
+  return {
+    projectId: PROJECT_ID,
+    daysPerYear: 360,
+    seasonBoundaries: "[]",
+    startYear: 100,
+    months: "[]",
+    weekdayNames: "[]",
+    weekdayStartIndex: 0,
+    leapRule: '{"kind":"none"}',
+    ageReckoning: "full",
+    eras: "[]",
+    reform: "null",
+    timezone: "null",
+    lunarTzMinutes: 480,
+    version,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+}
 
-beforeEach(async () => {
-  await db
-    .delete(projectCalendar)
-    .where(eq(projectCalendar.projectId, PROJECT_ID));
-});
+describe("upsertProjectCalendar OCC adapter", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
 
-describe("upsertProjectCalendar OCC", () => {
-  it("creates only when the caller observed an absent row", async () => {
+  it("invokes Native typed command and returns the persisted row", async () => {
+    invokeMock.mockResolvedValue(row(0));
     const created = await upsertProjectCalendar(calendarInput, {
       baseVersion: null,
     });
-
+    expect(invokeMock).toHaveBeenCalledWith("project_calendar_upsert", {
+      payload: expect.objectContaining({
+        projectId: PROJECT_ID,
+        baseVersion: null,
+        daysPerYear: 360,
+      }),
+    });
     expect(created.version).toBe(0);
+  });
+
+  it("maps Native null to ProjectCalendarVersionConflictError", async () => {
+    invokeMock.mockResolvedValue(null);
     await expect(
-      upsertProjectCalendar(calendarInput, { baseVersion: null }),
+      upsertProjectCalendar(calendarInput, { baseVersion: 0 }),
     ).rejects.toBeInstanceOf(ProjectCalendarVersionConflictError);
   });
 
-  it("increments version on a matching update and returns the persisted row", async () => {
-    const created = await upsertProjectCalendar(calendarInput, {
-      baseVersion: null,
-    });
+  it("passes observed baseVersion through for OCC updates", async () => {
+    invokeMock.mockResolvedValue(row(1));
     const updated = await upsertProjectCalendar(
-      { ...calendarInput, daysPerYear: 400 },
-      { baseVersion: created.version },
-    );
-
-    expect(updated.daysPerYear).toBe(400);
-    expect(updated.version).toBe(1);
-    await expect(getProjectCalendar(PROJECT_ID)).resolves.toMatchObject({
-      daysPerYear: 400,
-      version: 1,
-    });
-  });
-
-  it("rejects a stale update without changing calendar data or version", async () => {
-    await upsertProjectCalendar(calendarInput, { baseVersion: null });
-    await upsertProjectCalendar(
       { ...calendarInput, daysPerYear: 365 },
       { baseVersion: 0 },
     );
-
-    await expect(
-      upsertProjectCalendar(
-        { ...calendarInput, daysPerYear: 999 },
-        { baseVersion: 0 },
-      ),
-    ).rejects.toBeInstanceOf(ProjectCalendarVersionConflictError);
-    await expect(getProjectCalendar(PROJECT_ID)).resolves.toMatchObject({
-      daysPerYear: 365,
-      version: 1,
+    expect(invokeMock).toHaveBeenCalledWith("project_calendar_upsert", {
+      payload: expect.objectContaining({
+        baseVersion: 0,
+        daysPerYear: 365,
+      }),
     });
-  });
-
-  it("chains consecutive saves with the returned version token", async () => {
-    const created = await upsertProjectCalendar(calendarInput, {
-      baseVersion: null,
-    });
-    const first = await upsertProjectCalendar(calendarInput, {
-      baseVersion: created.version,
-    });
-    const second = await upsertProjectCalendar(calendarInput, {
-      baseVersion: first.version,
-    });
-
-    expect(second.version).toBe(2);
+    expect(updated.version).toBe(1);
   });
 });

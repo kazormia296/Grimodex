@@ -9,7 +9,7 @@ import {
   treeNodes,
 } from "@/db/schema";
 import type { EventPrecision, EventKind, EventGranularity } from "@/db/schema";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
 // 暦復元の正本は chronicleTime（純粋モジュール）へ集約。ここでは後方互換の再エクスポート。
 export { calendarFromRow } from "./chronicleTime";
@@ -631,68 +631,28 @@ export async function upsertProjectCalendar(
   options: { baseVersion: number | null },
 ): Promise<CalendarRow> {
   const now = new Date().toISOString();
-  const startYear = data.startYear ?? 0;
-  const months = data.months ?? "[]";
-  const weekdayNames = data.weekdayNames ?? "[]";
-  const weekdayStartIndex = data.weekdayStartIndex ?? 0;
-  const leapRule = data.leapRule ?? '{"kind":"none"}';
-  const ageReckoning = data.ageReckoning ?? "full";
-  const eras = data.eras ?? "[]";
-  const reform = data.reform ?? "null";
-  const timezone = data.timezone ?? "null";
-  const lunarTzMinutes = data.lunarTzMinutes ?? 480;
-  const values = {
-    projectId: data.projectId,
-    daysPerYear: data.daysPerYear,
-    seasonBoundaries: data.seasonBoundaries,
-    startYear,
-    months,
-    weekdayNames,
-    weekdayStartIndex,
-    leapRule,
-    ageReckoning,
-    eras,
-    reform,
-    timezone,
-    lunarTzMinutes,
-  };
-  const baseVersion = options.baseVersion;
-  // Update paths must not silently create a row: if the caller carries a version
-  // token but no row exists, that is a conflict (someone deleted it), never an
-  // insert. Verify existence up front so the shared insert callsite below only
-  // ever exercises the ON CONFLICT DO UPDATE branch for updates.
-  if (baseVersion !== null) {
-    const existing = await getProjectCalendar(data.projectId);
-    if (!existing) {
-      throw new ProjectCalendarVersionConflictError(data.projectId);
-    }
-  }
-  // Single insert callsite for BOTH create and update. For creates (baseVersion
-  // null) the row is inserted at version 0; if it already exists the conflict
-  // update is gated by `sql`0`` so it never matches and returning() is empty →
-  // conflict. For updates the conflict update sets version N+1 only when the
-  // stored version still equals the observed baseVersion (OCC), otherwise the
-  // WHERE fails and returning() is empty → conflict.
-  const [persisted] = await db
-    .insert(projectCalendar)
-    .values({
-      ...values,
-      version: 0,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: projectCalendar.projectId,
-      set:
-        baseVersion === null
-          ? { version: sql`${projectCalendar.version}` }
-          : { ...values, version: baseVersion + 1, updatedAt: now },
-      setWhere:
-        baseVersion === null
-          ? sql`0`
-          : eq(projectCalendar.version, baseVersion),
-    })
-    .returning();
+  const persisted = await invoke<CalendarRow | null>(
+    "project_calendar_upsert",
+    {
+      payload: {
+        projectId: data.projectId,
+        daysPerYear: data.daysPerYear,
+        seasonBoundaries: data.seasonBoundaries,
+        startYear: data.startYear ?? 0,
+        months: data.months ?? "[]",
+        weekdayNames: data.weekdayNames ?? "[]",
+        weekdayStartIndex: data.weekdayStartIndex ?? 0,
+        leapRule: data.leapRule ?? '{"kind":"none"}',
+        ageReckoning: data.ageReckoning ?? "full",
+        eras: data.eras ?? "[]",
+        reform: data.reform ?? "null",
+        timezone: data.timezone ?? "null",
+        lunarTzMinutes: data.lunarTzMinutes ?? 480,
+        baseVersion: options.baseVersion,
+        updatedAt: now,
+      },
+    },
+  );
   if (!persisted) {
     throw new ProjectCalendarVersionConflictError(data.projectId);
   }
@@ -702,26 +662,23 @@ export async function upsertProjectCalendar(
     daysPerYear: data.daysPerYear,
     version: persisted.version,
   });
-  const r = persisted as Record<string, unknown>;
   return {
-    projectId: s(r.projectId ?? r.project_id),
-    daysPerYear: Number(r.daysPerYear ?? r.days_per_year ?? 360),
-    seasonBoundaries: s(r.seasonBoundaries ?? r.season_boundaries, "[]"),
-    startYear: Number(r.startYear ?? r.start_year ?? 0),
-    months: s(r.months, "[]"),
-    weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
-    weekdayStartIndex: Number(
-      r.weekdayStartIndex ?? r.weekday_start_index ?? 0,
-    ),
-    leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
-    ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
-    eras: s(r.eras, "[]"),
-    reform: s(r.reform, "null"),
-    timezone: s(r.timezone, "null"),
-    lunarTzMinutes: Number(r.lunarTzMinutes ?? r.lunar_tz_minutes ?? 480),
-    version: Number(r.version),
-    createdAt: s(r.createdAt ?? r.created_at),
-    updatedAt: s(r.updatedAt ?? r.updated_at),
+    projectId: persisted.projectId,
+    daysPerYear: Number(persisted.daysPerYear),
+    seasonBoundaries: persisted.seasonBoundaries,
+    startYear: Number(persisted.startYear),
+    months: persisted.months,
+    weekdayNames: persisted.weekdayNames,
+    weekdayStartIndex: Number(persisted.weekdayStartIndex),
+    leapRule: persisted.leapRule,
+    ageReckoning: persisted.ageReckoning,
+    eras: persisted.eras,
+    reform: persisted.reform,
+    timezone: persisted.timezone,
+    lunarTzMinutes: Number(persisted.lunarTzMinutes),
+    version: Number(persisted.version),
+    createdAt: persisted.createdAt,
+    updatedAt: persisted.updatedAt,
   };
 }
 

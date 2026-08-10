@@ -3028,6 +3028,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_move_marker_bundle",
       "plot_thread_restore_snapshot",
       "plot_thread_update",
+      "project_calendar_upsert",
       "project_snapshot_apply_restore",
       "project_snapshot_create",
       "project_snapshot_restore_context",

@@ -372,6 +372,7 @@ export interface NapiBackendLike {
   lintTermDictionaryDelete?(projectId: string, id: string): Promise<void>;
   eventGetVersion?(projectId: string, eventId: string): Promise<string>;
   eventSetParticipants?(payload: unknown): Promise<string>;
+  projectCalendarUpsert?(payload: unknown): Promise<string>;
   authorshipReplaceLane?(payload: unknown): Promise<void>;
   entityTagsSet?(payload: unknown): Promise<void>;
   codexRenameUndo?(payload: unknown): Promise<void>;
@@ -1520,6 +1521,46 @@ function requireEventSetParticipantsPayload(args: CommandArgs): CommandArgs {
       );
     }
   });
+  return payload;
+}
+
+function requireProjectCalendarUpsertPayload(args: CommandArgs): CommandArgs {
+  const command = "project_calendar_upsert";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  for (const key of [
+    "seasonBoundaries",
+    "months",
+    "weekdayNames",
+    "leapRule",
+    "ageReckoning",
+    "eras",
+    "reform",
+    "timezone",
+  ] as const) {
+    requireString(payload, key, command);
+  }
+  for (const key of [
+    "daysPerYear",
+    "startYear",
+    "weekdayStartIndex",
+    "lunarTzMinutes",
+  ] as const) {
+    requireSafeInteger(payload, key, command);
+  }
+  if (payload.baseVersion !== undefined && payload.baseVersion !== null) {
+    const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer when present`,
+      );
+    }
+  } else if (payload.baseVersion === undefined) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: missing required key baseVersion`,
+    );
+  }
   return payload;
 }
 
@@ -3791,6 +3832,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.eventSetParticipants,
           "eventSetParticipants",
         )(requireEventSetParticipantsPayload(a)),
+      ),
+  },
+  project_calendar_upsert: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectCalendarUpsert,
+          "projectCalendarUpsert",
+        )(requireProjectCalendarUpsertPayload(a)),
       ),
   },
   authorship_replace_lane: {

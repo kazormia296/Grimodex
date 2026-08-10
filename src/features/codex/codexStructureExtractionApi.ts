@@ -84,10 +84,8 @@ import {
   buildCodexEntityProposalSafetyFlags,
   emptyCodexTaskCounts,
   isSafeForCodexEntityBulkApprove,
-  relationEndpointsReady,
   useCodexStructureExtractionStore,
   type CodexCompiledDomainOperation,
-  type CodexEntityProposalSafetyFlags,
   type CodexEntityReviewProposal,
   type CodexRelationReviewProposal,
   type CodexReviewEvidenceQuote,
@@ -102,9 +100,19 @@ import {
   normalizeRelationLabel,
 } from "./extraction/relationVocabulary";
 import {
+  buildCodexReviewRevisionEnvelope,
+  parseCodexReviewRevisionEnvelope,
+} from "./extraction/reviewRevisionEnvelope";
+import {
+  evaluateCodexRelationApplicability,
+  rematchCodexRelationProposals,
+  relationEndpointsReady,
+} from "./extraction/relationApplicability";
+import {
   matchExistingCodexRelation,
   type ExistingRelationCatalogRecord,
 } from "./extraction/existingRelationMatcher";
+
 const CODEX_STRUCTURE_LEASE_OWNER = "codex-structure-extract";
 const CODEX_STRUCTURE_TASK_KIND = "codex.entity.resolve";
 
@@ -161,40 +169,24 @@ export const CODEX_STRUCTURE_EXTRACT_SURFACE_PATH =
   "codex/structure-extract" as const;
 export const CODEX_STRUCTURE_PROPOSAL_SET_KIND =
   "codex.structure.extract.review@1" as const;
-/** Durable review UI + Evidence for cold-start restore (finish_task artifact). */
+/** Durable Evidence (+ labels) for cold-start restore (finish_task artifact). */
 export const CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND =
   "codex.structure.review-projection@1" as const;
 
-interface CodexStructureReviewEntityArtifactRow {
-  readonly proposalId: string;
-  readonly proposalKey: string;
-  readonly proposal: BindCodexEntityProposal;
-  readonly evidence: readonly CodexReviewEvidenceQuote[];
-  readonly safety: CodexEntityProposalSafetyFlags;
-  readonly applicability: CodexEntityReviewProposal["applicability"];
-  readonly displayTitle: string;
-  readonly blockedReason?: string;
-  readonly hypothesisId?: string;
-}
-
-interface CodexStructureReviewRelationArtifactRow {
-  readonly proposalId: string;
-  readonly proposalKey: string;
-  readonly proposal: CreateCodexRelationProposal;
-  readonly evidence: readonly CodexReviewEvidenceQuote[];
-  readonly subjectLabel: string;
-  readonly objectLabel: string;
-  readonly applicability: CodexRelationReviewProposal["applicability"];
-  readonly displayTitle: string;
-  readonly blockedReason?: string;
-  readonly hypothesisId?: string;
-  readonly existingRelationRef?: string;
-}
-
 interface CodexStructureReviewArtifactPayload {
   readonly proposalSetId?: string;
-  readonly entities: readonly CodexStructureReviewEntityArtifactRow[];
-  readonly relations: readonly CodexStructureReviewRelationArtifactRow[];
+  readonly evidenceByProposalId?: Readonly<
+    Record<string, readonly CodexReviewEvidenceQuote[]>
+  >;
+  readonly relationLabelsByProposalId?: Readonly<
+    Record<
+      string,
+      { readonly subjectLabel: string; readonly objectLabel: string }
+    >
+  >;
+  /** Legacy full-snapshot rows (pre-envelope); ignored when Native envelopes exist. */
+  readonly entities?: readonly unknown[];
+  readonly relations?: readonly unknown[];
 }
 
 export interface CodexStructureExtractionHeuristicSeed {
@@ -570,29 +562,12 @@ export function deriveRelationSeedsFromCoMentions(input: {
           const label = normalizeRelationLabel(vocab.forwardLabel);
           if (!label || !window.quote.includes(label)) continue;
 
-          let subject = left;
-          let object = right;
-          if (vocab.directionality === "directed") {
-            const resolved = resolveDirectedEndpoints(
-              window.quote,
-              left,
-              right,
-              label,
-            );
-            if (!resolved) continue;
-            subject = resolved.subject;
-            object = resolved.object;
-          } else {
-            const resolved = resolveSymmetricEndpoints(
-              window.quote,
-              left,
-              right,
-              label,
-            );
-            if (!resolved) continue;
-            subject = resolved.subject;
-            object = resolved.object;
-          }
+          const resolved =
+            vocab.directionality === "directed"
+              ? resolveDirectedEndpoints(window.quote, left, right, label)
+              : resolveSymmetricEndpoints(window.quote, left, right, label);
+          if (!resolved) continue;
+          const { subject, object } = resolved;
 
           const quote = quoteSpanCovering(window.quote, [
             subject.surface,
@@ -1249,16 +1224,7 @@ export async function startCodexStructureExtraction(
 
       const blockedDeps = !relationEndpointsReady(
         {
-          proposalId: created.proposalId,
-          revisionId: null,
-          proposalKey: hypothesis.hypothesisId,
-          status: "unreviewed",
-          applicability: "applicable",
-          displayTitle: "",
           proposal: created,
-          evidence: [],
-          subjectLabel,
-          objectLabel,
         },
         proposals,
       );
@@ -1370,20 +1336,18 @@ export async function startCodexStructureExtraction(
         throw new Error(`Failed to claim task ${CODEX_STRUCTURE_TASK_KIND}`);
       }
 
-      const actionableRelations = relationProposals.filter(
-        (proposal) => proposal.applicability !== "already-satisfied",
-      );
       const saved = await saveProposalSet({
         runId,
         projectId: request.projectId,
         setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
         summaryJson: {
-          proposalCount: proposals.length + actionableRelations.length,
+          proposalCount: proposals.length + relationProposals.length,
           catalog: catalogSnapshot,
+          existingRelations,
           // Immutable across append_revision: Relation dependency graph keyed by
           // stable proposal IDs (also sent as ProposalSeed.proposalId below).
           relationDependencies: Object.fromEntries(
-            actionableRelations.map((proposal) => [
+            relationProposals.map((proposal) => [
               proposal.proposalId,
               proposal.proposal.dependencies,
             ]),
@@ -1394,14 +1358,18 @@ export async function startCodexStructureExtraction(
             proposalId: proposal.proposalId,
             proposalKey: proposal.proposalKey,
             kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
-            payloadJson: proposal.proposal.payload,
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: proposal.proposal.payload,
+            }) as unknown as Record<string, unknown>,
           })),
-          ...actionableRelations.map((proposal) => ({
+          ...relationProposals.map((proposal) => ({
             proposalId: proposal.proposalId,
             proposalKey: proposal.proposalKey,
             kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
             // Domain payload only — dependencies live in summaryJson.
-            payloadJson: proposal.proposal.payload,
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: proposal.proposal.payload,
+            }) as unknown as Record<string, unknown>,
           })),
         ],
       });
@@ -1429,13 +1397,6 @@ export async function startCodexStructureExtraction(
         };
       });
       finalRelations = relationProposals.map((proposal) => {
-        if (proposal.applicability === "already-satisfied") {
-          return {
-            ...proposal,
-            revisionId:
-              proposal.revisionId ?? `satisfied-${proposal.proposalKey}`,
-          };
-        }
         const seed = byKey.get(proposal.proposalKey);
         if (!seed?.revisionId) {
           throw new Error(
@@ -1455,6 +1416,29 @@ export async function startCodexStructureExtraction(
         };
       });
 
+      // Terminal "適用不要" decisions so already-satisfied rows leave resumable
+      // unreviewed queues and survive cold-start without Apply attempts.
+      for (const proposal of finalRelations) {
+        if (
+          proposal.applicability !== "already-satisfied" ||
+          !proposal.revisionId
+        ) {
+          continue;
+        }
+        await appendDecision({
+          runId,
+          projectId: request.projectId,
+          proposalId: proposal.proposalId,
+          revisionId: proposal.revisionId,
+          decision: "deferred",
+          decisionJson: {
+            reason: "already-satisfied",
+            existingRelationRef: proposal.existingRelationRef ?? null,
+          },
+          createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+        });
+      }
+
       await narrativeExtractionFinishTask({
         runId,
         projectId: request.projectId,
@@ -1467,38 +1451,30 @@ export async function startCodexStructureExtraction(
           relationProposalCount: finalRelations.length,
         },
         artifacts: (() => {
+          const evidenceByProposalId: Record<
+            string,
+            readonly CodexReviewEvidenceQuote[]
+          > = {};
+          const relationLabelsByProposalId: Record<
+            string,
+            { subjectLabel: string; objectLabel: string }
+          > = {};
+          for (const proposal of finalProposals) {
+            evidenceByProposalId[proposal.proposalId] = proposal.evidence;
+          }
+          for (const proposal of finalRelations) {
+            evidenceByProposalId[proposal.proposalId] = proposal.evidence;
+            relationLabelsByProposalId[proposal.proposalId] = {
+              subjectLabel: proposal.subjectLabel,
+              objectLabel: proposal.objectLabel,
+            };
+          }
           const reviewDraft = buildInlineJsonArtifact(
             CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
             {
               proposalSetId: saved.proposalSetId,
-              entities: finalProposals.map((proposal) => ({
-                proposalId: proposal.proposalId,
-                proposalKey: proposal.proposalKey,
-                proposal: proposal.proposal,
-                evidence: proposal.evidence,
-                safety: proposal.safety,
-                applicability: proposal.applicability,
-                displayTitle: proposal.displayTitle,
-                blockedReason: proposal.blockedReason,
-                hypothesisId: proposal.hypothesisId,
-              })),
-              relations: finalRelations.map((proposal) => ({
-                proposalId: proposal.proposalId,
-                proposalKey: proposal.proposalKey,
-                proposal: {
-                  ...proposal.proposal,
-                  // Dependencies live in ProposalSet summaryJson.
-                  dependencies: [],
-                },
-                evidence: proposal.evidence,
-                subjectLabel: proposal.subjectLabel,
-                objectLabel: proposal.objectLabel,
-                applicability: proposal.applicability,
-                displayTitle: proposal.displayTitle,
-                blockedReason: proposal.blockedReason,
-                hypothesisId: proposal.hypothesisId,
-                existingRelationRef: proposal.existingRelationRef,
-              })),
+              evidenceByProposalId,
+              relationLabelsByProposalId,
             } as unknown as Record<string, unknown>,
           );
           rememberInlineJsonArtifact({
@@ -1574,6 +1550,7 @@ export async function startCodexStructureExtraction(
     proposals: finalProposals,
     relationProposals: finalRelations,
     catalog: catalogSnapshot,
+    existingRelations,
     ...counts,
   };
 
@@ -1716,28 +1693,6 @@ function isRelationCreatePayload(
   );
 }
 
-function isBindCodexEntityProposal(
-  value: unknown,
-): value is BindCodexEntityProposal {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return (
-    record.kind === CODEX_ENTITY_BIND_PROPOSAL_KIND &&
-    isBindCodexEntityPayload(record.payload)
-  );
-}
-
-function isCreateCodexRelationProposal(
-  value: unknown,
-): value is CreateCodexRelationProposal {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return (
-    record.kind === CODEX_RELATION_CREATE_PROPOSAL_KIND &&
-    isRelationCreatePayload(record.payload)
-  );
-}
-
 function wrapBindProposal(
   proposalId: string,
   payload: BindCodexEntityPayload,
@@ -1811,242 +1766,228 @@ function inferCompiledOperationFromNativePayload(
   return null;
 }
 
-function parseSafetyFlags(
-  value: unknown,
-  fallbackPayload: BindCodexEntityPayload,
-  evidence: readonly CodexReviewEvidenceQuote[],
-): CodexEntityProposalSafetyFlags {
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (
-      typeof record.evidenceExact === "boolean" &&
-      typeof record.typeResolved === "boolean" &&
-      typeof record.noExistingCandidates === "boolean" &&
-      typeof record.explicitProperName === "boolean" &&
-      typeof record.explicitAliasesOnly === "boolean" &&
-      typeof record.noRelationDeps === "boolean" &&
-      typeof record.createNew === "boolean"
-    ) {
-      return {
-        evidenceExact: record.evidenceExact,
-        typeResolved: record.typeResolved,
-        noExistingCandidates: record.noExistingCandidates,
-        explicitProperName: record.explicitProperName,
-        explicitAliasesOnly: record.explicitAliasesOnly,
-        noRelationDeps: record.noRelationDeps,
-        createNew: record.createNew,
-      };
-    }
-  }
-  return buildCodexEntityProposalSafetyFlags({
-    bindingKind: fallbackPayload.binding.kind,
-    typeStatus: fallbackPayload.typeResolution.status,
-    evidenceMethods: evidence.map((row) => row.method),
-    hasExistingCandidates: fallbackPayload.binding.kind !== "create-new",
-    hasProperNameMention: true,
-    aliasesAllExplicit: fallbackPayload.aliases.every(
-      (alias) => alias.status === "explicit",
-    ),
-  });
+function existingRelationsFromSummaryJson(
+  summaryJson: unknown,
+): readonly ExistingRelationCatalogRecord[] {
+  if (!summaryJson || typeof summaryJson !== "object") return [];
+  const raw = (summaryJson as Record<string, unknown>).existingRelations;
+  return Array.isArray(raw) ? (raw as ExistingRelationCatalogRecord[]) : [];
 }
 
-function parseReviewArtifact(
+function parseEvidenceArtifact(
   raw: CodexStructureReviewArtifactPayload | null,
-): CodexStructureReviewArtifactPayload {
+): {
+  readonly proposalSetId?: string;
+  readonly evidenceByProposalId: ReadonlyMap<
+    string,
+    readonly CodexReviewEvidenceQuote[]
+  >;
+  readonly relationLabelsByProposalId: ReadonlyMap<
+    string,
+    { readonly subjectLabel: string; readonly objectLabel: string }
+  >;
+} {
+  const evidenceByProposalId = new Map<
+    string,
+    readonly CodexReviewEvidenceQuote[]
+  >();
+  const relationLabelsByProposalId = new Map<
+    string,
+    { readonly subjectLabel: string; readonly objectLabel: string }
+  >();
   if (!raw) {
-    return { entities: [], relations: [] };
+    return { evidenceByProposalId, relationLabelsByProposalId };
   }
-  const entities = Array.isArray(raw.entities)
-    ? raw.entities.flatMap((row): CodexStructureReviewEntityArtifactRow[] => {
-        if (!row || typeof row !== "object") return [];
-        const record = row as Record<string, unknown>;
-        if (
-          typeof record.proposalId !== "string" ||
-          typeof record.proposalKey !== "string" ||
-          !isBindCodexEntityProposal(record.proposal)
-        ) {
-          return [];
-        }
-        const evidence = parseEvidenceQuotes(record.evidence);
-        return [
-          {
-            proposalId: record.proposalId,
-            proposalKey: record.proposalKey,
-            proposal: record.proposal,
-            evidence,
-            safety: parseSafetyFlags(
-              record.safety,
-              record.proposal.payload,
-              evidence,
-            ),
-            applicability:
-              record.applicability === "blocked" ? "blocked" : "applicable",
-            displayTitle:
-              typeof record.displayTitle === "string"
-                ? record.displayTitle
-                : record.proposal.payload.canonicalName,
-            blockedReason:
-              typeof record.blockedReason === "string"
-                ? record.blockedReason
-                : undefined,
-            hypothesisId:
-              typeof record.hypothesisId === "string"
-                ? record.hypothesisId
-                : undefined,
-          },
-        ];
-      })
-    : [];
-  const relations = Array.isArray(raw.relations)
-    ? raw.relations.flatMap(
-        (row): CodexStructureReviewRelationArtifactRow[] => {
-          if (!row || typeof row !== "object") return [];
-          const record = row as Record<string, unknown>;
-          if (
-            typeof record.proposalId !== "string" ||
-            typeof record.proposalKey !== "string" ||
-            !isCreateCodexRelationProposal(record.proposal)
-          ) {
-            return [];
-          }
-          const applicability =
-            record.applicability === "blocked"
-              ? "blocked"
-              : record.applicability === "already-satisfied"
-                ? "already-satisfied"
-                : "applicable";
-          return [
-            {
-              proposalId: record.proposalId,
-              proposalKey: record.proposalKey,
-              proposal: record.proposal,
-              evidence: parseEvidenceQuotes(record.evidence),
-              subjectLabel:
-                typeof record.subjectLabel === "string"
-                  ? record.subjectLabel
-                  : "",
-              objectLabel:
-                typeof record.objectLabel === "string"
-                  ? record.objectLabel
-                  : "",
-              applicability,
-              displayTitle:
-                typeof record.displayTitle === "string"
-                  ? record.displayTitle
-                  : record.proposal.payload.relation.forwardLabel,
-              blockedReason:
-                typeof record.blockedReason === "string"
-                  ? record.blockedReason
-                  : undefined,
-              hypothesisId:
-                typeof record.hypothesisId === "string"
-                  ? record.hypothesisId
-                  : undefined,
-              existingRelationRef:
-                typeof record.existingRelationRef === "string"
-                  ? record.existingRelationRef
-                  : undefined,
-            },
-          ];
-        },
-      )
-    : [];
+  if (
+    raw.evidenceByProposalId &&
+    typeof raw.evidenceByProposalId === "object"
+  ) {
+    for (const [proposalId, value] of Object.entries(
+      raw.evidenceByProposalId,
+    )) {
+      evidenceByProposalId.set(proposalId, parseEvidenceQuotes(value));
+    }
+  }
+  if (
+    raw.relationLabelsByProposalId &&
+    typeof raw.relationLabelsByProposalId === "object"
+  ) {
+    for (const [proposalId, value] of Object.entries(
+      raw.relationLabelsByProposalId,
+    )) {
+      if (!value || typeof value !== "object") continue;
+      const record = value as Record<string, unknown>;
+      if (
+        typeof record.subjectLabel === "string" &&
+        typeof record.objectLabel === "string"
+      ) {
+        relationLabelsByProposalId.set(proposalId, {
+          subjectLabel: record.subjectLabel,
+          objectLabel: record.objectLabel,
+        });
+      }
+    }
+  }
   return {
     proposalSetId:
       typeof raw.proposalSetId === "string" ? raw.proposalSetId : undefined,
-    entities,
-    relations,
+    evidenceByProposalId,
+    relationLabelsByProposalId,
   };
 }
 
-function rebuildEntityReviewRow(args: {
-  readonly artifact: CodexStructureReviewEntityArtifactRow;
-  readonly native: ReviewBundleProposal | undefined;
-}): CodexEntityReviewProposal {
-  const nativePayload = args.native?.payloadJson;
-  const bindPayload = isBindCodexEntityPayload(nativePayload)
-    ? nativePayload
-    : args.artifact.proposal.payload;
-  const proposal = wrapBindProposal(args.artifact.proposalId, bindPayload);
+function decisionAlreadySatisfied(
+  native: ReviewBundleProposal | undefined,
+): { readonly existingRelationRef?: string } | null {
+  const reason = native?.latestDecision?.decisionJson?.reason;
+  if (reason !== "already-satisfied") return null;
+  const ref = native?.latestDecision?.decisionJson?.existingRelationRef;
+  return {
+    existingRelationRef: typeof ref === "string" ? ref : undefined,
+  };
+}
+
+function rebuildEntityFromNative(args: {
+  readonly native: ReviewBundleProposal;
+  readonly evidence: readonly CodexReviewEvidenceQuote[];
+}): CodexEntityReviewProposal | null {
+  const envelope = parseCodexReviewRevisionEnvelope(args.native.payloadJson);
+  const reviewPayload = envelope
+    ? envelope.reviewPayload
+    : isBindCodexEntityPayload(args.native.payloadJson)
+      ? args.native.payloadJson
+      : null;
+  if (!reviewPayload || !isBindCodexEntityPayload(reviewPayload)) {
+    return null;
+  }
+  const proposal = wrapBindProposal(args.native.proposalId, reviewPayload);
+  const evidence =
+    args.evidence.length > 0
+      ? args.evidence
+      : [
+          {
+            anchorId: `missing-${args.native.proposalId}`,
+            quote: "",
+            documentRef: "",
+            method: "unknown" as const,
+            blocked: true,
+          },
+        ];
+  const safety = buildCodexEntityProposalSafetyFlags({
+    bindingKind: proposal.payload.binding.kind,
+    typeStatus: proposal.payload.typeResolution.status,
+    evidenceMethods: evidence.map((row) => row.method),
+    hasExistingCandidates: proposal.payload.binding.kind === "unresolved",
+    hasProperNameMention: true,
+    aliasesAllExplicit: proposal.payload.aliases.every(
+      (alias) => alias.status === "explicit",
+    ),
+  });
+  const typeResolved = proposal.payload.typeResolution.status === "resolved";
+  const applicability =
+    proposal.payload.binding.kind === "unresolved" ||
+    (proposal.payload.binding.kind === "create-new" && !typeResolved)
+      ? ("blocked" as const)
+      : ("applicable" as const);
   const compiledOperation =
-    args.native && !isBindCodexEntityPayload(nativePayload)
+    envelope?.compiledOperation ??
+    (!isBindCodexEntityPayload(args.native.payloadJson)
       ? inferCompiledOperationFromNativePayload(
           args.native.kind,
-          nativePayload ?? {},
+          args.native.payloadJson,
         )
-      : null;
+      : null);
   return {
-    proposalId: args.artifact.proposalId,
-    revisionId: args.native?.currentRevisionId ?? null,
-    proposalKey: args.artifact.proposalKey,
-    status: args.native?.status ?? "unreviewed",
-    applicability: args.artifact.applicability,
-    displayTitle: args.artifact.displayTitle,
+    proposalId: args.native.proposalId,
+    revisionId: args.native.currentRevisionId,
+    proposalKey: args.native.proposalKey,
+    status: args.native.status,
+    applicability,
+    displayTitle: proposal.payload.canonicalName,
     proposal,
-    evidence: args.artifact.evidence,
-    safety: parseSafetyFlags(
-      args.artifact.safety,
-      proposal.payload,
-      args.artifact.evidence,
-    ),
-    blockedReason: args.artifact.blockedReason,
-    hypothesisId: args.artifact.hypothesisId,
+    evidence,
+    safety,
+    blockedReason:
+      applicability === "blocked"
+        ? proposal.payload.binding.kind === "unresolved"
+          ? "Binding が未解決です"
+          : "Codex Type が未解決です"
+        : undefined,
     compiledOperation,
   };
 }
 
-function rebuildRelationReviewRow(args: {
-  readonly artifact: CodexStructureReviewRelationArtifactRow;
-  readonly native: ReviewBundleProposal | undefined;
+function rebuildRelationFromNative(args: {
+  readonly native: ReviewBundleProposal;
+  readonly evidence: readonly CodexReviewEvidenceQuote[];
+  readonly labels?: {
+    readonly subjectLabel: string;
+    readonly objectLabel: string;
+  };
   readonly dependencies: readonly {
     readonly kind: string;
     readonly proposalId: string;
   }[];
-}): CodexRelationReviewProposal {
-  const nativePayload = args.native?.payloadJson;
-  const payload = isRelationCreatePayload(nativePayload)
-    ? nativePayload
-    : args.artifact.proposal.payload;
+  readonly entityTitles: ReadonlyMap<string, string>;
+}): CodexRelationReviewProposal | null {
+  const envelope = parseCodexReviewRevisionEnvelope(args.native.payloadJson);
+  const reviewPayload = envelope
+    ? envelope.reviewPayload
+    : isRelationCreatePayload(args.native.payloadJson)
+      ? args.native.payloadJson
+      : null;
+  if (!reviewPayload || !isRelationCreatePayload(reviewPayload)) {
+    return null;
+  }
+  const satisfied = decisionAlreadySatisfied(args.native);
+  const subjectLabel =
+    args.labels?.subjectLabel ??
+    args.entityTitles.get(reviewPayload.subjectEntityId) ??
+    reviewPayload.subjectEntityId;
+  const objectLabel =
+    args.labels?.objectLabel ??
+    args.entityTitles.get(reviewPayload.objectEntityId) ??
+    reviewPayload.objectEntityId;
+  const proposal: CreateCodexRelationProposal = {
+    proposalId: args.native.proposalId,
+    kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+    target: { kind: "new", logicalRef: args.native.proposalKey },
+    payload: reviewPayload,
+    dependencies: args.dependencies.map((dep) => ({
+      kind: "requires-resolution" as const,
+      proposalId: dep.proposalId,
+    })),
+  };
   const compiledOperation =
-    args.native && !isRelationCreatePayload(nativePayload)
+    envelope?.compiledOperation ??
+    (!isRelationCreatePayload(args.native.payloadJson)
       ? inferCompiledOperationFromNativePayload(
           args.native.kind,
-          nativePayload ?? {},
+          args.native.payloadJson,
         )
-      : null;
+      : null);
   return {
-    proposalId: args.artifact.proposalId,
-    revisionId:
-      args.native?.currentRevisionId ??
-      (args.artifact.applicability === "already-satisfied"
-        ? `satisfied-${args.artifact.proposalKey}`
-        : null),
-    proposalKey: args.artifact.proposalKey,
-    status: args.native?.status ?? "unreviewed",
-    applicability: args.artifact.applicability,
-    displayTitle: args.artifact.displayTitle,
-    proposal: {
-      ...args.artifact.proposal,
-      proposalId: args.artifact.proposalId,
-      payload,
-      dependencies: args.dependencies.map((dep) => ({
-        kind: "requires-resolution" as const,
-        proposalId: dep.proposalId,
-      })),
-    },
-    evidence: args.artifact.evidence,
-    subjectLabel: args.artifact.subjectLabel,
-    objectLabel: args.artifact.objectLabel,
-    blockedReason: args.artifact.blockedReason,
-    hypothesisId: args.artifact.hypothesisId,
-    existingRelationRef: args.artifact.existingRelationRef,
+    proposalId: args.native.proposalId,
+    revisionId: args.native.currentRevisionId,
+    proposalKey: args.native.proposalKey,
+    status: args.native.status,
+    applicability: satisfied ? "already-satisfied" : "applicable",
+    displayTitle: `${subjectLabel} → ${reviewPayload.relation.forwardLabel} → ${objectLabel}`,
+    proposal,
+    evidence: args.evidence,
+    subjectLabel,
+    objectLabel,
+    existingRelationRef: satisfied?.existingRelationRef,
+    blockedReason: satisfied
+      ? "既に同じ関係が登録されています（適用不要）"
+      : undefined,
     compiledOperation,
   };
 }
 
 /**
- * Return the in-memory review projection for a Run owned by the given project.
- * Cold start: hydrates review-projection artifact + Native ProposalSet.
+ * Build a review projection from Native without publishing to the store.
+ * Callers (Dialog) must setProjection only after generation/folder authority checks.
  */
 export async function getCodexStructureExtractionReview(
   runId: string,
@@ -2054,6 +1995,7 @@ export async function getCodexStructureExtractionReview(
     readonly projectId: string;
     readonly workspacePath?: string;
     readonly openRevision?: number;
+    readonly folderId?: string;
   },
 ): Promise<CodexStructureExtractionReviewProjection> {
   const current = useCodexStructureExtractionStore.getState().projection;
@@ -2081,6 +2023,15 @@ export async function getCodexStructureExtractionReview(
         "Codex structure extraction run belongs to another workspace revision",
       );
     }
+    if (
+      scope?.folderId !== undefined &&
+      current.folderId != null &&
+      current.folderId !== scope.folderId
+    ) {
+      throw new Error(
+        "Codex structure extraction run belongs to another folder",
+      );
+    }
     return current;
   }
 
@@ -2095,6 +2046,16 @@ export async function getCodexStructureExtractionReview(
     runProjection.run.surfacePathId !== CODEX_STRUCTURE_EXTRACT_SURFACE_PATH
   ) {
     throw new Error("Run is not a codex structure extraction surface");
+  }
+  const runFolderId = folderIdFromScopeJson(runProjection.run.scopeJson);
+  if (
+    scope.folderId !== undefined &&
+    runFolderId !== null &&
+    runFolderId !== scope.folderId
+  ) {
+    throw new Error(
+      `Codex structure extraction run folder mismatch: expected ${scope.folderId}, got ${runFolderId}`,
+    );
   }
 
   let bundle;
@@ -2117,7 +2078,7 @@ export async function getCodexStructureExtractionReview(
     );
   }
 
-  const reviewArtifact = parseReviewArtifact(
+  const artifact = parseEvidenceArtifact(
     await loadInlineJsonArtifact<CodexStructureReviewArtifactPayload>(
       runId,
       CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
@@ -2125,37 +2086,57 @@ export async function getCodexStructureExtractionReview(
     ),
   );
 
-  if (
-    reviewArtifact.entities.length === 0 &&
-    reviewArtifact.relations.length === 0 &&
-    bundle.proposals.length > 0
-  ) {
-    throw new Error(
-      `Codex structure extraction run ${runId} missing review-projection artifact`,
-    );
-  }
-
-  const nativeById = new Map(
-    bundle.proposals.map((proposal) => [proposal.proposalId, proposal]),
-  );
   const depsByRelationId = relationDependenciesFromSummaryJson(
     bundle.proposalSet.summaryJson,
   );
-
-  const proposals = reviewArtifact.entities.map((artifact) =>
-    rebuildEntityReviewRow({
-      artifact,
-      native: nativeById.get(artifact.proposalId),
-    }),
+  const catalog = catalogFromSummaryJson(bundle.proposalSet.summaryJson);
+  const existingRelations = existingRelationsFromSummaryJson(
+    bundle.proposalSet.summaryJson,
   );
 
-  const relationProposals = reviewArtifact.relations.map((artifact) =>
-    rebuildRelationReviewRow({
-      artifact,
-      native: nativeById.get(artifact.proposalId),
-      dependencies: depsByRelationId.get(artifact.proposalId) ?? [],
-    }),
+  const entityNatives = bundle.proposals.filter(
+    (row) => row.kind === CODEX_ENTITY_BIND_PROPOSAL_KIND,
   );
+  const relationNatives = bundle.proposals.filter(
+    (row) => row.kind === CODEX_RELATION_CREATE_PROPOSAL_KIND,
+  );
+
+  const proposals = entityNatives.flatMap((native) => {
+    const row = rebuildEntityFromNative({
+      native,
+      evidence: artifact.evidenceByProposalId.get(native.proposalId) ?? [],
+    });
+    return row ? [row] : [];
+  });
+  if (proposals.length === 0 && entityNatives.length > 0) {
+    throw new Error(
+      `Codex structure extraction run ${runId} missing review payloads for entities`,
+    );
+  }
+
+  const entityTitles = new Map(
+    proposals.map((row) => [
+      row.proposal.payload.narrativeEntityId,
+      row.displayTitle,
+    ]),
+  );
+
+  const relationProposals = rematchCodexRelationProposals({
+    entities: proposals,
+    relations: relationNatives.flatMap((native) => {
+      const row = rebuildRelationFromNative({
+        native,
+        evidence: artifact.evidenceByProposalId.get(native.proposalId) ?? [],
+        labels: artifact.relationLabelsByProposalId.get(native.proposalId),
+        dependencies: depsByRelationId.get(native.proposalId) ?? [],
+        entityTitles,
+      });
+      return row ? [row] : [];
+    }),
+    projectId: scope.projectId,
+    existingRelations,
+    catalog,
+  });
 
   const counts = recountProjection(proposals, relationProposals);
   const projection: CodexStructureExtractionReviewProjection = {
@@ -2163,38 +2144,41 @@ export async function getCodexStructureExtractionReview(
     projectId: scope.projectId,
     workspacePath: scope.workspacePath ?? null,
     openRevision: scope.openRevision ?? null,
-    proposalSetId:
-      reviewArtifact.proposalSetId ?? bundle.proposalSet.proposalSetId,
-    folderId: folderIdFromScopeJson(runProjection.run.scopeJson),
+    proposalSetId: artifact.proposalSetId ?? bundle.proposalSet.proposalSetId,
+    folderId: runFolderId ?? scope.folderId ?? null,
     status: runProjection.run.status,
     coverage: coverageFromRunJson(runProjection.run.coverageJson),
     taskCounts: runProjection.taskCounts,
     proposals,
     relationProposals,
-    catalog: catalogFromSummaryJson(bundle.proposalSet.summaryJson),
+    catalog,
+    existingRelations,
     ...counts,
   };
 
   lastRunId = runId;
-  useCodexStructureExtractionStore.getState().setProjection(projection);
+  // Intentionally do not setProjection — Dialog publishes after generation checks.
   return projection;
 }
 
 /**
  * Restore the newest resumable Codex structure extraction review for a dialog scope.
  * Soft-fails (returns null) when Native ledger has no matching run.
+ * Does not publish to the store.
  */
 export async function restoreCodexStructureExtractionReview(scope: {
   readonly projectId: string;
   readonly workspacePath: string;
   readonly openRevision: number;
+  readonly folderId: string;
 }): Promise<CodexStructureExtractionReviewProjection | null> {
   const current = useCodexStructureExtractionStore.getState().projection;
   if (
     current &&
     current.projectId === scope.projectId &&
     current.workspacePath === scope.workspacePath &&
-    current.openRevision === scope.openRevision
+    current.openRevision === scope.openRevision &&
+    current.folderId === scope.folderId
   ) {
     return current;
   }
@@ -2203,17 +2187,19 @@ export async function restoreCodexStructureExtractionReview(scope: {
     const resumable = await listResumableRuns({
       projectId: scope.projectId,
       surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
-      limit: 5,
+      limit: 8,
     });
     for (const candidate of resumable) {
+      const candidateFolder = folderIdFromScopeJson(candidate.run.scopeJson);
+      if (candidateFolder !== null && candidateFolder !== scope.folderId) {
+        continue;
+      }
       try {
         return await getCodexStructureExtractionReview(
           candidate.run.runId,
           scope,
         );
       } catch {
-        // Newer crashed runs without a durable ProposalSet must not hide
-        // older completed reviews that still hydrate.
         continue;
       }
     }
@@ -2251,6 +2237,36 @@ export async function applyCodexStructureExtractionReview(
     throw new Error("Missing proposalSetId for codex commit");
   }
 
+  // Preflight: rematch existing Relations so Apply never sends semantic duplicates.
+  const rematchedRelations = rematchCodexRelationProposals({
+    entities: projection.proposals,
+    relations: projection.relationProposals,
+    projectId: projection.projectId,
+    existingRelations: projection.existingRelations ?? [],
+    catalog: projection.catalog,
+  });
+  if (
+    rematchedRelations.some(
+      (row, index) =>
+        row.applicability !==
+        projection.relationProposals[index]?.applicability,
+    )
+  ) {
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...projection,
+      relationProposals: rematchedRelations,
+    });
+    await persistNewlySatisfiedRelationDecisions(
+      projection,
+      useCodexStructureExtractionStore.getState().projection ?? {
+        ...projection,
+        relationProposals: rematchedRelations,
+      },
+    );
+  }
+  const active =
+    useCodexStructureExtractionStore.getState().projection ?? projection;
+
   const operations: {
     operation: CodexDomainOperationV1;
     proposalId: string;
@@ -2263,7 +2279,7 @@ export async function applyCodexStructureExtractionReview(
     source: "existing";
   }[] = [];
 
-  const approvedEntities = projection.proposals.filter(
+  const approvedEntities = active.proposals.filter(
     (proposal) =>
       proposal.applicability === "applicable" &&
       proposal.status === "approved" &&
@@ -2274,7 +2290,7 @@ export async function applyCodexStructureExtractionReview(
     const revisionId = review.revisionId!;
     const operation =
       (review.compiledOperation as CodexDomainOperationV1 | null | undefined) ??
-      compileEntityOperationForReview(review, projection.catalog, input);
+      compileEntityOperationForReview(review, active.catalog, input);
     if (!operation) {
       throw new Error(
         `Approved entity proposal ${review.proposalId} has no compilable operation`,
@@ -2313,7 +2329,7 @@ export async function applyCodexStructureExtractionReview(
     });
   }
 
-  const approvedRelations = projection.relationProposals.filter(
+  const approvedRelations = active.relationProposals.filter(
     (proposal) =>
       proposal.applicability === "applicable" &&
       proposal.status === "approved" &&
@@ -2334,11 +2350,14 @@ export async function applyCodexStructureExtractionReview(
   }
 
   if (operations.length === 0) return 0;
+  if (!active.proposalSetId) {
+    throw new Error("Missing proposalSetId for codex commit");
+  }
 
   await prepareAndApplyCodexCommit({
     projectId: input.projectId,
-    runId: projection.runId,
-    proposalSetId: projection.proposalSetId,
+    runId: active.runId,
+    proposalSetId: active.proposalSetId,
     requestId: crypto.randomUUID(),
     sessionId: crypto.randomUUID(),
     surface: "codex/CodexStructureExtractDialog",
@@ -2484,6 +2503,42 @@ export async function decideCodexStructureProposal(args: {
       };
     } else {
       const relation = proposal as CodexRelationReviewProposal;
+      const rematched = evaluateCodexRelationApplicability({
+        relation,
+        entities: projection.proposals,
+        projectId: projection.projectId,
+        existingRelations: projection.existingRelations ?? [],
+        catalog: projection.catalog,
+      });
+      if (rematched.applicability === "already-satisfied") {
+        useCodexStructureExtractionStore.getState().setProjection({
+          ...projection,
+          relationProposals: projection.relationProposals.map((item) =>
+            item.proposalId === args.proposalId ? rematched : item,
+          ),
+          ...recountProjection(
+            projection.proposals,
+            projection.relationProposals.map((item) =>
+              item.proposalId === args.proposalId ? rematched : item,
+            ),
+          ),
+        });
+        if (rematched.revisionId) {
+          await appendDecision({
+            runId: projection.runId,
+            projectId: projection.projectId,
+            proposalId: rematched.proposalId,
+            revisionId: rematched.revisionId,
+            decision: "deferred",
+            decisionJson: {
+              reason: "already-satisfied",
+              existingRelationRef: rematched.existingRelationRef ?? null,
+            },
+            createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+          });
+        }
+        return;
+      }
       if (!relationEndpointsReady(relation, projection.proposals)) {
         throw new Error(
           `Cannot approve Relation ${args.proposalId}: 先に両端の Entity proposal を承認してください`,
@@ -2533,7 +2588,13 @@ export async function decideCodexStructureProposal(args: {
       projectId: projection.projectId,
       proposalId: args.proposalId,
       expectedCurrentRevisionId: revisionId,
-      payloadJson: compiledOperation.payload,
+      payloadJson: buildCodexReviewRevisionEnvelope({
+        reviewPayload:
+          kind === "entity"
+            ? (proposal as CodexEntityReviewProposal).proposal.payload
+            : (proposal as CodexRelationReviewProposal).proposal.payload,
+        compiledOperation,
+      }) as unknown as Readonly<Record<string, unknown>>,
       decision,
       createdBy: "codex-structure-extract-dialog",
     });
@@ -2676,9 +2737,9 @@ export async function reviseCodexStructureProposal(args: {
     projectId: projection.projectId,
     proposalId: args.proposalId,
     expectedCurrentRevisionId: current.revisionId,
-    payloadJson: updated.proposal.payload as unknown as Readonly<
-      Record<string, unknown>
-    >,
+    payloadJson: buildCodexReviewRevisionEnvelope({
+      reviewPayload: updated.proposal.payload,
+    }) as unknown as Readonly<Record<string, unknown>>,
     createdBy: "codex-structure-extract-dialog",
   });
   const latest = useCodexStructureExtractionStore.getState().projection;
@@ -2691,4 +2752,185 @@ export async function reviseCodexStructureProposal(args: {
         : proposal,
     ),
   });
+  await persistNewlySatisfiedRelationDecisions(projection, latest);
+}
+
+async function persistNewlySatisfiedRelationDecisions(
+  before: CodexStructureExtractionReviewProjection,
+  after: CodexStructureExtractionReviewProjection,
+): Promise<void> {
+  for (const relation of after.relationProposals) {
+    if (
+      relation.applicability !== "already-satisfied" ||
+      !relation.revisionId
+    ) {
+      continue;
+    }
+    const previous = before.relationProposals.find(
+      (item) => item.proposalId === relation.proposalId,
+    );
+    if (previous?.applicability === "already-satisfied") continue;
+    await appendDecision({
+      runId: after.runId,
+      projectId: after.projectId,
+      proposalId: relation.proposalId,
+      revisionId: relation.revisionId,
+      decision: "deferred",
+      decisionJson: {
+        reason: "already-satisfied",
+        existingRelationRef: relation.existingRelationRef ?? null,
+      },
+      createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+    });
+  }
+}
+
+/**
+ * Persist Binding resolution to Native and rematch Relations for already-satisfied.
+ */
+export async function resolveCodexStructureBinding(args: {
+  readonly proposalId: string;
+  readonly resolution:
+    | { readonly kind: "create-new" }
+    | { readonly kind: "bind-existing"; readonly entityRef: string };
+}): Promise<void> {
+  const store = useCodexStructureExtractionStore.getState();
+  const projection = store.projection;
+  if (!projection)
+    throw new Error("No active codex structure extraction review");
+  const current = projection.proposals.find(
+    (item) => item.proposalId === args.proposalId,
+  );
+  if (!current?.revisionId) {
+    throw new Error(`Proposal ${args.proposalId} missing revisionId`);
+  }
+  store.resolveBinding(args.proposalId, args.resolution);
+  const updated = useCodexStructureExtractionStore
+    .getState()
+    .projection?.proposals.find((item) => item.proposalId === args.proposalId);
+  if (!updated) {
+    throw new Error(`Proposal ${args.proposalId} missing after resolve`);
+  }
+  const result = await appendRevision({
+    runId: projection.runId,
+    projectId: projection.projectId,
+    proposalId: args.proposalId,
+    expectedCurrentRevisionId: current.revisionId,
+    payloadJson: buildCodexReviewRevisionEnvelope({
+      reviewPayload: updated.proposal.payload,
+    }) as unknown as Readonly<Record<string, unknown>>,
+    createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+  });
+  const mid = useCodexStructureExtractionStore.getState().projection;
+  if (!mid) return;
+  useCodexStructureExtractionStore.getState().setProjection({
+    ...mid,
+    proposals: mid.proposals.map((proposal) =>
+      proposal.proposalId === args.proposalId
+        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+        : proposal,
+    ),
+  });
+  const latest = useCodexStructureExtractionStore.getState().projection;
+  if (!latest) return;
+  await persistNewlySatisfiedRelationDecisions(projection, latest);
+}
+
+export async function reviseCodexStructureRelation(args: {
+  readonly proposalId: string;
+  readonly patch: {
+    directionality?: "directed" | "symmetric";
+    forwardLabel?: string;
+    inverseLabel?: string | null;
+  };
+}): Promise<void> {
+  const store = useCodexStructureExtractionStore.getState();
+  const projection = store.projection;
+  if (!projection)
+    throw new Error("No active codex structure extraction review");
+  const current = projection.relationProposals.find(
+    (item) => item.proposalId === args.proposalId,
+  );
+  if (!current?.revisionId) {
+    throw new Error(`Relation ${args.proposalId} missing revisionId`);
+  }
+  store.reviseRelationFields(args.proposalId, args.patch);
+  const updated = useCodexStructureExtractionStore
+    .getState()
+    .projection?.relationProposals.find(
+      (item) => item.proposalId === args.proposalId,
+    );
+  if (!updated) {
+    throw new Error(`Relation ${args.proposalId} missing after revise`);
+  }
+  const result = await appendRevision({
+    runId: projection.runId,
+    projectId: projection.projectId,
+    proposalId: args.proposalId,
+    expectedCurrentRevisionId: current.revisionId,
+    payloadJson: buildCodexReviewRevisionEnvelope({
+      reviewPayload: updated.proposal.payload,
+    }) as unknown as Readonly<Record<string, unknown>>,
+    createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+  });
+  const mid = useCodexStructureExtractionStore.getState().projection;
+  if (!mid) return;
+  useCodexStructureExtractionStore.getState().setProjection({
+    ...mid,
+    relationProposals: mid.relationProposals.map((proposal) =>
+      proposal.proposalId === args.proposalId
+        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+        : proposal,
+    ),
+  });
+  const latest = useCodexStructureExtractionStore.getState().projection;
+  if (!latest) return;
+  await persistNewlySatisfiedRelationDecisions(projection, latest);
+}
+
+export async function swapCodexStructureRelationEndpoints(args: {
+  readonly proposalId: string;
+}): Promise<void> {
+  const store = useCodexStructureExtractionStore.getState();
+  const projection = store.projection;
+  if (!projection)
+    throw new Error("No active codex structure extraction review");
+  const current = projection.relationProposals.find(
+    (item) => item.proposalId === args.proposalId,
+  );
+  if (!current?.revisionId) {
+    throw new Error(`Relation ${args.proposalId} missing revisionId`);
+  }
+  store.swapRelationEndpoints(args.proposalId);
+  const updated = useCodexStructureExtractionStore
+    .getState()
+    .projection?.relationProposals.find(
+      (item) => item.proposalId === args.proposalId,
+    );
+  if (!updated) {
+    throw new Error(`Relation ${args.proposalId} missing after swap`);
+  }
+  const result = await appendRevision({
+    runId: projection.runId,
+    projectId: projection.projectId,
+    proposalId: args.proposalId,
+    expectedCurrentRevisionId: current.revisionId,
+    payloadJson: buildCodexReviewRevisionEnvelope({
+      reviewPayload: updated.proposal.payload,
+    }) as unknown as Readonly<Record<string, unknown>>,
+    createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+  });
+  const mid = useCodexStructureExtractionStore.getState().projection;
+  if (!mid) return;
+  useCodexStructureExtractionStore.getState().setProjection({
+    ...mid,
+    relationProposals: mid.relationProposals.map((proposal) =>
+      proposal.proposalId === args.proposalId
+        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+        : proposal,
+    ),
+  });
+  const latest = useCodexStructureExtractionStore.getState().projection;
+  if (!latest) return;
+  await persistNewlySatisfiedRelationDecisions(projection, latest);
 }

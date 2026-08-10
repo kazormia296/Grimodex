@@ -90,6 +90,11 @@ export declare class Backend {
   eventGetVersion(projectId: string, eventId: string): Promise<string>
   eventSetParticipants(payload: any): Promise<string>
   /**
+   * Project Calendar create/update, single-row OCC (see `chronicle` module
+   * docs). Returns the persisted row as JSON, or JSON `null` on conflict.
+   */
+  projectCalendarUpsert(payload: any): Promise<string>
+  /**
    * Renderer domain aggregates that previously crossed the preload
    * boundary as renderer-authored SQL batches.
    */

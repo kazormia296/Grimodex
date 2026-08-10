@@ -4,6 +4,10 @@ import { CodexRelationEditor } from "./CodexRelationEditor";
 import { CodexRelationProposalCard } from "./CodexRelationProposalCard";
 import { decideCodexStructureProposal } from "./codexStructureExtractionApi";
 import {
+  reviseCodexStructureRelation,
+  swapCodexStructureRelationEndpoints,
+} from "./codexStructureExtractionApi";
+import {
   useCodexStructureExtractionStore,
   type CodexRelationReviewProposal,
   type CodexReviewEvidenceQuote,
@@ -34,12 +38,6 @@ export function CodexRelationProposalReview({
   );
   const selectRelationProposal = useCodexStructureExtractionStore(
     (s) => s.selectRelationProposal,
-  );
-  const reviseRelationFields = useCodexStructureExtractionStore(
-    (s) => s.reviseRelationFields,
-  );
-  const swapRelationEndpoints = useCodexStructureExtractionStore(
-    (s) => s.swapRelationEndpoints,
   );
 
   const proposals = proposalsProp ?? storeProjection?.relationProposals ?? [];
@@ -119,10 +117,15 @@ export function CodexRelationProposalReview({
               <CodexRelationEditor
                 proposal={selected}
                 onChange={(patch) =>
-                  reviseRelationFields(selected.proposalId, patch)
+                  void reviseCodexStructureRelation({
+                    proposalId: selected.proposalId,
+                    patch,
+                  })
                 }
                 onSwapEndpoints={() =>
-                  swapRelationEndpoints(selected.proposalId)
+                  void swapCodexStructureRelationEndpoints({
+                    proposalId: selected.proposalId,
+                  })
                 }
               />
             )}

@@ -8,6 +8,7 @@ import {
   bulkApproveSafeCodexStructureProposals,
   decideCodexStructureProposal,
   reviseCodexStructureProposal,
+  resolveCodexStructureBinding,
 } from "./codexStructureExtractionApi";
 import {
   isSafeForCodexEntityBulkApprove,
@@ -41,9 +42,6 @@ export function CodexEntityProposalReview({
   );
   const selectProposal = useCodexStructureExtractionStore(
     (s) => s.selectProposal,
-  );
-  const resolveBinding = useCodexStructureExtractionStore(
-    (s) => s.resolveBinding,
   );
   const reviseProposalFields = useCodexStructureExtractionStore(
     (s) => s.reviseProposalFields,
@@ -276,12 +274,15 @@ export function CodexEntityProposalReview({
                 candidates={unresolvedBinding.candidates}
                 candidateLabels={candidateLabels}
                 onCreateNew={() =>
-                  resolveBinding(selected.proposalId, { kind: "create-new" })
+                  void resolveCodexStructureBinding({
+                    proposalId: selected.proposalId,
+                    resolution: { kind: "create-new" },
+                  })
                 }
                 onUseExisting={(entityRef) =>
-                  resolveBinding(selected.proposalId, {
-                    kind: "bind-existing",
-                    entityRef,
+                  void resolveCodexStructureBinding({
+                    proposalId: selected.proposalId,
+                    resolution: { kind: "bind-existing", entityRef },
                   })
                 }
               />
