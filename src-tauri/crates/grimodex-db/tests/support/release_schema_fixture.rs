@@ -3,9 +3,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use grimodex_core::{PREVIOUS_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION};
-use grimodex_db::Database;
+use grimodex_core::{
+    workspace_schema::has_current_schema_checkpoint_invariants, PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+};
 use rusqlite::{config::DbConfig, params, Connection, OptionalExtension};
+
+const PREVIOUS_RELEASE_SCHEMA_SQL: &str = include_str!("../../../../../scripts/schema-seed-ja.sql");
 
 pub const PROJECT_ID: &str = "gate-a2-project";
 pub const FOLDER_ID: &str = "gate-a2-folder";
@@ -25,15 +29,15 @@ pub fn seed_previous_release_workspace(workspace: &Path) -> PathBuf {
     fs::create_dir_all(workspace).expect("create workspace");
     let db_path = workspace.join("grimodex.db");
     {
-        let db = Database::new(&db_path).expect("open release fixture db");
-        db.migrate().expect("create current release-shaped schema");
-        db.with_conn(seed_release_rows)
-            .expect("seed release-shaped fixture rows");
-        db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", PREVIOUS_COMPATIBLE_SCHEMA_VERSION)?;
-            Ok(())
-        })
-        .expect("downgrade fixture marker to previous release");
+        let conn = Connection::open(&db_path).expect("open release fixture db");
+        conn.execute_batch(PREVIOUS_RELEASE_SCHEMA_SQL)
+            .expect("create previous-release seed schema");
+        create_previous_release_ai_audit_schema(&conn)
+            .expect("create previous-release AI audit schema");
+        seed_release_rows(&conn).expect("seed previous-release fixture rows");
+        conn.pragma_update(None, "user_version", PREVIOUS_COMPATIBLE_SCHEMA_VERSION)
+            .expect("stamp fixture marker as previous release");
+        assert_previous_release_schema_on_connection(&conn);
     }
     grimodex_db::migration_supervisor::seal_sqlite_image(&db_path)
         .expect("seal base release fixture before dirty WAL write");
@@ -52,6 +56,7 @@ pub fn assert_release_fixture_rows(db_path: &Path) {
         SCHEMA_VERSION,
         "fixture should be migrated to the current marker"
     );
+    assert_current_release_schema_on_connection(&conn);
     assert_release_rows_on_connection(&conn);
     let wal_value: String = conn
         .query_row(
@@ -70,6 +75,7 @@ pub fn assert_previous_release_snapshot_rows(snapshot_path: &Path) {
         PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
         "snapshot must preserve the source release marker"
     );
+    assert_previous_release_schema_on_connection(&conn);
     assert_release_rows_on_connection(&conn);
     let wal_value: String = conn
         .query_row(
@@ -97,6 +103,92 @@ pub fn latest_migration_snapshot(workspace: &Path) -> PathBuf {
 pub fn live_user_version(workspace: &Path) -> i32 {
     let conn = Connection::open(workspace.join("grimodex.db")).expect("open live db");
     user_version(&conn)
+}
+
+pub fn assert_previous_release_fixture_shape(db_path: &Path) {
+    let conn = Connection::open(db_path).expect("open pre-migration fixture");
+    assert_previous_release_schema_on_connection(&conn);
+}
+
+fn create_previous_release_ai_audit_schema(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ai_audit_events (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id            TEXT NOT NULL,
+            project_id          TEXT REFERENCES projects(id) ON DELETE CASCADE,
+            sequence            INTEGER NOT NULL,
+            event_id            TEXT NOT NULL,
+            execution_id        TEXT NOT NULL,
+            operation_id        TEXT NOT NULL,
+            parent_execution_id TEXT,
+            path_id             TEXT NOT NULL,
+            event_type          TEXT NOT NULL,
+            timestamp           INTEGER NOT NULL,
+            recorded_at         INTEGER NOT NULL,
+            payload             TEXT NOT NULL,
+            payload_sha256      TEXT NOT NULL,
+            prev_hash           TEXT NOT NULL,
+            hash                TEXT NOT NULL,
+            CHECK (
+                (scope_id = 'workspace' AND project_id IS NULL)
+                OR
+                (project_id IS NOT NULL AND scope_id = 'project:' || project_id)
+            )
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_audit_scope_seq
+            ON ai_audit_events(scope_id, sequence);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_audit_scope_event
+            ON ai_audit_events(scope_id, event_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_execution
+            ON ai_audit_events(scope_id, execution_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_execution_event_type
+            ON ai_audit_events(scope_id, execution_id, event_type);
+        CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_operation
+            ON ai_audit_events(scope_id, operation_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_timestamp
+            ON ai_audit_events(scope_id, timestamp, sequence);",
+    )?;
+    Ok(())
+}
+
+fn assert_previous_release_schema_on_connection(conn: &Connection) {
+    assert_eq!(
+        user_version(conn),
+        PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        "previous-release fixture should start at the previous marker"
+    );
+    assert!(
+        !table_exists(conn, "editor_stickies"),
+        "previous-release physical schema must not already include editor_stickies"
+    );
+    assert!(
+        !has_current_schema_checkpoint_invariants(conn)
+            .expect("probe current schema checkpoint invariants"),
+        "previous-release physical schema must not already satisfy current invariants"
+    );
+}
+
+fn assert_current_release_schema_on_connection(conn: &Connection) {
+    assert!(
+        table_exists(conn, "editor_stickies"),
+        "migrated fixture should include the v3 editor_stickies table"
+    );
+    assert!(
+        has_current_schema_checkpoint_invariants(conn)
+            .expect("probe current schema checkpoint invariants"),
+        "migrated fixture should satisfy current schema checkpoint invariants"
+    );
+}
+
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+        )",
+        [table],
+        |row| row.get(0),
+    )
+    .expect("probe table existence")
 }
 
 fn seed_release_rows(conn: &Connection) -> anyhow::Result<()> {
