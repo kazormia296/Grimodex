@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 13,
+  "schemaVersion": 14,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -4122,6 +4122,70 @@
       ],
       "createSql": "CREATE TABLE generation_logs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')), command_id TEXT, instruction TEXT, prompt_full TEXT, model TEXT, trace_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "generic_extraction_schemas": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "description": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "name": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "schema_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "id",
+            "revision"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE generic_extraction_schemas ( id TEXT NOT NULL, revision INTEGER NOT NULL, name TEXT NOT NULL, description TEXT, digest TEXT NOT NULL, schema_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(id, revision) )"
+    },
     "idempotency_requests": {
       "kind": "table",
       "columns": {
@@ -4247,6 +4311,202 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE impact_review_baselines ( entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, snapshot_json TEXT NOT NULL, content_hash TEXT NOT NULL, reviewed_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "import_capture_blobs": {
+      "kind": "table",
+      "columns": {
+        "byte_length": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_capture_blobs ( digest TEXT PRIMARY KEY, byte_length INTEGER NOT NULL, created_at TEXT NOT NULL )"
+    },
+    "import_capture_entries": {
+      "kind": "table",
+      "columns": {
+        "blob_ref": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "byte_length": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "capture_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "capture_status": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "extension": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "parent_resource_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "raw_digest": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "relative_path": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resource_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_captures",
+          "from": "capture_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_capture_entries ( id TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE, resource_key TEXT NOT NULL, parent_resource_key TEXT, relative_path TEXT NOT NULL, kind TEXT NOT NULL, byte_length INTEGER NOT NULL, extension TEXT, capture_status TEXT NOT NULL, raw_digest TEXT, blob_ref TEXT, created_at TEXT NOT NULL )"
+    },
+    "import_captures": {
+      "kind": "table",
+      "columns": {
+        "budget_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "sealed_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_captures ( id TEXT PRIMARY KEY, state TEXT NOT NULL, source_kind TEXT NOT NULL, sealed_digest TEXT, budget_json TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
     "import_commits": {
       "kind": "table",
       "columns": {
@@ -4323,6 +4583,88 @@
         }
       ],
       "createSql": "CREATE TABLE import_commits ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, project_id TEXT, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, created_at TEXT NOT NULL, UNIQUE(request_id) )"
+    },
+    "import_decoded_resources": {
+      "kind": "table",
+      "columns": {
+        "capture_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decoded_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decoder_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decoder_version": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resource_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_captures",
+          "from": "capture_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_decoded_resources ( id TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE, resource_key TEXT NOT NULL, decoder_id TEXT NOT NULL, decoder_version TEXT NOT NULL, kind TEXT NOT NULL, digest TEXT NOT NULL, decoded_json TEXT NOT NULL, created_at TEXT NOT NULL )"
     },
     "import_evidence_bindings": {
       "kind": "table",
@@ -11328,6 +11670,18 @@
       ],
       "createSql": "CREATE INDEX idx_generation_logs_scene ON generation_logs(scene_node_id)"
     },
+    "idx_generic_extraction_schemas_digest": {
+      "table": "generic_extraction_schemas",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "digest"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_generic_extraction_schemas_digest ON generic_extraction_schemas(digest)"
+    },
     "idx_idempotency_requests_project_created": {
       "table": "idempotency_requests",
       "unique": false,
@@ -11356,6 +11710,42 @@
       ],
       "createSql": "CREATE INDEX idx_impact_baselines_project ON impact_review_baselines(project_id)"
     },
+    "idx_import_capture_entries_capture": {
+      "table": "import_capture_entries",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "capture_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "capture_status"
+        },
+        {
+          "ordinal": 2,
+          "column": "relative_path"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_capture_entries_capture ON import_capture_entries(capture_id, capture_status, relative_path)"
+    },
+    "idx_import_captures_state": {
+      "table": "import_captures",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "state"
+        },
+        {
+          "ordinal": 1,
+          "column": "updated_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_captures_state ON import_captures(state, updated_at)"
+    },
     "idx_import_commits_session": {
       "table": "import_commits",
       "unique": false,
@@ -11371,6 +11761,22 @@
         }
       ],
       "createSql": "CREATE INDEX idx_import_commits_session ON import_commits(session_id, created_at)"
+    },
+    "idx_import_decoded_resources_capture": {
+      "table": "import_decoded_resources",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "capture_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "resource_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_decoded_resources_capture ON import_decoded_resources(capture_id, resource_key)"
     },
     "idx_import_evidence_bindings_session": {
       "table": "import_evidence_bindings",

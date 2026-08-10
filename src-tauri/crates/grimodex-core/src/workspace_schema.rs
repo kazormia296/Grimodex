@@ -548,13 +548,9 @@ pub fn has_v12_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     )
 }
 
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 13 adds Import Session persistence on top of
-/// every v12 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 13 || !has_v3_physical_invariants(conn)? {
-        return Ok(false);
-    }
+/// SCHEMA 13 checkpoint: Import Session persistence on top of every v12
+/// invariant.
+pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     if !has_v12_checkpoint_invariants(conn)? {
         return Ok(false);
     }
@@ -575,6 +571,19 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
     .iter()
     .all(|name| columns.iter().any(|column| column.name == *name)))
 }
+
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 14 adds Generic Import capture/seal tables on
+/// top of every v13 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    Ok(
+        SCHEMA_VERSION == 14
+            && has_v3_physical_invariants(conn)?
+            && has_v13_checkpoint_invariants(conn)?
+            && table_exists(conn, "import_captures")?,
+    )
+}
+
 
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

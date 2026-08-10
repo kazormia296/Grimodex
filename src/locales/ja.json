@@ -483,6 +483,17 @@
       "folder-too-large": "フォルダー内の原稿ファイル合計が大きすぎます（上限 {{maxMiB}} MiB）",
       "path-too-deep": "フォルダー階層が深すぎます（上限 {{maxDepth}} 階層）"
     },
+    "generic": {
+      "wizardTitle": "Generic インポート（プレビュー）",
+      "runPreview": "プレビュー実行",
+      "resourceTreeHint": "取り込み対象ファイルと推定ロール（プレビュー）。",
+      "noResources": "リソースがありません",
+      "rolePickerHint": "リソースの semantic role を確認します（プレビュー）。",
+      "disposition": "配置",
+      "summaryHint": "Generic インポートの組み立て概要（プレビュー）。",
+      "skipped": "スキップ",
+      "decoderPickerHint": "デコーダーは拡張子とマジックバイトから自動選択されます（プレビュー）。"
+    },
     "scan": {
       "description": "Scan のプライベート editor seed (JSON) を読み込み、新規プロジェクトへ段階適用します。既存プロジェクトは変更されません。",
       "tooLarge": "Scan seed が大きすぎます（最大32MB）。",
@@ -1511,7 +1522,11 @@
         "narrative_foreshadow_signal_synthesize": "伏線 setup 信号 統合",
         "narrative_setup_payoff_link": "Setup/Payoff リンク",
         "narrative_foreshadow_global_reconcile": "伏線候補 グローバル調停",
-        "narrative_foreshadow_quality_evaluate": "伏線品質 評価"
+        "narrative_foreshadow_quality_evaluate": "伏線品質 評価",
+        "generic_import_role_classify": "Generic Import ロール分類",
+        "generic_import_document_partition": "Generic Import 文書分割",
+        "generic_import_custom_extract": "Generic Import カスタム抽出",
+        "generic_import_record_reconcile": "Generic Import レコード統合"
       }
     }
   },

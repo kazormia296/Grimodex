@@ -10,6 +10,7 @@ import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
 import { NovelImportFlow } from "./flows/NovelImportFlow";
 import { ScanImportFlow } from "./flows/ScanImportFlow";
 import { ImportWizard } from "./wizard/ImportWizard";
+import { GenericImportWizardPreview } from "./wizard/generic/GenericImportWizardPreview";
 
 interface Props {
   open: boolean;
@@ -53,6 +54,7 @@ export function ImportDialogBody({
   const [flowBusy, setFlowBusy] = useState(false);
   const [flowFailed, setFlowFailed] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [genericWizardOpen, setGenericWizardOpen] = useState(false);
   const interactionLocked = flowBusy || flowFailed;
 
   const handleBusyChange = useCallback(
@@ -133,7 +135,7 @@ export function ImportDialogBody({
         {t("import.dialogTitleUnified")}
       </h2>
 
-      <div className="flex shrink-0 justify-end">
+      <div className="flex shrink-0 justify-end gap-2">
         <button
           type="button"
           data-testid="import-wizard-entry"
@@ -143,9 +145,24 @@ export function ImportDialogBody({
         >
           新インポート（プレビュー）
         </button>
+        <button
+          type="button"
+          data-testid="import-generic-wizard-entry"
+          disabled={interactionLocked}
+          onClick={() => setGenericWizardOpen(true)}
+          className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        >
+          Generic（プレビュー）
+        </button>
       </div>
 
-      {wizardOpen ? (
+      {genericWizardOpen ? (
+        <GenericImportWizardPreview
+          onClose={() => {
+            setGenericWizardOpen(false);
+          }}
+        />
+      ) : wizardOpen ? (
         <ImportWizard
           onClose={() => {
             setWizardOpen(false);

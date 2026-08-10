@@ -2512,6 +2512,101 @@ export const importEvidenceBindings = sqliteTable(
   ],
 );
 
+// =========================================================================
+// Import Captures: portable native inventory, digest registry, and decoder
+// outputs. Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 14).
+// =========================================================================
+export const importCaptures = sqliteTable(
+  "import_captures",
+  {
+    id: text("id").primaryKey(),
+    state: text("state").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sealedDigest: text("sealed_digest"),
+    budgetJson: text("budget_json").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [index("idx_import_captures_state").on(table.state, table.updatedAt)],
+);
+
+export const importCaptureEntries = sqliteTable(
+  "import_capture_entries",
+  {
+    id: text("id").primaryKey(),
+    captureId: text("capture_id")
+      .notNull()
+      .references(() => importCaptures.id, { onDelete: "cascade" }),
+    resourceKey: text("resource_key").notNull(),
+    parentResourceKey: text("parent_resource_key"),
+    relativePath: text("relative_path").notNull(),
+    kind: text("kind").notNull(),
+    byteLength: integer("byte_length").notNull(),
+    extension: text("extension"),
+    captureStatus: text("capture_status").notNull(),
+    rawDigest: text("raw_digest"),
+    blobRef: text("blob_ref"),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_capture_entries_capture").on(
+      table.captureId,
+      table.captureStatus,
+      table.relativePath,
+    ),
+  ],
+);
+
+export const importCaptureBlobs = sqliteTable("import_capture_blobs", {
+  digest: text("digest").primaryKey(),
+  byteLength: integer("byte_length").notNull(),
+  createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+});
+
+export const importDecodedResources = sqliteTable(
+  "import_decoded_resources",
+  {
+    id: text("id").primaryKey(),
+    captureId: text("capture_id")
+      .notNull()
+      .references(() => importCaptures.id, { onDelete: "cascade" }),
+    resourceKey: text("resource_key").notNull(),
+    decoderId: text("decoder_id").notNull(),
+    decoderVersion: text("decoder_version").notNull(),
+    kind: text("kind").notNull(),
+    digest: text("digest").notNull(),
+    decodedJson: text("decoded_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_decoded_resources_capture").on(
+      table.captureId,
+      table.resourceKey,
+    ),
+  ],
+);
+
+export const genericExtractionSchemas = sqliteTable(
+  "generic_extraction_schemas",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    digest: text("digest").notNull(),
+    schemaJson: text("schema_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_generic_extraction_schemas_1").on(
+      table.id,
+      table.revision,
+    ),
+    index("idx_generic_extraction_schemas_digest").on(table.digest),
+  ],
+);
+
 /** Temporal Constraint Graph nodes (SCHEMA_VERSION 10). */
 export const narrativeTemporalNodes = sqliteTable(
   "narrative_temporal_nodes",

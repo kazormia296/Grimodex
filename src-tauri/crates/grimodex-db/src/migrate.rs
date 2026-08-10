@@ -2767,6 +2767,70 @@ impl Database {
                 ON import_evidence_bindings(session_id, target_scene_id);",
         )?;
 
+        // SCHEMA_VERSION 14: durable import capture inventory. Native filesystem
+        // selection remains outside this migration; these tables only preserve
+        // portable inventory, digest, and decoding metadata.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS import_captures (
+                id            TEXT PRIMARY KEY,
+                state         TEXT NOT NULL,
+                source_kind   TEXT NOT NULL,
+                sealed_digest TEXT,
+                budget_json   TEXT NOT NULL,
+                version       INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_capture_entries (
+                id                  TEXT PRIMARY KEY,
+                capture_id          TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE,
+                resource_key        TEXT NOT NULL,
+                parent_resource_key TEXT,
+                relative_path       TEXT NOT NULL,
+                kind                TEXT NOT NULL,
+                byte_length         INTEGER NOT NULL,
+                extension           TEXT,
+                capture_status      TEXT NOT NULL,
+                raw_digest          TEXT,
+                blob_ref            TEXT,
+                created_at          TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_capture_blobs (
+                digest      TEXT PRIMARY KEY,
+                byte_length INTEGER NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_decoded_resources (
+                id              TEXT PRIMARY KEY,
+                capture_id      TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE,
+                resource_key    TEXT NOT NULL,
+                decoder_id      TEXT NOT NULL,
+                decoder_version TEXT NOT NULL,
+                kind            TEXT NOT NULL,
+                digest          TEXT NOT NULL,
+                decoded_json    TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS generic_extraction_schemas (
+                id          TEXT NOT NULL,
+                revision    INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                description TEXT,
+                digest      TEXT NOT NULL,
+                schema_json TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                UNIQUE(id, revision)
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_captures_state
+                ON import_captures(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_import_capture_entries_capture
+                ON import_capture_entries(capture_id, capture_status, relative_path);
+            CREATE INDEX IF NOT EXISTS idx_import_decoded_resources_capture
+                ON import_decoded_resources(capture_id, resource_key);
+            CREATE INDEX IF NOT EXISTS idx_generic_extraction_schemas_digest
+                ON generic_extraction_schemas(digest);",
+        )?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
