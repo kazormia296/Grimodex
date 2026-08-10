@@ -778,6 +778,11 @@ export const useCodexStructureExtractionStore =
       });
     },
 
+    /**
+     * Local-only status flip for unit tests / selection criteria.
+     * Product UI must call bulkApproveSafeCodexStructureProposals() so Native
+     * revision + decision are persisted before Apply.
+     */
     bulkApproveSafe: () => {
       const projection = get().projection;
       if (!projection) return 0;

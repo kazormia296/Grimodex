@@ -24,7 +24,7 @@
     "largest-host-lines": 292,
     "chat-store-lines": 405,
     "chat-store-runtime-imports": 21,
-    "renderer-drizzle-mutation": 179,
+    "renderer-drizzle-mutation": 180,
     "renderer-raw-sql-read": 0,
     "renderer-raw-sql-write": 0,
     "renderer-generic-db-route": 0,

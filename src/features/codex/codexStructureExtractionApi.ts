@@ -24,11 +24,24 @@ import {
   appendRevision,
   saveProposalSet,
 } from "@/application/narrative-extraction/proposalRepository";
-import { createRun } from "@/application/narrative-extraction/runRepository";
+import {
+  cancelRun,
+  createRun,
+  getRun,
+} from "@/application/narrative-extraction/runRepository";
+import {
+  narrativeExtractionClaimTask,
+  narrativeExtractionFailTask,
+  narrativeExtractionFinishTask,
+  type ClaimTaskResult,
+} from "@/application/narrative-extraction/nativeApi";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 import { parseAliases } from "./codexMatcher";
 import { BUILTIN_CODEX_TYPES } from "./api";
-import { runEntityCandidatePrepass } from "./extraction/entityCandidatePrepass";
+import {
+  runEntityCandidatePrepass,
+  type EntityCandidateOccurrence,
+} from "./extraction/entityCandidatePrepass";
 import {
   matchExistingEntity,
   type ExistingEntityCatalogRecord,
@@ -52,6 +65,7 @@ import {
 import {
   buildCodexEntityProposalSafetyFlags,
   emptyCodexTaskCounts,
+  isSafeForCodexEntityBulkApprove,
   relationEndpointsReady,
   useCodexStructureExtractionStore,
   type CodexCompiledDomainOperation,
@@ -66,6 +80,9 @@ import {
   BUILTIN_CODEX_RELATION_VOCABULARY,
   normalizeRelationLabel,
 } from "./extraction/relationVocabulary";
+
+const CODEX_STRUCTURE_LEASE_OWNER = "codex-structure-extract";
+const CODEX_STRUCTURE_TASK_KIND = "codex.entity.resolve";
 
 /**
  * Rebuild Relation dependency edges from ProposalSet summaryJson.
@@ -224,6 +241,31 @@ function resolveDirectedEndpoints(
   if (tryOrder(left, right)) return { subject: left, object: right };
   if (tryOrder(right, left)) return { subject: right, object: left };
   return null;
+}
+
+/**
+ * Relation co-mention window from a prepass occurrence.
+ * Entity Evidence quotes stay surface-only; Relation seeding needs the
+ * surrounding sentence/context so subject+object+label can co-occur.
+ */
+export function buildRelationCoMentionQuote(occurrence: {
+  readonly quote: string;
+  readonly context: { readonly prefix: string; readonly suffix: string };
+}): string {
+  return `${occurrence.context.prefix}${occurrence.quote}${occurrence.context.suffix}`;
+}
+
+/** Build Relation-only Evidence rows from Native prepass occurrences. */
+export function buildRelationEvidenceFromOccurrences(
+  occurrences: readonly EntityCandidateOccurrence[],
+): CodexReviewEvidenceQuote[] {
+  return occurrences.map((occurrence) => ({
+    anchorId: occurrence.evidence.id,
+    quote: buildRelationCoMentionQuote(occurrence),
+    documentRef: occurrence.documentRef,
+    method: "exact-with-context" as const,
+    blocked: false,
+  }));
 }
 
 /** Minimal span that still contains every required surface (capped). */
@@ -671,13 +713,8 @@ export async function startCodexStructureExtraction(
     readonly skipNativePersist?: boolean;
   },
 ): Promise<CodexStructureExtractionReviewProjection> {
-  const createId = (() => {
-    let n = 0;
-    return () => {
-      n += 1;
-      return `codex-bind-${n}`;
-    };
-  })();
+  // Globally unique across runs (DB PRIMARY KEY); stable within one ProposalSet.
+  const createId = (): string => crypto.randomUUID();
 
   const catalogs = buildCodexStructureCatalogs({
     existingEntries: request.existingEntries,
@@ -689,6 +726,11 @@ export async function startCodexStructureExtraction(
 
   let seeds = request.heuristicSeeds ? [...request.heuristicSeeds] : null;
   const evidenceBySurface = new Map<string, CodexReviewEvidenceQuote[]>();
+  /** Relation seeding windows (context), separate from Entity surface Evidence. */
+  const relationEvidenceBySurface = new Map<
+    string,
+    CodexReviewEvidenceQuote[]
+  >();
   let coverageDocumentCount = request.sceneIds.length;
   let coverageWindowCount = Math.max(1, request.sceneIds.length);
   let snapshotDigest: string | null = null;
@@ -744,6 +786,10 @@ export async function startCodexStructureExtraction(
             blocked: false,
           })),
         );
+        relationEvidenceBySurface.set(
+          seed.surface,
+          buildRelationEvidenceFromOccurrences(seed.occurrences),
+        );
         seeds.push({
           surface: seed.surface,
           form: seed.features.appearsAsProperName ? "proper-name" : "alias",
@@ -768,6 +814,8 @@ export async function startCodexStructureExtraction(
     for (const seed of seeds) {
       if (seed.evidence?.length) {
         evidenceBySurface.set(seed.surface, [...seed.evidence]);
+        // Unit-test / injected seeds already carry Relation windows as quotes.
+        relationEvidenceBySurface.set(seed.surface, [...seed.evidence]);
       }
     }
   }
@@ -853,7 +901,9 @@ export async function startCodexStructureExtraction(
         proposalId: proposal.proposalId,
         displayTitle: proposal.displayTitle,
         narrativeEntityId: proposal.proposal.payload.narrativeEntityId,
-        evidence: proposal.evidence,
+        evidence:
+          relationEvidenceBySurface.get(proposal.displayTitle) ??
+          proposal.evidence,
       })),
     });
 
@@ -976,6 +1026,12 @@ export async function startCodexStructureExtraction(
   let proposalSetId: string | null = `proposal-set-${runId}`;
   let finalProposals: CodexEntityReviewProposal[];
   let finalRelations: CodexRelationReviewProposal[];
+  let runStatus: CodexStructureExtractionReviewProjection["status"] =
+    "completed";
+  let taskCounts = {
+    ...emptyCodexTaskCounts(),
+    completed: hypotheses.length + relationProposals.length,
+  };
 
   if (!(request as { skipNativePersist?: boolean }).skipNativePersist) {
     const createdRun = await createRun({
@@ -988,7 +1044,7 @@ export async function startCodexStructureExtraction(
       specJson: {
         domain: "codex",
         version: 1,
-        taskChain: ["codex.entity.resolve"],
+        taskChain: [CODEX_STRUCTURE_TASK_KIND],
       },
       specDigest: digestStableString("codex.structure.extract.v1"),
       snapshotDigest,
@@ -1000,87 +1056,145 @@ export async function startCodexStructureExtraction(
       catalogDigest: digestStableString(JSON.stringify(catalogSnapshot)),
       tasks: [
         {
-          taskKind: "codex.entity.resolve",
+          taskKind: CODEX_STRUCTURE_TASK_KIND,
           priority: 1,
           inputJson: { stage: 1 },
         },
       ],
     });
     runId = createdRun.runId;
-    const saved = await saveProposalSet({
-      runId,
-      projectId: request.projectId,
-      setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
-      summaryJson: {
-        proposalCount: proposals.length + relationProposals.length,
-        catalog: catalogSnapshot,
-        // Immutable across append_revision: Relation dependency graph keyed by
-        // stable proposal IDs (also sent as ProposalSeed.proposalId below).
-        relationDependencies: Object.fromEntries(
-          relationProposals.map((proposal) => [
-            proposal.proposalId,
-            proposal.proposal.dependencies,
-          ]),
-        ),
-      },
-      proposals: [
-        ...proposals.map((proposal) => ({
-          proposalId: proposal.proposalId,
-          proposalKey: proposal.proposalKey,
-          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
-          payloadJson: proposal.proposal.payload,
-        })),
-        ...relationProposals.map((proposal) => ({
-          proposalId: proposal.proposalId,
-          proposalKey: proposal.proposalKey,
-          kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
-          // Domain payload only — dependencies live in summaryJson.
-          payloadJson: proposal.proposal.payload,
-        })),
-      ],
-    });
-    proposalSetId = saved.proposalSetId;
-    const byKey = new Map(
-      saved.proposals.map((seed) => [seed.proposalKey, seed] as const),
-    );
-    finalProposals = proposals.map((proposal) => {
-      const seed = byKey.get(proposal.proposalKey);
-      if (!seed?.revisionId) {
-        throw new Error(
-          `Missing Native revision for entity key ${proposal.proposalKey}`,
-        );
+
+    let claim: ClaimTaskResult | null = null;
+    try {
+      claim = await narrativeExtractionClaimTask({
+        runId,
+        projectId: request.projectId,
+        leaseOwner: CODEX_STRUCTURE_LEASE_OWNER,
+        taskKinds: [CODEX_STRUCTURE_TASK_KIND],
+      });
+      if (!claim.claimed || !claim.task) {
+        throw new Error(`Failed to claim task ${CODEX_STRUCTURE_TASK_KIND}`);
       }
-      if (seed.proposalId !== proposal.proposalId) {
-        throw new Error(
-          `Native remapped entity proposalId for ${proposal.proposalKey}; expected stable client id`,
-        );
-      }
-      return {
-        ...proposal,
-        proposalId: seed.proposalId,
-        revisionId: seed.revisionId,
-        status: seed.status ?? proposal.status,
+
+      const saved = await saveProposalSet({
+        runId,
+        projectId: request.projectId,
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        summaryJson: {
+          proposalCount: proposals.length + relationProposals.length,
+          catalog: catalogSnapshot,
+          // Immutable across append_revision: Relation dependency graph keyed by
+          // stable proposal IDs (also sent as ProposalSeed.proposalId below).
+          relationDependencies: Object.fromEntries(
+            relationProposals.map((proposal) => [
+              proposal.proposalId,
+              proposal.proposal.dependencies,
+            ]),
+          ),
+        },
+        proposals: [
+          ...proposals.map((proposal) => ({
+            proposalId: proposal.proposalId,
+            proposalKey: proposal.proposalKey,
+            kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+            payloadJson: proposal.proposal.payload,
+          })),
+          ...relationProposals.map((proposal) => ({
+            proposalId: proposal.proposalId,
+            proposalKey: proposal.proposalKey,
+            kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+            // Domain payload only — dependencies live in summaryJson.
+            payloadJson: proposal.proposal.payload,
+          })),
+        ],
+      });
+      proposalSetId = saved.proposalSetId;
+      const byKey = new Map(
+        saved.proposals.map((seed) => [seed.proposalKey, seed] as const),
+      );
+      finalProposals = proposals.map((proposal) => {
+        const seed = byKey.get(proposal.proposalKey);
+        if (!seed?.revisionId) {
+          throw new Error(
+            `Missing Native revision for entity key ${proposal.proposalKey}`,
+          );
+        }
+        if (seed.proposalId !== proposal.proposalId) {
+          throw new Error(
+            `Native remapped entity proposalId for ${proposal.proposalKey}; expected stable client id`,
+          );
+        }
+        return {
+          ...proposal,
+          proposalId: seed.proposalId,
+          revisionId: seed.revisionId,
+          status: seed.status ?? proposal.status,
+        };
+      });
+      finalRelations = relationProposals.map((proposal) => {
+        const seed = byKey.get(proposal.proposalKey);
+        if (!seed?.revisionId) {
+          throw new Error(
+            `Missing Native revision for relation key ${proposal.proposalKey}`,
+          );
+        }
+        if (seed.proposalId !== proposal.proposalId) {
+          throw new Error(
+            `Native remapped relation proposalId for ${proposal.proposalKey}; expected stable client id`,
+          );
+        }
+        return {
+          ...proposal,
+          proposalId: seed.proposalId,
+          revisionId: seed.revisionId,
+          status: seed.status ?? proposal.status,
+        };
+      });
+
+      await narrativeExtractionFinishTask({
+        runId,
+        projectId: request.projectId,
+        taskId: claim.task.taskId,
+        attemptId: claim.task.attemptId,
+        leaseOwner: CODEX_STRUCTURE_LEASE_OWNER,
+        outputJson: {
+          proposalSetId: saved.proposalSetId,
+          entityProposalCount: finalProposals.length,
+          relationProposalCount: finalRelations.length,
+        },
+      });
+
+      const nativeRun = await getRun(runId, request.projectId);
+      runStatus = nativeRun.run.status;
+      taskCounts = {
+        ...emptyCodexTaskCounts(),
+        ...nativeRun.taskCounts,
       };
-    });
-    finalRelations = relationProposals.map((proposal) => {
-      const seed = byKey.get(proposal.proposalKey);
-      if (!seed?.revisionId) {
-        throw new Error(
-          `Missing Native revision for relation key ${proposal.proposalKey}`,
-        );
+    } catch (error) {
+      if (claim?.task) {
+        try {
+          await narrativeExtractionFailTask({
+            runId,
+            projectId: request.projectId,
+            taskId: claim.task.taskId,
+            attemptId: claim.task.attemptId,
+            leaseOwner: CODEX_STRUCTURE_LEASE_OWNER,
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+            requeue: false,
+          });
+        } catch {
+          // Prefer original failure; fail-task is best-effort.
+        }
+      } else {
+        try {
+          await cancelRun(runId, request.projectId);
+        } catch {
+          // Prefer original failure; cancel is best-effort.
+        }
       }
-      if (seed.proposalId !== proposal.proposalId) {
-        throw new Error(
-          `Native remapped relation proposalId for ${proposal.proposalKey}; expected stable client id`,
-        );
-      }
-      return {
-        ...proposal,
-        proposalId: seed.proposalId,
-        revisionId: seed.revisionId,
-        status: seed.status ?? proposal.status,
-      };
-    });
+      throw error;
+    }
   } else {
     finalProposals = proposals.map((proposal) => ({
       ...proposal,
@@ -1100,7 +1214,7 @@ export async function startCodexStructureExtraction(
     workspacePath: request.workspacePath,
     openRevision: request.openRevision,
     proposalSetId,
-    status: "completed",
+    status: runStatus,
     coverage: {
       mode: "complete",
       documentCount: coverageDocumentCount,
@@ -1108,10 +1222,7 @@ export async function startCodexStructureExtraction(
       completedWindows: coverageWindowCount,
       gaps: [],
     },
-    taskCounts: {
-      ...emptyCodexTaskCounts(),
-      completed: hypotheses.length + finalRelations.length,
-    },
+    taskCounts,
     proposals: finalProposals,
     relationProposals: finalRelations,
     catalog: catalogSnapshot,
@@ -1492,6 +1603,50 @@ export async function decideCodexStructureProposal(args: {
       ),
     });
   }
+}
+
+export interface BulkApproveSafeCodexStructureResult {
+  readonly approved: number;
+  readonly failed: readonly {
+    readonly proposalId: string;
+    readonly error: string;
+  }[];
+}
+
+/**
+ * Persist-aware bulk approve for safe Entity proposals.
+ * Loops decideCodexStructureProposal (revision + decision + Relation re-eval).
+ * Continues after individual failures and reports them.
+ */
+export async function bulkApproveSafeCodexStructureProposals(): Promise<BulkApproveSafeCodexStructureResult> {
+  const projection = useCodexStructureExtractionStore.getState().projection;
+  if (!projection) {
+    throw new Error("No active codex structure extraction review");
+  }
+  const targets = projection.proposals.filter(
+    (proposal) =>
+      proposal.applicability === "applicable" &&
+      proposal.status === "unreviewed" &&
+      isSafeForCodexEntityBulkApprove(proposal.safety),
+  );
+  let approved = 0;
+  const failed: { proposalId: string; error: string }[] = [];
+  for (const proposal of targets) {
+    try {
+      await decideCodexStructureProposal({
+        proposalId: proposal.proposalId,
+        status: "approved",
+        kind: "entity",
+      });
+      approved += 1;
+    } catch (error) {
+      failed.push({
+        proposalId: proposal.proposalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { approved, failed };
 }
 
 export async function reviseCodexStructureProposal(args: {

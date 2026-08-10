@@ -4,6 +4,7 @@ import { CodexEntityProposalCard } from "./CodexEntityProposalCard";
 import { CodexEntityResolutionPicker } from "./CodexEntityResolutionPicker";
 import {
   catalogEntityDisplayName,
+  bulkApproveSafeCodexStructureProposals,
   decideCodexStructureProposal,
   reviseCodexStructureProposal,
 } from "./codexStructureExtractionApi";
@@ -46,9 +47,6 @@ export function CodexEntityProposalReview({
   const reviseProposalFields = useCodexStructureExtractionStore(
     (s) => s.reviseProposalFields,
   );
-  const bulkApproveSafe = useCodexStructureExtractionStore(
-    (s) => s.bulkApproveSafe,
-  );
 
   const proposals = proposalsProp ?? storeProjection?.proposals ?? [];
   const selectedProposalId =
@@ -68,6 +66,7 @@ export function CodexEntityProposalReview({
 
   const [draftName, setDraftName] = useState<string | null>(null);
   const [draftSummary, setDraftSummary] = useState<string | null>(null);
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   const nameValue =
     draftName ??
@@ -132,8 +131,13 @@ export function CodexEntityProposalReview({
             <button
               type="button"
               className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={safeCount === 0}
-              onClick={() => bulkApproveSafe()}
+              disabled={safeCount === 0 || bulkApproving}
+              onClick={() => {
+                setBulkApproving(true);
+                void bulkApproveSafeCodexStructureProposals().finally(() => {
+                  setBulkApproving(false);
+                });
+              }}
               data-testid="codex-bulk-approve-safe"
             >
               安全な提案をまとめて承認

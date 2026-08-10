@@ -1638,3 +1638,108 @@ fn relation_dependencies_in_summary_json_survive_append_revision() {
         "domain payload must not carry dependencies after approve revision"
     );
 }
+
+#[test]
+fn client_proposal_ids_collide_across_runs_when_reused() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+
+    create_run_with_task(&db, "run-collide-1", "task-collide-1");
+    narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-collide-1".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-collide-1".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("codex-bind-1".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect("first save should succeed");
+
+    create_run_with_task(&db, "run-collide-2", "task-collide-2");
+    let err = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-collide-2".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-collide-2".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("codex-bind-1".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect_err("reused client proposalId across runs must violate PRIMARY KEY");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("UNIQUE")
+            || message.contains("unique")
+            || message.contains("constraint")
+            || message.contains("PRIMARY"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn distinct_client_proposal_ids_persist_across_consecutive_runs() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+
+    create_run_with_task(&db, "run-unique-1", "task-unique-1");
+    let first = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-unique-1".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-unique-1".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect("first unique save");
+
+    create_run_with_task(&db, "run-unique-2", "task-unique-2");
+    let second = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-unique-2".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-unique-2".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("22222222-2222-4222-8222-222222222222".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect("second unique save");
+
+    assert_eq!(
+        first["proposals"][0]["proposalId"],
+        "11111111-1111-4111-8111-111111111111"
+    );
+    assert_eq!(
+        second["proposals"][0]["proposalId"],
+        "22222222-2222-4222-8222-222222222222"
+    );
+}
