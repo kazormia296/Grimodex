@@ -281,6 +281,9 @@ describe("ChronicleProposalReview", () => {
       ]),
     );
     render(<ChronicleProposalReview />);
+    expect(
+      screen.queryByRole("button", { name: "承認" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "同じものとしてスキップ" }),
     );

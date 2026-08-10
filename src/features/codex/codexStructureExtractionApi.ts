@@ -67,6 +67,53 @@ import {
   normalizeRelationLabel,
 } from "./extraction/relationVocabulary";
 
+/**
+ * Rebuild Relation dependency edges from ProposalSet summaryJson.
+ * Dependencies are stored here (not in revision payloads) so approve revisions
+ * cannot erase the gate graph.
+ */
+export function relationDependenciesFromSummaryJson(
+  summaryJson: unknown,
+): ReadonlyMap<
+  string,
+  readonly { readonly kind: string; readonly proposalId: string }[]
+> {
+  if (!summaryJson || typeof summaryJson !== "object") {
+    return new Map();
+  }
+  const raw = (summaryJson as Record<string, unknown>).relationDependencies;
+  if (!raw || typeof raw !== "object") {
+    return new Map();
+  }
+  const out = new Map<
+    string,
+    readonly { readonly kind: string; readonly proposalId: string }[]
+  >();
+  for (const [proposalId, value] of Object.entries(
+    raw as Record<string, unknown>,
+  )) {
+    if (!Array.isArray(value)) continue;
+    const deps = value.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const record = item as Record<string, unknown>;
+      if (
+        typeof record.proposalId !== "string" ||
+        typeof record.kind !== "string"
+      ) {
+        return [];
+      }
+      return [
+        {
+          kind: record.kind,
+          proposalId: record.proposalId,
+        },
+      ];
+    });
+    out.set(proposalId, deps);
+  }
+  return out;
+}
+
 export type { StartCodexStructureExtractionRequest };
 
 export const CODEX_STRUCTURE_EXTRACT_SURFACE_PATH =
@@ -119,10 +166,18 @@ export interface CodexStructureExtractionRelationSeed {
   readonly quote?: string;
   readonly documentRef?: string;
   readonly anchorId?: string;
+  /** Aggregated Evidence quotes when the same Relation appears in multiple anchors. */
+  readonly evidenceQuotes?: readonly {
+    readonly quote: string;
+    readonly documentRef: string;
+    readonly anchorId: string;
+  }[];
 }
 
 const MAX_DERIVED_RELATION_SEEDS = 20;
 const MAX_RELATION_QUOTE_CHARS = 240;
+const RELATION_ASSERTING_COPULA =
+  /^(?:だ|である|だった|です|でした|であります)/u;
 
 type CoMentionEntity = {
   readonly surface: string;
@@ -132,7 +187,8 @@ type CoMentionEntity = {
 
 /**
  * Resolve directed subject/object from conservative Japanese patterns.
- * Returns null when orientation cannot be determined from the quote.
+ * Requires a relation-asserting copula after the label so action/case particles
+ * like 「父を殺した」「師匠に会った」 do not become Relations.
  */
 function resolveDirectedEndpoints(
   quote: string,
@@ -140,18 +196,33 @@ function resolveDirectedEndpoints(
   right: CoMentionEntity,
   label: string,
 ): { subject: CoMentionEntity; object: CoMentionEntity } | null {
-  const patterns: Array<(a: CoMentionEntity, b: CoMentionEntity) => boolean> = [
-    // 「ベルカはライカの父」→ subject=ベルカ, object=ライカ
-    (subject, object) =>
-      quote.includes(`${subject.surface}は${object.surface}の${label}`),
-    // 「ライカの父はベルカ」→ subject=ベルカ, object=ライカ
-    (subject, object) =>
-      quote.includes(`${object.surface}の${label}は${subject.surface}`),
-  ];
-  for (const matches of patterns) {
-    if (matches(left, right)) return { subject: left, object: right };
-    if (matches(right, left)) return { subject: right, object: left };
-  }
+  const tryOrder = (
+    subject: CoMentionEntity,
+    object: CoMentionEntity,
+  ): boolean => {
+    // 「ベルカはライカの父だ」
+    const forward = `${subject.surface}は${object.surface}の${label}`;
+    const forwardIndex = quote.indexOf(forward);
+    if (forwardIndex >= 0) {
+      const after = quote.slice(forwardIndex + forward.length);
+      return RELATION_ASSERTING_COPULA.test(after);
+    }
+    // 「ライカの父はベルカだ」 / 「ライカの父はベルカ」
+    const inverted = `${object.surface}の${label}は${subject.surface}`;
+    const invertedIndex = quote.indexOf(inverted);
+    if (invertedIndex >= 0) {
+      const after = quote.slice(invertedIndex + inverted.length);
+      return (
+        after.length === 0 ||
+        RELATION_ASSERTING_COPULA.test(after) ||
+        /^[。．!！?？]/u.test(after)
+      );
+    }
+    return false;
+  };
+
+  if (tryOrder(left, right)) return { subject: left, object: right };
+  if (tryOrder(right, left)) return { subject: right, object: left };
   return null;
 }
 
@@ -240,7 +311,7 @@ export function deriveRelationSeedsFromCoMentions(input: {
   }
 
   const seeds: CodexStructureExtractionRelationSeed[] = [];
-  const seen = new Set<string>();
+  const seedByKey = new Map<string, CodexStructureExtractionRelationSeed>();
 
   for (const window of windowsByKey.values()) {
     if (window.entities.length < 2) continue;
@@ -284,16 +355,52 @@ export function deriveRelationSeedsFromCoMentions(input: {
           ]);
           if (!quote) continue;
 
-          const key = `${subject.narrativeEntityId}\0${object.narrativeEntityId}\0${vocab.relationType}\0${label}\0${window.anchorId}`;
-          if (seen.has(key)) continue;
-          // Symmetric undirected pairs still collapse A↔B; directed opposites stay distinct.
-          if (vocab.directionality === "symmetric") {
-            const keyRev = `${object.narrativeEntityId}\0${subject.narrativeEntityId}\0${vocab.relationType}\0${label}\0${window.anchorId}`;
-            if (seen.has(keyRev)) continue;
-            seen.add(keyRev);
+          // Semantic Relation key — Evidence anchors aggregate into one proposal.
+          const key =
+            vocab.directionality === "symmetric"
+              ? [
+                  subject.narrativeEntityId < object.narrativeEntityId
+                    ? subject.narrativeEntityId
+                    : object.narrativeEntityId,
+                  subject.narrativeEntityId < object.narrativeEntityId
+                    ? object.narrativeEntityId
+                    : subject.narrativeEntityId,
+                  vocab.relationType,
+                  label,
+                ].join("\0")
+              : [
+                  subject.narrativeEntityId,
+                  object.narrativeEntityId,
+                  vocab.relationType,
+                  label,
+                  normalizeRelationLabel(vocab.inverseLabel ?? ""),
+                ].join("\0");
+
+          const evidenceRow = {
+            quote,
+            documentRef: window.documentRef,
+            anchorId: window.anchorId,
+          };
+          const existing = seedByKey.get(key);
+          if (existing) {
+            const evidenceQuotes = [
+              ...(existing.evidenceQuotes ?? []),
+              evidenceRow,
+            ];
+            const next: CodexStructureExtractionRelationSeed = {
+              ...existing,
+              evidenceQuotes,
+              quote: existing.quote ?? quote,
+              documentRef: existing.documentRef ?? window.documentRef,
+              anchorId: existing.anchorId ?? window.anchorId,
+            };
+            seedByKey.set(key, next);
+            const index = seeds.findIndex((seed) => seed === existing);
+            if (index >= 0) seeds[index] = next;
+            continue;
           }
-          seen.add(key);
-          seeds.push({
+
+          const seed: CodexStructureExtractionRelationSeed = {
             subjectEntityId: subject.narrativeEntityId,
             objectEntityId: object.narrativeEntityId,
             predicate: vocab.relationType,
@@ -307,7 +414,10 @@ export function deriveRelationSeedsFromCoMentions(input: {
             quote,
             documentRef: window.documentRef,
             anchorId: window.anchorId,
-          });
+            evidenceQuotes: [evidenceRow],
+          };
+          seedByKey.set(key, seed);
+          seeds.push(seed);
           if (seeds.length >= maxSeeds) return seeds;
         }
       }
@@ -819,18 +929,39 @@ export async function startCodexStructureExtraction(
             : ("applicable" as const),
           displayTitle: `${subjectLabel} → ${seed.forwardLabel} → ${objectLabel}`,
           proposal: created,
-          evidence: [
-            {
-              anchorId: seed.anchorId ?? `rel-anchor-${created.proposalId}`,
-              quote: seed.quote ?? "",
-              documentRef: seed.documentRef ?? "",
-              method:
-                seed.quote && seed.documentRef
-                  ? ("exact" as const)
-                  : ("unknown" as const),
-              blocked: !(seed.quote && seed.documentRef),
-            },
-          ],
+          evidence: (() => {
+            const quotes =
+              seed.evidenceQuotes && seed.evidenceQuotes.length > 0
+                ? seed.evidenceQuotes
+                : seed.quote && seed.documentRef
+                  ? [
+                      {
+                        quote: seed.quote,
+                        documentRef: seed.documentRef,
+                        anchorId:
+                          seed.anchorId ?? `rel-anchor-${created.proposalId}`,
+                      },
+                    ]
+                  : [];
+            if (quotes.length === 0) {
+              return [
+                {
+                  anchorId: `rel-anchor-${created.proposalId}`,
+                  quote: "",
+                  documentRef: "",
+                  method: "unknown" as const,
+                  blocked: true,
+                },
+              ];
+            }
+            return quotes.map((row) => ({
+              anchorId: row.anchorId,
+              quote: row.quote,
+              documentRef: row.documentRef,
+              method: "exact" as const,
+              blocked: false,
+            }));
+          })(),
           subjectLabel,
           objectLabel,
           blockedReason: blockedDeps
@@ -883,22 +1014,28 @@ export async function startCodexStructureExtraction(
       summaryJson: {
         proposalCount: proposals.length + relationProposals.length,
         catalog: catalogSnapshot,
+        // Immutable across append_revision: Relation dependency graph keyed by
+        // stable proposal IDs (also sent as ProposalSeed.proposalId below).
+        relationDependencies: Object.fromEntries(
+          relationProposals.map((proposal) => [
+            proposal.proposalId,
+            proposal.proposal.dependencies,
+          ]),
+        ),
       },
       proposals: [
         ...proposals.map((proposal) => ({
+          proposalId: proposal.proposalId,
           proposalKey: proposal.proposalKey,
           kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
           payloadJson: proposal.proposal.payload,
         })),
         ...relationProposals.map((proposal) => ({
+          proposalId: proposal.proposalId,
           proposalKey: proposal.proposalKey,
           kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
-          // Persist dependencies alongside the domain payload so cold-start
-          // restore can rebuild Relation gates after Native ID remapping.
-          payloadJson: {
-            ...proposal.proposal.payload,
-            dependencies: proposal.proposal.dependencies,
-          },
+          // Domain payload only — dependencies live in summaryJson.
+          payloadJson: proposal.proposal.payload,
         })),
       ],
     });
@@ -913,6 +1050,11 @@ export async function startCodexStructureExtraction(
           `Missing Native revision for entity key ${proposal.proposalKey}`,
         );
       }
+      if (seed.proposalId !== proposal.proposalId) {
+        throw new Error(
+          `Native remapped entity proposalId for ${proposal.proposalKey}; expected stable client id`,
+        );
+      }
       return {
         ...proposal,
         proposalId: seed.proposalId,
@@ -920,12 +1062,6 @@ export async function startCodexStructureExtraction(
         status: seed.status ?? proposal.status,
       };
     });
-    const nativeIdByLocalProposalId = new Map(
-      proposals.map((proposal, index) => {
-        const native = finalProposals[index];
-        return [proposal.proposalId, native!.proposalId] as const;
-      }),
-    );
     finalRelations = relationProposals.map((proposal) => {
       const seed = byKey.get(proposal.proposalKey);
       if (!seed?.revisionId) {
@@ -933,23 +1069,16 @@ export async function startCodexStructureExtraction(
           `Missing Native revision for relation key ${proposal.proposalKey}`,
         );
       }
-      const remappedDependencies = proposal.proposal.dependencies.map(
-        (dependency) => ({
-          ...dependency,
-          proposalId:
-            nativeIdByLocalProposalId.get(dependency.proposalId) ??
-            dependency.proposalId,
-        }),
-      );
+      if (seed.proposalId !== proposal.proposalId) {
+        throw new Error(
+          `Native remapped relation proposalId for ${proposal.proposalKey}; expected stable client id`,
+        );
+      }
       return {
         ...proposal,
         proposalId: seed.proposalId,
         revisionId: seed.revisionId,
         status: seed.status ?? proposal.status,
-        proposal: {
-          ...proposal.proposal,
-          dependencies: remappedDependencies,
-        },
       };
     });
   } else {

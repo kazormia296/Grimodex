@@ -545,6 +545,7 @@ export async function getChronicleExtractionReview(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `Failed to restore chronicle extraction review from Native: ${message}`,
+      { cause: error },
     );
   }
 

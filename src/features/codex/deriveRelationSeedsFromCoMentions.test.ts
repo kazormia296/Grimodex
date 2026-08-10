@@ -185,8 +185,7 @@ describe("deriveRelationSeedsFromCoMentions", () => {
     expect(orientations.has("ne-belka>ne-laika")).toBe(true);
   });
 
-  it("skips directed seeds when subject/object orientation cannot be resolved", () => {
-    const quote = "ライカとベルカの話に師匠という言葉が出た";
+  it("aggregates the same semantic Relation across separate anchors into one seed", () => {
     const seeds = deriveRelationSeedsFromCoMentions({
       proposals: [
         {
@@ -196,8 +195,14 @@ describe("deriveRelationSeedsFromCoMentions", () => {
           evidence: [
             {
               anchorId: "a1",
-              quote,
-              documentRef: "D000004",
+              quote: "ライカとベルカは友人だ。",
+              documentRef: "D000001",
+              method: "exact",
+            },
+            {
+              anchorId: "a2",
+              quote: "その後もライカとベルカは友人であり続けた。",
+              documentRef: "D000001",
               method: "exact",
             },
           ],
@@ -209,17 +214,70 @@ describe("deriveRelationSeedsFromCoMentions", () => {
           evidence: [
             {
               anchorId: "a1",
-              quote,
-              documentRef: "D000004",
+              quote: "ライカとベルカは友人だ。",
+              documentRef: "D000001",
+              method: "exact",
+            },
+            {
+              anchorId: "a2",
+              quote: "その後もライカとベルカは友人であり続けた。",
+              documentRef: "D000001",
               method: "exact",
             },
           ],
         },
       ],
       vocabulary: BUILTIN_CODEX_RELATION_VOCABULARY.filter(
-        (row) => row.forwardLabel === "師匠",
+        (row) => row.forwardLabel === "友人",
       ),
     });
-    expect(seeds).toEqual([]);
+    expect(seeds).toHaveLength(1);
+    expect(seeds[0]?.evidenceQuotes).toHaveLength(2);
+    expect(seeds[0]?.evidenceQuotes?.map((row) => row.anchorId).sort()).toEqual(
+      ["a1", "a2"],
+    );
+  });
+
+  it("requires a relation-asserting copula for directed seeds", () => {
+    const vocabulary = BUILTIN_CODEX_RELATION_VOCABULARY.filter(
+      (row) => row.forwardLabel === "父" || row.forwardLabel === "師匠",
+    );
+    const make = (quote: string) =>
+      deriveRelationSeedsFromCoMentions({
+        proposals: [
+          {
+            proposalId: "p-laika",
+            displayTitle: "ライカ",
+            narrativeEntityId: "ne-laika",
+            evidence: [
+              {
+                anchorId: "a1",
+                quote,
+                documentRef: "D1",
+                method: "exact",
+              },
+            ],
+          },
+          {
+            proposalId: "p-belka",
+            displayTitle: "ベルカ",
+            narrativeEntityId: "ne-belka",
+            evidence: [
+              {
+                anchorId: "a1",
+                quote,
+                documentRef: "D1",
+                method: "exact",
+              },
+            ],
+          },
+        ],
+        vocabulary,
+      });
+
+    expect(make("ベルカはライカの父だ")).toHaveLength(1);
+    expect(make("ベルカはライカの父である")).toHaveLength(1);
+    expect(make("ベルカはライカの父を殺した")).toEqual([]);
+    expect(make("ベルカはライカの師匠に会った")).toEqual([]);
   });
 });

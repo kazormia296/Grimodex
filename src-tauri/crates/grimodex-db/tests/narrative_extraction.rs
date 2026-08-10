@@ -1506,3 +1506,135 @@ fn list_resumable_runs_prefers_older_review_over_crashed_running() {
         .collect();
     assert_eq!(ids, vec!["run-old-review"]);
 }
+
+#[test]
+fn relation_dependencies_in_summary_json_survive_append_revision() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    create_run_with_task(&db, "run-rel-deps", "task-rel-deps");
+
+    let entity_a = "prop-entity-a";
+    let entity_b = "prop-entity-b";
+    let relation_id = "prop-relation-1";
+    let summary = json!({
+        "relationDependencies": {
+            relation_id: [
+                { "kind": "requires-resolution", "proposalId": entity_a },
+                { "kind": "requires-resolution", "proposalId": entity_b }
+            ]
+        }
+    });
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-rel-deps".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-rel-deps".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(summary.clone()),
+            proposals: vec![
+                ProposalSeed {
+                    proposal_id: Some(entity_a.to_string()),
+                    proposal_key: "entity-a".to_string(),
+                    kind: "codex.entity.bind@1".to_string(),
+                    payload_json: json!({ "narrativeEntityId": "ne-a", "canonicalName": "ライカ" }),
+                },
+                ProposalSeed {
+                    proposal_id: Some(entity_b.to_string()),
+                    proposal_key: "entity-b".to_string(),
+                    kind: "codex.entity.bind@1".to_string(),
+                    payload_json: json!({ "narrativeEntityId": "ne-b", "canonicalName": "ベルカ" }),
+                },
+                ProposalSeed {
+                    proposal_id: Some(relation_id.to_string()),
+                    proposal_key: "relation-1".to_string(),
+                    kind: "codex.relation.create@1".to_string(),
+                    payload_json: json!({
+                        "subjectEntityId": "ne-a",
+                        "objectEntityId": "ne-b",
+                        "relation": {
+                            "relationType": "friend",
+                            "directionality": "symmetric",
+                            "forwardLabel": "友人",
+                            "inverseLabel": "友人"
+                        },
+                        "validity": "current"
+                    }),
+                },
+            ],
+        },
+    )
+    .expect("save");
+
+    let proposals = saved["proposals"].as_array().expect("proposals");
+    assert_eq!(proposals.len(), 3);
+    for proposal in proposals {
+        let id = proposal["proposalId"].as_str().unwrap();
+        assert!(
+            id == entity_a || id == entity_b || id == relation_id,
+            "stable client proposalId must be preserved, got {id}"
+        );
+    }
+
+    let relation = proposals
+        .iter()
+        .find(|row| row["proposalId"] == relation_id)
+        .expect("relation");
+    let revision_id = relation["revisionId"].as_str().unwrap().to_string();
+
+    // Approve-style revision overwrites domain payload without dependencies.
+    narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-rel-deps".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: relation_id.to_string(),
+            expected_current_revision_id: revision_id,
+            payload_json: json!({
+                "kind": "codex.relation.create",
+                "fromCodexId": "codex-a",
+                "toCodexId": "codex-b",
+                "relationType": "friend",
+                "forwardLabel": "友人",
+                "inverseLabel": "友人",
+                "directionality": "symmetric",
+                "semanticKey": "friend:a:b"
+            }),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("append revision");
+
+    let bundle = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: "run-rel-deps".to_string(),
+            project_id: "project-1".to_string(),
+        },
+    )
+    .expect("bundle");
+
+    let summary_json = &bundle["proposalSet"]["summaryJson"];
+    assert_eq!(
+        summary_json["relationDependencies"][relation_id][0]["proposalId"],
+        entity_a
+    );
+    assert_eq!(
+        summary_json["relationDependencies"][relation_id][1]["proposalId"],
+        entity_b
+    );
+
+    let relation_row = bundle["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .find(|row| row["proposalId"] == relation_id)
+        .expect("relation row");
+    assert!(
+        relation_row["payloadJson"]
+            .get("dependencies")
+            .is_none(),
+        "domain payload must not carry dependencies after approve revision"
+    );
+}

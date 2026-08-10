@@ -69,10 +69,15 @@ describe("startCodexStructureExtraction product safety", () => {
       taskIds: ["t1"],
     });
     saveProposalSetMock.mockImplementation(
-      async (payload: { proposals: readonly { proposalKey: string }[] }) => ({
+      async (payload: {
+        proposals: readonly {
+          proposalKey: string;
+          proposalId?: string;
+        }[];
+      }) => ({
         proposalSetId: "native-ps-1",
         proposals: payload.proposals.map((proposal, index) => ({
-          proposalId: `native-p-${index + 1}`,
+          proposalId: proposal.proposalId ?? `native-p-${index + 1}`,
           proposalKey: proposal.proposalKey,
           revisionId: `native-rev-${index + 1}`,
           status: "unreviewed",
@@ -236,6 +241,165 @@ describe("startCodexStructureExtraction product safety", () => {
           item.displayTitle.includes("ベルカ"),
       ),
     ).toBe(true);
+  });
+
+  it("aggregates multi-anchor friend mentions into one Relation proposal", async () => {
+    const projection = await startCodexStructureExtraction({
+      projectId: "p1",
+      folderId: "f1",
+      sceneIds: ["s1"],
+      authority: {
+        projectId: "p1",
+        currentProjectId: () => "p1",
+        workspacePath: "/w",
+        workspaceOpenRevision: 1,
+      },
+      workspacePath: "/w",
+      openRevision: 1,
+      useAi: false,
+      skipNativePersist: true,
+      typeCatalog: [
+        {
+          ref: "T0001",
+          sourceKey: "character",
+          slug: "character",
+          label: "character",
+          coarseClassHints: ["person"],
+          expectedVersion: 1,
+        },
+      ],
+      heuristicSeeds: [
+        {
+          surface: "ライカ",
+          typeRef: "T0001",
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカとベルカは友人だ。",
+              documentRef: "D000001",
+              method: "exact",
+            },
+            {
+              anchorId: "a2",
+              quote: "その後もライカとベルカは友人であり続けた。",
+              documentRef: "D000001",
+              method: "exact",
+            },
+          ],
+        },
+        {
+          surface: "ベルカ",
+          typeRef: "T0001",
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカとベルカは友人だ。",
+              documentRef: "D000001",
+              method: "exact",
+            },
+            {
+              anchorId: "a2",
+              quote: "その後もライカとベルカは友人であり続けた。",
+              documentRef: "D000001",
+              method: "exact",
+            },
+          ],
+        },
+      ],
+    });
+
+    const friends = projection.relationProposals.filter((item) =>
+      item.displayTitle.includes("友人"),
+    );
+    expect(friends).toHaveLength(1);
+    expect(friends[0]?.evidence).toHaveLength(2);
+    expect(friends[0]?.evidence.map((row) => row.anchorId).sort()).toEqual([
+      "a1",
+      "a2",
+    ]);
+  });
+
+  it("persists stable proposalIds and immutable relationDependencies in summaryJson", async () => {
+    await startCodexStructureExtraction({
+      projectId: "p1",
+      folderId: "f1",
+      sceneIds: ["s1"],
+      authority: {
+        projectId: "p1",
+        currentProjectId: () => "p1",
+        workspacePath: "/w",
+        workspaceOpenRevision: 1,
+      },
+      workspacePath: "/w",
+      openRevision: 1,
+      useAi: false,
+      typeCatalog: [
+        {
+          ref: "T0001",
+          sourceKey: "character",
+          slug: "character",
+          label: "character",
+          coarseClassHints: ["person"],
+          expectedVersion: 1,
+        },
+      ],
+      heuristicSeeds: [
+        {
+          surface: "ライカ",
+          typeRef: "T0001",
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカとベルカは友人だ",
+              documentRef: "D000001",
+              method: "exact",
+            },
+          ],
+        },
+        {
+          surface: "ベルカ",
+          typeRef: "T0001",
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカとベルカは友人だ",
+              documentRef: "D000001",
+              method: "exact",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(saveProposalSetMock).toHaveBeenCalled();
+    const payload = saveProposalSetMock.mock.calls[0]?.[0] as {
+      summaryJson: {
+        relationDependencies: Record<string, readonly { proposalId: string }[]>;
+      };
+      proposals: readonly {
+        proposalId: string;
+        kind: string;
+        payloadJson: Record<string, unknown>;
+      }[];
+    };
+    expect(
+      payload.proposals.every((row) => typeof row.proposalId === "string"),
+    ).toBe(true);
+    const relation = payload.proposals.find((row) =>
+      row.kind.includes("relation"),
+    );
+    expect(relation).toBeDefined();
+    expect(relation?.payloadJson.dependencies).toBeUndefined();
+    const deps = payload.summaryJson.relationDependencies[relation!.proposalId];
+    expect(deps?.length).toBe(2);
+    const entityIds = new Set(
+      payload.proposals
+        .filter((row) => !row.kind.includes("relation"))
+        .map((row) => row.proposalId),
+    );
+    for (const dep of deps ?? []) {
+      expect(entityIds.has(dep.proposalId)).toBe(true);
+    }
   });
 });
 

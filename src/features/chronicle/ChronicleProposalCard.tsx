@@ -80,7 +80,7 @@ export function ChronicleProposalCard({
         </span>
       </button>
 
-      {!alreadySatisfied && (
+      {!alreadySatisfied && !probable && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"
