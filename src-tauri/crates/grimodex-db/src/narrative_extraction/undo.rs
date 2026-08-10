@@ -134,6 +134,7 @@ fn mutate_commit(
                     );
 
                     let mut restored = Vec::new();
+                    let mut after_entities = Vec::new();
                     for entity in &entities {
                         let entity_id = entity_id(entity)?;
                         let snapshot = entity
@@ -155,12 +156,23 @@ fn mutate_commit(
                             Some(replay_version),
                             true,
                         )?;
+                        // Keep journal after-snapshot aligned with the redone live
+                        // state so the next Undo compares against version N+1.
+                        let live_snapshot = collect_event_snapshot(conn, entity_id)?;
+                        after_entities.push(json!({
+                            "entityKind": "event",
+                            "entityId": entity_id,
+                            "version": replay_version,
+                            "snapshot": live_snapshot,
+                        }));
                         restored.push(json!({
                             "entityKind": "event",
                             "entityId": entity_id,
                             "version": replay_version,
                         }));
                     }
+
+                    update_journal_after(conn, &commit.commit_id, &after_entities)?;
 
                     let change_uid = Uuid::new_v4().to_string();
                     append_change_events_in_tx(
@@ -220,6 +232,30 @@ fn load_journal_after(
         |row| row.get(0),
     )?;
     serde_json::from_str(&raw).map_err(Into::into)
+}
+
+fn update_journal_after(
+    conn: &rusqlite::Connection,
+    commit_id: &str,
+    after_entities: &[Value],
+) -> anyhow::Result<()> {
+    let after_json = json!({ "entities": after_entities });
+    let updated = conn.execute(
+        "UPDATE narrative_commit_journals
+            SET after_json = ?1
+          WHERE id = (
+            SELECT id FROM narrative_commit_journals
+             WHERE commit_id = ?2
+             ORDER BY created_at DESC
+             LIMIT 1
+          )",
+        params![after_json.to_string(), commit_id],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "commit journal not found for redo after-snapshot update"
+    );
+    Ok(())
 }
 
 fn journal_entities(after: &Value) -> anyhow::Result<Vec<Value>> {

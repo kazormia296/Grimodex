@@ -15,7 +15,9 @@ fn fresh_schema_exposes_the_calendar_occ_token() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         assert_eq!(column, ("INTEGER".to_string(), true, Some("0".to_string())));
-        assert!(grimodex_core::SCHEMA_VERSION >= 5);
+        const {
+            assert!(grimodex_core::SCHEMA_VERSION >= 5);
+        }
         Ok(())
     })
     .expect("inspect calendar schema");

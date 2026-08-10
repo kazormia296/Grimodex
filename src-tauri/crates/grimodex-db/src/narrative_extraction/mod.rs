@@ -8,10 +8,10 @@ mod task_leases;
 mod undo;
 
 pub use models::{
-    AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ClaimTaskPayload,
-    CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed, FailTaskPayload,
-    FinishTaskPayload, GetCommitStatusPayload, PrepareCommitPayload, ProposalSeed, RunRefPayload,
-    SaveProposalSetPayload, UndoCommitPayload,
+    AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
+    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
+    FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload, PrepareCommitPayload, ProposalSeed,
+    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 pub use repository::ensure_test_schema;
 
@@ -67,6 +67,13 @@ pub fn narrative_extraction_save_proposal_set(
     payload: SaveProposalSetPayload,
 ) -> anyhow::Result<Value> {
     repository::save_proposal_set(db, payload)
+}
+
+pub fn narrative_extraction_get_run_review_bundle(
+    db: &Database,
+    payload: RunRefPayload,
+) -> anyhow::Result<Value> {
+    repository::get_run_review_bundle(db, payload.run_id, payload.project_id)
 }
 
 pub fn narrative_extraction_append_revision(

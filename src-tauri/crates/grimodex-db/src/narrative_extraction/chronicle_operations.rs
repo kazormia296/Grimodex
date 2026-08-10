@@ -191,9 +191,9 @@ fn get_integer_part(key: &str) -> anyhow::Result<&str> {
     let bytes = key.as_bytes();
     anyhow::ensure!(!bytes.is_empty(), "empty fractional key");
     let head = bytes[0];
-    let int_len = if (b'a'..=b'z').contains(&head) {
+    let int_len = if head.is_ascii_lowercase() {
         (head - b'a' + 2) as usize
-    } else if (b'A'..=b'Z').contains(&head) {
+    } else if head.is_ascii_uppercase() {
         (b'Z' - head + 2) as usize
     } else {
         anyhow::bail!("invalid fractional key integer head");
@@ -268,46 +268,56 @@ fn generate_key_between(a: Option<&str>, b: Option<&str>) -> anyhow::Result<Stri
     }
 }
 
+pub(crate) struct ChronicleEventCreateContext<'a> {
+    pub conn: &'a Connection,
+    pub project_id: &'a str,
+    pub session_id: &'a str,
+    pub surface: Option<&'a str>,
+    pub payload: &'a ChronicleEventCreatePayload,
+    pub ordinal: &'a str,
+    pub now: &'a str,
+    pub timestamp: i64,
+}
+
 pub(crate) fn apply_chronicle_event_create(
-    conn: &Connection,
-    project_id: &str,
-    session_id: &str,
-    surface: Option<&str>,
-    payload: &ChronicleEventCreatePayload,
-    ordinal: &str,
-    now: &str,
-    timestamp: i64,
+    ctx: ChronicleEventCreateContext<'_>,
 ) -> anyhow::Result<EventCreateTxResult> {
     anyhow::ensure!(
-        payload.placement.mode == "append-tail",
+        ctx.payload.placement.mode == "append-tail",
         "unsupported placement mode: {}",
-        payload.placement.mode
+        ctx.payload.placement.mode
     );
 
-    let scene_ids: Vec<String> = payload
+    let scene_ids: Vec<String> = ctx
+        .payload
         .evidence_scene_links
         .iter()
         .map(|link| link.scene_id.clone())
         .collect();
-    let reveal_scene_id = payload
+    let reveal_scene_id = ctx
+        .payload
         .reveal_scene_id
         .clone()
         .filter(|value| !value.is_empty())
         .or_else(|| scene_ids.first().cloned());
 
-    let start_granularity = payload
+    let start_granularity = ctx
+        .payload
         .start_granularity
         .clone()
         .unwrap_or_else(|| "none".to_string());
-    let end_granularity = payload
+    let end_granularity = ctx
+        .payload
         .end_granularity
         .clone()
         .unwrap_or_else(|| "none".to_string());
-    let precision = payload
+    let precision = ctx
+        .payload
         .precision
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
-    let kind = payload
+    let kind = ctx
+        .payload
         .kind
         .clone()
         .unwrap_or_else(|| "generic".to_string());
@@ -315,36 +325,36 @@ pub(crate) fn apply_chronicle_event_create(
     let event_uid = uuid::Uuid::new_v4().to_string();
 
     apply_event_create_in_tx(
-        conn,
+        ctx.conn,
         EventCreateTxInput {
-            project_id,
-            session_id,
-            surface,
-            event_id: &payload.event_id,
+            project_id: ctx.project_id,
+            session_id: ctx.session_id,
+            surface: ctx.surface,
+            event_id: &ctx.payload.event_id,
             undo_id: &undo_id,
             event_uid: &event_uid,
-            title: &payload.title,
-            note: payload.note.as_deref(),
-            detail: payload.detail.as_deref(),
-            ordinal,
-            primary_codex_id: payload.primary_codex_id.as_deref(),
+            title: &ctx.payload.title,
+            note: ctx.payload.note.as_deref(),
+            detail: ctx.payload.detail.as_deref(),
+            ordinal: ctx.ordinal,
+            primary_codex_id: ctx.payload.primary_codex_id.as_deref(),
             lane_group: None,
-            location_codex_id: payload.location_codex_id.as_deref(),
-            start_time: payload.start_time,
-            end_time: payload.end_time,
-            start_minute: payload.start_minute,
-            end_minute: payload.end_minute,
+            location_codex_id: ctx.payload.location_codex_id.as_deref(),
+            start_time: ctx.payload.start_time,
+            end_time: ctx.payload.end_time,
+            start_minute: ctx.payload.start_minute,
+            end_minute: ctx.payload.end_minute,
             start_granularity: &start_granularity,
             end_granularity: &end_granularity,
             precision: &precision,
             kind: &kind,
-            secret: payload.secret,
+            secret: ctx.payload.secret,
             reveal_scene_id: reveal_scene_id.as_deref(),
-            participants: &payload.participants,
+            participants: &ctx.payload.participants,
             scene_ids: &scene_ids,
             request_hash: None,
-            now,
-            timestamp,
+            now: ctx.now,
+            timestamp: ctx.timestamp,
             write_undo_journal: false,
             write_change_event: false,
         },

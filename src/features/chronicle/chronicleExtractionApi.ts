@@ -4,7 +4,10 @@ import {
   runChronicleExtractionCoordinator,
   type ChronicleExtractionRequest,
 } from "@/application/narrative-extraction/extractionCoordinator";
-import { loadInlineJsonArtifact } from "@/application/narrative-extraction/artifactRepository";
+import {
+  hydrateInlineArtifactsFromNative,
+  loadInlineJsonArtifact,
+} from "@/application/narrative-extraction/artifactRepository";
 import {
   getRun,
   listResumableRuns,
@@ -17,6 +20,11 @@ import {
   applyChronicleCommit,
   prepareChronicleCommit,
 } from "@/application/narrative-extraction/commitCoordinator";
+import type {
+  GetRunReviewBundleResult,
+  ReviewBundleProposal,
+  SavedProposalSeed,
+} from "@/application/narrative-extraction/nativeApi";
 import { compileCreateChronicleEventOperation } from "./extraction/compiler";
 import type { NarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/types";
 import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
@@ -25,6 +33,7 @@ import type { ChronicleExistingMatch } from "./extraction/existingEventMatcher";
 import {
   buildProposalSafetyFlags,
   emptyTaskCounts,
+  isSafeForBulkApprove,
   useChronicleExtractionStore,
   type ChronicleExtractionCoverage,
   type ChronicleExtractionReviewProjection,
@@ -32,6 +41,7 @@ import {
   type ChronicleReviewProposal,
   type StartChronicleExtractionRequest,
 } from "./chronicleExtractionStore";
+import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 
 export type { StartChronicleExtractionRequest };
 
@@ -64,6 +74,10 @@ const proposalSetIdByRunId = new Map<string, string>();
 
 function rememberProposalSetId(runId: string, proposalSetId: string): void {
   proposalSetIdByRunId.set(runId, proposalSetId);
+}
+
+export function resetChronicleExtractionApiCachesForTests(): void {
+  proposalSetIdByRunId.clear();
 }
 
 function resolveProposalSetId(
@@ -112,17 +126,38 @@ function evidenceQuotesForProposal(
   });
 }
 
+function isProposalPayload(
+  value: unknown,
+): value is CreateChronicleEventProposalPayloadV1 {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.eventId === "string" &&
+    typeof record.title === "string" &&
+    Array.isArray(record.evidenceAnchorIds)
+  );
+}
+
+function plannedProposalKey(
+  planned: PlannedProposalArtifactRow,
+  index: number,
+): string {
+  return `${planned.proposal.eventId}:${index}`;
+}
+
 function buildReviewProposalFromPlanned(args: {
   readonly planned: PlannedProposalArtifactRow;
   readonly proposalId: string;
   readonly revisionId: string;
   readonly proposalKey: string;
+  readonly status: NarrativeProposalStatus;
+  readonly payload: CreateChronicleEventProposalPayloadV1;
   readonly anchorsById: Map<string, ResolvedEvidenceAnchor>;
   readonly snapshot: NarrativeCorpusSnapshot | null;
   readonly titleBySceneId: ReadonlyMap<string, string>;
 }): ChronicleReviewProposal {
   const evidence = evidenceQuotesForProposal(
-    args.planned.proposal,
+    args.payload,
     args.anchorsById,
     args.snapshot,
     args.titleBySceneId,
@@ -132,7 +167,7 @@ function buildReviewProposalFromPlanned(args: {
   );
   const safety = buildProposalSafetyFlags({
     match: args.planned.match,
-    actuality: args.planned.proposal.actuality,
+    actuality: args.payload.actuality,
     evidenceMethods: evidence.map((item) => item.method),
     lossless: !fragmented,
   });
@@ -140,10 +175,10 @@ function buildReviewProposalFromPlanned(args: {
     proposalId: args.proposalId,
     revisionId: args.revisionId,
     proposalKey: args.proposalKey,
-    status: "unreviewed",
+    status: args.status,
     applicability: "applicable",
-    displayTitle: args.planned.proposal.title,
-    payload: args.planned.proposal,
+    displayTitle: args.payload.title,
+    payload: args.payload,
     match: args.planned.match,
     evidence,
     safety,
@@ -152,6 +187,45 @@ function buildReviewProposalFromPlanned(args: {
       ? "断片 Evidence のため適用不可（確認のみ）"
       : undefined,
   };
+}
+
+type SavedReviewSeed = {
+  readonly proposalId: string;
+  readonly proposalKey: string;
+  readonly revisionId: string;
+  readonly status?: NarrativeProposalStatus;
+  readonly payload?: CreateChronicleEventProposalPayloadV1;
+};
+
+function savedSeedsFromBundle(
+  proposals: readonly ReviewBundleProposal[],
+): SavedReviewSeed[] {
+  return proposals.flatMap((proposal) => {
+    if (!proposal.currentRevisionId) return [];
+    const payload = isProposalPayload(proposal.payloadJson)
+      ? proposal.payloadJson
+      : undefined;
+    return [
+      {
+        proposalId: proposal.proposalId,
+        proposalKey: proposal.proposalKey,
+        revisionId: proposal.currentRevisionId,
+        status: proposal.status,
+        payload,
+      },
+    ];
+  });
+}
+
+function savedSeedsFromCoordinator(
+  proposals: readonly SavedProposalSeed[],
+): SavedReviewSeed[] {
+  return proposals.map((proposal) => ({
+    proposalId: proposal.proposalId,
+    proposalKey: proposal.proposalKey,
+    revisionId: proposal.revisionId,
+    status: proposal.status,
+  }));
 }
 
 export function buildChronicleExtractionReviewProjection(args: {
@@ -169,11 +243,7 @@ export function buildChronicleExtractionReviewProjection(args: {
     readonly title: string;
     readonly existingRef: string;
   }[];
-  readonly savedProposals?: readonly {
-    readonly proposalId: string;
-    readonly proposalKey: string;
-    readonly revisionId: string;
-  }[];
+  readonly savedProposals?: readonly SavedReviewSeed[];
   readonly anchors?: readonly ResolvedEvidenceAnchor[];
   readonly snapshot?: NarrativeCorpusSnapshot | null;
   readonly titleBySceneId?: ReadonlyMap<string, string>;
@@ -182,17 +252,29 @@ export function buildChronicleExtractionReviewProjection(args: {
     (args.anchors ?? []).map((anchor) => [anchor.id, anchor] as const),
   );
   const titleBySceneId = args.titleBySceneId ?? new Map<string, string>();
-  const saved = args.savedProposals ?? [];
+  const savedByKey = new Map(
+    (args.savedProposals ?? []).map(
+      (seed) => [seed.proposalKey, seed] as const,
+    ),
+  );
 
   const proposals: ChronicleReviewProposal[] = args.planned.map(
     (planned, index) => {
-      const seed = saved[index];
+      const proposalKey = plannedProposalKey(planned, index);
+      const seed = savedByKey.get(proposalKey);
+      if (!seed?.revisionId) {
+        throw new Error(
+          `Missing Native proposal revision for key ${proposalKey} on run ${args.runId}`,
+        );
+      }
+      const payload = seed.payload ?? planned.proposal;
       return buildReviewProposalFromPlanned({
         planned,
-        proposalId: seed?.proposalId ?? `local-proposal-${index}`,
-        revisionId: seed?.revisionId ?? `local-rev-${index}`,
-        proposalKey:
-          seed?.proposalKey ?? `${planned.proposal.eventId}:${index}`,
+        proposalId: seed.proposalId,
+        revisionId: seed.revisionId,
+        proposalKey: seed.proposalKey,
+        status: seed.status ?? "unreviewed",
+        payload,
         anchorsById,
         snapshot: args.snapshot ?? null,
         titleBySceneId,
@@ -266,11 +348,13 @@ export async function startChronicleExtraction(
     await loadInlineJsonArtifact<ProposalPlanArtifactPayload>(
       result.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+      { projectId: request.projectId },
     );
   const evidenceArtifact =
     await loadInlineJsonArtifact<ResolvedEvidenceArtifactPayload>(
       result.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+      { projectId: request.projectId },
     );
 
   let coverage: ChronicleExtractionCoverage = {
@@ -306,7 +390,8 @@ export async function startChronicleExtraction(
             ? runProjection.run.coverageJson.windowCount
             : 0,
       gaps: Array.isArray(runProjection.run.coverageJson.gaps)
-        ? (runProjection.run.coverageJson.gaps as ChronicleExtractionCoverage["gaps"])
+        ? (runProjection.run.coverageJson
+            .gaps as ChronicleExtractionCoverage["gaps"])
         : [],
     };
     taskCounts = runProjection.taskCounts;
@@ -339,7 +424,7 @@ export async function startChronicleExtraction(
     taskCounts,
     planned,
     alreadySatisfied: proposalArtifact?.alreadySatisfied,
-    savedProposals: result.savedProposals,
+    savedProposals: savedSeedsFromCoordinator(result.savedProposals),
     anchors: evidenceArtifact?.anchors,
     snapshot: result.snapshot,
     titleBySceneId,
@@ -349,9 +434,48 @@ export async function startChronicleExtraction(
   return { runId: result.runId };
 }
 
+function coverageFromRunJson(
+  coverageJson: Readonly<Record<string, unknown>>,
+): ChronicleExtractionCoverage {
+  return {
+    mode: typeof coverageJson.mode === "string" ? coverageJson.mode : undefined,
+    documentCount:
+      typeof coverageJson.documentCount === "number"
+        ? coverageJson.documentCount
+        : undefined,
+    windowCount:
+      typeof coverageJson.windowCount === "number"
+        ? coverageJson.windowCount
+        : undefined,
+    completedWindows:
+      typeof coverageJson.completedWindows === "number"
+        ? coverageJson.completedWindows
+        : typeof coverageJson.windowCount === "number"
+          ? coverageJson.windowCount
+          : undefined,
+    gaps: Array.isArray(coverageJson.gaps)
+      ? (coverageJson.gaps as ChronicleExtractionCoverage["gaps"])
+      : [],
+  };
+}
+
+function plannedRowsFromArtifact(
+  proposalArtifact: ProposalPlanArtifactPayload | null,
+): PlannedProposalArtifactRow[] {
+  if (proposalArtifact?.planned) {
+    return [...proposalArtifact.planned];
+  }
+  return (proposalArtifact?.proposals ?? []).map((proposal) => ({
+    proposal,
+    match: { status: "none" } as const,
+    hypothesisId: proposal.eventId,
+  }));
+}
+
 /**
  * Return the in-memory review projection for a Run owned by the given project.
  * Foreign project/workspace runs are rejected (dialog scope isolation).
+ * Cold start: hydrates artifacts + proposals from Native review bundle.
  */
 export async function getChronicleExtractionReview(
   runId: string,
@@ -394,65 +518,83 @@ export async function getChronicleExtractionReview(
     throw new Error("Run is not a chronicle extraction surface");
   }
 
+  let bundle: GetRunReviewBundleResult;
+  try {
+    bundle = await hydrateInlineArtifactsFromNative({
+      runId,
+      projectId: scope.projectId,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Failed to restore chronicle extraction review from Native: ${message}`,
+    );
+  }
+
+  if (!bundle.proposalSet) {
+    throw new Error(
+      `Chronicle extraction run ${runId} has no Native proposal set`,
+    );
+  }
+  rememberProposalSetId(runId, bundle.proposalSet.proposalSetId);
+
   const proposalArtifact =
     await loadInlineJsonArtifact<ProposalPlanArtifactPayload>(
       runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+      { projectId: scope.projectId },
     );
   const evidenceArtifact =
     await loadInlineJsonArtifact<ResolvedEvidenceArtifactPayload>(
       runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+      { projectId: scope.projectId },
     );
   const snapshotArtifact =
     await loadInlineJsonArtifact<SnapshotArtifactPayload>(
       runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+      { projectId: scope.projectId },
     );
 
-  const planned =
-    proposalArtifact?.planned ??
-    (proposalArtifact?.proposals ?? []).map((proposal) => ({
-      proposal,
-      match: { status: "none" } as const,
-      hypothesisId: proposal.eventId,
-    }));
+  const planned = plannedRowsFromArtifact(proposalArtifact);
+  if (planned.length === 0 && bundle.proposals.length > 0) {
+    for (const [index, native] of bundle.proposals.entries()) {
+      if (!isProposalPayload(native.payloadJson)) {
+        throw new Error(
+          `Native proposal ${native.proposalId} missing chronicle payload`,
+        );
+      }
+      planned.push({
+        proposal: native.payloadJson,
+        match: { status: "none" },
+        hypothesisId: native.payloadJson.eventId || `native-${index}`,
+      });
+    }
+  }
+
+  const titleBySceneId = new Map<string, string>();
+  for (const document of snapshotArtifact?.snapshot.documents ?? []) {
+    if (document.origin.kind !== "project-node") continue;
+    titleBySceneId.set(document.origin.nodeId, document.origin.nodeId);
+  }
 
   const projection = buildChronicleExtractionReviewProjection({
     runId,
     projectId: scope.projectId,
     workspacePath: scope.workspacePath ?? null,
     openRevision: scope.openRevision ?? null,
-    proposalSetId: proposalArtifact?.proposalSetId ?? null,
+    proposalSetId:
+      proposalArtifact?.proposalSetId ?? bundle.proposalSet.proposalSetId,
     status: runProjection.run.status,
-    coverage: {
-      mode:
-        typeof runProjection.run.coverageJson.mode === "string"
-          ? runProjection.run.coverageJson.mode
-          : undefined,
-      documentCount:
-        typeof runProjection.run.coverageJson.documentCount === "number"
-          ? runProjection.run.coverageJson.documentCount
-          : undefined,
-      windowCount:
-        typeof runProjection.run.coverageJson.windowCount === "number"
-          ? runProjection.run.coverageJson.windowCount
-          : undefined,
-      completedWindows:
-        typeof runProjection.run.coverageJson.completedWindows === "number"
-          ? runProjection.run.coverageJson.completedWindows
-          : typeof runProjection.run.coverageJson.windowCount === "number"
-            ? runProjection.run.coverageJson.windowCount
-            : undefined,
-      gaps: Array.isArray(runProjection.run.coverageJson.gaps)
-        ? (runProjection.run.coverageJson.gaps as ChronicleExtractionCoverage["gaps"])
-        : [],
-    },
+    coverage: coverageFromRunJson(runProjection.run.coverageJson),
     taskCounts: runProjection.taskCounts,
     planned,
     alreadySatisfied: proposalArtifact?.alreadySatisfied,
+    savedProposals: savedSeedsFromBundle(bundle.proposals),
     anchors: evidenceArtifact?.anchors,
     snapshot: snapshotArtifact?.snapshot ?? null,
+    titleBySceneId,
   });
 
   useChronicleExtractionStore.getState().setProjection(projection);
@@ -516,6 +658,7 @@ export async function applyChronicleExtractionCommit(input: {
     await loadInlineJsonArtifact<SnapshotArtifactPayload>(
       projection.runId,
       CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+      { projectId: input.projectId },
     );
   if (!snapshotArtifact?.snapshot) {
     throw new Error("Missing snapshot artifact for chronicle commit");
@@ -578,8 +721,8 @@ export async function applyChronicleExtractionCommit(input: {
 }
 
 /**
- * Persist a decision for the selected revision when Native ledger is available.
- * Local store status is the source of truth for the dialog until commit.
+ * Persist a decision for the current revision. Fail-closed: errors propagate.
+ * Callers must update Zustand only after this resolves.
  */
 export async function recordChronicleProposalDecision(args: {
   readonly runId: string;
@@ -588,38 +731,166 @@ export async function recordChronicleProposalDecision(args: {
   readonly revisionId: string;
   readonly decision: "approved" | "rejected" | "deferred" | "held";
 }): Promise<void> {
-  try {
-    await appendDecision({
-      runId: args.runId,
-      projectId: args.projectId,
-      proposalId: args.proposalId,
-      revisionId: args.revisionId,
-      decision: args.decision,
-      createdBy: "chronicle-extract-dialog",
-    });
-  } catch {
-    // Ledger write is best-effort until commit path is mandatory.
-  }
+  await appendDecision({
+    runId: args.runId,
+    projectId: args.projectId,
+    proposalId: args.proposalId,
+    revisionId: args.revisionId,
+    decision: args.decision,
+    createdBy: "chronicle-extract-dialog",
+  });
 }
 
+/**
+ * Append a Native revision and return the server-issued revision id.
+ * Fail-closed: never invents client revision ids.
+ */
 export async function recordChronicleProposalRevision(args: {
   readonly runId: string;
   readonly projectId: string;
   readonly proposalId: string;
+  readonly expectedCurrentRevisionId: string;
   readonly payload: CreateChronicleEventProposalPayloadV1;
-}): Promise<string | null> {
-  try {
-    const result = await appendRevision({
-      runId: args.runId,
-      projectId: args.projectId,
-      proposalId: args.proposalId,
-      payloadJson: args.payload as unknown as Readonly<Record<string, unknown>>,
-      createdBy: "chronicle-extract-dialog",
-    });
-    return result.revisionId;
-  } catch {
-    return null;
+}): Promise<string> {
+  const result = await appendRevision({
+    runId: args.runId,
+    projectId: args.projectId,
+    proposalId: args.proposalId,
+    expectedCurrentRevisionId: args.expectedCurrentRevisionId,
+    payloadJson: args.payload as unknown as Readonly<Record<string, unknown>>,
+    createdBy: "chronicle-extract-dialog",
+  });
+  return result.revisionId;
+}
+
+/**
+ * Approve / reject / hold via Native, then mirror status into the store.
+ */
+export async function decideChronicleProposal(args: {
+  readonly proposalId: string;
+  readonly status: NarrativeProposalStatus;
+}): Promise<void> {
+  const projection = useChronicleExtractionStore.getState().projection;
+  if (!projection) {
+    throw new Error("No active chronicle extraction review");
   }
+  const proposal = projection.proposals.find(
+    (item) => item.proposalId === args.proposalId,
+  );
+  if (!proposal?.revisionId) {
+    throw new Error(`Proposal ${args.proposalId} missing revisionId`);
+  }
+  if (args.status === "unreviewed") {
+    useChronicleExtractionStore
+      .getState()
+      .updateProposalStatus(args.proposalId, args.status);
+    return;
+  }
+  const decision =
+    args.status === "approved"
+      ? "approved"
+      : args.status === "rejected"
+        ? "rejected"
+        : args.status === "held"
+          ? "held"
+          : "deferred";
+  await recordChronicleProposalDecision({
+    runId: projection.runId,
+    projectId: projection.projectId,
+    proposalId: args.proposalId,
+    revisionId: proposal.revisionId,
+    decision,
+  });
+  useChronicleExtractionStore
+    .getState()
+    .updateProposalStatus(args.proposalId, args.status);
+}
+
+/**
+ * Persist field edits as a Native revision, then update the local projection.
+ */
+export async function reviseChronicleProposal(args: {
+  readonly proposalId: string;
+  readonly patch: {
+    title?: string;
+    note?: string | null;
+    secret?: boolean;
+    revealDocumentRef?: string;
+  };
+}): Promise<void> {
+  const projection = useChronicleExtractionStore.getState().projection;
+  if (!projection) {
+    throw new Error("No active chronicle extraction review");
+  }
+  const current = projection.proposals.find(
+    (item) => item.proposalId === args.proposalId,
+  );
+  if (!current?.payload || !current.revisionId) {
+    throw new Error(`Proposal ${args.proposalId} missing payload/revision`);
+  }
+  const nextPayload: CreateChronicleEventProposalPayloadV1 = {
+    ...current.payload,
+    title:
+      args.patch.title !== undefined
+        ? args.patch.title.trim()
+        : current.payload.title,
+    note:
+      args.patch.note !== undefined
+        ? args.patch.note === null
+          ? null
+          : args.patch.note.trim() || null
+        : current.payload.note,
+    disclosure: {
+      secret:
+        args.patch.secret !== undefined
+          ? args.patch.secret
+          : current.payload.disclosure.secret,
+      revealDocumentRef:
+        args.patch.revealDocumentRef ??
+        current.payload.disclosure.revealDocumentRef,
+    },
+  };
+  const revisionId = await recordChronicleProposalRevision({
+    runId: projection.runId,
+    projectId: projection.projectId,
+    proposalId: args.proposalId,
+    expectedCurrentRevisionId: current.revisionId,
+    payload: nextPayload,
+  });
+  useChronicleExtractionStore
+    .getState()
+    .reviseProposalFields(args.proposalId, revisionId, args.patch);
+}
+
+/**
+ * Bulk-approve safe proposals with Native persistence. Stops on first failure.
+ */
+export async function bulkApproveSafeChronicleProposals(): Promise<number> {
+  const projection = useChronicleExtractionStore.getState().projection;
+  if (!projection) return 0;
+  let approved = 0;
+  for (const proposal of projection.proposals) {
+    if (
+      proposal.applicability !== "applicable" ||
+      proposal.status !== "unreviewed" ||
+      !isSafeForBulkApprove(proposal.safety) ||
+      !proposal.revisionId
+    ) {
+      continue;
+    }
+    await recordChronicleProposalDecision({
+      runId: projection.runId,
+      projectId: projection.projectId,
+      proposalId: proposal.proposalId,
+      revisionId: proposal.revisionId,
+      decision: "approved",
+    });
+    useChronicleExtractionStore
+      .getState()
+      .updateProposalStatus(proposal.proposalId, "approved");
+    approved += 1;
+  }
+  return approved;
 }
 
 export type {

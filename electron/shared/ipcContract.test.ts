@@ -470,6 +470,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionSaveProposalSet",
       Promise.resolve('{"proposalSetId":"ps1","proposals":[]}'),
     ) as never,
+    narrativeExtractionGetRunReviewBundle: record(
+      "narrativeExtractionGetRunReviewBundle",
+      Promise.resolve(
+        '{"runId":"r1","projectId":"p1","artifacts":[],"proposalSet":null,"proposals":[]}',
+      ),
+    ) as never,
     narrativeExtractionAppendRevision: record(
       "narrativeExtractionAppendRevision",
       Promise.resolve(
@@ -2990,6 +2996,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_finish_task",
       "narrative_extraction_get_commit_status",
       "narrative_extraction_get_run",
+      "narrative_extraction_get_run_review_bundle",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",
       "narrative_extraction_save_proposal_set",

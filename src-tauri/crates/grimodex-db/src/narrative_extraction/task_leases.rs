@@ -48,7 +48,7 @@ pub(crate) fn claim_next_task(
                   OR (
                     status = 'running'
                     AND lease_expires_at IS NOT NULL
-                    AND lease_expires_at < datetime('now')
+                    AND julianday(lease_expires_at) < julianday('now')
                   )
                 )
               ORDER BY priority DESC, created_at ASC
@@ -80,7 +80,7 @@ pub(crate) fn claim_next_task(
                   OR (
                     status = 'running'
                     AND lease_expires_at IS NOT NULL
-                    AND lease_expires_at < datetime('now')
+                    AND julianday(lease_expires_at) < julianday('now')
                   )
                 )
               ORDER BY priority DESC, created_at ASC
@@ -121,7 +121,7 @@ pub(crate) fn claim_next_task(
               OR (
                 status = 'running'
                 AND lease_expires_at IS NOT NULL
-                AND lease_expires_at < datetime('now')
+                AND julianday(lease_expires_at) < julianday('now')
               )
             )",
         params![
@@ -182,7 +182,7 @@ pub(crate) fn verify_task_lease(
     );
     if let Some(expires_at) = expires_at {
         let expired: bool = conn.query_row(
-            "SELECT CASE WHEN ?1 < datetime('now') THEN 1 ELSE 0 END",
+            "SELECT CASE WHEN julianday(?1) < julianday('now') THEN 1 ELSE 0 END",
             params![expires_at],
             |row| row.get(0),
         )?;

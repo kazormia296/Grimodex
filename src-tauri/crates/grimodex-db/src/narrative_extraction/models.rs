@@ -131,6 +131,8 @@ pub struct AppendRevisionPayload {
     pub project_id: String,
     pub proposal_id: String,
     pub payload_json: Value,
+    /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
+    pub expected_current_revision_id: String,
     #[serde(default)]
     pub created_by: Option<String>,
 }

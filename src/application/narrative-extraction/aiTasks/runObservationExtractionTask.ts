@@ -41,10 +41,7 @@ export function buildObservationExtractionPrompt(
   windows: readonly ObservationExtractionWindowInput[],
 ): string {
   const bodies = windows
-    .map(
-      (window) =>
-        `--- sourceRef=${window.sourceRef} ---\n${window.text}`,
-    )
+    .map((window) => `--- sourceRef=${window.sourceRef} ---\n${window.text}`)
     .join("\n\n");
   return `あなたは小説本文の観測アシスタントです。与えられた Source View 断片から、作中で提示されている出来事の Observation を JSON で列挙してください。
 Project ID / Scene ID / Event ID / DB version は出力にも入力にも使いません。evidence.sourceRef には与えた sourceRef（例: S0001）だけを使います。
@@ -94,13 +91,10 @@ export async function runObservationExtractionTask(
   );
   const ov = resolveRoleSendOverride("narrative_observation_extract");
   const response = input.send
-    ? await input.send(
-        [{ role: "user", content: prompt }],
-        {
-          projectId,
-          pathId: "narrative_observation_extract",
-        },
-      )
+    ? await input.send([{ role: "user", content: prompt }], {
+        projectId,
+        pathId: "narrative_observation_extract",
+      })
     : await sendChatMessageWithThinking(
         [{ role: "user", content: prompt }],
         {

@@ -127,11 +127,69 @@ export interface SaveProposalSetResult {
   readonly proposals: readonly SavedProposalSeed[];
 }
 
+export interface ReviewBundleArtifact {
+  readonly artifactId: string;
+  readonly runId: string;
+  readonly taskId: string | null;
+  readonly attemptId: string | null;
+  readonly artifactKind: string;
+  readonly payloadStorage: "inline-json" | "ref" | string;
+  readonly payloadJson: Readonly<Record<string, unknown>> | null;
+  readonly payloadRef: string | null;
+  readonly payloadDigest: string | null;
+  readonly createdAt: string;
+}
+
+export interface ReviewBundleProposalSet {
+  readonly proposalSetId: string;
+  readonly runId: string;
+  readonly projectId: string;
+  readonly setKind: string;
+  readonly status: string;
+  readonly summaryJson: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly version: number;
+}
+
+export interface ReviewBundleLatestDecision {
+  readonly decisionId: string;
+  readonly proposalId: string;
+  readonly revisionId: string;
+  readonly decision: NarrativeProposalDecision;
+  readonly decisionJson: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+  readonly createdBy: string;
+}
+
+export interface ReviewBundleProposal {
+  readonly proposalId: string;
+  readonly proposalSetId: string;
+  readonly proposalKey: string;
+  readonly kind: string;
+  readonly status: NarrativeProposalStatus;
+  readonly payloadJson: Readonly<Record<string, unknown>>;
+  readonly currentRevisionId: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly latestDecision: ReviewBundleLatestDecision | null;
+}
+
+export interface GetRunReviewBundleResult {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly artifacts: readonly ReviewBundleArtifact[];
+  readonly proposalSet: ReviewBundleProposalSet | null;
+  readonly proposals: readonly ReviewBundleProposal[];
+}
+
 export interface AppendRevisionPayload {
   readonly runId: string;
   readonly projectId: string;
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
+  /** Must match Native `current_revision_id` (OCC). */
+  readonly expectedCurrentRevisionId: string;
   readonly createdBy?: string;
 }
 
@@ -307,6 +365,15 @@ export async function narrativeExtractionSaveProposalSet(
 ): Promise<SaveProposalSetResult> {
   return invoke<SaveProposalSetResult>(
     "narrative_extraction_save_proposal_set",
+    { payload },
+  );
+}
+
+export async function narrativeExtractionGetRunReviewBundle(
+  payload: RunRefPayload,
+): Promise<GetRunReviewBundleResult> {
+  return invoke<GetRunReviewBundleResult>(
+    "narrative_extraction_get_run_review_bundle",
     { payload },
   );
 }

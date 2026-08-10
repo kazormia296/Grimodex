@@ -65,10 +65,12 @@ fn insert_binding(
 
 #[test]
 fn fresh_migration_retains_the_v4_detail_semantic_binding_contract() {
-    assert!(
-        grimodex_core::SCHEMA_VERSION >= DETAIL_BINDING_SCHEMA_VERSION,
-        "semantic binding persistence must remain part of every schema after v4",
-    );
+    const {
+        assert!(
+            grimodex_core::SCHEMA_VERSION >= DETAIL_BINDING_SCHEMA_VERSION,
+            "semantic binding persistence must remain part of every schema after v4",
+        );
+    }
 
     let db = migrated_database();
     db.with_conn(|conn| {

@@ -23,10 +23,7 @@ export interface StartChronicleExtractionRequest {
   readonly useAi?: boolean;
 }
 
-export type ProbableDuplicateChoice =
-  | "skip-as-same"
-  | "create-as-new"
-  | "hold";
+export type ProbableDuplicateChoice = "skip-as-same" | "create-as-new" | "hold";
 
 export interface ChronicleExtractionCoverageGap {
   readonly windowId?: string;
@@ -172,11 +169,12 @@ interface ChronicleExtractionState {
     choice: ProbableDuplicateChoice,
   ) => void;
   /**
-   * Local editable fields. Appends a logical revision and resets to unreviewed
-   * so the user must re-approve.
+   * Apply a Native-persisted revision locally. `revisionId` must come from
+   * `appendRevision` — never fabricate client-side IDs.
    */
   reviseProposalFields: (
     proposalId: string,
+    revisionId: string,
     patch: {
       title?: string;
       note?: string | null;
@@ -275,7 +273,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       });
     },
 
-    reviseProposalFields: (proposalId, patch) => {
+    reviseProposalFields: (proposalId, revisionId, patch) => {
       const projection = get().projection;
       if (!projection) return;
       const current = projection.proposals.find(
@@ -287,7 +285,9 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       const nextPayload: CreateChronicleEventProposalPayloadV1 = {
         ...current.payload,
         title:
-          patch.title !== undefined ? patch.title.trim() : current.payload.title,
+          patch.title !== undefined
+            ? patch.title.trim()
+            : current.payload.title,
         note:
           patch.note !== undefined
             ? patch.note === null
@@ -304,7 +304,6 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             current.payload.disclosure.revealDocumentRef,
         },
       };
-      const revisionId = crypto.randomUUID();
       set({
         projection: {
           ...projection,

@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
-import { ChronicleProposalReview } from "./ChronicleProposalReview";
 import {
   buildProposalSafetyFlags,
   resetChronicleExtractionStoreForTests,
@@ -11,6 +10,24 @@ import {
   type ChronicleReviewProposal,
 } from "./chronicleExtractionStore";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
+
+const decideMock = vi.hoisted(() => vi.fn());
+const reviseMock = vi.hoisted(() => vi.fn());
+const bulkMock = vi.hoisted(() => vi.fn());
+
+vi.mock("./chronicleExtractionApi", async () => {
+  const actual = await vi.importActual<typeof import("./chronicleExtractionApi")>(
+    "./chronicleExtractionApi",
+  );
+  return {
+    ...actual,
+    decideChronicleProposal: decideMock,
+    reviseChronicleProposal: reviseMock,
+    bulkApproveSafeChronicleProposals: bulkMock,
+  };
+});
+
+import { ChronicleProposalReview } from "./ChronicleProposalReview";
 
 function payload(
   overrides: Partial<CreateChronicleEventProposalPayloadV1> = {},
@@ -124,6 +141,27 @@ describe("ChronicleExtractionProgress", () => {
 describe("ChronicleProposalReview", () => {
   beforeEach(() => {
     resetChronicleExtractionStoreForTests();
+    vi.clearAllMocks();
+    decideMock.mockImplementation(
+      async (args: { proposalId: string; status: string }) => {
+        useChronicleExtractionStore
+          .getState()
+          .updateProposalStatus(args.proposalId, args.status as never);
+      },
+    );
+    reviseMock.mockImplementation(
+      async (args: {
+        proposalId: string;
+        patch: { title?: string; note?: string | null };
+      }) => {
+        useChronicleExtractionStore
+          .getState()
+          .reviseProposalFields(args.proposalId, "rev-native-2", args.patch);
+      },
+    );
+    bulkMock.mockImplementation(async () => {
+      return useChronicleExtractionStore.getState().bulkApproveSafe();
+    });
   });
 
   it("renders list + detail split with evidence and unresolved metadata", () => {
@@ -146,16 +184,22 @@ describe("ChronicleProposalReview", () => {
     expect(screen.getByText(/場所: 教会/)).toBeInTheDocument();
   });
 
-  it("approves from card and supports safe bulk approve", () => {
+  it("approves from card and supports safe bulk approve", async () => {
     useChronicleExtractionStore
       .getState()
       .setProjection(projection([proposal()]));
     render(<ChronicleProposalReview />);
 
     fireEvent.click(screen.getByRole("button", { name: "承認" }));
-    expect(
-      useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
-    ).toBe("approved");
+    await waitFor(() => {
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
+      ).toBe("approved");
+    });
+    expect(decideMock).toHaveBeenCalledWith({
+      proposalId: "proposal-1",
+      status: "approved",
+    });
 
     act(() => {
       useChronicleExtractionStore
@@ -163,9 +207,12 @@ describe("ChronicleProposalReview", () => {
         .updateProposalStatus("proposal-1", "unreviewed");
     });
     fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
-    expect(
-      useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
-    ).toBe("approved");
+    await waitFor(() => {
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
+      ).toBe("approved");
+    });
+    expect(bulkMock).toHaveBeenCalled();
   });
 
   it("shows already-satisfied as completed / not applicable", () => {
@@ -188,7 +235,7 @@ describe("ChronicleProposalReview", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("offers probable-duplicate choices", () => {
+  it("offers probable-duplicate choices", async () => {
     useChronicleExtractionStore.getState().setProjection(
       projection([
         proposal({
@@ -213,16 +260,22 @@ describe("ChronicleProposalReview", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "同じものとしてスキップ" }),
     );
-    expect(
-      useChronicleExtractionStore.getState().projection?.proposals[0]
-        ?.probableDuplicateChoice,
-    ).toBe("skip-as-same");
+    await waitFor(() => {
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]
+          ?.probableDuplicateChoice,
+      ).toBe("skip-as-same");
+    });
     expect(
       useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
     ).toBe("rejected");
+    expect(decideMock).toHaveBeenCalledWith({
+      proposalId: "proposal-1",
+      status: "rejected",
+    });
   });
 
-  it("editing title requires re-approval", () => {
+  it("editing title requires re-approval via Native revision", async () => {
     useChronicleExtractionStore
       .getState()
       .setProjection(projection([proposal({ status: "approved" })]));
@@ -230,9 +283,16 @@ describe("ChronicleProposalReview", () => {
     const input = screen.getByTestId("chronicle-proposal-title-input");
     fireEvent.change(input, { target: { value: "撤退命令" } });
     fireEvent.blur(input);
+    await waitFor(() => {
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]
+          ?.displayTitle,
+      ).toBe("撤退命令");
+    });
     const updated =
       useChronicleExtractionStore.getState().projection?.proposals[0];
-    expect(updated?.displayTitle).toBe("撤退命令");
     expect(updated?.status).toBe("unreviewed");
+    expect(updated?.revisionId).toBe("rev-native-2");
+    expect(reviseMock).toHaveBeenCalled();
   });
 });

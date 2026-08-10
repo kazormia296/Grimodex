@@ -4144,6 +4144,23 @@ impl Backend {
     }
 
     #[napi]
+    pub async fn narrative_extraction_get_run_review_bundle(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RunRefPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_get_run_review_bundle(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
     pub async fn narrative_extraction_append_revision(
         &self,
         payload: serde_json::Value,

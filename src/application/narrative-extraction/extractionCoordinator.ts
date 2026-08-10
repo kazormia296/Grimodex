@@ -20,6 +20,10 @@ import {
 } from "@/features/chronicle/extraction/existingEventMatcher";
 import { planChronicleEventProposals } from "@/features/chronicle/extraction/proposalPlanner";
 import {
+  assertUniqueObservationLocalIds,
+  rekeyObservationsForWindow,
+} from "@/features/chronicle/extraction/windowExtractor";
+import {
   planExtractionWindows,
   type ExtractionWindow,
   type WindowPlan,
@@ -27,6 +31,7 @@ import {
 import type { SavedProposalSeed } from "./nativeApi";
 import {
   narrativeExtractionClaimTask,
+  narrativeExtractionFailTask,
   narrativeExtractionFinishTask,
 } from "./nativeApi";
 import {
@@ -157,6 +162,7 @@ interface MatchArtifactPayload {
 
 interface ProposalPlanArtifactPayload {
   readonly proposals: readonly CreateChronicleEventProposalPayloadV1[];
+  readonly proposalSetId?: string;
   /** Planned rows including match metadata for Review UI (PR4). */
   readonly planned?: readonly {
     readonly proposal: CreateChronicleEventProposalPayloadV1;
@@ -269,10 +275,7 @@ export async function observeChronicleEventsFromSnapshot(
   return observations;
 }
 
-function evidenceFingerprint(
-  sourceRef: string,
-  quote: string,
-): string {
+function evidenceFingerprint(sourceRef: string, quote: string): string {
   return `${sourceRef}\0${quote}`;
 }
 
@@ -382,10 +385,11 @@ async function executeTask(
       );
     }
     case CHRONICLE_EXTRACT_TASK_KINDS.windowPlan: {
-      const snapshotPayload = await loadInlineJsonArtifact<SnapshotArtifactPayload>(
-        runId,
-        CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
-      );
+      const snapshotPayload =
+        await loadInlineJsonArtifact<SnapshotArtifactPayload>(
+          runId,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+        );
       if (!snapshotPayload) {
         throw new Error("Missing source.snapshot@1 artifact");
       }
@@ -400,10 +404,11 @@ async function executeTask(
       };
     }
     case CHRONICLE_EXTRACT_TASK_KINDS.observe: {
-      const snapshotPayload = await loadInlineJsonArtifact<SnapshotArtifactPayload>(
-        runId,
-        CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
-      );
+      const snapshotPayload =
+        await loadInlineJsonArtifact<SnapshotArtifactPayload>(
+          runId,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+        );
       const windowPayload =
         await loadInlineJsonArtifact<WindowPlanArtifactPayload>(
           runId,
@@ -415,12 +420,9 @@ async function executeTask(
 
       let observations: readonly RawChronicleEventObservation[];
       if (deps.useAi) {
-        const observe =
-          deps.observeWithAi ?? runObservationExtractionTask;
+        const observe = deps.observeWithAi ?? runObservationExtractionTask;
         const sourceByRef = new Map(
-          snapshotPayload.sourceViews.map(
-            (view) => [view.ref, view] as const,
-          ),
+          snapshotPayload.sourceViews.map((view) => [view.ref, view] as const),
         );
         const collected: RawChronicleEventObservation[] = [];
         for (const window of windowPayload.windows) {
@@ -431,7 +433,7 @@ async function executeTask(
             projectId: request.projectId,
             createId,
           });
-          collected.push(...batch);
+          collected.push(...rekeyObservationsForWindow(window.windowId, batch));
         }
         observations = collected;
       } else {
@@ -441,6 +443,7 @@ async function executeTask(
           createId,
         );
       }
+      assertUniqueObservationLocalIds(observations);
 
       const draft = buildInlineJsonArtifact(
         CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations,
@@ -452,10 +455,11 @@ async function executeTask(
       };
     }
     case CHRONICLE_EXTRACT_TASK_KINDS.resolveEvidence: {
-      const snapshotPayload = await loadInlineJsonArtifact<SnapshotArtifactPayload>(
-        runId,
-        CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
-      );
+      const snapshotPayload =
+        await loadInlineJsonArtifact<SnapshotArtifactPayload>(
+          runId,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+        );
       const observationPayload =
         await loadInlineJsonArtifact<ObservationArtifactPayload>(
           runId,
@@ -500,10 +504,11 @@ async function executeTask(
       };
     }
     case CHRONICLE_EXTRACT_TASK_KINDS.cluster: {
-      const mergedPayload = await loadInlineJsonArtifact<ObservationArtifactPayload>(
-        runId,
-        CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
-      );
+      const mergedPayload =
+        await loadInlineJsonArtifact<ObservationArtifactPayload>(
+          runId,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
+        );
       if (!mergedPayload) {
         throw new Error("Missing merged observation artifact");
       }
@@ -518,14 +523,16 @@ async function executeTask(
       };
     }
     case CHRONICLE_EXTRACT_TASK_KINDS.synthesize: {
-      const mergedPayload = await loadInlineJsonArtifact<ObservationArtifactPayload>(
-        runId,
-        CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
-      );
-      const clusterPayload = await loadInlineJsonArtifact<ClusterArtifactPayload>(
-        runId,
-        CHRONICLE_EXTRACT_ARTIFACT_KINDS.clusters,
-      );
+      const mergedPayload =
+        await loadInlineJsonArtifact<ObservationArtifactPayload>(
+          runId,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations,
+        );
+      const clusterPayload =
+        await loadInlineJsonArtifact<ClusterArtifactPayload>(
+          runId,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.clusters,
+        );
       if (!mergedPayload || !clusterPayload) {
         throw new Error("Missing merge/cluster artifacts");
       }
@@ -573,10 +580,11 @@ async function executeTask(
       };
     }
     case CHRONICLE_EXTRACT_TASK_KINDS.matchExisting: {
-      const snapshotPayload = await loadInlineJsonArtifact<SnapshotArtifactPayload>(
-        runId,
-        CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
-      );
+      const snapshotPayload =
+        await loadInlineJsonArtifact<SnapshotArtifactPayload>(
+          runId,
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot,
+        );
       const observationPayload =
         await loadInlineJsonArtifact<ObservationArtifactPayload>(
           runId,
@@ -608,8 +616,7 @@ async function executeTask(
       );
       const anchorsByQuote = new Map(
         evidencePayload.anchors.map(
-          (anchor) =>
-            [`${anchor.sourceRef}\0${anchor.quote}`, anchor] as const,
+          (anchor) => [`${anchor.sourceRef}\0${anchor.quote}`, anchor] as const,
         ),
       );
 
@@ -733,7 +740,9 @@ async function executeTask(
       };
     }
     default:
-      throw new Error(`Unsupported narrative extraction task kind: ${taskKind}`);
+      throw new Error(
+        `Unsupported narrative extraction task kind: ${taskKind}`,
+      );
   }
 }
 
@@ -790,7 +799,8 @@ export async function runChronicleExtractionCoordinator(
       version: 1,
       taskChain: [...CHRONICLE_EXTRACT_DAG],
     },
-    specDigest: request.specDigest ?? digestStableString("chronicle.extract.v1"),
+    specDigest:
+      request.specDigest ?? digestStableString("chronicle.extract.v1"),
     snapshotDigest: snapshotResult.snapshot.digest,
     coverageJson: {
       mode: "complete",
@@ -805,6 +815,8 @@ export async function runChronicleExtractionCoordinator(
   });
 
   const runId = createdRun.runId;
+  let savedProposalSetId: string | undefined;
+  let savedProposals: readonly SavedProposalSeed[] = [];
 
   for (const taskKind of CHRONICLE_EXTRACT_DAG) {
     const claim = await narrativeExtractionClaimTask({
@@ -817,91 +829,143 @@ export async function runChronicleExtractionCoordinator(
       throw new Error(`Failed to claim task ${taskKind}`);
     }
 
-    if (taskKind === CHRONICLE_EXTRACT_TASK_KINDS.snapshot) {
-      rememberInlineJsonArtifact({
+    try {
+      if (taskKind === CHRONICLE_EXTRACT_TASK_KINDS.snapshot) {
+        rememberInlineJsonArtifact({
+          runId,
+          taskId: claim.task.taskId,
+          attemptId: claim.task.attemptId,
+          draft: snapshotDraft,
+        });
+        await narrativeExtractionFinishTask({
+          runId,
+          projectId: request.projectId,
+          taskId: claim.task.taskId,
+          attemptId: claim.task.attemptId,
+          leaseOwner,
+          outputJson: {
+            snapshotDigest: snapshotResult.snapshot.digest,
+            documentCount: snapshotResult.snapshot.documents.length,
+          },
+          artifacts: [snapshotDraft.artifactInput],
+        });
+        continue;
+      }
+
+      const executed = await executeTask(
+        taskKind,
         runId,
-        taskId: claim.task.taskId,
-        attemptId: claim.task.attemptId,
-        draft: snapshotDraft,
-      });
+        request,
+        deps,
+        createId,
+      );
+
+      let artifacts = executed.artifacts;
+      let outputJson = executed.outputJson;
+
+      // Persist ProposalSet before finishing the last task so Run cannot become
+      // `completed` without a durable review ledger.
+      if (taskKind === CHRONICLE_EXTRACT_TASK_KINDS.planProposals) {
+        const proposalDraft = artifacts.find(
+          (draft) =>
+            draft.artifactKind === CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+        );
+        const proposalPayload =
+          (proposalDraft?.payloadJson as
+            | ProposalPlanArtifactPayload
+            | undefined) ?? null;
+        const proposals = proposalPayload?.proposals ?? [];
+        const saved = await saveChronicleProposalSet({
+          runId,
+          projectId: request.projectId,
+          summaryJson: {
+            proposalCount: proposals.length,
+            surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+          },
+          proposals: proposals.map((proposal, index) => ({
+            proposalKey: `${proposal.eventId}:${index}`,
+            payload: proposal,
+          })),
+        });
+        savedProposalSetId = saved.proposalSetId;
+        savedProposals = saved.proposals;
+        if (proposalDraft && proposalPayload) {
+          const bound = buildInlineJsonArtifact(
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+            {
+              ...proposalPayload,
+              proposalSetId: saved.proposalSetId,
+            },
+            proposalDraft.artifactId,
+          );
+          artifacts = artifacts.map((draft) =>
+            draft.artifactKind === CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals
+              ? bound
+              : draft,
+          );
+          outputJson = {
+            ...outputJson,
+            proposalSetId: saved.proposalSetId,
+            proposalCount: proposals.length,
+          };
+        }
+      }
+
+      for (const draft of artifacts) {
+        rememberInlineJsonArtifact({
+          runId,
+          taskId: claim.task.taskId,
+          attemptId: claim.task.attemptId,
+          draft,
+        });
+      }
       await narrativeExtractionFinishTask({
         runId,
         projectId: request.projectId,
         taskId: claim.task.taskId,
         attemptId: claim.task.attemptId,
         leaseOwner,
-        outputJson: {
-          snapshotDigest: snapshotResult.snapshot.digest,
-          documentCount: snapshotResult.snapshot.documents.length,
-        },
-        artifacts: [snapshotDraft.artifactInput],
+        outputJson,
+        artifacts: artifacts.map((draft) => draft.artifactInput),
       });
-      continue;
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "chronicle extraction task failed";
+      try {
+        await narrativeExtractionFailTask({
+          runId,
+          projectId: request.projectId,
+          taskId: claim.task.taskId,
+          attemptId: claim.task.attemptId,
+          leaseOwner,
+          errorMessage: message,
+          requeue: false,
+        });
+      } catch {
+        // Prefer original task failure; ledger fail is best-effort after primary error.
+      }
+      throw error;
     }
-
-    const executed = await executeTask(
-      taskKind,
-      runId,
-      request,
-      deps,
-      createId,
-    );
-    for (const draft of executed.artifacts) {
-      rememberInlineJsonArtifact({
-        runId,
-        taskId: claim.task.taskId,
-        attemptId: claim.task.attemptId,
-        draft,
-      });
-    }
-    await narrativeExtractionFinishTask({
-      runId,
-      projectId: request.projectId,
-      taskId: claim.task.taskId,
-      attemptId: claim.task.attemptId,
-      leaseOwner,
-      outputJson: executed.outputJson,
-      artifacts: executed.artifacts.map((draft) => draft.artifactInput),
-    });
   }
 
-  const proposalPayload = await loadInlineJsonArtifact<ProposalPlanArtifactPayload>(
-    runId,
-    CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
-  );
-  const proposals = proposalPayload?.proposals ?? [];
-
-  const saved = await saveChronicleProposalSet({
-    runId,
-    projectId: request.projectId,
-    summaryJson: {
-      proposalCount: proposals.length,
-      surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
-    },
-    proposals: proposals.map((proposal, index) => ({
-      proposalKey: `${proposal.eventId}:${index}`,
-      payload: proposal,
-    })),
-  });
-
-  if (proposalPayload) {
-    rememberInlineJsonArtifact({
+  const proposalPayload =
+    await loadInlineJsonArtifact<ProposalPlanArtifactPayload>(
       runId,
-      taskId: "proposal-set-bind",
-      attemptId: "proposal-set-bind",
-      draft: buildInlineJsonArtifact(CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals, {
-        ...proposalPayload,
-        proposalSetId: saved.proposalSetId,
-      }),
-    });
+      CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals,
+    );
+  const proposals = proposalPayload?.proposals ?? [];
+  if (!savedProposalSetId) {
+    throw new Error("Missing proposalSetId after chronicle extraction");
   }
 
   return {
     runId,
     snapshot: snapshotResult.snapshot,
     proposals,
-    savedProposalSetId: saved.proposalSetId,
-    savedProposals: saved.proposals,
+    savedProposalSetId,
+    savedProposals,
   };
 }
 

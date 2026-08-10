@@ -2,10 +2,16 @@ import { useMemo, useState } from "react";
 import { ChronicleEvidencePane } from "./ChronicleEvidencePane";
 import { ChronicleProposalCard } from "./ChronicleProposalCard";
 import {
+  bulkApproveSafeChronicleProposals,
+  decideChronicleProposal,
+  reviseChronicleProposal,
+} from "./chronicleExtractionApi";
+import {
   isSafeForBulkApprove,
   useChronicleExtractionStore,
   type ChronicleReviewEvidenceQuote,
   type ChronicleReviewProposal,
+  type ProbableDuplicateChoice,
 } from "./chronicleExtractionStore";
 
 export interface ChronicleProposalReviewProps {
@@ -17,8 +23,11 @@ export interface ChronicleProposalReviewProps {
   readonly boundToStore?: boolean;
 }
 
+const EMPTY_PROPOSALS: readonly ChronicleReviewProposal[] = [];
+
 /**
  * Proposal list + detail split layout (spec §16).
+ * Bound mode persists approve/edit/bulk via Native before updating Zustand.
  */
 export function ChronicleProposalReview({
   proposals: proposalsProp,
@@ -28,20 +37,18 @@ export function ChronicleProposalReview({
   boundToStore = true,
 }: ChronicleProposalReviewProps) {
   const storeProjection = useChronicleExtractionStore((s) => s.projection);
-  const storeSelected = useChronicleExtractionStore((s) => s.selectedProposalId);
-  const selectProposal = useChronicleExtractionStore((s) => s.selectProposal);
-  const updateProposalStatus = useChronicleExtractionStore(
-    (s) => s.updateProposalStatus,
+  const storeSelected = useChronicleExtractionStore(
+    (s) => s.selectedProposalId,
   );
+  const selectProposal = useChronicleExtractionStore((s) => s.selectProposal);
   const setProbableDuplicateChoice = useChronicleExtractionStore(
     (s) => s.setProbableDuplicateChoice,
   );
-  const reviseProposalFields = useChronicleExtractionStore(
-    (s) => s.reviseProposalFields,
-  );
-  const bulkApproveSafe = useChronicleExtractionStore((s) => s.bulkApproveSafe);
 
-  const proposals = proposalsProp ?? storeProjection?.proposals ?? [];
+  const proposals = useMemo(
+    () => proposalsProp ?? storeProjection?.proposals ?? EMPTY_PROPOSALS,
+    [proposalsProp, storeProjection?.proposals],
+  );
   const selectedProposalId =
     selectedProp !== undefined
       ? selectedProp
@@ -51,13 +58,16 @@ export function ChronicleProposalReview({
 
   const selected = useMemo(
     () =>
-      proposals.find((proposal) => proposal.proposalId === selectedProposalId) ??
-      null,
+      proposals.find(
+        (proposal) => proposal.proposalId === selectedProposalId,
+      ) ?? null,
     [proposals, selectedProposalId],
   );
 
   const [draftTitle, setDraftTitle] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState<string | null>(null);
+  const [persistError, setPersistError] = useState<string | null>(null);
+  const [persisting, setPersisting] = useState(false);
 
   const titleValue =
     draftTitle ?? selected?.payload?.title ?? selected?.displayTitle ?? "";
@@ -66,8 +76,59 @@ export function ChronicleProposalReview({
   const handleSelect = (proposalId: string) => {
     setDraftTitle(null);
     setDraftNote(null);
+    setPersistError(null);
     if (onSelectProposal) onSelectProposal(proposalId);
     else if (boundToStore) selectProposal(proposalId);
+  };
+
+  const runPersist = async (action: () => Promise<unknown>) => {
+    setPersisting(true);
+    setPersistError(null);
+    try {
+      await action();
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "提案の保存に失敗しました",
+      );
+    } finally {
+      setPersisting(false);
+    }
+  };
+
+  const handleDecide = (
+    proposalId: string,
+    status: ChronicleReviewProposal["status"],
+  ) => {
+    if (!boundToStore) return;
+    void runPersist(() => decideChronicleProposal({ proposalId, status }));
+  };
+
+  const handleDuplicateChoice = (
+    proposalId: string,
+    choice: ProbableDuplicateChoice,
+  ) => {
+    if (!boundToStore) return;
+    void runPersist(async () => {
+      if (choice === "hold") {
+        await decideChronicleProposal({ proposalId, status: "held" });
+      } else if (choice === "skip-as-same") {
+        await decideChronicleProposal({ proposalId, status: "rejected" });
+      }
+      setProbableDuplicateChoice(proposalId, choice);
+    });
+  };
+
+  const handleRevise = (
+    proposalId: string,
+    patch: {
+      title?: string;
+      note?: string | null;
+      secret?: boolean;
+      revealDocumentRef?: string;
+    },
+  ) => {
+    if (!boundToStore) return;
+    void runPersist(() => reviseChronicleProposal({ proposalId, patch }));
   };
 
   const safeCount = proposals.filter(
@@ -91,8 +152,10 @@ export function ChronicleProposalReview({
             <button
               type="button"
               className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={safeCount === 0}
-              onClick={() => bulkApproveSafe()}
+              disabled={safeCount === 0 || persisting}
+              onClick={() =>
+                void runPersist(() => bulkApproveSafeChronicleProposals())
+              }
               data-testid="chronicle-bulk-approve-safe"
             >
               安全な提案をまとめて承認
@@ -112,16 +175,10 @@ export function ChronicleProposalReview({
                 proposal={proposal}
                 selected={proposal.proposalId === selectedProposalId}
                 onSelect={() => handleSelect(proposal.proposalId)}
-                onDecide={(status) => {
-                  if (boundToStore) {
-                    updateProposalStatus(proposal.proposalId, status);
-                  }
-                }}
-                onDuplicateChoice={(choice) => {
-                  if (boundToStore) {
-                    setProbableDuplicateChoice(proposal.proposalId, choice);
-                  }
-                }}
+                onDecide={(status) => handleDecide(proposal.proposalId, status)}
+                onDuplicateChoice={(choice) =>
+                  handleDuplicateChoice(proposal.proposalId, choice)
+                }
               />
             ))
           )}
@@ -130,8 +187,18 @@ export function ChronicleProposalReview({
 
       <div className="flex max-h-80 min-w-0 flex-col gap-3 overflow-y-auto px-3 py-2">
         <span className="text-xs font-medium text-foreground">詳細</span>
+        {persistError ? (
+          <p
+            className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+            data-testid="chronicle-proposal-persist-error"
+          >
+            {persistError}
+          </p>
+        ) : null}
         {!selected ? (
-          <p className="text-xs text-muted-foreground">提案を選択してください</p>
+          <p className="text-xs text-muted-foreground">
+            提案を選択してください
+          </p>
         ) : selected.applicability === "already-satisfied" ? (
           <div className="flex flex-col gap-2">
             <p className="text-sm font-medium">{selected.displayTitle}</p>
@@ -150,14 +217,13 @@ export function ChronicleProposalReview({
               <input
                 className="rounded border border-border bg-background px-2 py-1 text-sm focus:outline-none"
                 value={titleValue}
-                disabled={!boundToStore}
+                disabled={!boundToStore || persisting}
                 onChange={(event) => setDraftTitle(event.target.value)}
                 onBlur={() => {
                   if (!boundToStore || draftTitle === null) return;
-                  reviseProposalFields(selected.proposalId, {
-                    title: draftTitle,
-                  });
+                  const title = draftTitle;
                   setDraftTitle(null);
+                  handleRevise(selected.proposalId, { title });
                 }}
                 data-testid="chronicle-proposal-title-input"
               />
@@ -167,14 +233,13 @@ export function ChronicleProposalReview({
               <textarea
                 className="min-h-[52px] rounded border border-border bg-background px-2 py-1 text-sm focus:outline-none"
                 value={noteValue}
-                disabled={!boundToStore}
+                disabled={!boundToStore || persisting}
                 onChange={(event) => setDraftNote(event.target.value)}
                 onBlur={() => {
                   if (!boundToStore || draftNote === null) return;
-                  reviseProposalFields(selected.proposalId, {
-                    note: draftNote,
-                  });
+                  const note = draftNote;
                   setDraftNote(null);
+                  handleRevise(selected.proposalId, { note });
                 }}
                 data-testid="chronicle-proposal-note-input"
               />
@@ -185,9 +250,9 @@ export function ChronicleProposalReview({
                   <input
                     type="checkbox"
                     checked={selected.payload.disclosure.secret}
-                    disabled={!boundToStore}
+                    disabled={!boundToStore || persisting}
                     onChange={(event) =>
-                      reviseProposalFields(selected.proposalId, {
+                      handleRevise(selected.proposalId, {
                         secret: event.target.checked,
                       })
                     }
@@ -202,9 +267,9 @@ export function ChronicleProposalReview({
                   <input
                     className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-0.5 text-[11px] focus:outline-none"
                     value={selected.payload.disclosure.revealDocumentRef}
-                    disabled={!boundToStore}
+                    disabled={!boundToStore || persisting}
                     onChange={(event) =>
-                      reviseProposalFields(selected.proposalId, {
+                      handleRevise(selected.proposalId, {
                         revealDocumentRef: event.target.value,
                       })
                     }

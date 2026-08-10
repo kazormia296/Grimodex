@@ -1,11 +1,69 @@
+use chrono::{Duration, Utc};
 use grimodex_db::narrative_extraction::{
-    self, ensure_test_schema, AppendDecisionPayload, ApplyCommitPayload, ClaimTaskPayload,
-    CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
-    GetCommitStatusPayload, PrepareCommitPayload, ProposalSeed, RunRefPayload,
+    self, ensure_test_schema, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload,
+    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
+    FinishTaskPayload, GetCommitStatusPayload, PrepareCommitPayload, ProposalSeed, RunRefPayload,
     SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
+
+fn rfc3339_millis(dt: chrono::DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+fn create_run_with_task(db: &Database, run_id: &str, task_id: &str) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.to_string()),
+                task_kind: "extract_window".to_string(),
+                input_json: Some(json!({ "windowId": "w-1" })),
+                priority: None,
+            }],
+        },
+    )
+    .expect("create run");
+}
+
+fn claim_with_owner(db: &Database, run_id: &str, lease_owner: &str, lease_secs: i64) -> Value {
+    narrative_extraction::narrative_extraction_claim_task(
+        db,
+        ClaimTaskPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            lease_owner: lease_owner.to_string(),
+            lease_duration_secs: Some(lease_secs),
+            task_kinds: None,
+        },
+    )
+    .expect("claim task")
+}
+
+fn set_task_lease_expires_at(db: &Database, task_id: &str, lease_expires_at: &str) {
+    db.execute(
+        "UPDATE narrative_extraction_tasks
+            SET lease_expires_at = ?
+          WHERE id = ?",
+        &[
+            Value::String(lease_expires_at.to_string()),
+            Value::String(task_id.to_string()),
+        ],
+        "run",
+    )
+    .expect("set lease_expires_at");
+}
 
 fn test_db() -> Database {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
@@ -292,6 +350,120 @@ fn claim_task_acquires_queued_task_under_immediate_transaction() {
 }
 
 #[test]
+fn claim_task_reclaims_same_day_expired_rfc3339_lease() {
+    let db = test_db();
+    create_run_with_task(&db, "run-lease-expired", "task-lease-expired");
+
+    let first = claim_with_owner(&db, "run-lease-expired", "worker-a", 120);
+    assert_eq!(first["claimed"], true);
+
+    let past = rfc3339_millis(Utc::now() - Duration::minutes(5));
+    set_task_lease_expires_at(&db, "task-lease-expired", &past);
+
+    let reclaim = claim_with_owner(&db, "run-lease-expired", "worker-b", 120);
+    assert_eq!(reclaim["claimed"], true);
+    assert_eq!(reclaim["task"]["taskId"], "task-lease-expired");
+    assert_eq!(reclaim["task"]["attemptNumber"], 2);
+
+    let loaded = narrative_extraction::narrative_extraction_get_run(
+        &db,
+        "run-lease-expired".to_string(),
+        "project-1".to_string(),
+    )
+    .expect("get run after reclaim");
+    assert_eq!(loaded["tasks"][0]["leaseOwner"], "worker-b");
+}
+
+#[test]
+fn claim_task_does_not_reclaim_same_day_future_rfc3339_lease() {
+    let db = test_db();
+    create_run_with_task(&db, "run-lease-future", "task-lease-future");
+
+    let first = claim_with_owner(&db, "run-lease-future", "worker-a", 120);
+    assert_eq!(first["claimed"], true);
+
+    let future = rfc3339_millis(Utc::now() + Duration::minutes(5));
+    set_task_lease_expires_at(&db, "task-lease-future", &future);
+
+    let second = claim_with_owner(&db, "run-lease-future", "worker-b", 120);
+    assert_eq!(second["claimed"], false);
+
+    let loaded = narrative_extraction::narrative_extraction_get_run(
+        &db,
+        "run-lease-future".to_string(),
+        "project-1".to_string(),
+    )
+    .expect("get run after blocked reclaim");
+    assert_eq!(loaded["tasks"][0]["leaseOwner"], "worker-a");
+}
+
+#[test]
+fn claim_task_reclaims_lease_across_utc_date_boundary() {
+    let db = test_db();
+    create_run_with_task(&db, "run-lease-boundary", "task-lease-boundary");
+
+    let first = claim_with_owner(&db, "run-lease-boundary", "worker-a", 120);
+    assert_eq!(first["claimed"], true);
+
+    // Yesterday late UTC still expires before "now", even when calendar day differs.
+    let past_across_day = rfc3339_millis(Utc::now() - Duration::hours(25));
+    set_task_lease_expires_at(&db, "task-lease-boundary", &past_across_day);
+
+    let reclaim = claim_with_owner(&db, "run-lease-boundary", "worker-b", 120);
+    assert_eq!(reclaim["claimed"], true);
+    assert_eq!(reclaim["task"]["taskId"], "task-lease-boundary");
+
+    // Tomorrow early UTC must remain leased.
+    let future_across_day = rfc3339_millis(Utc::now() + Duration::hours(25));
+    set_task_lease_expires_at(&db, "task-lease-boundary", &future_across_day);
+
+    let blocked = claim_with_owner(&db, "run-lease-boundary", "worker-c", 120);
+    assert_eq!(blocked["claimed"], false);
+
+    let loaded = narrative_extraction::narrative_extraction_get_run(
+        &db,
+        "run-lease-boundary".to_string(),
+        "project-1".to_string(),
+    )
+    .expect("get run after boundary checks");
+    assert_eq!(loaded["tasks"][0]["leaseOwner"], "worker-b");
+}
+
+#[test]
+fn finish_task_rejects_after_lease_expiry() {
+    let db = test_db();
+    create_run_with_task(&db, "run-lease-finish", "task-lease-finish");
+
+    let claim = claim_with_owner(&db, "run-lease-finish", "worker-a", 120);
+    assert_eq!(claim["claimed"], true);
+    let attempt_id = claim["task"]["attemptId"]
+        .as_str()
+        .expect("attemptId")
+        .to_string();
+
+    let past = rfc3339_millis(Utc::now() - Duration::minutes(5));
+    set_task_lease_expires_at(&db, "task-lease-finish", &past);
+
+    let err = narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: "run-lease-finish".to_string(),
+            project_id: "project-1".to_string(),
+            task_id: "task-lease-finish".to_string(),
+            attempt_id,
+            lease_owner: "worker-a".to_string(),
+            output_json: Some(json!({ "ok": true })),
+            artifacts: vec![],
+        },
+    )
+    .expect_err("finish must reject expired lease");
+    assert!(
+        err.to_string().contains("task lease expired"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn cancel_run_marks_active_tasks_cancelled() {
     let db = test_db();
     narrative_extraction::narrative_extraction_create_run(
@@ -453,13 +625,27 @@ fn apply_commit_rolls_back_all_on_failure() {
     let commit_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT COUNT(*) FROM narrative_apply_commits",
+                "SELECT COUNT(*) FROM narrative_apply_commits WHERE status = 'failed'",
                 [],
                 |r| r.get(0),
             )?)
         })
         .unwrap();
-    assert_eq!(commit_count, 0);
+    assert_eq!(
+        commit_count, 1,
+        "failed apply must leave an audit commit row outside the rolled-back domain TX"
+    );
+
+    let status: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status FROM narrative_apply_commits WHERE request_id = 'req-fail-1'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "failed");
 }
 
 #[test]
@@ -591,4 +777,333 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
         })
         .unwrap();
     assert_eq!(remaining, 2);
+}
+
+#[test]
+fn undo_redo_cycles_without_event_edited_false_positive() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &["A", "B"]);
+    let ops = vec![
+        (
+            pairs[0].0.clone(),
+            pairs[0].1.clone(),
+            event_create_payload("event-cycle-1", "A", "scene-1", 0),
+        ),
+        (
+            pairs[1].0.clone(),
+            pairs[1].1.clone(),
+            event_create_payload("event-cycle-2", "B", "scene-1", 0),
+        ),
+    ];
+    let payload =
+        build_apply_payload("req-cycle-1", "digest-cycle-1", "set-6", "run-commit-6", ops);
+    let applied =
+        narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("apply");
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    let undo_payload = UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess".to_string(),
+        surface: None,
+        commit_id: Some(commit_id),
+        request_id: None,
+    };
+
+    for cycle in 1..=2 {
+        let undone = narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            undo_payload.clone(),
+        )
+        .unwrap_or_else(|err| panic!("undo cycle {cycle}: {err}"));
+        assert_eq!(undone["status"], "undone");
+
+        let event_count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(event_count, 0, "events must be gone after undo cycle {cycle}");
+
+        let redone = narrative_extraction::narrative_extraction_redo_commit(
+            &db,
+            undo_payload.clone(),
+        )
+        .unwrap_or_else(|err| panic!("redo cycle {cycle}: {err}"));
+        assert_eq!(redone["status"], "redone");
+
+        let event_count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(event_count, 2, "events must be restored after redo cycle {cycle}");
+
+        let versions: Vec<i64> = db
+            .with_conn(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT version FROM events
+                      WHERE id IN ('event-cycle-1', 'event-cycle-2')
+                      ORDER BY id",
+                )?;
+                let rows = stmt.query_map([], |row| row.get(0))?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+            })
+            .unwrap();
+        // Apply starts at 1; each redo bumps to previous+1.
+        assert_eq!(versions, vec![cycle + 1, cycle + 1]);
+    }
+
+    // Final undo after two full cycles must still succeed (journal stayed in sync).
+    let final_undo =
+        narrative_extraction::narrative_extraction_undo_commit(&db, undo_payload).expect("final undo");
+    assert_eq!(final_undo["status"], "undone");
+}
+
+#[test]
+fn append_decision_rejects_stale_revision_when_current_advanced() {
+    let db = migrated_db();
+    let run_id = "run-occ-1";
+    let proposal_set_id = "set-occ-1";
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: "spec-occ".to_string(),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create run");
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(proposal_set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("prop-occ".to_string()),
+                proposal_key: "key-occ".to_string(),
+                kind: "chronicle.event.create@1".to_string(),
+                payload_json: json!({ "title": "Rev1" }),
+            }],
+        },
+    )
+    .expect("save");
+    let proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rev1 = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let rev2 = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev2" }),
+            expected_current_revision_id: rev1.clone(),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect("append rev2");
+    let rev2_id = rev2["revisionId"].as_str().unwrap().to_string();
+    assert_ne!(rev1, rev2_id);
+
+    let stale = narrative_extraction::narrative_extraction_append_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            revision_id: rev1,
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("stale-window".to_string()),
+        },
+    )
+    .expect_err("stale revision must fail");
+    assert!(
+        stale
+            .to_string()
+            .contains("NEX_PROPOSAL_REVISION_MISMATCH"),
+        "unexpected error: {stale}"
+    );
+
+    let status: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "unreviewed");
+
+    narrative_extraction::narrative_extraction_append_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id,
+            revision_id: rev2_id,
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("current-window".to_string()),
+        },
+    )
+    .expect("current revision approve");
+}
+
+#[test]
+fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
+    let db = test_db();
+    create_run_with_task(&db, "run-review-bundle", "task-review-bundle");
+
+    let claim = claim_with_owner(&db, "run-review-bundle", "worker-bundle", 120);
+    assert_eq!(claim["claimed"], true);
+    let attempt_id = claim["task"]["attemptId"]
+        .as_str()
+        .expect("attemptId")
+        .to_string();
+
+    narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: "run-review-bundle".to_string(),
+            project_id: "project-1".to_string(),
+            task_id: "task-review-bundle".to_string(),
+            attempt_id,
+            lease_owner: "worker-bundle".to_string(),
+            output_json: Some(json!({ "ok": true })),
+            artifacts: vec![
+                narrative_extraction::ArtifactInput {
+                    artifact_id: Some("art-proposals".to_string()),
+                    artifact_kind: "chronicle.extract.proposals@1".to_string(),
+                    payload_storage: Some("inline-json".to_string()),
+                    payload_json: Some(json!({
+                        "proposalSetId": "set-review-bundle",
+                        "proposals": [{ "eventId": "ev-1", "title": "From artifact" }],
+                        "planned": [{
+                            "proposal": { "eventId": "ev-1", "title": "From artifact" },
+                            "match": { "status": "none" },
+                            "hypothesisId": "h-1"
+                        }]
+                    })),
+                    payload_ref: None,
+                    payload_digest: None,
+                },
+                narrative_extraction::ArtifactInput {
+                    artifact_id: Some("art-snapshot".to_string()),
+                    artifact_kind: "chronicle.extract.snapshot@1".to_string(),
+                    payload_storage: Some("inline-json".to_string()),
+                    payload_json: Some(json!({ "snapshot": { "documents": [] } })),
+                    payload_ref: None,
+                    payload_digest: None,
+                },
+            ],
+        },
+    )
+    .expect("finish with artifacts");
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-review-bundle".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-review-bundle".to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("prop-review-1".to_string()),
+                proposal_key: "ev-1:0".to_string(),
+                kind: "chronicle.event.create@1".to_string(),
+                payload_json: json!({ "eventId": "ev-1", "title": "Native title" }),
+            }],
+        },
+    )
+    .expect("save proposal set");
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("revisionId")
+        .to_string();
+
+    narrative_extraction::narrative_extraction_append_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: "run-review-bundle".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: "prop-review-1".to_string(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: Some(json!({ "source": "test" })),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("approve");
+
+    let bundle = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: "run-review-bundle".to_string(),
+            project_id: "project-1".to_string(),
+        },
+    )
+    .expect("get review bundle");
+
+    assert_eq!(bundle["runId"], "run-review-bundle");
+    assert_eq!(bundle["projectId"], "project-1");
+    let artifacts = bundle["artifacts"].as_array().expect("artifacts");
+    assert_eq!(artifacts.len(), 2);
+    assert!(artifacts.iter().any(|a| {
+        a["artifactKind"] == "chronicle.extract.proposals@1"
+            && a["payloadJson"]["proposalSetId"] == "set-review-bundle"
+    }));
+
+    assert_eq!(
+        bundle["proposalSet"]["proposalSetId"],
+        "set-review-bundle"
+    );
+    let proposals = bundle["proposals"].as_array().expect("proposals");
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0]["proposalId"], "prop-review-1");
+    assert_eq!(proposals[0]["proposalKey"], "ev-1:0");
+    assert_eq!(proposals[0]["status"], "approved");
+    assert_eq!(proposals[0]["currentRevisionId"], revision_id);
+    assert_eq!(proposals[0]["payloadJson"]["title"], "Native title");
+    assert_eq!(proposals[0]["latestDecision"]["decision"], "approved");
+    assert_eq!(proposals[0]["latestDecision"]["revisionId"], revision_id);
+    assert_eq!(
+        proposals[0]["latestDecision"]["decisionJson"]["source"],
+        "test"
+    );
+
+    let mismatch = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: "run-review-bundle".to_string(),
+            project_id: "other-project".to_string(),
+        },
+    )
+    .expect_err("project mismatch must fail closed");
+    assert!(
+        mismatch
+            .to_string()
+            .contains("narrative extraction run project mismatch"),
+        "unexpected error: {mismatch}"
+    );
 }

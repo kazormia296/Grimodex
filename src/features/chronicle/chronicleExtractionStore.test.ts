@@ -163,19 +163,22 @@ describe("chronicleExtractionStore", () => {
     );
   });
 
-  it("reviseProposalFields appends revision and requires re-approval", () => {
+  it("reviseProposalFields applies Native revision id and requires re-approval", () => {
     useChronicleExtractionStore
       .getState()
       .setProjection(projection([proposal({ status: "approved" })]));
     useChronicleExtractionStore
       .getState()
-      .reviseProposalFields("proposal-1", { title: "撤退命令", secret: false });
+      .reviseProposalFields("proposal-1", "rev-native-2", {
+        title: "撤退命令",
+        secret: false,
+      });
     const updated =
       useChronicleExtractionStore.getState().projection?.proposals[0];
     expect(updated?.status).toBe("unreviewed");
     expect(updated?.displayTitle).toBe("撤退命令");
     expect(updated?.payload?.disclosure.secret).toBe(false);
-    expect(updated?.revisionId).not.toBe("rev-1");
+    expect(updated?.revisionId).toBe("rev-native-2");
   });
 
   it("bulkApproveSafe only approves safe unreviewed proposals", () => {

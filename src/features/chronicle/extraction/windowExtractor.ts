@@ -44,3 +44,33 @@ export function normalizeWindowObservations(
 
   return out;
 }
+
+/**
+ * Re-key window-local observation IDs into globally unique IDs.
+ * Scheme: `{windowKey}:obs-{paddedSeq}` (1-based, 3-digit).
+ * Does not trust model localIds as global identifiers.
+ */
+export function rekeyObservationsForWindow(
+  windowKey: string,
+  observations: readonly RawChronicleEventObservation[],
+): readonly RawChronicleEventObservation[] {
+  return observations.map((observation, index) => ({
+    ...observation,
+    localId: `${windowKey}:obs-${String(index + 1).padStart(3, "0")}`,
+  }));
+}
+
+/** Fail-closed uniqueness check for observation localIds. */
+export function assertUniqueObservationLocalIds(
+  observations: readonly RawChronicleEventObservation[],
+): void {
+  const seen = new Set<string>();
+  for (const observation of observations) {
+    if (seen.has(observation.localId)) {
+      throw new Error(
+        `Duplicate observation localId after window collection: ${observation.localId}`,
+      );
+    }
+    seen.add(observation.localId);
+  }
+}
