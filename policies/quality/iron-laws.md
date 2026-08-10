@@ -92,6 +92,69 @@ verification and a citation. Stale or ungrounded evidence is a quality failure.
 Structured output, citations, links, and generated artifacts must pass their declared validators.
 Existence alone is insufficient when a parser, schema, fingerprint, or provenance contract exists.
 
+## GDX-NARR-EVAL-001 — Version and replay Narrative Extraction evaluations
+
+Every Narrative Extraction case, model request, raw-response replay, parser result, and report is
+bound to explicit Prompt, response-schema, extractor, parser, corpus, and model identities. Human
+Gold is canonical; a model never authors or silently repairs its own Gold. A legacy baseline may be
+measured, but it is never reported as certification for a richer production contract.
+
+Transport credentials are runtime-only. Replay and report artifacts reject authorization, API-key,
+credential, password, bearer-token, and secret fields while retaining non-secret usage counts,
+provider-reported cost, duration, requested model, and resolved model identity.
+
+## GDX-NARR-EVIDENCE-001 — Resolve Narrative Evidence exactly
+
+Every accepted Narrative observation or inference cites an exact quote from a declared immutable
+Source View and resolves through the production Evidence resolver. Model-provided offsets are not
+accepted. Missing, unknown, ambiguous, transformed-to-a-different-string, or otherwise unresolved
+Evidence is a hard failure rather than a best-effort match.
+
+## GDX-NARR-SEMANTIC-001 — Preserve narrative assertion semantics
+
+Event detection, actuality, attribution, narrative frame, clustering, significance, and Proposal
+gate are scored as independent semantic dimensions. Plans, rumors, dreams, hypotheses, failed or
+blocked attempts, negations, recollections, and disputed claims are not promoted to narrator-
+asserted story-world facts. A missing output dimension is `unobservable`, never an implicit pass.
+
+## GDX-NARR-COVERAGE-001 — Do not overclaim from partial narrative coverage
+
+Narrative evaluations and extraction artifacts declare included and omitted documents. Partial
+coverage cannot support claims that no other event exists, that an unresolved entity is absent, or
+that the corpus is complete. Such claims are hard failures even if precision or recall is otherwise
+high.
+
+## GDX-NARR-DETAIL-001 — Project details only through stable, type-safe bindings
+
+Automatic Narrative Detail projection targets only an existing Detail Definition resolved by stable
+Definition ID through a confirmed user binding, a preset binding, or an explicit per-proposal user
+selection. A field name, translated label, or similarity match alone never authorizes automatic
+binding. Preset backfill requires one exact localized, field-type-compatible match and rejects
+ambiguity.
+
+Every projected value preserves the binding version and temporal policy and must be losslessly
+compatible with the declared field type and dropdown/reference catalog. `inherit`, `set`, and
+`clear` remain distinct. Legacy stored values may be decoded, but canonical encoders never invent a
+Definition, option, reference, or silently turn absence into an explicit clear.
+
+## GDX-NARR-TEMPORAL-001 — Preserve temporal axes and deterministic calendar authority
+
+Discourse position, story relation, calendar coordinate, and state validity are separate temporal
+axes. Chronicle Event ordinal and manuscript reading order are not calendar facts. A partial story
+order remains partial, and a multi-period Scene is never collapsed into one date merely to satisfy
+a projection.
+
+Models may identify temporal expressions, relations, and attachment candidates, but they do not
+author epoch coordinates, calendar arithmetic, propagated order, or conflict resolution. Unknown
+week length, month, era, reform, timezone, or qualitative duration remains symbolic, ambiguous, or
+unresolved rather than inheriting a familiar-world default.
+
+Project Calendar snapshots are strict, immutable, versioned artifacts. Calendar writers use
+optimistic concurrency control, and stale snapshots cannot authorize a later resolution. Existing
+Scene/Event times and manual story order enter the graph as virtual user constraints; values
+materialized from an approved constraint set are folded back into that provenance and never counted
+again as an independent source.
+
 ## GDX-ISOLATION-001 — Isolate every evaluation case
 
 Each case owns a unique run, conversation, workspace, and artifact namespace, declares locale,

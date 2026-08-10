@@ -130,6 +130,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
       ["node", "scripts/quality/validate-retrieval-fixtures.mjs"],
     ],
   },
+  "narrative-extraction": {
+    failureClasses: ["quality", "artifact"],
+    commands: [["pnpm", "eval:narrative"]],
+  },
 });
 
 function unique(values) {

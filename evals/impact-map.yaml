@@ -5,6 +5,7 @@ allSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
+  - narrative-extraction
 rules:
   - id: quality-foundation
     reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
@@ -163,6 +164,57 @@ rules:
       - GDX-ISOLATION-001
     suites:
       - retrieval-grounding
+  - id: narrative-extraction
+    reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
+    paths:
+      - src/features/narrative-extraction/**
+      - src/application/narrative-extraction/temporal/**
+      - src/features/chronicle/extractEventsApi.ts
+      - src/features/chronicle/extractEventsApi.test.ts
+      - src/features/chronicle/calendar/**
+      - src/features/chronicle/calendarOcc.ts
+      - src/features/chronicle/api.ts
+      - src/features/chronicle/api.calendarOcc.test.ts
+      - src/features/chronicle/useSeasonConflicts.ts
+      - src/features/chronicle/useSeasonConflicts.hook.test.tsx
+      - src/features/chronicle/ChroniclePanel.tsx
+      - src/features/chronicle/ChronicleToolbar.tsx
+      - src/features/chronicle/ChronicleToolbar.test.tsx
+      - src/features/chronicle/ChronicleCalendarEditor.tsx
+      - src/features/chronicle/ChronicleCalendarEditor.test.tsx
+      - src/features/chronicle/ChronicleCalendarPopover.tsx
+      - src/features/chronicle/ChronicleCalendarPopover.test.tsx
+      - src/features/revision/projectSnapshotApi.ts
+      - src/features/revision/projectSnapshotApi.test.ts
+      - src/features/revision/projectSnapshotNative.ts
+      - src/features/revision/projectSnapshotScopes.ts
+      - src/db/schema.ts
+      - src/db/generated/schema-contract.json
+      - src/db/projectCalendarSchema.test.ts
+      - src/lib/browser-mock.ts
+      - src/lib/browser-mock.persistence-contract.test.ts
+      - scripts/schema-seed-ja.sql
+      - src-tauri/crates/grimodex-core/src/lib.rs
+      - src-tauri/crates/grimodex-core/src/workspace_schema.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/src/project_snapshots.rs
+      - src-tauri/crates/grimodex-db/tests/project_calendar_version.rs
+      - src-tauri/crates/grimodex-db/tests/schema_contract.rs
+      - src/features/codex/details/**
+      - src/features/codex/detailPresets.ts
+      - src/features/codex/detailPresets.test.ts
+      - src/features/codex/detailPresets.semantic.test.ts
+      - evals/narrative/**
+      - evals/fixtures/narrative-extraction.yaml
+    requirements:
+      - GDX-NARR-EVAL-001
+      - GDX-NARR-EVIDENCE-001
+      - GDX-NARR-SEMANTIC-001
+      - GDX-NARR-COVERAGE-001
+      - GDX-NARR-DETAIL-001
+      - GDX-NARR-TEMPORAL-001
+    suites:
+      - narrative-extraction
   - id: semantic-retrieval-experiments
     reason: Offline retrieval fixtures, private-label contracts, and shadow evidence must preserve grounding, isolation, artifact validation, and traceability.
     paths:

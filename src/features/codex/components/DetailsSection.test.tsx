@@ -386,6 +386,30 @@ describe("DetailsSection", () => {
       expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間");
     });
 
+    it("keeps the legacy Phase writer plain when the Base seed is PM JSON", async () => {
+      const user = userEvent.setup();
+      const canonicalBase = JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "人間" }],
+          },
+        ],
+      });
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([
+        makeValueWithDef("def-1", "種族", "text", canonicalBase),
+      ]);
+
+      render(<DetailsSection entry={mockEntry} activePhase={PHASE} />);
+      await user.click(
+        await screen.findByTestId("detail-field-override-add-def-1"),
+      );
+
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間");
+    });
+
     it("shows an inherited Phase value and seeds a new override from it", async () => {
       const user = userEvent.setup();
       mockListDefs.mockResolvedValue([textDef()]);

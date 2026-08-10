@@ -12,6 +12,7 @@ pub mod chunker_en;
 pub mod codex_candidates;
 pub mod codex_index;
 pub mod codex_search;
+pub mod entity_seeds;
 pub mod events_index;
 pub mod events_search;
 pub mod index;
