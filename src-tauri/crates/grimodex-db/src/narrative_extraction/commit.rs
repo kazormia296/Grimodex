@@ -30,6 +30,22 @@ use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
+use super::temporal_constraints::{
+    apply_constraint_create_in_tx, parse_constraint_create_payload, OP_KIND_CONSTRAINT_CREATE,
+};
+use super::temporal_nodes::{
+    apply_node_ensure_in_tx, parse_node_ensure_payload, OP_KIND_NODE_ENSURE,
+};
+use super::temporal_operations::{
+    apply_event_metadata_patch_in_tx, apply_scene_metadata_patch_in_tx,
+    apply_story_order_materialize_in_tx, ensure_calendar_version,
+    parse_event_metadata_patch_payload, parse_scene_metadata_patch_payload,
+    parse_story_order_materialize_payload, OP_KIND_EVENT_METADATA_PATCH,
+    OP_KIND_SCENE_METADATA_PATCH, OP_KIND_STORY_ORDER_MATERIALIZE,
+};
+use super::temporal_projections::{
+    apply_projection_record_in_tx, parse_projection_record_payload, OP_KIND_PROJECTION_RECORD,
+};
 use super::models::{
     ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
     GetCommitStatusPayload, PrepareCommitPayload,
@@ -45,6 +61,7 @@ const STATUS_REDONE: &str = "redone";
 const STATUS_FAILED: &str = "failed";
 
 struct CommitPlanValidationContext<'a> {
+    expected_calendar_version: Option<i64>,
     project_id: &'a str,
     run_id: &'a str,
     proposal_set_id: &'a str,
@@ -63,6 +80,7 @@ pub fn narrative_extraction_prepare_commit(
             validate_commit_plan(
                 conn,
                 CommitPlanValidationContext {
+                    expected_calendar_version: payload.expected_calendar_version,
                     project_id: &payload.project_id,
                     run_id: &payload.run_id,
                     proposal_set_id: &payload.proposal_set_id,
@@ -104,6 +122,7 @@ pub fn narrative_extraction_apply_commit(
             validate_commit_plan(
                 conn,
                 CommitPlanValidationContext {
+                    expected_calendar_version: payload.expected_calendar_version,
                     project_id: &payload.project_id,
                     run_id: &payload.run_id,
                     proposal_set_id: &payload.proposal_set_id,
@@ -188,6 +207,7 @@ pub fn narrative_extraction_apply_commit(
                                 "create",
                             )
                         }
+
                         OP_KIND_ENTRY_CREATE => {
                             let entry_payload = parse_entry_create_payload(&op.payload)?;
                             let result = apply_codex_entry_create(
@@ -356,6 +376,118 @@ pub fn narrative_extraction_apply_commit(
                                 result.op_kind,
                             )
                         }
+                        OP_KIND_NODE_ENSURE => {
+                            let node_payload = parse_node_ensure_payload(&op.payload)?;
+                            let result = apply_node_ensure_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &node_payload,
+                                &now,
+                            )?;
+                            (
+                                "temporal_node",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                None,
+                                if result.created {
+                                    "create"
+                                } else {
+                                    "ensure-existing"
+                                },
+                            )
+                        }
+                        OP_KIND_CONSTRAINT_CREATE => {
+                            let constraint_payload =
+                                parse_constraint_create_payload(&op.payload)?;
+                            let result = apply_constraint_create_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &constraint_payload,
+                                &now,
+                            )?;
+                            (
+                                "temporal_constraint",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                None,
+                                "create",
+                            )
+                        }
+                        OP_KIND_SCENE_METADATA_PATCH => {
+                            let scene_payload =
+                                parse_scene_metadata_patch_payload(&op.payload)?;
+                            let result = apply_scene_metadata_patch_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &scene_payload,
+                                &now,
+                            )?;
+                            (
+                                "temporal_scene_chronicle",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                Some(result.before_snapshot),
+                                "patch",
+                            )
+                        }
+                        OP_KIND_EVENT_METADATA_PATCH => {
+                            let event_payload =
+                                parse_event_metadata_patch_payload(&op.payload)?;
+                            let result = apply_event_metadata_patch_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &event_payload,
+                                &now,
+                            )?;
+                            (
+                                "temporal_event_chronicle",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                Some(result.before_snapshot),
+                                "patch",
+                            )
+                        }
+                        OP_KIND_STORY_ORDER_MATERIALIZE => {
+                            let story_order_payload =
+                                parse_story_order_materialize_payload(&op.payload)?;
+                            let result = apply_story_order_materialize_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &story_order_payload,
+                                &now,
+                            )?;
+                            (
+                                "temporal_scene_story_order",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                Some(result.before_snapshot),
+                                "patch",
+                            )
+                        }
+                        OP_KIND_PROJECTION_RECORD => {
+                            let projection_payload =
+                                parse_projection_record_payload(&op.payload)?;
+                            let result = apply_projection_record_in_tx(
+                                conn,
+                                &payload.project_id,
+                                &projection_payload,
+                                &now,
+                            )?;
+                            (
+                                "temporal_projection",
+                                result.entity_id,
+                                result.version,
+                                result.after_snapshot,
+                                result.before_snapshot,
+                                result.op_kind,
+                            )
+                        }
+
                         other => anyhow::bail!("unsupported commit operation kind: {other}"),
                     };
 
@@ -680,6 +812,10 @@ fn validate_commit_plan(
     anyhow::ensure!(!ctx.operations.is_empty(), "commit requires at least one operation");
     ensure_run_project(conn, ctx.run_id, ctx.project_id)?;
 
+    if let Some(expected_calendar_version) = ctx.expected_calendar_version {
+        ensure_calendar_version(conn, ctx.project_id, expected_calendar_version)?;
+    }
+
     let set_ok: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_proposal_sets
           WHERE id = ?1 AND run_id = ?2 AND project_id = ?3",
@@ -787,6 +923,27 @@ fn validate_commit_plan(
             }
             OP_KIND_SEMANTIC_BINDING_UPSERT => {
                 let _ = parse_semantic_binding_upsert_payload(&op.payload)?;
+            }
+            OP_KIND_NODE_ENSURE => {
+                let _ = parse_node_ensure_payload(&op.payload)?;
+            }
+            OP_KIND_CONSTRAINT_CREATE => {
+                // Referenced nodes may be created earlier in this same commit
+                // (e.g. by `temporal.node.ensure`), so existence is checked
+                // at apply time, in operation order, like relation/detail ops.
+                let _ = parse_constraint_create_payload(&op.payload)?;
+            }
+            OP_KIND_SCENE_METADATA_PATCH => {
+                let _ = parse_scene_metadata_patch_payload(&op.payload)?;
+            }
+            OP_KIND_EVENT_METADATA_PATCH => {
+                let _ = parse_event_metadata_patch_payload(&op.payload)?;
+            }
+            OP_KIND_STORY_ORDER_MATERIALIZE => {
+                let _ = parse_story_order_materialize_payload(&op.payload)?;
+            }
+            OP_KIND_PROJECTION_RECORD => {
+                let _ = parse_projection_record_payload(&op.payload)?;
             }
             other => anyhow::bail!("unsupported commit operation kind: {other}"),
         }

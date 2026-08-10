@@ -19,6 +19,12 @@ use super::phase_undo::{
     undo_created_semantic_binding,
 };
 use super::semantic_bindings::collect_semantic_binding_snapshot;
+use super::temporal_undo::{
+    reapply_constraint_create_snapshot, reapply_node_ensure_snapshot,
+    reapply_projection_create_snapshot, restore_event_chronicle_patch,
+    restore_projection_patch, restore_scene_chronicle_patch, restore_scene_story_order_patch,
+    undo_created_constraint, undo_created_node, undo_created_projection,
+};
 use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
 use super::models::UndoCommitPayload;
 use super::task_leases::with_immediate_transaction;
@@ -493,6 +499,109 @@ fn mutate_commit(
                                     (replay_version, live_snapshot)
                                 }
                             }
+                            "temporal_node" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                let replay_version = if op_kind == "ensure-existing" {
+                                    conn.query_row(
+                                        "SELECT version FROM narrative_temporal_nodes WHERE id = ?1",
+                                        params![entity_id],
+                                        |row| row.get(0),
+                                    )?
+                                } else {
+                                    reapply_node_ensure_snapshot(
+                                        conn,
+                                        &payload.project_id,
+                                        &snapshot,
+                                        &now,
+                                    )?
+                                };
+                                (replay_version, snapshot.clone())
+                            }
+                            "temporal_constraint" => {
+                                let replay_version = reapply_constraint_create_snapshot(
+                                    conn,
+                                    &payload.project_id,
+                                    &snapshot,
+                                    &now,
+                                )?;
+                                (replay_version, snapshot.clone())
+                            }
+                            "temporal_scene_chronicle" => {
+                                let live_version: i64 = conn.query_row(
+                                    "SELECT version FROM tree_nodes WHERE id = ?1",
+                                    params![entity_id],
+                                    |row| row.get(0),
+                                )?;
+                                let replay_version = restore_scene_chronicle_patch(
+                                    conn,
+                                    entity_id,
+                                    &snapshot,
+                                    live_version,
+                                    &now,
+                                )?;
+                                (replay_version, snapshot.clone())
+                            }
+                            "temporal_event_chronicle" => {
+                                let live_version: i64 = conn.query_row(
+                                    "SELECT version FROM events WHERE id = ?1",
+                                    params![entity_id],
+                                    |row| row.get(0),
+                                )?;
+                                let replay_version = restore_event_chronicle_patch(
+                                    conn,
+                                    entity_id,
+                                    &snapshot,
+                                    live_version,
+                                    &now,
+                                )?;
+                                (replay_version, snapshot.clone())
+                            }
+                            "temporal_scene_story_order" => {
+                                let live_version: i64 = conn.query_row(
+                                    "SELECT version FROM tree_nodes WHERE id = ?1",
+                                    params![entity_id],
+                                    |row| row.get(0),
+                                )?;
+                                let replay_version = restore_scene_story_order_patch(
+                                    conn,
+                                    entity_id,
+                                    &snapshot,
+                                    live_version,
+                                    &now,
+                                )?;
+                                (replay_version, snapshot.clone())
+                            }
+                            "temporal_projection" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                let replay_version = if op_kind == "patch" {
+                                    let live_version: i64 = conn.query_row(
+                                        "SELECT version FROM narrative_temporal_projections WHERE id = ?1",
+                                        params![entity_id],
+                                        |row| row.get(0),
+                                    )?;
+                                    restore_projection_patch(
+                                        conn,
+                                        entity_id,
+                                        &snapshot,
+                                        live_version,
+                                        &now,
+                                    )?
+                                } else {
+                                    reapply_projection_create_snapshot(
+                                        conn,
+                                        &payload.project_id,
+                                        &snapshot,
+                                        &now,
+                                    )?
+                                };
+                                (replay_version, snapshot.clone())
+                            }
                             other => anyhow::bail!("unsupported journal entity kind '{other}'"),
                         };
 
@@ -663,6 +772,94 @@ fn preflight_undo_entity(
             if live_version != expected_version {
                 anyhow::bail!(
                     "NEX_COMMIT_BINDING_EDITED: semantic binding '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        "temporal_node" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "ensure-existing" {
+                // Node pre-existed before this commit; nothing to preflight.
+                return Ok(());
+            }
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM narrative_temporal_nodes WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_TEMPORAL_NODE_EDITED: node '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        "temporal_constraint" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM narrative_temporal_constraints WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_TEMPORAL_CONSTRAINT_EDITED: constraint '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        "temporal_scene_chronicle" | "temporal_scene_story_order" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM tree_nodes WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_SCENE_EDITED: scene '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        "temporal_event_chronicle" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM events WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_EVENT_EDITED: event '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        "temporal_projection" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM narrative_temporal_projections WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )?;
+            if live_version != expected_version {
+                anyhow::bail!(
+                    "NEX_COMMIT_TEMPORAL_PROJECTION_EDITED: projection '{entity_id}' was modified after commit"
                 );
             }
         }
@@ -872,6 +1069,82 @@ fn undo_one_entity(
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
                 undo_created_semantic_binding(conn, entity_id, expected_version)?;
+            }
+        }
+        "temporal_node" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind != "ensure-existing" {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                undo_created_node(conn, entity_id, expected_version)?;
+            }
+        }
+        "temporal_constraint" => {
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            undo_created_constraint(conn, entity_id, expected_version)?;
+        }
+        "temporal_scene_chronicle" => {
+            let before = entity
+                .get("beforeSnapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("scene chronicle patch journal missing beforeSnapshot"))?;
+            let expected_after_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            restore_scene_chronicle_patch(conn, entity_id, &before, expected_after_version, now)?;
+        }
+        "temporal_event_chronicle" => {
+            let before = entity
+                .get("beforeSnapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("event chronicle patch journal missing beforeSnapshot"))?;
+            let expected_after_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            restore_event_chronicle_patch(conn, entity_id, &before, expected_after_version, now)?;
+        }
+        "temporal_scene_story_order" => {
+            let before = entity
+                .get("beforeSnapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("scene story-order patch journal missing beforeSnapshot"))?;
+            let expected_after_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            restore_scene_story_order_patch(conn, entity_id, &before, expected_after_version, now)?;
+        }
+        "temporal_projection" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let before = entity
+                    .get("beforeSnapshot")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("projection patch journal missing beforeSnapshot"))?;
+                let expected_after_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                restore_projection_patch(conn, entity_id, &before, expected_after_version, now)?;
+            } else {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                undo_created_projection(conn, entity_id, expected_version)?;
             }
         }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),

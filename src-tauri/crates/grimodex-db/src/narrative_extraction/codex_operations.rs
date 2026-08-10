@@ -18,6 +18,12 @@ use crate::codex_relation_keys::{
 use super::detail_operations::OP_KIND_DETAIL_VALUE_SET;
 use super::phase_operations::{OP_KIND_PHASE_CREATE, OP_KIND_PHASE_PATCH};
 use super::semantic_bindings::OP_KIND_SEMANTIC_BINDING_UPSERT;
+use super::temporal_constraints::OP_KIND_CONSTRAINT_CREATE;
+use super::temporal_nodes::OP_KIND_NODE_ENSURE;
+use super::temporal_operations::{
+    OP_KIND_EVENT_METADATA_PATCH, OP_KIND_SCENE_METADATA_PATCH, OP_KIND_STORY_ORDER_MATERIALIZE,
+};
+use super::temporal_projections::OP_KIND_PROJECTION_RECORD;
 
 pub(crate) const OP_KIND_EVENT_CREATE: &str = "chronicle.event.create";
 pub(crate) const OP_KIND_ENTRY_CREATE: &str = "codex.entry.create";
@@ -191,6 +197,12 @@ pub(crate) fn ensure_operation_kind(kind: &str) -> anyhow::Result<()> {
                 | OP_KIND_PHASE_CREATE
                 | OP_KIND_PHASE_PATCH
                 | OP_KIND_SEMANTIC_BINDING_UPSERT
+                | OP_KIND_NODE_ENSURE
+                | OP_KIND_CONSTRAINT_CREATE
+                | OP_KIND_SCENE_METADATA_PATCH
+                | OP_KIND_EVENT_METADATA_PATCH
+                | OP_KIND_STORY_ORDER_MATERIALIZE
+                | OP_KIND_PROJECTION_RECORD
         ),
         "unsupported commit operation kind: {kind}"
     );

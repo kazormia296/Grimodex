@@ -35,7 +35,7 @@ describe("detail OCC schema (v8)", () => {
   });
 
   it("bumps generated schema contract to version 8 with OCC columns", () => {
-    expect(contractJson.schemaVersion).toBe(8);
+    expect(contractJson.schemaVersion).toBeGreaterThanOrEqual(8);
     const definitions = contractJson.tables.codex_detail_definitions;
     const values = contractJson.tables.codex_detail_values;
     expect(definitions).toBeDefined();

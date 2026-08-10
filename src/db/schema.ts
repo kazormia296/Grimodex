@@ -2311,6 +2311,135 @@ export const narrativeCommitJournals = sqliteTable(
   },
 );
 
+/** Temporal Constraint Graph nodes (SCHEMA_VERSION 9). */
+export const narrativeTemporalNodes = sqliteTable(
+  "narrative_temporal_nodes",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    timelineKind: text("timeline_kind", {
+      enum: ["primary", "alternate", "embedded-fiction", "hypothetical"],
+    })
+      .notNull()
+      .default("primary"),
+    timelineKey: text("timeline_key"),
+    subjectKind: text("subject_kind", {
+      enum: [
+        "scene",
+        "event",
+        "state-boundary",
+        "phase-boundary",
+        "named-period",
+      ],
+    }).notNull(),
+    subjectJson: text("subject_json").notNull(),
+    semanticKey: text("semantic_key").notNull(),
+    shape: text("shape", {
+      enum: ["point", "interval", "unknown"],
+    })
+      .notNull()
+      .default("unknown"),
+    fingerprint: text("fingerprint").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_nodes_semantic_key").on(
+      table.projectId,
+      table.semanticKey,
+    ),
+    index("idx_narrative_temporal_nodes_project").on(table.projectId),
+  ],
+);
+
+export const narrativeTemporalConstraints = sqliteTable(
+  "narrative_temporal_constraints",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: text("kind", {
+      enum: [
+        "absolute-window",
+        "relative-offset",
+        "interval-relation",
+        "duration",
+        "symbolic",
+      ],
+    }).notNull(),
+    authority: text("authority", {
+      enum: [
+        "user-metadata",
+        "user-confirmed",
+        "explicit-story-text",
+        "existing-domain-relation",
+        "deterministic-derived",
+        "model-inferred",
+        "projection-derived",
+      ],
+    }).notNull(),
+    strictness: text("strictness", {
+      enum: ["hard", "soft"],
+    }).notNull(),
+    semanticKey: text("semantic_key").notNull(),
+    sourceIdsJson: text("source_ids_json").notNull().default("[]"),
+    fingerprint: text("fingerprint").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_constraints_semantic_key").on(
+      table.projectId,
+      table.semanticKey,
+    ),
+    index("idx_narrative_temporal_constraints_project").on(
+      table.projectId,
+      table.kind,
+    ),
+  ],
+);
+
+export const narrativeTemporalProjections = sqliteTable(
+  "narrative_temporal_projections",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    targetKind: text("target_kind", {
+      enum: ["scene-time", "event-time", "scene-story-order"],
+    }).notNull(),
+    targetId: text("target_id").notNull(),
+    constraintSetDigest: text("constraint_set_digest").notNull(),
+    solverVersion: text("solver_version").notNull(),
+    calendarDigest: text("calendar_digest"),
+    projectedValueDigest: text("projected_value_digest").notNull(),
+    targetResultVersion: integer("target_result_version").notNull(),
+    applicationId: text("application_id").notNull(),
+    status: text("status", {
+      enum: ["current", "invalidated", "undone"],
+    })
+      .notNull()
+      .default("current"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_projections_target").on(
+      table.projectId,
+      table.targetKind,
+      table.targetId,
+    ),
+  ],
+);
+
 // Trash bin: holds deleted text fragments (Phase 1) and structure items (Phase 4-5).
 // payload / preview_meta は素の TEXT で JSON.stringify を保持（aiReasoning と同流儀）。
 export const trashItems = sqliteTable(

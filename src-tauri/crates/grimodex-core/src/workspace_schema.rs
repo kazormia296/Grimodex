@@ -9,6 +9,7 @@
 //! - **v7** — Narrative Extraction persistence tables
 //! - **v8** — Codex relation directionality / semantic_key / version
 //! - **v9** — Detail Definition / Detail Value OCC columns
+//! - **v10** — Temporal Constraint Graph tables (Nodes / Constraints / Projections)
 //!
 //!
 //! These probes deliberately avoid exact whole-schema comparison because
@@ -412,13 +413,9 @@ pub fn has_v8_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     Ok(has_directionality && has_inverse_label && has_semantic_key && has_version)
 }
 
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 9 adds Detail Definition / Detail Value OCC
-/// columns on top of every v8 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 9 || !has_v3_physical_invariants(conn)? {
-        return Ok(false);
-    }
+/// SCHEMA 9 checkpoint: Detail Definition / Detail Value OCC columns on top of
+/// every v8 invariant.
+pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     if !has_v8_checkpoint_invariants(conn)? {
         return Ok(false);
     }
@@ -438,6 +435,42 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
     )
 }
 
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 10 adds the Temporal Constraint Graph
+/// persistence tables (`narrative_temporal_nodes`,
+/// `narrative_temporal_constraints`, `narrative_temporal_projections`) on top
+/// of every v9 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 10 || !has_v3_physical_invariants(conn)? {
+        return Ok(false);
+    }
+    if !has_v9_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    for table in [
+        "narrative_temporal_nodes",
+        "narrative_temporal_constraints",
+        "narrative_temporal_projections",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+    let nodes = table_columns(conn, "narrative_temporal_nodes")?;
+    let constraints = table_columns(conn, "narrative_temporal_constraints")?;
+    let projections = table_columns(conn, "narrative_temporal_projections")?;
+    Ok(
+        has_occ_integer_column(&nodes, "version")
+            && has_timestamp_text_column(&nodes, "created_at")
+            && has_timestamp_text_column(&nodes, "updated_at")
+            && has_occ_integer_column(&constraints, "version")
+            && has_timestamp_text_column(&constraints, "created_at")
+            && has_timestamp_text_column(&constraints, "updated_at")
+            && has_occ_integer_column(&projections, "version")
+            && has_timestamp_text_column(&projections, "created_at")
+            && has_timestamp_text_column(&projections, "updated_at"),
+    )
+}
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
     columns.iter().any(|column| {
@@ -447,6 +480,7 @@ fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
             && column.default.as_deref() == Some("0")
     })
 }
+
 fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
     columns.iter().any(|column| {
         column.name == name
