@@ -466,14 +466,8 @@ pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     )
 }
 
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 11 adds Plot Thread OCC
-/// (`plot_threads.version`, marker/branch `version` + `semantic_key`) on top
-/// of every v10 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 11 || !has_v3_physical_invariants(conn)? {
-        return Ok(false);
-    }
+/// SCHEMA 11 checkpoint: Plot Thread OCC on top of every v10 invariant.
+pub fn has_v11_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     if !has_v10_checkpoint_invariants(conn)? {
         return Ok(false);
     }
@@ -486,6 +480,75 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
             && has_text_column(&links, "semantic_key")
             && has_occ_integer_column(&branches, "version")
             && has_text_column(&branches, "semantic_key"),
+    )
+}
+
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 12 adds Foreshadow Setup/Payoff aggregate tables
+/// with root OCC on top of every v11 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 12 || !has_v3_physical_invariants(conn)? {
+        return Ok(false);
+    }
+    if !has_v11_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    for table in [
+        "foreshadows",
+        "foreshadow_setups",
+        "foreshadow_payoffs",
+        "foreshadow_setup_payoff_links",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let foreshadows = table_columns(conn, "foreshadows")?;
+    let setups = table_columns(conn, "foreshadow_setups")?;
+    let payoffs = table_columns(conn, "foreshadow_payoffs")?;
+    let links = table_columns(conn, "foreshadow_setup_payoff_links")?;
+
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == declared_type)
+    };
+
+    Ok(
+        has_occ_integer_column(&foreshadows, "version")
+            && has_column(&foreshadows, "mechanism", "TEXT")
+            && has_text_column(&setups, "role")
+            && has_text_column(&setups, "semantic_key")
+            && [
+                "id",
+                "foreshadow_id",
+                "scene_id",
+                "from_pos",
+                "to_pos",
+                "role",
+                "confirmed",
+                "is_primary",
+                "attribution",
+                "ai_rationale",
+                "is_orphan",
+                "evidence_anchor_id",
+                "semantic_key",
+                "created_at",
+                "updated_at",
+            ]
+            .iter()
+            .all(|name| payoffs.iter().any(|column| column.name == *name))
+            && [
+                "foreshadow_id",
+                "setup_id",
+                "payoff_id",
+                "bridge_kind",
+                "explanation",
+                "created_at",
+            ]
+            .iter()
+            .all(|name| links.iter().any(|column| column.name == *name)),
     )
 }
 

@@ -16,6 +16,9 @@ use crate::codex_relation_keys::{
 };
 
 use super::detail_operations::OP_KIND_DETAIL_VALUE_SET;
+use super::foreshadow_operations::{
+    OP_KIND_FORESHADOW_AGGREGATE_CREATE, OP_KIND_FORESHADOW_AGGREGATE_PATCH,
+};
 use super::phase_operations::{OP_KIND_PHASE_CREATE, OP_KIND_PHASE_PATCH};
 use super::semantic_bindings::OP_KIND_SEMANTIC_BINDING_UPSERT;
 use super::temporal_constraints::OP_KIND_CONSTRAINT_CREATE;
@@ -131,6 +134,7 @@ pub(crate) struct CodexRelationCreateTxResult {
 pub(crate) struct CommitMap {
     bindings: HashMap<String, CodexEntityBinding>,
     plot_thread_bindings: HashMap<String, PlotThreadBinding>,
+    foreshadow_bindings: HashMap<String, ForeshadowBinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,12 +150,15 @@ pub(crate) struct PlotThreadBinding {
     pub plot_thread_id: String,
     pub source: String,
 }
+#[derive(Debug, Clone)]
+pub(crate) struct ForeshadowBinding { pub hypothesis_id: String, pub foreshadow_id: String, pub source: String }
 
 impl CommitMap {
     pub fn new() -> Self {
         Self {
             bindings: HashMap::new(),
             plot_thread_bindings: HashMap::new(),
+            foreshadow_bindings: HashMap::new(),
         }
     }
 
@@ -176,6 +183,9 @@ impl CommitMap {
     pub fn insert_plot_thread_binding(&mut self, binding: PlotThreadBinding) {
         self.plot_thread_bindings
             .insert(binding.hypothesis_id.clone(), binding);
+    }
+    pub fn insert_foreshadow_binding(&mut self, binding: ForeshadowBinding) {
+        self.foreshadow_bindings.insert(binding.hypothesis_id.clone(), binding);
     }
 
     pub fn resolve(&self, narrative_entity_id: &str) -> anyhow::Result<&CodexEntityBinding> {
@@ -218,6 +228,11 @@ impl CommitMap {
             );
         }
         obj.insert("plotThreadBindings".to_string(), Value::Object(plot_obj));
+        let mut foreshadow_obj = serde_json::Map::new();
+        for (hypothesis_id, binding) in &self.foreshadow_bindings {
+            foreshadow_obj.insert(hypothesis_id.clone(), json!({"hypothesisId": binding.hypothesis_id, "foreshadowId": binding.foreshadow_id, "source": binding.source}));
+        }
+        obj.insert("foreshadowBindings".to_string(), Value::Object(foreshadow_obj));
         Value::Object(obj)
     }
 }
@@ -245,6 +260,8 @@ pub(crate) fn ensure_operation_kind(kind: &str) -> anyhow::Result<()> {
                 | OP_KIND_PLOT_THREAD_PATCH
                 | OP_KIND_PLOT_MARKER_CREATE
                 | OP_KIND_PLOT_BRANCH_CREATE
+                | OP_KIND_FORESHADOW_AGGREGATE_CREATE
+                | OP_KIND_FORESHADOW_AGGREGATE_PATCH
         ),
         "unsupported commit operation kind: {kind}"
     );

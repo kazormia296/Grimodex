@@ -16,11 +16,17 @@ use super::codex_operations::{
     apply_codex_relation_create_in_tx, ensure_entry_id_available, ensure_entry_version,
     ensure_operation_kind, is_chronicle_op, parse_entry_create_payload, parse_entry_patch_payload,
     parse_entity_bind_existing_payload, parse_relation_create_payload, CodexEntityBinding,
-    CommitMap, OP_KIND_ENTITY_BIND_EXISTING, OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH,
-    OP_KIND_EVENT_CREATE, OP_KIND_RELATION_CREATE, PlotThreadBinding,
+    CommitMap, ForeshadowBinding, OP_KIND_ENTITY_BIND_EXISTING, OP_KIND_ENTRY_CREATE,
+    OP_KIND_ENTRY_PATCH, OP_KIND_EVENT_CREATE, OP_KIND_RELATION_CREATE, PlotThreadBinding,
 };
 use super::detail_operations::{
     apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
+};
+use super::foreshadow_operations::{
+    apply_create as apply_foreshadow_create, apply_patch as apply_foreshadow_patch,
+    ensure_id_available as ensure_foreshadow_id_available, ensure_version as ensure_foreshadow_version,
+    parse_create as parse_foreshadow_create, parse_patch as parse_foreshadow_patch,
+    OP_KIND_FORESHADOW_AGGREGATE_CREATE, OP_KIND_FORESHADOW_AGGREGATE_PATCH,
 };
 use super::phase_operations::{
     apply_phase_create_in_tx, apply_phase_patch_in_tx, parse_phase_create_payload,
@@ -580,6 +586,24 @@ pub fn narrative_extraction_apply_commit(
                                 result.op_kind,
                             )
                         }
+                        OP_KIND_FORESHADOW_AGGREGATE_CREATE => {
+                            let foreshadow_payload = parse_foreshadow_create(&op.payload)?;
+                            let result = apply_foreshadow_create(conn, &payload.project_id, &foreshadow_payload, &now)?;
+                            commit_map.insert_foreshadow_binding(ForeshadowBinding {
+                                hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
+                                foreshadow_id: result.entity_id.clone(), source: "created".to_string(),
+                            });
+                            ("foreshadow", result.entity_id, result.version, result.after_snapshot, result.before_snapshot, result.op_kind)
+                        }
+                        OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
+                            let foreshadow_payload = parse_foreshadow_patch(&op.payload)?;
+                            let result = apply_foreshadow_patch(conn, &payload.project_id, &foreshadow_payload, &now)?;
+                            commit_map.insert_foreshadow_binding(ForeshadowBinding {
+                                hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
+                                foreshadow_id: result.entity_id.clone(), source: "existing".to_string(),
+                            });
+                            ("foreshadow", result.entity_id, result.version, result.after_snapshot, result.before_snapshot, result.op_kind)
+                        }
                         other => anyhow::bail!("unsupported commit operation kind: {other}"),
                     };
 
@@ -1057,6 +1081,14 @@ fn validate_commit_plan(
             OP_KIND_PLOT_BRANCH_CREATE => {
                 let payload = parse_plot_branch_create_payload(&op.payload)?;
                 ensure_branch_id_available(conn, &payload.branch_id)?;
+            }
+            OP_KIND_FORESHADOW_AGGREGATE_CREATE => {
+                let payload = parse_foreshadow_create(&op.payload)?;
+                ensure_foreshadow_id_available(conn, ctx.project_id, &payload.foreshadow_id)?;
+            }
+            OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
+                let payload = parse_foreshadow_patch(&op.payload)?;
+                ensure_foreshadow_version(conn, ctx.project_id, &payload.foreshadow_id, payload.base_version)?;
             }
             other => anyhow::bail!("unsupported commit operation kind: {other}"),
         }

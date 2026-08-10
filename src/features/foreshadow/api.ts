@@ -1567,9 +1567,27 @@ function isValidAuditCandidate(c: unknown): c is AuditCandidate {
   );
 }
 
+/**
+ * Soft-cutover switch (foreshadow-setup-payoff-extraction-vertical-slice).
+ *
+ * Off by default: legacy one-shot `auditChapter` behavior is unchanged.
+ * When enabled, discovery is owned by the new extraction pipeline
+ * (signalIndex → narrative_foreshadow_signal_synthesize → proposalPlanner);
+ * callers should route users to extraction-ui/ForeshadowExtractionReview instead.
+ */
+export function isNewForeshadowExtractionPipelinePreferred(): boolean {
+  return (
+    import.meta.env.VITE_GRIMODEX_FORESHADOW_EXTRACTION_PIPELINE === "new"
+  );
+}
+
 export async function auditChapter(
   req: ChapterAuditRequest,
 ): Promise<AuditCandidate[]> {
+  if (isNewForeshadowExtractionPipelinePreferred()) {
+    // New pipeline owns chapter-level discovery; legacy audit returns empty.
+    return [];
+  }
   if (blockIfPolicyOff("analysis")) return [];
   let _auditProject;
   try {

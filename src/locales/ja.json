@@ -1507,7 +1507,11 @@
         "narrative_plot_thread_synthesize": "プロットスレッド候補 統合",
         "narrative_plot_development_classify": "プロット進展 分類",
         "narrative_plot_marker_assign": "プロットマーカー 補助",
-        "narrative_plot_relation_synthesize": "プロット関係 統合"
+        "narrative_plot_relation_synthesize": "プロット関係 統合",
+        "narrative_foreshadow_signal_synthesize": "伏線 setup 信号 統合",
+        "narrative_setup_payoff_link": "Setup/Payoff リンク",
+        "narrative_foreshadow_global_reconcile": "伏線候補 グローバル調停",
+        "narrative_foreshadow_quality_evaluate": "伏線品質 評価"
       }
     }
   },
