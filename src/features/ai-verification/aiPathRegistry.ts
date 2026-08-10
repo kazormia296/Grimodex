@@ -244,6 +244,27 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
     auditProperty: "pathId",
   },
   {
+    pathId: "narrative_state_synthesize",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runStateSynthesisTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
+    pathId: "narrative_phase_synthesize",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runPhaseSynthesisTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
+    pathId: "narrative_detail_compose",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runDetailComposeTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
     pathId: "narrative_structured_repair",
     sourceRef:
       "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
@@ -602,6 +623,54 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: SINGLE_SHOT_AUDIT_TEST,
     testName: "AI audit path: narrative_relation_synthesize",
     note: "Candidate Entity ペアの Relation Hypothesis 合成。Narrative Entity ID と Observation ref のみ。実 Codex Entry ID は送らない。",
+  },
+  {
+    id: "narrative_state_synthesize",
+    label: "Narrative State Track Synthesis",
+    surface:
+      "narrative-extraction/aiTasks/runStateSynthesisTask.ts runStateSynthesisTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_state_synthesize",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_state_synthesize",
+    note: "State Track 統合。Narrative Entity ID と Observation ref のみ。実 Codex Entry ID は送らない。",
+  },
+  {
+    id: "narrative_phase_synthesize",
+    label: "Narrative Phase Boundary Synthesis",
+    surface:
+      "narrative-extraction/aiTasks/runPhaseSynthesisTask.ts runPhaseSynthesisTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_phase_synthesize",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_phase_synthesize",
+    note: "Phase 境界ラベル提案。Persistence gate は決定的。実 Codex Phase / Entry ID は送らない。",
+  },
+  {
+    id: "narrative_detail_compose",
+    label: "Narrative Detail Value Compose",
+    surface:
+      "narrative-extraction/aiTasks/runDetailComposeTask.ts runDetailComposeTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_detail_compose",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_detail_compose",
+    note: "Detail 値整形。dropdown は opaque optionRef のみ。clear≠inherit≠set を混同しない。",
   },
   {
     id: "narrative_structured_repair",

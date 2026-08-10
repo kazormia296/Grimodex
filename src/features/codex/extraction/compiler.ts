@@ -4,11 +4,20 @@ import type {
   CreateCodexRelationProposal,
   CreateCodexRelationProposalPayload,
 } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import type { SetCodexDetailValueOperationV1 } from "./detailCompiler";
+import type {
+  CreateCodexPhaseOperationV1,
+  PatchCodexPhaseOperationV1,
+} from "./phaseCompiler";
 
 export type CodexDomainOperationKind =
   | "codex.entry.create"
   | "codex.entry.patch"
-  | "codex.relation.create";
+  | "codex.relation.create"
+  | "codex.detail.value.set"
+  | "codex.phase.create"
+  | "codex.phase.patch"
+  | "codex.semantic_binding.upsert";
 
 export interface DomainOperationBase<TKind extends string, TPayload> {
   readonly kind: TKind;
@@ -77,7 +86,10 @@ export type CreateCodexRelationOperationV1 = DomainOperationBase<
 export type CodexDomainOperationV1 =
   | CreateCodexEntryOperationV1
   | PatchCodexEntryOperationV1
-  | CreateCodexRelationOperationV1;
+  | CreateCodexRelationOperationV1
+  | SetCodexDetailValueOperationV1
+  | CreateCodexPhaseOperationV1
+  | PatchCodexPhaseOperationV1;
 
 export interface CodexEntityBinding {
   readonly narrativeEntityId: NarrativeEntityId;
