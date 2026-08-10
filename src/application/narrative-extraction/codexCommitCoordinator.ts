@@ -125,11 +125,16 @@ export async function prepareCodexCommit(
     proposalId: item.proposalId,
     revisionId: item.revisionId,
   }));
-  const planDigest = await computePlanDigest(operations, null);
+  const commitMap = buildCommitMap(input);
+  const planDigest = await computePlanDigest(
+    operations,
+    null,
+    toEntityBindingSeeds(commitMap),
+  );
   const prepared = await narrativeExtractionPrepareCommit(
     toCommitWire(input, planDigest),
   );
-  return { ...prepared, planDigest, commitMap: buildCommitMap(input) };
+  return { ...prepared, planDigest, commitMap };
 }
 
 export async function applyCodexCommit(
@@ -142,7 +147,14 @@ export async function applyCodexCommit(
     proposalId: item.proposalId,
     revisionId: item.revisionId,
   }));
-  const digest = planDigest ?? (await computePlanDigest(operations, null));
+  const commitMap = buildCommitMap(input);
+  const digest =
+    planDigest ??
+    (await computePlanDigest(
+      operations,
+      null,
+      toEntityBindingSeeds(commitMap),
+    ));
   return narrativeExtractionApplyCommit(toCommitWire(input, digest));
 }
 

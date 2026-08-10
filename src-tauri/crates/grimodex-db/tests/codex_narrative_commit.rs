@@ -138,8 +138,8 @@ fn build_apply(
         .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
             kind: kind.clone(),
             payload: payload.clone(),
-            proposal_id: Some(proposal_id.clone()),
-            revision_id: Some(revision_id.clone()),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
         })
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
@@ -728,4 +728,107 @@ fn external_tag_dependency_blocks_undo() {
     )
     .expect_err("tag dep");
     assert!(err.to_string().contains("NEX_UNDO_EXTERNAL_DEPENDENCY"));
+}
+
+#[test]
+fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
+    let db = migrated_db();
+    db.execute(
+        "INSERT INTO codex_entries
+            (id, project_id, type, name, aliases, summary, content, parent_id, version, created_at, updated_at)
+         VALUES (?, 'project-1', 'character', 'Existing', '[]', '', '{}', NULL, 3, 't', 't')",
+        &[Value::String("entry-patch-cycle".to_string())],
+        "run",
+    )
+    .expect("seed existing");
+
+    let items = [(
+        "codex.entry.patch",
+        json!({
+            "entryId": "entry-patch-cycle",
+            "baseVersion": 3,
+            "aliases": { "kind": "set", "values": ["灰の目"] },
+            "summary": { "kind": "fill-if-empty", "value": "監察官" },
+            "name": { "kind": "leave" },
+            "typeSlug": { "kind": "leave" },
+            "parentId": { "kind": "leave" },
+            "narrativeEntityId": "ent:patch-cycle"
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-patch-cycle", "set-patch-cycle", &items);
+    let applied = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-patch-cycle",
+            "digest-patch-cycle",
+            "set-patch-cycle",
+            "run-patch-cycle",
+            ops_from_pairs(&pairs, &items),
+            vec![EntityBindingSeed {
+                narrative_entity_id: "ent:patch-cycle".to_string(),
+                codex_entry_id: "entry-patch-cycle".to_string(),
+                source: "existing".to_string(),
+            }],
+        ),
+    )
+    .expect("apply");
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    let undo_payload = UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess".to_string(),
+        surface: None,
+        commit_id: Some(commit_id),
+        request_id: None,
+    };
+
+    for cycle in 1..=2 {
+        let undone = narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            undo_payload.clone(),
+        )
+        .unwrap_or_else(|err| panic!("undo cycle {cycle}: {err}"));
+        assert_eq!(undone["status"], "undone");
+
+        let (aliases, summary): (String, String) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT aliases, summary FROM codex_entries WHERE id = 'entry-patch-cycle'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert!(
+            !aliases.contains("灰の目"),
+            "undo must restore pre-patch aliases"
+        );
+        assert_eq!(summary, "", "undo must restore empty summary");
+
+        let redone = narrative_extraction::narrative_extraction_redo_commit(
+            &db,
+            undo_payload.clone(),
+        )
+        .unwrap_or_else(|err| panic!("redo cycle {cycle}: {err}"));
+        assert_eq!(redone["status"], "redone");
+
+        let (aliases, summary, version): (String, String, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT aliases, summary, version FROM codex_entries WHERE id = 'entry-patch-cycle'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .unwrap();
+        assert!(aliases.contains("灰の目"));
+        assert_eq!(summary, "監察官");
+        assert!(version > 3);
+    }
+
+    let undone_final = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        undo_payload,
+    )
+    .expect("final undo after redo cycles");
+    assert_eq!(undone_final["status"], "undone");
 }

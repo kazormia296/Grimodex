@@ -23,7 +23,7 @@ export function CodexEntityResolutionPicker({
   const labelFor = (ref: string): string => {
     if (!candidateLabels) return ref;
     if (candidateLabels instanceof Map) return candidateLabels.get(ref) ?? ref;
-    return candidateLabels[ref] ?? ref;
+    return (candidateLabels as Record<string, string>)[ref] ?? ref;
   };
 
   return (
@@ -66,7 +66,9 @@ export function CodexEntityResolutionPicker({
           ))}
         </ul>
       ) : (
-        <p className="text-[11px] text-muted-foreground">既存候補はありません</p>
+        <p className="text-[11px] text-muted-foreground">
+          既存候補はありません
+        </p>
       )}
     </div>
   );

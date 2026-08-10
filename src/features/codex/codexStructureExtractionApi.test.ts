@@ -88,7 +88,7 @@ describe("startCodexStructureExtraction product safety", () => {
       sceneIds: ["s1"],
       authority: {
         projectId: "p1",
-        currentProjectId: "p1",
+        currentProjectId: () => "p1",
         workspacePath: "/w",
         workspaceOpenRevision: 1,
       },
@@ -132,7 +132,7 @@ describe("startCodexStructureExtraction product safety", () => {
       sceneIds: ["s1"],
       authority: {
         projectId: "p1",
-        currentProjectId: "p1",
+        currentProjectId: () => "p1",
         workspacePath: "/w",
         workspaceOpenRevision: 1,
       },
@@ -171,6 +171,71 @@ describe("startCodexStructureExtraction product safety", () => {
     expect(projection.proposalSetId).toBe("native-ps-1");
     expect(projection.proposals[0]?.revisionId).toBe("native-rev-1");
     expect(projection.catalog?.types[0]?.slug).toBe("character");
+  });
+
+  it("derives relation proposals from vocabulary co-mentions in shared quotes", async () => {
+    const quote = "ライカとベルカは友人だ";
+    const projection = await startCodexStructureExtraction({
+      projectId: "p1",
+      folderId: "f1",
+      sceneIds: ["s1"],
+      authority: {
+        projectId: "p1",
+        currentProjectId: () => "p1",
+        workspacePath: "/w",
+        workspaceOpenRevision: 1,
+      },
+      workspacePath: "/w",
+      openRevision: 1,
+      useAi: false,
+      skipNativePersist: true,
+      typeCatalog: [
+        {
+          ref: "T0001",
+          sourceKey: "character",
+          slug: "character",
+          label: "character",
+          coarseClassHints: ["person"],
+          expectedVersion: 1,
+        },
+      ],
+      heuristicSeeds: [
+        {
+          surface: "ライカ",
+          typeRef: "T0001",
+          evidence: [
+            {
+              anchorId: "a1",
+              quote,
+              documentRef: "D000001",
+              method: "exact",
+            },
+          ],
+        },
+        {
+          surface: "ベルカ",
+          typeRef: "T0001",
+          evidence: [
+            {
+              anchorId: "a2",
+              quote,
+              documentRef: "D000001",
+              method: "exact",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(projection.relationProposals.length).toBeGreaterThan(0);
+    expect(
+      projection.relationProposals.some(
+        (item) =>
+          item.displayTitle.includes("友人") &&
+          item.displayTitle.includes("ライカ") &&
+          item.displayTitle.includes("ベルカ"),
+      ),
+    ).toBe(true);
   });
 });
 
