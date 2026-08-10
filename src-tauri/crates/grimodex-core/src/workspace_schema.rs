@@ -2,12 +2,13 @@
 //!
 //! Historical checkpoints cover the live-comment/audit repairs in v3,
 //! durable Detail semantic bindings in v4, Calendar OCC in v5, Narrative
-//! Extraction persistence in v6, and Codex relation directionality /
-//! semantic_key columns in v7. The current checkpoint extends them with
-//! Detail Definition / Detail Value OCC columns. These probes deliberately
-//! avoid exact whole-schema comparison because legitimate upgraded databases
-//! can differ from fresh databases in column order and normalized DDL while
-//! remaining compatible.
+//! Extraction persistence in v6, Codex relation directionality /
+//! semantic_key columns in v7, and Detail Definition / Detail Value OCC
+//! columns in v8. The current checkpoint extends them with the Temporal
+//! Constraint Graph persistence tables (Nodes / Constraints / Projections).
+//! These probes deliberately avoid exact whole-schema comparison because
+//! legitimate upgraded databases can differ from fresh databases in column
+//! order and normalized DDL while remaining compatible.
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -368,11 +369,11 @@ fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
     })
 }
 
-/// Whether the physical schema satisfies the checkpoint represented by the
-/// current workspace version. Version 8 adds Detail Definition / Detail Value
-/// OCC columns on top of every v7 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 8 || !has_v7_checkpoint_invariants(conn)? {
+/// Whether the physical schema satisfies the historical v8 checkpoint.
+/// Version 8 adds Detail Definition / Detail Value OCC columns on top of
+/// every v7 invariant.
+pub fn has_v8_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v7_checkpoint_invariants(conn)? {
         return Ok(false);
     }
     if !table_exists(conn, "codex_detail_definitions")?
@@ -388,6 +389,40 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
             && has_occ_integer_column(&values, "version")
             && has_timestamp_text_column(&values, "created_at")
             && has_timestamp_text_column(&values, "updated_at"),
+    )
+}
+
+/// Whether the physical schema satisfies the checkpoint represented by the
+/// current workspace version. Version 9 adds the Temporal Constraint Graph
+/// persistence tables (`narrative_temporal_nodes`,
+/// `narrative_temporal_constraints`, `narrative_temporal_projections`) on top
+/// of every v8 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 9 || !has_v8_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    for table in [
+        "narrative_temporal_nodes",
+        "narrative_temporal_constraints",
+        "narrative_temporal_projections",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+    let nodes = table_columns(conn, "narrative_temporal_nodes")?;
+    let constraints = table_columns(conn, "narrative_temporal_constraints")?;
+    let projections = table_columns(conn, "narrative_temporal_projections")?;
+    Ok(
+        has_occ_integer_column(&nodes, "version")
+            && has_timestamp_text_column(&nodes, "created_at")
+            && has_timestamp_text_column(&nodes, "updated_at")
+            && has_occ_integer_column(&constraints, "version")
+            && has_timestamp_text_column(&constraints, "created_at")
+            && has_timestamp_text_column(&constraints, "updated_at")
+            && has_occ_integer_column(&projections, "version")
+            && has_timestamp_text_column(&projections, "created_at")
+            && has_timestamp_text_column(&projections, "updated_at"),
     )
 }
 

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 8,
+  "schemaVersion": 9,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -5989,6 +5989,329 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_proposals ( id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL, proposal_key TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unreviewed', payload_json TEXT NOT NULL, current_revision_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
     },
+    "narrative_temporal_constraints": {
+      "kind": "table",
+      "columns": {
+        "authority": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "fingerprint": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_json": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_key": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_ids_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "strictness": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_temporal_constraints ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('absolute-window','relative-offset','interval-relation','duration','symbolic')), authority TEXT NOT NULL CHECK(authority IN ('user-metadata','user-confirmed','explicit-story-text','existing-domain-relation','deterministic-derived','model-inferred','projection-derived')), strictness TEXT NOT NULL CHECK(strictness IN ('hard','soft')), semantic_key TEXT NOT NULL, source_ids_json TEXT NOT NULL DEFAULT '[]', fingerprint TEXT NOT NULL, payload_json TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "narrative_temporal_nodes": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "fingerprint": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_key": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "shape": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'unknown'",
+          "primaryKey": 0
+        },
+        "subject_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "subject_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "timeline_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "timeline_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'primary'",
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_temporal_nodes ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, timeline_kind TEXT NOT NULL DEFAULT 'primary' CHECK(timeline_kind IN ('primary','alternate','embedded-fiction','hypothetical')), timeline_key TEXT, subject_kind TEXT NOT NULL CHECK(subject_kind IN ('scene','event','state-boundary','phase-boundary','named-period')), subject_json TEXT NOT NULL, semantic_key TEXT NOT NULL, shape TEXT NOT NULL DEFAULT 'unknown' CHECK(shape IN ('point','interval','unknown')), fingerprint TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "narrative_temporal_projections": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "calendar_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "constraint_set_digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "projected_value_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "solver_version": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'current'",
+          "primaryKey": 0
+        },
+        "target_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_result_version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 11,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_temporal_projections ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, target_kind TEXT NOT NULL CHECK(target_kind IN ('scene-time','event-time','scene-story-order')), target_id TEXT NOT NULL, constraint_set_digest TEXT NOT NULL, solver_version TEXT NOT NULL, calendar_digest TEXT, projected_value_digest TEXT NOT NULL, target_result_version INTEGER NOT NULL, application_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','invalidated','undone')), version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
     "plot_thread_branches": {
       "kind": "table",
       "columns": {
@@ -10492,6 +10815,34 @@
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
     },
+    "idx_narrative_temporal_constraints_project": {
+      "table": "narrative_temporal_constraints",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "kind"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_temporal_constraints_project ON narrative_temporal_constraints(project_id, kind)"
+    },
+    "idx_narrative_temporal_nodes_project": {
+      "table": "narrative_temporal_nodes",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_temporal_nodes_project ON narrative_temporal_nodes(project_id)"
+    },
     "idx_pea_parent": {
       "table": "post_effect_annotations",
       "unique": false,
@@ -11407,6 +11758,58 @@
         }
       ],
       "createSql": "CREATE UNIQUE INDEX uq_codex_detail_semantic_binding_definition_facet ON codex_detail_semantic_bindings(definition_id, facet_key)"
+    },
+    "uq_narrative_temporal_constraints_semantic_key": {
+      "table": "narrative_temporal_constraints",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_narrative_temporal_constraints_semantic_key ON narrative_temporal_constraints(project_id, semantic_key)"
+    },
+    "uq_narrative_temporal_nodes_semantic_key": {
+      "table": "narrative_temporal_nodes",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_narrative_temporal_nodes_semantic_key ON narrative_temporal_nodes(project_id, semantic_key)"
+    },
+    "uq_narrative_temporal_projections_target": {
+      "table": "narrative_temporal_projections",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "target_id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_narrative_temporal_projections_target ON narrative_temporal_projections(project_id, target_kind, target_id)"
     },
     "uq_scene_chunks_scene_index": {
       "table": "scene_chunks",

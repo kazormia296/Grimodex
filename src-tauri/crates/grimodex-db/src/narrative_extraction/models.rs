@@ -182,6 +182,12 @@ pub struct PrepareCommitPayload {
     /// Existing-only NarrativeEntityId → Codex entry bindings for CommitMap.
     #[serde(default)]
     pub entity_bindings: Vec<EntityBindingSeed>,
+    /// OCC for `project_calendar.version`, required whenever the plan carries
+    /// a Temporal Constraint Graph operation that resolves absolute literals
+    /// against the calendar. `None` skips the check for calendar-independent
+    /// plans (missing calendar rows read as version 0).
+    #[serde(default)]
+    pub expected_calendar_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -202,6 +208,8 @@ pub struct ApplyCommitPayload {
     pub expected_tail_ordinal: Option<String>,
     #[serde(default)]
     pub entity_bindings: Vec<EntityBindingSeed>,
+    #[serde(default)]
+    pub expected_calendar_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -2431,6 +2431,77 @@ impl Database {
             );",
         )?;
 
+        // Temporal Constraint Graph persistence (SCHEMA_VERSION 9): Nodes /
+        // Constraints / Projections. Mirrors src/db/schema.ts. Kind-specific
+        // shapes are polymorphic JSON blobs (subject_json / payload_json), not
+        // exploded into columns, matching the TS domain model in
+        // src/features/narrative-extraction/temporal/{nodes,constraints}.ts.
+        // The STN solver and Review UI are out of scope for this slice; these
+        // tables are pure domain persistence + atomic commit/undo.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_temporal_nodes (
+                id            TEXT PRIMARY KEY,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                timeline_kind TEXT NOT NULL DEFAULT 'primary'
+                                CHECK(timeline_kind IN ('primary','alternate','embedded-fiction','hypothetical')),
+                timeline_key  TEXT,
+                subject_kind  TEXT NOT NULL
+                                CHECK(subject_kind IN ('scene','event','state-boundary','phase-boundary','named-period')),
+                subject_json  TEXT NOT NULL,
+                semantic_key  TEXT NOT NULL,
+                shape         TEXT NOT NULL DEFAULT 'unknown'
+                                CHECK(shape IN ('point','interval','unknown')),
+                fingerprint   TEXT NOT NULL,
+                version       INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_temporal_nodes_semantic_key
+                ON narrative_temporal_nodes(project_id, semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_temporal_nodes_project
+                ON narrative_temporal_nodes(project_id);
+
+            CREATE TABLE IF NOT EXISTS narrative_temporal_constraints (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                kind              TEXT NOT NULL
+                                    CHECK(kind IN ('absolute-window','relative-offset','interval-relation','duration','symbolic')),
+                authority         TEXT NOT NULL
+                                    CHECK(authority IN ('user-metadata','user-confirmed','explicit-story-text','existing-domain-relation','deterministic-derived','model-inferred','projection-derived')),
+                strictness        TEXT NOT NULL CHECK(strictness IN ('hard','soft')),
+                semantic_key      TEXT NOT NULL,
+                source_ids_json   TEXT NOT NULL DEFAULT '[]',
+                fingerprint       TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                version           INTEGER NOT NULL DEFAULT 0,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_temporal_constraints_semantic_key
+                ON narrative_temporal_constraints(project_id, semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_temporal_constraints_project
+                ON narrative_temporal_constraints(project_id, kind);
+
+            CREATE TABLE IF NOT EXISTS narrative_temporal_projections (
+                id                      TEXT PRIMARY KEY,
+                project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                target_kind             TEXT NOT NULL CHECK(target_kind IN ('scene-time','event-time','scene-story-order')),
+                target_id               TEXT NOT NULL,
+                constraint_set_digest   TEXT NOT NULL,
+                solver_version          TEXT NOT NULL,
+                calendar_digest         TEXT,
+                projected_value_digest  TEXT NOT NULL,
+                target_result_version   INTEGER NOT NULL,
+                application_id          TEXT NOT NULL,
+                status                  TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','invalidated','undone')),
+                version                 INTEGER NOT NULL DEFAULT 0,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_temporal_projections_target
+                ON narrative_temporal_projections(project_id, target_kind, target_id);",
+        )?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
