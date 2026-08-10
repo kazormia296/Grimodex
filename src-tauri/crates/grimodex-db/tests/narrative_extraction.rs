@@ -2,8 +2,8 @@ use chrono::{Duration, Utc};
 use grimodex_db::narrative_extraction::{
     self, ensure_test_schema, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
-    FinishTaskPayload, GetCommitStatusPayload, PrepareCommitPayload, ProposalSeed, RunRefPayload,
-    SaveProposalSetPayload, UndoCommitPayload,
+    FinishTaskPayload, GetCommitStatusPayload, ListResumableRunsPayload, PrepareCommitPayload,
+    ProposalSeed, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -137,7 +137,7 @@ fn seed_approved_proposals(
     db: &Database,
     run_id: &str,
     proposal_set_id: &str,
-    titles: &[&str],
+    events: &[(&str, &str)],
 ) -> Vec<(String, String)> {
     narrative_extraction::narrative_extraction_create_run(
         db,
@@ -157,14 +157,19 @@ fn seed_approved_proposals(
     )
     .expect("create run");
 
-    let proposals: Vec<ProposalSeed> = titles
+    let proposals: Vec<ProposalSeed> = events
         .iter()
         .enumerate()
-        .map(|(index, title)| ProposalSeed {
-            proposal_id: Some(format!("prop-{index}")),
-            proposal_key: format!("key-{index}"),
+        .map(|(index, (event_id, title))| ProposalSeed {
+            proposal_id: Some(format!("{run_id}-prop-{index}")),
+            proposal_key: format!("{run_id}-key-{index}"),
             kind: "chronicle.event.create@1".to_string(),
-            payload_json: json!({ "title": title }),
+            payload_json: json!({
+                "eventId": event_id,
+                "title": title,
+                "note": null,
+                "disclosure": { "secret": false, "revealDocumentRef": "doc:scene-1" },
+            }),
         })
         .collect();
 
@@ -215,8 +220,8 @@ fn build_apply_payload(
         .map(|(proposal_id, revision_id, payload)| CommitOperation {
             kind: "chronicle.event.create".to_string(),
             payload: payload.clone(),
-            proposal_id: Some(proposal_id.clone()),
-            revision_id: Some(revision_id.clone()),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
         })
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
@@ -430,6 +435,136 @@ fn claim_task_reclaims_lease_across_utc_date_boundary() {
 }
 
 #[test]
+fn claim_task_with_single_kind_filter_binds_parameters() {
+    let db = test_db();
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some("run-kind-1".to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: "spec-kind-1".to_string(),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![
+                CreateTaskSeed {
+                    task_id: Some("task-snapshot".to_string()),
+                    task_kind: "snapshot".to_string(),
+                    input_json: Some(json!({ "stage": 1 })),
+                    priority: Some(3),
+                },
+                CreateTaskSeed {
+                    task_id: Some("task-observe".to_string()),
+                    task_kind: "observe".to_string(),
+                    input_json: Some(json!({ "stage": 2 })),
+                    priority: Some(2),
+                },
+            ],
+        },
+    )
+    .expect("create run");
+
+    let claim = narrative_extraction::narrative_extraction_claim_task(
+        &db,
+        ClaimTaskPayload {
+            run_id: "run-kind-1".to_string(),
+            project_id: "project-1".to_string(),
+            lease_owner: "worker-kind".to_string(),
+            lease_duration_secs: Some(120),
+            task_kinds: Some(vec!["snapshot".to_string()]),
+        },
+    )
+    .expect("claim snapshot by kind");
+    assert_eq!(claim["claimed"], true);
+    assert_eq!(claim["task"]["taskId"], "task-snapshot");
+    assert_eq!(claim["task"]["taskKind"], "snapshot");
+}
+
+#[test]
+fn claim_task_with_multi_kind_filter_and_miss_and_expired_lease() {
+    let db = test_db();
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some("run-kind-2".to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: "spec-kind-2".to_string(),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![
+                CreateTaskSeed {
+                    task_id: Some("task-snapshot-2".to_string()),
+                    task_kind: "snapshot".to_string(),
+                    input_json: Some(json!({ "stage": 1 })),
+                    priority: Some(3),
+                },
+                CreateTaskSeed {
+                    task_id: Some("task-observe-2".to_string()),
+                    task_kind: "observe".to_string(),
+                    input_json: Some(json!({ "stage": 2 })),
+                    priority: Some(2),
+                },
+            ],
+        },
+    )
+    .expect("create run");
+
+    let miss = narrative_extraction::narrative_extraction_claim_task(
+        &db,
+        ClaimTaskPayload {
+            run_id: "run-kind-2".to_string(),
+            project_id: "project-1".to_string(),
+            lease_owner: "worker-miss".to_string(),
+            lease_duration_secs: Some(120),
+            task_kinds: Some(vec!["synthesize".to_string()]),
+        },
+    )
+    .expect("kind miss must not error");
+    assert_eq!(miss["claimed"], false);
+
+    let first = narrative_extraction::narrative_extraction_claim_task(
+        &db,
+        ClaimTaskPayload {
+            run_id: "run-kind-2".to_string(),
+            project_id: "project-1".to_string(),
+            lease_owner: "worker-a".to_string(),
+            lease_duration_secs: Some(120),
+            task_kinds: Some(vec!["snapshot".to_string(), "observe".to_string()]),
+        },
+    )
+    .expect("multi-kind claim");
+    assert_eq!(first["claimed"], true);
+    assert_eq!(first["task"]["taskId"], "task-snapshot-2");
+
+    let past = rfc3339_millis(Utc::now() - Duration::minutes(5));
+    set_task_lease_expires_at(&db, "task-snapshot-2", &past);
+
+    let reclaim = narrative_extraction::narrative_extraction_claim_task(
+        &db,
+        ClaimTaskPayload {
+            run_id: "run-kind-2".to_string(),
+            project_id: "project-1".to_string(),
+            lease_owner: "worker-b".to_string(),
+            lease_duration_secs: Some(120),
+            task_kinds: Some(vec!["snapshot".to_string()]),
+        },
+    )
+    .expect("expired lease reclaim with kind");
+    assert_eq!(reclaim["claimed"], true);
+    assert_eq!(reclaim["task"]["taskId"], "task-snapshot-2");
+    assert_eq!(reclaim["task"]["attemptNumber"], 2);
+}
+
+#[test]
 fn finish_task_rejects_after_lease_expiry() {
     let db = test_db();
     create_run_with_task(&db, "run-lease-finish", "task-lease-finish");
@@ -514,7 +649,7 @@ fn cancel_run_marks_active_tasks_cancelled() {
 fn apply_commit_creates_three_events_atomically() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 3);
-    let pairs = seed_approved_proposals(&db, "run-commit-1", "set-1", &["A", "B", "C"]);
+    let pairs = seed_approved_proposals(&db, "run-commit-1", "set-1", &[("event-a", "A"), ("event-b", "B"), ("event-c", "C")]);
 
     let ops = vec![
         (
@@ -594,7 +729,7 @@ fn apply_commit_creates_three_events_atomically() {
 fn apply_commit_rolls_back_all_on_failure() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 1);
-    let pairs = seed_approved_proposals(&db, "run-commit-2", "set-2", &["A", "B"]);
+    let pairs = seed_approved_proposals(&db, "run-commit-2", "set-2", &[("event-ok", "A"), ("event-bad", "B")]);
 
     // Second op expects wrong scene version → whole commit fails.
     let ops = vec![
@@ -652,7 +787,7 @@ fn apply_commit_rolls_back_all_on_failure() {
 fn apply_commit_is_idempotent_for_same_request_and_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-3", "set-3", &["Only"]);
+    let pairs = seed_approved_proposals(&db, "run-commit-3", "set-3", &[("event-only", "Only")]);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
@@ -679,7 +814,7 @@ fn apply_commit_is_idempotent_for_same_request_and_digest() {
 fn apply_commit_rejects_same_request_with_different_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-4", "set-4", &["Only"]);
+    let pairs = seed_approved_proposals(&db, "run-commit-4", "set-4", &[("event-only-2", "Only")]);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
@@ -699,7 +834,7 @@ fn apply_commit_rejects_same_request_with_different_digest() {
 fn undo_commit_removes_all_events_and_refuses_edited() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &["A", "B"]);
+    let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &[("event-u1", "A"), ("event-u2", "B")]);
     let ops = vec![
         (
             pairs[0].0.clone(),
@@ -783,7 +918,7 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
 fn undo_redo_cycles_without_event_edited_false_positive() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &["A", "B"]);
+    let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &[("event-cycle-1", "A"), ("event-cycle-2", "B")]);
     let ops = vec![
         (
             pairs[0].0.clone(),
@@ -1106,4 +1241,197 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
             .contains("narrative extraction run project mismatch"),
         "unexpected error: {mismatch}"
     );
+}
+
+#[test]
+fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let pairs = seed_approved_proposals(&db, "run-failopen", "set-failopen", &[("event-x", "X")]);
+
+    let mut payload = build_apply_payload(
+        "req-failopen-1",
+        "digest-failopen-1",
+        "set-failopen",
+        "run-failopen",
+        vec![(
+            pairs[0].0.clone(),
+            pairs[0].1.clone(),
+            event_create_payload("event-x", "X", "scene-1", 0),
+        )],
+    );
+    payload.applications.clear();
+    let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
+        .expect_err("empty applications must fail closed");
+    assert!(
+        err.to_string()
+            .contains("NEX_COMMIT_APPLICATIONS_MISMATCH"),
+        "unexpected error: {err}"
+    );
+
+    // Unapproved proposal must not apply even with matching applications.
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some("run-unapproved".to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: "spec-unapproved".to_string(),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create");
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-unapproved".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-unapproved".to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("prop-unapproved".to_string()),
+                proposal_key: "key-unapproved".to_string(),
+                kind: "chronicle.event.create@1".to_string(),
+                payload_json: json!({
+                    "eventId": "event-unapproved",
+                    "title": "Nope",
+                    "note": null,
+                    "disclosure": { "secret": false }
+                }),
+            }],
+        },
+    )
+    .expect("save");
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let payload = build_apply_payload(
+        "req-unapproved",
+        "digest-unapproved",
+        "set-unapproved",
+        "run-unapproved",
+        vec![(
+            "prop-unapproved".to_string(),
+            revision_id,
+            event_create_payload("event-unapproved", "Nope", "scene-1", 0),
+        )],
+    );
+    let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
+        .expect_err("unapproved must fail");
+    assert!(
+        err.to_string().contains("NEX_PROPOSAL_NOT_APPROVED"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn apply_commit_rejects_revision_payload_mismatch() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let pairs =
+        seed_approved_proposals(&db, "run-rev-mismatch", "set-rev-mismatch", &[("event-m", "M")]);
+    let ops = vec![(
+        pairs[0].0.clone(),
+        pairs[0].1.clone(),
+        // Title diverges from approved revision.
+        event_create_payload("event-m", "Different", "scene-1", 0),
+    )];
+    let payload = build_apply_payload(
+        "req-rev-mismatch",
+        "digest-rev-mismatch",
+        "set-rev-mismatch",
+        "run-rev-mismatch",
+        ops,
+    );
+    let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
+        .expect_err("title mismatch must fail");
+    assert!(
+        err.to_string()
+            .contains("NEX_REVISION_PAYLOAD_MISMATCH"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn list_resumable_runs_excludes_applied_completed_runs() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+
+    // In-progress run is always resumable.
+    create_run_with_task(&db, "run-resumable-pending", "task-resumable-pending");
+    db.execute(
+        "UPDATE narrative_extraction_runs SET status = 'running' WHERE id = ?",
+        &[Value::String("run-resumable-pending".to_string())],
+        "run",
+    )
+    .expect("mark running");
+
+    // Completed + approved but unapplied → resumable.
+    let pairs = seed_approved_proposals(
+        &db,
+        "run-resumable-review",
+        "set-resumable-review",
+        &[("event-r", "R")],
+    );
+    db.execute(
+        "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+        &[Value::String("run-resumable-review".to_string())],
+        "run",
+    )
+    .expect("mark completed");
+
+    // Completed + applied → not resumable.
+    let applied_pairs = seed_approved_proposals(
+        &db,
+        "run-applied",
+        "set-applied",
+        &[("event-applied", "Applied")],
+    );
+    let payload = build_apply_payload(
+        "req-applied",
+        "digest-applied",
+        "set-applied",
+        "run-applied",
+        vec![(
+            applied_pairs[0].0.clone(),
+            applied_pairs[0].1.clone(),
+            event_create_payload("event-applied", "Applied", "scene-1", 0),
+        )],
+    );
+    narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("apply");
+    db.execute(
+        "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+        &[Value::String("run-applied".to_string())],
+        "run",
+    )
+    .expect("mark applied completed");
+
+    let listed = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("list");
+    let ids: Vec<&str> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["runId"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"run-resumable-pending"));
+    assert!(ids.contains(&"run-resumable-review"));
+    assert!(!ids.contains(&"run-applied"));
+    // pairs used to keep approved revision alive for review run
+    assert!(!pairs.is_empty());
 }

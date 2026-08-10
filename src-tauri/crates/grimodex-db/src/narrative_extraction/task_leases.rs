@@ -34,7 +34,9 @@ pub(crate) fn claim_next_task(
     let heartbeat_at = now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
     let candidate = if let Some(kinds) = payload.task_kinds.as_ref().filter(|k| !k.is_empty()) {
-        let placeholders = (1..=kinds.len())
+        // run_id is ?1; kind filters must start at ?2 so rusqlite parameter
+        // indices match [runId, kind1, kind2, ...].
+        let placeholders = (2..=kinds.len() + 1)
             .map(|index| format!("?{index}"))
             .collect::<Vec<_>>()
             .join(", ");

@@ -39,6 +39,7 @@ import {
   type ChronicleExtractionReviewProjection,
   type ChronicleReviewEvidenceQuote,
   type ChronicleReviewProposal,
+  type ProbableDuplicateChoice,
   type StartChronicleExtractionRequest,
 } from "./chronicleExtractionStore";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
@@ -155,6 +156,7 @@ function buildReviewProposalFromPlanned(args: {
   readonly anchorsById: Map<string, ResolvedEvidenceAnchor>;
   readonly snapshot: NarrativeCorpusSnapshot | null;
   readonly titleBySceneId: ReadonlyMap<string, string>;
+  readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
 }): ChronicleReviewProposal {
   const evidence = evidenceQuotesForProposal(
     args.payload,
@@ -182,7 +184,7 @@ function buildReviewProposalFromPlanned(args: {
     match: args.planned.match,
     evidence,
     safety,
-    probableDuplicateChoice: null,
+    probableDuplicateChoice: args.probableDuplicateChoice ?? null,
     blockedReason: fragmented
       ? "断片 Evidence のため適用不可（確認のみ）"
       : undefined,
@@ -195,7 +197,18 @@ type SavedReviewSeed = {
   readonly revisionId: string;
   readonly status?: NarrativeProposalStatus;
   readonly payload?: CreateChronicleEventProposalPayloadV1;
+  readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
 };
+
+function probableDuplicateChoiceFromDecisionJson(
+  decisionJson: Readonly<Record<string, unknown>> | null | undefined,
+): ProbableDuplicateChoice | null {
+  const raw = decisionJson?.probableDuplicateChoice;
+  if (raw === "create-as-new" || raw === "skip-as-same" || raw === "hold") {
+    return raw;
+  }
+  return null;
+}
 
 function savedSeedsFromBundle(
   proposals: readonly ReviewBundleProposal[],
@@ -212,6 +225,9 @@ function savedSeedsFromBundle(
         revisionId: proposal.currentRevisionId,
         status: proposal.status,
         payload,
+        probableDuplicateChoice: probableDuplicateChoiceFromDecisionJson(
+          proposal.latestDecision?.decisionJson,
+        ),
       },
     ];
   });
@@ -278,6 +294,7 @@ export function buildChronicleExtractionReviewProjection(args: {
         anchorsById,
         snapshot: args.snapshot ?? null,
         titleBySceneId,
+        probableDuplicateChoice: seed.probableDuplicateChoice ?? null,
       });
     },
   );
@@ -730,6 +747,7 @@ export async function recordChronicleProposalDecision(args: {
   readonly proposalId: string;
   readonly revisionId: string;
   readonly decision: "approved" | "rejected" | "deferred" | "held";
+  readonly decisionJson?: Readonly<Record<string, unknown>>;
 }): Promise<void> {
   await appendDecision({
     runId: args.runId,
@@ -737,6 +755,7 @@ export async function recordChronicleProposalDecision(args: {
     proposalId: args.proposalId,
     revisionId: args.revisionId,
     decision: args.decision,
+    decisionJson: args.decisionJson,
     createdBy: "chronicle-extract-dialog",
   });
 }
@@ -769,6 +788,7 @@ export async function recordChronicleProposalRevision(args: {
 export async function decideChronicleProposal(args: {
   readonly proposalId: string;
   readonly status: NarrativeProposalStatus;
+  readonly decisionJson?: Readonly<Record<string, unknown>>;
 }): Promise<void> {
   const projection = useChronicleExtractionStore.getState().projection;
   if (!projection) {
@@ -800,10 +820,35 @@ export async function decideChronicleProposal(args: {
     proposalId: args.proposalId,
     revisionId: proposal.revisionId,
     decision,
+    decisionJson: args.decisionJson,
   });
   useChronicleExtractionStore
     .getState()
     .updateProposalStatus(args.proposalId, args.status);
+}
+
+/**
+ * Persist probable-duplicate resolution (including create-as-new) via Native
+ * Decision ledger, then mirror into the review store.
+ */
+export async function decideChronicleProbableDuplicate(args: {
+  readonly proposalId: string;
+  readonly choice: ProbableDuplicateChoice;
+}): Promise<void> {
+  const status =
+    args.choice === "hold"
+      ? ("held" as const)
+      : args.choice === "skip-as-same"
+        ? ("rejected" as const)
+        : ("approved" as const);
+  await decideChronicleProposal({
+    proposalId: args.proposalId,
+    status,
+    decisionJson: { probableDuplicateChoice: args.choice },
+  });
+  useChronicleExtractionStore
+    .getState()
+    .setProbableDuplicateChoice(args.proposalId, args.choice);
 }
 
 /**

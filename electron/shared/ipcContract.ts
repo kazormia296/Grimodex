@@ -664,6 +664,7 @@ export interface NapiBackendLike {
   agentEventRelationRemove(payload: unknown): Promise<string>;
   narrativeExtractionCreateRun(payload: unknown): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
+  narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
   narrativeExtractionCancelRun(payload: unknown): Promise<string>;
   narrativeExtractionClaimTask(payload: unknown): Promise<string>;
   narrativeExtractionFinishTask(payload: unknown): Promise<string>;
@@ -4992,6 +4993,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  narrative_extraction_list_resumable_runs: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionListResumableRuns(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_list_resumable_runs",
+          ),
+        ),
+      ),
+  },
   narrative_extraction_cancel_run: {
     run: async (b, a) =>
       parseWire(
@@ -5028,7 +5041,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.narrativeExtractionSaveProposalSet(
-          requirePresent(a, "payload", "narrative_extraction_save_proposal_set"),
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_save_proposal_set",
+          ),
         ),
       ),
   },
@@ -5080,7 +5097,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.narrativeExtractionGetCommitStatus(
-          requirePresent(a, "payload", "narrative_extraction_get_commit_status"),
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_get_commit_status",
+          ),
         ),
       ),
   },

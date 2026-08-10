@@ -450,6 +450,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionGetRun",
       Promise.resolve('{"run":{"runId":"r1"},"tasks":[],"taskCounts":{}}'),
     ) as never,
+    narrativeExtractionListResumableRuns: record(
+      "narrativeExtractionListResumableRuns",
+      Promise.resolve(
+        '[{"runId":"r1","projectId":"p1","surfacePathId":"chronicle.extract","status":"completed","snapshotDigest":null,"createdAt":"2026-01-01T00:00:00.000Z","startedAt":null,"completedAt":null}]',
+      ),
+    ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
       Promise.resolve('{"runId":"r1","status":"cancelled"}'),
@@ -2997,6 +3003,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_get_commit_status",
       "narrative_extraction_get_run",
       "narrative_extraction_get_run_review_bundle",
+      "narrative_extraction_list_resumable_runs",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",
       "narrative_extraction_save_proposal_set",

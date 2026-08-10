@@ -183,33 +183,6 @@ pub fn narrative_extraction_apply_commit(
                 )?;
             }
 
-            // Also bind proposal/revision from operations when applications omitted.
-            if payload.applications.is_empty() {
-                for (index, op) in payload.operations.iter().enumerate() {
-                    if let (Some(proposal_id), Some(revision_id)) =
-                        (op.proposal_id.as_ref(), op.revision_id.as_ref())
-                    {
-                        let entity_id = created[index]["entityId"]
-                            .as_str()
-                            .expect("entity id");
-                        conn.execute(
-                            "INSERT INTO narrative_proposal_applications
-                                (id, commit_id, proposal_id, revision_id,
-                                 applied_entity_kind, applied_entity_id, created_at)
-                             VALUES (?1, ?2, ?3, ?4, 'event', ?5, ?6)",
-                            params![
-                                Uuid::new_v4().to_string(),
-                                commit_id,
-                                proposal_id,
-                                revision_id,
-                                entity_id,
-                                now,
-                            ],
-                        )?;
-                    }
-                }
-            }
-
             let after_json = json!({
                 "entities": after_snapshots,
             });
@@ -474,51 +447,39 @@ fn validate_commit_plan(
 
     ensure_order_neighbor(conn, project_id, expected_tail_ordinal)?;
 
-    for op in operations {
-        ensure_operation_kind(&op.kind)?;
-        let payload = parse_event_create_payload(&op.payload)?;
+    anyhow::ensure!(
+        applications.len() == operations.len(),
+        "NEX_COMMIT_APPLICATIONS_MISMATCH: applications length {} != operations length {}",
+        applications.len(),
+        operations.len()
+    );
+
+    for (index, (operation, application)) in
+        operations.iter().zip(applications.iter()).enumerate()
+    {
+        ensure_operation_kind(&operation.kind)?;
+        let payload = parse_event_create_payload(&operation.payload)?;
         ensure_event_id_available(conn, project_id, &payload.event_id)?;
         ensure_scene_versions(conn, project_id, &payload.evidence_scene_links)?;
 
-        if let Some(proposal_id) = op.proposal_id.as_deref() {
-            ensure_proposal_approved(conn, proposal_set_id, proposal_id, op.revision_id.as_deref())?;
-            ensure_proposal_not_applied(conn, proposal_id)?;
-        }
-    }
-
-    if !applications.is_empty() {
         anyhow::ensure!(
-            applications.len() == operations.len(),
-            "NEX_COMMIT_APPLICATIONS_MISMATCH: applications length {} != operations length {}",
-            applications.len(),
-            operations.len()
+            operation.proposal_id == application.proposal_id
+                && operation.revision_id == application.revision_id,
+            "NEX_COMMIT_APPLICATIONS_MISMATCH: index {index} proposal/revision diverge"
         );
-        for (index, (operation, application)) in
-            operations.iter().zip(applications.iter()).enumerate()
-        {
-            let op_proposal = operation.proposal_id.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_COMMIT_APPLICATIONS_MISMATCH: operation[{index}] missing proposalId"
-                )
-            })?;
-            let op_revision = operation.revision_id.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_COMMIT_APPLICATIONS_MISMATCH: operation[{index}] missing revisionId"
-                )
-            })?;
-            anyhow::ensure!(
-                op_proposal == application.proposal_id.as_str()
-                    && op_revision == application.revision_id.as_str(),
-                "NEX_COMMIT_APPLICATIONS_MISMATCH: index {index} proposal/revision diverge"
-            );
-            ensure_proposal_approved(
-                conn,
-                proposal_set_id,
-                &application.proposal_id,
-                Some(&application.revision_id),
-            )?;
-            ensure_proposal_not_applied(conn, &application.proposal_id)?;
-        }
+        ensure_proposal_approved(
+            conn,
+            proposal_set_id,
+            &application.proposal_id,
+            &application.revision_id,
+        )?;
+        ensure_proposal_not_applied(conn, &application.proposal_id)?;
+        ensure_operation_matches_revision(
+            conn,
+            &application.proposal_id,
+            &application.revision_id,
+            operation,
+        )?;
     }
 
     Ok(())
@@ -528,7 +489,7 @@ fn ensure_proposal_approved(
     conn: &Connection,
     proposal_set_id: &str,
     proposal_id: &str,
-    revision_id: Option<&str>,
+    revision_id: &str,
 ) -> anyhow::Result<()> {
     let row: Option<(String, Option<String>)> = conn
         .query_row(
@@ -546,12 +507,74 @@ fn ensure_proposal_approved(
         status == "approved",
         "NEX_PROPOSAL_NOT_APPROVED: proposal '{proposal_id}' status is '{status}'"
     );
-    if let Some(revision_id) = revision_id {
-        anyhow::ensure!(
-            current_revision_id.as_deref() == Some(revision_id),
-            "NEX_PROPOSAL_REVISION_MISMATCH: proposal '{proposal_id}'"
-        );
-    }
+    anyhow::ensure!(
+        current_revision_id.as_deref() == Some(revision_id),
+        "NEX_PROPOSAL_REVISION_MISMATCH: proposal '{proposal_id}'"
+    );
+    Ok(())
+}
+
+/// Bind Apply Operation fields that compile must preserve from the approved
+/// Revision payload. Evidence / scene mapping is derived at Apply time and is
+/// not re-checked here.
+fn ensure_operation_matches_revision(
+    conn: &Connection,
+    proposal_id: &str,
+    revision_id: &str,
+    operation: &CommitOperation,
+) -> anyhow::Result<()> {
+    let revision_payload_raw: String = conn.query_row(
+        "SELECT payload_json
+           FROM narrative_proposal_revisions
+          WHERE id = ?1 AND proposal_id = ?2",
+        params![revision_id, proposal_id],
+        |row| row.get(0),
+    )?;
+    let revision: Value = serde_json::from_str(&revision_payload_raw)?;
+    let op = &operation.payload;
+
+    let revision_event_id = revision
+        .get("eventId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_REVISION_PAYLOAD_MISMATCH: revision missing eventId")
+        })?;
+    let op_event_id = op.get("eventId").and_then(Value::as_str);
+    anyhow::ensure!(
+        op_event_id == Some(revision_event_id),
+        "NEX_REVISION_PAYLOAD_MISMATCH: eventId diverges for proposal '{proposal_id}'"
+    );
+
+    let revision_title = revision
+        .get("title")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_REVISION_PAYLOAD_MISMATCH: revision missing title")
+        })?;
+    let op_title = op.get("title").and_then(Value::as_str);
+    anyhow::ensure!(
+        op_title == Some(revision_title),
+        "NEX_REVISION_PAYLOAD_MISMATCH: title diverges for proposal '{proposal_id}'"
+    );
+
+    let revision_note = revision.get("note").cloned().unwrap_or(Value::Null);
+    let op_note = op.get("note").cloned().unwrap_or(Value::Null);
+    anyhow::ensure!(
+        revision_note == op_note,
+        "NEX_REVISION_PAYLOAD_MISMATCH: note diverges for proposal '{proposal_id}'"
+    );
+
+    let revision_secret = revision
+        .pointer("/disclosure/secret")
+        .and_then(Value::as_bool)
+        .or_else(|| revision.get("secret").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let op_secret = op.get("secret").and_then(Value::as_bool).unwrap_or(false);
+    anyhow::ensure!(
+        revision_secret == op_secret,
+        "NEX_REVISION_PAYLOAD_MISMATCH: secret diverges for proposal '{proposal_id}'"
+    );
+
     Ok(())
 }
 

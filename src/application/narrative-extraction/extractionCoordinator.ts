@@ -44,7 +44,7 @@ import {
   buildProjectNarrativeSnapshot,
   type ProjectSnapshotAdapterServices,
 } from "./projectSnapshotAdapter";
-import { createRun } from "./runRepository";
+import { cancelRun, createRun } from "./runRepository";
 import { runObservationExtractionTask } from "./aiTasks/runObservationExtractionTask";
 import { runEventSynthesisTask } from "./aiTasks/runEventSynthesisTask";
 
@@ -819,13 +819,28 @@ export async function runChronicleExtractionCoordinator(
   let savedProposals: readonly SavedProposalSeed[] = [];
 
   for (const taskKind of CHRONICLE_EXTRACT_DAG) {
-    const claim = await narrativeExtractionClaimTask({
-      runId,
-      projectId: request.projectId,
-      leaseOwner,
-      taskKinds: [taskKind],
-    });
+    let claim;
+    try {
+      claim = await narrativeExtractionClaimTask({
+        runId,
+        projectId: request.projectId,
+        leaseOwner,
+        taskKinds: [taskKind],
+      });
+    } catch (error) {
+      try {
+        await cancelRun(runId, request.projectId);
+      } catch {
+        // Prefer original claim failure; cancel is best-effort.
+      }
+      throw error;
+    }
     if (!claim.claimed || !claim.task) {
+      try {
+        await cancelRun(runId, request.projectId);
+      } catch {
+        // Prefer original claim failure; cancel is best-effort.
+      }
       throw new Error(`Failed to claim task ${taskKind}`);
     }
 
