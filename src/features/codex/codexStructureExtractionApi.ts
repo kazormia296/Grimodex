@@ -184,9 +184,6 @@ interface CodexStructureReviewArtifactPayload {
       { readonly subjectLabel: string; readonly objectLabel: string }
     >
   >;
-  /** Legacy full-snapshot rows (pre-envelope); ignored when Native envelopes exist. */
-  readonly entities?: readonly unknown[];
-  readonly relations?: readonly unknown[];
 }
 
 export interface CodexStructureExtractionHeuristicSeed {
@@ -1877,7 +1874,7 @@ function rebuildEntityFromNative(args: {
     bindingKind: proposal.payload.binding.kind,
     typeStatus: proposal.payload.typeResolution.status,
     evidenceMethods: evidence.map((row) => row.method),
-    hasExistingCandidates: proposal.payload.binding.kind === "unresolved",
+    hasExistingCandidates: proposal.payload.binding.kind !== "create-new",
     hasProperNameMention: true,
     aliasesAllExplicit: proposal.payload.aliases.every(
       (alias) => alias.status === "explicit",
@@ -2121,21 +2118,60 @@ export async function getCodexStructureExtractionReview(
     ]),
   );
 
+  const rebuiltRelations = relationNatives.flatMap((native) => {
+    const row = rebuildRelationFromNative({
+      native,
+      evidence: artifact.evidenceByProposalId.get(native.proposalId) ?? [],
+      labels: artifact.relationLabelsByProposalId.get(native.proposalId),
+      dependencies: depsByRelationId.get(native.proposalId) ?? [],
+      entityTitles,
+    });
+    return row ? [row] : [];
+  });
+  if (rebuiltRelations.length === 0 && relationNatives.length > 0) {
+    throw new Error(
+      `Codex structure extraction run ${runId} missing review payloads for relations`,
+    );
+  }
+
+  // Native "already-satisfied" decisions are terminal and authoritative — a
+  // rematch that cannot re-derive the semantic match (e.g. entity bindings
+  // still pending approval) must not silently flip the row back to
+  // blocked/applicable.
+  const nativeAlreadySatisfiedRefById = new Map<string, string | undefined>();
+  for (const native of relationNatives) {
+    const satisfied = decisionAlreadySatisfied(native);
+    if (satisfied) {
+      nativeAlreadySatisfiedRefById.set(
+        native.proposalId,
+        satisfied.existingRelationRef,
+      );
+    }
+  }
+
   const relationProposals = rematchCodexRelationProposals({
     entities: proposals,
-    relations: relationNatives.flatMap((native) => {
-      const row = rebuildRelationFromNative({
-        native,
-        evidence: artifact.evidenceByProposalId.get(native.proposalId) ?? [],
-        labels: artifact.relationLabelsByProposalId.get(native.proposalId),
-        dependencies: depsByRelationId.get(native.proposalId) ?? [],
-        entityTitles,
-      });
-      return row ? [row] : [];
-    }),
+    relations: rebuiltRelations,
     projectId: scope.projectId,
     existingRelations,
     catalog,
+  }).map((relation) => {
+    if (
+      relation.applicability === "already-satisfied" ||
+      !nativeAlreadySatisfiedRefById.has(relation.proposalId)
+    ) {
+      return relation;
+    }
+    return {
+      ...relation,
+      applicability: "already-satisfied" as const,
+      existingRelationRef: nativeAlreadySatisfiedRefById.get(
+        relation.proposalId,
+      ),
+      blockedReason: "既に同じ関係が登録されています（適用不要）",
+      status: "unreviewed" as const,
+      compiledOperation: null,
+    };
   });
 
   const counts = recountProjection(proposals, relationProposals);
