@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { CodexExtractionEvidencePane } from "./CodexExtractionEvidencePane";
 import { CodexEntityProposalCard } from "./CodexEntityProposalCard";
 import { CodexEntityResolutionPicker } from "./CodexEntityResolutionPicker";
@@ -134,9 +135,24 @@ export function CodexEntityProposalReview({
               disabled={safeCount === 0 || bulkApproving}
               onClick={() => {
                 setBulkApproving(true);
-                void bulkApproveSafeCodexStructureProposals().finally(() => {
-                  setBulkApproving(false);
-                });
+                void bulkApproveSafeCodexStructureProposals()
+                  .then((result) => {
+                    if (result.failed.length > 0) {
+                      toast.error(
+                        `${result.failed.length}件の提案を承認できませんでした`,
+                      );
+                    }
+                  })
+                  .catch((error) => {
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "まとめて承認に失敗しました",
+                    );
+                  })
+                  .finally(() => {
+                    setBulkApproving(false);
+                  });
               }}
               data-testid="codex-bulk-approve-safe"
             >

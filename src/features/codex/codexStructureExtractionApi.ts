@@ -22,6 +22,7 @@ import { buildProjectNarrativeSnapshot } from "@/application/narrative-extractio
 import {
   appendDecision,
   appendRevision,
+  reviseAndDecide,
   saveProposalSet,
 } from "@/application/narrative-extraction/proposalRepository";
 import {
@@ -78,8 +79,13 @@ import {
 } from "./codexStructureExtractionStore";
 import {
   BUILTIN_CODEX_RELATION_VOCABULARY,
+  buildCodexRelationSemanticKey,
   normalizeRelationLabel,
 } from "./extraction/relationVocabulary";
+import {
+  matchExistingCodexRelation,
+  type ExistingRelationCatalogRecord,
+} from "./extraction/existingRelationMatcher";
 
 const CODEX_STRUCTURE_LEASE_OWNER = "codex-structure-extract";
 const CODEX_STRUCTURE_TASK_KIND = "codex.entity.resolve";
@@ -194,7 +200,7 @@ export interface CodexStructureExtractionRelationSeed {
 const MAX_DERIVED_RELATION_SEEDS = 20;
 const MAX_RELATION_QUOTE_CHARS = 240;
 const RELATION_ASSERTING_COPULA =
-  /^(?:だ|である|だった|です|でした|であります)/u;
+  /^(?:だ|である|であり|だった|です|でした|であります)/u;
 
 type CoMentionEntity = {
   readonly surface: string;
@@ -244,6 +250,56 @@ function resolveDirectedEndpoints(
 }
 
 /**
+ * Resolve symmetric pair from conservative Japanese asserting patterns.
+ * Rejects case-particle / object uses: 「敵を倒した」「家族を守った」「友人を助けた」.
+ */
+function resolveSymmetricEndpoints(
+  quote: string,
+  left: CoMentionEntity,
+  right: CoMentionEntity,
+  label: string,
+): { subject: CoMentionEntity; object: CoMentionEntity } | null {
+  const tryPair = (
+    a: CoMentionEntity,
+    b: CoMentionEntity,
+  ): { subject: CoMentionEntity; object: CoMentionEntity } | null => {
+    // 「AとBは友人だ」 / 「AとBは友人である」 / 「AとBは恋人だった」
+    const both = `${a.surface}と${b.surface}は${label}`;
+    const bothIndex = quote.indexOf(both);
+    if (bothIndex >= 0) {
+      const after = quote.slice(bothIndex + both.length);
+      if (
+        RELATION_ASSERTING_COPULA.test(after) ||
+        after.length === 0 ||
+        /^[。．!！?？]/u.test(after)
+      ) {
+        return a.narrativeEntityId <= b.narrativeEntityId
+          ? { subject: a, object: b }
+          : { subject: b, object: a };
+      }
+    }
+    // 「AはBの友人だ」
+    const of = `${a.surface}は${b.surface}の${label}`;
+    const ofIndex = quote.indexOf(of);
+    if (ofIndex >= 0) {
+      const after = quote.slice(ofIndex + of.length);
+      if (
+        RELATION_ASSERTING_COPULA.test(after) ||
+        after.length === 0 ||
+        /^[。．!！?？]/u.test(after)
+      ) {
+        return a.narrativeEntityId <= b.narrativeEntityId
+          ? { subject: a, object: b }
+          : { subject: b, object: a };
+      }
+    }
+    return null;
+  };
+
+  return tryPair(left, right) ?? tryPair(right, left);
+}
+
+/**
  * Relation co-mention window from a prepass occurrence.
  * Entity Evidence quotes stay surface-only; Relation seeding needs the
  * surrounding sentence/context so subject+object+label can co-occur.
@@ -255,17 +311,47 @@ export function buildRelationCoMentionQuote(occurrence: {
   return `${occurrence.context.prefix}${occurrence.quote}${occurrence.context.suffix}`;
 }
 
+/** Document-global UTF-16 range covering prefix + surface + suffix. */
+export function buildRelationCoMentionRange(occurrence: {
+  readonly canonicalRange: CanonicalRange;
+  readonly context: { readonly prefix: string; readonly suffix: string };
+}): CanonicalRange {
+  return {
+    start: Math.max(
+      0,
+      occurrence.canonicalRange.start - occurrence.context.prefix.length,
+    ),
+    end: occurrence.canonicalRange.end + occurrence.context.suffix.length,
+  };
+}
+
 /** Build Relation-only Evidence rows from Native prepass occurrences. */
 export function buildRelationEvidenceFromOccurrences(
   occurrences: readonly EntityCandidateOccurrence[],
+  documentTexts?: ReadonlyMap<string, string>,
 ): CodexReviewEvidenceQuote[] {
-  return occurrences.map((occurrence) => ({
-    anchorId: occurrence.evidence.id,
-    quote: buildRelationCoMentionQuote(occurrence),
-    documentRef: occurrence.documentRef,
-    method: "exact-with-context" as const,
-    blocked: false,
-  }));
+  return occurrences.map((occurrence) => {
+    const range = buildRelationCoMentionRange(occurrence);
+    const documentText = documentTexts?.get(occurrence.documentRef);
+    const quote =
+      documentText &&
+      range.end <= documentText.length &&
+      range.start < range.end
+        ? documentText.slice(range.start, range.end)
+        : buildRelationCoMentionQuote(occurrence);
+    return {
+      anchorId: occurrence.evidence.id,
+      quote,
+      documentRef: occurrence.documentRef,
+      method: "exact-with-context" as const,
+      blocked: false,
+      canonicalRange: range,
+    };
+  });
+}
+
+function rangesOverlap(left: CanonicalRange, right: CanonicalRange): boolean {
+  return left.start < right.end && right.start < left.end;
 }
 
 /** Minimal span that still contains every required surface (capped). */
@@ -296,8 +382,8 @@ function quoteSpanCovering(
 
 /**
  * Conservative co-mention relation seeds: both entity surfaces and a builtin
- * vocabulary label must appear in the *same* Evidence quote. Document-bag joins
- * across separate anchors are intentionally rejected.
+ * vocabulary label must appear in the *same* Evidence window. Windows merge by
+ * overlapping canonical ranges (or identical quote text as a fallback).
  */
 export function deriveRelationSeedsFromCoMentions(input: {
   readonly proposals: readonly {
@@ -308,46 +394,106 @@ export function deriveRelationSeedsFromCoMentions(input: {
   }[];
   readonly vocabulary?: typeof BUILTIN_CODEX_RELATION_VOCABULARY;
   readonly maxSeeds?: number;
+  /** Optional document texts for rebuilding quotes from merged ranges. */
+  readonly documentTexts?: ReadonlyMap<string, string>;
 }): CodexStructureExtractionRelationSeed[] {
   const vocabulary = input.vocabulary ?? BUILTIN_CODEX_RELATION_VOCABULARY;
   const maxSeeds = input.maxSeeds ?? MAX_DERIVED_RELATION_SEEDS;
+  const documentTexts = input.documentTexts;
 
-  type AnchorWindow = {
+  type Mention = {
     readonly documentRef: string;
     readonly anchorId: string;
     readonly quote: string;
-    readonly entities: CoMentionEntity[];
+    readonly range: CanonicalRange | null;
+    readonly entity: CoMentionEntity;
   };
 
-  const windowsByKey = new Map<string, AnchorWindow>();
+  type AnchorWindow = {
+    documentRef: string;
+    anchorId: string;
+    quote: string;
+    range: CanonicalRange | null;
+    entities: CoMentionEntity[];
+  };
 
+  const mentions: Mention[] = [];
   for (const proposal of input.proposals) {
     for (const row of proposal.evidence) {
       if (!row.documentRef || row.blocked || !row.quote) continue;
       if (!row.quote.includes(proposal.displayTitle)) continue;
-      // Same document quote text is one span even when prepass assigned distinct
-      // anchor ids to each entity mention inside that quote.
-      const key = `${row.documentRef}\0${row.quote}`;
-      let window = windowsByKey.get(key);
-      if (!window) {
-        window = {
-          documentRef: row.documentRef,
-          anchorId: row.anchorId,
-          quote: row.quote,
-          entities: [],
-        };
-        windowsByKey.set(key, window);
-      }
-      if (
-        !window.entities.some(
-          (entity) => entity.narrativeEntityId === proposal.narrativeEntityId,
-        )
-      ) {
-        window.entities.push({
+      mentions.push({
+        documentRef: row.documentRef,
+        anchorId: row.anchorId,
+        quote: row.quote,
+        range: row.canonicalRange ?? null,
+        entity: {
           surface: proposal.displayTitle,
           narrativeEntityId: proposal.narrativeEntityId,
           proposalId: proposal.proposalId,
-        });
+        },
+      });
+    }
+  }
+
+  const windows: AnchorWindow[] = [];
+  for (const mention of mentions) {
+    let mergedInto: AnchorWindow | null = null;
+    for (const window of windows) {
+      if (window.documentRef !== mention.documentRef) continue;
+      const canMergeByRange =
+        window.range !== null &&
+        mention.range !== null &&
+        rangesOverlap(window.range, mention.range);
+      const canMergeByQuote =
+        window.range === null &&
+        mention.range === null &&
+        window.quote === mention.quote;
+      if (!canMergeByRange && !canMergeByQuote) continue;
+      mergedInto = window;
+      break;
+    }
+
+    if (!mergedInto) {
+      windows.push({
+        documentRef: mention.documentRef,
+        anchorId: mention.anchorId,
+        quote: mention.quote,
+        range: mention.range,
+        entities: [mention.entity],
+      });
+      continue;
+    }
+
+    if (
+      !mergedInto.entities.some(
+        (entity) =>
+          entity.narrativeEntityId === mention.entity.narrativeEntityId,
+      )
+    ) {
+      mergedInto.entities.push(mention.entity);
+    }
+    if (mergedInto.range && mention.range) {
+      mergedInto.range = {
+        start: Math.min(mergedInto.range.start, mention.range.start),
+        end: Math.max(mergedInto.range.end, mention.range.end),
+      };
+      const documentText = documentTexts?.get(mergedInto.documentRef);
+      if (
+        documentText &&
+        mergedInto.range.end <= documentText.length &&
+        mergedInto.range.start < mergedInto.range.end
+      ) {
+        mergedInto.quote = documentText.slice(
+          mergedInto.range.start,
+          mergedInto.range.end,
+        );
+      } else if (
+        mention.quote.length > mergedInto.quote.length &&
+        mention.quote.includes(mergedInto.entities[0]?.surface ?? "")
+      ) {
+        // Prefer the longer overlapping context when document text is unavailable.
+        mergedInto.quote = mention.quote;
       }
     }
   }
@@ -355,7 +501,7 @@ export function deriveRelationSeedsFromCoMentions(input: {
   const seeds: CodexStructureExtractionRelationSeed[] = [];
   const seedByKey = new Map<string, CodexStructureExtractionRelationSeed>();
 
-  for (const window of windowsByKey.values()) {
+  for (const window of windows) {
     if (window.entities.length < 2) continue;
     for (let i = 0; i < window.entities.length; i += 1) {
       for (let j = i + 1; j < window.entities.length; j += 1) {
@@ -383,11 +529,16 @@ export function deriveRelationSeedsFromCoMentions(input: {
             if (!resolved) continue;
             subject = resolved.subject;
             object = resolved.object;
-          } else if (
-            left.narrativeEntityId.localeCompare(right.narrativeEntityId) > 0
-          ) {
-            subject = right;
-            object = left;
+          } else {
+            const resolved = resolveSymmetricEndpoints(
+              window.quote,
+              left,
+              right,
+              label,
+            );
+            if (!resolved) continue;
+            subject = resolved.subject;
+            object = resolved.object;
           }
 
           const quote = quoteSpanCovering(window.quote, [
@@ -693,8 +844,14 @@ function recountProjection(
       relationProposals.filter((item) => item.applicability === "blocked")
         .length,
     approvedCount:
-      proposals.filter((item) => item.status === "approved").length +
-      relationProposals.filter((item) => item.status === "approved").length,
+      proposals.filter(
+        (item) =>
+          item.applicability === "applicable" && item.status === "approved",
+      ).length +
+      relationProposals.filter(
+        (item) =>
+          item.applicability === "applicable" && item.status === "approved",
+      ).length,
   };
 }
 
@@ -731,6 +888,7 @@ export async function startCodexStructureExtraction(
     string,
     CodexReviewEvidenceQuote[]
   >();
+  const documentTextsByRef = new Map<string, string>();
   let coverageDocumentCount = request.sceneIds.length;
   let coverageWindowCount = Math.max(1, request.sceneIds.length);
   let snapshotDigest: string | null = null;
@@ -756,6 +914,9 @@ export async function startCodexStructureExtraction(
     const sourceViews = await buildSourceViewsForPlan(snapshot, windowPlan);
     coverageDocumentCount = snapshot.documents.length;
     coverageWindowCount = Math.max(1, windowPlan.windows.length);
+    for (const document of snapshot.documents) {
+      documentTextsByRef.set(document.ref, document.canonical.text);
+    }
 
     const prepass = await runEntityCandidatePrepass({
       snapshot,
@@ -788,7 +949,10 @@ export async function startCodexStructureExtraction(
         );
         relationEvidenceBySurface.set(
           seed.surface,
-          buildRelationEvidenceFromOccurrences(seed.occurrences),
+          buildRelationEvidenceFromOccurrences(
+            seed.occurrences,
+            documentTextsByRef,
+          ),
         );
         seeds.push({
           surface: seed.surface,
@@ -905,10 +1069,25 @@ export async function startCodexStructureExtraction(
           relationEvidenceBySurface.get(proposal.displayTitle) ??
           proposal.evidence,
       })),
+      documentTexts: documentTextsByRef,
     });
 
+  const existingRelations: readonly ExistingRelationCatalogRecord[] =
+    request.existingRelations ?? [];
+
+  const resolveEndpointEntryId = (narrativeEntityId: string): string | null => {
+    const entity = proposals.find(
+      (proposal) =>
+        proposal.proposal.payload.narrativeEntityId === narrativeEntityId,
+    );
+    if (!entity) return null;
+    const binding = entity.proposal.payload.binding;
+    if (binding.kind !== "bind-existing") return null;
+    return resolveCodexEntitySourceKey(binding.entityRef, catalogSnapshot);
+  };
+
   const relationProposals: CodexRelationReviewProposal[] =
-    relationSeeds.flatMap((seed, index) => {
+    relationSeeds.flatMap((seed, index): CodexRelationReviewProposal[] => {
       const hypothesis: CodexRelationHypothesis = {
         hypothesisId: createId(),
         observationRefs: [`rel-obs-${index + 1}`],
@@ -953,6 +1132,64 @@ export async function startCodexStructureExtraction(
         seed.objectLabel ??
         entityLabelById.get(seed.objectEntityId) ??
         seed.objectEntityId;
+
+      const fromEntryId = resolveEndpointEntryId(seed.subjectEntityId);
+      const toEntryId = resolveEndpointEntryId(seed.objectEntityId);
+      const provisionalSemanticKey =
+        fromEntryId && toEntryId
+          ? buildCodexRelationSemanticKey({
+              projectId: request.projectId,
+              fromCodexId: fromEntryId,
+              toCodexId: toEntryId,
+              relationType: seed.predicate,
+              directionality: seed.directionality ?? "directed",
+              forwardLabel: seed.forwardLabel,
+              inverseLabel: seed.inverseLabel ?? null,
+            })
+          : null;
+      const existingMatch = matchExistingCodexRelation(
+        provisionalSemanticKey,
+        existingRelations,
+      );
+      if (existingMatch.status === "already-satisfied") {
+        const evidenceQuotes =
+          seed.evidenceQuotes && seed.evidenceQuotes.length > 0
+            ? seed.evidenceQuotes
+            : seed.quote && seed.documentRef
+              ? [
+                  {
+                    quote: seed.quote,
+                    documentRef: seed.documentRef,
+                    anchorId:
+                      seed.anchorId ?? `rel-anchor-${created.proposalId}`,
+                  },
+                ]
+              : [];
+        return [
+          {
+            proposalId: created.proposalId,
+            revisionId: null,
+            proposalKey: hypothesis.hypothesisId,
+            status: "unreviewed" as const,
+            applicability: "already-satisfied" as const,
+            displayTitle: `${subjectLabel} → ${seed.forwardLabel} → ${objectLabel}`,
+            proposal: created,
+            evidence: evidenceQuotes.map((row) => ({
+              anchorId: row.anchorId,
+              quote: row.quote,
+              documentRef: row.documentRef,
+              method: "exact" as const,
+              blocked: false,
+            })),
+            subjectLabel,
+            objectLabel,
+            blockedReason: "既に同じ関係が登録されています（適用不要）",
+            existingRelationRef: existingMatch.existingRef,
+            hypothesisId: hypothesis.hypothesisId,
+          },
+        ];
+      }
+
       const blockedDeps = !relationEndpointsReady(
         {
           proposalId: created.proposalId,
@@ -1018,7 +1255,7 @@ export async function startCodexStructureExtraction(
             ? "先に両端の Entity proposal を承認してください"
             : undefined,
           hypothesisId: hypothesis.hypothesisId,
-        } satisfies CodexRelationReviewProposal,
+        },
       ];
     });
 
@@ -1076,17 +1313,20 @@ export async function startCodexStructureExtraction(
         throw new Error(`Failed to claim task ${CODEX_STRUCTURE_TASK_KIND}`);
       }
 
+      const actionableRelations = relationProposals.filter(
+        (proposal) => proposal.applicability !== "already-satisfied",
+      );
       const saved = await saveProposalSet({
         runId,
         projectId: request.projectId,
         setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
         summaryJson: {
-          proposalCount: proposals.length + relationProposals.length,
+          proposalCount: proposals.length + actionableRelations.length,
           catalog: catalogSnapshot,
           // Immutable across append_revision: Relation dependency graph keyed by
           // stable proposal IDs (also sent as ProposalSeed.proposalId below).
           relationDependencies: Object.fromEntries(
-            relationProposals.map((proposal) => [
+            actionableRelations.map((proposal) => [
               proposal.proposalId,
               proposal.proposal.dependencies,
             ]),
@@ -1099,7 +1339,7 @@ export async function startCodexStructureExtraction(
             kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
             payloadJson: proposal.proposal.payload,
           })),
-          ...relationProposals.map((proposal) => ({
+          ...actionableRelations.map((proposal) => ({
             proposalId: proposal.proposalId,
             proposalKey: proposal.proposalKey,
             kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
@@ -1132,6 +1372,13 @@ export async function startCodexStructureExtraction(
         };
       });
       finalRelations = relationProposals.map((proposal) => {
+        if (proposal.applicability === "already-satisfied") {
+          return {
+            ...proposal,
+            revisionId:
+              proposal.revisionId ?? `satisfied-${proposal.proposalKey}`,
+          };
+        }
         const seed = byKey.get(proposal.proposalKey);
         if (!seed?.revisionId) {
           throw new Error(
@@ -1447,6 +1694,15 @@ export async function decideCodexStructureProposal(args: {
   if (!proposal?.revisionId) {
     throw new Error(`Proposal ${args.proposalId} missing revisionId`);
   }
+  if (
+    kind === "relation" &&
+    (proposal as CodexRelationReviewProposal).applicability ===
+      "already-satisfied"
+  ) {
+    throw new Error(
+      `Cannot decide already-satisfied Relation ${args.proposalId}`,
+    );
+  }
   if (args.status === "unreviewed") {
     if (kind === "entity") {
       useCodexStructureExtractionStore
@@ -1462,6 +1718,15 @@ export async function decideCodexStructureProposal(args: {
 
   let revisionId = proposal.revisionId;
   let compiledOperation: CodexCompiledDomainOperation | null = null;
+
+  const decision =
+    args.status === "approved"
+      ? "approved"
+      : args.status === "rejected"
+        ? "rejected"
+        : args.status === "held"
+          ? "held"
+          : "deferred";
 
   if (args.status === "approved") {
     // Lock Domain Operation into Native revision before decision so Apply digests match.
@@ -1526,33 +1791,29 @@ export async function decideCodexStructureProposal(args: {
       };
     }
 
-    const revised = await appendRevision({
+    // Atomic revision + decision in ONE Native transaction so an approve can
+    // never leave a fresh revision without its decision.
+    const result = await reviseAndDecide({
       runId: projection.runId,
       projectId: projection.projectId,
       proposalId: args.proposalId,
       expectedCurrentRevisionId: revisionId,
       payloadJson: compiledOperation.payload,
+      decision,
       createdBy: "codex-structure-extract-dialog",
     });
-    revisionId = revised.revisionId;
+    revisionId = result.revisionId;
+  } else {
+    // Reject / held / deferred keep the current revision — decision only.
+    await appendDecision({
+      runId: projection.runId,
+      projectId: projection.projectId,
+      proposalId: args.proposalId,
+      revisionId,
+      decision,
+      createdBy: "codex-structure-extract-dialog",
+    });
   }
-
-  const decision =
-    args.status === "approved"
-      ? "approved"
-      : args.status === "rejected"
-        ? "rejected"
-        : args.status === "held"
-          ? "held"
-          : "deferred";
-  await appendDecision({
-    runId: projection.runId,
-    projectId: projection.projectId,
-    proposalId: args.proposalId,
-    revisionId,
-    decision,
-    createdBy: "codex-structure-extract-dialog",
-  });
 
   const latest = useCodexStructureExtractionStore.getState().projection;
   if (!latest) return;

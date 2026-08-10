@@ -4206,6 +4206,20 @@ impl Backend {
     }
 
     #[napi]
+    pub async fn narrative_extraction_revise_and_decide(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_revise_and_decide,
+        )
+        .await
+    }
+
+    #[napi]
     pub async fn narrative_extraction_prepare_commit(
         &self,
         payload: serde_json::Value,

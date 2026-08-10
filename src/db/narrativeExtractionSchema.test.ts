@@ -71,7 +71,7 @@ describe("narrative extraction schema", () => {
   });
 
   it("includes narrative extraction tables in the generated schema contract", () => {
-    expect(contractJson.schemaVersion).toBe(6);
+    expect(contractJson.schemaVersion).toBe(7);
     for (const tableName of CONTRACT_TABLES) {
       expect(
         contractJson.tables,

@@ -8,6 +8,7 @@ import type {
 } from "@/features/narrative-extraction/runtime/types";
 import type { MutationAuthority } from "@/features/concurrency/mutationAuthority";
 import type { ExistingEntityCatalogRecord } from "./extraction/existingEntityMatcher";
+import type { ExistingRelationCatalogRecord } from "./extraction/existingRelationMatcher";
 import type { KnowledgeTypeCatalogRecord } from "./extraction/entityResolver";
 
 export interface StartCodexStructureExtractionRequest {
@@ -20,6 +21,8 @@ export interface StartCodexStructureExtractionRequest {
   readonly openRevision: number;
   readonly existingEntries?: readonly ExistingEntityCatalogRecord[];
   readonly typeCatalog?: readonly KnowledgeTypeCatalogRecord[];
+  /** Existing Codex Relations for already-satisfied semantic matching. */
+  readonly existingRelations?: readonly ExistingRelationCatalogRecord[];
   readonly useAi?: boolean;
 }
 
@@ -60,6 +63,11 @@ export interface CodexReviewEvidenceQuote {
   readonly sceneTitle?: string;
   readonly method: "exact" | "exact-with-context" | "fragmented" | "unknown";
   readonly blocked?: boolean;
+  /**
+   * Document-global UTF-16 range of this Relation window (prefix+surface+suffix).
+   * Used to merge overlapping co-mention contexts; quote string alone is not identity.
+   */
+  readonly canonicalRange?: { readonly start: number; readonly end: number };
 }
 
 export interface CodexCompiledDomainOperation {
@@ -91,7 +99,7 @@ export interface CodexRelationReviewProposal {
   readonly revisionId: string | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
-  readonly applicability: "applicable" | "blocked";
+  readonly applicability: "applicable" | "blocked" | "already-satisfied";
   readonly displayTitle: string;
   readonly proposal: CreateCodexRelationProposal;
   readonly evidence: readonly CodexReviewEvidenceQuote[];
@@ -99,6 +107,7 @@ export interface CodexRelationReviewProposal {
   readonly objectLabel: string;
   readonly blockedReason?: string;
   readonly hypothesisId?: string;
+  readonly existingRelationRef?: string;
   readonly compiledOperation?: CodexCompiledDomainOperation | null;
 }
 
@@ -281,8 +290,14 @@ function recount(
       relationProposals.filter((item) => item.applicability === "blocked")
         .length,
     approvedCount:
-      proposals.filter((item) => item.status === "approved").length +
-      relationProposals.filter((item) => item.status === "approved").length,
+      proposals.filter(
+        (item) =>
+          item.applicability === "applicable" && item.status === "approved",
+      ).length +
+      relationProposals.filter(
+        (item) =>
+          item.applicability === "applicable" && item.status === "approved",
+      ).length,
   };
 }
 
@@ -315,11 +330,21 @@ export { relationEndpointsReady };
 
 const RELATION_ENDPOINT_BLOCKED_REASON =
   "先に両端の Entity proposal を承認してください";
+const RELATION_ALREADY_SATISFIED_REASON =
+  "既に同じ関係が登録されています（適用不要）";
 
 function withEvaluatedRelationApplicability(
   relation: CodexRelationReviewProposal,
   entities: readonly CodexEntityReviewProposal[],
 ): CodexRelationReviewProposal {
+  if (relation.applicability === "already-satisfied") {
+    return {
+      ...relation,
+      applicability: "already-satisfied",
+      blockedReason: RELATION_ALREADY_SATISFIED_REASON,
+      status: "unreviewed",
+    };
+  }
   if (!relationEndpointsReady(relation, entities)) {
     return {
       ...relation,
@@ -451,7 +476,12 @@ export const useCodexStructureExtractionStore =
       const current = projection.relationProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.applicability === "blocked") return;
+      if (
+        !current ||
+        current.applicability === "blocked" ||
+        current.applicability === "already-satisfied"
+      )
+        return;
       if (
         status === "approved" &&
         !relationEndpointsReady(current, projection.proposals)

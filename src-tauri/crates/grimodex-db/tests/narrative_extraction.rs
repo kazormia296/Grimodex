@@ -3,7 +3,7 @@ use grimodex_db::narrative_extraction::{
     self, ensure_test_schema, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     FinishTaskPayload, GetCommitStatusPayload, ListResumableRunsPayload, PrepareCommitPayload,
-    ProposalSeed, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    ProposalSeed, ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -1116,6 +1116,246 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
         },
     )
     .expect("current revision approve");
+}
+
+/// Create a run + a single-proposal ProposalSet, returning (proposalId, rev1).
+fn seed_single_proposal(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    proposal_id: &str,
+) -> (String, String) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create run");
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(proposal_set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: format!("{proposal_id}-key"),
+                kind: "chronicle.event.create@1".to_string(),
+                payload_json: json!({ "title": "Rev1" }),
+            }],
+        },
+    )
+    .expect("save proposal set");
+
+    let rev1 = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (proposal_id.to_string(), rev1)
+}
+
+fn count_revisions(db: &Database, proposal_id: &str) -> i64 {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = ?1",
+            rusqlite::params![proposal_id],
+            |row| row.get(0),
+        )?)
+    })
+    .unwrap()
+}
+
+#[test]
+fn revise_and_decide_approves_atomically_with_new_revision() {
+    let db = migrated_db();
+    let (proposal_id, rev1) =
+        seed_single_proposal(&db, "run-rad-happy", "set-rad-happy", "prop-rad-happy");
+    assert_eq!(count_revisions(&db, &proposal_id), 1);
+
+    let result = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-rad-happy".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev2" }),
+            expected_current_revision_id: rev1.clone(),
+            decision: "approved".to_string(),
+            decision_json: Some(json!({ "source": "test" })),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("revise and decide");
+
+    let new_revision_id = result["revisionId"].as_str().unwrap().to_string();
+    assert_ne!(new_revision_id, rev1);
+    assert_eq!(result["revisionNumber"], 2);
+    assert_eq!(result["decision"], "approved");
+    assert_eq!(result["status"], "approved");
+    assert_eq!(result["proposalId"], proposal_id);
+    assert!(result["decisionId"].is_string());
+
+    // Both writes landed atomically.
+    assert_eq!(count_revisions(&db, &proposal_id), 2);
+
+    let (status, current_revision): (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "approved");
+    assert_eq!(current_revision, new_revision_id);
+
+    let decision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_decisions
+                  WHERE proposal_id = ?1 AND revision_id = ?2 AND decision = 'approved'",
+                rusqlite::params![proposal_id, new_revision_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(decision_count, 1);
+}
+
+#[test]
+fn revise_and_decide_rolls_back_revision_on_invalid_decision() {
+    let db = migrated_db();
+    let (proposal_id, rev1) =
+        seed_single_proposal(&db, "run-rad-bad", "set-rad-bad", "prop-rad-bad");
+    assert_eq!(count_revisions(&db, &proposal_id), 1);
+
+    let err = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-rad-bad".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev2" }),
+            expected_current_revision_id: rev1.clone(),
+            decision: "totally-bogus".to_string(),
+            decision_json: None,
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect_err("invalid decision must fail");
+    assert!(
+        err.to_string().contains("unsupported proposal decision"),
+        "unexpected error: {err}"
+    );
+
+    // The would-be revision must be rolled back with the failed decision.
+    assert_eq!(count_revisions(&db, &proposal_id), 1);
+
+    let (status, current_revision): (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "unreviewed");
+    assert_eq!(current_revision, rev1);
+
+    let decision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                rusqlite::params![proposal_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(decision_count, 0);
+}
+
+#[test]
+fn revise_and_decide_rejects_stale_expected_current_revision() {
+    let db = migrated_db();
+    let (proposal_id, rev1) =
+        seed_single_proposal(&db, "run-rad-stale", "set-rad-stale", "prop-rad-stale");
+
+    // Advance the current revision so rev1 becomes stale.
+    let rev2 = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-rad-stale".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev2" }),
+            expected_current_revision_id: rev1.clone(),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect("append rev2");
+    let rev2_id = rev2["revisionId"].as_str().unwrap().to_string();
+    assert_eq!(count_revisions(&db, &proposal_id), 2);
+
+    let err = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-rad-stale".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev3" }),
+            expected_current_revision_id: rev1.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("stale-window".to_string()),
+        },
+    )
+    .expect_err("stale expected revision must conflict");
+    assert!(
+        err.to_string().contains("NEX_PROPOSAL_REVISION_CONFLICT"),
+        "unexpected error: {err}"
+    );
+
+    // No third revision, no decision, current stays at rev2, status unreviewed.
+    assert_eq!(count_revisions(&db, &proposal_id), 2);
+
+    let (status, current_revision): (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "unreviewed");
+    assert_eq!(current_revision, rev2_id);
+
+    let decision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                rusqlite::params![proposal_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(decision_count, 0);
 }
 
 #[test]

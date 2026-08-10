@@ -6,6 +6,7 @@ const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
 const appendDecisionMock = vi.hoisted(() => vi.fn());
 const appendRevisionMock = vi.hoisted(() => vi.fn());
+const reviseAndDecideMock = vi.hoisted(() => vi.fn());
 const prepareApplyMock = vi.hoisted(() => vi.fn());
 const claimTaskMock = vi.hoisted(() => vi.fn());
 const finishTaskMock = vi.hoisted(() => vi.fn());
@@ -22,6 +23,7 @@ vi.mock("@/application/narrative-extraction/proposalRepository", () => ({
   saveProposalSet: saveProposalSetMock,
   appendDecision: appendDecisionMock,
   appendRevision: appendRevisionMock,
+  reviseAndDecide: reviseAndDecideMock,
 }));
 vi.mock(
   "@/application/narrative-extraction/nativeApi",
@@ -168,6 +170,7 @@ describe("startCodexStructureExtraction product safety", () => {
     prepareApplyMock.mockReset();
     appendDecisionMock.mockReset();
     appendRevisionMock.mockReset();
+    reviseAndDecideMock.mockReset();
     buildSnapshotMock.mockReset();
     runPrepassMock.mockReset();
     buildSnapshotMock.mockResolvedValue({
@@ -727,16 +730,14 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
     resetCodexStructureExtractionStoreForTests();
     appendDecisionMock.mockReset();
     appendRevisionMock.mockReset();
-    appendDecisionMock.mockResolvedValue({
-      decisionId: "d1",
+    reviseAndDecideMock.mockReset();
+    reviseAndDecideMock.mockResolvedValue({
       proposalId: "safe",
       revisionId: "rev-2",
+      revisionNumber: 2,
+      decisionId: "d1",
       decision: "approved",
       status: "approved",
-    });
-    appendRevisionMock.mockResolvedValue({
-      revisionId: "rev-2",
-      proposalId: "safe",
     });
   });
 
@@ -824,11 +825,14 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
     const result = await bulkApproveSafeCodexStructureProposals();
     expect(result.approved).toBe(1);
     expect(result.failed).toEqual([]);
-    expect(appendRevisionMock).toHaveBeenCalled();
-    expect(appendDecisionMock).toHaveBeenCalledWith(
+    // Approve is a single atomic revision + decision transaction now.
+    expect(appendRevisionMock).not.toHaveBeenCalled();
+    expect(appendDecisionMock).not.toHaveBeenCalled();
+    expect(reviseAndDecideMock).toHaveBeenCalledWith(
       expect.objectContaining({
         proposalId: "safe",
         decision: "approved",
+        expectedCurrentRevisionId: "rev-1",
       }),
     );
     expect(

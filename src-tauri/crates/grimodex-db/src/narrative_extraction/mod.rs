@@ -14,8 +14,8 @@ pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
-    ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, RunRefPayload,
-    SaveProposalSetPayload, UndoCommitPayload,
+    ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
+    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 pub use repository::ensure_test_schema;
 
@@ -99,6 +99,13 @@ pub fn narrative_extraction_append_decision(
     payload: AppendDecisionPayload,
 ) -> anyhow::Result<Value> {
     repository::append_decision(db, payload)
+}
+
+pub fn narrative_extraction_revise_and_decide(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+) -> anyhow::Result<Value> {
+    repository::revise_and_decide(db, payload)
 }
 
 pub fn narrative_extraction_prepare_commit(

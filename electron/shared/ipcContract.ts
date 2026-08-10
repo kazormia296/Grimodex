@@ -673,6 +673,7 @@ export interface NapiBackendLike {
   narrativeExtractionGetRunReviewBundle(payload: unknown): Promise<string>;
   narrativeExtractionAppendRevision(payload: unknown): Promise<string>;
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
+  narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
   narrativeExtractionPrepareCommit(payload: unknown): Promise<string>;
   narrativeExtractionApplyCommit(payload: unknown): Promise<string>;
   narrativeExtractionGetCommitStatus(payload: unknown): Promise<string>;
@@ -5074,6 +5075,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.narrativeExtractionAppendDecision(
           requirePresent(a, "payload", "narrative_extraction_append_decision"),
+        ),
+      ),
+  },
+  narrative_extraction_revise_and_decide: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionReviseAndDecide(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_revise_and_decide",
+          ),
         ),
       ),
   },

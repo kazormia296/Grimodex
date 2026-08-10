@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createNewBindCodexEntityProposal } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
 import { CodexEntityProposalReview } from "./CodexEntityProposalReview";
 import { CodexStructureExtractionProgress } from "./CodexStructureExtractionProgress";
+import { bulkApproveSafeCodexStructureProposals } from "./codexStructureExtractionApi";
 import {
   buildCodexEntityProposalSafetyFlags,
   resetCodexStructureExtractionStoreForTests,
@@ -11,6 +12,37 @@ import {
   type CodexEntityReviewProposal,
   type CodexStructureExtractionReviewProjection,
 } from "./codexStructureExtractionStore";
+
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
+
+// The bulk-approve button now calls the async persistence-aware API instead of
+// a synchronous store method. Keep the rest of the module real (importOriginal)
+// and stub only the bulk approve so it resolves after flipping the safe
+// proposals to "approved" in the shared store — no Native backend needed.
+vi.mock("./codexStructureExtractionApi", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./codexStructureExtractionApi")>();
+  return {
+    ...actual,
+    bulkApproveSafeCodexStructureProposals: vi.fn(async () => {
+      const { useCodexStructureExtractionStore } =
+        await import("./codexStructureExtractionStore");
+      const state = useCodexStructureExtractionStore.getState();
+      const projection = state.projection;
+      if (!projection) return { approved: 0, failed: [] };
+      state.setProjection({
+        ...projection,
+        proposals: projection.proposals.map((proposal) => ({
+          ...proposal,
+          status: "approved" as const,
+        })),
+      });
+      return { approved: projection.proposals.length, failed: [] };
+    }),
+  };
+});
 
 function reviewProposal(
   overrides: Partial<CodexEntityReviewProposal> = {},
@@ -130,7 +162,7 @@ describe("CodexEntityProposalReview", () => {
     resetCodexStructureExtractionStoreForTests();
   });
 
-  it("renders list + detail with evidence and supports safe bulk approve", () => {
+  it("renders list + detail with evidence and supports safe bulk approve", async () => {
     useCodexStructureExtractionStore
       .getState()
       .setProjection(projection([reviewProposal()]));
@@ -145,9 +177,12 @@ describe("CodexEntityProposalReview", () => {
     expect(screen.getByText(/Alias: 灰の目/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("codex-bulk-approve-safe"));
-    expect(
-      useCodexStructureExtractionStore.getState().projection?.proposals[0]
-        ?.status,
-    ).toBe("approved");
+    expect(bulkApproveSafeCodexStructureProposals).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(
+        useCodexStructureExtractionStore.getState().projection?.proposals[0]
+          ?.status,
+      ).toBe("approved");
+    });
   });
 });

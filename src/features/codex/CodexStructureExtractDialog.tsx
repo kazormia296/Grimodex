@@ -26,6 +26,8 @@ import {
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
 import { useCodexStore } from "./codexStore";
+import { listCodexRelations } from "./codexRelationApi";
+import { buildExistingRelationCatalog } from "./extraction/existingRelationMatcher";
 
 /**
  * Folder-scoped Codex Structure Extraction dialog
@@ -109,6 +111,19 @@ export function CodexStructureExtractDialog({
           version: entry.version,
         })),
       });
+      const existingRelations = buildExistingRelationCatalog(
+        (await listCodexRelations(projectId)).map((row) => ({
+          id: row.id,
+          fromCodexId: row.fromCodexId,
+          toCodexId: row.toCodexId,
+          relationType: row.relationType,
+          directionality:
+            row.directionality === "symmetric" ? "symmetric" : "directed",
+          label: row.label,
+          inverseLabel: row.inverseLabel,
+          semanticKey: row.semanticKey,
+        })),
+      );
       await startCodexStructureExtraction({
         projectId,
         folderId,
@@ -119,6 +134,7 @@ export function CodexStructureExtractDialog({
         useAi: false,
         existingEntries: catalogs.existingCatalog,
         typeCatalog: catalogs.typeCatalog,
+        existingRelations,
       });
       getCodexStructureReview();
       setReviewTab("entity");

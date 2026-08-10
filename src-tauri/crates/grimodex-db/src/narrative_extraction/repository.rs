@@ -8,7 +8,7 @@ use uuid::Uuid;
 use super::models::{
     AppendDecisionPayload, AppendRevisionPayload, ArtifactInput, CreateRunPayload,
     CreateTaskSeed, FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload, ProposalSeed,
-    SaveProposalSetPayload, default_object_json,
+    ReviseAndDecidePayload, SaveProposalSetPayload, default_object_json,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -652,85 +652,108 @@ fn insert_proposal_seed(
 }
 
 pub fn append_revision(db: &Database, payload: AppendRevisionPayload) -> anyhow::Result<Value> {
-    let payload_json = serde_json::to_string(&payload.payload_json)?;
-    let revision_id = Uuid::new_v4().to_string();
-    let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let created_by = payload.created_by.unwrap_or_else(|| "user".to_string());
-
     db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| {
-            ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
-            let (proposal_set_id, current_revision_id): (String, String) = conn.query_row(
-                "SELECT p.proposal_set_id, p.current_revision_id
-                   FROM narrative_proposals p
-                   INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
-                  WHERE p.id = ?1
-                    AND s.run_id = ?2
-                    AND s.project_id = ?3",
-                params![payload.proposal_id, payload.run_id, payload.project_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            let _ = proposal_set_id;
-            anyhow::ensure!(
-                current_revision_id == payload.expected_current_revision_id,
-                "NEX_PROPOSAL_REVISION_CONFLICT: expected current revision '{}', found '{}'",
-                payload.expected_current_revision_id,
-                current_revision_id
-            );
-
-            let next_revision: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(revision_number), 0) + 1
-                   FROM narrative_proposal_revisions
-                  WHERE proposal_id = ?1",
-                params![payload.proposal_id],
-                |row| row.get(0),
-            )?;
-
-            conn.execute(
-                "INSERT INTO narrative_proposal_revisions
-                    (id, proposal_id, revision_number, payload_json, created_at, created_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    revision_id,
-                    payload.proposal_id,
-                    next_revision,
-                    payload_json,
-                    created_at,
-                    created_by,
-                ],
-            )?;
-
-            let updated = conn.execute(
-                "UPDATE narrative_proposals
-                    SET payload_json = ?1,
-                        current_revision_id = ?2,
-                        status = 'unreviewed',
-                        updated_at = datetime('now')
-                  WHERE id = ?3
-                    AND current_revision_id = ?4",
-                params![
-                    payload_json.clone(),
-                    revision_id,
-                    payload.proposal_id,
-                    payload.expected_current_revision_id
-                ],
-            )?;
-            anyhow::ensure!(
-                updated == 1,
-                "NEX_PROPOSAL_REVISION_CONFLICT: current revision changed concurrently"
-            );
-
-            Ok(json!({
-                "proposalId": payload.proposal_id,
-                "revisionId": revision_id,
-                "revisionNumber": next_revision,
-                "status": "unreviewed",
-            }))
-        })
+        with_immediate_transaction(conn, |conn| append_revision_on_conn(conn, &payload))
     })
 }
 
+/// Append a new revision on an existing connection/transaction.
+/// Callers own the surrounding `with_immediate_transaction` so this can be
+/// composed atomically with other writes (see `revise_and_decide`).
+fn append_revision_on_conn(
+    conn: &Connection,
+    payload: &AppendRevisionPayload,
+) -> anyhow::Result<Value> {
+    let payload_json = serde_json::to_string(&payload.payload_json)?;
+    let revision_id = Uuid::new_v4().to_string();
+    let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let created_by = payload
+        .created_by
+        .clone()
+        .unwrap_or_else(|| "user".to_string());
+
+    ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
+    let (proposal_set_id, current_revision_id): (String, String) = conn.query_row(
+        "SELECT p.proposal_set_id, p.current_revision_id
+           FROM narrative_proposals p
+           INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+          WHERE p.id = ?1
+            AND s.run_id = ?2
+            AND s.project_id = ?3",
+        params![payload.proposal_id, payload.run_id, payload.project_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let _ = proposal_set_id;
+    anyhow::ensure!(
+        current_revision_id == payload.expected_current_revision_id,
+        "NEX_PROPOSAL_REVISION_CONFLICT: expected current revision '{}', found '{}'",
+        payload.expected_current_revision_id,
+        current_revision_id
+    );
+
+    let next_revision: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(revision_number), 0) + 1
+           FROM narrative_proposal_revisions
+          WHERE proposal_id = ?1",
+        params![payload.proposal_id],
+        |row| row.get(0),
+    )?;
+
+    conn.execute(
+        "INSERT INTO narrative_proposal_revisions
+            (id, proposal_id, revision_number, payload_json, created_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            revision_id,
+            payload.proposal_id,
+            next_revision,
+            payload_json,
+            created_at,
+            created_by,
+        ],
+    )?;
+
+    let updated = conn.execute(
+        "UPDATE narrative_proposals
+            SET payload_json = ?1,
+                current_revision_id = ?2,
+                status = 'unreviewed',
+                updated_at = datetime('now')
+          WHERE id = ?3
+            AND current_revision_id = ?4",
+        params![
+            payload_json.clone(),
+            revision_id,
+            payload.proposal_id,
+            payload.expected_current_revision_id
+        ],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_PROPOSAL_REVISION_CONFLICT: current revision changed concurrently"
+    );
+
+    Ok(json!({
+        "proposalId": payload.proposal_id,
+        "revisionId": revision_id,
+        "revisionNumber": next_revision,
+        "status": "unreviewed",
+    }))
+}
+
 pub fn append_decision(db: &Database, payload: AppendDecisionPayload) -> anyhow::Result<Value> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| append_decision_on_conn(conn, &payload))
+    })
+}
+
+/// Append a decision on an existing connection/transaction.
+/// Callers own the surrounding `with_immediate_transaction` so this can be
+/// composed atomically with a preceding revision (see `revise_and_decide`).
+fn append_decision_on_conn(
+    conn: &Connection,
+    payload: &AppendDecisionPayload,
+) -> anyhow::Result<Value> {
     let decision_json = serde_json::to_string(
         payload
             .decision_json
@@ -739,77 +762,127 @@ pub fn append_decision(db: &Database, payload: AppendDecisionPayload) -> anyhow:
     )?;
     let decision_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let created_by = payload.created_by.unwrap_or_else(|| "user".to_string());
+    let created_by = payload
+        .created_by
+        .clone()
+        .unwrap_or_else(|| "user".to_string());
     let proposal_status = map_decision_to_status(&payload.decision)?;
 
+    ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
+
+    let (revision_owner, current_revision_id): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT p.id, p.current_revision_id
+               FROM narrative_proposals p
+               INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+               INNER JOIN narrative_proposal_revisions r ON r.id = ?1
+              WHERE p.id = ?2
+                AND r.proposal_id = p.id
+                AND s.run_id = ?3
+                AND s.project_id = ?4",
+            params![
+                payload.revision_id,
+                payload.proposal_id,
+                payload.run_id,
+                payload.project_id
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((None, None));
+    anyhow::ensure!(
+        revision_owner.as_deref() == Some(payload.proposal_id.as_str()),
+        "proposal revision mismatch for run/project"
+    );
+    anyhow::ensure!(
+        current_revision_id.as_deref() == Some(payload.revision_id.as_str()),
+        "NEX_PROPOSAL_REVISION_MISMATCH: decision revision '{}' is not current",
+        payload.revision_id
+    );
+
+    conn.execute(
+        "INSERT INTO narrative_proposal_decisions
+            (id, proposal_id, revision_id, decision, decision_json, created_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            decision_id,
+            payload.proposal_id,
+            payload.revision_id,
+            payload.decision,
+            decision_json,
+            created_at,
+            created_by,
+        ],
+    )?;
+
+    let updated = conn.execute(
+        "UPDATE narrative_proposals
+            SET status = ?1,
+                updated_at = datetime('now')
+          WHERE id = ?2
+            AND current_revision_id = ?3",
+        params![proposal_status, payload.proposal_id, payload.revision_id],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_PROPOSAL_REVISION_MISMATCH: current revision changed concurrently"
+    );
+
+    Ok(json!({
+        "decisionId": decision_id,
+        "proposalId": payload.proposal_id,
+        "revisionId": payload.revision_id,
+        "decision": payload.decision,
+        "status": proposal_status,
+    }))
+}
+
+/// Atomically append a revision then a decision that references the new revision.
+/// One `with_immediate_transaction` guards both writes, so an approve can never
+/// leave a fresh revision without its decision (or vice versa).
+pub fn revise_and_decide(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
+            let revision_payload = AppendRevisionPayload {
+                run_id: payload.run_id.clone(),
+                project_id: payload.project_id.clone(),
+                proposal_id: payload.proposal_id.clone(),
+                payload_json: payload.payload_json.clone(),
+                expected_current_revision_id: payload.expected_current_revision_id.clone(),
+                created_by: payload.created_by.clone(),
+            };
+            let revision = append_revision_on_conn(conn, &revision_payload)?;
+            let revision_id = revision["revisionId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("revise_and_decide: missing revisionId"))?
+                .to_string();
+            let revision_number = revision["revisionNumber"].clone();
 
-            let (revision_owner, current_revision_id): (Option<String>, Option<String>) = conn
-                .query_row(
-                    "SELECT p.id, p.current_revision_id
-                       FROM narrative_proposals p
-                       INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
-                       INNER JOIN narrative_proposal_revisions r ON r.id = ?1
-                      WHERE p.id = ?2
-                        AND r.proposal_id = p.id
-                        AND s.run_id = ?3
-                        AND s.project_id = ?4",
-                    params![
-                        payload.revision_id,
-                        payload.proposal_id,
-                        payload.run_id,
-                        payload.project_id
-                    ],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?
-                .unwrap_or((None, None));
-            anyhow::ensure!(
-                revision_owner.as_deref() == Some(payload.proposal_id.as_str()),
-                "proposal revision mismatch for run/project"
-            );
-            anyhow::ensure!(
-                current_revision_id.as_deref() == Some(payload.revision_id.as_str()),
-                "NEX_PROPOSAL_REVISION_MISMATCH: decision revision '{}' is not current",
-                payload.revision_id
-            );
-
-            conn.execute(
-                "INSERT INTO narrative_proposal_decisions
-                    (id, proposal_id, revision_id, decision, decision_json, created_at, created_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    decision_id,
-                    payload.proposal_id,
-                    payload.revision_id,
-                    payload.decision,
-                    decision_json,
-                    created_at,
-                    created_by,
-                ],
-            )?;
-
-            let updated = conn.execute(
-                "UPDATE narrative_proposals
-                    SET status = ?1,
-                        updated_at = datetime('now')
-                  WHERE id = ?2
-                    AND current_revision_id = ?3",
-                params![proposal_status, payload.proposal_id, payload.revision_id],
-            )?;
-            anyhow::ensure!(
-                updated == 1,
-                "NEX_PROPOSAL_REVISION_MISMATCH: current revision changed concurrently"
-            );
+            let decision_payload = AppendDecisionPayload {
+                run_id: payload.run_id.clone(),
+                project_id: payload.project_id.clone(),
+                proposal_id: payload.proposal_id.clone(),
+                revision_id: revision_id.clone(),
+                decision: payload.decision.clone(),
+                decision_json: payload.decision_json.clone(),
+                created_by: payload.created_by.clone(),
+            };
+            let decision = append_decision_on_conn(conn, &decision_payload)?;
+            let decision_id = decision["decisionId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("revise_and_decide: missing decisionId"))?
+                .to_string();
 
             Ok(json!({
-                "decisionId": decision_id,
                 "proposalId": payload.proposal_id,
-                "revisionId": payload.revision_id,
+                "revisionId": revision_id,
+                "revisionNumber": revision_number,
+                "decisionId": decision_id,
                 "decision": payload.decision,
-                "status": proposal_status,
+                "status": decision["status"].clone(),
             }))
         })
     })

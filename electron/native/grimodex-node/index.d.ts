@@ -557,6 +557,7 @@ export declare class Backend {
   narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>
   narrativeExtractionAppendRevision(payload: any): Promise<string>
   narrativeExtractionAppendDecision(payload: any): Promise<string>
+  narrativeExtractionReviseAndDecide(payload: any): Promise<string>
   narrativeExtractionPrepareCommit(payload: any): Promise<string>
   narrativeExtractionApplyCommit(payload: any): Promise<string>
   narrativeExtractionGetCommitStatus(payload: any): Promise<string>

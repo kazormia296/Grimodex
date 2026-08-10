@@ -280,4 +280,107 @@ describe("deriveRelationSeedsFromCoMentions", () => {
     expect(make("ベルカはライカの父を殺した")).toEqual([]);
     expect(make("ベルカはライカの師匠に会った")).toEqual([]);
   });
+
+  it("requires asserting patterns for symmetric labels (rejects object/case uses)", () => {
+    const vocabulary = BUILTIN_CODEX_RELATION_VOCABULARY.filter((row) =>
+      ["友人", "敵", "家族"].includes(row.forwardLabel),
+    );
+    const make = (quote: string) =>
+      deriveRelationSeedsFromCoMentions({
+        proposals: [
+          {
+            proposalId: "p-laika",
+            displayTitle: "ライカ",
+            narrativeEntityId: "ne-laika",
+            evidence: [
+              {
+                anchorId: "a1",
+                quote,
+                documentRef: "D1",
+                method: "exact",
+              },
+            ],
+          },
+          {
+            proposalId: "p-belka",
+            displayTitle: "ベルカ",
+            narrativeEntityId: "ne-belka",
+            evidence: [
+              {
+                anchorId: "a1",
+                quote,
+                documentRef: "D1",
+                method: "exact",
+              },
+            ],
+          },
+        ],
+        vocabulary,
+      });
+
+    expect(make("ライカとベルカは友人だ")).toHaveLength(1);
+    expect(make("ライカはベルカの友人だ")).toHaveLength(1);
+    expect(make("ライカとベルカは敵を倒した。")).toEqual([]);
+    expect(make("ライカとベルカは家族を守った。")).toEqual([]);
+    expect(make("ライカとベルカは友人を助けた。")).toEqual([]);
+  });
+
+  it("merges overlapping canonical ranges even when quote strings differ", () => {
+    const padLeft = "あ".repeat(80);
+    const core = "ライカとベルカは友人だ";
+    const padRight = "い".repeat(80);
+    const full = `${padLeft}${core}${padRight}`;
+    const laikaStart = padLeft.length;
+    const belkaStart = padLeft.length + "ライカと".length;
+    const documentTexts = new Map([["D-long", full]]);
+
+    const seeds = deriveRelationSeedsFromCoMentions({
+      proposals: [
+        {
+          proposalId: "p-laika",
+          displayTitle: "ライカ",
+          narrativeEntityId: "ne-laika",
+          evidence: [
+            {
+              anchorId: "a-laika",
+              quote: full.slice(0, belkaStart + "ベルカは友人だ".length),
+              documentRef: "D-long",
+              method: "exact-with-context",
+              canonicalRange: {
+                start: 0,
+                end: belkaStart + "ベルカは友人だ".length,
+              },
+            },
+          ],
+        },
+        {
+          proposalId: "p-belka",
+          displayTitle: "ベルカ",
+          narrativeEntityId: "ne-belka",
+          evidence: [
+            {
+              anchorId: "a-belka",
+              quote: full.slice(laikaStart, full.length),
+              documentRef: "D-long",
+              method: "exact-with-context",
+              canonicalRange: {
+                start: laikaStart,
+                end: full.length,
+              },
+            },
+          ],
+        },
+      ],
+      vocabulary: BUILTIN_CODEX_RELATION_VOCABULARY.filter(
+        (row) => row.forwardLabel === "友人",
+      ),
+      documentTexts,
+    });
+
+    expect(seeds).toHaveLength(1);
+    expect(seeds[0]?.forwardLabel).toBe("友人");
+    expect(seeds[0]?.quote).toContain("ライカ");
+    expect(seeds[0]?.quote).toContain("ベルカ");
+    expect(seeds[0]?.quote).toContain("友人");
+  });
 });

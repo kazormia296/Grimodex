@@ -9,7 +9,7 @@ import {
   treeNodes,
 } from "@/db/schema";
 import type { EventPrecision, EventKind, EventGranularity } from "@/db/schema";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
 // 暦復元の正本は chronicleTime（純粋モジュール）へ集約。ここでは後方互換の再エクスポート。
 export { calendarFromRow } from "./chronicleTime";
@@ -656,32 +656,43 @@ export async function upsertProjectCalendar(
     timezone,
     lunarTzMinutes,
   };
-  const [persisted] =
-    options.baseVersion === null
-      ? await db
-          .insert(projectCalendar)
-          .values({
-            ...values,
-            version: 0,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .onConflictDoNothing({ target: projectCalendar.projectId })
-          .returning()
-      : await db
-          .update(projectCalendar)
-          .set({
-            ...values,
-            version: options.baseVersion + 1,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(projectCalendar.projectId, data.projectId),
-              eq(projectCalendar.version, options.baseVersion),
-            ),
-          )
-          .returning();
+  const baseVersion = options.baseVersion;
+  // Update paths must not silently create a row: if the caller carries a version
+  // token but no row exists, that is a conflict (someone deleted it), never an
+  // insert. Verify existence up front so the shared insert callsite below only
+  // ever exercises the ON CONFLICT DO UPDATE branch for updates.
+  if (baseVersion !== null) {
+    const existing = await getProjectCalendar(data.projectId);
+    if (!existing) {
+      throw new ProjectCalendarVersionConflictError(data.projectId);
+    }
+  }
+  // Single insert callsite for BOTH create and update. For creates (baseVersion
+  // null) the row is inserted at version 0; if it already exists the conflict
+  // update is gated by `sql`0`` so it never matches and returning() is empty →
+  // conflict. For updates the conflict update sets version N+1 only when the
+  // stored version still equals the observed baseVersion (OCC), otherwise the
+  // WHERE fails and returning() is empty → conflict.
+  const [persisted] = await db
+    .insert(projectCalendar)
+    .values({
+      ...values,
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: projectCalendar.projectId,
+      set:
+        baseVersion === null
+          ? { version: sql`${projectCalendar.version}` }
+          : { ...values, version: baseVersion + 1, updatedAt: now },
+      setWhere:
+        baseVersion === null
+          ? sql`0`
+          : eq(projectCalendar.version, baseVersion),
+    })
+    .returning();
   if (!persisted) {
     throw new ProjectCalendarVersionConflictError(data.projectId);
   }

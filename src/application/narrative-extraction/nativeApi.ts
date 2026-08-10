@@ -218,6 +218,27 @@ export interface AppendDecisionResult {
   readonly status: NarrativeProposalStatus;
 }
 
+export interface ReviseAndDecidePayload {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly proposalId: string;
+  readonly payloadJson: Readonly<Record<string, unknown>>;
+  /** Must match Native `current_revision_id` (OCC). */
+  readonly expectedCurrentRevisionId: string;
+  readonly decision: NarrativeProposalDecision;
+  readonly decisionJson?: Readonly<Record<string, unknown>>;
+  readonly createdBy?: string;
+}
+
+export interface ReviseAndDecideResult {
+  readonly proposalId: string;
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+  readonly decisionId: string;
+  readonly decision: NarrativeProposalDecision;
+  readonly status: NarrativeProposalStatus;
+}
+
 export interface CommitApplicationRef {
   readonly proposalId: string;
   readonly revisionId: string;
@@ -413,6 +434,15 @@ export async function narrativeExtractionAppendDecision(
   return invoke<AppendDecisionResult>("narrative_extraction_append_decision", {
     payload,
   });
+}
+
+export async function narrativeExtractionReviseAndDecide(
+  payload: ReviseAndDecidePayload,
+): Promise<ReviseAndDecideResult> {
+  return invoke<ReviseAndDecideResult>(
+    "narrative_extraction_revise_and_decide",
+    { payload },
+  );
 }
 
 export async function narrativeExtractionPrepareCommit(
