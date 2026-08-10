@@ -7,6 +7,6 @@
 
 pub(crate) use super::codex_snapshots::{
     delete_codex_relation_checked, ensure_no_external_codex_dependencies,
-    reapply_codex_entry_create_snapshot, reapply_codex_relation_snapshot,
-    restore_codex_entry_patch, undo_created_codex_entry,
+    ensure_patch_pre_redo_matches_before, reapply_codex_entry_create_snapshot,
+    reapply_codex_relation_snapshot, restore_codex_entry_patch, undo_created_codex_entry,
 };

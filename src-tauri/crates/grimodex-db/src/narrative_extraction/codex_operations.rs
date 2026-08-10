@@ -5,16 +5,20 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use unicode_normalization::UnicodeNormalization;
 
 use crate::agent_writes::{
-    apply_codex_entry_create_in_tx, apply_codex_entry_patch_in_tx, CodexEntryCreateTxInput,
-    CodexEntryCreateTxResult, CodexEntryPatchTxInput, CodexEntryPatchTxResult,
+    apply_codex_entry_create_in_tx, apply_codex_entry_patch_in_tx, collect_codex_entry_snapshot,
+    CodexEntryCreateTxInput, CodexEntryCreateTxResult, CodexEntryPatchTxInput,
+    CodexEntryPatchTxResult,
+};
+use crate::codex_relation_keys::{
+    build_codex_relation_semantic_key, normalize_relation_label,
 };
 
 pub(crate) const OP_KIND_EVENT_CREATE: &str = "chronicle.event.create";
 pub(crate) const OP_KIND_ENTRY_CREATE: &str = "codex.entry.create";
 pub(crate) const OP_KIND_ENTRY_PATCH: &str = "codex.entry.patch";
+pub(crate) const OP_KIND_ENTITY_BIND_EXISTING: &str = "codex.entity.bind-existing";
 pub(crate) const OP_KIND_RELATION_CREATE: &str = "codex.relation.create";
 
 pub(crate) const EMPTY_CODEX_CONTENT: &str = r#"{"type":"doc","content":[]}"#;
@@ -74,6 +78,15 @@ pub(crate) struct CodexEntryPatchPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct CodexEntityBindExistingPayload {
+    pub entry_id: String,
+    pub narrative_entity_id: String,
+    #[serde(default)]
+    pub base_version: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CodexRelationCreatePayload {
     pub relation_id: String,
     #[serde(default)]
@@ -119,9 +132,22 @@ impl CommitMap {
         }
     }
 
-    pub fn insert_binding(&mut self, binding: CodexEntityBinding) {
+    pub fn insert_binding(&mut self, binding: CodexEntityBinding) -> anyhow::Result<()> {
+        if let Some(existing) = self.bindings.get(&binding.narrative_entity_id) {
+            if existing.codex_entry_id != binding.codex_entry_id {
+                anyhow::bail!(
+                    "NEX_COMMIT_MAP_CONFLICT: narrative entity '{}' already bound to '{}', refusing '{}'",
+                    binding.narrative_entity_id,
+                    existing.codex_entry_id,
+                    binding.codex_entry_id
+                );
+            }
+            // Identical remapping is OK; keep original source.
+            return Ok(());
+        }
         self.bindings
             .insert(binding.narrative_entity_id.clone(), binding);
+        Ok(())
     }
 
     pub fn resolve(&self, narrative_entity_id: &str) -> anyhow::Result<&CodexEntityBinding> {
@@ -155,6 +181,7 @@ pub(crate) fn ensure_operation_kind(kind: &str) -> anyhow::Result<()> {
             OP_KIND_EVENT_CREATE
                 | OP_KIND_ENTRY_CREATE
                 | OP_KIND_ENTRY_PATCH
+                | OP_KIND_ENTITY_BIND_EXISTING
                 | OP_KIND_RELATION_CREATE
         ),
         "unsupported commit operation kind: {kind}"
@@ -176,6 +203,13 @@ pub(crate) fn parse_entry_patch_payload(payload: &Value) -> anyhow::Result<Codex
         .map_err(|err| anyhow::anyhow!("invalid codex.entry.patch payload: {err}"))
 }
 
+pub(crate) fn parse_entity_bind_existing_payload(
+    payload: &Value,
+) -> anyhow::Result<CodexEntityBindExistingPayload> {
+    serde_json::from_value(payload.clone())
+        .map_err(|err| anyhow::anyhow!("invalid codex.entity.bind-existing payload: {err}"))
+}
+
 pub(crate) fn parse_relation_create_payload(
     payload: &Value,
 ) -> anyhow::Result<CodexRelationCreatePayload> {
@@ -183,59 +217,29 @@ pub(crate) fn parse_relation_create_payload(
         .map_err(|err| anyhow::anyhow!("invalid codex.relation.create payload: {err}"))
 }
 
-fn normalize_relation_label(label: &str) -> String {
-    let nfc: String = label.nfc().collect();
-    let trimmed = nfc.trim();
-    let mut out = String::with_capacity(trimmed.len());
-    let mut prev_space = false;
-    for ch in trimmed.chars() {
-        if ch.is_whitespace() {
-            if !prev_space {
-                out.push(' ');
-                prev_space = true;
-            }
-        } else {
-            out.push(ch);
-            prev_space = false;
-        }
-    }
-    out
-}
-
-/// Mirrors `buildCodexRelationSemanticKey` in relationVocabulary.ts.
-pub(crate) fn build_codex_relation_semantic_key(
-    project_id: &str,
-    from_codex_id: &str,
-    to_codex_id: &str,
-    relation_type: &str,
-    directionality: &str,
-    forward_label: &str,
-    inverse_label: Option<&str>,
-) -> String {
-    let relation_type = normalize_relation_label(relation_type);
-    let forward = normalize_relation_label(forward_label);
-    let inverse = normalize_relation_label(inverse_label.unwrap_or(""));
-    if directionality == "symmetric" {
-        let (left, right) = if from_codex_id <= to_codex_id {
-            (from_codex_id, to_codex_id)
-        } else {
-            (to_codex_id, from_codex_id)
-        };
-        let label = if forward.is_empty() {
-            inverse
-        } else {
-            forward
-        };
-        format!("s\t{project_id}\t{left}\t{right}\t{relation_type}\t{label}")
-    } else {
-        format!(
-            "d\t{project_id}\t{from_codex_id}\t{to_codex_id}\t{relation_type}\t{forward}\t{inverse}"
-        )
-    }
-}
-
 pub(crate) fn aliases_to_storage(aliases: &[String]) -> String {
     serde_json::to_string(aliases).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn parse_aliases_json(raw: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let Some(raw) = raw.filter(|value| !value.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let parsed: Value = serde_json::from_str(raw)
+        .map_err(|err| anyhow::anyhow!("invalid aliases json: {err}"))?;
+    match parsed {
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(text) = item.as_str() else {
+                    anyhow::bail!("aliases array must contain only strings");
+                };
+                out.push(text.to_string());
+            }
+            Ok(out)
+        }
+        _ => anyhow::bail!("aliases must be a JSON array"),
+    }
 }
 
 pub(crate) fn ensure_entry_id_available(
@@ -358,8 +362,22 @@ pub(crate) fn apply_codex_entry_patch(
         );
     }
 
+    let (current_aliases_raw, current_summary): (Option<String>, String) = conn.query_row(
+        "SELECT aliases, summary FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        params![payload.entry_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let current_aliases = parse_aliases_json(current_aliases_raw.as_deref())?;
+
     let aliases_json = match &payload.aliases {
         Some(collection) if collection.kind == "set" => {
+            // Additive-only under narrative scope: refuse removals.
+            for existing in &current_aliases {
+                anyhow::ensure!(
+                    collection.values.iter().any(|value| value == existing),
+                    "NEX_CODEX_PATCH_ALIASES_REMOVAL: aliases.set must not remove existing aliases"
+                );
+            }
             Some(aliases_to_storage(&collection.values))
         }
         Some(collection) if collection.kind == "leave" => None,
@@ -369,15 +387,21 @@ pub(crate) fn apply_codex_entry_patch(
 
     let (summary_value, fill_if_empty) = match &payload.summary {
         Some(field) if field.kind == "leave" => (None, false),
-        Some(field) if field.kind == "set" => (
-            Some(
-                field
-                    .value
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("summary.set requires value"))?,
-            ),
-            false,
-        ),
+        Some(field) if field.kind == "set" => {
+            anyhow::ensure!(
+                current_summary.trim().is_empty(),
+                "NEX_CODEX_PATCH_SUMMARY_OVERWRITE: summary.set refused for non-empty summary; use fill-if-empty"
+            );
+            (
+                Some(
+                    field
+                        .value
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("summary.set requires value"))?,
+                ),
+                false,
+            )
+        }
         Some(field) if field.kind == "fill-if-empty" => (
             Some(
                 field
@@ -430,13 +454,21 @@ fn resolve_endpoint(
     narrative_entity_id: Option<&str>,
     role: &str,
 ) -> anyhow::Result<String> {
-    if let Some(id) = concrete_id.filter(|value| !value.is_empty()) {
-        return Ok(id.to_string());
-    }
     let Some(entity_id) = narrative_entity_id.filter(|value| !value.is_empty()) else {
+        // Legacy path: concrete Codex ID without NarrativeEntityId.
+        if let Some(id) = concrete_id.filter(|value| !value.is_empty()) {
+            return Ok(id.to_string());
+        }
         anyhow::bail!("codex.relation.create missing {role} endpoint");
     };
-    Ok(commit_map.resolve(entity_id)?.codex_entry_id.clone())
+    let resolved = commit_map.resolve(entity_id)?.codex_entry_id.clone();
+    if let Some(concrete) = concrete_id.filter(|value| !value.is_empty()) {
+        anyhow::ensure!(
+            concrete == resolved.as_str(),
+            "NEX_COMMIT_MAP_ENDPOINT_MISMATCH: {role} concrete id '{concrete}' != CommitMap '{resolved}' for '{entity_id}'"
+        );
+    }
+    Ok(resolved)
 }
 
 pub(crate) fn apply_codex_relation_create_in_tx(
@@ -487,17 +519,21 @@ pub(crate) fn apply_codex_relation_create_in_tx(
         );
     }
 
-    let semantic_key = payload.semantic_key.clone().unwrap_or_else(|| {
-        build_codex_relation_semantic_key(
-            project_id,
-            &from_codex_id,
-            &to_codex_id,
-            &payload.relation_type,
-            &payload.directionality,
-            &forward,
-            inverse.as_deref(),
-        )
-    });
+    let semantic_key = build_codex_relation_semantic_key(
+        project_id,
+        &from_codex_id,
+        &to_codex_id,
+        &payload.relation_type,
+        &payload.directionality,
+        &forward,
+        inverse.as_deref(),
+    );
+    if let Some(client_key) = payload.semantic_key.as_deref() {
+        anyhow::ensure!(
+            client_key == semantic_key.as_str(),
+            "NEX_CODEX_RELATION_SEMANTIC_KEY_MISMATCH: client '{client_key}' != recomputed '{semantic_key}'"
+        );
+    }
 
     let duplicate: i64 = conn.query_row(
         "SELECT COUNT(*) FROM codex_relations
@@ -547,6 +583,28 @@ pub(crate) fn apply_codex_relation_create_in_tx(
         version: 1,
         after_snapshot,
     })
+}
+
+pub(crate) fn apply_codex_entity_bind_existing(
+    conn: &Connection,
+    project_id: &str,
+    payload: &CodexEntityBindExistingPayload,
+) -> anyhow::Result<(String, i64, Value)> {
+    anyhow::ensure!(
+        !payload.narrative_entity_id.trim().is_empty(),
+        "codex.entity.bind-existing requires narrativeEntityId"
+    );
+    if let Some(expected) = payload.base_version {
+        ensure_entry_version(conn, project_id, &payload.entry_id, expected)?;
+    } else {
+        ensure_codex_in_project(conn, project_id, &payload.entry_id)?;
+    }
+    let snapshot = collect_codex_entry_snapshot(conn, &payload.entry_id)?;
+    let version = snapshot
+        .get("version")
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
+    Ok((payload.entry_id.clone(), version, snapshot))
 }
 
 fn ensure_codex_in_project(

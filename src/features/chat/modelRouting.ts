@@ -22,7 +22,7 @@
  *   - inline: inline_ai_stream
  *   - cheap: session_title, beat_role, summarization
  *       … summarization は chatStore の injected callback 経由で model を注入
- *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, narrative_entity_resolve, codex_yomi
+ *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, narrative_entity_resolve, codex_judgment, codex_yomi
  *   - review: post_effect_*（校閲）
  *   - reader: post_effect_pseudo_comment（本文を読む最中の反応）
  *       … start_post_effect_run(_multi) に model_override を渡し、各 process_*_scene が
@@ -163,6 +163,7 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   narrative_structured_repair: "structured",
   map_branch: "structured",
   tree_scaffold: "structured",
+  codex_judgment: "structured",
   codex_yomi: "structured",
   // review — 校閲 post-effect（JSON 構造化）
   post_effect_intent_drift: "review",
@@ -195,8 +196,6 @@ export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   "ai_connection_test",
   "relation_injection",
   "agent_call_limit",
-  // PR6: product path retired; role routing stays on narrative_entity_resolve.
-  "codex_judgment",
 ];
 
 /**

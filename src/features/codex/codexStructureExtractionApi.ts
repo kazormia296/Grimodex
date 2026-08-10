@@ -1,13 +1,45 @@
 import type { CodexEntityHypothesis } from "@/features/narrative-extraction/ir/inferences/codexEntityHypothesis";
 import type { EntityMentionForm } from "@/features/narrative-extraction/ir/observations/entityIdentity";
-import { createCodexRelationProposalFromHypothesis } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
-import type { CodexRelationHypothesis } from "@/features/narrative-extraction/ir/inferences/codexRelationHypothesis";
 import {
-  prepareAndApplyCodexCommit,
-} from "@/application/narrative-extraction/codexCommitCoordinator";
+  createCodexRelationProposalFromHypothesis,
+  CODEX_RELATION_CREATE_PROPOSAL_KIND,
+} from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import type { CodexRelationHypothesis } from "@/features/narrative-extraction/ir/inferences/codexRelationHypothesis";
+import { CODEX_ENTITY_BIND_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
+import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
+import type {
+  CanonicalRange,
+  NarrativeCorpusSnapshot,
+  NarrativeSourceView,
+  Sha256Digest,
+} from "@/features/narrative-extraction/source/types";
+import {
+  planExtractionWindows,
+  type WindowPlan,
+} from "@/features/chronicle/extraction/windowPlanner";
+import { prepareAndApplyCodexCommit } from "@/application/narrative-extraction/codexCommitCoordinator";
+import { buildProjectNarrativeSnapshot } from "@/application/narrative-extraction/projectSnapshotAdapter";
+import {
+  appendDecision,
+  appendRevision,
+  saveProposalSet,
+} from "@/application/narrative-extraction/proposalRepository";
+import { createRun } from "@/application/narrative-extraction/runRepository";
+import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 import { parseAliases } from "./codexMatcher";
+import { BUILTIN_CODEX_TYPES } from "./api";
+import { runEntityCandidatePrepass } from "./extraction/entityCandidatePrepass";
+import {
+  matchExistingEntity,
+  type ExistingEntityCatalogRecord,
+} from "./extraction/existingEntityMatcher";
+import {
+  resolveEntityType,
+  type KnowledgeTypeCatalogRecord,
+} from "./extraction/entityResolver";
 import { planBindCodexEntityProposals } from "./extraction/proposalPlanner";
 import {
+  compileBindExistingCodexEntityOperation,
   compileCreateCodexEntryOperation,
   compileCreateCodexRelationOperation,
   compilePatchCodexEntryOperation,
@@ -21,13 +53,21 @@ import {
   buildCodexEntityProposalSafetyFlags,
   emptyCodexTaskCounts,
   useCodexStructureExtractionStore,
+  type CodexCompiledDomainOperation,
   type CodexEntityReviewProposal,
   type CodexRelationReviewProposal,
+  type CodexReviewEvidenceQuote,
+  type CodexStructureCatalogSnapshot,
   type CodexStructureExtractionReviewProjection,
   type StartCodexStructureExtractionRequest,
 } from "./codexStructureExtractionStore";
 
 export type { StartCodexStructureExtractionRequest };
+
+export const CODEX_STRUCTURE_EXTRACT_SURFACE_PATH =
+  "codex/structure-extract" as const;
+export const CODEX_STRUCTURE_PROPOSAL_SET_KIND =
+  "codex.structure.extract.review@1" as const;
 
 export interface CodexStructureExtractionHeuristicSeed {
   readonly surface: string;
@@ -56,6 +96,8 @@ export interface CodexStructureExtractionHeuristicSeed {
       | "user-confirmation-required";
   }[];
   readonly summarySuggestion?: string | null;
+  /** Unit-test only: real evidence quotes (never invent exact). */
+  readonly evidence?: readonly CodexReviewEvidenceQuote[];
 }
 
 export interface CodexStructureExtractionRelationSeed {
@@ -72,9 +114,155 @@ export interface CodexStructureExtractionRelationSeed {
   readonly quote?: string;
 }
 
+function digestStableString(value: string): Sha256Digest {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return `sha256:${hash.toString(16).padStart(64, "0")}` as Sha256Digest;
+}
+
+function mergeRanges(ranges: readonly CanonicalRange[]): CanonicalRange {
+  return {
+    start: Math.min(...ranges.map((range) => range.start)),
+    end: Math.max(...ranges.map((range) => range.end)),
+  };
+}
+
+async function buildSourceViewsForPlan(
+  snapshot: NarrativeCorpusSnapshot,
+  plan: WindowPlan,
+): Promise<readonly NarrativeSourceView[]> {
+  const documentByRef = new Map(
+    snapshot.documents.map((document) => [document.ref, document] as const),
+  );
+  const views: NarrativeSourceView[] = [];
+  for (const window of plan.windows) {
+    const document = documentByRef.get(window.documentRef);
+    if (!document) continue;
+    views.push(
+      await buildNarrativeSourceView({
+        ref: window.sourceRef,
+        document,
+        documentRange: mergeRanges([
+          ...window.ownedRanges,
+          ...window.contextRanges,
+        ]),
+      }),
+    );
+  }
+  return views;
+}
+
+function coarseClassForSlug(
+  slug: string,
+): CodexEntityHypothesis["payload"]["coarseClass"] {
+  switch (slug) {
+    case "character":
+      return "person";
+    case "location":
+      return "place";
+    case "item":
+      return "item";
+    case "lore":
+      return "concept";
+    default:
+      return "unknown";
+  }
+}
+
+/** Build opaque K#### / T#### catalogs from local Codex entries + builtin types. */
+export function buildCodexStructureCatalogs(args: {
+  readonly entries?: readonly {
+    readonly id: string;
+    readonly name: string | null;
+    readonly aliases: string | null;
+    readonly type: string;
+    readonly version: number;
+  }[];
+  readonly typeCatalog?: readonly KnowledgeTypeCatalogRecord[];
+  readonly existingEntries?: readonly ExistingEntityCatalogRecord[];
+}): {
+  readonly existingCatalog: ExistingEntityCatalogRecord[];
+  readonly typeCatalog: KnowledgeTypeCatalogRecord[];
+  readonly snapshot: CodexStructureCatalogSnapshot;
+} {
+  const typeCatalog =
+    args.typeCatalog && args.typeCatalog.length > 0
+      ? [...args.typeCatalog]
+      : BUILTIN_CODEX_TYPES.map((slug, index) => ({
+          ref: `T${String(index + 1).padStart(4, "0")}`,
+          sourceKey: slug,
+          slug,
+          label: slug,
+          coarseClassHints: [coarseClassForSlug(slug)],
+          expectedVersion: 1,
+        }));
+  const typeRefBySlug = new Map(
+    typeCatalog.map((type) => [type.slug, type.ref] as const),
+  );
+  const existingCatalog =
+    args.existingEntries && args.existingEntries.length > 0
+      ? [...args.existingEntries]
+      : (args.entries ?? []).map((entry, index) => ({
+          ref: `K${String(index + 1).padStart(4, "0")}`,
+          sourceKey: entry.id,
+          name: entry.name ?? "",
+          aliases: parseAliases(entry.aliases),
+          typeRef:
+            typeRefBySlug.get(entry.type) ?? typeCatalog[0]?.ref ?? "T0001",
+          expectedVersion: entry.version,
+        }));
+  return {
+    existingCatalog,
+    typeCatalog,
+    snapshot: {
+      entities: existingCatalog.map((entry) => ({
+        ref: entry.ref,
+        sourceKey: entry.sourceKey,
+        name: entry.name,
+        typeRef: entry.typeRef,
+        expectedVersion: entry.expectedVersion,
+        aliases: entry.aliases,
+      })),
+      types: typeCatalog.map((type) => ({
+        ref: type.ref,
+        sourceKey: type.sourceKey,
+        slug: type.slug,
+        label: type.label,
+      })),
+    },
+  };
+}
+
+export function resolveCodexTypeSlug(
+  typeRef: string,
+  catalog: CodexStructureCatalogSnapshot | null | undefined,
+): string {
+  return catalog?.types.find((type) => type.ref === typeRef)?.slug ?? typeRef;
+}
+
+export function resolveCodexEntitySourceKey(
+  entityRef: string,
+  catalog: CodexStructureCatalogSnapshot | null | undefined,
+): string {
+  return (
+    catalog?.entities.find((entity) => entity.ref === entityRef)?.sourceKey ??
+    entityRef
+  );
+}
+
+export function catalogEntityDisplayName(
+  entityRef: string,
+  catalog: CodexStructureCatalogSnapshot | null | undefined,
+): string {
+  const hit = catalog?.entities.find((entity) => entity.ref === entityRef);
+  return hit?.name?.trim() ? hit.name : entityRef;
+}
+
 /**
  * Build a minimal Entity Hypothesis for heuristic / unit-test paths.
- * AI resolution (runEntityResolutionTask) is optional via useAi.
+ * Product Dialog must not invent scene-id dummy seeds.
  */
 export function buildHeuristicEntityHypothesis(
   seed: CodexStructureExtractionHeuristicSeed,
@@ -84,21 +272,21 @@ export function buildHeuristicEntityHypothesis(
   const entityId = `ne-${index + 1}`;
   const form = seed.form ?? "proper-name";
   const existingResolution = seed.existingCandidates?.length
-    ? ({
+    ? {
         status: "ambiguous" as const,
         candidates: seed.existingCandidates.map((candidate) => ({
           ref: candidate.ref,
           score: candidate.score,
           methods: candidate.methods,
         })),
-      })
+      }
     : seed.existingRef
-      ? ({
+      ? {
           status: "resolved" as const,
           ref: seed.existingRef,
           method: "exact-name" as const,
-        })
-      : ({ status: "none" as const });
+        }
+      : { status: "none" as const };
 
   return {
     hypothesisId: createId(),
@@ -163,6 +351,8 @@ export async function startCodexStructureExtraction(
   request: StartCodexStructureExtractionRequest & {
     readonly heuristicSeeds?: readonly CodexStructureExtractionHeuristicSeed[];
     readonly relationSeeds?: readonly CodexStructureExtractionRelationSeed[];
+    /** Test seam only — product path always persists Native Run/ProposalSet. */
+    readonly skipNativePersist?: boolean;
   },
 ): Promise<CodexStructureExtractionReviewProjection> {
   const createId = (() => {
@@ -173,21 +363,105 @@ export async function startCodexStructureExtraction(
     };
   })();
 
+  const catalogs = buildCodexStructureCatalogs({
+    existingEntries: request.existingEntries,
+    typeCatalog: request.typeCatalog,
+  });
+  const existingCatalog = catalogs.existingCatalog;
+  const typeCatalog = catalogs.typeCatalog;
+  const catalogSnapshot = catalogs.snapshot;
+
+  let seeds = request.heuristicSeeds ? [...request.heuristicSeeds] : null;
+  let evidenceBySurface = new Map<string, CodexReviewEvidenceQuote[]>();
+  let coverageDocumentCount = request.sceneIds.length;
+  let coverageWindowCount = Math.max(1, request.sceneIds.length);
+  let snapshotDigest: string | null = null;
+
+  if (!seeds) {
+    const snapshotResult = await buildProjectNarrativeSnapshot({
+      projectId: request.projectId,
+      folderId: request.folderId,
+      language: request.language ?? "ja",
+      sceneIds: request.sceneIds,
+      authority: request.authority,
+    });
+    if (!snapshotResult.ok) {
+      throw new Error(
+        `Snapshot build failed: ${snapshotResult.diagnostics
+          .map((diagnostic) => diagnostic.code)
+          .join(", ")}`,
+      );
+    }
+    const snapshot = snapshotResult.snapshot;
+    snapshotDigest = snapshot.digest;
+    const windowPlan = planExtractionWindows(snapshot);
+    const sourceViews = await buildSourceViewsForPlan(snapshot, windowPlan);
+    coverageDocumentCount = snapshot.documents.length;
+    coverageWindowCount = Math.max(1, windowPlan.windows.length);
+
+    const prepass = await runEntityCandidatePrepass({
+      snapshot,
+      sourceViews,
+      minimumOccurrenceCount: 1,
+      createEvidenceAnchorId: createId,
+    });
+    seeds = [];
+    if (prepass.status === "complete") {
+      for (const seed of prepass.seeds) {
+        const existingResolution = matchExistingEntity(
+          { surfaces: [seed.surface] },
+          existingCatalog,
+        );
+        const typeResolution = resolveEntityType({
+          existingResolution,
+          existingCatalog,
+          typeCatalog,
+          coarseClass: seed.features.appearsAsProperName ? "person" : "unknown",
+        });
+        evidenceBySurface.set(
+          seed.surface,
+          seed.occurrences.map((occurrence) => ({
+            anchorId: occurrence.evidence.id,
+            quote: occurrence.evidence.quote,
+            documentRef: occurrence.evidence.documentRef,
+            method: occurrence.evidence.method,
+            blocked: false,
+          })),
+        );
+        seeds.push({
+          surface: seed.surface,
+          form: seed.features.appearsAsProperName ? "proper-name" : "alias",
+          coarseClass: seed.features.appearsAsProperName ? "person" : "unknown",
+          typeRef:
+            typeResolution.status === "resolved"
+              ? typeResolution.typeRef
+              : undefined,
+          existingRef:
+            existingResolution.status === "resolved"
+              ? existingResolution.ref
+              : undefined,
+          existingCandidates:
+            existingResolution.status === "ambiguous"
+              ? existingResolution.candidates
+              : undefined,
+          evidence: evidenceBySurface.get(seed.surface),
+        });
+      }
+    }
+  } else {
+    for (const seed of seeds) {
+      if (seed.evidence?.length) {
+        evidenceBySurface.set(seed.surface, [...seed.evidence]);
+      }
+    }
+  }
+
   // Optional AI path reserved for later wiring (runEntityResolutionTask).
   if (request.useAi) {
     // Keep stub: callers may set useAi without requiring live models in tests.
   }
 
-  const seeds =
-    request.heuristicSeeds ??
-    request.sceneIds.slice(0, 3).map((sceneId, index) => ({
-      surface: `候補${index + 1}`,
-      form: "proper-name" as const,
-      typeRef: request.typeCatalog?.[0]?.ref,
-      summarySuggestion: `Scene ${sceneId} から抽出`,
-    }));
-
-  const hypotheses = seeds.map((seed, index) =>
+  const hypotheses = (seeds ?? []).map((seed, index) =>
     buildHeuristicEntityHypothesis(seed, index, createId),
   );
 
@@ -205,7 +479,7 @@ export async function startCodexStructureExtraction(
     );
     return {
       proposalId: item.proposal.proposalId,
-      revisionId: crypto.randomUUID(),
+      revisionId: null,
       proposalKey: item.hypothesisId,
       status: "unreviewed" as const,
       applicability: item.blocked
@@ -213,18 +487,32 @@ export async function startCodexStructureExtraction(
         : ("applicable" as const),
       displayTitle: item.proposal.payload.canonicalName,
       proposal: item.proposal,
-      evidence: [
-        {
-          anchorId: `anchor-${item.proposal.proposalId}`,
-          quote: item.proposal.payload.canonicalName,
-          documentRef: `D${String(index + 1).padStart(6, "0")}`,
-          method: "exact" as const,
-        },
-      ],
+      evidence: (() => {
+        const quotes = evidenceBySurface.get(
+          item.proposal.payload.canonicalName,
+        );
+        if (quotes?.length) return quotes;
+        return [
+          {
+            anchorId: `missing-${item.proposal.proposalId}`,
+            quote: "",
+            documentRef: "",
+            method: "unknown" as const,
+            blocked: true,
+          },
+        ];
+      })(),
       safety: buildCodexEntityProposalSafetyFlags({
         bindingKind: binding.kind,
         typeStatus: item.proposal.payload.typeResolution.status,
-        evidenceMethods: ["exact"],
+        evidenceMethods: (() => {
+          const quotes = evidenceBySurface.get(
+            item.proposal.payload.canonicalName,
+          );
+          return quotes?.length
+            ? quotes.map((row) => row.method)
+            : (["unknown"] as const);
+        })(),
         hasExistingCandidates: binding.kind !== "create-new",
         hasProperNameMention: hasProperName,
         aliasesAllExplicit,
@@ -300,7 +588,7 @@ export async function startCodexStructureExtraction(
     return [
       {
         proposalId: created.proposalId,
-        revisionId: crypto.randomUUID(),
+        revisionId: null,
         proposalKey: hypothesis.hypothesisId,
         status: "unreviewed" as const,
         applicability: blockedDeps
@@ -311,9 +599,10 @@ export async function startCodexStructureExtraction(
         evidence: [
           {
             anchorId: `rel-anchor-${created.proposalId}`,
-            quote: seed.quote ?? seed.forwardLabel,
-            documentRef: `R${String(index + 1).padStart(6, "0")}`,
-            method: "exact" as const,
+            quote: seed.quote ?? "",
+            documentRef: "",
+            method: seed.quote ? ("exact" as const) : ("unknown" as const),
+            blocked: !seed.quote,
           },
         ],
         subjectLabel,
@@ -326,29 +615,128 @@ export async function startCodexStructureExtraction(
     ];
   });
 
-  const runId = createId();
+  let runId = createId();
+  let proposalSetId: string | null = `proposal-set-${runId}`;
+  let finalProposals = proposals;
+  let finalRelations = relationProposals;
+
+  if (!(request as { skipNativePersist?: boolean }).skipNativePersist) {
+    const createdRun = await createRun({
+      projectId: request.projectId,
+      surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+      scopeJson: {
+        folderId: request.folderId,
+        sceneIds: [...request.sceneIds],
+      },
+      specJson: {
+        domain: "codex",
+        version: 1,
+        taskChain: ["codex.entity.resolve"],
+      },
+      specDigest: digestStableString("codex.structure.extract.v1"),
+      snapshotDigest,
+      coverageJson: {
+        mode: "complete",
+        documentCount: coverageDocumentCount,
+        windowCount: coverageWindowCount,
+      },
+      catalogDigest: digestStableString(JSON.stringify(catalogSnapshot)),
+      tasks: [
+        {
+          taskKind: "codex.entity.resolve",
+          priority: 1,
+          inputJson: { stage: 1 },
+        },
+      ],
+    });
+    runId = createdRun.runId;
+    const saved = await saveProposalSet({
+      runId,
+      projectId: request.projectId,
+      setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+      summaryJson: {
+        proposalCount: proposals.length + relationProposals.length,
+        catalog: catalogSnapshot,
+      },
+      proposals: [
+        ...proposals.map((proposal) => ({
+          proposalKey: proposal.proposalKey,
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          payloadJson: proposal.proposal.payload,
+        })),
+        ...relationProposals.map((proposal) => ({
+          proposalKey: proposal.proposalKey,
+          kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+          payloadJson: proposal.proposal.payload,
+        })),
+      ],
+    });
+    proposalSetId = saved.proposalSetId;
+    const byKey = new Map(
+      saved.proposals.map((seed) => [seed.proposalKey, seed] as const),
+    );
+    finalProposals = proposals.map((proposal) => {
+      const seed = byKey.get(proposal.proposalKey);
+      if (!seed?.revisionId) {
+        throw new Error(
+          `Missing Native revision for entity key ${proposal.proposalKey}`,
+        );
+      }
+      return {
+        ...proposal,
+        proposalId: seed.proposalId,
+        revisionId: seed.revisionId,
+        status: seed.status ?? proposal.status,
+      };
+    });
+    finalRelations = relationProposals.map((proposal) => {
+      const seed = byKey.get(proposal.proposalKey);
+      if (!seed?.revisionId) {
+        throw new Error(
+          `Missing Native revision for relation key ${proposal.proposalKey}`,
+        );
+      }
+      return {
+        ...proposal,
+        proposalId: seed.proposalId,
+        revisionId: seed.revisionId,
+        status: seed.status ?? proposal.status,
+      };
+    });
+  } else {
+    finalProposals = proposals.map((proposal) => ({
+      ...proposal,
+      revisionId: proposal.revisionId ?? `test-rev-${proposal.proposalKey}`,
+    }));
+    finalRelations = relationProposals.map((proposal) => ({
+      ...proposal,
+      revisionId: proposal.revisionId ?? `test-rev-${proposal.proposalKey}`,
+    }));
+  }
+
   lastRunId = runId;
-  const counts = recountProjection(proposals, relationProposals);
+  const counts = recountProjection(finalProposals, finalRelations);
   const projection: CodexStructureExtractionReviewProjection = {
     runId,
     projectId: request.projectId,
     workspacePath: request.workspacePath,
     openRevision: request.openRevision,
-    proposalSetId: `proposal-set-${runId}`,
+    proposalSetId,
     status: "completed",
     coverage: {
       mode: "complete",
-      documentCount: request.sceneIds.length,
-      windowCount: Math.max(1, request.sceneIds.length),
-      completedWindows: Math.max(1, request.sceneIds.length),
+      documentCount: coverageDocumentCount,
+      windowCount: coverageWindowCount,
+      completedWindows: coverageWindowCount,
       gaps: [],
     },
     taskCounts: {
       ...emptyCodexTaskCounts(),
-      completed: hypotheses.length + relationProposals.length,
+      completed: hypotheses.length + finalRelations.length,
     },
-    proposals,
-    relationProposals,
+    proposals: finalProposals,
+    relationProposals: finalRelations,
+    catalog: catalogSnapshot,
     ...counts,
   };
 
@@ -378,6 +766,8 @@ export interface ApplyCodexStructureExtractionInput {
 
 /**
  * Compile approved Bind + Relation proposals and apply via codexCommitCoordinator.
+ * Prefer operation payloads locked at approve time (`compiledOperation`) so Native
+ * revision digests match Apply operations.
  */
 export async function applyCodexStructureExtractionReview(
   input: ApplyCodexStructureExtractionInput,
@@ -389,10 +779,6 @@ export async function applyCodexStructureExtractionReview(
   if (!projection.proposalSetId) {
     throw new Error("Missing proposalSetId for codex commit");
   }
-
-  const entryById = new Map(input.entries.map((entry) => [entry.id, entry]));
-  const resolveTypeSlug =
-    input.resolveTypeSlug ?? ((typeRef: string) => typeRef);
 
   const operations: {
     operation: CodexDomainOperationV1;
@@ -414,62 +800,46 @@ export async function applyCodexStructureExtractionReview(
   );
 
   for (const review of approvedEntities) {
-    const binding = review.proposal.payload.binding;
-    const narrativeEntityId = review.proposal.payload.narrativeEntityId;
     const revisionId = review.revisionId!;
-    let operation: CodexDomainOperationV1 | null = null;
-
-    if (binding.kind === "create-new") {
-      const typeRef =
-        review.proposal.payload.typeResolution.status === "resolved"
-          ? review.proposal.payload.typeResolution.typeRef
-          : "character";
-      operation = compileCreateCodexEntryOperation({
-        narrativeEntityId,
-        typeSlug: resolveTypeSlug(typeRef),
-        name: binding.entry.name,
-        aliases: binding.entry.aliases,
-        summary: binding.entry.summary,
-      });
-      commitMap = registerCreatedBinding(
-        commitMap,
-        narrativeEntityId,
-        operation.payload.entryId,
+    const operation =
+      (review.compiledOperation as CodexDomainOperationV1 | null | undefined) ??
+      compileEntityOperationForReview(review, projection.catalog, input);
+    if (!operation) {
+      throw new Error(
+        `Approved entity proposal ${review.proposalId} has no compilable operation`,
       );
-    } else if (binding.kind === "bind-existing") {
-      const entry = entryById.get(binding.entityRef);
-      if (!entry) {
-        throw new Error(
-          `Existing Codex entry ${binding.entityRef} not found for bind`,
-        );
-      }
+    }
+
+    const narrativeEntityId = review.proposal.payload.narrativeEntityId;
+    const entryId =
+      "entryId" in operation.payload &&
+      typeof operation.payload.entryId === "string"
+        ? operation.payload.entryId
+        : null;
+    if (operation.kind === "codex.entry.create" && entryId) {
+      commitMap = registerCreatedBinding(commitMap, narrativeEntityId, entryId);
+    } else if (
+      (operation.kind === "codex.entry.patch" ||
+        operation.kind === "codex.entity.bind-existing") &&
+      entryId
+    ) {
       existingBindings.push({
         narrativeEntityId,
-        codexEntryId: entry.id,
+        codexEntryId: entryId,
         source: "existing",
       });
       commitMap = registerExistingBinding(
         commitMap,
         narrativeEntityId,
-        entry.id,
+        entryId,
       );
-      operation = compilePatchCodexEntryOperation({
-        narrativeEntityId,
-        entryId: entry.id,
-        baseVersion: entry.version,
-        aliasesToAdd: binding.enrichment.aliasesToAdd,
-        existingAliases: parseAliases(entry.aliases),
-        summary: binding.enrichment.summary,
-      });
     }
 
-    if (operation) {
-      operations.push({
-        operation,
-        proposalId: review.proposalId,
-        revisionId,
-      });
-    }
+    operations.push({
+      operation,
+      proposalId: review.proposalId,
+      revisionId,
+    });
   }
 
   const approvedRelations = projection.relationProposals.filter(
@@ -480,11 +850,11 @@ export async function applyCodexStructureExtractionReview(
   );
 
   for (const review of approvedRelations) {
-    const operation = compileCreateCodexRelationOperation(
-      review.proposal,
-      commitMap,
-      { projectId: input.projectId },
-    );
+    const operation =
+      (review.compiledOperation as CodexDomainOperationV1 | null | undefined) ??
+      compileCreateCodexRelationOperation(review.proposal, commitMap, {
+        projectId: input.projectId,
+      });
     operations.push({
       operation,
       proposalId: review.proposalId,
@@ -506,4 +876,285 @@ export async function applyCodexStructureExtractionReview(
   });
 
   return operations.length;
+}
+
+function compileEntityOperationForReview(
+  review: CodexEntityReviewProposal,
+  catalog: CodexStructureCatalogSnapshot | null | undefined,
+  input?: ApplyCodexStructureExtractionInput,
+): CodexDomainOperationV1 | null {
+  const binding = review.proposal.payload.binding;
+  const narrativeEntityId = review.proposal.payload.narrativeEntityId;
+  const resolveTypeSlug =
+    input?.resolveTypeSlug ??
+    ((typeRef: string) => resolveCodexTypeSlug(typeRef, catalog));
+
+  if (binding.kind === "create-new") {
+    const typeRef =
+      review.proposal.payload.typeResolution.status === "resolved"
+        ? review.proposal.payload.typeResolution.typeRef
+        : "character";
+    return compileCreateCodexEntryOperation({
+      narrativeEntityId,
+      typeSlug: resolveTypeSlug(typeRef),
+      name: binding.entry.name,
+      aliases: binding.entry.aliases,
+      summary: binding.entry.summary,
+    });
+  }
+
+  if (binding.kind === "bind-existing") {
+    const entryId = resolveCodexEntitySourceKey(binding.entityRef, catalog);
+    const catalogEntity = catalog?.entities.find(
+      (entity) =>
+        entity.sourceKey === entryId || entity.ref === binding.entityRef,
+    );
+    const live = input?.entries.find((entry) => entry.id === entryId);
+    const baseVersion =
+      live?.version ?? catalogEntity?.expectedVersion ?? undefined;
+    if (baseVersion == null) {
+      throw new Error(
+        `Missing baseVersion for bind-existing entry ${binding.entityRef}`,
+      );
+    }
+    const existingAliases =
+      live != null
+        ? parseAliases(live.aliases)
+        : [...(catalogEntity?.aliases ?? [])];
+    const patch = compilePatchCodexEntryOperation({
+      narrativeEntityId,
+      entryId,
+      baseVersion,
+      aliasesToAdd: binding.enrichment.aliasesToAdd,
+      existingAliases,
+      summary: binding.enrichment.summary,
+    });
+    if (patch) return patch;
+    return compileBindExistingCodexEntityOperation({
+      narrativeEntityId,
+      entryId,
+      baseVersion,
+    });
+  }
+
+  return null;
+}
+
+export async function decideCodexStructureProposal(args: {
+  readonly proposalId: string;
+  readonly status: NarrativeProposalStatus;
+  readonly kind?: "entity" | "relation";
+}): Promise<void> {
+  const projection = useCodexStructureExtractionStore.getState().projection;
+  if (!projection)
+    throw new Error("No active codex structure extraction review");
+  const kind = args.kind ?? "entity";
+  const proposal =
+    kind === "entity"
+      ? projection.proposals.find((item) => item.proposalId === args.proposalId)
+      : projection.relationProposals.find(
+          (item) => item.proposalId === args.proposalId,
+        );
+  if (!proposal?.revisionId) {
+    throw new Error(`Proposal ${args.proposalId} missing revisionId`);
+  }
+  if (args.status === "unreviewed") {
+    if (kind === "entity") {
+      useCodexStructureExtractionStore
+        .getState()
+        .updateProposalStatus(args.proposalId, args.status);
+    } else {
+      useCodexStructureExtractionStore
+        .getState()
+        .updateRelationProposalStatus(args.proposalId, args.status);
+    }
+    return;
+  }
+
+  let revisionId = proposal.revisionId;
+  let compiledOperation: CodexCompiledDomainOperation | null = null;
+
+  if (args.status === "approved") {
+    // Lock Domain Operation into Native revision before decision so Apply digests match.
+    if (kind === "entity") {
+      const entity = proposal as CodexEntityReviewProposal;
+      const operation = compileEntityOperationForReview(
+        entity,
+        projection.catalog,
+      );
+      if (!operation) {
+        throw new Error(
+          `Cannot approve blocked/unresolved entity proposal ${args.proposalId}`,
+        );
+      }
+      compiledOperation = {
+        kind: operation.kind,
+        payload: operation.payload as unknown as Readonly<
+          Record<string, unknown>
+        >,
+      };
+    } else {
+      // Relation compile needs CommitMap of approved entity bindings; use provisional map
+      // from already-approved entity compiled ops + this run's create targets.
+      let commitMap = emptyCommitMap();
+      for (const entity of projection.proposals) {
+        const op = entity.compiledOperation;
+        if (!op) continue;
+        const narrativeEntityId = entity.proposal.payload.narrativeEntityId;
+        const entryId =
+          typeof op.payload.entryId === "string" ? op.payload.entryId : null;
+        if (!entryId) continue;
+        if (op.kind === "codex.entry.create") {
+          commitMap = registerCreatedBinding(
+            commitMap,
+            narrativeEntityId,
+            entryId,
+          );
+        } else {
+          commitMap = registerExistingBinding(
+            commitMap,
+            narrativeEntityId,
+            entryId,
+          );
+        }
+      }
+      const relation = proposal as CodexRelationReviewProposal;
+      const operation = compileCreateCodexRelationOperation(
+        relation.proposal,
+        commitMap,
+        { projectId: projection.projectId },
+      );
+      compiledOperation = {
+        kind: operation.kind,
+        payload: operation.payload as unknown as Readonly<
+          Record<string, unknown>
+        >,
+      };
+    }
+
+    const revised = await appendRevision({
+      runId: projection.runId,
+      projectId: projection.projectId,
+      proposalId: args.proposalId,
+      expectedCurrentRevisionId: revisionId,
+      payloadJson: compiledOperation.payload,
+      createdBy: "codex-structure-extract-dialog",
+    });
+    revisionId = revised.revisionId;
+  }
+
+  const decision =
+    args.status === "approved"
+      ? "approved"
+      : args.status === "rejected"
+        ? "rejected"
+        : args.status === "held"
+          ? "held"
+          : "deferred";
+  await appendDecision({
+    runId: projection.runId,
+    projectId: projection.projectId,
+    proposalId: args.proposalId,
+    revisionId,
+    decision,
+    createdBy: "codex-structure-extract-dialog",
+  });
+
+  const latest = useCodexStructureExtractionStore.getState().projection;
+  if (!latest) return;
+  if (kind === "entity") {
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...latest,
+      proposals: latest.proposals.map((item) =>
+        item.proposalId === args.proposalId
+          ? {
+              ...item,
+              status: args.status,
+              revisionId,
+              compiledOperation:
+                args.status === "approved" ? compiledOperation : null,
+            }
+          : item,
+      ),
+      ...recountProjection(
+        latest.proposals.map((item) =>
+          item.proposalId === args.proposalId
+            ? { ...item, status: args.status }
+            : item,
+        ),
+        latest.relationProposals,
+      ),
+    });
+  } else {
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...latest,
+      relationProposals: latest.relationProposals.map((item) =>
+        item.proposalId === args.proposalId
+          ? {
+              ...item,
+              status: args.status,
+              revisionId,
+              compiledOperation:
+                args.status === "approved" ? compiledOperation : null,
+            }
+          : item,
+      ),
+      ...recountProjection(
+        latest.proposals,
+        latest.relationProposals.map((item) =>
+          item.proposalId === args.proposalId
+            ? { ...item, status: args.status }
+            : item,
+        ),
+      ),
+    });
+  }
+}
+
+export async function reviseCodexStructureProposal(args: {
+  readonly proposalId: string;
+  readonly patch: {
+    canonicalName?: string;
+    summary?: string | null;
+    aliases?: readonly string[];
+    typeRef?: string;
+  };
+}): Promise<void> {
+  const store = useCodexStructureExtractionStore.getState();
+  const projection = store.projection;
+  if (!projection)
+    throw new Error("No active codex structure extraction review");
+  const current = projection.proposals.find(
+    (item) => item.proposalId === args.proposalId,
+  );
+  if (!current?.revisionId) {
+    throw new Error(`Proposal ${args.proposalId} missing revisionId`);
+  }
+  store.reviseProposalFields(args.proposalId, args.patch);
+  const updated = useCodexStructureExtractionStore
+    .getState()
+    .projection?.proposals.find((item) => item.proposalId === args.proposalId);
+  if (!updated) {
+    throw new Error(`Proposal ${args.proposalId} missing after revise`);
+  }
+  const result = await appendRevision({
+    runId: projection.runId,
+    projectId: projection.projectId,
+    proposalId: args.proposalId,
+    expectedCurrentRevisionId: current.revisionId,
+    payloadJson: updated.proposal.payload as unknown as Readonly<
+      Record<string, unknown>
+    >,
+    createdBy: "codex-structure-extract-dialog",
+  });
+  const latest = useCodexStructureExtractionStore.getState().projection;
+  if (!latest) return;
+  useCodexStructureExtractionStore.getState().setProjection({
+    ...latest,
+    proposals: latest.proposals.map((proposal) =>
+      proposal.proposalId === args.proposalId
+        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+        : proposal,
+    ),
+  });
 }

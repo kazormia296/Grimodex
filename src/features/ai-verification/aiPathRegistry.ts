@@ -359,6 +359,8 @@ const SINGLE_SHOT_TEST = "src/features/ai-verification/singleShot.live.test.ts";
 const RELATION_EVAL_TEST =
   "src/features/codex/relationInjectionEval.live.test.ts";
 const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
+const CANDIDATE_JUDGMENT_TEST =
+  "src/features/codex/candidateJudgment.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
 const BROWSER_BYOK_CONTRACT_TEST = "src/lib/browser-ai.test.ts";
 const BROWSER_BYOK_CONSENT_CONTRACT_TEST =
@@ -535,8 +537,7 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "contract",
     testRef: SINGLE_SHOT_AUDIT_TEST,
     testName: "AI audit path: chronicle_extract",
-    note:
-      "Run surface / 旧一括抽出 façade。Stage AI は narrative_observation_extract / narrative_event_synthesize / narrative_structured_repair。cutover まで compatibility callsite を残す。",
+    note: "Run surface / 旧一括抽出 façade。Stage AI は narrative_observation_extract / narrative_event_synthesize / narrative_structured_repair。cutover まで compatibility callsite を残す。",
   },
   {
     id: "narrative_observation_extract",
@@ -584,8 +585,7 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "contract",
     testRef: SINGLE_SHOT_AUDIT_TEST,
     testName: "AI audit path: narrative_entity_resolve",
-    note:
-      "Codex Entity Cluster の同定。不透明 Type／Entry Catalog Ref（T####／K####）と Source View Ref のみ渡し、実 DB Entry ID は送らない。",
+    note: "Codex Entity Cluster の同定。不透明 Type／Entry Catalog Ref（T####／K####）と Source View Ref のみ渡し、実 DB Entry ID は送らない。",
   },
   {
     id: "narrative_relation_synthesize",
@@ -666,16 +666,18 @@ export const AI_PATHS: AiPathEntry[] = [
   },
   {
     id: "codex_judgment",
-    label: "Codex 候補の LLM 判定（退役）",
-    surface: "codex/candidateJudgment.ts judgeCandidates (retired)",
+    label: "Codex 候補の LLM 判定（種別/要約/別名）",
+    surface: "codex/candidateJudgment.ts judgeCandidates",
     layer: "single-shot",
     transport: "send_chat_message",
-    auditOwner: "none",
-    captureLevel: "not-applicable",
-    auditTestRef: null,
-    verifier: "stub",
-    testRef: null,
-    note: "PR6 cutover: 固定4種／実DB ID／mergeTargetId 経路を退役。代替は narrative_entity_resolve + CodexStructureExtractDialog。judgeCandidates はモデルを呼ばず reject する。",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: codex_judgment",
+    verifier: "js-live",
+    testRef: CANDIDATE_JUDGMENT_TEST,
+    testName: "codex candidate judgment live E2E",
+    note: "本番ビルダー codexJudgment.buildCandidateJudgmentPrompt + 本番パーサ parseJudgmentResponse + runLiveSingleShot。形態素×LLM の LLM 半分（種別分類/別名検出）を実モデルで検証。",
   },
   {
     id: "codex_yomi",

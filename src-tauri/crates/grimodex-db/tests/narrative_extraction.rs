@@ -137,7 +137,7 @@ fn seed_approved_proposals(
     db: &Database,
     run_id: &str,
     proposal_set_id: &str,
-    titles: &[&str],
+    payloads: &[Value],
 ) -> Vec<(String, String)> {
     narrative_extraction::narrative_extraction_create_run(
         db,
@@ -157,14 +157,14 @@ fn seed_approved_proposals(
     )
     .expect("create run");
 
-    let proposals: Vec<ProposalSeed> = titles
+    let proposals: Vec<ProposalSeed> = payloads
         .iter()
         .enumerate()
-        .map(|(index, title)| ProposalSeed {
+        .map(|(index, payload)| ProposalSeed {
             proposal_id: Some(format!("prop-{index}")),
             proposal_key: format!("key-{index}"),
             kind: "chronicle.event.create@1".to_string(),
-            payload_json: json!({ "title": title }),
+            payload_json: payload.clone(),
         })
         .collect();
 
@@ -515,23 +515,28 @@ fn cancel_run_marks_active_tasks_cancelled() {
 fn apply_commit_creates_three_events_atomically() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 3);
-    let pairs = seed_approved_proposals(&db, "run-commit-1", "set-1", &["A", "B", "C"]);
+    let payloads = [
+        event_create_payload("event-a", "A", "scene-1", 3),
+        event_create_payload("event-b", "B", "scene-1", 3),
+        event_create_payload("event-c", "C", "scene-1", 3),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-1", "set-1", &payloads);
 
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-a", "A", "scene-1", 3),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-b", "B", "scene-1", 3),
+            payloads[1].clone(),
         ),
         (
             pairs[2].0.clone(),
             pairs[2].1.clone(),
-            event_create_payload("event-c", "C", "scene-1", 3),
+            payloads[2].clone(),
         ),
     ];
     let payload =
@@ -596,19 +601,23 @@ fn apply_commit_creates_three_events_atomically() {
 fn apply_commit_rolls_back_all_on_failure() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 1);
-    let pairs = seed_approved_proposals(&db, "run-commit-2", "set-2", &["A", "B"]);
+    let payloads = [
+        event_create_payload("event-ok", "A", "scene-1", 1),
+        event_create_payload("event-bad", "B", "scene-1", 99),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-2", "set-2", &payloads);
 
     // Second op expects wrong scene version → whole commit fails.
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-ok", "A", "scene-1", 1),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-bad", "B", "scene-1", 99),
+            payloads[1].clone(),
         ),
     ];
     let payload =
@@ -654,11 +663,12 @@ fn apply_commit_rolls_back_all_on_failure() {
 fn apply_commit_is_idempotent_for_same_request_and_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-3", "set-3", &["Only"]);
+    let payloads = [event_create_payload("event-only", "Only", "scene-1", 0)];
+    let pairs = seed_approved_proposals(&db, "run-commit-3", "set-3", &payloads);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
-        event_create_payload("event-only", "Only", "scene-1", 0),
+        payloads[0].clone(),
     )];
     let payload =
         build_apply_payload("req-idem-1", "digest-idem-1", "set-3", "run-commit-3", ops);
@@ -681,11 +691,12 @@ fn apply_commit_is_idempotent_for_same_request_and_digest() {
 fn apply_commit_rejects_same_request_with_different_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-4", "set-4", &["Only"]);
+    let payloads = [event_create_payload("event-only-2", "Only", "scene-1", 0)];
+    let pairs = seed_approved_proposals(&db, "run-commit-4", "set-4", &payloads);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
-        event_create_payload("event-only-2", "Only", "scene-1", 0),
+        payloads[0].clone(),
     )];
     let first =
         build_apply_payload("req-conflict-1", "digest-a", "set-4", "run-commit-4", ops.clone());
@@ -701,17 +712,21 @@ fn apply_commit_rejects_same_request_with_different_digest() {
 fn undo_commit_removes_all_events_and_refuses_edited() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &["A", "B"]);
+    let payloads = [
+        event_create_payload("event-u1", "A", "scene-1", 0),
+        event_create_payload("event-u2", "B", "scene-1", 0),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &payloads);
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-u1", "A", "scene-1", 0),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-u2", "B", "scene-1", 0),
+            payloads[1].clone(),
         ),
     ];
     let payload =
@@ -785,17 +800,21 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
 fn undo_redo_cycles_without_event_edited_false_positive() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &["A", "B"]);
+    let payloads = [
+        event_create_payload("event-cycle-1", "A", "scene-1", 0),
+        event_create_payload("event-cycle-2", "B", "scene-1", 0),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &payloads);
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-cycle-1", "A", "scene-1", 0),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-cycle-2", "B", "scene-1", 0),
+            payloads[1].clone(),
         ),
     ];
     let payload =

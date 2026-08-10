@@ -21,6 +21,7 @@ import { CodexRelationProposalReview } from "./CodexRelationProposalReview";
 import { useCodexStructureExtractionStore } from "./codexStructureExtractionStore";
 import {
   applyCodexStructureExtractionReview,
+  buildCodexStructureCatalogs,
   getCodexStructureReview,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
@@ -99,6 +100,15 @@ export function CodexStructureExtractDialog({
         projectId,
         getCurrentProjectId,
       );
+      const catalogs = buildCodexStructureCatalogs({
+        entries: entries.map((entry) => ({
+          id: entry.id,
+          name: entry.name,
+          aliases: entry.aliases,
+          type: entry.type,
+          version: entry.version,
+        })),
+      });
       await startCodexStructureExtraction({
         projectId,
         folderId,
@@ -107,6 +117,8 @@ export function CodexStructureExtractDialog({
         workspacePath: workspace.activeWorkspacePath,
         openRevision: workspace.workspaceOpenRevision,
         useAi: false,
+        existingEntries: catalogs.existingCatalog,
+        typeCatalog: catalogs.typeCatalog,
       });
       getCodexStructureReview();
       setReviewTab("entity");

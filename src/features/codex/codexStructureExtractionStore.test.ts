@@ -86,6 +86,7 @@ function projection(
     relationCount: 0,
     unresolvedCount: proposals.filter((p) => p.status === "unreviewed").length,
     approvedCount: proposals.filter((p) => p.status === "approved").length,
+    catalog: null,
   };
 }
 
@@ -207,7 +208,7 @@ describe("codexStructureExtractionStore", () => {
     ]);
   });
 
-  it("reviseProposalFields resets approval to unreviewed", () => {
+  it("reviseProposalFields resets approval to unreviewed without inventing revision ids", () => {
     useCodexStructureExtractionStore
       .getState()
       .setProjection(projection([safeCreateProposal({ status: "approved" })]));
@@ -218,6 +219,7 @@ describe("codexStructureExtractionStore", () => {
       useCodexStructureExtractionStore.getState().projection?.proposals[0];
     expect(updated?.status).toBe("unreviewed");
     expect(updated?.displayTitle).toBe("雷牙");
-    expect(updated?.revisionId).not.toBe("rev-1");
+    // Native appendRevision must supply the next revisionId (store keeps OCC base).
+    expect(updated?.revisionId).toBe("rev-1");
   });
 });

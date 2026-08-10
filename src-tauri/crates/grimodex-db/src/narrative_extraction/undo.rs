@@ -6,8 +6,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::codex_undo::{
-    delete_codex_relation_checked, reapply_codex_entry_create_snapshot,
-    reapply_codex_relation_snapshot, restore_codex_entry_patch, undo_created_codex_entry,
+    delete_codex_relation_checked, ensure_patch_pre_redo_matches_before,
+    reapply_codex_entry_create_snapshot, reapply_codex_relation_snapshot, restore_codex_entry_patch,
+    undo_created_codex_entry,
 };
 use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
 use super::models::UndoCommitPayload;
@@ -57,6 +58,10 @@ fn mutate_commit(
             let commit = resolve_commit(conn, payload)?;
             let journal_after = load_journal_after(conn, &commit.commit_id)?;
             let entities = journal_entities(&journal_after)?;
+            let entity_bindings = journal_after
+                .get("entityBindings")
+                .cloned()
+                .unwrap_or(Value::Null);
 
             match direction {
                 UndoDirection::Undo => {
@@ -113,6 +118,12 @@ fn mutate_commit(
                         commit.status
                     );
 
+                    // Preflight: current state must still match the post-Undo expectation
+                    // before we re-apply after-snapshots (especially patch summary/aliases).
+                    for entity in &entities {
+                        preflight_redo_entity(conn, &payload.project_id, entity)?;
+                    }
+
                     let mut restored = Vec::new();
                     let mut after_entities = Vec::new();
                     for entity in &entities {
@@ -122,13 +133,14 @@ fn mutate_commit(
                             .get("snapshot")
                             .cloned()
                             .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
-                        let replay_version = match entity_kind {
+                        let (replay_version, live_snapshot) = match entity_kind {
                             "event" => {
                                 let previous_version = entity
                                     .get("version")
                                     .and_then(Value::as_i64)
-                                    .unwrap_or(1);
-                                // Do not reuse the original version generation.
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("journal event missing version")
+                                    })?;
                                 let replay_version = previous_version
                                     .checked_add(1)
                                     .ok_or_else(|| {
@@ -141,16 +153,8 @@ fn mutate_commit(
                                     Some(replay_version),
                                     true,
                                 )?;
-                                // Keep journal after-snapshot aligned with the redone live
-                                // state so the next Undo compares against version N+1.
                                 let live_snapshot = collect_event_snapshot(conn, entity_id)?;
-                                after_entities.push(json!({
-                                    "entityKind": "event",
-                                    "entityId": entity_id,
-                                    "version": replay_version,
-                                    "snapshot": live_snapshot,
-                                }));
-                                replay_version
+                                (replay_version, live_snapshot)
                             }
                             "codex_entry" => {
                                 let op_kind = entity
@@ -158,18 +162,13 @@ fn mutate_commit(
                                     .and_then(Value::as_str)
                                     .unwrap_or("create");
                                 if op_kind == "patch" {
-                                    // Redo of patch: re-apply after snapshot fields with OCC.
-                                    let after_version = entity
-                                        .get("version")
-                                        .and_then(Value::as_i64)
-                                        .unwrap_or(1);
-                                    // Current should be undo-restored version (after_version + 1 typically).
                                     let live_version: i64 = conn.query_row(
                                         "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
                                         params![entity_id, payload.project_id],
                                         |row| row.get(0),
                                     )?;
-                                    let aliases = snapshot.get("aliases").cloned().unwrap_or(Value::Null);
+                                    let aliases =
+                                        snapshot.get("aliases").cloned().unwrap_or(Value::Null);
                                     let summary = snapshot
                                         .get("summary")
                                         .and_then(Value::as_str)
@@ -182,7 +181,9 @@ fn mutate_commit(
                                     let next = live_version
                                         .checked_add(1)
                                         .ok_or_else(|| {
-                                            anyhow::anyhow!("codex entry version overflow during redo")
+                                            anyhow::anyhow!(
+                                                "codex entry version overflow during redo"
+                                            )
                                         })?;
                                     let updated = conn.execute(
                                         "UPDATE codex_entries
@@ -205,8 +206,17 @@ fn mutate_commit(
                                         updated == 1,
                                         "NEX_COMMIT_ENTRY_EDITED: entry '{entity_id}' redo patch conflict"
                                     );
-                                    let _ = after_version;
-                                    next
+                                    let live_snapshot =
+                                        collect_codex_entry_snapshot(conn, entity_id)?;
+                                    (next, live_snapshot)
+                                } else if op_kind == "bind" {
+                                    let live_snapshot =
+                                        collect_codex_entry_snapshot(conn, entity_id)?;
+                                    let version = live_snapshot
+                                        .get("version")
+                                        .and_then(Value::as_i64)
+                                        .unwrap_or(1);
+                                    (version, live_snapshot)
                                 } else {
                                     reapply_codex_entry_create_snapshot(
                                         conn,
@@ -224,16 +234,13 @@ fn mutate_commit(
                             )?,
                             other => anyhow::bail!("unsupported journal entity kind '{other}'"),
                         };
-                        if entity_kind != "event" {
-                            let mut row = entity.clone();
-                            if let Some(obj) = row.as_object_mut() {
-                                obj.insert(
-                                    "version".to_string(),
-                                    Value::from(replay_version),
-                                );
-                            }
-                            after_entities.push(row);
+
+                        let mut row = entity.clone();
+                        if let Some(obj) = row.as_object_mut() {
+                            obj.insert("version".to_string(), Value::from(replay_version));
+                            obj.insert("snapshot".to_string(), live_snapshot);
                         }
+                        after_entities.push(row);
                         restored.push(json!({
                             "entityKind": entity_kind,
                             "entityId": entity_id,
@@ -241,7 +248,7 @@ fn mutate_commit(
                         }));
                     }
 
-                    update_journal_after(conn, &commit.commit_id, &after_entities)?;
+                    update_journal_after(conn, &commit.commit_id, &after_entities, &entity_bindings)?;
 
                     let change_uid = Uuid::new_v4().to_string();
                     append_change_events_in_tx(
@@ -302,7 +309,7 @@ fn preflight_undo_entity(
                 let expected_version = entity
                     .get("version")
                     .and_then(Value::as_i64)
-                    .unwrap_or(1);
+                    .ok_or_else(|| anyhow::anyhow!("journal patch missing version"))?;
                 let live_version: i64 = conn.query_row(
                     "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
                     params![entity_id, project_id],
@@ -347,6 +354,66 @@ fn preflight_undo_entity(
     Ok(())
 }
 
+fn preflight_redo_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity: &Value,
+) -> anyhow::Result<()> {
+    let entity_kind = entity_kind(entity)?;
+    let entity_id = entity_id(entity)?;
+    match entity_kind {
+        "event" => {
+            // Create redo expects the event to be absent after undo.
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+                params![entity_id, project_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                exists == 0,
+                "NEX_COMMIT_EVENT_EDITED: event '{entity_id}' still exists before redo"
+            );
+        }
+        "codex_entry" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let before = entity
+                    .get("beforeSnapshot")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("patch journal missing beforeSnapshot"))?;
+                let live = collect_codex_entry_snapshot(conn, entity_id)?;
+                ensure_patch_pre_redo_matches_before(&live, &before, entity_id)?;
+            } else {
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+                    params![entity_id, project_id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(
+                    exists == 0,
+                    "NEX_COMMIT_ENTRY_EDITED: entry '{entity_id}' still exists before redo"
+                );
+            }
+        }
+        "codex_relation" => {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM codex_relations WHERE id = ?1 AND project_id = ?2",
+                params![entity_id, project_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                exists == 0,
+                "NEX_COMMIT_RELATION_EDITED: relation '{entity_id}' still exists before redo"
+            );
+        }
+        other => anyhow::bail!("unsupported journal entity kind '{other}'"),
+    }
+    Ok(())
+}
+
 fn undo_one_entity(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -384,7 +451,7 @@ fn undo_one_entity(
                 let expected_after_version = entity
                     .get("version")
                     .and_then(Value::as_i64)
-                    .unwrap_or(1);
+                    .ok_or_else(|| anyhow::anyhow!("journal patch missing version"))?;
                 restore_codex_entry_patch(
                     conn,
                     project_id,
@@ -397,7 +464,7 @@ fn undo_one_entity(
                 let expected_version = entity
                     .get("version")
                     .and_then(Value::as_i64)
-                    .unwrap_or(1);
+                    .ok_or_else(|| anyhow::anyhow!("journal create missing version"))?;
                 undo_created_codex_entry(conn, project_id, entity_id, expected_version)?;
             }
         }
@@ -424,8 +491,13 @@ fn update_journal_after(
     conn: &rusqlite::Connection,
     commit_id: &str,
     after_entities: &[Value],
+    entity_bindings: &Value,
 ) -> anyhow::Result<()> {
-    let after_json = json!({ "entities": after_entities });
+    let after_json = if entity_bindings.is_null() {
+        json!({ "entities": after_entities })
+    } else {
+        json!({ "entities": after_entities, "entityBindings": entity_bindings })
+    };
     let updated = conn.execute(
         "UPDATE narrative_commit_journals
             SET after_json = ?1

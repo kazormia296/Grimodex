@@ -1,12 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const mockSend = vi.hoisted(() => vi.fn());
+const mockBlock = vi.hoisted(() => vi.fn(() => false));
 
 vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: mockSend,
 }));
 vi.mock("@/features/ai-policy/policyGuard", () => ({
-  blockIfPolicyOff: vi.fn(() => false),
+  blockIfPolicyOff: mockBlock,
 }));
 vi.mock("@/features/ai-usage/recordAiUsage", () => ({
   recordAiUsage: vi.fn(),
@@ -18,10 +19,7 @@ vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => ({ projectId: "p1" }) },
 }));
 
-import {
-  CandidateJudgmentRetiredError,
-  judgeCandidates,
-} from "./candidateJudgment";
+import { judgeCandidates } from "./candidateJudgment";
 import type { CodexCandidate } from "./candidateExtractor";
 
 function cand(surface: string): CodexCandidate {
@@ -34,20 +32,102 @@ function cand(surface: string): CodexCandidate {
   };
 }
 
-describe("judgeCandidates (retired)", () => {
-  it("rejects without calling the model", async () => {
-    await expect(judgeCandidates([cand("円明")], [])).rejects.toBeInstanceOf(
-      CandidateJudgmentRetiredError,
+function aiReturns(judgments: unknown[]) {
+  mockSend.mockResolvedValue({
+    text: JSON.stringify({ judgments }),
+    inputTokens: 1,
+    outputTokens: 1,
+  });
+}
+
+describe("judgeCandidates", () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockBlock.mockReturnValue(false);
+  });
+
+  it("種別を正規化採用し、不正種別は捨て、未知 aliasOfId は null に倒す", async () => {
+    aiReturns([
+      {
+        surface: "円明",
+        suggestedType: " Character ",
+        summary: "主人公",
+        aliasOfId: null,
+      },
+      {
+        surface: "帝都",
+        suggestedType: "location",
+        summary: "",
+        aliasOfId: "e1",
+      },
+      { surface: "謎", suggestedType: "bogus", summary: "", aliasOfId: null },
+      { surface: "影", suggestedType: "item", summary: "", aliasOfId: "ghost" },
+    ]);
+    const m = await judgeCandidates(
+      [cand("円明"), cand("帝都"), cand("謎"), cand("影")],
+      [{ id: "e1", name: "首都", aliases: null }],
     );
+    // 前後空白・大小を吸収して enum に丸める
+    expect(m.get("円明")?.suggestedType).toBe("character");
+    expect(m.get("円明")?.summary).toBe("主人公");
+    expect(m.get("帝都")?.aliasOfId).toBe("e1"); // 既知 id は採用
+    expect(m.has("謎")).toBe(false); // 不正な種別は除外
+    // 種別は有効・aliasOfId だけ未知 → 判定は活かし alias は null に倒す
+    expect(m.get("影")?.suggestedType).toBe("item");
+    expect(m.get("影")?.aliasOfId).toBeNull();
+  });
+
+  it("入力候補に無い surface (hallucination) と空白のみ surface は捨てる", async () => {
+    aiReturns([
+      {
+        surface: "円明",
+        suggestedType: "character",
+        summary: "",
+        aliasOfId: null,
+      },
+      {
+        surface: "パン屋",
+        suggestedType: "location",
+        summary: "",
+        aliasOfId: null,
+      },
+      { surface: "   ", suggestedType: "item", summary: "", aliasOfId: null },
+    ]);
+    const m = await judgeCandidates([cand("円明")], []);
+    expect(m.has("円明")).toBe(true);
+    expect(m.has("パン屋")).toBe(false); // 入力に無い
+    expect(m.size).toBe(1); // 空白 surface も入らない
+  });
+
+  it("policy off なら AI を呼ばず空", async () => {
+    mockBlock.mockReturnValue(true);
+    const m = await judgeCandidates([cand("円明")], []);
+    expect(m.size).toBe(0);
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it("never sends entry DB ids even when entries are provided", async () => {
-    await expect(
-      judgeCandidates([cand("円明")], [
-        { id: "real-db-id", name: "円明", aliases: null },
-      ]),
-    ).rejects.toMatchObject({ code: "CODEX_JUDGMENT_RETIRED" });
+  it("候補ゼロなら AI を呼ばない", async () => {
+    const m = await judgeCandidates([], []);
+    expect(m.size).toBe(0);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("壊れた AI 出力は失敗として通知できるよう reject する", async () => {
+    mockSend.mockResolvedValue({
+      text: "no json here",
+      inputTokens: 0,
+      outputTokens: 0,
+    });
+    await expect(judgeCandidates([cand("円明")], [])).rejects.toMatchObject({
+      code: "CODEX_JUDGMENT_NO_VALID_RESULT",
+    });
+  });
+
+  it("transport 失敗を空 Map にせず呼び出し元へ伝える", async () => {
+    mockSend.mockRejectedValue(new Error("transport unavailable"));
+
+    await expect(judgeCandidates([cand("円明")], [])).rejects.toThrow(
+      "transport unavailable",
+    );
   });
 });

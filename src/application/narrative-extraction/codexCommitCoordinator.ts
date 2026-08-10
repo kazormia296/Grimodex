@@ -1,4 +1,7 @@
-import type { CodexDomainOperationV1, CommitMap } from "@/features/codex/extraction/compiler";
+import type {
+  CodexDomainOperationV1,
+  CommitMap,
+} from "@/features/codex/extraction/compiler";
 import {
   emptyCommitMap,
   registerCreatedBinding,
@@ -65,6 +68,12 @@ function buildCommitMap(input: CommitCodexOperationsInput): CommitMap {
         item.operation.payload.entryId,
       );
     } else if (item.operation.kind === "codex.entry.patch") {
+      commitMap = registerExistingBinding(
+        commitMap,
+        item.operation.payload.narrativeEntityId,
+        item.operation.payload.entryId,
+      );
+    } else if (item.operation.kind === "codex.entity.bind-existing") {
       commitMap = registerExistingBinding(
         commitMap,
         item.operation.payload.narrativeEntityId,

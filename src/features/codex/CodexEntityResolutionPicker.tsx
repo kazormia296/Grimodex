@@ -3,6 +3,9 @@ import type { EntityBindingCandidate } from "@/features/narrative-extraction/ir/
 export interface CodexEntityResolutionPickerProps {
   readonly allowCreateNew: boolean;
   readonly candidates: readonly EntityBindingCandidate[];
+  readonly candidateLabels?:
+    | ReadonlyMap<string, string>
+    | Record<string, string>;
   readonly onCreateNew?: () => void;
   readonly onUseExisting?: (entityRef: string) => void;
 }
@@ -13,9 +16,16 @@ export interface CodexEntityResolutionPickerProps {
 export function CodexEntityResolutionPicker({
   allowCreateNew,
   candidates,
+  candidateLabels,
   onCreateNew,
   onUseExisting,
 }: CodexEntityResolutionPickerProps) {
+  const labelFor = (ref: string): string => {
+    if (!candidateLabels) return ref;
+    if (candidateLabels instanceof Map) return candidateLabels.get(ref) ?? ref;
+    return candidateLabels[ref] ?? ref;
+  };
+
   return (
     <div
       className="flex flex-col gap-2 rounded border border-border bg-muted/20 px-2.5 py-2"
@@ -44,9 +54,9 @@ export function CodexEntityResolutionPicker({
                 onClick={() => onUseExisting?.(candidate.ref)}
                 data-testid={`codex-resolve-existing-${candidate.ref}`}
               >
-                既存 Entry {candidate.ref}
+                {labelFor(candidate.ref)}
                 <span className="ml-1 text-muted-foreground">
-                  score {candidate.score}
+                  ({candidate.ref}) · score {candidate.score}
                   {candidate.methods.length > 0
                     ? ` · ${candidate.methods.join(",")}`
                     : ""}

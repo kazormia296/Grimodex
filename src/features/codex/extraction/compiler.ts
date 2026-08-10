@@ -8,6 +8,7 @@ import type {
 export type CodexDomainOperationKind =
   | "codex.entry.create"
   | "codex.entry.patch"
+  | "codex.entity.bind-existing"
   | "codex.relation.create";
 
 export interface DomainOperationBase<TKind extends string, TPayload> {
@@ -56,6 +57,17 @@ export type PatchCodexEntryOperationV1 = DomainOperationBase<
   PatchCodexEntryOperationPayloadV1
 >;
 
+export interface BindExistingCodexEntityOperationPayloadV1 {
+  readonly entryId: string;
+  readonly narrativeEntityId: NarrativeEntityId;
+  readonly baseVersion: number;
+}
+
+export type BindExistingCodexEntityOperationV1 = DomainOperationBase<
+  "codex.entity.bind-existing",
+  BindExistingCodexEntityOperationPayloadV1
+>;
+
 export interface CreateCodexRelationOperationPayloadV1 {
   readonly relationId: string;
   readonly fromCodexId?: string;
@@ -77,6 +89,7 @@ export type CreateCodexRelationOperationV1 = DomainOperationBase<
 export type CodexDomainOperationV1 =
   | CreateCodexEntryOperationV1
   | PatchCodexEntryOperationV1
+  | BindExistingCodexEntityOperationV1
   | CreateCodexRelationOperationV1;
 
 export interface CodexEntityBinding {
@@ -128,6 +141,25 @@ export function compileCreateCodexEntryOperation(
       parentId: null,
       content: EMPTY_CONTENT,
       narrativeEntityId: input.narrativeEntityId,
+    },
+  };
+}
+
+export interface BindExistingOnlyInput {
+  readonly narrativeEntityId: NarrativeEntityId;
+  readonly entryId: string;
+  readonly baseVersion: number;
+}
+
+export function compileBindExistingCodexEntityOperation(
+  input: BindExistingOnlyInput,
+): BindExistingCodexEntityOperationV1 {
+  return {
+    kind: "codex.entity.bind-existing",
+    payload: {
+      entryId: input.entryId,
+      narrativeEntityId: input.narrativeEntityId,
+      baseVersion: input.baseVersion,
     },
   };
 }
@@ -211,9 +243,11 @@ export function resolveCodexEntryId(
 }
 
 export function compileCreateCodexRelationOperation(
-  proposal: Pick<CreateCodexRelationProposal, "payload"> | {
-    readonly payload: CreateCodexRelationProposalPayload;
-  },
+  proposal:
+    | Pick<CreateCodexRelationProposal, "payload">
+    | {
+        readonly payload: CreateCodexRelationProposalPayload;
+      },
   commitMap: CommitMap,
   options?: {
     readonly projectId: string;

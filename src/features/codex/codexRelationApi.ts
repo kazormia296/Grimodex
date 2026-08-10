@@ -1,6 +1,10 @@
 import { db } from "@/db/client";
 import { codexRelations } from "@/db/schema";
 import { and, asc, eq, or, inArray } from "drizzle-orm";
+import {
+  buildCodexRelationSemanticKey,
+  type CodexRelationDirectionalityStored,
+} from "@/features/codex/extraction/relationVocabulary";
 import { notifyCodexRelationsChanged } from "./codexRelationEvents";
 
 export type CodexRelationRow = typeof codexRelations.$inferSelect;
@@ -54,9 +58,29 @@ export async function createCodexRelation(
     | "label"
     | "depthHint"
     | "sourceMapEdgeId"
-  > & { id?: string },
+  > & {
+    id?: string;
+    directionality?: CodexRelationDirectionalityStored;
+    inverseLabel?: string | null;
+  },
 ): Promise<CodexRelationRow> {
   const now = new Date().toISOString();
+  const directionality = data.directionality ?? "directed";
+  const forwardLabel = data.label ?? "";
+  const inverseLabel =
+    directionality === "symmetric"
+      ? (data.inverseLabel ?? forwardLabel)
+      : (data.inverseLabel ?? null);
+  const relationType = data.relationType ?? "custom";
+  const semanticKey = buildCodexRelationSemanticKey({
+    projectId: data.projectId,
+    fromCodexId: data.fromCodexId,
+    toCodexId: data.toCodexId,
+    relationType,
+    directionality,
+    forwardLabel,
+    inverseLabel,
+  });
   const rows = await db
     .insert(codexRelations)
     .values({
@@ -64,8 +88,12 @@ export async function createCodexRelation(
       projectId: data.projectId,
       fromCodexId: data.fromCodexId,
       toCodexId: data.toCodexId,
-      relationType: data.relationType ?? "custom",
+      relationType,
       label: data.label ?? null,
+      directionality,
+      inverseLabel,
+      semanticKey,
+      version: 1,
       depthHint: data.depthHint ?? null,
       sourceMapEdgeId: data.sourceMapEdgeId ?? null,
       createdAt: now,

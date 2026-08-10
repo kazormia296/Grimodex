@@ -1,65 +1,13 @@
 use rusqlite::{params, Connection, ErrorCode};
 use std::time::Duration;
-use unicode_normalization::UnicodeNormalization;
 
+use super::codex_relation_keys::build_codex_relation_semantic_key;
 use super::Database;
 
 enum ConvergedPreviousFinalize {
     Finalized,
     Busy,
     NeedsFullMigration,
-}
-
-fn normalize_relation_label(label: &str) -> String {
-    let nfc: String = label.nfc().collect();
-    let trimmed = nfc.trim();
-    let mut out = String::with_capacity(trimmed.len());
-    let mut prev_space = false;
-    for ch in trimmed.chars() {
-        if ch.is_whitespace() {
-            if !prev_space {
-                out.push(' ');
-                prev_space = true;
-            }
-        } else {
-            out.push(ch);
-            prev_space = false;
-        }
-    }
-    out
-}
-
-/// Mirrors `buildCodexRelationSemanticKey` in relationVocabulary.ts.
-fn build_codex_relation_semantic_key(
-    project_id: &str,
-    from_codex_id: &str,
-    to_codex_id: &str,
-    relation_type: &str,
-    directionality: &str,
-    forward_label: &str,
-    inverse_label: Option<&str>,
-) -> String {
-    let relation_type = normalize_relation_label(relation_type);
-    let forward = normalize_relation_label(forward_label);
-    let inverse = normalize_relation_label(inverse_label.unwrap_or(""));
-    if directionality == "symmetric" {
-        let (left, right) = if from_codex_id <= to_codex_id {
-            (from_codex_id, to_codex_id)
-        } else {
-            (to_codex_id, from_codex_id)
-        };
-        let label = if forward.is_empty() {
-            inverse
-        } else {
-            forward
-        };
-        format!("s\t{project_id}\t{left}\t{right}\t{relation_type}\t{label}")
-    } else {
-        // Existing rows are treated as directed even if directionality text is unexpected.
-        format!(
-            "d\t{project_id}\t{from_codex_id}\t{to_codex_id}\t{relation_type}\t{forward}\t{inverse}"
-        )
-    }
 }
 
 impl Database {

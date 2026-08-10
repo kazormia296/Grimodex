@@ -546,6 +546,7 @@ pub mod backup_restore;
 pub mod change_events;
 pub mod chronicle;
 pub mod chronicle_bulk;
+pub mod codex_relation_keys;
 pub mod domain_writes;
 pub mod editor_stickies;
 mod execute;

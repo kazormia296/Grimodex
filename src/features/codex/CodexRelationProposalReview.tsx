@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { CodexExtractionEvidencePane } from "./CodexExtractionEvidencePane";
 import { CodexRelationEditor } from "./CodexRelationEditor";
 import { CodexRelationProposalCard } from "./CodexRelationProposalCard";
+import { decideCodexStructureProposal } from "./codexStructureExtractionApi";
 import {
   useCodexStructureExtractionStore,
   type CodexRelationReviewProposal,
@@ -34,9 +35,6 @@ export function CodexRelationProposalReview({
   const selectRelationProposal = useCodexStructureExtractionStore(
     (s) => s.selectRelationProposal,
   );
-  const updateRelationProposalStatus = useCodexStructureExtractionStore(
-    (s) => s.updateRelationProposalStatus,
-  );
   const reviseRelationFields = useCodexStructureExtractionStore(
     (s) => s.reviseRelationFields,
   );
@@ -51,8 +49,9 @@ export function CodexRelationProposalReview({
 
   const selected = useMemo(
     () =>
-      proposals.find((proposal) => proposal.proposalId === selectedProposalId) ??
-      null,
+      proposals.find(
+        (proposal) => proposal.proposalId === selectedProposalId,
+      ) ?? null,
     [proposals, selectedProposalId],
   );
 
@@ -92,9 +91,12 @@ export function CodexRelationProposalReview({
                 selected={proposal.proposalId === selectedProposalId}
                 onSelect={() => handleSelect(proposal.proposalId)}
                 onDecide={(status) => {
-                  if (boundToStore) {
-                    updateRelationProposalStatus(proposal.proposalId, status);
-                  }
+                  if (!boundToStore) return;
+                  void decideCodexStructureProposal({
+                    proposalId: proposal.proposalId,
+                    status,
+                    kind: "relation",
+                  });
                 }}
               />
             ))
@@ -105,7 +107,9 @@ export function CodexRelationProposalReview({
       <div className="flex max-h-80 min-w-0 flex-col gap-3 overflow-y-auto px-3 py-2">
         <span className="text-xs font-medium text-foreground">詳細</span>
         {!selected ? (
-          <p className="text-xs text-muted-foreground">提案を選択してください</p>
+          <p className="text-xs text-muted-foreground">
+            提案を選択してください
+          </p>
         ) : (
           <>
             {boundToStore && (

@@ -21,7 +21,7 @@ fn seed_approved_proposals(
     db: &Database,
     run_id: &str,
     proposal_set_id: &str,
-    kinds: &[&str],
+    items: &[(&str, Value)],
 ) -> Vec<(String, String)> {
     narrative_extraction::narrative_extraction_create_run(
         db,
@@ -41,14 +41,14 @@ fn seed_approved_proposals(
     )
     .expect("create run");
 
-    let proposals: Vec<ProposalSeed> = kinds
+    let proposals: Vec<ProposalSeed> = items
         .iter()
         .enumerate()
-        .map(|(index, kind)| ProposalSeed {
-            proposal_id: Some(format!("prop-{index}")),
-            proposal_key: format!("key-{index}"),
-            kind: kind.to_string(),
-            payload_json: json!({ "index": index }),
+        .map(|(index, (kind, payload))| ProposalSeed {
+            proposal_id: Some(format!("{proposal_set_id}-prop-{index}")),
+            proposal_key: format!("{proposal_set_id}-key-{index}"),
+            kind: (*kind).to_string(),
+            payload_json: payload.clone(),
         })
         .collect();
 
@@ -164,39 +164,42 @@ fn build_apply(
     }
 }
 
+fn ops_from_pairs(
+    pairs: &[(String, String)],
+    items: &[(&str, Value)],
+) -> Vec<(String, String, String, Value)> {
+    pairs
+        .iter()
+        .zip(items.iter())
+        .map(|((proposal_id, revision_id), (kind, payload))| {
+            (
+                proposal_id.clone(),
+                revision_id.clone(),
+                (*kind).to_string(),
+                payload.clone(),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn two_entries_and_relation_atomic_commit() {
     let db = migrated_db();
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-codex-1",
-        "set-codex-1",
-        &[
-            "codex.entry.create",
-            "codex.entry.create",
-            "codex.relation.create",
-        ],
-    );
-    let ops = vec![
+    let items = [
         (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-a", "Alice", "ent:alice"),
         ),
         (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-b", "Bob", "ent:bob"),
         ),
         (
-            pairs[2].0.clone(),
-            pairs[2].1.clone(),
-            "codex.relation.create".to_string(),
+            "codex.relation.create",
             relation_create("rel-1", "ent:alice", "ent:bob", None),
         ),
     ];
+    let pairs = seed_approved_proposals(&db, "run-codex-1", "set-codex-1", &items);
     let applied = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
@@ -204,7 +207,7 @@ fn two_entries_and_relation_atomic_commit() {
             "digest-codex-1",
             "set-codex-1",
             "run-codex-1",
-            ops,
+            ops_from_pairs(&pairs, &items),
             vec![],
         ),
     )
@@ -237,37 +240,21 @@ fn two_entries_and_relation_atomic_commit() {
 #[test]
 fn relation_failure_rolls_back_entries() {
     let db = migrated_db();
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-codex-2",
-        "set-codex-2",
-        &[
-            "codex.entry.create",
-            "codex.entry.create",
-            "codex.relation.create",
-        ],
-    );
-    // Self-relation should fail after two creates, rolling everything back.
-    let ops = vec![
+    let items = [
         (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-a2", "Alice", "ent:alice"),
         ),
         (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-b2", "Bob", "ent:bob"),
         ),
         (
-            pairs[2].0.clone(),
-            pairs[2].1.clone(),
-            "codex.relation.create".to_string(),
+            "codex.relation.create",
             relation_create("rel-bad", "ent:alice", "ent:alice", None),
         ),
     ];
+    let pairs = seed_approved_proposals(&db, "run-codex-2", "set-codex-2", &items);
     let err = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
@@ -275,7 +262,7 @@ fn relation_failure_rolls_back_entries() {
             "digest-codex-fail",
             "set-codex-2",
             "run-codex-2",
-            ops,
+            ops_from_pairs(&pairs, &items),
             vec![],
         ),
     )
@@ -302,21 +289,9 @@ fn patch_create_and_relation_atomic() {
     )
     .expect("seed existing");
 
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-codex-3",
-        "set-codex-3",
-        &[
-            "codex.entry.patch",
-            "codex.entry.create",
-            "codex.relation.create",
-        ],
-    );
-    let ops = vec![
+    let items = [
         (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            "codex.entry.patch".to_string(),
+            "codex.entry.patch",
             json!({
                 "entryId": "entry-existing",
                 "baseVersion": 3,
@@ -329,18 +304,15 @@ fn patch_create_and_relation_atomic() {
             }),
         ),
         (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-new", "Belka", "ent:belka"),
         ),
         (
-            pairs[2].0.clone(),
-            pairs[2].1.clone(),
-            "codex.relation.create".to_string(),
+            "codex.relation.create",
             relation_create("rel-2", "ent:existing", "ent:belka", None),
         ),
     ];
+    let pairs = seed_approved_proposals(&db, "run-codex-3", "set-codex-3", &items);
     let applied = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
@@ -348,7 +320,7 @@ fn patch_create_and_relation_atomic() {
             "digest-codex-3",
             "set-codex-3",
             "run-codex-3",
-            ops,
+            ops_from_pairs(&pairs, &items),
             vec![EntityBindingSeed {
                 narrative_entity_id: "ent:existing".to_string(),
                 codex_entry_id: "entry-existing".to_string(),
@@ -405,16 +377,8 @@ fn semantic_duplicate_relation_is_rejected() {
     )
     .unwrap();
 
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-codex-4",
-        "set-codex-4",
-        &["codex.relation.create"],
-    );
-    let ops = vec![(
-        pairs[0].0.clone(),
-        pairs[0].1.clone(),
-        "codex.relation.create".to_string(),
+    let items = [(
+        "codex.relation.create",
         json!({
             "relationId": "rel-new",
             "fromCodexId": "entry-a",
@@ -426,6 +390,7 @@ fn semantic_duplicate_relation_is_rejected() {
             "semanticKey": key
         }),
     )];
+    let pairs = seed_approved_proposals(&db, "run-codex-4", "set-codex-4", &items);
     let err = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
@@ -433,7 +398,7 @@ fn semantic_duplicate_relation_is_rejected() {
             "digest-dup",
             "set-codex-4",
             "run-codex-4",
-            ops,
+            ops_from_pairs(&pairs, &items),
             vec![],
         ),
     )
@@ -444,38 +409,149 @@ fn semantic_duplicate_relation_is_rejected() {
 }
 
 #[test]
+fn commit_map_conflict_and_payload_mismatch_are_rejected() {
+    let db = migrated_db();
+    db.execute(
+        "INSERT INTO codex_entries
+            (id, project_id, type, name, aliases, summary, content, parent_id, version, created_at, updated_at)
+         VALUES (?, 'project-1', 'character', 'A', '[]', '', '{}', NULL, 1, 't', 't')",
+        &[Value::String("entry-a".to_string())],
+        "run",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO codex_entries
+            (id, project_id, type, name, aliases, summary, content, parent_id, version, created_at, updated_at)
+         VALUES (?, 'project-1', 'character', 'B', '[]', '', '{}', NULL, 1, 't', 't')",
+        &[Value::String("entry-b".to_string())],
+        "run",
+    )
+    .unwrap();
+
+    let items = [(
+        "codex.relation.create",
+        json!({
+            "relationId": "rel-map",
+            "subjectEntityId": "ent:a",
+            "objectEntityId": "ent:b",
+            "fromCodexId": "entry-a",
+            "toCodexId": "entry-wrong",
+            "relationType": "friend",
+            "directionality": "symmetric",
+            "forwardLabel": "友人",
+            "inverseLabel": "友人"
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-codex-map", "set-codex-map", &items);
+    let err = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-map",
+            "digest-map",
+            "set-codex-map",
+            "run-codex-map",
+            ops_from_pairs(&pairs, &items),
+            vec![
+                EntityBindingSeed {
+                    narrative_entity_id: "ent:a".to_string(),
+                    codex_entry_id: "entry-a".to_string(),
+                    source: "existing".to_string(),
+                },
+                EntityBindingSeed {
+                    narrative_entity_id: "ent:b".to_string(),
+                    codex_entry_id: "entry-b".to_string(),
+                    source: "existing".to_string(),
+                },
+            ],
+        ),
+    )
+    .expect_err("endpoint mismatch");
+    assert!(err.to_string().contains("NEX_COMMIT_MAP_ENDPOINT_MISMATCH"));
+
+    // Conflicting seed bindings for the same NarrativeEntityId.
+    let items2 = [(
+        "codex.relation.create",
+        relation_create("rel-conflict", "ent:a", "ent:b", None),
+    )];
+    let pairs2 = seed_approved_proposals(&db, "run-codex-conflict", "set-codex-conflict", &items2);
+    let err2 = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-conflict",
+            "digest-conflict",
+            "set-codex-conflict",
+            "run-codex-conflict",
+            ops_from_pairs(&pairs2, &items2),
+            vec![
+                EntityBindingSeed {
+                    narrative_entity_id: "ent:a".to_string(),
+                    codex_entry_id: "entry-a".to_string(),
+                    source: "existing".to_string(),
+                },
+                EntityBindingSeed {
+                    narrative_entity_id: "ent:a".to_string(),
+                    codex_entry_id: "entry-b".to_string(),
+                    source: "existing".to_string(),
+                },
+                EntityBindingSeed {
+                    narrative_entity_id: "ent:b".to_string(),
+                    codex_entry_id: "entry-b".to_string(),
+                    source: "existing".to_string(),
+                },
+            ],
+        ),
+    )
+    .expect_err("map conflict");
+    assert!(err2.to_string().contains("NEX_COMMIT_MAP_CONFLICT"));
+}
+
+#[test]
+fn revision_payload_mismatch_is_rejected() {
+    let db = migrated_db();
+    let seeded = [(
+        "codex.entry.create",
+        entry_create("entry-seed", "Seed", "ent:seed"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-codex-mismatch", "set-codex-mismatch", &seeded);
+    let mismatched = vec![(
+        pairs[0].0.clone(),
+        pairs[0].1.clone(),
+        "codex.entry.create".to_string(),
+        entry_create("entry-other", "Other", "ent:other"),
+    )];
+    let err = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-mismatch",
+            "digest-mismatch",
+            "set-codex-mismatch",
+            "run-codex-mismatch",
+            mismatched,
+            vec![],
+        ),
+    )
+    .expect_err("payload mismatch");
+    assert!(err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"));
+}
+
+#[test]
 fn undo_deletes_relation_before_entries() {
     let db = migrated_db();
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-codex-5",
-        "set-codex-5",
-        &[
-            "codex.entry.create",
-            "codex.entry.create",
-            "codex.relation.create",
-        ],
-    );
-    let ops = vec![
+    let items = [
         (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-u1", "A", "ent:a"),
         ),
         (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-u2", "B", "ent:b"),
         ),
         (
-            pairs[2].0.clone(),
-            pairs[2].1.clone(),
-            "codex.relation.create".to_string(),
+            "codex.relation.create",
             relation_create("rel-u", "ent:a", "ent:b", None),
         ),
     ];
+    let pairs = seed_approved_proposals(&db, "run-codex-5", "set-codex-5", &items);
     let applied = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
@@ -483,7 +559,7 @@ fn undo_deletes_relation_before_entries() {
             "digest-undo-codex",
             "set-codex-5",
             "run-codex-5",
-            ops,
+            ops_from_pairs(&pairs, &items),
             vec![],
         ),
     )
@@ -496,12 +572,38 @@ fn undo_deletes_relation_before_entries() {
             project_id: "project-1".to_string(),
             session_id: "sess".to_string(),
             surface: None,
-            commit_id: Some(commit_id),
+            commit_id: Some(commit_id.clone()),
             request_id: None,
         },
     )
     .expect("undo");
     assert_eq!(undone["status"], "undone");
+
+    let redone = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess".to_string(),
+            surface: None,
+            commit_id: Some(commit_id.clone()),
+            request_id: None,
+        },
+    )
+    .expect("redo");
+    assert_eq!(redone["status"], "redone");
+
+    let undone_again = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess".to_string(),
+            surface: None,
+            commit_id: Some(commit_id),
+            request_id: None,
+        },
+    )
+    .expect("second undo");
+    assert_eq!(undone_again["status"], "undone");
 
     let entry_count: i64 = db
         .with_conn(|conn| {
@@ -520,26 +622,17 @@ fn undo_deletes_relation_before_entries() {
 #[test]
 fn external_dependency_blocks_undo() {
     let db = migrated_db();
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-codex-6",
-        "set-codex-6",
-        &["codex.entry.create", "codex.entry.create"],
-    );
-    let ops = vec![
+    let items = [
         (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-x1", "X1", "ent:x1"),
         ),
         (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            "codex.entry.create".to_string(),
+            "codex.entry.create",
             entry_create("entry-x2", "X2", "ent:x2"),
         ),
     ];
+    let pairs = seed_approved_proposals(&db, "run-codex-6", "set-codex-6", &items);
     let applied = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
@@ -547,7 +640,7 @@ fn external_dependency_blocks_undo() {
             "digest-ext",
             "set-codex-6",
             "run-codex-6",
-            ops,
+            ops_from_pairs(&pairs, &items),
             vec![],
         ),
     )
@@ -585,4 +678,54 @@ fn external_dependency_blocks_undo() {
         })
         .unwrap();
     assert_eq!(entry_count, 2);
+}
+
+#[test]
+fn external_tag_dependency_blocks_undo() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-tag", "Tagged", "ent:tag"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-codex-tag", "set-codex-tag", &items);
+    let applied = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-tag",
+            "digest-tag",
+            "set-codex-tag",
+            "run-codex-tag",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    )
+    .expect("apply");
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+
+    db.execute(
+        "INSERT INTO codex_tags (id, project_id, name)
+         VALUES ('tag-1', 'project-1', 'hero')",
+        &[],
+        "run",
+    )
+    .expect("tag");
+    db.execute(
+        "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES ('entry-tag', 'tag-1')",
+        &[],
+        "run",
+    )
+    .expect("entry tag");
+
+    let err = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess".to_string(),
+            surface: None,
+            commit_id: Some(commit_id),
+            request_id: None,
+        },
+    )
+    .expect_err("tag dep");
+    assert!(err.to_string().contains("NEX_UNDO_EXTERNAL_DEPENDENCY"));
 }

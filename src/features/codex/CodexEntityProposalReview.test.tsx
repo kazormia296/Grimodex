@@ -92,6 +92,7 @@ function projection(
     relationCount: 0,
     unresolvedCount: 1,
     approvedCount: 0,
+    catalog: null,
   };
 }
 

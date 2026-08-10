@@ -3,6 +3,11 @@ import { CodexExtractionEvidencePane } from "./CodexExtractionEvidencePane";
 import { CodexEntityProposalCard } from "./CodexEntityProposalCard";
 import { CodexEntityResolutionPicker } from "./CodexEntityResolutionPicker";
 import {
+  catalogEntityDisplayName,
+  decideCodexStructureProposal,
+  reviseCodexStructureProposal,
+} from "./codexStructureExtractionApi";
+import {
   isSafeForCodexEntityBulkApprove,
   useCodexStructureExtractionStore,
   type CodexEntityReviewProposal,
@@ -35,9 +40,6 @@ export function CodexEntityProposalReview({
   const selectProposal = useCodexStructureExtractionStore(
     (s) => s.selectProposal,
   );
-  const updateProposalStatus = useCodexStructureExtractionStore(
-    (s) => s.updateProposalStatus,
-  );
   const resolveBinding = useCodexStructureExtractionStore(
     (s) => s.resolveBinding,
   );
@@ -58,8 +60,9 @@ export function CodexEntityProposalReview({
 
   const selected = useMemo(
     () =>
-      proposals.find((proposal) => proposal.proposalId === selectedProposalId) ??
-      null,
+      proposals.find(
+        (proposal) => proposal.proposalId === selectedProposalId,
+      ) ?? null,
     [proposals, selectedProposalId],
   );
 
@@ -67,7 +70,10 @@ export function CodexEntityProposalReview({
   const [draftSummary, setDraftSummary] = useState<string | null>(null);
 
   const nameValue =
-    draftName ?? selected?.proposal.payload.canonicalName ?? selected?.displayTitle ?? "";
+    draftName ??
+    selected?.proposal.payload.canonicalName ??
+    selected?.displayTitle ??
+    "";
   const summaryValue = (() => {
     if (draftSummary !== null) return draftSummary;
     if (!selected) return "";
@@ -100,6 +106,17 @@ export function CodexEntityProposalReview({
     selected?.proposal.payload.binding.kind === "unresolved"
       ? selected.proposal.payload.binding
       : null;
+
+  const candidateLabels = useMemo(() => {
+    const catalog = storeProjection?.catalog;
+    if (!catalog) return undefined;
+    return new Map(
+      catalog.entities.map((entity) => [
+        entity.ref,
+        catalogEntityDisplayName(entity.ref, catalog),
+      ]),
+    );
+  }, [storeProjection?.catalog]);
 
   return (
     <div
@@ -137,9 +154,11 @@ export function CodexEntityProposalReview({
                 selected={proposal.proposalId === selectedProposalId}
                 onSelect={() => handleSelect(proposal.proposalId)}
                 onDecide={(status) => {
-                  if (boundToStore) {
-                    updateProposalStatus(proposal.proposalId, status);
-                  }
+                  if (!boundToStore) return;
+                  void decideCodexStructureProposal({
+                    proposalId: proposal.proposalId,
+                    status,
+                  });
                 }}
               />
             ))
@@ -150,7 +169,9 @@ export function CodexEntityProposalReview({
       <div className="flex max-h-80 min-w-0 flex-col gap-3 overflow-y-auto px-3 py-2">
         <span className="text-xs font-medium text-foreground">詳細</span>
         {!selected ? (
-          <p className="text-xs text-muted-foreground">提案を選択してください</p>
+          <p className="text-xs text-muted-foreground">
+            提案を選択してください
+          </p>
         ) : (
           <>
             <label className="flex flex-col gap-1 text-xs">
@@ -161,10 +182,16 @@ export function CodexEntityProposalReview({
                 onChange={(event) => setDraftName(event.target.value)}
                 onBlur={() => {
                   if (!boundToStore || draftName === null) return;
-                  reviseProposalFields(selected.proposalId, {
-                    canonicalName: draftName,
-                  });
-                  setDraftName(null);
+                  void reviseCodexStructureProposal({
+                    proposalId: selected.proposalId,
+                    patch: { canonicalName: draftName },
+                  })
+                    .catch(() => {
+                      reviseProposalFields(selected.proposalId, {
+                        canonicalName: draftName,
+                      });
+                    })
+                    .finally(() => setDraftName(null));
                 }}
                 data-testid="codex-entity-name-input"
               />
@@ -177,19 +204,57 @@ export function CodexEntityProposalReview({
                 onChange={(event) => setDraftSummary(event.target.value)}
                 onBlur={() => {
                   if (!boundToStore || draftSummary === null) return;
-                  reviseProposalFields(selected.proposalId, {
-                    summary: draftSummary,
-                  });
-                  setDraftSummary(null);
+                  void reviseCodexStructureProposal({
+                    proposalId: selected.proposalId,
+                    patch: { summary: draftSummary },
+                  })
+                    .catch(() => {
+                      reviseProposalFields(selected.proposalId, {
+                        summary: draftSummary,
+                      });
+                    })
+                    .finally(() => setDraftSummary(null));
                 }}
                 data-testid="codex-entity-summary-input"
               />
             </label>
 
+            {selected.proposal.payload.typeResolution.status !== "resolved" &&
+              boundToStore &&
+              storeProjection?.catalog?.types &&
+              storeProjection.catalog.types.length > 0 && (
+                <label className="flex flex-col gap-1 text-xs">
+                  <span className="text-muted-foreground">Codex Type</span>
+                  <select
+                    className="rounded border border-input bg-background px-2 py-1 text-sm"
+                    value=""
+                    onChange={(event) => {
+                      const typeRef = event.target.value;
+                      if (!typeRef) return;
+                      void reviseCodexStructureProposal({
+                        proposalId: selected.proposalId,
+                        patch: { typeRef },
+                      }).catch(() => {
+                        reviseProposalFields(selected.proposalId, { typeRef });
+                      });
+                    }}
+                    data-testid="codex-entity-type-select"
+                  >
+                    <option value="">選択してください</option>
+                    {storeProjection.catalog.types.map((type) => (
+                      <option key={type.ref} value={type.ref}>
+                        {type.label} ({type.ref})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
             {unresolvedBinding && boundToStore && (
               <CodexEntityResolutionPicker
                 allowCreateNew={unresolvedBinding.allowCreateNew}
                 candidates={unresolvedBinding.candidates}
+                candidateLabels={candidateLabels}
                 onCreateNew={() =>
                   resolveBinding(selected.proposalId, { kind: "create-new" })
                 }

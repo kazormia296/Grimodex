@@ -62,6 +62,11 @@ export interface CodexReviewEvidenceQuote {
   readonly blocked?: boolean;
 }
 
+export interface CodexCompiledDomainOperation {
+  readonly kind: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
 export interface CodexEntityReviewProposal {
   readonly proposalId: string;
   readonly revisionId: string | null;
@@ -74,6 +79,11 @@ export interface CodexEntityReviewProposal {
   readonly safety: CodexEntityProposalSafetyFlags;
   readonly blockedReason?: string;
   readonly hypothesisId?: string;
+  /**
+   * Compiled Domain Operation locked at approve time.
+   * Apply must reuse this payload so Native revision digests match.
+   */
+  readonly compiledOperation?: CodexCompiledDomainOperation | null;
 }
 
 export interface CodexRelationReviewProposal {
@@ -89,6 +99,28 @@ export interface CodexRelationReviewProposal {
   readonly objectLabel: string;
   readonly blockedReason?: string;
   readonly hypothesisId?: string;
+  readonly compiledOperation?: CodexCompiledDomainOperation | null;
+}
+
+export interface CodexStructureCatalogEntity {
+  readonly ref: string;
+  readonly sourceKey: string;
+  readonly name: string;
+  readonly typeRef: string;
+  readonly expectedVersion?: number;
+  readonly aliases?: readonly string[];
+}
+
+export interface CodexStructureCatalogType {
+  readonly ref: string;
+  readonly sourceKey: string;
+  readonly slug: string;
+  readonly label: string;
+}
+
+export interface CodexStructureCatalogSnapshot {
+  readonly entities: readonly CodexStructureCatalogEntity[];
+  readonly types: readonly CodexStructureCatalogType[];
 }
 
 export interface CodexStructureExtractionReviewProjection {
@@ -106,6 +138,8 @@ export interface CodexStructureExtractionReviewProjection {
   readonly relationCount: number;
   readonly unresolvedCount: number;
   readonly approvedCount: number;
+  /** Opaque K####/T#### → sourceKey/slug mapping for Apply. */
+  readonly catalog: CodexStructureCatalogSnapshot | null;
 }
 
 export function isSafeForCodexEntityBulkApprove(
@@ -454,10 +488,8 @@ export const useCodexStructureExtractionStore =
         proposal: nextProposal,
         applicability,
         blockedReason:
-          applicability === "blocked"
-            ? "Codex Type が未解決です"
-            : undefined,
-        revisionId: crypto.randomUUID(),
+          applicability === "blocked" ? "Codex Type が未解決です" : undefined,
+        revisionId: current.revisionId,
         status: "unreviewed",
         safety: buildCodexEntityProposalSafetyFlags({
           bindingKind: nextProposal.payload.binding.kind,
@@ -562,7 +594,7 @@ export const useCodexStructureExtractionStore =
         ...current,
         proposal: nextProposal,
         displayTitle: nextProposal.payload.canonicalName,
-        revisionId: crypto.randomUUID(),
+        revisionId: current.revisionId,
         status: "unreviewed",
         applicability,
         blockedReason:
@@ -634,7 +666,7 @@ export const useCodexStructureExtractionStore =
           ...current,
           proposal: nextProposal,
           displayTitle: `${current.subjectLabel} → ${forwardLabel} → ${current.objectLabel}`,
-          revisionId: crypto.randomUUID(),
+          revisionId: current.revisionId,
           status: "unreviewed",
         },
       );

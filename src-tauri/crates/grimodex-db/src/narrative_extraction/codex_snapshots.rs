@@ -6,17 +6,28 @@ use serde_json::{json, Value};
 use super::codex_operations::collect_codex_relation_snapshot;
 use crate::agent_writes::{collect_codex_entry_snapshot, delete_codex_entry_cascade};
 
+fn query_dependency_count(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    label: &str,
+) -> anyhow::Result<i64> {
+    conn.query_row(sql, params, |row| row.get(0))
+        .map_err(|err| anyhow::anyhow!("NEX_UNDO_DEPENDENCY_CHECK_FAILED: {label}: {err}"))
+}
+
 pub(crate) fn ensure_no_external_codex_dependencies(
     conn: &Connection,
     project_id: &str,
     entry_id: &str,
 ) -> anyhow::Result<()> {
-    let relation_count: i64 = conn.query_row(
+    let relation_count = query_dependency_count(
+        conn,
         "SELECT COUNT(*) FROM codex_relations
           WHERE project_id = ?1
             AND (from_codex_id = ?2 OR to_codex_id = ?2)",
         params![project_id, entry_id],
-        |row| row.get(0),
+        "codex_relations",
     )?;
     if relation_count > 0 {
         anyhow::bail!(
@@ -24,10 +35,11 @@ pub(crate) fn ensure_no_external_codex_dependencies(
         );
     }
 
-    let participant_count: i64 = conn.query_row(
+    let participant_count = query_dependency_count(
+        conn,
         "SELECT COUNT(*) FROM event_participants WHERE codex_entry_id = ?1",
         params![entry_id],
-        |row| row.get(0),
+        "event_participants",
     )?;
     if participant_count > 0 {
         anyhow::bail!(
@@ -35,11 +47,12 @@ pub(crate) fn ensure_no_external_codex_dependencies(
         );
     }
 
-    let child_count: i64 = conn.query_row(
+    let child_count = query_dependency_count(
+        conn,
         "SELECT COUNT(*) FROM codex_entries
           WHERE project_id = ?1 AND parent_id = ?2",
         params![project_id, entry_id],
-        |row| row.get(0),
+        "codex_entries.parent_id",
     )?;
     if child_count > 0 {
         anyhow::bail!(
@@ -47,29 +60,39 @@ pub(crate) fn ensure_no_external_codex_dependencies(
         );
     }
 
-    let detail_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM codex_detail_values WHERE entry_id = ?1",
-            params![entry_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let detail_count = query_dependency_count(
+        conn,
+        "SELECT COUNT(*) FROM codex_detail_values WHERE entry_id = ?1",
+        params![entry_id],
+        "codex_detail_values",
+    )?;
     if detail_count > 0 {
         anyhow::bail!(
             "NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_detail_values"
         );
     }
 
-    let phase_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM codex_entry_phases WHERE entry_id = ?1",
-            params![entry_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let phase_count = query_dependency_count(
+        conn,
+        "SELECT COUNT(*) FROM codex_entry_phases WHERE entry_id = ?1",
+        params![entry_id],
+        "codex_entry_phases",
+    )?;
     if phase_count > 0 {
         anyhow::bail!(
             "NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_entry_phases"
+        );
+    }
+
+    let tag_count = query_dependency_count(
+        conn,
+        "SELECT COUNT(*) FROM codex_entry_tags WHERE entry_id = ?1",
+        params![entry_id],
+        "codex_entry_tags",
+    )?;
+    if tag_count > 0 {
+        anyhow::bail!(
+            "NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_entry_tags"
         );
     }
 
@@ -86,11 +109,11 @@ pub(crate) fn delete_codex_relation_checked(
     let expected_version = expected
         .get("version")
         .and_then(Value::as_i64)
-        .unwrap_or(1);
+        .ok_or_else(|| anyhow::anyhow!("relation snapshot missing version"))?;
     let current_version = current
         .get("version")
         .and_then(Value::as_i64)
-        .unwrap_or(0);
+        .ok_or_else(|| anyhow::anyhow!("live relation missing version"))?;
     let expected_key = expected.get("semanticKey").and_then(Value::as_str);
     let current_key = current.get("semanticKey").and_then(Value::as_str);
     if current_version != expected_version || expected_key != current_key {
@@ -179,7 +202,7 @@ pub(crate) fn undo_created_codex_entry(
     let live_version = current
         .get("version")
         .and_then(Value::as_i64)
-        .unwrap_or(0);
+        .ok_or_else(|| anyhow::anyhow!("codex entry snapshot missing version"))?;
     if live_version != expected_version {
         anyhow::bail!(
             "NEX_COMMIT_ENTRY_EDITED: entry '{entry_id}' was modified after commit"
@@ -193,7 +216,7 @@ pub(crate) fn reapply_codex_relation_snapshot(
     project_id: &str,
     snapshot: &Value,
     now: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<(i64, Value)> {
     let relation_id = snapshot
         .get("id")
         .and_then(Value::as_str)
@@ -223,7 +246,7 @@ pub(crate) fn reapply_codex_relation_snapshot(
     let previous_version = snapshot
         .get("version")
         .and_then(Value::as_i64)
-        .unwrap_or(1);
+        .ok_or_else(|| anyhow::anyhow!("relation snapshot missing version"))?;
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("relation version overflow during redo"))?;
@@ -248,7 +271,8 @@ pub(crate) fn reapply_codex_relation_snapshot(
             now,
         ],
     )?;
-    Ok(replay_version)
+    let live = collect_codex_relation_snapshot(conn, relation_id)?;
+    Ok((replay_version, live))
 }
 
 pub(crate) fn reapply_codex_entry_create_snapshot(
@@ -256,7 +280,7 @@ pub(crate) fn reapply_codex_entry_create_snapshot(
     project_id: &str,
     snapshot: &Value,
     now: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<(i64, Value)> {
     let entry_id = snapshot
         .get("id")
         .and_then(Value::as_str)
@@ -285,7 +309,7 @@ pub(crate) fn reapply_codex_entry_create_snapshot(
     let previous_version = snapshot
         .get("version")
         .and_then(Value::as_i64)
-        .unwrap_or(1);
+        .ok_or_else(|| anyhow::anyhow!("codex snapshot missing version"))?;
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("codex entry version overflow during redo"))?;
@@ -308,5 +332,30 @@ pub(crate) fn reapply_codex_entry_create_snapshot(
         ],
     )?;
     let _ = json!({ "restored": true });
-    Ok(replay_version)
+    let live = collect_codex_entry_snapshot(conn, entry_id)?;
+    Ok((replay_version, live))
+}
+
+/// Compare alias/summary fields that Redo of a patch would overwrite.
+pub(crate) fn ensure_patch_pre_redo_matches_before(
+    live: &Value,
+    before_snapshot: &Value,
+    entry_id: &str,
+) -> anyhow::Result<()> {
+    let live_aliases = live.get("aliases").cloned().unwrap_or(Value::Null);
+    let before_aliases = before_snapshot
+        .get("aliases")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let live_summary = live.get("summary").and_then(Value::as_str).unwrap_or("");
+    let before_summary = before_snapshot
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if live_aliases != before_aliases || live_summary != before_summary {
+        anyhow::bail!(
+            "NEX_COMMIT_ENTRY_EDITED: entry '{entry_id}' diverged after undo; refusing redo patch clobber"
+        );
+    }
+    Ok(())
 }
