@@ -468,6 +468,12 @@ describe("startCodexStructureExtraction product safety", () => {
     expect(saveProposalSetMock).toHaveBeenCalled();
     expect(claimTaskMock).toHaveBeenCalled();
     expect(finishTaskMock).toHaveBeenCalled();
+    const finishPayload = finishTaskMock.mock.calls[0]?.[0] as {
+      artifacts?: readonly { artifactKind: string }[];
+    };
+    expect(finishPayload.artifacts?.[0]?.artifactKind).toBe(
+      "codex.structure.review-projection@1",
+    );
     expect(getRunMock).toHaveBeenCalledWith("native-run-1", "p1");
     const payload = saveProposalSetMock.mock.calls[0]?.[0] as {
       summaryJson: {

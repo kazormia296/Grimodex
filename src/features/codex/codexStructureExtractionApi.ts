@@ -3,9 +3,18 @@ import type { EntityMentionForm } from "@/features/narrative-extraction/ir/obser
 import {
   createCodexRelationProposalFromHypothesis,
   CODEX_RELATION_CREATE_PROPOSAL_KIND,
+  type CreateCodexRelationProposal,
+  type CreateCodexRelationProposalPayload,
 } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
 import type { CodexRelationHypothesis } from "@/features/narrative-extraction/ir/inferences/codexRelationHypothesis";
-import { CODEX_ENTITY_BIND_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
+import {
+  CODEX_ENTITY_BIND_PROPOSAL_KIND,
+  createNewBindCodexEntityProposal,
+  bindExistingCodexEntityProposal,
+  unresolvedBindCodexEntityProposal,
+  type BindCodexEntityPayload,
+  type BindCodexEntityProposal,
+} from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
 import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
 import type {
   CanonicalRange,
@@ -17,6 +26,12 @@ import {
   planExtractionWindows,
   type WindowPlan,
 } from "@/features/chronicle/extraction/windowPlanner";
+import {
+  buildInlineJsonArtifact,
+  hydrateInlineArtifactsFromNative,
+  loadInlineJsonArtifact,
+  rememberInlineJsonArtifact,
+} from "@/application/narrative-extraction/artifactRepository";
 import { prepareAndApplyCodexCommit } from "@/application/narrative-extraction/codexCommitCoordinator";
 import { buildProjectNarrativeSnapshot } from "@/application/narrative-extraction/projectSnapshotAdapter";
 import {
@@ -29,12 +44,14 @@ import {
   cancelRun,
   createRun,
   getRun,
+  listResumableRuns,
 } from "@/application/narrative-extraction/runRepository";
 import {
   narrativeExtractionClaimTask,
   narrativeExtractionFailTask,
   narrativeExtractionFinishTask,
   type ClaimTaskResult,
+  type ReviewBundleProposal,
 } from "@/application/narrative-extraction/nativeApi";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 import { parseAliases } from "./codexMatcher";
@@ -70,10 +87,12 @@ import {
   relationEndpointsReady,
   useCodexStructureExtractionStore,
   type CodexCompiledDomainOperation,
+  type CodexEntityProposalSafetyFlags,
   type CodexEntityReviewProposal,
   type CodexRelationReviewProposal,
   type CodexReviewEvidenceQuote,
   type CodexStructureCatalogSnapshot,
+  type CodexStructureExtractionCoverage,
   type CodexStructureExtractionReviewProjection,
   type StartCodexStructureExtractionRequest,
 } from "./codexStructureExtractionStore";
@@ -86,7 +105,6 @@ import {
   matchExistingCodexRelation,
   type ExistingRelationCatalogRecord,
 } from "./extraction/existingRelationMatcher";
-
 const CODEX_STRUCTURE_LEASE_OWNER = "codex-structure-extract";
 const CODEX_STRUCTURE_TASK_KIND = "codex.entity.resolve";
 
@@ -143,6 +161,41 @@ export const CODEX_STRUCTURE_EXTRACT_SURFACE_PATH =
   "codex/structure-extract" as const;
 export const CODEX_STRUCTURE_PROPOSAL_SET_KIND =
   "codex.structure.extract.review@1" as const;
+/** Durable review UI + Evidence for cold-start restore (finish_task artifact). */
+export const CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND =
+  "codex.structure.review-projection@1" as const;
+
+interface CodexStructureReviewEntityArtifactRow {
+  readonly proposalId: string;
+  readonly proposalKey: string;
+  readonly proposal: BindCodexEntityProposal;
+  readonly evidence: readonly CodexReviewEvidenceQuote[];
+  readonly safety: CodexEntityProposalSafetyFlags;
+  readonly applicability: CodexEntityReviewProposal["applicability"];
+  readonly displayTitle: string;
+  readonly blockedReason?: string;
+  readonly hypothesisId?: string;
+}
+
+interface CodexStructureReviewRelationArtifactRow {
+  readonly proposalId: string;
+  readonly proposalKey: string;
+  readonly proposal: CreateCodexRelationProposal;
+  readonly evidence: readonly CodexReviewEvidenceQuote[];
+  readonly subjectLabel: string;
+  readonly objectLabel: string;
+  readonly applicability: CodexRelationReviewProposal["applicability"];
+  readonly displayTitle: string;
+  readonly blockedReason?: string;
+  readonly hypothesisId?: string;
+  readonly existingRelationRef?: string;
+}
+
+interface CodexStructureReviewArtifactPayload {
+  readonly proposalSetId?: string;
+  readonly entities: readonly CodexStructureReviewEntityArtifactRow[];
+  readonly relations: readonly CodexStructureReviewRelationArtifactRow[];
+}
 
 export interface CodexStructureExtractionHeuristicSeed {
   readonly surface: string;
@@ -857,6 +910,10 @@ function recountProjection(
 
 let lastRunId: string | null = null;
 
+export function resetCodexStructureExtractionApiCachesForTests(): void {
+  lastRunId = null;
+}
+
 /**
  * Thin coordinator for structure extraction review:
  * builds heuristic Entity (+ optional Relation) proposals → store projection.
@@ -1409,6 +1466,49 @@ export async function startCodexStructureExtraction(
           entityProposalCount: finalProposals.length,
           relationProposalCount: finalRelations.length,
         },
+        artifacts: (() => {
+          const reviewDraft = buildInlineJsonArtifact(
+            CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+            {
+              proposalSetId: saved.proposalSetId,
+              entities: finalProposals.map((proposal) => ({
+                proposalId: proposal.proposalId,
+                proposalKey: proposal.proposalKey,
+                proposal: proposal.proposal,
+                evidence: proposal.evidence,
+                safety: proposal.safety,
+                applicability: proposal.applicability,
+                displayTitle: proposal.displayTitle,
+                blockedReason: proposal.blockedReason,
+                hypothesisId: proposal.hypothesisId,
+              })),
+              relations: finalRelations.map((proposal) => ({
+                proposalId: proposal.proposalId,
+                proposalKey: proposal.proposalKey,
+                proposal: {
+                  ...proposal.proposal,
+                  // Dependencies live in ProposalSet summaryJson.
+                  dependencies: [],
+                },
+                evidence: proposal.evidence,
+                subjectLabel: proposal.subjectLabel,
+                objectLabel: proposal.objectLabel,
+                applicability: proposal.applicability,
+                displayTitle: proposal.displayTitle,
+                blockedReason: proposal.blockedReason,
+                hypothesisId: proposal.hypothesisId,
+                existingRelationRef: proposal.existingRelationRef,
+              })),
+            } as unknown as Record<string, unknown>,
+          );
+          rememberInlineJsonArtifact({
+            runId,
+            taskId: claim.task.taskId,
+            attemptId: claim.task.attemptId,
+            draft: reviewDraft,
+          });
+          return [reviewDraft.artifactInput];
+        })(),
       });
 
       const nativeRun = await getRun(runId, request.projectId);
@@ -1461,6 +1561,7 @@ export async function startCodexStructureExtraction(
     workspacePath: request.workspacePath,
     openRevision: request.openRevision,
     proposalSetId,
+    folderId: request.folderId,
     status: runStatus,
     coverage: {
       mode: "complete",
@@ -1486,6 +1587,640 @@ export function getCodexStructureReview(): CodexStructureExtractionReviewProject
 
 export function getLastCodexStructureRunId(): string | null {
   return lastRunId;
+}
+
+function folderIdFromScopeJson(scopeJson: unknown): string | null {
+  if (!scopeJson || typeof scopeJson !== "object") return null;
+  const folderId = (scopeJson as Record<string, unknown>).folderId;
+  return typeof folderId === "string" ? folderId : null;
+}
+
+function coverageFromRunJson(
+  coverageJson: unknown,
+): CodexStructureExtractionCoverage {
+  if (!coverageJson || typeof coverageJson !== "object") return {};
+  const record = coverageJson as Record<string, unknown>;
+  return {
+    mode: typeof record.mode === "string" ? record.mode : undefined,
+    documentCount:
+      typeof record.documentCount === "number"
+        ? record.documentCount
+        : undefined,
+    windowCount:
+      typeof record.windowCount === "number" ? record.windowCount : undefined,
+    completedWindows:
+      typeof record.completedWindows === "number"
+        ? record.completedWindows
+        : undefined,
+    gaps: Array.isArray(record.gaps)
+      ? (record.gaps as CodexStructureExtractionCoverage["gaps"])
+      : undefined,
+  };
+}
+
+function catalogFromSummaryJson(
+  summaryJson: unknown,
+): CodexStructureCatalogSnapshot | null {
+  if (!summaryJson || typeof summaryJson !== "object") return null;
+  const catalog = (summaryJson as Record<string, unknown>).catalog;
+  if (!catalog || typeof catalog !== "object") return null;
+  const record = catalog as Record<string, unknown>;
+  const entities = Array.isArray(record.entities) ? record.entities : [];
+  const types = Array.isArray(record.types) ? record.types : [];
+  return {
+    entities: entities as CodexStructureCatalogSnapshot["entities"],
+    types: types as CodexStructureCatalogSnapshot["types"],
+  };
+}
+
+function isEvidenceMethod(
+  value: unknown,
+): value is CodexReviewEvidenceQuote["method"] {
+  return (
+    value === "exact" ||
+    value === "exact-with-context" ||
+    value === "fragmented" ||
+    value === "unknown"
+  );
+}
+
+function parseEvidenceQuotes(
+  value: unknown,
+): readonly CodexReviewEvidenceQuote[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (
+      typeof record.anchorId !== "string" ||
+      typeof record.quote !== "string" ||
+      typeof record.documentRef !== "string" ||
+      !isEvidenceMethod(record.method)
+    ) {
+      return [];
+    }
+    const canonicalRange =
+      record.canonicalRange &&
+      typeof record.canonicalRange === "object" &&
+      typeof (record.canonicalRange as Record<string, unknown>).start ===
+        "number" &&
+      typeof (record.canonicalRange as Record<string, unknown>).end === "number"
+        ? {
+            start: (record.canonicalRange as { start: number }).start,
+            end: (record.canonicalRange as { end: number }).end,
+          }
+        : undefined;
+    return [
+      {
+        anchorId: record.anchorId,
+        quote: record.quote,
+        documentRef: record.documentRef,
+        sceneId:
+          typeof record.sceneId === "string" ? record.sceneId : undefined,
+        sceneTitle:
+          typeof record.sceneTitle === "string" ? record.sceneTitle : undefined,
+        method: record.method,
+        blocked: record.blocked === true ? true : undefined,
+        canonicalRange,
+      },
+    ];
+  });
+}
+
+function isBindCodexEntityPayload(
+  value: unknown,
+): value is BindCodexEntityPayload {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.narrativeEntityId === "string" &&
+    typeof record.canonicalName === "string" &&
+    Array.isArray(record.aliases) &&
+    record.binding !== null &&
+    typeof record.binding === "object" &&
+    record.typeResolution !== null &&
+    typeof record.typeResolution === "object"
+  );
+}
+
+function isRelationCreatePayload(
+  value: unknown,
+): value is CreateCodexRelationProposalPayload {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.subjectEntityId === "string" &&
+    typeof record.objectEntityId === "string" &&
+    record.relation !== null &&
+    typeof record.relation === "object"
+  );
+}
+
+function isBindCodexEntityProposal(
+  value: unknown,
+): value is BindCodexEntityProposal {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.kind === CODEX_ENTITY_BIND_PROPOSAL_KIND &&
+    isBindCodexEntityPayload(record.payload)
+  );
+}
+
+function isCreateCodexRelationProposal(
+  value: unknown,
+): value is CreateCodexRelationProposal {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.kind === CODEX_RELATION_CREATE_PROPOSAL_KIND &&
+    isRelationCreatePayload(record.payload)
+  );
+}
+
+function wrapBindProposal(
+  proposalId: string,
+  payload: BindCodexEntityPayload,
+): BindCodexEntityProposal {
+  if (payload.binding.kind === "create-new") {
+    return createNewBindCodexEntityProposal(
+      payload as BindCodexEntityPayload & {
+        binding: Extract<
+          BindCodexEntityPayload["binding"],
+          { kind: "create-new" }
+        >;
+      },
+      { proposalId },
+    );
+  }
+  if (payload.binding.kind === "bind-existing") {
+    return bindExistingCodexEntityProposal(
+      payload as BindCodexEntityPayload & {
+        binding: Extract<
+          BindCodexEntityPayload["binding"],
+          { kind: "bind-existing" }
+        >;
+      },
+      { proposalId },
+    );
+  }
+  return unresolvedBindCodexEntityProposal(
+    payload as BindCodexEntityPayload & {
+      binding: Extract<
+        BindCodexEntityPayload["binding"],
+        { kind: "unresolved" }
+      >;
+    },
+    { proposalId },
+  );
+}
+
+function inferCompiledOperationFromNativePayload(
+  kind: string,
+  payloadJson: Readonly<Record<string, unknown>>,
+): CodexCompiledDomainOperation | null {
+  if (kind === CODEX_RELATION_CREATE_PROPOSAL_KIND) {
+    if (typeof payloadJson.relationId === "string") {
+      return { kind: "codex.relation.create", payload: payloadJson };
+    }
+    return null;
+  }
+  if (kind !== CODEX_ENTITY_BIND_PROPOSAL_KIND) return null;
+  if (
+    typeof payloadJson.entryId === "string" &&
+    typeof payloadJson.typeSlug === "string" &&
+    typeof payloadJson.name === "string"
+  ) {
+    return { kind: "codex.entry.create", payload: payloadJson };
+  }
+  if (
+    typeof payloadJson.entryId === "string" &&
+    typeof payloadJson.baseVersion === "number" &&
+    payloadJson.aliases &&
+    typeof payloadJson.aliases === "object"
+  ) {
+    return { kind: "codex.entry.patch", payload: payloadJson };
+  }
+  if (
+    typeof payloadJson.entryId === "string" &&
+    typeof payloadJson.narrativeEntityId === "string" &&
+    typeof payloadJson.baseVersion === "number"
+  ) {
+    return { kind: "codex.entity.bind-existing", payload: payloadJson };
+  }
+  return null;
+}
+
+function parseSafetyFlags(
+  value: unknown,
+  fallbackPayload: BindCodexEntityPayload,
+  evidence: readonly CodexReviewEvidenceQuote[],
+): CodexEntityProposalSafetyFlags {
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.evidenceExact === "boolean" &&
+      typeof record.typeResolved === "boolean" &&
+      typeof record.noExistingCandidates === "boolean" &&
+      typeof record.explicitProperName === "boolean" &&
+      typeof record.explicitAliasesOnly === "boolean" &&
+      typeof record.noRelationDeps === "boolean" &&
+      typeof record.createNew === "boolean"
+    ) {
+      return {
+        evidenceExact: record.evidenceExact,
+        typeResolved: record.typeResolved,
+        noExistingCandidates: record.noExistingCandidates,
+        explicitProperName: record.explicitProperName,
+        explicitAliasesOnly: record.explicitAliasesOnly,
+        noRelationDeps: record.noRelationDeps,
+        createNew: record.createNew,
+      };
+    }
+  }
+  return buildCodexEntityProposalSafetyFlags({
+    bindingKind: fallbackPayload.binding.kind,
+    typeStatus: fallbackPayload.typeResolution.status,
+    evidenceMethods: evidence.map((row) => row.method),
+    hasExistingCandidates: fallbackPayload.binding.kind !== "create-new",
+    hasProperNameMention: true,
+    aliasesAllExplicit: fallbackPayload.aliases.every(
+      (alias) => alias.status === "explicit",
+    ),
+  });
+}
+
+function parseReviewArtifact(
+  raw: CodexStructureReviewArtifactPayload | null,
+): CodexStructureReviewArtifactPayload {
+  if (!raw) {
+    return { entities: [], relations: [] };
+  }
+  const entities = Array.isArray(raw.entities)
+    ? raw.entities.flatMap((row): CodexStructureReviewEntityArtifactRow[] => {
+        if (!row || typeof row !== "object") return [];
+        const record = row as Record<string, unknown>;
+        if (
+          typeof record.proposalId !== "string" ||
+          typeof record.proposalKey !== "string" ||
+          !isBindCodexEntityProposal(record.proposal)
+        ) {
+          return [];
+        }
+        const evidence = parseEvidenceQuotes(record.evidence);
+        return [
+          {
+            proposalId: record.proposalId,
+            proposalKey: record.proposalKey,
+            proposal: record.proposal,
+            evidence,
+            safety: parseSafetyFlags(
+              record.safety,
+              record.proposal.payload,
+              evidence,
+            ),
+            applicability:
+              record.applicability === "blocked" ? "blocked" : "applicable",
+            displayTitle:
+              typeof record.displayTitle === "string"
+                ? record.displayTitle
+                : record.proposal.payload.canonicalName,
+            blockedReason:
+              typeof record.blockedReason === "string"
+                ? record.blockedReason
+                : undefined,
+            hypothesisId:
+              typeof record.hypothesisId === "string"
+                ? record.hypothesisId
+                : undefined,
+          },
+        ];
+      })
+    : [];
+  const relations = Array.isArray(raw.relations)
+    ? raw.relations.flatMap(
+        (row): CodexStructureReviewRelationArtifactRow[] => {
+          if (!row || typeof row !== "object") return [];
+          const record = row as Record<string, unknown>;
+          if (
+            typeof record.proposalId !== "string" ||
+            typeof record.proposalKey !== "string" ||
+            !isCreateCodexRelationProposal(record.proposal)
+          ) {
+            return [];
+          }
+          const applicability =
+            record.applicability === "blocked"
+              ? "blocked"
+              : record.applicability === "already-satisfied"
+                ? "already-satisfied"
+                : "applicable";
+          return [
+            {
+              proposalId: record.proposalId,
+              proposalKey: record.proposalKey,
+              proposal: record.proposal,
+              evidence: parseEvidenceQuotes(record.evidence),
+              subjectLabel:
+                typeof record.subjectLabel === "string"
+                  ? record.subjectLabel
+                  : "",
+              objectLabel:
+                typeof record.objectLabel === "string"
+                  ? record.objectLabel
+                  : "",
+              applicability,
+              displayTitle:
+                typeof record.displayTitle === "string"
+                  ? record.displayTitle
+                  : record.proposal.payload.relation.forwardLabel,
+              blockedReason:
+                typeof record.blockedReason === "string"
+                  ? record.blockedReason
+                  : undefined,
+              hypothesisId:
+                typeof record.hypothesisId === "string"
+                  ? record.hypothesisId
+                  : undefined,
+              existingRelationRef:
+                typeof record.existingRelationRef === "string"
+                  ? record.existingRelationRef
+                  : undefined,
+            },
+          ];
+        },
+      )
+    : [];
+  return {
+    proposalSetId:
+      typeof raw.proposalSetId === "string" ? raw.proposalSetId : undefined,
+    entities,
+    relations,
+  };
+}
+
+function rebuildEntityReviewRow(args: {
+  readonly artifact: CodexStructureReviewEntityArtifactRow;
+  readonly native: ReviewBundleProposal | undefined;
+}): CodexEntityReviewProposal {
+  const nativePayload = args.native?.payloadJson;
+  const bindPayload = isBindCodexEntityPayload(nativePayload)
+    ? nativePayload
+    : args.artifact.proposal.payload;
+  const proposal = wrapBindProposal(args.artifact.proposalId, bindPayload);
+  const compiledOperation =
+    args.native && !isBindCodexEntityPayload(nativePayload)
+      ? inferCompiledOperationFromNativePayload(
+          args.native.kind,
+          nativePayload ?? {},
+        )
+      : null;
+  return {
+    proposalId: args.artifact.proposalId,
+    revisionId: args.native?.currentRevisionId ?? null,
+    proposalKey: args.artifact.proposalKey,
+    status: args.native?.status ?? "unreviewed",
+    applicability: args.artifact.applicability,
+    displayTitle: args.artifact.displayTitle,
+    proposal,
+    evidence: args.artifact.evidence,
+    safety: parseSafetyFlags(
+      args.artifact.safety,
+      proposal.payload,
+      args.artifact.evidence,
+    ),
+    blockedReason: args.artifact.blockedReason,
+    hypothesisId: args.artifact.hypothesisId,
+    compiledOperation,
+  };
+}
+
+function rebuildRelationReviewRow(args: {
+  readonly artifact: CodexStructureReviewRelationArtifactRow;
+  readonly native: ReviewBundleProposal | undefined;
+  readonly dependencies: readonly {
+    readonly kind: string;
+    readonly proposalId: string;
+  }[];
+}): CodexRelationReviewProposal {
+  const nativePayload = args.native?.payloadJson;
+  const payload = isRelationCreatePayload(nativePayload)
+    ? nativePayload
+    : args.artifact.proposal.payload;
+  const compiledOperation =
+    args.native && !isRelationCreatePayload(nativePayload)
+      ? inferCompiledOperationFromNativePayload(
+          args.native.kind,
+          nativePayload ?? {},
+        )
+      : null;
+  return {
+    proposalId: args.artifact.proposalId,
+    revisionId:
+      args.native?.currentRevisionId ??
+      (args.artifact.applicability === "already-satisfied"
+        ? `satisfied-${args.artifact.proposalKey}`
+        : null),
+    proposalKey: args.artifact.proposalKey,
+    status: args.native?.status ?? "unreviewed",
+    applicability: args.artifact.applicability,
+    displayTitle: args.artifact.displayTitle,
+    proposal: {
+      ...args.artifact.proposal,
+      proposalId: args.artifact.proposalId,
+      payload,
+      dependencies: args.dependencies.map((dep) => ({
+        kind: "requires-resolution" as const,
+        proposalId: dep.proposalId,
+      })),
+    },
+    evidence: args.artifact.evidence,
+    subjectLabel: args.artifact.subjectLabel,
+    objectLabel: args.artifact.objectLabel,
+    blockedReason: args.artifact.blockedReason,
+    hypothesisId: args.artifact.hypothesisId,
+    existingRelationRef: args.artifact.existingRelationRef,
+    compiledOperation,
+  };
+}
+
+/**
+ * Return the in-memory review projection for a Run owned by the given project.
+ * Cold start: hydrates review-projection artifact + Native ProposalSet.
+ */
+export async function getCodexStructureExtractionReview(
+  runId: string,
+  scope?: {
+    readonly projectId: string;
+    readonly workspacePath?: string;
+    readonly openRevision?: number;
+  },
+): Promise<CodexStructureExtractionReviewProjection> {
+  const current = useCodexStructureExtractionStore.getState().projection;
+  if (current && current.runId === runId) {
+    if (scope && current.projectId !== scope.projectId) {
+      throw new Error(
+        "Codex structure extraction run belongs to another project",
+      );
+    }
+    if (
+      scope?.workspacePath !== undefined &&
+      current.workspacePath !== null &&
+      current.workspacePath !== scope.workspacePath
+    ) {
+      throw new Error(
+        "Codex structure extraction run belongs to another workspace",
+      );
+    }
+    if (
+      scope?.openRevision !== undefined &&
+      current.openRevision !== null &&
+      current.openRevision !== scope.openRevision
+    ) {
+      throw new Error(
+        "Codex structure extraction run belongs to another workspace revision",
+      );
+    }
+    return current;
+  }
+
+  if (!scope) {
+    throw new Error(
+      `Codex structure extraction review not loaded for run ${runId}`,
+    );
+  }
+
+  const runProjection = await getRun(runId, scope.projectId);
+  if (
+    runProjection.run.surfacePathId !== CODEX_STRUCTURE_EXTRACT_SURFACE_PATH
+  ) {
+    throw new Error("Run is not a codex structure extraction surface");
+  }
+
+  let bundle;
+  try {
+    bundle = await hydrateInlineArtifactsFromNative({
+      runId,
+      projectId: scope.projectId,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Failed to restore codex structure extraction review from Native: ${message}`,
+      { cause: error },
+    );
+  }
+
+  if (!bundle.proposalSet) {
+    throw new Error(
+      `Codex structure extraction run ${runId} has no Native proposal set`,
+    );
+  }
+
+  const reviewArtifact = parseReviewArtifact(
+    await loadInlineJsonArtifact<CodexStructureReviewArtifactPayload>(
+      runId,
+      CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+      { projectId: scope.projectId },
+    ),
+  );
+
+  if (
+    reviewArtifact.entities.length === 0 &&
+    reviewArtifact.relations.length === 0 &&
+    bundle.proposals.length > 0
+  ) {
+    throw new Error(
+      `Codex structure extraction run ${runId} missing review-projection artifact`,
+    );
+  }
+
+  const nativeById = new Map(
+    bundle.proposals.map((proposal) => [proposal.proposalId, proposal]),
+  );
+  const depsByRelationId = relationDependenciesFromSummaryJson(
+    bundle.proposalSet.summaryJson,
+  );
+
+  const proposals = reviewArtifact.entities.map((artifact) =>
+    rebuildEntityReviewRow({
+      artifact,
+      native: nativeById.get(artifact.proposalId),
+    }),
+  );
+
+  const relationProposals = reviewArtifact.relations.map((artifact) =>
+    rebuildRelationReviewRow({
+      artifact,
+      native: nativeById.get(artifact.proposalId),
+      dependencies: depsByRelationId.get(artifact.proposalId) ?? [],
+    }),
+  );
+
+  const counts = recountProjection(proposals, relationProposals);
+  const projection: CodexStructureExtractionReviewProjection = {
+    runId,
+    projectId: scope.projectId,
+    workspacePath: scope.workspacePath ?? null,
+    openRevision: scope.openRevision ?? null,
+    proposalSetId:
+      reviewArtifact.proposalSetId ?? bundle.proposalSet.proposalSetId,
+    folderId: folderIdFromScopeJson(runProjection.run.scopeJson),
+    status: runProjection.run.status,
+    coverage: coverageFromRunJson(runProjection.run.coverageJson),
+    taskCounts: runProjection.taskCounts,
+    proposals,
+    relationProposals,
+    catalog: catalogFromSummaryJson(bundle.proposalSet.summaryJson),
+    ...counts,
+  };
+
+  lastRunId = runId;
+  useCodexStructureExtractionStore.getState().setProjection(projection);
+  return projection;
+}
+
+/**
+ * Restore the newest resumable Codex structure extraction review for a dialog scope.
+ * Soft-fails (returns null) when Native ledger has no matching run.
+ */
+export async function restoreCodexStructureExtractionReview(scope: {
+  readonly projectId: string;
+  readonly workspacePath: string;
+  readonly openRevision: number;
+}): Promise<CodexStructureExtractionReviewProjection | null> {
+  const current = useCodexStructureExtractionStore.getState().projection;
+  if (
+    current &&
+    current.projectId === scope.projectId &&
+    current.workspacePath === scope.workspacePath &&
+    current.openRevision === scope.openRevision
+  ) {
+    return current;
+  }
+
+  try {
+    const resumable = await listResumableRuns({
+      projectId: scope.projectId,
+      surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+      limit: 5,
+    });
+    for (const candidate of resumable) {
+      try {
+        return await getCodexStructureExtractionReview(
+          candidate.run.runId,
+          scope,
+        );
+      } catch {
+        // Newer crashed runs without a durable ProposalSet must not hide
+        // older completed reviews that still hydrate.
+        continue;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export interface ApplyCodexStructureExtractionInput {

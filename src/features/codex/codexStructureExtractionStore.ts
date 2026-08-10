@@ -138,6 +138,8 @@ export interface CodexStructureExtractionReviewProjection {
   readonly workspacePath: string | null;
   readonly openRevision: number | null;
   readonly proposalSetId: string | null;
+  /** Folder that scoped the Run (cold-start restore / dialog select). */
+  readonly folderId?: string | null;
   readonly status: NarrativeExtractionRunStatus;
   readonly coverage: CodexStructureExtractionCoverage;
   readonly taskCounts: NarrativeExtractionTaskCounts;

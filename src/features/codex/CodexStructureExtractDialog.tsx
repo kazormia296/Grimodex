@@ -23,6 +23,7 @@ import {
   applyCodexStructureExtractionReview,
   buildCodexStructureCatalogs,
   getCodexStructureReview,
+  restoreCodexStructureExtractionReview,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
 import { useCodexStore } from "./codexStore";
@@ -68,13 +69,32 @@ export function CodexStructureExtractDialog({
     if (initialFolderId) setFolderId(initialFolderId);
     const workspace = useWorkspaceStore.getState();
     const projectId = getCurrentProjectId();
-    if (projectId && workspace.activeWorkspacePath) {
-      clearIfScopeMismatch({
-        projectId,
-        workspacePath: workspace.activeWorkspacePath,
-        openRevision: workspace.workspaceOpenRevision,
-      });
+    if (!projectId || !workspace.activeWorkspacePath) return;
+    const scope = {
+      projectId,
+      workspacePath: workspace.activeWorkspacePath,
+      openRevision: workspace.workspaceOpenRevision,
+    };
+    clearIfScopeMismatch(scope);
+    const current = useCodexStructureExtractionStore.getState().projection;
+    const matched =
+      current &&
+      current.projectId === scope.projectId &&
+      current.workspacePath === scope.workspacePath &&
+      current.openRevision === scope.openRevision;
+    if (matched) {
+      if (current.folderId) setFolderId(current.folderId);
+      return;
     }
+    void restoreCodexStructureExtractionReview(scope)
+      .then((restored) => {
+        if (!restored) return;
+        if (restored.folderId) setFolderId(restored.folderId);
+        setReviewTab("entity");
+      })
+      .catch(() => {
+        // Soft-fail: empty review until the user runs analyze.
+      });
   }, [open, initialFolderId, clearIfScopeMismatch]);
 
   const approvedCount = projection?.approvedCount ?? 0;
@@ -171,9 +191,8 @@ export function CodexStructureExtractDialog({
   };
 
   const handleClose = (next: boolean) => {
-    if (!next) {
-      clearProjection();
-    }
+    // Keep projection across close so same project/workspace/openRevision can
+    // resume without re-analyze (Chronicle parity). Clear only on Apply / folder change.
     onOpenChange(next);
   };
 
@@ -193,7 +212,10 @@ export function CodexStructureExtractDialog({
             <select
               className="rounded border border-input bg-background px-2 py-1.5 text-sm"
               value={folderId}
-              onChange={(event) => setFolderId(event.target.value)}
+              onChange={(event) => {
+                setFolderId(event.target.value);
+                clearProjection();
+              }}
               data-testid="codex-structure-folder-select"
             >
               <option value="">選択してください</option>
