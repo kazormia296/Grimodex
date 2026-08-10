@@ -83,6 +83,8 @@ const SINGLE_SHOT_PATHS = [
   "AI audit path: narrative_state_synthesize",
   "AI audit path: narrative_phase_synthesize",
   "AI audit path: narrative_detail_compose",
+  "AI audit path: narrative_temporal_attach",
+  "AI audit path: narrative_temporal_synthesize",
   "AI audit path: narrative_structured_repair",
   "AI audit path: beat_role",
   "AI audit path: codex_yomi",
