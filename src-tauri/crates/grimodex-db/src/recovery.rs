@@ -1246,6 +1246,7 @@ mod tests {
         let _ = fs::remove_dir_all(&ws);
     }
 
+    #[cfg(unix)]
     #[test]
     fn unreadable_restore_marker_with_healthy_db_enters_safe_mode() {
         use crate::backup_restore::restore_session_marker_path;
