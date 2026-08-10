@@ -28,6 +28,16 @@ default = []
 # enabled in production / release Electron builds.
 test-failpoints = []
 
+[[bin]]
+name = "migration-crash-harness"
+path = "src/bin/migration-crash-harness.rs"
+required-features = ["test-failpoints"]
+
+[[bin]]
+name = "restore-crash-harness"
+path = "src/bin/restore-crash-harness.rs"
+required-features = ["test-failpoints"]
+
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2 = "0.11"

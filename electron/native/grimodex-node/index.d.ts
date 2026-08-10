@@ -9,7 +9,11 @@ export declare class Backend {
    * (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
    * com.miyakey.grimodex には触らない)。
    */
-  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
+  constructor(
+    appDataDir: string,
+    semanticResourceRoot?: string | undefined | null,
+    rerankerResourceRoot?: string | undefined | null,
+  );
   /**
    * Main-process-only bridge used during the Electron v2 first-run
    * credential migration. This method is deliberately absent from
@@ -17,107 +21,116 @@ export declare class Backend {
    * Feature-off development builds return a disabled envelope and never
    * touch the OS keyring.
    */
-  readLegacyApiKeysForMigration(): Promise<string>
+  readLegacyApiKeysForMigration(): Promise<string>;
   /**
    * Main/CI-only build gate. Packaging verifies both release-only features
    * before electron-builder runs; this method is not registered in renderer
    * IPC and contains no user data.
    */
-  getNativeBuildCapabilities(): Promise<string>
+  getNativeBuildCapabilities(): Promise<string>;
   /**
    * 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
    * exact disabled DTOを返し、license.jsonには一切触れない。
    */
-  getLicenseState(): Promise<string>
+  getLicenseState(): Promise<string>;
   /** Polar activate → atomic license.json更新。HTTP await中にfile lockは保持しない。 */
-  activateLicense(key: string): Promise<string>
+  activateLicense(key: string): Promise<string>;
   /** 明示的な再検証。共有runtimeのsingle-flightとstale response guardを使う。 */
-  revalidateLicense(): Promise<string>
+  revalidateLicense(): Promise<string>;
   /** Polar側を解除してから、同じactivationである場合だけlocal stateを破棄する。 */
-  deactivateLicense(): Promise<string>
+  deactivateLicense(): Promise<string>;
   /**
    * 起動5秒後/以後6時間周期のmain schedulerから呼ぶfail-soft cycle。
    * disabled・not due・in-flightはJS null、実行後はJSON DTOを返す。
    */
-  runLicenseValidateCycle(): Promise<string | null>
+  runLicenseValidateCycle(): Promise<string | null>;
   /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
    * は "run" | "get" | "all" | "values"。
    * 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
    */
-  dbExecute(sql: string, params: any, method: string): Promise<string>
+  dbExecute(sql: string, params: any, method: string): Promise<string>;
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
    * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
    */
-  dbExecuteBatch(statements: any): Promise<string>
+  dbExecuteBatch(statements: any): Promise<string>;
   /**
    * Typed persistence commands for Editor-only visual stickies. The
    * renderer sends document-shaped DTOs; SQL and typed owner derivation
    * stay inside grimodex-db.
    */
-  editorStickyList(projectId: string, documentKey: string): Promise<string>
-  editorStickyCreate(payload: any): Promise<string>
-  editorStickyUpdate(payload: any): Promise<string>
-  editorStickyDelete(payload: any): Promise<void>
+  editorStickyList(projectId: string, documentKey: string): Promise<string>;
+  editorStickyCreate(payload: any): Promise<string>;
+  editorStickyUpdate(payload: any): Promise<string>;
+  editorStickyDelete(payload: any): Promise<void>;
   /**
    * Project-scoped lint diagnostic ignore-list commands. The renderer
    * receives a domain DTO instead of owning SQL strings or generic DB
    * parameters; all scene ownership checks happen in grimodex-db.
    */
-  lintIgnoreList(projectId: string): Promise<string>
-  lintIgnoreListScene(projectId: string, sceneId: string): Promise<string>
-  lintIgnoreCreate(payload: any): Promise<string>
-  lintIgnoreDelete(projectId: string, id: string): Promise<void>
-  lintIgnoreCopy(payload: any): Promise<string>
-  lintIgnoreMove(payload: any): Promise<string>
+  lintIgnoreList(projectId: string): Promise<string>;
+  lintIgnoreListScene(projectId: string, sceneId: string): Promise<string>;
+  lintIgnoreCreate(payload: any): Promise<string>;
+  lintIgnoreDelete(projectId: string, id: string): Promise<void>;
+  lintIgnoreCopy(payload: any): Promise<string>;
+  lintIgnoreMove(payload: any): Promise<string>;
   /**
    * Project-scoped term-dictionary commands. SQL and project ownership stay
    * in grimodex-db; the renderer only sends domain DTOs.
    */
-  lintTermDictionaryList(projectId: string): Promise<string>
-  lintTermDictionaryInsert(payload: any): Promise<string>
-  lintTermDictionaryUpdate(payload: any): Promise<string>
-  lintTermDictionarySetEnabled(projectId: string, id: string, enabled: boolean, updatedAt: number): Promise<string>
-  lintTermDictionaryDelete(projectId: string, id: string): Promise<void>
+  lintTermDictionaryList(projectId: string): Promise<string>;
+  lintTermDictionaryInsert(payload: any): Promise<string>;
+  lintTermDictionaryUpdate(payload: any): Promise<string>;
+  lintTermDictionarySetEnabled(
+    projectId: string,
+    id: string,
+    enabled: boolean,
+    updatedAt: number,
+  ): Promise<string>;
+  lintTermDictionaryDelete(projectId: string, id: string): Promise<void>;
   /**
    * Chronicle aggregate OCC reads and participant replacement. The latter
    * advances the event version and replaces participants in one DB tx.
    */
-  eventGetVersion(projectId: string, eventId: string): Promise<string>
-  eventSetParticipants(payload: any): Promise<string>
+  eventGetVersion(projectId: string, eventId: string): Promise<string>;
+  eventSetParticipants(payload: any): Promise<string>;
   /**
    * Renderer domain aggregates that previously crossed the preload
    * boundary as renderer-authored SQL batches.
    */
-  authorshipReplaceLane(payload: any): Promise<void>
-  entityTagsSet(payload: any): Promise<void>
-  codexRenameUndo(payload: any): Promise<void>
-  scanStagingProjectCreate(payload: any): Promise<void>
-  treePlanUndo(payload: any): Promise<void>
-  mapWriteBundle(payload: any): Promise<void>
+  authorshipReplaceLane(payload: any): Promise<void>;
+  entityTagsSet(payload: any): Promise<void>;
+  codexRenameUndo(payload: any): Promise<void>;
+  scanStagingProjectCreate(payload: any): Promise<void>;
+  treePlanUndo(payload: any): Promise<void>;
+  mapWriteBundle(payload: any): Promise<void>;
   /**
    * Project snapshots are a typed aggregate: renderer computes the
    * dependency-safe row plan while shared Rust owns all SQL, project
    * ownership checks, and transaction boundaries.
    */
-  projectSnapshotCreate(payload: any): Promise<void>
-  projectSnapshotRestoreContext(projectId: string, snapshotId: string, scopes: any): Promise<string>
-  projectSnapshotApplyRestore(payload: any): Promise<void>
+  projectSnapshotCreate(payload: any): Promise<void>;
+  projectSnapshotRestoreContext(
+    projectId: string,
+    snapshotId: string,
+    scopes: any,
+  ): Promise<string>;
+  projectSnapshotApplyRestore(payload: any): Promise<void>;
   /**
    * Scene content and every document-derived sidecar are committed in one
    * SQLite transaction. The renderer performs one PM traversal and passes
    * the typed snapshot as camelCase JSON.
    */
-  saveSceneBodyBundle(payload: any): Promise<string>
+  saveSceneBodyBundle(payload: any): Promise<string>;
   /**
    * Compact the active workspace in place. Unlike raw renderer SQL, this
    * command accepts no destination path and cannot become `VACUUM INTO`.
    */
-  vacuumDatabase(): Promise<void>
+  vacuumDatabase(): Promise<void>;
   /**
    * workspace を開く: migrate → swap → RAII SwitchingGuard →
    * authority commit 後の低優先度 maintenance worker →
@@ -126,72 +139,106 @@ export declare class Backend {
    * Codex matcher破棄 + semantic 4cache epoch rotateを行う。
    * 完了時に `workspace:opened` (FE 購読者なしのデバッグチャネル) を emit
    * する (§7.1 の end-to-end 実証チャネルその 2)。
-   * 返り値: `{"name":…,"isExisting":…}` の JSON 文字列。
+   * 返り値: WorkspaceOpenOutcome JSON
+   * (`ready` / `migrated` / `recovery-required` / `safe-mode`)。
    */
-  openWorkspace(path: string): Promise<string>
+  openWorkspace(path: string): Promise<string>;
   /**
    * 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
    * 軽量 stat のみなので設計どおり同期のまま (§4.2「純関数の validate 除く」)。
    */
-  validateWorkspacePath(path: string): boolean
+  validateWorkspacePath(path: string): boolean;
   /**
    * Electron main専用の内部境界。standalone MCP sidecarへ渡す現在の
    * workspace directoryを返す。renderer commandとしては公開せず、mainの
    * `get_mcp_config` handlerだけが利用する。
    */
-  getActiveWorkspacePath(): Promise<string>
+  getActiveWorkspacePath(): Promise<string>;
   /**
    * Main-only Codex App Server binding lookup. This method is intentionally
    * not registered in `NAPI_COMMANDS`: renderer cannot select an external
    * thread or bypass the project/session ownership check.
    */
-  getChatRuntimeThreadBinding(projectId: string, sessionId: string, runtime: string, expectedWorkspacePath: string): Promise<string>
+  getChatRuntimeThreadBinding(
+    projectId: string,
+    sessionId: string,
+    runtime: string,
+    expectedWorkspacePath: string,
+  ): Promise<string>;
   /**
    * Main-only Codex App Server binding upsert. The shared DB layer verifies
    * that session_id belongs to project_id and that the external id is not
    * already attached to another runtime session.
    */
-  upsertChatRuntimeThreadBinding(binding: any, expectedWorkspacePath: string): Promise<void>
+  upsertChatRuntimeThreadBinding(
+    binding: any,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
   /**
    * Main-only compare-and-swap bridge for committing a completed Codex turn's
    * pending history revision. A stale or competing completion returns `false`.
    */
-  advanceChatRuntimeThreadHistoryRevision(expectedWorkspacePath: string, projectId: string, sessionId: string, runtime: string, externalThreadId: string, lastTurnId: string, pendingHistoryRevision: string, nextHistoryRevision: string, updatedAt: string): Promise<boolean>
+  advanceChatRuntimeThreadHistoryRevision(
+    expectedWorkspacePath: string,
+    projectId: string,
+    sessionId: string,
+    runtime: string,
+    externalThreadId: string,
+    lastTurnId: string,
+    pendingHistoryRevision: string,
+    nextHistoryRevision: string,
+    updatedAt: string,
+  ): Promise<boolean>;
   /** Main-only Codex App Server binding deletion with project/session guard. */
-  deleteChatRuntimeThreadBinding(projectId: string, sessionId: string, runtime: string, expectedWorkspacePath: string): Promise<void>
+  deleteChatRuntimeThreadBinding(
+    projectId: string,
+    sessionId: string,
+    runtime: string,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
   /**
    * アクティブworkspaceの復元候補を新しい順で返す。
    * 返り値は `BackupInfo[]` のcamelCase JSON文字列。
    */
-  listBackups(): Promise<string>
+  listBackups(): Promise<string>;
   /**
    * バックアップを検証・安全退避・原子置換し、同じworkspaceを再openする。
    * 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
    * rotateして復元前DBへのlate writeを不可視にする。
    */
-  restoreBackup(fileName: string): Promise<void>
+  restoreBackup(fileName: string): Promise<void>;
+  /** Safe Mode中の復元候補をopaque idだけで列挙する。 */
+  listRecoveryCandidates(): Promise<string>;
+  /** candidate idを検証し、復元前の候補メタデータを返す。 */
+  verifyRecoveryCandidate(candidateId: string): Promise<string>;
+  /** Safe Mode候補を復元する。復元後はrendererがopen_workspaceを再実行する。 */
+  restoreRecoveryCandidate(candidateId: string): Promise<void>;
+  /** 現在の破損live DBをworkspace内の隔離名へ移動し、そのfile nameを返す。 */
+  quarantineLiveDatabase(): Promise<string>;
+  /** Safe Mode診断JSONを書き出し、そのpath文字列を返す。 */
+  exportSafeModeDiagnostics(): Promise<string>;
   /**
    * 起動時に必ず呼ばれる (workspace/store.ts:152)。
    * 返り値: `GlobalSettings` の JSON 文字列 (camelCase — Tauri ワイヤと同形)。
    */
-  getGlobalSettings(): Promise<string>
+  getGlobalSettings(): Promise<string>;
   /**
    * `settings` は GlobalSettings 全体 (camelCase オブジェクト)。tmp+rename の
    * 原子的書き込みと write_lock 直列化は Tauri コマンドと同一経路。
    */
-  saveGlobalSettings(settings: any): Promise<void>
+  saveGlobalSettings(settings: any): Promise<void>;
   /**
    * AppData配下に一意なsample-workspace世代を共有coreで公開する。
    * GlobalSettingsのwrite_lockをget/save/openと共有し、同時seedも同じ
    * critical sectionへ入る。公開済み世代はアクティブDB/MCPが保持し得るため削除しない。
    */
-  seedSampleWorkspace(language: string, aiPolicy: string): Promise<string>
+  seedSampleWorkspace(language: string, aiPolicy: string): Promise<string>;
   /**
    * Hosted Web Editorがローカル保存したversioned handoffを検証し、
    * AppData配下の新しいworkspace世代として公開する。現在のactive workspaceは
    * 触らず、rendererが通常のopen_workspace経路で明示的に切り替える。
    */
-  importWebEditorWorkspace(handoffJson: string): Promise<string>
+  importWebEditorWorkspace(handoffJson: string): Promise<string>;
   /**
    * 監査チェーン append (commands/timelapse.rs の写像。編集ループ常連の
    * 軽量 DB 書き込み。§4.3)。`events` は camelCase の AppendChangeEvent 配列
@@ -199,7 +246,11 @@ export declare class Backend {
    * 返り値: `AppendResult` (`{"insertedCount":…,"tailSequence":…,"tailHash":…}`)
    * の JSON 文字列。
    */
-  timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
+  timelapseAppendBatch(
+    projectId: string,
+    sessionId: string,
+    events: any,
+  ): Promise<string>;
   /**
    * Append a durable batch to the complete AI-use audit ledger. The
    * renderer snapshots `expected_workspace_path` before dispatch; every
@@ -207,45 +258,78 @@ export declare class Backend {
    * switch therefore leaves a visible non-terminal execution instead of
    * writing its terminal event into the newly active project database.
    */
-  aiAuditAppendBatch(expectedWorkspacePath: string, projectId: string | undefined | null, events: any): Promise<string>
+  aiAuditAppendBatch(
+    expectedWorkspacePath: string,
+    projectId: string | undefined | null,
+    events: any,
+  ): Promise<string>;
   /**
    * Validate the durable CLI lifecycle and atomically append the
    * main-owned one-shot dispatch claim before the shell manager can spawn.
    */
-  aiAuditClaimCliDispatch(expectedWorkspacePath: string, projectId: string | undefined | null, executionId: string, operationId: string, parentExecutionId: string | undefined | null, pathId: string, expectedRequestSha256: string): Promise<string>
+  aiAuditClaimCliDispatch(
+    expectedWorkspacePath: string,
+    projectId: string | undefined | null,
+    executionId: string,
+    operationId: string,
+    parentExecutionId: string | undefined | null,
+    pathId: string,
+    expectedRequestSha256: string,
+  ): Promise<string>;
   /**
    * Read one immutable high-water snapshot. Rows appended after the
    * selected high-water sequence are deliberately excluded from export.
    */
-  aiAuditReadSnapshot(expectedWorkspacePath: string, projectId?: string | undefined | null, afterSequence?: number | undefined | null, highWaterSequence?: number | undefined | null, limit?: number | undefined | null): Promise<string>
+  aiAuditReadSnapshot(
+    expectedWorkspacePath: string,
+    projectId?: string | undefined | null,
+    afterSequence?: number | undefined | null,
+    highWaterSequence?: number | undefined | null,
+    limit?: number | undefined | null,
+  ): Promise<string>;
   /**
    * Verify payload digests, event hashes, sequence continuity, and the
    * project-global previous-hash chain through an optional high-water mark.
    */
-  aiAuditVerify(expectedWorkspacePath: string, projectId?: string | undefined | null, highWaterSequence?: number | undefined | null): Promise<string>
+  aiAuditVerify(
+    expectedWorkspacePath: string,
+    projectId?: string | undefined | null,
+    highWaterSequence?: number | undefined | null,
+  ): Promise<string>;
   /**
    * 現在の Codex 読みを `<userData>/ime/projects/<projectId>.json` へ再出力する。
    * options は typed IPC と同じ camelCase `ImeExportOptions`。DB 読み取りと
    * ファイル I/O の双方を Node main thread の外で実行する。
    */
-  imeExportRefresh(projectId: string, expectedWorkspacePath: string, options: any): Promise<string>
+  imeExportRefresh(
+    projectId: string,
+    expectedWorkspacePath: string,
+    options: any,
+  ): Promise<string>;
   /**
    * IME consumer が参照する active project を切り替える。`None` は明示的な
    * deactivation であり、renderer からの null をそのまま受ける。
    */
-  imeExportSetActiveProject(projectId: string | undefined | null, expectedWorkspacePath: string | undefined | null, mode: string): Promise<string>
+  imeExportSetActiveProject(
+    projectId: string | undefined | null,
+    expectedWorkspacePath: string | undefined | null,
+    mode: string,
+  ): Promise<string>;
   /**
    * Electron の will-quit 専用。blocking pool の処理をタイムアウトで
    * 打ち切ると state.json が旧 project を指したまま終了し得るため、ここだけ
    * 同期的に writer mutex を待ち、active pointer の解除完了を保証する。
    */
-  imeExportDeactivateOnExit(): void
+  imeExportDeactivateOnExit(): void;
   /** consumer handshake と現在の export 状態を返す。 */
-  imeExportGetStatus(mode: string): Promise<string>
+  imeExportGetStatus(mode: string): Promise<string>;
   /** consumer handshake は保持し、project snapshots と active state を消去する。 */
-  imeExportClearAll(): Promise<void>
+  imeExportClearAll(): Promise<void>;
   /** 単一 project の snapshot を削除し、必要なら active state も解除する。 */
-  imeExportRemoveProject(projectId: string, expectedWorkspacePath: string): Promise<void>
+  imeExportRemoveProject(
+    projectId: string,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
   /**
    * 文字屑ゴミ箱: 作成 (commands/trash_bin.rs の写像 — 実装本体は
    * `grimodex_db::trash_bin` を Tauri コマンドと共用)。trash_bin 5 コマンドは
@@ -254,47 +338,59 @@ export declare class Backend {
    * `payload` は camelCase の TrashBinCreatePayload。
    * 返り値: 作成行 (`SELECT *`、列名は snake_case) の JSON 文字列。
    */
-  trashBinCreate(payload: any): Promise<string>
+  trashBinCreate(payload: any): Promise<string>;
   /**
    * 文字屑ゴミ箱: 一覧 (deleted_at 降順、`limit` 省略時 50 件)。
    * 返り値: 行オブジェクト配列の JSON 文字列。
    */
-  trashBinList(projectId: string, limit?: number | undefined | null): Promise<string>
+  trashBinList(
+    projectId: string,
+    limit?: number | undefined | null,
+  ): Promise<string>;
   /** 文字屑ゴミ箱: 1 件削除 (拾い上げ成功時にも呼ばれる)。 */
-  trashBinDelete(id: string): Promise<void>
+  trashBinDelete(id: string): Promise<void>;
   /** 文字屑ゴミ箱: project 内全削除。 */
-  trashBinClearAll(projectId: string): Promise<void>
+  trashBinClearAll(projectId: string): Promise<void>;
   /**
    * 文字屑ゴミ箱: 期日切れ・件数超過の刈り取り (起動時に呼ばれる)。
    * 返り値: 残件数 (i64) の JSON 文字列。
    */
-  trashBinPrune(projectId: string, retentionDays: number, maxCount: number): Promise<string>
+  trashBinPrune(
+    projectId: string,
+    retentionDays: number,
+    maxCount: number,
+  ): Promise<string>;
   /**
    * FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
    * `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
    * タイミングで呼ばれる fail-soft コマンド。
    */
-  ftsOptimize(): Promise<void>
+  ftsOptimize(): Promise<void>;
   /** FTS 全再構築 (設定画面のデータカテゴリから明示実行)。 */
-  ftsRebuild(): Promise<void>
+  ftsRebuild(): Promise<void>;
   /** 英語 FTS の再構築 (英語プロジェクト作成時に fail-soft で呼ばれる)。 */
-  ftsRebuildEn(): Promise<void>
+  ftsRebuildEn(): Promise<void>;
   /**
    * FTS 検索 (チャット recall / コマンドセンター検索 — 編集ループ常連)。
    * 返り値: 行オブジェクト配列の JSON 文字列。
    */
-  ftsSearch(projectId: string, query: string, scope: string, limit: number): Promise<string>
+  ftsSearch(
+    projectId: string,
+    query: string,
+    scope: string,
+    limit: number,
+  ): Promise<string>;
   /**
    * 整合性チェック (IntegrityCheckDialog)。
    * 返り値: レポート object の JSON 文字列。
    */
-  integrityCheck(): Promise<string>
+  integrityCheck(): Promise<string>;
   /**
    * 整合性修復 (IntegrityCheckDialog — 長時間になりうるが spawn_blocking
    * なので Node main thread は塞がない)。
    * 返り値: レポート object の JSON 文字列。
    */
-  repairIntegrity(): Promise<string>
+  repairIntegrity(): Promise<string>;
   /**
    * Linter 本体 (commands/lint.rs の写像 — grimodex-lint を Tauri と共用)。
    * State 非依存だが、UniDic コールドロード (初回 >数秒) + CPU バウンドなので
@@ -303,20 +399,26 @@ export declare class Backend {
    * lint_text アダプタが object reject へ復元する)。
    * 返り値: `LintResponse` の JSON 文字列。
    */
-  lintText(blocks: any, language: string, scope: any, config: any, disables?: any | undefined | null): Promise<string>
+  lintText(
+    blocks: any,
+    language: string,
+    scope: any,
+    config: any,
+    disables?: any | undefined | null,
+  ): Promise<string>;
   /**
    * 段落プレーンテキストの文節分割 (commands/reorder.rs の写像)。
    * UniDic コールドロードで初回 10s 超えうる (FE 側 SLOW_COMMANDS 登録済み)。
    * 返り値: `[{start, end, surface}, …]` (UTF-16 offset) の JSON 文字列。
    */
-  segmentBunsetsu(text: string): Promise<string>
+  segmentBunsetsu(text: string): Promise<string>;
   /**
    * システムフォント列挙 (commands/fonts.rs の写像 — 実装本体は
    * grimodex-fonts を Tauri と共用)。OS のフォントディレクトリスキャンは
    * 数百 ms かかりうるため spawn_blocking。
    * 返り値: family 名配列 (昇順・重複排除) の JSON 文字列。
    */
-  listSystemFonts(): Promise<string>
+  listSystemFonts(): Promise<string>;
   /**
    * Codex 名寄せマッチャの再構築 (commands/codex_matching.rs の写像 —
    * 本体は grimodex-core::codex_matching を Tauri と共用)。`entries` は
@@ -325,14 +427,14 @@ export declare class Backend {
    * rebuild と match_text は AppState.codex_matcher の**同一インスタンス**を
    * 見る (Tauri の CodexMatcherState 相当)。
    */
-  codexRebuildMatcher(entries: any): Promise<void>
+  codexRebuildMatcher(entries: any): Promise<void>;
   /**
    * `text` を現在のマッチャで名寄せする (commands/codex_matching.rs の写像)。
    * マッチャ未構築時は空配列 (Tauri 実装と同一の fail-soft)。高頻度 IPC だが
    * 作法統一のため async + spawn_blocking。
    * 返り値: `CodexMatch` (UTF-16 offset、camelCase) 配列の JSON 文字列。
    */
-  codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>
+  codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>;
   /**
    * 本文から未知の固有名詞候補を抽出する
    * (`grimodex_semantic::codex_candidates` を Tauri と共用)。
@@ -343,245 +445,346 @@ export declare class Backend {
    * lock に閉じ、UniDic + Aho-Corasick の CPU phase は lock 外で実行する。
    * 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
    */
-  extractCodexCandidates(projectId: string, minCount?: number | undefined | null): Promise<string>
+  extractCodexCandidates(
+    projectId: string,
+    minCount?: number | undefined | null,
+  ): Promise<string>;
   /**
    * Rebuild可能なsemantic background indexingを協調停止する。
    * 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
    * `IPC_DERIVED_CANCELLED` を返す。途中生成したindex payloadはcommitしない。
    * 返り値は新generationのJSON数値。
    */
-  semanticCancelBackground(): Promise<string>
+  semanticCancelBackground(): Promise<string>;
   /**
    * モデルが無ければbackground downloadを開始し、状態文字列を即返す。
    * resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
    * installed/unavailable/downloading または明示エラーとして扱う。
    */
-  semanticDownloadModel(language: string): Promise<string>
-  semanticIndexScene(expectedWorkspacePath: string, projectId: string, sceneId: string): Promise<string>
-  semanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
+  semanticDownloadModel(language: string): Promise<string>;
+  semanticIndexScene(
+    expectedWorkspacePath: string,
+    projectId: string,
+    sceneId: string,
+  ): Promise<string>;
+  semanticSearch(
+    expectedWorkspacePath: string,
+    projectId: string,
+    query: string,
+    limit: number,
+    sceneScope?: string | undefined | null,
+    descriptionMode?: boolean | undefined | null,
+  ): Promise<string>;
   /**
    * Score a frozen Semantic Recall candidate set for diagnostic shadow or
    * opt-in apply. This command neither reads the active workspace nor owns
    * admission; it only returns logits, hashes, and truncation counters.
    */
-  semanticRerankerShadowScore(request: any): Promise<string>
-  codexIndexEntry(expectedWorkspacePath: string, projectId: string, entryId: string): Promise<string>
-  codexSemanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number): Promise<string>
-  codexIndexStatus(projectId: string): Promise<string>
-  codexReindexAll(expectedWorkspacePath: string, projectId: string): Promise<string>
-  eventsIndexEntry(expectedWorkspacePath: string, projectId: string, eventId: string): Promise<string>
-  eventsSemanticSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number): Promise<string>
-  eventsIndexStatus(projectId: string): Promise<string>
-  eventsReindexAll(expectedWorkspacePath: string, projectId: string): Promise<string>
-  chatIndexMessage(expectedWorkspacePath: string, projectId: string, messageId: string): Promise<string>
-  chatMessageSearch(expectedWorkspacePath: string, projectId: string, query: string, limit: number): Promise<string>
-  chatIndexStatus(projectId: string): Promise<string>
-  chatReindexAll(expectedWorkspacePath: string, projectId: string): Promise<string>
-  semanticIndexStatus(projectId: string): Promise<string>
-  semanticReindexAll(expectedWorkspacePath: string, projectId: string, runId?: string | undefined | null): Promise<string>
-  semanticChunkContext(sceneId: string, charStart: number, charEnd: number, padding: number): Promise<string>
-  semanticDebugDump(projectId: string, sceneId?: string | undefined | null, limit?: number | undefined | null): Promise<string>
+  semanticRerankerShadowScore(request: any): Promise<string>;
+  codexIndexEntry(
+    expectedWorkspacePath: string,
+    projectId: string,
+    entryId: string,
+  ): Promise<string>;
+  codexSemanticSearch(
+    expectedWorkspacePath: string,
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  codexIndexStatus(projectId: string): Promise<string>;
+  codexReindexAll(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  eventsIndexEntry(
+    expectedWorkspacePath: string,
+    projectId: string,
+    eventId: string,
+  ): Promise<string>;
+  eventsSemanticSearch(
+    expectedWorkspacePath: string,
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  eventsIndexStatus(projectId: string): Promise<string>;
+  eventsReindexAll(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  chatIndexMessage(
+    expectedWorkspacePath: string,
+    projectId: string,
+    messageId: string,
+  ): Promise<string>;
+  chatMessageSearch(
+    expectedWorkspacePath: string,
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  chatIndexStatus(projectId: string): Promise<string>;
+  chatReindexAll(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  semanticIndexStatus(projectId: string): Promise<string>;
+  semanticReindexAll(
+    expectedWorkspacePath: string,
+    projectId: string,
+    runId?: string | undefined | null,
+  ): Promise<string>;
+  semanticChunkContext(
+    sceneId: string,
+    charStart: number,
+    charEnd: number,
+    padding: number,
+  ): Promise<string>;
+  semanticDebugDump(
+    projectId: string,
+    sceneId?: string | undefined | null,
+    limit?: number | undefined | null,
+  ): Promise<string>;
   /**
    * プロットスレッド作成 (commands/plot_threads.rs::plot_thread_create の写像)。
    * `payload` は camelCase の PlotThreadCreatePayload。
    * 返り値: 作成行 (`SELECT *`、列名 snake_case) の JSON 文字列。
    */
-  plotThreadCreate(payload: any): Promise<string>
+  plotThreadCreate(payload: any): Promise<string>;
   /**
    * プロットスレッド更新 (空 patch 時は現行行を返す)。`patch` は camelCase の
    * PlotThreadPatch (color / description は Option<Option<String>>)。
    * 返り値: 更新後行の JSON 文字列。
    */
-  plotThreadUpdate(id: string, patch: any): Promise<string>
+  plotThreadUpdate(id: string, patch: any): Promise<string>;
   /** プロットスレッド削除。 */
-  plotThreadDelete(id: string): Promise<void>
+  plotThreadDelete(id: string): Promise<void>;
   /**
    * プロジェクトのスレッド一覧 (sort_order 昇順)。
    * 返り値: 行オブジェクト配列の JSON 文字列。
    */
-  plotThreadList(projectId: string): Promise<string>
+  plotThreadList(projectId: string): Promise<string>;
   /**
    * スレッド↔シーンのリンク作成 (XPROJ ガード + phase_type 検証を含む)。
    * `payload` は camelCase の PlotThreadLinkCreatePayload。
    * 返り値: 作成行の JSON 文字列。
    */
-  plotThreadLinkCreate(payload: any): Promise<string>
+  plotThreadLinkCreate(payload: any): Promise<string>;
   /**
    * プロットスレッド分岐/合流作成。request ledger・XPROJ 検証・entity
    * insert を共有 Rust の単一 transaction で実行する。
    */
-  plotThreadBranchCreate(payload: any): Promise<string>
+  plotThreadBranchCreate(payload: any): Promise<string>;
   /**
    * Marker move + branch create/update/delete. Full before/after snapshots,
    * durable replay identity, and all writes share one Rust transaction.
    */
-  plotThreadMoveMarkerBundle(payload: any): Promise<string>
+  plotThreadMoveMarkerBundle(payload: any): Promise<string>;
   /**
    * History snapshot restore. Parent/children and request ledger commit in
    * one shared-Rust transaction.
    */
-  plotThreadRestoreSnapshot(payload: any): Promise<string>
+  plotThreadRestoreSnapshot(payload: any): Promise<string>;
   /** Atomic marker + dependent-branch delete with durable replay identity. */
-  plotThreadDeleteSnapshot(payload: any): Promise<string>
+  plotThreadDeleteSnapshot(payload: any): Promise<string>;
   /**
    * リンク更新 (別スレッドへの移動時は XPROJ ガード。空 patch 時は現行行)。
    * `patch` は camelCase の PlotThreadLinkPatch (note / sortOrder は
    * Option<Option<String>>)。
    * 返り値: 更新後行の JSON 文字列。
    */
-  plotThreadLinkUpdate(id: string, patch: any): Promise<string>
+  plotThreadLinkUpdate(id: string, patch: any): Promise<string>;
   /** リンク削除。 */
-  plotThreadLinkDelete(id: string): Promise<void>
+  plotThreadLinkDelete(id: string): Promise<void>;
   /**
    * プロジェクトの全リンク (thread の project で JOIN 絞り込み)。
    * 返り値: 行オブジェクト配列の JSON 文字列。
    */
-  plotThreadListLinks(projectId: string): Promise<string>
+  plotThreadListLinks(projectId: string): Promise<string>;
   /**
    * 伏線作成 (load_bearing 検証を含む)。`payload` は camelCase の
    * ForeshadowCreatePayload。返り値: 作成行 (snake_case) の JSON 文字列。
    */
-  foreshadowCreate(payload: any): Promise<string>
+  foreshadowCreate(payload: any): Promise<string>;
   /**
    * 伏線更新 (空 patch 時は現行行)。`patch` は ForeshadowPatch (多数の
    * Option<Option<T>>)。返り値: 更新後行の JSON 文字列。
    */
-  foreshadowUpdate(id: string, patch: any): Promise<string>
+  foreshadowUpdate(id: string, patch: any): Promise<string>;
   /** 伏線削除。 */
-  foreshadowDelete(id: string): Promise<void>
+  foreshadowDelete(id: string): Promise<void>;
   /**
    * 伏線 + setup ラベル行を 1 ロックで取得。返り値: ForeshadowListWithLabels
    * Response (camelCase struct、内部行は snake_case) の JSON 文字列。
    */
-  foreshadowListWithLabels(projectId: string): Promise<string>
+  foreshadowListWithLabels(projectId: string): Promise<string>;
   /** 未解決 (open) 伏線 + setup ラベル行を 1 ロックで取得。 */
-  foreshadowListOpenForContext(projectId: string): Promise<string>
+  foreshadowListOpenForContext(projectId: string): Promise<string>;
   /**
    * シーンの setup/payoff 伏線 id。返り値: ForeshadowSceneInfoResponse
    * (camelCase Vec<String>) の JSON 文字列。
    */
-  foreshadowGetSceneInfo(sceneId: string): Promise<string>
+  foreshadowGetSceneInfo(sceneId: string): Promise<string>;
   /**
    * シーンの伏線コンテキスト (3 クエリ、JOIN)。返り値: ForeshadowSceneContext
    * Response の JSON 文字列。
    */
-  foreshadowGetSceneContext(sceneId: string): Promise<string>
+  foreshadowGetSceneContext(sceneId: string): Promise<string>;
   /**
    * codex エントリに紐づく伏線一覧。返り値: ForeshadowListWithLabelsResponse
    * の JSON 文字列。
    */
-  foreshadowListByCodexEntry(codexEntryId: string): Promise<string>
+  foreshadowListByCodexEntry(codexEntryId: string): Promise<string>;
   /**
    * チャプターの伏線統計 (最重 read、5 クエリ)。返り値: ForeshadowChapterStats
    * Bundle の JSON 文字列。
    */
-  foreshadowGetChapterStats(chapterId: string): Promise<string>
+  foreshadowGetChapterStats(chapterId: string): Promise<string>;
   /** setup 単体取得。返り値: 行 (snake_case) or null の JSON 文字列。 */
-  foreshadowGetSetup(setupId: string): Promise<string>
+  foreshadowGetSetup(setupId: string): Promise<string>;
   /**
    * setup 更新 (空 patch は no-op)。`patch` は ForeshadowSetupPatch
    * (Option<Option<T>>)。
    */
-  foreshadowUpdateSetup(id: string, patch: any): Promise<void>
+  foreshadowUpdateSetup(id: string, patch: any): Promise<void>;
   /**
    * 伏線 + その setup 群を取得。返り値: `{"foreshadow":…,"setups":[…]}`
    * (キーは literal、内部行は snake_case) の JSON 文字列。
    */
-  foreshadowGet(id: string): Promise<string>
+  foreshadowGet(id: string): Promise<string>;
   /** 伏線↔codex リンク作成 (INSERT OR IGNORE)。 */
-  foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>
+  foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>;
   /** 伏線↔codex リンク削除。 */
-  foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>
+  foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>;
   /**
    * 伏線に紐づく codex エントリ一覧。返り値: codex_entries.* 行 (snake_case)
    * の JSON 文字列。
    */
-  foreshadowListLinkedCodex(foreshadowId: string): Promise<string>
+  foreshadowListLinkedCodex(foreshadowId: string): Promise<string>;
   /** setup の強度を直接更新 (`strength` は null で列クリア)。 */
-  foreshadowSetSetupStrength(setupId: string, strength?: string | undefined | null): Promise<void>
+  foreshadowSetSetupStrength(
+    setupId: string,
+    strength?: string | undefined | null,
+  ): Promise<void>;
   /**
    * AI 由来 setup の upsert。`input` は camelCase の SetupCreateAiInput
    * (fromPos/toPos は i64、lastEvaluatedAt は Option<i64> — from_wire が正規化)。
    */
-  foreshadowSetupCreateAi(input: any): Promise<void>
+  foreshadowSetupCreateAi(input: any): Promise<void>;
   /**
    * orphan setup の解決 (reanchor / delete / reinsert)。`payload` は camelCase
    * の OrphanResolvePayload (fromPos/toPos は Option<i64>)。
    * 返り値: reinsert 時のみ new_id、その他は null の JSON 文字列。
    */
-  foreshadowResolveOrphan(payload: any): Promise<string>
+  foreshadowResolveOrphan(payload: any): Promise<string>;
   /**
    * シーンのアンカーを一括保存 (batch tx)。`setups` / `payoffs` は camelCase
    * の配列 (from/to_pos は i64)。`doc_content_size` は空 doc 判定の i64 ガード
    * (<=2 で bulk-orphan)。
    */
-  foreshadowSaveAnchorsForScene(sceneId: string, setups: any, payoffs: any, docContentSize: number): Promise<void>
+  foreshadowSaveAnchorsForScene(
+    sceneId: string,
+    setups: any,
+    payoffs: any,
+    docContentSize: number,
+  ): Promise<void>;
   /**
    * シーンのアンカー mark を取得 (0 座標・orphan を除外)。返り値:
    * AnchorMarkOutput 配列 (camelCase: from/to/markName/attrs) の JSON 文字列。
    */
-  foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>
-  agentCodexCreate(payload: any): Promise<string>
-  agentCodexUpdate(payload: any): Promise<string>
-  agentWriteBundle(payload: any): Promise<string>
-  agentSnippetCreate(payload: any): Promise<string>
-  agentProposeSceneBody(payload: any): Promise<string>
-  agentAcceptProseStage(payload: any): Promise<string>
-  agentDiscardProseStage(payload: any): Promise<string>
-  agentApplyUndoJournal(payload: any): Promise<string>
-  agentForeshadowCreate(payload: any): Promise<string>
-  agentForeshadowUpdate(payload: any): Promise<string>
-  agentEventCreate(payload: any): Promise<string>
-  agentEventUpdate(payload: any): Promise<string>
-  agentEventDelete(payload: any): Promise<string>
-  agentChronicleBulkMutate(payload: any): Promise<string>
-  agentEventSetParticipants(payload: any): Promise<string>
-  agentSceneEventLink(payload: any): Promise<string>
-  agentSceneEventUnlink(payload: any): Promise<string>
-  agentEventRelationAdd(payload: any): Promise<string>
-  agentEventRelationRemove(payload: any): Promise<string>
+  foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
+  agentCodexCreate(payload: any): Promise<string>;
+  agentCodexUpdate(payload: any): Promise<string>;
+  agentWriteBundle(payload: any): Promise<string>;
+  agentSnippetCreate(payload: any): Promise<string>;
+  agentProposeSceneBody(payload: any): Promise<string>;
+  agentAcceptProseStage(payload: any): Promise<string>;
+  agentDiscardProseStage(payload: any): Promise<string>;
+  agentApplyUndoJournal(payload: any): Promise<string>;
+  agentForeshadowCreate(payload: any): Promise<string>;
+  agentForeshadowUpdate(payload: any): Promise<string>;
+  agentEventCreate(payload: any): Promise<string>;
+  agentEventUpdate(payload: any): Promise<string>;
+  agentEventDelete(payload: any): Promise<string>;
+  agentChronicleBulkMutate(payload: any): Promise<string>;
+  agentEventSetParticipants(payload: any): Promise<string>;
+  agentSceneEventLink(payload: any): Promise<string>;
+  agentSceneEventUnlink(payload: any): Promise<string>;
+  agentEventRelationAdd(payload: any): Promise<string>;
+  agentEventRelationRemove(payload: any): Promise<string>;
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
-  listPostEffectRuns(projectId: string, effectType?: string | undefined | null, limit?: number | undefined | null, offset?: number | undefined | null): Promise<string>
+  listPostEffectRuns(
+    projectId: string,
+    effectType?: string | undefined | null,
+    limit?: number | undefined | null,
+    offset?: number | undefined | null,
+  ): Promise<string>;
   /** Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。 */
-  listSceneLensForProject(projectId: string): Promise<string>
+  listSceneLensForProject(projectId: string): Promise<string>;
   /** シーンの annotation + relation を返す (`{annotations,relations}`)。 */
-  listAnnotationsForScene(projectId: string, sceneId: string, status?: string | undefined | null): Promise<string>
+  listAnnotationsForScene(
+    projectId: string,
+    sceneId: string,
+    status?: string | undefined | null,
+  ): Promise<string>;
   /** プロジェクトの annotation を返す (`{annotations}`)。 */
-  listAnnotationsForProject(projectId: string, status?: string | undefined | null): Promise<string>
+  listAnnotationsForProject(
+    projectId: string,
+    status?: string | undefined | null,
+  ): Promise<string>;
   /** annotation の status を更新 (XPROJ ガード付き、conn 直呼び)。 */
-  updateAnnotationStatus(annotationId: string, status: string, projectId: string): Promise<string>
+  updateAnnotationStatus(
+    annotationId: string,
+    status: string,
+    projectId: string,
+  ): Promise<string>;
   /** 疑似コメントへの返信を追加 (`args` は snake_case の ReplyToAnnotationArgs)。 */
-  replyToAnnotation(args: any): Promise<string>
+  replyToAnnotation(args: any): Promise<string>;
   /** シーンの annotation を保存 (raw snake_case 配列、range_start/end は i64)。 */
-  savePostEffectAnnotations(projectId: string, sceneId: string, annotations: any): Promise<void>
+  savePostEffectAnnotations(
+    projectId: string,
+    sceneId: string,
+    annotations: any,
+  ): Promise<void>;
   /**
    * 単一sceneの校閲runを開始し、AI完了を待たず `{run_id,from_cache}` を返す。
    * `settings` とsecretはElectron mainが同じinvokeで取得したsnapshot。API key
    * 未登録 (`None`) と保存済み空文字 (`Some("")`) を区別し、lookup errorも
    * cache hitを壊さないよう背景taskまで遅延させる。
    */
-  startPostEffectRun(args: any, settings: any, apiKey?: string | undefined | null, apiKeyError?: string | undefined | null): Promise<string>
+  startPostEffectRun(
+    args: any,
+    settings: any,
+    apiKey?: string | undefined | null,
+    apiKeyError?: string | undefined | null,
+  ): Promise<string>;
   /**
    * 複数sceneの校閲run。処理はscene境界でabort registryを確認し、イベントは
    * `post_effect:{progress,partial,done,error}` をEventQueueへ配信する。
    */
-  startPostEffectRunMulti(args: any, settings: any, apiKey?: string | undefined | null, apiKeyError?: string | undefined | null): Promise<string>
+  startPostEffectRunMulti(
+    args: any,
+    settings: any,
+    apiKey?: string | undefined | null,
+    apiKeyError?: string | undefined | null,
+  ): Promise<string>;
   /**
    * 同一BackendのregistryとDB rowを一緒に更新する。DB上のproject ownershipを
    * 確認できたrunning runだけにabort flagを立てるため、cross-project/late abort
    * は別runや将来runへ波及しない。
    */
-  abortPostEffectRun(runId: string, projectId: string): Promise<void>
+  abortPostEffectRun(runId: string, projectId: string): Promise<void>;
   /**
    * AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
    * 返り値: `AiSettings` の JSON 文字列 (camelCase)。
    */
-  getAiSettings(): Promise<string>
+  getAiSettings(): Promise<string>;
   /**
    * AI 設定を `<appData>/ai-settings.json` へ保存する (Tauri の
    * `save_ai_settings` と同一)。API キーは別の safeStorage 経路なので含まない。
    */
-  saveAiSettings(settings: any): Promise<void>
+  saveAiSettings(settings: any): Promise<void>;
   /**
    * 非ストリーミングのチャット送信 (Tauri の send_chat_message と同一ロジック。
    * キーは注入)。`args` は camelCase の ChatRequest、`api_key` は解決済み平文。
@@ -590,7 +793,7 @@ export declare class Backend {
    * 単一 read_ai_settings と同じ原子性を保つ (2 度読みの TOCTOU 回避)。
    * 返り値: `ChatResponse` の JSON 文字列 (camelCase)。
    */
-  sendChatMessage(args: any, settings: any, apiKey: string): Promise<string>
+  sendChatMessage(args: any, settings: any, apiKey: string): Promise<string>;
   /**
    * ストリーミングのチャット送信 (Tauri の send_chat_message_stream と同一)。
    * チャンクは `chat:stream-chunk` / 完了は `chat:stream-done` を EventQueue へ emit。
@@ -599,38 +802,42 @@ export declare class Backend {
    * `streamId` は audit execution ID と一致必須。ストリームごとの cancellation
    * registry へ登録し、他の同時ストリームとは隔離する。全 emit に同じ ID を付ける。
    */
-  sendChatMessageStream(args: any, settings: any, apiKey: string): Promise<void>
+  sendChatMessageStream(
+    args: any,
+    settings: any,
+    apiKey: string,
+  ): Promise<void>;
   /**
    * 指定 `streamId` のチャットだけを中止し、そのローカル処理が quiesce するまで待つ。
    * 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
    */
-  abortChatStream(streamId: string): Promise<boolean>
+  abortChatStream(streamId: string): Promise<boolean>;
   /**
    * インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
    * AI のべりすとでは Completion mode を使う。チャットとは別の per-stream
    * cancellation registry を使い、全 emit に audit execution ID を付ける。
    */
-  sendInlineAiStream(args: any, settings: any, apiKey: string): Promise<void>
+  sendInlineAiStream(args: any, settings: any, apiKey: string): Promise<void>;
   /**
    * 指定 `streamId` のインライン AI だけを中止し、ローカル quiescence まで待つ。
    * 未登録 ID は将来の同 ID 登録だけに効く bounded tombstone となり false を返す。
    */
-  abortInlineAiStream(streamId: string): Promise<boolean>
+  abortInlineAiStream(streamId: string): Promise<boolean>;
   /**
    * Tool Use 対応の Agent 送信。tool protocol 解決・Hermes/native の安全ゲートを
    * 含む `grimodex_ai::send_chat_with_tools` をTauriと共用する。
    */
-  sendAgentMessage(args: any, settings: any, apiKey: string): Promise<string>
+  sendAgentMessage(args: any, settings: any, apiKey: string): Promise<string>;
   /**
    * provider のモデル一覧を取得する。`settings` はmainが1回読んだsnapshot、
    * `api_key` はsafeStorageにキーが無い場合も空文字で注入される。
    */
-  listAiModels(args: any, settings: any, apiKey: string): Promise<string>
+  listAiModels(args: any, settings: any, apiKey: string): Promise<string>;
   /**
    * 最小リクエストでAI接続を確認する。variant解決はテスト対象providerを設定へ
    * 反映してから行い、OpenAI互換endpointの既定variantを正しく選ぶ。
    */
-  testAiConnection(args: any, settings: any, apiKey: string): Promise<string>
+  testAiConnection(args: any, settings: any, apiKey: string): Promise<string>;
   /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
@@ -638,5 +845,5 @@ export declare class Backend {
    * TSFn は unref 済み — 登録が Node のイベントループを生かし続けることは
    * ない (プロセス終了を妨げない)。
    */
-  onEvent(callback: (...args: any[]) => any): void
+  onEvent(callback: (...args: any[]) => any): void;
 }

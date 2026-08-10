@@ -67,6 +67,7 @@ function resetStore() {
     error: null,
     pendingTrustPath: null,
     showSampleTour: false,
+    recoveryShell: null,
   });
 }
 
@@ -489,6 +490,69 @@ describe("useWorkspaceStore", () => {
       expect(state.workspaceOpenRevision).toBe(1);
       expect(state.workspaceSwitchInProgress).toBe(false);
       expect(state.workspaceHydrated).toBe(true);
+    });
+
+    it("opens the recovery shell without hydrating when native returns Safe Mode", async () => {
+      const previousLoadAll = useSettingsStore.getState().loadAll;
+      const loadAll = vi.fn(async () => {});
+      useSettingsStore.setState({ loadAll });
+      const candidate = {
+        id: "rc_auto_1",
+        kind: "automatic-backup",
+        createdAt: "2026-08-10T12:00:00Z",
+        schemaVersion: 42,
+        appVersion: "0.7.0",
+        sizeBytes: 4096,
+        checksumStatus: "verified",
+      };
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "open_workspace") {
+          return {
+            status: "safe-mode",
+            reason: "WORKSPACE_SAFE_MODE: live database schema is newer",
+            candidates: [candidate],
+          };
+        }
+        if (command === "get_global_settings") {
+          throw new Error("settings hydration must be skipped");
+        }
+        if (command === "db_execute") {
+          throw new Error("project hydration must be skipped");
+        }
+        return undefined;
+      });
+
+      try {
+        const outcome = await useWorkspaceStore
+          .getState()
+          .openWorkspace("D:\\Novels\\SafeMode");
+
+        expect(outcome).toBe("safe-mode");
+        expect(loadAll).not.toHaveBeenCalled();
+        expect(
+          mockInvoke.mock.calls.some(([command]) => command === "db_execute"),
+        ).toBe(false);
+        expect(
+          mockInvoke.mock.calls.some(
+            ([command]) => command === "get_global_settings",
+          ),
+        ).toBe(false);
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          view: "recovery",
+          activeWorkspacePath: null,
+          workspaceOpenRevision: 0,
+          workspaceSwitchInProgress: false,
+          workspaceHydrated: false,
+          recoveryShell: {
+            mode: "safe-mode",
+            workspacePath: "D:\\Novels\\SafeMode",
+            reason: "WORKSPACE_SAFE_MODE: live database schema is newer",
+            candidates: [candidate],
+          },
+        });
+      } finally {
+        useSettingsStore.setState({ loadAll: previousLoadAll });
+      }
     });
 
     it("keeps window-close waiting until the full Workspace lifecycle completes", async () => {

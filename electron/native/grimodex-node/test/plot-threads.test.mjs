@@ -51,7 +51,8 @@ test("workspace 未オープンの plotThreadList は 'No workspace is open' で
 
 test("plotThreadCreate → list → update roundtrip（生行 snake_case）", async () => {
   const opened = JSON.parse(await backend.openWorkspace(join(root, "ws")));
-  assert.equal(opened.isExisting, false);
+  assert.equal(opened.status, "ready");
+  assert.equal(opened.workspace.isExisting, false);
 
   const created = JSON.parse(
     await backend.plotThreadCreate({

@@ -71,6 +71,10 @@ use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::project_snapshots::{
     self, ApplyProjectSnapshotRestorePayload, CreateProjectSnapshotPayload, RestoreScope,
 };
+use grimodex_db::recovery::{
+    export_safe_mode_diagnostics, list_safe_mode_candidates, quarantine_live_database,
+    restore_safe_mode_candidate, verify_safe_mode_candidate,
+};
 use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
@@ -1290,7 +1294,9 @@ impl Backend {
         run_blocking(move || {
             let payload: editor_stickies::CreatePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&editor_stickies::create(db, payload)?)?)
+                Ok(serde_json::to_string(&editor_stickies::create(
+                    db, payload,
+                )?)?)
             })
         })
         .await
@@ -1302,7 +1308,9 @@ impl Backend {
         run_blocking(move || {
             let payload: editor_stickies::UpdatePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&editor_stickies::update(db, payload)?)?)
+                Ok(serde_json::to_string(&editor_stickies::update(
+                    db, payload,
+                )?)?)
             })
         })
         .await
@@ -1634,7 +1642,8 @@ impl Backend {
     /// Codex matcher破棄 + semantic 4cache epoch rotateを行う。
     /// 完了時に `workspace:opened` (FE 購読者なしのデバッグチャネル) を emit
     /// する (§7.1 の end-to-end 実証チャネルその 2)。
-    /// 返り値: `{"name":…,"isExisting":…}` の JSON 文字列。
+    /// 返り値: WorkspaceOpenOutcome JSON
+    /// (`ready`/`migrated`/`recovery-required`/`safe-mode`)。
     #[napi]
     pub async fn open_workspace(&self, path: String) -> Result<String> {
         let state = Arc::clone(&self.state);
@@ -1747,10 +1756,11 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
-            let binding =
-                workspace
-                    .db()
-                    .get_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
+            let binding = workspace.db().get_chat_runtime_thread_binding(
+                &project_id,
+                &session_id,
+                &runtime,
+            )?;
             Ok(serde_json::to_string(&binding).map_err(anyhow::Error::from)?)
         })
         .await
@@ -1772,7 +1782,9 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
-            workspace.db().upsert_chat_runtime_thread_binding(&binding)?;
+            workspace
+                .db()
+                .upsert_chat_runtime_thread_binding(&binding)?;
             Ok(())
         })
         .await
@@ -1798,16 +1810,18 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
-            Ok(workspace.db().advance_chat_runtime_thread_history_revision(
-                &project_id,
-                &session_id,
-                &runtime,
-                &external_thread_id,
-                &last_turn_id,
-                &pending_history_revision,
-                &next_history_revision,
-                &updated_at,
-            )?)
+            Ok(workspace
+                .db()
+                .advance_chat_runtime_thread_history_revision(
+                    &project_id,
+                    &session_id,
+                    &runtime,
+                    &external_thread_id,
+                    &last_turn_id,
+                    &pending_history_revision,
+                    &next_history_revision,
+                    &updated_at,
+                )?)
         })
         .await
     }
@@ -1825,9 +1839,11 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
-            workspace
-                .db()
-                .delete_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
+            workspace.db().delete_chat_runtime_thread_binding(
+                &project_id,
+                &session_id,
+                &runtime,
+            )?;
             Ok(())
         })
         .await
@@ -1868,6 +1884,57 @@ impl Backend {
                 serde_json::json!({ "path": path, "reason": "restore" }),
             );
             Ok(())
+        })
+        .await
+    }
+
+    /// Safe Mode中の復元候補をopaque idだけで列挙する。
+    #[napi]
+    pub async fn list_recovery_candidates(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let candidates = list_safe_mode_candidates(&state.ws)?;
+            Ok(serde_json::to_string(&candidates).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// candidate idを検証し、復元前の候補メタデータを返す。
+    #[napi]
+    pub async fn verify_recovery_candidate(&self, candidate_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let candidate = verify_safe_mode_candidate(&state.ws, &candidate_id)?;
+            Ok(serde_json::to_string(&candidate).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Safe Mode候補を復元する。復元後はrendererがopen_workspaceを再実行する。
+    #[napi]
+    pub async fn restore_recovery_candidate(&self, candidate_id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || restore_safe_mode_candidate(&state.ws, &candidate_id)).await
+    }
+
+    /// 現在の破損live DBをworkspace内の隔離名へ移動し、そのfile nameを返す。
+    #[napi]
+    pub async fn quarantine_live_database(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let file_name = quarantine_live_database(&state.ws)?;
+            Ok(serde_json::to_string(&file_name).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Safe Mode診断JSONを書き出し、そのpath文字列を返す。
+    #[napi]
+    pub async fn export_safe_mode_diagnostics(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let path = export_safe_mode_diagnostics(&state.ws)?;
+            Ok(serde_json::to_string(&path).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -5292,13 +5359,10 @@ mod ime_workspace_tests {
         let workspace_path = dir.join("workspace-a");
         std::fs::create_dir_all(&workspace_path).expect("workspace dir");
         let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
-        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
-            db,
-            workspace_path.clone(),
-        )
-        .expect("authority");
-        *state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(authority));
+        let authority =
+            grimodex_db::WorkspaceAuthority::from_database_for_test(db, workspace_path.clone())
+                .expect("authority");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
         let options = ImeExportOptions {
             mode: ImeIntegrationMode::On,
             exclude_hidden: false,
@@ -5339,13 +5403,10 @@ mod ime_workspace_tests {
         let nested = workspace_path.join("nested");
         std::fs::create_dir_all(&nested).expect("workspace dirs");
         let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
-        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
-            db,
-            workspace_path.clone(),
-        )
-        .expect("authority");
-        *state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(authority));
+        let authority =
+            grimodex_db::WorkspaceAuthority::from_database_for_test(db, workspace_path.clone())
+                .expect("authority");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
         let snapshot = active_workspace_snapshot(&state.ws).expect("workspace snapshot");
         let equivalent_but_noncanonical = nested.join("..");
 
@@ -5440,13 +5501,10 @@ mod semantic_reranker_lane_tests {
         let state =
             AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
         let database = Arc::into_inner(database).expect("database Arc must be unique");
-        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
-            database,
-            workspace_path,
-        )
-        .expect("authority");
-        *state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(authority));
+        let authority =
+            grimodex_db::WorkspaceAuthority::from_database_for_test(database, workspace_path)
+                .expect("authority");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
         let backend = Backend {
             state: Arc::new(state),
         };

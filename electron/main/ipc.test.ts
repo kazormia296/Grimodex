@@ -121,9 +121,12 @@ describe("registerIpcRouter workspace-open main trace", () => {
     registerIpcRouter(
       backendWithOpenWorkspace(async () =>
         JSON.stringify({
-          name: "SECRET_WORKSPACE_NAME",
-          isExisting: true,
-          workspaceId: "SECRET_WORKSPACE_ID",
+          status: "ready",
+          workspace: {
+            name: "SECRET_WORKSPACE_NAME",
+            isExisting: true,
+            workspaceId: "SECRET_WORKSPACE_ID",
+          },
         }),
       ),
     );
@@ -183,9 +186,12 @@ describe("registerIpcRouter workspace-open main trace", () => {
     registerIpcRouter(
       backendWithOpenWorkspace(async () =>
         JSON.stringify({
-          name: "workspace",
-          isExisting: true,
-          workspaceId: "workspace-id",
+          status: "ready",
+          workspace: {
+            name: "workspace",
+            isExisting: true,
+            workspaceId: "workspace-id",
+          },
         }),
       ),
     );
@@ -234,9 +240,12 @@ describe("registerIpcRouter workspace-open main trace", () => {
     registerIpcRouter(
       backendWithOpenWorkspace(async () =>
         JSON.stringify({
-          name: "workspace",
-          isExisting: true,
-          workspaceId: "workspace-id",
+          status: "ready",
+          workspace: {
+            name: "workspace",
+            isExisting: true,
+            workspaceId: "workspace-id",
+          },
         }),
       ),
     );

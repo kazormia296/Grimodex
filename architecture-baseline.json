@@ -20,7 +20,7 @@
     "cyclic-modules": 0,
     "largest-scc": 0,
     "scc-internal-edges": 0,
-    "app-root-lines": 81,
+    "app-root-lines": 60,
     "largest-host-lines": 292,
     "chat-store-lines": 405,
     "chat-store-runtime-imports": 21,

@@ -2181,7 +2181,7 @@ async function phaseSeed() {
       path: workspaceDir,
     });
     log(
-      `  open_workspace: name=${opened?.name} isExisting=${opened?.isExisting}`,
+      `  open_workspace: status=${opened?.status} name=${opened?.workspace?.name ?? opened?.name} isExisting=${opened?.workspace?.isExisting ?? opened?.isExisting}`,
     );
 
     // 次回起動を editor ビュー直行にする: 信頼リスト + launcher スキップ +

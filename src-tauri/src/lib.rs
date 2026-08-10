@@ -95,6 +95,7 @@ pub fn run() {
             // Workspace state starts empty — frontend will call open_workspace
             app.manage(WorkspaceState {
                 inner: Mutex::new(None),
+                safe_mode: grimodex_db::recovery::SafeModeState::default(),
                 switching: std::sync::atomic::AtomicBool::new(false),
                 open_lock: Mutex::new(()),
             });
