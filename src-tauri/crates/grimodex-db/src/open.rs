@@ -651,7 +651,8 @@ pub struct SwitchingGuard<'a>(pub &'a std::sync::atomic::AtomicBool);
 /// Same-path reopen quiesce: wait for sole authority owner, drop the old
 /// authority (releasing its shared lease), hold the maintenance exclusive claim
 /// through open, and on pre-replace failure best-effort republish a
-/// current-schema authority from disk.
+/// current-schema authority via DDL-free reopen (never re-run the full
+/// Migration Supervisor).
 struct QuiescedSamePath<'a> {
     ws_state: &'a WorkspaceState,
     ws_path: PathBuf,
@@ -728,11 +729,10 @@ impl Drop for QuiescedSamePath<'_> {
         if !self.did_quiesce || self.abandon_restore {
             return;
         }
-        match crate::migration_supervisor::open_or_migrate_workspace_db(&self.ws_path) {
-            Ok(crate::migration_supervisor::WorkspaceOpenDbOutcome::Ready { opened, .. })
-            | Ok(crate::migration_supervisor::WorkspaceOpenDbOutcome::Migrated {
-                opened, ..
-            }) => {
+        // Release in-process maintenance exclusive before acquiring shared lease.
+        self._maintenance = None;
+        match crate::migration_supervisor::reopen_existing_current_authority(&self.ws_path) {
+            Ok(opened) => {
                 let authority = Arc::new(WorkspaceAuthority::new(
                     opened.database,
                     self.ws_path.clone(),
@@ -744,7 +744,11 @@ impl Drop for QuiescedSamePath<'_> {
                     }
                 }
             }
-            _ => {}
+            Err(error) => {
+                tracing::error!(
+                    "WORKSPACE_REACTIVATION_FAILED during same-path pre-replace recovery: {error}"
+                );
+            }
         }
     }
 }

@@ -70,6 +70,38 @@ pub fn try_acquire_shared(workspace: &Path) -> Result<WorkspaceLease, LeaseError
     }
 }
 
+/// Acquire a shared lease, waiting up to `timeout`.
+///
+/// Used for exclusive→shared handoff after a verified live replace, so a brief
+/// contending exclusive holder can finish without forcing a blind rollback.
+pub fn acquire_shared(
+    workspace: &Path,
+    timeout: Duration,
+) -> Result<WorkspaceLease, LeaseError> {
+    let file = open_lock_file(workspace).map_err(LeaseError::Io)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match file.try_lock_shared() {
+            Ok(()) => {
+                return Ok(WorkspaceLease {
+                    _file: file,
+                    path: lock_path(workspace),
+                    mode: LeaseMode::Shared,
+                })
+            }
+            Err(TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    return Err(LeaseError::Busy {
+                        code: "WORKSPACE_SHARED_LEASE_TIMEOUT",
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(TryLockError::Error(error)) => return Err(LeaseError::Io(error)),
+        }
+    }
+}
+
 /// Acquire an exclusive lease, waiting up to `timeout`.
 pub fn acquire_exclusive(
     workspace: &Path,

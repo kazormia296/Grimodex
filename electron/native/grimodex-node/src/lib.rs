@@ -5439,7 +5439,7 @@ mod semantic_reranker_lane_tests {
         let resources = dir.join("missing-semantic-resources");
         let state =
             AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
-        let database = Arc::try_unwrap(database).expect("unique database arc");
+        let database = Arc::into_inner(database).expect("database Arc must be unique");
         let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
             database,
             workspace_path,
@@ -5472,9 +5472,14 @@ mod semantic_reranker_lane_tests {
             "unexpected reranker preparation error: {error}"
         );
 
-        let snapshot = database
-            .read_ai_audit_snapshot("project-a", None, None, None)
-            .expect("read native reranker audit");
+        let snapshot = {
+            let guard = backend.state.ws.inner.lock().expect("workspace lock");
+            let active = guard.as_ref().expect("workspace still open");
+            active
+                .db()
+                .read_ai_audit_snapshot("project-a", None, None, None)
+                .expect("read native reranker audit")
+        };
         assert_eq!(
             snapshot
                 .events
@@ -5534,7 +5539,6 @@ mod semantic_reranker_lane_tests {
         assert_eq!(failed.payload["onnxSessionRunObserved"], false);
 
         drop(backend);
-        drop(database);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

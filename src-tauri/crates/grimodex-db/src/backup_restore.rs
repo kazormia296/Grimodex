@@ -252,32 +252,38 @@ pub fn restore_backup_core(
     }
     staged_cleanup.disarm();
 
+    let installed = match crate::migration_supervisor::capture_installed_image(
+        &db_path,
+        grimodex_core::SCHEMA_VERSION,
+        None,
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            // Candidate is already live; keep rollback artifact and try CAS rollback.
+            rollback_cleanup.disarm();
+            return Err(anyhow::anyhow!(
+                "RESTORE_SESSION_LOST: installed image digest capture failed after replace: {error}; rollback at {rollback_path:?}"
+            )
+            .into());
+        }
+    };
+
     match publish_active_workspace(ws_state, ws_path.clone(), exclusive_lease) {
         Ok(()) => {
             on_reopened();
             Ok(())
         }
         Err(restore_error) => {
-            // A failed open may have created WAL/SHM for the restored file.
-            // They must not be replayed into the original DB during rollback.
             let restore_error_msg = restore_error.to_string();
-            if let Err(sidecar_error) = remove_db_sidecars(&db_path) {
-                rollback_cleanup.disarm();
-                return Err(anyhow::anyhow!(
-                    "RESTORE_SESSION_LOST: 復元DBを再オープンできず、sidecar削除にも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error_msg}; sidecar={sidecar_error}"
-                )
-                .into());
-            }
-
-            match atomic_replace(&rollback_path, &db_path) {
-                Ok(()) => {
+            match crate::migration_supervisor::rollback_if_installed_image_unchanged(
+                &ws_path,
+                &db_path,
+                &rollback_path,
+                &installed,
+                "RESTORE_HANDOFF_CONFLICT",
+            ) {
+                Ok(exclusive) => {
                     rollback_cleanup.disarm();
-                    let exclusive = workspace_lease::acquire_exclusive_for_migration(&ws_path)
-                        .map_err(|error| {
-                            anyhow::anyhow!(
-                                "RESTORE_SESSION_LOST: rollback exclusive lease failed: {error}"
-                            )
-                        })?;
                     match publish_active_workspace(ws_state, ws_path, exclusive) {
                         Ok(()) => Err(anyhow::anyhow!(
                             "復元DBを再オープンできなかったため元のDBへ戻しました: {restore_error_msg}"
@@ -289,12 +295,21 @@ pub fn restore_backup_core(
                         .into()),
                     }
                 }
-                Err(rollback_error) => {
-                    rollback_cleanup.disarm();
-                    Err(anyhow::anyhow!(
-                        "RESTORE_SESSION_LOST: 復元DBを再オープンできず、元のDBへのロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error_msg}; rollback={rollback_error}"
-                    )
-                    .into())
+                Err(conflict) => {
+                    let conflict_msg = conflict.to_string();
+                    if conflict_msg.contains("RESTORE_HANDOFF_CONFLICT") {
+                        rollback_cleanup.disarm();
+                        Err(anyhow::anyhow!(
+                            "{conflict_msg}; originalPublishError={restore_error_msg}"
+                        )
+                        .into())
+                    } else {
+                        rollback_cleanup.disarm();
+                        Err(anyhow::anyhow!(
+                            "RESTORE_SESSION_LOST: 復元DBを再オープンできず、CASロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error_msg}; rollback={conflict_msg}"
+                        )
+                        .into())
+                    }
                 }
             }
         }
@@ -306,10 +321,11 @@ fn publish_active_workspace(
     ws_path: PathBuf,
     exclusive: workspace_lease::WorkspaceLease,
 ) -> AppResult<()> {
-    let opened =
-        crate::migration_supervisor::reopen_under_shared_lease(&ws_path, exclusive).map_err(
-            |error| anyhow::anyhow!("workspace shared handoff after restore: {error}"),
-        )?;
+    let opened = crate::migration_supervisor::reopen_under_shared_lease_for_restore(
+        &ws_path,
+        exclusive,
+    )
+    .map_err(|error| anyhow::anyhow!("workspace shared handoff after restore: {error}"))?;
     if let Err(error) = opened.database.rebuild_fts_if_stale() {
         tracing::warn!("restore: fts rebuild after restore failed: {error}");
     }
@@ -323,27 +339,22 @@ fn publish_active_workspace(
     Ok(())
 }
 
-fn open_active(db_path: &Path) -> anyhow::Result<Database> {
-    let database = Database::new(db_path)?;
-    database.migrate()?;
-    if let Err(error) = database.optimize() {
-        tracing::warn!("PRAGMA optimize after restore failed: {error}");
-    }
-    Ok(database)
-}
-
 fn reactivate_workspace(
     ws_state: &WorkspaceState,
     db_path: &Path,
     ws_path: &Path,
 ) -> anyhow::Result<()> {
-    // Lease first, then open — never leave a handle unlocked.
-    let lease = workspace_lease::try_acquire_shared(ws_path)?;
-    let database = open_active(db_path)?;
+    let _ = db_path;
+    // Shared lease + current-schema inspection only — never full migrate() DDL.
+    let opened = crate::migration_supervisor::reopen_existing_current_authority(ws_path)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    if let Err(error) = opened.database.rebuild_fts_if_stale() {
+        tracing::warn!("restore: fts rebuild after reactivate failed: {error}");
+    }
     let authority = std::sync::Arc::new(WorkspaceAuthority::new(
-        database,
+        opened.database,
         ws_path.to_path_buf(),
-        lease,
+        opened.lease,
     ));
     let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     *inner = Some(ActiveWorkspace::new(authority));

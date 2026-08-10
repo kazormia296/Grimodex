@@ -348,6 +348,275 @@ fn failpoint_reopen_failure_restores_without_publishing_database() {
     assert!(snapshot_still_present(&ws));
 }
 
+#[test]
+fn failpoint_shared_handoff_busy_keeps_verified_migrated_live() {
+    let ws = temp_workspace("fp-handoff-busy");
+    let db_path = ws.join("grimodex.db");
+    seed_legacy_db(&db_path, 0);
+
+    let err = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+        &ws,
+        Some(Failpoint::SharedHandoffBusy),
+    )
+    .expect_err("handoff busy must not roll back");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("MIGRATION_HANDOFF_BUSY"),
+        "msg={msg}"
+    );
+    // Verified migration must remain published on disk — no blind snapshot restore.
+    assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
+    assert!(snapshot_still_present(&ws));
+}
+
+#[test]
+fn handoff_busy_race_does_not_clobber_foreign_live_update() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
+
+    let ws = temp_workspace("handoff-race");
+    let db_path = ws.join("grimodex.db");
+    seed_legacy_db(&db_path, 0);
+
+    // Thread A migrates then hits SharedHandoffBusy after exclusive drop.
+    // Thread B installs a distinct live image under exclusive in that gap.
+    // A must not roll the pre-migration snapshot over B's completed update.
+    let barrier = Arc::new(Barrier::new(2));
+    let ws_a = ws.clone();
+    let ws_b = ws.clone();
+    let db_b = db_path.clone();
+    let barrier_a = Arc::clone(&barrier);
+    let barrier_b = Arc::clone(&barrier);
+
+    let a = thread::spawn(move || {
+        barrier_a.wait();
+        migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws_a,
+            Some(Failpoint::SharedHandoffBusy),
+        )
+    });
+
+    let b = thread::spawn(move || {
+        barrier_b.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if db_b.exists() {
+                if let Ok(db) = Database::new(&db_b) {
+                    if let Ok(version) = db.with_conn(|conn| {
+                        Ok(conn.pragma_query_value(None, "user_version", |row| {
+                            row.get::<_, i32>(0)
+                        })?)
+                    }) {
+                        if version == SCHEMA_VERSION {
+                            drop(db);
+                            if let Ok(exclusive) =
+                                grimodex_db::workspace_lease::acquire_exclusive(
+                                    &ws_b,
+                                    Duration::from_secs(5),
+                                )
+                            {
+                                let foreign = ws_b.join("foreign.db");
+                                {
+                                    let fdb = Database::new(&foreign).expect("foreign");
+                                    fdb.migrate().expect("migrate foreign");
+                                    fdb.with_conn(|conn| {
+                                        conn.execute(
+                                            "INSERT INTO projects (id, title, language) VALUES (?1, 'Foreign', 'ja')",
+                                            ["project-foreign"],
+                                        )?;
+                                        Ok(())
+                                    })
+                                    .expect("seed foreign");
+                                }
+                                migration_supervisor::seal_sqlite_image(&foreign)
+                                    .expect("seal foreign");
+                                fs::copy(&foreign, &db_b).expect("install foreign live");
+                                migration_supervisor::seal_sqlite_image(&db_b)
+                                    .expect("reseal");
+                                drop(exclusive);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("timed out waiting for migrated live DB");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+
+    let a_result = a.join().expect("thread A");
+    b.join().expect("thread B");
+
+    let err = a_result.expect_err("A must not blind-rollback after handoff busy");
+    assert!(
+        err.to_string().contains("MIGRATION_HANDOFF_BUSY"),
+        "err={}",
+        err
+    );
+
+    let db = Database::new(&db_path).expect("open final live");
+    let count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = 'project-foreign'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count foreign");
+    assert_eq!(
+        count, 1,
+        "Process B's completed update must survive A's handoff failure"
+    );
+}
+
+}
+
+#[test]
+fn rollback_cas_refuses_when_live_image_changed() {
+    let ws = temp_workspace("cas-conflict");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate");
+    }
+    migration_supervisor::seal_sqlite_image(&db_path).expect("seal");
+    let installed = migration_supervisor::capture_installed_image(
+        &db_path,
+        SCHEMA_VERSION,
+        Some("mig-a".into()),
+    )
+    .expect("capture A");
+
+    // Process B replaces live with a different sealed image.
+    let other = ws.join("other.db");
+    {
+        let db = Database::new(&other).expect("other");
+        db.migrate().expect("migrate other");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title, language) VALUES (?1, 'B', 'ja')",
+                ["project-b"],
+            )?;
+            Ok(())
+        })
+        .expect("seed B");
+    }
+    migration_supervisor::seal_sqlite_image(&other).expect("seal other");
+    fs::copy(&other, &db_path).expect("B wins live");
+    migration_supervisor::seal_sqlite_image(&db_path).expect("reseal live");
+
+    let rollback = ws.join("rollback-a.db");
+    fs::copy(&other, &rollback).expect("dummy rollback artifact");
+
+    let err = migration_supervisor::rollback_if_installed_image_unchanged(
+        &ws,
+        &db_path,
+        &rollback,
+        &installed,
+        "MIGRATION_HANDOFF_CONFLICT",
+    )
+    .expect_err("must refuse overwrite");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("MIGRATION_HANDOFF_CONFLICT"),
+        "msg={msg}"
+    );
+
+    // Live still has Process B's project row.
+    let db = Database::new(&db_path).expect("open live");
+    let count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = 'project-b'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count");
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn rollback_cas_applies_when_live_image_unchanged() {
+    let ws = temp_workspace("cas-ok");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title, language) VALUES (?1, 'Installed', 'ja')",
+                ["project-installed"],
+            )?;
+            Ok(())
+        })
+        .expect("seed installed");
+    }
+    let installed = migration_supervisor::capture_installed_image(
+        &db_path,
+        SCHEMA_VERSION,
+        None,
+    )
+    .expect("capture");
+
+    let rollback = ws.join("rollback.db");
+    {
+        let db = Database::new(&rollback).expect("rollback db");
+        db.migrate().expect("migrate rollback");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title, language) VALUES (?1, 'Rollback', 'ja')",
+                ["project-rollback"],
+            )?;
+            Ok(())
+        })
+        .expect("seed rollback");
+    }
+    migration_supervisor::seal_sqlite_image(&rollback).expect("seal rollback");
+
+    let exclusive = migration_supervisor::rollback_if_installed_image_unchanged(
+        &ws,
+        &db_path,
+        &rollback,
+        &installed,
+        "RESTORE_HANDOFF_CONFLICT",
+    )
+    .expect("cas rollback");
+    drop(exclusive);
+
+    let db = Database::new(&db_path).expect("open live");
+    let title: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT title FROM projects WHERE id = 'project-rollback'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("title");
+    assert_eq!(title, "Rollback");
+}
+
+#[test]
+fn reopen_existing_current_authority_is_ddl_free_ready() {
+    let ws = temp_workspace("reactivate");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate");
+    }
+    let opened =
+        migration_supervisor::reopen_existing_current_authority(&ws).expect("reopen");
+    assert_eq!(
+        opened.lease.mode(),
+        grimodex_db::workspace_lease::LeaseMode::Shared
+    );
+    drop(opened);
 }
 
 #[test]

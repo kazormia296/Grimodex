@@ -6,8 +6,12 @@
 //! 2. on upgrade: drops shared, takes exclusive, re-inspects, seals WAL
 //! 3. creates a checksummed migration snapshot under `backups/migrations/`
 //! 4. migrates a staged copy
-//! 5. atomically replaces the live DB; post-replace failures roll back from the
-//!    verified snapshot and return restore-only Safe Mode (no Database authority)
+//! 5. atomically replaces the live DB; post-replace failures **while exclusive
+//!    is still held** roll back from the verified snapshot and return
+//!    restore-only Safe Mode (no Database authority)
+//! 6. after a verified install, exclusive is dropped and shared is waited with
+//!    timeout; handoff failure does **not** blind-rollback (another authority
+//!    may have already published a newer live image)
 //!
 //! Same-schema opens keep the shared lease for the returned
 //! [`OpenedWorkspaceDb`] lifetime. Newer-than-supported schemas return Safe Mode
@@ -19,6 +23,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::backup_restore::{list_backups_in, BackupInfo};
@@ -36,6 +41,9 @@ pub enum Failpoint {
     AfterReplace,
     BeforeReopen,
     ReopenFailure,
+    /// After verified install + exclusive drop: fail shared handoff without
+    /// rolling the live DB back to the pre-migration snapshot.
+    SharedHandoffBusy,
     ChecksumMismatch,
     DiskFull,
 }
@@ -49,11 +57,22 @@ impl Failpoint {
             Self::AfterReplace => "migration.after_replace",
             Self::BeforeReopen => "migration.before_reopen",
             Self::ReopenFailure => "migration.reopen_failure",
+            Self::SharedHandoffBusy => "migration.shared_handoff_busy",
             Self::ChecksumMismatch => "migration.checksum_mismatch",
             Self::DiskFull => "migration.disk_full",
         }
     }
 }
+
+/// CAS token for a live SQLite image installed under exclusive lease.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledImageToken {
+    pub digest: String,
+    pub schema_version: i32,
+    pub migration_id: Option<String>,
+}
+
+const HANDOFF_SHARED_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationSupervisorError {
@@ -410,7 +429,21 @@ fn finish_after_live_replaced(
         }
     };
 
-    match reopen_under_shared_lease(workspace, exclusive) {
+    // Record the verified installed image under exclusive, then hand off.
+    // Shared-lease failure after this point must NOT blind-rollback: another
+    // process may have completed restore/migration in the gap.
+    let installed = capture_installed_image(
+        db_path,
+        SCHEMA_VERSION,
+        Some(snapshot.migration_id.clone()),
+    )?;
+
+    match handoff_verified_live_to_shared(
+        workspace,
+        exclusive,
+        "MIGRATION_HANDOFF_BUSY",
+        failpoint,
+    ) {
         Ok(opened) => Ok(WorkspaceOpenDbOutcome::Migrated {
             opened,
             from_schema: inspection.current_schema_version,
@@ -418,39 +451,167 @@ fn finish_after_live_replaced(
             receipt_path,
         }),
         Err(error) => {
-            // Shared handoff failed after verify — attempt snapshot rollback under a
-            // fresh exclusive if possible; otherwise session lost.
-            match workspace_lease::acquire_exclusive_for_migration(workspace) {
-                Ok(exclusive_again) => rollback_after_live_replaced(
-                    workspace,
-                    db_path,
-                    snapshot,
-                    "MIGRATION_REOPEN_FAILED",
-                    error.to_string(),
-                    exclusive_again,
-                ),
-                Err(lease_error) => Err(MigrationSupervisorError::Message(format!(
-                    "MIGRATION_SESSION_LOST: rollbackPath={} detail={error}; lease={lease_error}",
-                    snapshot.db_path.display()
-                ))),
+            let detail = error.to_string();
+            if detail.contains("WORKSPACE_SAFE_MODE") {
+                Ok(WorkspaceOpenDbOutcome::SafeMode {
+                    reason: detail,
+                    available_backups: list_recovery_candidates(workspace),
+                })
+            } else {
+                // Live remains the verified migrated image. Snapshot stays on disk.
+                Err(MigrationSupervisorError::Message(format!(
+                    "{detail}; installedDigest={} migrationId={}",
+                    installed.digest,
+                    installed.migration_id.as_deref().unwrap_or("-")
+                )))
             }
         }
     }
 }
 
-/// Close exclusive, acquire shared, then open+reinspect the live DB.
+/// Capture a sealed live-image digest for later CAS rollback checks.
+pub fn capture_installed_image(
+    db_path: &Path,
+    schema_version: i32,
+    migration_id: Option<String>,
+) -> Result<InstalledImageToken, MigrationSupervisorError> {
+    seal_sqlite_image(db_path)?;
+    Ok(InstalledImageToken {
+        digest: sha256_file(db_path)?,
+        schema_version,
+        migration_id,
+    })
+}
+
+/// True when the sealed live DB still matches `installed.digest`.
+pub fn installed_image_unchanged(
+    db_path: &Path,
+    installed: &InstalledImageToken,
+) -> Result<bool, MigrationSupervisorError> {
+    if !db_path.exists() {
+        return Ok(false);
+    }
+    seal_sqlite_image(db_path)?;
+    let digest = sha256_file(db_path)?;
+    Ok(digest == installed.digest)
+}
+
+/// Under a fresh exclusive lease: if live still equals `installed`, apply
+/// `rollback_path` onto the live DB. Otherwise leave live untouched.
+///
+/// Returns the exclusive lease after a successful rollback so the caller can
+/// hand off to shared. On digest mismatch returns `*_HANDOFF_CONFLICT`.
+pub fn rollback_if_installed_image_unchanged(
+    workspace: &Path,
+    db_path: &Path,
+    rollback_path: &Path,
+    installed: &InstalledImageToken,
+    conflict_code: &str,
+) -> Result<WorkspaceLease, MigrationSupervisorError> {
+    let exclusive = workspace_lease::acquire_exclusive_for_migration(workspace)?;
+    if !installed_image_unchanged(db_path, installed)? {
+        drop(exclusive);
+        return Err(MigrationSupervisorError::Message(format!(
+            "{conflict_code}: live DB no longer matches the installed image digest {}; leaving live untouched; rollback artifact at {}",
+            installed.digest,
+            rollback_path.display()
+        )));
+    }
+    remove_db_sidecars(db_path)?;
+    let staged_rollback = sibling(db_path, &format!(".handoff-rollback-{}", Uuid::new_v4()));
+    let mut staged_cleanup = Cleanup::new(staged_rollback.clone());
+    fs::copy(rollback_path, &staged_rollback)?;
+    remove_db_sidecars(&staged_rollback)?;
+    seal_sqlite_image(&staged_rollback)?;
+    atomic_replace(&staged_rollback, db_path)?;
+    staged_cleanup.disarm();
+    Ok(exclusive)
+}
+
+/// Close exclusive, wait for shared (timeout), then open+reinspect the live DB.
 ///
 /// Callers must drop every Database handle on `workspace` before invoking this.
+/// After exclusive is dropped this never rolls live back.
 pub fn reopen_under_shared_lease(
     workspace: &Path,
     exclusive: WorkspaceLease,
 ) -> Result<OpenedWorkspaceDb, MigrationSupervisorError> {
+    handoff_verified_live_to_shared(workspace, exclusive, "MIGRATION_HANDOFF_BUSY", None)
+}
+
+/// Like [`reopen_under_shared_lease`] but uses a restore-specific busy code.
+pub fn reopen_under_shared_lease_for_restore(
+    workspace: &Path,
+    exclusive: WorkspaceLease,
+) -> Result<OpenedWorkspaceDb, MigrationSupervisorError> {
+    handoff_verified_live_to_shared(workspace, exclusive, "RESTORE_HANDOFF_BUSY", None)
+}
+
+fn handoff_verified_live_to_shared(
+    workspace: &Path,
+    exclusive: WorkspaceLease,
+    busy_code: &str,
+    failpoint: Option<Failpoint>,
+) -> Result<OpenedWorkspaceDb, MigrationSupervisorError> {
     drop(exclusive);
-    let lease = workspace_lease::try_acquire_shared(workspace)?;
+    if let Err(error) = hit_failpoint(failpoint, Failpoint::SharedHandoffBusy) {
+        return Err(MigrationSupervisorError::Message(format!(
+            "{busy_code}: {error}"
+        )));
+    }
+    let lease = match workspace_lease::acquire_shared(workspace, HANDOFF_SHARED_TIMEOUT) {
+        Ok(lease) => lease,
+        Err(workspace_lease::LeaseError::Busy { .. }) => {
+            return Err(MigrationSupervisorError::Message(format!(
+                "{busy_code}: timed out waiting for shared lease after verified live install"
+            )));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let db_path = workspace.join("grimodex.db");
     let database = Database::new(&db_path)?;
     reinspect_current_authority(&database)?;
     database.recover_open_time_state_without_schema_ddl()?;
+    Ok(OpenedWorkspaceDb { database, lease })
+}
+
+/// DDL-free reopen of an already-current live DB under a shared lease.
+///
+/// Used for same-path pre-replace failure recovery and restore reactivation.
+/// Never runs schema migration DDL; mismatches return
+/// `WORKSPACE_REACTIVATION_FAILED` / Safe Mode style errors.
+pub fn reopen_existing_current_authority(
+    workspace: &Path,
+) -> Result<OpenedWorkspaceDb, MigrationSupervisorError> {
+    let lease = workspace_lease::try_acquire_shared(workspace).map_err(|error| {
+        MigrationSupervisorError::Message(format!(
+            "WORKSPACE_REACTIVATION_FAILED: shared lease: {error}"
+        ))
+    })?;
+    let db_path = workspace.join("grimodex.db");
+    if !db_path.exists() {
+        drop(lease);
+        return Err(MigrationSupervisorError::Message(
+            "WORKSPACE_REACTIVATION_FAILED: grimodex.db is missing".to_string(),
+        ));
+    }
+    let database = Database::new(&db_path).map_err(|error| {
+        MigrationSupervisorError::Message(format!(
+            "WORKSPACE_REACTIVATION_FAILED: open failed: {error}"
+        ))
+    })?;
+    reinspect_current_authority(&database).map_err(|error| {
+        MigrationSupervisorError::Message(format!(
+            "WORKSPACE_REACTIVATION_FAILED: {error}"
+        ))
+    })?;
+    database
+        .recover_open_time_state_without_schema_ddl()
+        .map_err(|error| {
+            MigrationSupervisorError::Message(format!(
+                "WORKSPACE_REACTIVATION_FAILED: open-time recovery: {error}"
+            ))
+        })?;
     Ok(OpenedWorkspaceDb { database, lease })
 }
 
