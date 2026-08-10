@@ -177,9 +177,11 @@ impl SafeModeSession {
     }
 
     pub fn resolve(&self, candidate_id: &str) -> AppResult<&RecoveryCandidateRecord> {
-        self.records
-            .get(candidate_id)
-            .ok_or_else(|| AppError::Anyhow(anyhow::anyhow!("RECOVERY_CANDIDATE_UNKNOWN: {candidate_id}")))
+        self.records.get(candidate_id).ok_or_else(|| {
+            AppError::Anyhow(anyhow::anyhow!(
+                "RECOVERY_CANDIDATE_UNKNOWN: {candidate_id}"
+            ))
+        })
     }
 
     pub fn refresh_candidates(&mut self) -> AppResult<()> {
@@ -361,9 +363,7 @@ fn opaque_id_for(relative_key: &str) -> String {
     format!("rc_{}", &digest[..24])
 }
 
-fn inspect_migration_snapshot(
-    db_path: &Path,
-) -> (Option<i32>, Option<String>, ChecksumStatus) {
+fn inspect_migration_snapshot(db_path: &Path) -> (Option<i32>, Option<String>, ChecksumStatus) {
     let manifest_path = sidecar_manifest(db_path);
     let Ok(raw) = fs::read_to_string(&manifest_path) else {
         return (None, None, ChecksumStatus::Unverified);
@@ -413,31 +413,40 @@ pub fn ensure_path_inside_workspace(workspace: &Path, candidate: &Path) -> AppRe
     let ws = workspace
         .canonicalize()
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("workspace canonicalize: {e}")))?;
-    let path = if candidate.exists() {
-        candidate
-            .canonicalize()
-            .map_err(|e| AppError::Anyhow(anyhow::anyhow!("candidate canonicalize: {e}")))?
-    } else {
+    if !candidate.exists() {
         return Err(AppError::Anyhow(anyhow::anyhow!(
             "RECOVERY_CANDIDATE_MISSING: {}",
             candidate.display()
         )));
-    };
-    if !path.starts_with(&ws) {
-        return Err(AppError::Anyhow(anyhow::anyhow!(
-            "RECOVERY_PATH_ESCAPE: candidate is outside workspace"
-        )));
     }
-    let meta = fs::symlink_metadata(&path).map_err(anyhow::Error::from)?;
-    if meta.file_type().is_symlink() {
+    // Inspect the path itself before following links.
+    let link_meta = fs::symlink_metadata(candidate).map_err(anyhow::Error::from)?;
+    if link_meta.file_type().is_symlink() {
         return Err(AppError::Anyhow(anyhow::anyhow!(
             "RECOVERY_CANDIDATE_SYMLINK: refusing symlink restore source"
         )));
     }
-    if !meta.file_type().is_file() {
+    if !link_meta.file_type().is_file() {
         return Err(AppError::Anyhow(anyhow::anyhow!(
             "RECOVERY_CANDIDATE_NOT_FILE: {}",
-            path.display()
+            candidate.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if link_meta.nlink() > 1 {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "RECOVERY_CANDIDATE_HARDLINK: refusing multi-link restore source"
+            )));
+        }
+    }
+    let path = candidate
+        .canonicalize()
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("candidate canonicalize: {e}")))?;
+    if !path.starts_with(&ws) {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_PATH_ESCAPE: candidate is outside workspace"
         )));
     }
     Ok(())
@@ -478,12 +487,8 @@ pub fn session_from_db_outcome(
 }
 
 pub fn list_candidates_for_workspace(workspace: &Path) -> AppResult<Vec<RecoveryCandidate>> {
-    let session = SafeModeSession::from_workspace(
-        workspace.to_path_buf(),
-        "listing".into(),
-        None,
-        None,
-    )?;
+    let session =
+        SafeModeSession::from_workspace(workspace.to_path_buf(), "listing".into(), None, None)?;
     Ok(session.candidates())
 }
 
@@ -509,8 +514,7 @@ pub fn verify_candidate_record(record: &RecoveryCandidateRecord) -> AppResult<Re
             let result = (|| -> AppResult<()> {
                 let db = Database::new(&tmp)?;
                 db.with_conn(|conn| {
-                    let ok: String =
-                        conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+                    let ok: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
                     if ok != "ok" {
                         anyhow::bail!("RECOVERY_QUICK_CHECK_FAILED: {ok}");
                     }
@@ -587,28 +591,14 @@ pub fn verify_safe_mode_candidate(
 
 /// Restore-only atomic restore by opaque candidate id.
 ///
-/// Does **not** publish [`crate::state::WorkspaceAuthority`]. After success the
-/// Safe Mode session is cleared and the caller must `open_workspace` again.
-pub fn restore_safe_mode_candidate(
-    ws_state: &WorkspaceState,
-    candidate_id: &str,
-) -> AppResult<()> {
+/// Does **not** publish [`crate::state::WorkspaceAuthority`]. The Safe Mode
+/// session remains active until the next Ready/Migrated `open_workspace` so
+/// Recovery Shell can still list / verify / retry.
+pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str) -> AppResult<()> {
     let _open_guard = ws_state
         .open_lock
         .lock()
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
-
-    let (workspace_path, absolute_path, relative_key) =
-        ws_state.safe_mode.with_session(|session| {
-            let record = session.resolve(candidate_id)?;
-            ensure_path_inside_workspace(&session.workspace_path, &record.absolute_path)?;
-            preflight_restore_candidate(record)?;
-            Ok((
-                session.workspace_path.clone(),
-                record.absolute_path.clone(),
-                record.relative_key.clone(),
-            ))
-        })?;
 
     // Refuse restore while a normal authority is somehow still published.
     {
@@ -623,21 +613,34 @@ pub fn restore_safe_mode_candidate(
         }
     }
 
+    let (workspace_path, absolute_path, relative_key) =
+        ws_state.safe_mode.with_session(|session| {
+            let record = session.resolve(candidate_id)?;
+            Ok((
+                session.workspace_path.clone(),
+                record.absolute_path.clone(),
+                record.relative_key.clone(),
+            ))
+        })?;
+
     let db_path = workspace_path.join("grimodex.db");
     let staged = db_path.with_extension(format!("safe-restore-{}.db", Uuid::new_v4()));
     let mut staged_cleanup = StagingCleanup::new(staged.clone());
-    materialize_candidate_to_plain(&absolute_path, &relative_key, &staged)?;
-    {
-        let db = Database::new(&staged)?;
-        db.migrate_for_restore_preflight()?;
-    }
 
     ws_state
         .switching
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let _switching = SwitchingFlag(&ws_state.switching);
 
+    // Exclusive first, then re-validate the candidate path immediately before
+    // materialize so symlink/hardlink TOCTOU cannot race the copy.
     let exclusive = workspace_lease::acquire_exclusive_for_migration(&workspace_path)?;
+    ensure_path_inside_workspace(&workspace_path, &absolute_path)?;
+    materialize_candidate_to_plain(&absolute_path, &relative_key, &staged)?;
+    {
+        let db = Database::new(&staged)?;
+        db.migrate_for_restore_preflight()?;
+    }
     migration_supervisor::seal_sqlite_image(&staged)
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
 
@@ -663,8 +666,6 @@ pub fn restore_safe_mode_candidate(
     migration_supervisor::seal_sqlite_image(&db_path)
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
     drop(exclusive);
-
-    ws_state.safe_mode.clear()?;
     Ok(())
 }
 
@@ -814,10 +815,7 @@ mod tests {
     #[test]
     fn path_escape_is_rejected() {
         let ws = temp_ws("escape");
-        let outside = std::env::temp_dir().join(format!(
-            "grimodex-outside-{}.db",
-            Uuid::new_v4()
-        ));
+        let outside = std::env::temp_dir().join(format!("grimodex-outside-{}.db", Uuid::new_v4()));
         File::create(&outside).expect("create");
         let err = ensure_path_inside_workspace(&ws, &outside).expect_err("escape");
         assert!(
@@ -825,6 +823,25 @@ mod tests {
             "err={err}"
         );
         let _ = fs::remove_file(&outside);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_candidate_is_rejected() {
+        let ws = temp_ws("symlink");
+        let target = ws.join("backups/grimodex-real.db");
+        {
+            let db = Database::new(&target).expect("db");
+            db.migrate().expect("migrate");
+        }
+        let link = ws.join("backups/grimodex-link.db");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let err = ensure_path_inside_workspace(&ws, &link).expect_err("symlink");
+        assert!(
+            err.to_string().contains("RECOVERY_CANDIDATE_SYMLINK"),
+            "err={err}"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 }

@@ -76,9 +76,10 @@ test("onEvent が登録前 emit の backend:ready を受信する (バッファ 
 
 test("openWorkspace が新規 workspace を scaffold + migrate し workspace:opened を emit する", async () => {
   const result = JSON.parse(await backend.openWorkspace(wsDir));
-  assert.equal(result.isExisting, false);
-  assert.equal(result.name, basename(wsDir));
-  assert.match(result.workspaceId, /^[0-9a-f-]{36}$/);
+  assert.equal(result.status, "ready");
+  assert.equal(result.workspace.isExisting, false);
+  assert.equal(result.workspace.name, basename(wsDir));
+  assert.match(result.workspace.workspaceId, /^[0-9a-f-]{36}$/);
 
   // migrate 済み: user_version が backend:ready の schemaVersion
   // (= grimodex_core::SCHEMA_VERSION) と一致する。
@@ -272,11 +273,12 @@ test("getGlobalSettings / saveGlobalSettings の roundtrip と recent-workspaces
 
 test("再オープンで isExisting=true になり書き込み内容が永続している (A2 の核)", async () => {
   const reopened = JSON.parse(await backend.openWorkspace(wsDir));
-  assert.equal(reopened.isExisting, true);
+  assert.equal(reopened.status, "ready");
+  assert.equal(reopened.workspace.isExisting, true);
   const workspaceMeta = JSON.parse(
     readFileSync(join(wsDir, ".grimodex", "workspace.json"), "utf8"),
   );
-  assert.equal(reopened.workspaceId, workspaceMeta.id);
+  assert.equal(reopened.workspace.workspaceId, workspaceMeta.id);
   const [{ title }] = await exec("SELECT title FROM projects WHERE id = ?", ["p1"], "get");
   assert.equal(title, "スモーク作品");
 });
@@ -288,7 +290,8 @@ test(
     const fixture = process.env.GRIMODEX_TAURI_WS_FIXTURE;
     assert.equal(backend.validateWorkspacePath(fixture), true);
     const result = JSON.parse(await backend.openWorkspace(fixture));
-    assert.equal(result.isExisting, true, "既存 workspace として認識される");
+    assert.equal(result.status, "ready");
+    assert.equal(result.workspace.isExisting, true, "既存 workspace として認識される");
 
     // 同一スキーマ・同一 migrate 経路: user_version が一致し、Tauri 側で
     // 書いた行が読める。

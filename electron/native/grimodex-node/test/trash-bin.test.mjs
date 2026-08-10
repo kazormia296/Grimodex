@@ -64,7 +64,8 @@ test("workspace 未オープンの trashBinList は 'No workspace is open' マ�
 
 test("trashBinCreate → trashBinList roundtrip (日本語 preview_text)", async () => {
   const opened = JSON.parse(await backend.openWorkspace(join(root, "ws")));
-  assert.equal(opened.isExisting, false);
+  assert.equal(opened.status, "ready");
+  assert.equal(opened.workspace.isExisting, false);
 
   const createPayload = makePayload(
     "消した文字屑（日本語・絵文字🗑）",

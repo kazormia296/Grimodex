@@ -60,12 +60,8 @@ fn newer_schema_open_returns_structured_safe_mode_without_authority() {
         on_swapped: &mut hook,
     };
 
-    let outcome = open_workspace_sync(
-        &ws_state,
-        &mut deps,
-        &ws.to_string_lossy(),
-    )
-    .expect("safe mode is Ok outcome");
+    let outcome = open_workspace_sync(&ws_state, &mut deps, &ws.to_string_lossy())
+        .expect("safe mode is Ok outcome");
     match outcome {
         WorkspaceOpenOutcome::SafeMode { reason, candidates } => {
             assert!(
@@ -76,13 +72,13 @@ fn newer_schema_open_returns_structured_safe_mode_without_authority() {
         }
         other => panic!("expected SafeMode, got {other:?}"),
     }
-    assert_eq!(on_swapped, 0, "Safe Mode must not run on_swapped hydration hooks");
+    assert_eq!(
+        on_swapped, 0,
+        "Safe Mode must not run on_swapped hydration hooks"
+    );
     assert!(ws_state.safe_mode.is_active());
     let err = with_db_state(&ws_state, |_db| Ok(())).expect_err("no authority");
-    assert!(
-        err.to_string().contains("WORKSPACE_SAFE_MODE"),
-        "err={err}"
-    );
+    assert!(err.to_string().contains("WORKSPACE_SAFE_MODE"), "err={err}");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -222,8 +218,8 @@ fn safe_mode_restore_by_opaque_id_then_reopen_ready() {
         gs_path: &gs_path,
         on_swapped: &mut hook,
     };
-    let outcome = open_workspace_sync(&ws_state, &mut deps, &ws.to_string_lossy())
-        .expect("safe mode");
+    let outcome =
+        open_workspace_sync(&ws_state, &mut deps, &ws.to_string_lossy()).expect("safe mode");
     assert!(matches!(outcome, WorkspaceOpenOutcome::SafeMode { .. }));
 
     let candidates = list_safe_mode_candidates(&ws_state).expect("list");
@@ -232,7 +228,10 @@ fn safe_mode_restore_by_opaque_id_then_reopen_ready() {
         .find(|c| c.kind == RecoveryCandidateKind::AutomaticBackup)
         .expect("automatic backup");
     restore_safe_mode_candidate(&ws_state, &backup_candidate.id).expect("restore");
-    assert!(!ws_state.safe_mode.is_active());
+    assert!(
+        ws_state.safe_mode.is_active(),
+        "Safe Mode session remains until Ready/Migrated reopen"
+    );
 
     let mut hook2 = || {};
     let mut deps2 = OpenDeps {
@@ -248,6 +247,8 @@ fn safe_mode_restore_by_opaque_id_then_reopen_ready() {
         ),
         "got {reopened:?}"
     );
+    assert!(!ws_state.safe_mode.is_active());
+
     with_db_state(&ws_state, |db| {
         let count: i64 = db.with_conn(|conn| {
             Ok(conn.query_row(
