@@ -222,19 +222,30 @@ pub fn open_or_migrate_workspace_db_with_failpoint(
     fs::create_dir_all(workspace)?;
     let db_path = workspace.join("grimodex.db");
 
-    if !db_path.exists() {
-        return create_fresh_workspace_db(workspace, &db_path, failpoint);
+    // Incomplete / unreadable restore session must not publish authority —
+    // Recovery Shell only. Checked *before* fresh-DB creation so a missing
+    // grimodex.db cannot wipe Recovery state while a marker remains.
+    match crate::backup_restore::read_incomplete_restore_session(workspace) {
+        Ok(Some(marker)) => {
+            return Ok(WorkspaceOpenDbOutcome::SafeMode {
+                reason: format!(
+                    "WORKSPACE_SAFE_MODE: RESTORE_SESSION_INCOMPLETE: phase={} safetyKind={} safety={}",
+                    marker.phase, marker.safety_kind, marker.safety_artifact
+                ),
+                available_backups: list_recovery_candidates(workspace),
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return Ok(WorkspaceOpenDbOutcome::SafeMode {
+                reason: format!("WORKSPACE_SAFE_MODE: RESTORE_SESSION_MARKER_UNREADABLE: {error}"),
+                available_backups: list_recovery_candidates(workspace),
+            });
+        }
     }
 
-    // Incomplete restore session must not publish authority — Recovery Shell only.
-    if let Ok(Some(marker)) = crate::backup_restore::read_incomplete_restore_session(workspace) {
-        return Ok(WorkspaceOpenDbOutcome::SafeMode {
-            reason: format!(
-                "WORKSPACE_SAFE_MODE: RESTORE_SESSION_INCOMPLETE: phase={} safetyKind={} safety={}",
-                marker.phase, marker.safety_kind, marker.safety_artifact
-            ),
-            available_backups: list_recovery_candidates(workspace),
-        });
+    if !db_path.exists() {
+        return create_fresh_workspace_db(workspace, &db_path, failpoint);
     }
 
     // Shared lease covers inspect + same-schema authority. Upgrade drops it
@@ -649,17 +660,32 @@ pub fn capture_installed_image(
     installed_image_token_from_sealed(db_path, schema_version, migration_id)
 }
 
-/// True when the sealed live DB still matches `installed.digest`.
-pub fn installed_image_unchanged(
+/// SHA-256 hex digest of a file (used for restore CAS tokens).
+pub fn digest_sha256_file(path: &Path) -> Result<String, MigrationSupervisorError> {
+    sha256_file(path).map_err(|error| {
+        MigrationSupervisorError::Message(format!("digest failed for {}: {error}", path.display()))
+    })
+}
+
+/// True when the sealed live DB still matches `expected_digest`.
+pub fn live_digest_equals(
     db_path: &Path,
-    installed: &InstalledImageToken,
+    expected_digest: &str,
 ) -> Result<bool, MigrationSupervisorError> {
     if !db_path.exists() {
         return Ok(false);
     }
     seal_sqlite_image(db_path)?;
     let digest = sha256_file(db_path)?;
-    Ok(digest == installed.digest)
+    Ok(digest == expected_digest)
+}
+
+/// True when the sealed live DB still matches `installed.digest`.
+pub fn installed_image_unchanged(
+    db_path: &Path,
+    installed: &InstalledImageToken,
+) -> Result<bool, MigrationSupervisorError> {
+    live_digest_equals(db_path, &installed.digest)
 }
 
 /// Under a fresh exclusive lease: if live still equals `installed`, apply

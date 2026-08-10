@@ -4,6 +4,9 @@
 //! never silently Ready a DB that lost WAL-only commits. Outcomes allowed:
 //! SafeMode (incomplete restore marker), Ready/Migrated with WAL commits intact,
 //! or RecoveryRequired — never Ready that dropped WAL-only rows.
+//!
+//! Also covers the Recovery Shell journey: crash → SafeMode → restore candidate
+//! → Retry Open → Ready with marker cleared.
 
 #![cfg(feature = "test-failpoints")]
 
@@ -16,8 +19,11 @@ use std::time::{Duration, Instant};
 
 use grimodex_db::backup_restore::read_incomplete_restore_session;
 use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
-use grimodex_db::recovery::{SafeModeSession, SafeModeState};
-use grimodex_db::state::WorkspaceState;
+use grimodex_db::open::{open_workspace_sync, OpenDeps};
+use grimodex_db::recovery::{
+    list_safe_mode_candidates, restore_safe_mode_candidate, WorkspaceOpenOutcome,
+};
+use grimodex_db::state::{with_db_state, GlobalSettingsPath, WorkspaceState};
 use grimodex_db::Database;
 use rusqlite::config::DbConfig;
 use rusqlite::params;
@@ -96,6 +102,116 @@ fn subprocess_kill_after_live_seal_does_not_drop_wal_commits_silently() {
     let _ = fs::remove_dir_all(&workspace);
 }
 
+#[test]
+fn subprocess_kill_after_live_seal_then_restore_candidate_reaches_ready() {
+    let root = temp_ws("restore-journey");
+    let workspace = root.join("workspace");
+    fs::create_dir_all(workspace.join("backups")).expect("mkdir");
+    let live = workspace.join("grimodex.db");
+    create_migrated_db(&live, "live");
+    commit_wal_only(&live);
+
+    let candidate = workspace.join("backups/grimodex-auto.db");
+    create_migrated_db(&candidate, "backup");
+
+    let ready_path = root.join("restore-journey-ready");
+    let mut child = spawn_restore_harness(
+        &workspace,
+        &candidate,
+        "restore.after_live_seal",
+        &ready_path,
+    );
+    wait_for_ready(&mut child, &ready_path, "restore.after_live_seal");
+    child.kill().expect("kill");
+    let _ = child.wait();
+
+    let ws_state = WorkspaceState {
+        inner: Mutex::new(None),
+        safe_mode: grimodex_db::recovery::SafeModeState::default(),
+        switching: std::sync::atomic::AtomicBool::new(false),
+        open_lock: Mutex::new(()),
+    };
+    let gs_path = GlobalSettingsPath {
+        path: root.join("global-settings.json"),
+        write_lock: Mutex::new(()),
+    };
+    let mut on_swapped = 0u32;
+    let mut hook = || on_swapped += 1;
+    let mut deps = OpenDeps {
+        gs_path: &gs_path,
+        on_swapped: &mut hook,
+    };
+
+    let shell = open_workspace_sync(&ws_state, &mut deps, &workspace.to_string_lossy())
+        .expect("open after crash");
+    let WorkspaceOpenOutcome::SafeMode { reason, .. } = shell else {
+        panic!("expected SafeMode after crash marker, got {shell:?}");
+    };
+    assert!(
+        reason.contains("RESTORE_SESSION_INCOMPLETE"),
+        "reason={reason}"
+    );
+    assert!(ws_state.safe_mode.is_active());
+    assert!(
+        with_db_state(&ws_state, |_| Ok(())).is_err(),
+        "Safe Mode must not publish authority"
+    );
+    assert_eq!(on_swapped, 0);
+
+    let candidates = list_safe_mode_candidates(&ws_state).expect("list candidates");
+    let candidate_id = ws_state
+        .safe_mode
+        .with_session(|session| {
+            session
+                .candidates()
+                .into_iter()
+                .find(|candidate| {
+                    session
+                        .resolve(&candidate.id)
+                        .map(|record| record.relative_key.ends_with("grimodex-auto.db"))
+                        .unwrap_or(false)
+                })
+                .map(|candidate| candidate.id)
+                .ok_or_else(|| {
+                    grimodex_db::error::AppError::Anyhow(anyhow::anyhow!(
+                        "grimodex-auto.db candidate missing; listed={candidates:?}"
+                    ))
+                })
+        })
+        .expect("automatic backup candidate id");
+
+    restore_safe_mode_candidate(&ws_state, &candidate_id).expect("restore candidate");
+    assert!(
+        read_incomplete_restore_session(&workspace)
+            .expect("marker read")
+            .is_none(),
+        "successful candidate restore must clear the restore session marker"
+    );
+
+    let mut hook2 = || on_swapped += 1;
+    let mut deps2 = OpenDeps {
+        gs_path: &gs_path,
+        on_swapped: &mut hook2,
+    };
+    let ready = open_workspace_sync(&ws_state, &mut deps2, &workspace.to_string_lossy())
+        .expect("retry open");
+    assert!(
+        matches!(
+            ready,
+            WorkspaceOpenOutcome::Ready { .. } | WorkspaceOpenOutcome::Migrated { .. }
+        ),
+        "got {ready:?}"
+    );
+    assert!(ready.is_authority_published());
+    assert!(!ws_state.safe_mode.is_active());
+    assert_eq!(recovery_marker(&live), "backup");
+    assert!(read_incomplete_restore_session(&workspace)
+        .expect("marker read")
+        .is_none());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn temp_ws(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "grimodex-restore-crash-{label}-{}",
@@ -114,6 +230,18 @@ fn create_migrated_db(path: &Path, marker: &str) {
         "run",
     )
     .expect("marker");
+}
+
+fn recovery_marker(db_path: &Path) -> String {
+    let db = Database::new(db_path).expect("db");
+    let rows = db
+        .execute(
+            "SELECT value FROM app_settings WHERE key = 'recovery-test'",
+            &[],
+            "get",
+        )
+        .expect("read");
+    rows[0]["value"].as_str().unwrap_or_default().to_string()
 }
 
 fn commit_wal_only(db_path: &Path) {
@@ -185,18 +313,4 @@ fn wait_for_ready(child: &mut Child, ready_path: &Path, expected: &str) {
     }
     let _ = child.kill();
     panic!("timed out waiting for restore failpoint ready marker");
-}
-
-#[allow(dead_code)]
-fn _safe_mode_state(ws: &Path) -> WorkspaceState {
-    let state = WorkspaceState {
-        inner: Mutex::new(None),
-        safe_mode: SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
-        open_lock: Mutex::new(()),
-    };
-    let session = SafeModeSession::from_workspace(ws.to_path_buf(), "test".into(), None, None)
-        .expect("session");
-    state.safe_mode.enter(session).expect("enter");
-    state
 }

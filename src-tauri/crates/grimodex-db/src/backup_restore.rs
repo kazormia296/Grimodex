@@ -44,6 +44,8 @@ pub enum RestoreFailpoint {
     AfterRollbackSnapshot,
     /// After live seal (checkpoint + sidecar removal) and before atomic replace.
     AfterLiveSeal,
+    /// Simulate `atomic_replace` failure while holding exclusive + marker.
+    FailAtomicReplace,
     AfterReplace,
     BeforeLiveVerify,
     LiveVerifyFailure,
@@ -55,6 +57,7 @@ impl RestoreFailpoint {
         match self {
             Self::AfterRollbackSnapshot => "restore.after_rollback_snapshot",
             Self::AfterLiveSeal => "restore.after_live_seal",
+            Self::FailAtomicReplace => "restore.fail_atomic_replace",
             Self::AfterReplace => "restore.after_replace",
             Self::BeforeLiveVerify => "restore.before_live_verify",
             Self::LiveVerifyFailure => "restore.live_verify_failure",
@@ -233,11 +236,9 @@ pub enum LiveSafetyArtifact {
 #[derive(Debug, Clone)]
 enum RestoreRollbackSource {
     LogicalImage(PathBuf),
+    /// Forensic bundles are retained for Recovery Shell; never auto-applied.
     ForensicImage {
         dir: PathBuf,
-        main: PathBuf,
-        wal: Option<PathBuf>,
-        shm: Option<PathBuf>,
     },
 }
 
@@ -260,24 +261,9 @@ impl LiveSafetyArtifact {
         match self {
             Self::LogicalDb { path } => RestoreRollbackSource::LogicalImage(path.clone()),
             Self::ForensicBundle { dir } => {
-                let main = dir.join("grimodex.db");
-                let wal = optional_regular_file(&dir.join("grimodex.db-wal"));
-                let shm = optional_regular_file(&dir.join("grimodex.db-shm"));
-                RestoreRollbackSource::ForensicImage {
-                    dir: dir.clone(),
-                    main,
-                    wal,
-                    shm,
-                }
+                RestoreRollbackSource::ForensicImage { dir: dir.clone() }
             }
         }
-    }
-}
-
-fn optional_regular_file(path: &Path) -> Option<PathBuf> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_file() => Some(path.to_path_buf()),
-        _ => None,
     }
 }
 
@@ -740,65 +726,116 @@ pub fn install_staged_workspace_db(
         ));
     }
 
-    if let Err(error) = atomic_replace(staged_plain, &db_path) {
-        let primary_msg = format!("復元DBの適用に失敗しました: {error}");
-        let rollback_result: AppResult<()> = match rollback_source.as_ref() {
-            Some(RestoreRollbackSource::LogicalImage(_)) => {
-                if let Some(path) = rollback_path.as_deref() {
-                    match crate::migration_supervisor::rollback_if_installed_image_unchanged(
-                        ws_path,
-                        &db_path,
-                        path,
-                        &installed,
-                        "RESTORE_REPLACE_FAILED",
-                    ) {
-                        Ok(exclusive) => {
-                            drop(exclusive);
-                            if let Some(cleanup) = rollback_cleanup.as_mut() {
-                                cleanup.disarm();
-                            }
-                            let _ = clear_restore_session_marker(ws_path);
-                            Err(anyhow::anyhow!("{primary_msg}; 元のDBへ戻しました").into())
-                        }
-                        Err(conflict) => {
-                            if let Some(cleanup) = rollback_cleanup.as_mut() {
-                                cleanup.disarm();
-                            }
-                            Err(anyhow::anyhow!(
-                                "RESTORE_SESSION_LOST: {primary_msg}; rollback={conflict}"
-                            )
-                            .into())
-                        }
-                    }
-                } else {
-                    Err(anyhow::anyhow!("{primary_msg}").into())
-                }
+    // Digest of sealed live *before* replace — used when replace fails so CAS
+    // compares against the pre-restore image, not the candidate digest.
+    let pre_replace_live_digest = if live_exists {
+        match crate::migration_supervisor::digest_sha256_file(&db_path) {
+            Ok(digest) => Some(digest),
+            Err(error) => {
+                drop(exclusive_lease);
+                return Err(abort_install(
+                    ws_state,
+                    &db_path,
+                    ws_path,
+                    detached_active,
+                    anyhow::anyhow!("RESTORE_PRE_REPLACE_DIGEST_FAILED: {error}"),
+                ));
             }
-            Some(RestoreRollbackSource::ForensicImage { .. }) => {
-                if let Some(cleanup) = rollback_cleanup.as_mut() {
-                    cleanup.disarm();
-                }
-                Err(anyhow::anyhow!(
-                    "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary_msg}; forensic artifact retained at {:?}",
-                    safety_artifact.as_ref().map(|a| a.retained_path())
-                )
-                .into())
-            }
-            None => Err(anyhow::anyhow!("{primary_msg}").into()),
-        };
-        drop(exclusive_lease);
-        // Safe Mode: never re-publish. Normal restore: only re-publish after
-        // logical rollback restored a sealed complete image.
-        if detached_active
-            && matches!(
-                rollback_source.as_ref(),
-                Some(RestoreRollbackSource::LogicalImage(_))
-            )
-            && rollback_result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.to_string().contains("元のDBへ戻しました"))
+        }
+    } else {
+        None
+    };
+
+    let replace_error = {
+        #[cfg(feature = "test-failpoints")]
+        if options.failpoint == Some(RestoreFailpoint::FailAtomicReplace) {
+            Some(io::Error::other(format!(
+                "RESTORE_FAILPOINT: {}",
+                RestoreFailpoint::FailAtomicReplace.as_str()
+            )))
+        } else {
+            atomic_replace(staged_plain, &db_path).err()
+        }
+        #[cfg(not(feature = "test-failpoints"))]
         {
+            atomic_replace(staged_plain, &db_path).err()
+        }
+    };
+
+    if let Some(error) = replace_error {
+        let primary_msg = format!("復元DBの適用に失敗しました: {error}");
+        // Hold exclusive through digest check: live is usually still the sealed
+        // pre-restore image. Compare against that digest — not the candidate.
+        let (rollback_result, republish_unchanged_live): (AppResult<()>, bool) =
+            match rollback_source.as_ref() {
+                Some(RestoreRollbackSource::LogicalImage(_)) => {
+                    match pre_replace_live_digest.as_deref() {
+                        Some(expected) => {
+                            match crate::migration_supervisor::live_digest_equals(
+                                &db_path, expected,
+                            ) {
+                                Ok(true) => {
+                                    if let Some(cleanup) = rollback_cleanup.as_mut() {
+                                        cleanup.disarm();
+                                    }
+                                    let _ = clear_restore_session_marker(ws_path);
+                                    (
+                                        Err(anyhow::anyhow!(
+                                            "{primary_msg}; 元のDBは未置換のまま保持しています"
+                                        )
+                                        .into()),
+                                        true,
+                                    )
+                                }
+                                Ok(false) => {
+                                    if let Some(cleanup) = rollback_cleanup.as_mut() {
+                                        cleanup.disarm();
+                                    }
+                                    // Marker retained — Recovery Shell only.
+                                    (
+                                        Err(anyhow::anyhow!(
+                                            "RESTORE_SESSION_LOST: {primary_msg}; live digest no longer matches pre-restore image"
+                                        )
+                                        .into()),
+                                        false,
+                                    )
+                                }
+                                Err(digest_error) => {
+                                    if let Some(cleanup) = rollback_cleanup.as_mut() {
+                                        cleanup.disarm();
+                                    }
+                                    (
+                                        Err(anyhow::anyhow!(
+                                            "RESTORE_SESSION_LOST: {primary_msg}; pre-restore digest check failed: {digest_error}"
+                                        )
+                                        .into()),
+                                        false,
+                                    )
+                                }
+                            }
+                        }
+                        None => (Err(anyhow::anyhow!("{primary_msg}").into()), false),
+                    }
+                }
+                Some(RestoreRollbackSource::ForensicImage { .. }) => {
+                    if let Some(cleanup) = rollback_cleanup.as_mut() {
+                        cleanup.disarm();
+                    }
+                    (
+                        Err(anyhow::anyhow!(
+                            "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary_msg}; forensic artifact retained at {:?}; live left untouched",
+                            safety_artifact.as_ref().map(|a| a.retained_path())
+                        )
+                        .into()),
+                        false,
+                    )
+                }
+                None => (Err(anyhow::anyhow!("{primary_msg}").into()), false),
+            };
+        drop(exclusive_lease);
+        // Normal restore: re-publish sealed old DB only when replace never
+        // landed and digest still matches the pre-restore image.
+        if detached_active && republish_unchanged_live {
             if let Err(reactivate_error) = reactivate_workspace(ws_state, &db_path, ws_path) {
                 return Err(anyhow::anyhow!(
                     "RESTORE_SESSION_LOST: {primary_msg}; 元DBの再オープンにも失敗しました: {reactivate_error}"
@@ -985,32 +1022,18 @@ fn restore_rollback_error(args: RestoreRollbackArgs<'_>) -> AppResult<()> {
         primary,
     } = args;
     match rollback_source {
-        Some(RestoreRollbackSource::ForensicImage {
-            dir,
-            main,
-            wal,
-            shm,
-        }) => {
-            match restore_forensic_bundle_to_live(db_path, main, wal.as_deref(), shm.as_deref()) {
-                Ok(()) => {
-                    if let Some(cleanup) = rollback_cleanup {
-                        cleanup.disarm();
-                    }
-                    Err(anyhow::anyhow!(
-                        "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary}; forensic bundle restored to live from {dir:?} — remain in Safe Mode"
-                    )
-                    .into())
-                }
-                Err(error) => {
-                    if let Some(cleanup) = rollback_cleanup {
-                        cleanup.disarm();
-                    }
-                    Err(anyhow::anyhow!(
-                        "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary}; forensic auto-rollback failed ({error}); artifact retained at {dir:?}"
-                    )
-                    .into())
-                }
+        Some(RestoreRollbackSource::ForensicImage { dir, .. }) => {
+            // Prefer fail-closed: never auto-write forensic main/WAL/SHM onto
+            // live without exclusive lease + digest CAS (cross-process Authority
+            // race). Keep forensic + restore marker; Recovery Shell only.
+            let _ = (db_path, installed, conflict_code, safety_artifact);
+            if let Some(cleanup) = rollback_cleanup {
+                cleanup.disarm();
             }
+            Err(anyhow::anyhow!(
+                "RESTORE_FORENSIC_RECOVERY_REQUIRED: {primary}; forensic artifact retained at {dir:?}; live left untouched — remain in Safe Mode"
+            )
+            .into())
         }
         Some(RestoreRollbackSource::LogicalImage(_)) | None => {
             let _ = safety_artifact;
@@ -1047,32 +1070,6 @@ fn restore_rollback_error(args: RestoreRollbackArgs<'_>) -> AppResult<()> {
             }
         }
     }
-}
-
-fn restore_forensic_bundle_to_live(
-    db_path: &Path,
-    main: &Path,
-    wal: Option<&Path>,
-    shm: Option<&Path>,
-) -> AppResult<()> {
-    remove_db_sidecars(db_path)
-        .map_err(|e| anyhow::anyhow!("forensic rollback sidecar cleanup failed: {e}"))?;
-    let (staged, mut staged_out) = create_unique_sidecar(db_path, "forensic-rollback")?;
-    let mut staged_cleanup = CleanupPath::new(staged.clone());
-    copy_path_into(main, &mut staged_out).map_err(anyhow::Error::from)?;
-    staged_out.sync_all().map_err(anyhow::Error::from)?;
-    drop(staged_out);
-    atomic_replace(&staged, db_path).map_err(anyhow::Error::from)?;
-    staged_cleanup.disarm();
-    if let Some(wal) = wal {
-        std::fs::copy(wal, sidecar(db_path, "-wal")).map_err(anyhow::Error::from)?;
-        sync_path(&sidecar(db_path, "-wal"))?;
-    }
-    if let Some(shm) = shm {
-        std::fs::copy(shm, sidecar(db_path, "-shm")).map_err(anyhow::Error::from)?;
-        sync_path(&sidecar(db_path, "-shm"))?;
-    }
-    Ok(())
 }
 
 #[cfg(feature = "test-failpoints")]

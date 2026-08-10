@@ -109,6 +109,9 @@ fn parse_failpoint(value: &str) -> anyhow::Result<RestoreFailpoint> {
             Ok(RestoreFailpoint::AfterRollbackSnapshot)
         }
         "after_live_seal" | "restore.after_live_seal" => Ok(RestoreFailpoint::AfterLiveSeal),
+        "fail_atomic_replace" | "restore.fail_atomic_replace" => {
+            Ok(RestoreFailpoint::FailAtomicReplace)
+        }
         "after_replace" | "restore.after_replace" => Ok(RestoreFailpoint::AfterReplace),
         "before_live_verify" | "restore.before_live_verify" => {
             Ok(RestoreFailpoint::BeforeLiveVerify)

@@ -1103,7 +1103,8 @@ mod tests {
     #[test]
     fn forensic_post_replace_failure_requires_recovery_not_main_only_success() {
         use crate::backup_restore::{
-            install_staged_workspace_db, InstallStagedOptions, RestoreFailpoint,
+            install_staged_workspace_db, read_incomplete_restore_session, InstallStagedOptions,
+            RestoreFailpoint,
         };
         use crate::workspace_lease;
 
@@ -1128,12 +1129,200 @@ mod tests {
         )
         .expect_err("forensic post-replace must fail closed");
         assert!(
-            err.to_string().contains("RESTORE_FORENSIC_RECOVERY_REQUIRED"),
+            err.to_string()
+                .contains("RESTORE_FORENSIC_RECOVERY_REQUIRED"),
             "err={err}"
+        );
+        assert!(
+            err.to_string().contains("live left untouched"),
+            "must not auto-rollback forensic onto live: {err}"
         );
         assert!(
             !err.to_string().contains("元のDBへ戻しました"),
             "must not claim logical rollback success: {err}"
+        );
+        assert!(
+            !err.to_string().contains("forensic bundle restored"),
+            "must not auto-restore forensic bundle: {err}"
+        );
+        // Candidate already landed via replace; do not put garbage back.
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "backup");
+        let marker = read_incomplete_restore_session(&ws)
+            .expect("marker read")
+            .expect("marker retained for Recovery Shell");
+        assert_eq!(marker.safety_kind, "forensic");
+        let forensic_dir = PathBuf::from(&marker.safety_artifact);
+        assert!(
+            forensic_dir.is_dir(),
+            "forensic bundle must remain at {}",
+            forensic_dir.display()
+        );
+        assert!(
+            forensic_dir.join("grimodex.db").is_file(),
+            "forensic main must remain"
+        );
+        let forensic_names: Vec<_> = fs::read_dir(&forensic_dir)
+            .expect("forensic dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(
+            forensic_dir.join("grimodex.db-wal").is_file()
+                || forensic_dir.join("forensic-meta.json").is_file(),
+            "forensic WAL or meta must remain; entries={forensic_names:?}"
+        );
+        assert!(state.inner.lock().expect("lock").is_none());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn atomic_replace_failure_republish_path_uses_pre_restore_digest() {
+        use crate::backup_restore::{
+            install_staged_workspace_db, read_incomplete_restore_session, InstallStagedOptions,
+            RestoreFailpoint,
+        };
+        use crate::workspace_lease;
+
+        let ws = temp_ws("replace-fail-cas");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+        let staged = ws.join("staged-restore.db");
+        fs::copy(ws.join("backups/grimodex-auto.db"), &staged).expect("stage");
+        let exclusive = workspace_lease::acquire_exclusive_for_migration(&ws).expect("lease");
+
+        let err = install_staged_workspace_db(
+            &state,
+            &ws,
+            &staged,
+            InstallStagedOptions::safe_mode_with_failpoint(
+                exclusive,
+                RestoreFailpoint::FailAtomicReplace,
+            ),
+        )
+        .expect_err("simulated replace failure");
+        assert!(
+            err.to_string().contains("未置換のまま")
+                || err.to_string().contains("restore.fail_atomic_replace"),
+            "err={err}"
+        );
+        assert!(
+            !err.to_string().contains("RESTORE_SESSION_LOST"),
+            "unchanged live must not look like session lost: {err}"
+        );
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "live");
+        assert!(
+            read_incomplete_restore_session(&ws)
+                .expect("marker read")
+                .is_none(),
+            "marker cleared when live still matches pre-restore digest"
+        );
+        assert!(state.inner.lock().expect("lock").is_none());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn malformed_restore_marker_with_healthy_db_enters_safe_mode() {
+        use crate::backup_restore::restore_session_marker_path;
+        use crate::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+
+        let ws = temp_ws("marker-malformed");
+        create_migrated_db(&ws.join("grimodex.db"), "healthy");
+        fs::create_dir_all(ws.join("backups")).expect("backups");
+        fs::write(restore_session_marker_path(&ws), b"{not-valid-json").expect("malformed");
+
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("open");
+        match outcome {
+            WorkspaceOpenDbOutcome::SafeMode { reason, .. } => {
+                assert!(
+                    reason.contains("RESTORE_SESSION_MARKER_UNREADABLE")
+                        || reason.contains("RESTORE_SESSION_MARKER_INVALID"),
+                    "reason={reason}"
+                );
+            }
+            other => panic!("expected SafeMode, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn unreadable_restore_marker_with_healthy_db_enters_safe_mode() {
+        use crate::backup_restore::restore_session_marker_path;
+        use crate::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+        use std::os::unix::fs::PermissionsExt;
+
+        let ws = temp_ws("marker-unreadable");
+        create_migrated_db(&ws.join("grimodex.db"), "healthy");
+        fs::create_dir_all(ws.join("backups")).expect("backups");
+        let marker_path = restore_session_marker_path(&ws);
+        fs::write(
+            &marker_path,
+            br#"{"version":1,"phase":"live-sealed","safetyArtifact":"x","safetyKind":"logical","installedDigest":"abc","workspaceIdentity":"ws"}"#,
+        )
+        .expect("marker");
+        let mut perms = fs::metadata(&marker_path).expect("meta").permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&marker_path, perms).expect("chmod");
+
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("open");
+        let mut perms = fs::metadata(&marker_path).expect("meta").permissions();
+        perms.set_mode(0o644);
+        let _ = fs::set_permissions(&marker_path, perms);
+
+        match outcome {
+            WorkspaceOpenDbOutcome::SafeMode { reason, .. } => {
+                assert!(
+                    reason.contains("RESTORE_SESSION_MARKER_UNREADABLE")
+                        || reason.contains("RESTORE_SESSION_MARKER_READ_FAILED")
+                        || reason.contains("RESTORE_SESSION_MARKER_INVALID"),
+                    "reason={reason}"
+                );
+            }
+            other => panic!("expected SafeMode, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn restore_marker_with_missing_live_db_does_not_create_fresh() {
+        use crate::backup_restore::{restore_session_marker_path, RestoreSessionMarker};
+        use crate::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+
+        let ws = temp_ws("marker-missing-db");
+        fs::create_dir_all(ws.join("backups")).expect("backups");
+        let marker = RestoreSessionMarker {
+            version: 1,
+            phase: "live-sealed".into(),
+            safety_artifact: ws
+                .join("backups/grimodex-pre-restore.db")
+                .display()
+                .to_string(),
+            safety_kind: "logical".into(),
+            rollback_artifact: None,
+            installed_digest: "deadbeef".into(),
+            workspace_identity: "test".into(),
+        };
+        fs::write(
+            restore_session_marker_path(&ws),
+            serde_json::to_vec_pretty(&marker).expect("json"),
+        )
+        .expect("write marker");
+        assert!(!ws.join("grimodex.db").exists());
+
+        let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("open");
+        match outcome {
+            WorkspaceOpenDbOutcome::SafeMode { reason, .. } => {
+                assert!(
+                    reason.contains("RESTORE_SESSION_INCOMPLETE"),
+                    "reason={reason}"
+                );
+            }
+            other => panic!("expected SafeMode, got {other:?}"),
+        }
+        assert!(
+            !ws.join("grimodex.db").exists(),
+            "must not create a fresh DB over an incomplete restore session"
         );
         let _ = fs::remove_dir_all(&ws);
     }
