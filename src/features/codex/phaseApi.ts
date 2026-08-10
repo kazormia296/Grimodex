@@ -7,6 +7,7 @@ import {
   type CodexPhaseDetailOverride,
 } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 import {
   clearImpactBaselinePhaseDeletion,
   markImpactBaselinePhasesRestricted,
@@ -16,6 +17,12 @@ import {
 import { PhaseVersionConflictError } from "./phaseOcc";
 
 export type { CodexEntryPhase, CodexPhaseDetailOverride };
+
+type BatchStatement = { sql: string; params: unknown[]; method: string };
+
+function toRun(query: { sql: string; params: unknown[] }): BatchStatement {
+  return { sql: query.sql, params: query.params, method: "run" };
+}
 
 function isAiVisibleMode(mode: unknown): boolean {
   return mode === "always" || mode === "mentioned";
@@ -269,56 +276,207 @@ export async function listDetailOverridesByPhaseIds(
     .where(inArray(codexPhaseDetailOverrides.phaseId, phaseIds));
 }
 
+export type PhaseDetailOverrideExactAfter = {
+  definitionId: string;
+  value: string | null;
+};
+
+export type PatchPhaseAggregateInput = {
+  phaseId: string;
+  baseVersion: number;
+  label?: string;
+  anchorNodeId?: string | null;
+  summary?: string | null;
+  content?: string | null;
+  contextMode?: string | null;
+  /** Exact-after override collection (missing definitions are deleted). */
+  detailOverrides: readonly PhaseDetailOverrideExactAfter[];
+};
+
+export type PatchPhaseAggregateResult = {
+  phase: CodexEntryPhase;
+  overrides: CodexPhaseDetailOverride[];
+};
+
+/**
+ * Atomically update Phase root fields and replace detail overrides, bumping
+ * `codex_entry_phases.version` exactly once under OCC.
+ */
+export async function patchPhaseAggregate(
+  input: PatchPhaseAggregateInput,
+): Promise<PatchPhaseAggregateResult> {
+  const current = await getPhase(input.phaseId);
+  if (!current) {
+    throw new Error(`Phase '${input.phaseId}' not found`);
+  }
+
+  const changesContextMode = Object.prototype.hasOwnProperty.call(
+    input,
+    "contextMode",
+  );
+  const nextContextMode = changesContextMode
+    ? (input.contextMode ?? null)
+    : current.contextModeOverride;
+  if (changesContextMode && !isAiVisibleMode(nextContextMode)) {
+    await markImpactBaselinePhasesRestricted(current.entryId);
+  }
+
+  const now = new Date().toISOString();
+  const resultVersion = input.baseVersion + 1;
+  const patch: Partial<{
+    label: string;
+    anchorNodeId: string | null;
+    summaryOverride: string | null;
+    contentOverride: string | null;
+    contextModeOverride: string | null;
+  }> = {};
+  if (input.label !== undefined) patch.label = input.label;
+  if (Object.prototype.hasOwnProperty.call(input, "anchorNodeId")) {
+    patch.anchorNodeId = input.anchorNodeId ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "summary")) {
+    patch.summaryOverride = input.summary ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "content")) {
+    patch.contentOverride = input.content ?? null;
+  }
+  if (changesContextMode) {
+    patch.contextModeOverride = nextContextMode;
+  }
+
+  const statements: BatchStatement[] = [
+    toRun(
+      db
+        .update(codexEntryPhases)
+        .set({
+          ...patch,
+          version: resultVersion,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(codexEntryPhases.id, input.phaseId),
+            eq(codexEntryPhases.version, input.baseVersion),
+          ),
+        )
+        .toSQL(),
+    ),
+    // Abort the whole transaction when the CAS UPDATE matched no rows.
+    {
+      sql: "SELECT CASE WHEN changes() = 0 THEN RAISE(ABORT, 'Phase version conflict') END",
+      params: [],
+      method: "run",
+    },
+    toRun(
+      db
+        .delete(codexPhaseDetailOverrides)
+        .where(eq(codexPhaseDetailOverrides.phaseId, input.phaseId))
+        .toSQL(),
+    ),
+  ];
+
+  for (const override of input.detailOverrides) {
+    statements.push(
+      toRun(
+        db
+          .insert(codexPhaseDetailOverrides)
+          .values({
+            phaseId: input.phaseId,
+            definitionId: override.definitionId,
+            value: override.value,
+          })
+          .toSQL(),
+      ),
+    );
+  }
+
+  try {
+    await invoke("db_execute_batch", { statements });
+  } catch (error) {
+    const message = String(error);
+    if (
+      message.includes("Phase version conflict") ||
+      message.includes("version conflict")
+    ) {
+      throw new PhaseVersionConflictError(input.phaseId);
+    }
+    throw error;
+  }
+
+  const phase = await getPhase(input.phaseId);
+  if (!phase || phase.version !== resultVersion) {
+    throw new PhaseVersionConflictError(input.phaseId);
+  }
+  const overrides = await listDetailOverridesByPhase(input.phaseId);
+
+  if (changesContextMode && isAiVisibleMode(nextContextMode)) {
+    await markImpactBaselinePhaseVisible(phase.entryId, phase.id).catch(
+      () => {},
+    );
+  }
+
+  return { phase, overrides };
+}
+
+/**
+ * @deprecated Product path should use {@link patchPhaseAggregate}. This wrapper
+ * loads the current Phase version and exact-after collection then delegates.
+ */
 export async function upsertDetailOverride(
   phaseId: string,
   definitionId: string,
   value: string | null,
 ): Promise<CodexPhaseDetailOverride> {
-  const existing = await db
-    .select()
-    .from(codexPhaseDetailOverrides)
-    .where(
-      and(
-        eq(codexPhaseDetailOverrides.phaseId, phaseId),
-        eq(codexPhaseDetailOverrides.definitionId, definitionId),
-      ),
-    );
-
-  if (existing.length > 0) {
-    const rows = await db
-      .update(codexPhaseDetailOverrides)
-      .set({ value })
-      .where(
-        and(
-          eq(codexPhaseDetailOverrides.phaseId, phaseId),
-          eq(codexPhaseDetailOverrides.definitionId, definitionId),
-        ),
-      )
-      .returning();
-    return rows[0];
-  } else {
-    const rows = await db
-      .insert(codexPhaseDetailOverrides)
-      .values({
-        phaseId,
-        definitionId,
-        value,
-      })
-      .returning();
-    return rows[0];
+  const phase = await getPhase(phaseId);
+  if (!phase) {
+    throw new Error(`Phase '${phaseId}' not found`);
   }
+  const existing = await listDetailOverridesByPhase(phaseId);
+  const detailOverrides = [
+    ...existing
+      .filter((row) => row.definitionId !== definitionId)
+      .map((row) => ({
+        definitionId: row.definitionId,
+        value: row.value ?? null,
+      })),
+    { definitionId, value },
+  ];
+  const { overrides } = await patchPhaseAggregate({
+    phaseId,
+    baseVersion: phase.version,
+    detailOverrides,
+  });
+  const updated = overrides.find((row) => row.definitionId === definitionId);
+  if (!updated) {
+    throw new Error(
+      `Failed to upsert detail override for phase '${phaseId}' definition '${definitionId}'`,
+    );
+  }
+  return updated;
 }
 
+/**
+ * @deprecated Product path should use {@link patchPhaseAggregate}. This wrapper
+ * loads the current Phase version and exact-after collection then delegates.
+ */
 export async function deleteDetailOverride(
   phaseId: string,
   definitionId: string,
 ): Promise<void> {
-  await db
-    .delete(codexPhaseDetailOverrides)
-    .where(
-      and(
-        eq(codexPhaseDetailOverrides.phaseId, phaseId),
-        eq(codexPhaseDetailOverrides.definitionId, definitionId),
-      ),
-    );
+  const phase = await getPhase(phaseId);
+  if (!phase) {
+    throw new Error(`Phase '${phaseId}' not found`);
+  }
+  const existing = await listDetailOverridesByPhase(phaseId);
+  const detailOverrides = existing
+    .filter((row) => row.definitionId !== definitionId)
+    .map((row) => ({
+      definitionId: row.definitionId,
+      value: row.value ?? null,
+    }));
+  await patchPhaseAggregate({
+    phaseId,
+    baseVersion: phase.version,
+    detailOverrides,
+  });
 }

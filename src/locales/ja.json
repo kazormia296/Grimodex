@@ -1498,6 +1498,9 @@
         "narrative_event_synthesize": "Narrative Event 統合",
         "narrative_entity_resolve": "Narrative Entity 解決",
         "narrative_relation_synthesize": "Narrative Relation 統合",
+        "narrative_state_synthesize": "Narrative State 統合",
+        "narrative_phase_synthesize": "Narrative Phase 統合",
+        "narrative_detail_compose": "Narrative Detail 整形",
         "narrative_structured_repair": "Narrative JSON 修復"
       }
     }
@@ -2421,7 +2424,8 @@
       "fieldTypeText": "テキスト",
       "fieldTypeDropdown": "ドロップダウン",
       "fieldTypeCodexReference": "Codex 参照",
-      "manageFieldsTitle": "フィールドを管理: {{type}}"
+      "manageFieldsTitle": "フィールドを管理: {{type}}",
+      "editConflict": "この詳細は別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。"
     },
     "relation": {
       "title": "階層（親子）",

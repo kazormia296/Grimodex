@@ -312,7 +312,10 @@ export const codexDetailDefinitions = sqliteTable(
     fieldConfig: text("field_config"), // JSON
     sortOrder: real("sort_order").notNull().default(0.0),
     includeInContext: integer("include_in_context").notNull().default(0),
+    // OCC version. Added in SCHEMA_VERSION 8 via migrate.rs add_column_if_missing.
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_detail_defs_project_type_name").on(
@@ -401,6 +404,11 @@ export const codexDetailValues = sqliteTable(
       .notNull()
       .references(() => codexDetailDefinitions.id, { onDelete: "cascade" }),
     value: text("value"),
+    // OCC version. Added in SCHEMA_VERSION 8 via migrate.rs add_column_if_missing.
+    // New inserts start at 1; updates require baseVersion and CAS-bump.
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_detail_values_entry_def").on(

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -1604,7 +1604,7 @@
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 8,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -1665,6 +1665,20 @@
           "notNull": true,
           "default": null,
           "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
         }
       },
       "foreignKeys": [
@@ -1708,7 +1722,7 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
+      "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
     },
     "codex_detail_semantic_bindings": {
       "kind": "table",
@@ -1829,6 +1843,13 @@
     "codex_detail_values": {
       "kind": "table",
       "columns": {
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
         "definition_id": {
           "ordinal": 2,
           "declaredType": "TEXT",
@@ -1850,11 +1871,25 @@
           "default": null,
           "primaryKey": 1
         },
+        "updated_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
         "value": {
           "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -1888,7 +1923,7 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, UNIQUE(entry_id, definition_id) )"
+      "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entry_id, definition_id) )"
     },
     "codex_dismissed_relations": {
       "kind": "table",

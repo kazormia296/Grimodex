@@ -181,7 +181,9 @@ CREATE TABLE IF NOT EXISTS codex_detail_definitions (
     field_config       TEXT,
     sort_order         REAL NOT NULL DEFAULT 0.0,
     include_in_context INTEGER NOT NULL DEFAULT 0,
+    version            INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(project_id, type_slug, name),
     FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
       ON UPDATE CASCADE ON DELETE RESTRICT
@@ -194,6 +196,9 @@ CREATE TABLE IF NOT EXISTS codex_detail_values (
     entry_id      TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
     value         TEXT,
+    version       INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(entry_id, definition_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_detail_values_entry ON codex_detail_values(entry_id);

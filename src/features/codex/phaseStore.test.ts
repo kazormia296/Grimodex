@@ -11,6 +11,7 @@ vi.mock("./phaseApi", () => ({
   listDetailOverridesByPhaseIds: vi.fn(),
   upsertDetailOverride: vi.fn(),
   deleteDetailOverride: vi.fn(),
+  patchPhaseAggregate: vi.fn(),
 }));
 
 import * as phaseApi from "./phaseApi";
@@ -39,8 +40,7 @@ const mockCreatePhase = vi.mocked(phaseApi.createPhase);
 const mockUpdatePhase = vi.mocked(phaseApi.updatePhase);
 const mockGetPhase = vi.mocked(phaseApi.getPhase);
 const mockDeletePhase = vi.mocked(phaseApi.deletePhase);
-const mockUpsertDetailOverride = vi.mocked(phaseApi.upsertDetailOverride);
-const mockDeleteDetailOverride = vi.mocked(phaseApi.deleteDetailOverride);
+const mockPatchPhaseAggregate = vi.mocked(phaseApi.patchPhaseAggregate);
 
 const mockPhase: CodexEntryPhase = {
   id: "phase-1",
@@ -597,17 +597,23 @@ describe("phaseStore", () => {
 
   describe("upsertDetailOverride", () => {
     it("overrideをupsertしてstoreに反映する", async () => {
-      mockUpsertDetailOverride.mockResolvedValue(mockOverride);
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [mockPhase] },
+      });
+      mockPatchPhaseAggregate.mockResolvedValue({
+        phase: { ...mockPhase, version: mockPhase.version + 1 },
+        overrides: [mockOverride],
+      });
 
       await usePhaseStore
         .getState()
         .upsertDetailOverride("phase-1", "def-1", "新しい値");
 
-      expect(mockUpsertDetailOverride).toHaveBeenCalledWith(
-        "phase-1",
-        "def-1",
-        "新しい値",
-      );
+      expect(mockPatchPhaseAggregate).toHaveBeenCalledWith({
+        phaseId: "phase-1",
+        baseVersion: mockPhase.version,
+        detailOverrides: [{ definitionId: "def-1", value: "新しい値" }],
+      });
       expect(usePhaseStore.getState().detailOverrides["phase-1"]).toContain(
         mockOverride,
       );
@@ -617,12 +623,21 @@ describe("phaseStore", () => {
   describe("deleteDetailOverride", () => {
     it("overrideを削除してstoreから除去する", async () => {
       usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [mockPhase] },
         detailOverrides: { "phase-1": [mockOverride] },
       });
-      mockDeleteDetailOverride.mockResolvedValue(undefined);
+      mockPatchPhaseAggregate.mockResolvedValue({
+        phase: { ...mockPhase, version: mockPhase.version + 1 },
+        overrides: [],
+      });
 
       await usePhaseStore.getState().deleteDetailOverride("phase-1", "def-1");
 
+      expect(mockPatchPhaseAggregate).toHaveBeenCalledWith({
+        phaseId: "phase-1",
+        baseVersion: mockPhase.version,
+        detailOverrides: [],
+      });
       expect(usePhaseStore.getState().detailOverrides["phase-1"]).toEqual([]);
     });
   });

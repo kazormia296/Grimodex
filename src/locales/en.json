@@ -1499,6 +1499,9 @@
         "narrative_event_synthesize": "Narrative event synthesize",
         "narrative_entity_resolve": "Narrative entity resolve",
         "narrative_relation_synthesize": "Narrative relation synthesize",
+        "narrative_state_synthesize": "Narrative state synthesize",
+        "narrative_phase_synthesize": "Narrative phase synthesize",
+        "narrative_detail_compose": "Narrative detail compose",
         "narrative_structured_repair": "Narrative structured repair"
       }
     }
@@ -2427,7 +2430,8 @@
       "fieldTypeText": "Text",
       "fieldTypeDropdown": "Dropdown",
       "fieldTypeCodexReference": "Codex Reference",
-      "manageFieldsTitle": "Manage fields: {{type}}"
+      "manageFieldsTitle": "Manage fields: {{type}}",
+      "editConflict": "Couldn't save: this detail was updated in another window. Reload the latest version and edit again."
     },
     "relation": {
       "title": "Hierarchy (parent/child)",

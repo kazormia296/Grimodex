@@ -1,12 +1,13 @@
 //! Read-only compatibility probes shared by desktop workspace open and MCP.
 //!
 //! Historical checkpoints cover the live-comment/audit repairs in v3,
-//! durable Detail semantic bindings in v4, Calendar OCC in v5, and Narrative
-//! Extraction persistence in v6. The current checkpoint extends them with
-//! Codex relation directionality / semantic_key columns. These probes
-//! deliberately avoid exact whole-schema comparison because legitimate
-//! upgraded databases can differ from fresh databases in column order and
-//! normalized DDL while remaining compatible.
+//! durable Detail semantic bindings in v4, Calendar OCC in v5, Narrative
+//! Extraction persistence in v6, and Codex relation directionality /
+//! semantic_key columns in v7. The current checkpoint extends them with
+//! Detail Definition / Detail Value OCC columns. These probes deliberately
+//! avoid exact whole-schema comparison because legitimate upgraded databases
+//! can differ from fresh databases in column order and normalized DDL while
+//! remaining compatible.
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -321,11 +322,11 @@ pub fn has_v6_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
         && table_exists(conn, "narrative_apply_commits")?)
 }
 
-/// Whether the physical schema satisfies the checkpoint represented by the
-/// current workspace version. Version 7 adds Codex relation directionality,
-/// inverse_label, semantic_key, and version on top of every v6 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 7 || !has_v6_checkpoint_invariants(conn)? {
+/// Whether the physical schema satisfies the historical v7 checkpoint.
+/// Version 7 adds Codex relation directionality, inverse_label, semantic_key,
+/// and version on top of every v6 invariant.
+pub fn has_v7_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v6_checkpoint_invariants(conn)? {
         return Ok(false);
     }
     if !table_exists(conn, "codex_relations")? {
@@ -348,6 +349,46 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
             && column.default.as_deref() == Some("1")
     });
     Ok(has_directionality && has_inverse_label && has_semantic_key && has_version)
+}
+
+fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("0")
+    })
+}
+
+fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name
+            && column.declared_type == "TEXT"
+            && column.not_null
+    })
+}
+
+/// Whether the physical schema satisfies the checkpoint represented by the
+/// current workspace version. Version 8 adds Detail Definition / Detail Value
+/// OCC columns on top of every v7 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 8 || !has_v7_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_detail_definitions")?
+        || !table_exists(conn, "codex_detail_values")?
+    {
+        return Ok(false);
+    }
+    let definitions = table_columns(conn, "codex_detail_definitions")?;
+    let values = table_columns(conn, "codex_detail_values")?;
+    Ok(
+        has_occ_integer_column(&definitions, "version")
+            && has_timestamp_text_column(&definitions, "updated_at")
+            && has_occ_integer_column(&values, "version")
+            && has_timestamp_text_column(&values, "created_at")
+            && has_timestamp_text_column(&values, "updated_at"),
+    )
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
