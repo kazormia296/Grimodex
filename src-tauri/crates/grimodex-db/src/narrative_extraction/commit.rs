@@ -765,13 +765,61 @@ fn ensure_proposal_approved_and_bound(
         |row| row.get(0),
     )?;
     let revision_payload: Value = serde_json::from_str(&revision_payload_raw)?;
-    let revision_digest = digest_plan(&revision_payload);
+    let comparable = revision_payload_for_commit_compare(&revision_payload, operation_kind)?;
+    let revision_digest = digest_plan(comparable);
     let operation_digest = digest_plan(operation_payload);
     anyhow::ensure!(
         revision_digest == operation_digest,
         "NEX_PROPOSAL_PAYLOAD_MISMATCH: proposal '{proposal_id}' revision payload does not match operation payload"
     );
     Ok(())
+}
+
+/// Codex review revisions store an envelope:
+/// `{ version: 1, reviewPayload, compiledOperation: { kind, payload } | null }`.
+/// Commit validation must compare `compiledOperation.payload` (when present) to
+/// the Domain Operation wire payload. Legacy revisions store the Domain Op
+/// payload directly.
+fn revision_payload_for_commit_compare<'a>(
+    revision_payload: &'a Value,
+    operation_kind: &str,
+) -> anyhow::Result<&'a Value> {
+    let Some(obj) = revision_payload.as_object() else {
+        return Ok(revision_payload);
+    };
+    let is_envelope = obj.get("version").and_then(Value::as_u64) == Some(1)
+        && obj.contains_key("reviewPayload");
+    if !is_envelope {
+        return Ok(revision_payload);
+    }
+
+    let compiled = obj.get("compiledOperation").ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope missing compiledOperation"
+        )
+    })?;
+    if compiled.is_null() {
+        anyhow::bail!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope has null compiledOperation"
+        );
+    }
+    let compiled_kind = compiled
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.kind missing"
+            )
+        })?;
+    anyhow::ensure!(
+        compiled_kind == operation_kind,
+        "NEX_PROPOSAL_KIND_MISMATCH: compiledOperation.kind '{compiled_kind}' != operation '{operation_kind}'"
+    );
+    compiled.get("payload").ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.payload missing"
+        )
+    })
 }
 
 fn ensure_proposal_not_applied(conn: &Connection, proposal_id: &str) -> anyhow::Result<()> {

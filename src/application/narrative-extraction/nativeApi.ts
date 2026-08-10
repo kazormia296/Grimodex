@@ -162,6 +162,14 @@ export interface ReviewBundleLatestDecision {
   readonly createdBy: string;
 }
 
+export interface ReviewBundleProposalApplication {
+  readonly commitId: string;
+  readonly revisionId: string;
+  readonly appliedEntityKind: string;
+  readonly appliedEntityId: string;
+  readonly createdAt: string;
+}
+
 export interface ReviewBundleProposal {
   readonly proposalId: string;
   readonly proposalSetId: string;
@@ -173,6 +181,8 @@ export interface ReviewBundleProposal {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly latestDecision: ReviewBundleLatestDecision | null;
+  /** Present when Native already applied this proposal (partial Apply / cold-start). */
+  readonly application?: ReviewBundleProposalApplication | null;
 }
 
 export interface GetRunReviewBundleResult {

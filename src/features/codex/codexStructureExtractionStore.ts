@@ -81,6 +81,12 @@ export interface CodexCompiledDomainOperation {
   readonly payload: Readonly<Record<string, unknown>>;
 }
 
+export interface CodexReviewProposalApplication {
+  readonly revisionId: string;
+  readonly appliedEntityKind: string;
+  readonly appliedEntityId: string;
+}
+
 export interface CodexEntityReviewProposal {
   readonly proposalId: string;
   readonly revisionId: string | null;
@@ -98,6 +104,8 @@ export interface CodexEntityReviewProposal {
    * Apply must reuse this payload so Native revision digests match.
    */
   readonly compiledOperation?: CodexCompiledDomainOperation | null;
+  /** Set after Native Apply; cold-start must not re-send these proposals. */
+  readonly application?: CodexReviewProposalApplication | null;
 }
 
 export interface CodexRelationReviewProposal {
@@ -115,6 +123,8 @@ export interface CodexRelationReviewProposal {
   readonly hypothesisId?: string;
   readonly existingRelationRef?: string;
   readonly compiledOperation?: CodexCompiledDomainOperation | null;
+  /** Set after Native Apply; cold-start must not re-send these proposals. */
+  readonly application?: CodexReviewProposalApplication | null;
 }
 
 export interface CodexStructureCatalogEntity {
@@ -303,11 +313,15 @@ function recount(
     approvedCount:
       proposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length +
       relationProposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length,
   };
 }

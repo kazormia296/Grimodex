@@ -22,7 +22,6 @@ import { useCodexStructureExtractionStore } from "./codexStructureExtractionStor
 import {
   applyCodexStructureExtractionReview,
   buildCodexStructureCatalogs,
-  getCodexStructureReview,
   restoreCodexStructureExtractionReview,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
@@ -186,9 +185,8 @@ export function CodexStructureExtractDialog({
         existingRelations,
       });
       if (generationRef.current !== generation) return;
-      getCodexStructureReview();
+      setProjection(next);
       setReviewTab("entity");
-      void next;
     } catch (err) {
       if (generationRef.current === generation) {
         setError(err instanceof Error ? err.message : String(err));

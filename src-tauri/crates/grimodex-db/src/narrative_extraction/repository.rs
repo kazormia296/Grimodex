@@ -243,7 +243,20 @@ pub fn list_resumable_runs(
                       JOIN narrative_proposals p ON p.proposal_set_id = ps.id
                      WHERE ps.run_id = r.id
                        AND ps.project_id = r.project_id
-                       AND p.status IN ('unreviewed', 'approved', 'held', 'deferred')
+                       AND (
+                            p.status IN ('unreviewed', 'approved', 'held')
+                            OR (
+                                p.status = 'deferred'
+                                AND NOT EXISTS (
+                                  SELECT 1
+                                    FROM narrative_proposal_decisions d
+                                   WHERE d.proposal_id = p.id
+                                     AND d.revision_id = p.current_revision_id
+                                     AND json_extract(d.decision_json, '$.reason')
+                                         = 'already-satisfied'
+                                )
+                            )
+                       )
                        AND NOT EXISTS (
                          SELECT 1
                            FROM narrative_proposal_applications a
@@ -548,8 +561,29 @@ pub fn get_run_review_bundle(
                         row_to_decision_value,
                     )
                     .optional()?;
+                let application = conn
+                    .query_row(
+                        "SELECT commit_id, revision_id, applied_entity_kind,
+                                applied_entity_id, created_at
+                           FROM narrative_proposal_applications
+                          WHERE proposal_id = ?1
+                          ORDER BY created_at DESC, id DESC
+                          LIMIT 1",
+                        params![proposal_id],
+                        |row| {
+                            Ok(json!({
+                                "commitId": row.get::<_, String>(0)?,
+                                "revisionId": row.get::<_, String>(1)?,
+                                "appliedEntityKind": row.get::<_, String>(2)?,
+                                "appliedEntityId": row.get::<_, String>(3)?,
+                                "createdAt": row.get::<_, String>(4)?,
+                            }))
+                        },
+                    )
+                    .optional()?;
                 if let Some(obj) = proposal.as_object_mut() {
                     obj.insert("latestDecision".to_string(), json!(latest_decision));
+                    obj.insert("application".to_string(), json!(application));
                 }
                 proposals.push(proposal);
             }

@@ -871,11 +871,15 @@ function recountProjection(
     approvedCount:
       proposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length +
       relationProposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length,
   };
 }
@@ -1551,7 +1555,7 @@ export async function startCodexStructureExtraction(
     ...counts,
   };
 
-  useCodexStructureExtractionStore.getState().setProjection(projection);
+  // Intentionally do not setProjection — Dialog publishes after generation checks.
   return projection;
 }
 
@@ -1836,11 +1840,26 @@ function parseEvidenceArtifact(
 function decisionAlreadySatisfied(
   native: ReviewBundleProposal | undefined,
 ): { readonly existingRelationRef?: string } | null {
-  const reason = native?.latestDecision?.decisionJson?.reason;
-  if (reason !== "already-satisfied") return null;
-  const ref = native?.latestDecision?.decisionJson?.existingRelationRef;
+  if (!native || native.status !== "deferred") return null;
+  const decision = native.latestDecision;
+  if (!decision) return null;
+  if (decision.revisionId !== native.currentRevisionId) return null;
+  if (decision.decisionJson?.reason !== "already-satisfied") return null;
+  const ref = decision.decisionJson?.existingRelationRef;
   return {
     existingRelationRef: typeof ref === "string" ? ref : undefined,
+  };
+}
+
+function applicationFromNative(
+  native: ReviewBundleProposal,
+): CodexEntityReviewProposal["application"] {
+  const app = native.application;
+  if (!app) return null;
+  return {
+    revisionId: app.revisionId,
+    appliedEntityKind: app.appliedEntityKind,
+    appliedEntityId: app.appliedEntityId,
   };
 }
 
@@ -1911,6 +1930,7 @@ function rebuildEntityFromNative(args: {
           : "Codex Type が未解決です"
         : undefined,
     compiledOperation,
+    application: applicationFromNative(args.native),
   };
 }
 
@@ -1937,13 +1957,15 @@ function rebuildRelationFromNative(args: {
     return null;
   }
   const satisfied = decisionAlreadySatisfied(args.native);
+  // Prefer live Entity titles (covers rename / endpoint swap). Artifact labels
+  // are fallback for endpoints not present in the entity title map.
   const subjectLabel =
-    args.labels?.subjectLabel ??
     args.entityTitles.get(reviewPayload.subjectEntityId) ??
+    args.labels?.subjectLabel ??
     reviewPayload.subjectEntityId;
   const objectLabel =
-    args.labels?.objectLabel ??
     args.entityTitles.get(reviewPayload.objectEntityId) ??
+    args.labels?.objectLabel ??
     reviewPayload.objectEntityId;
   const proposal: CreateCodexRelationProposal = {
     proposalId: args.native.proposalId,
@@ -1979,6 +2001,7 @@ function rebuildRelationFromNative(args: {
       ? "既に同じ関係が登録されています（適用不要）"
       : undefined,
     compiledOperation,
+    application: applicationFromNative(args.native),
   };
 }
 
@@ -2315,11 +2338,38 @@ export async function applyCodexStructureExtractionReview(
     source: "existing";
   }[] = [];
 
+  // Seed CommitMap from already-applied Entity proposals so Relations can
+  // resolve endpoints without re-sending those operations.
+  for (const review of active.proposals) {
+    const appliedId = review.application?.appliedEntityId;
+    if (!appliedId) continue;
+    const narrativeEntityId = review.proposal.payload.narrativeEntityId;
+    if (review.proposal.payload.binding.kind === "create-new") {
+      commitMap = registerCreatedBinding(
+        commitMap,
+        narrativeEntityId,
+        appliedId,
+      );
+    } else {
+      existingBindings.push({
+        narrativeEntityId,
+        codexEntryId: appliedId,
+        source: "existing",
+      });
+      commitMap = registerExistingBinding(
+        commitMap,
+        narrativeEntityId,
+        appliedId,
+      );
+    }
+  }
+
   const approvedEntities = active.proposals.filter(
     (proposal) =>
       proposal.applicability === "applicable" &&
       proposal.status === "approved" &&
-      proposal.revisionId,
+      proposal.revisionId &&
+      !proposal.application,
   );
 
   for (const review of approvedEntities) {
@@ -2369,7 +2419,8 @@ export async function applyCodexStructureExtractionReview(
     (proposal) =>
       proposal.applicability === "applicable" &&
       proposal.status === "approved" &&
-      proposal.revisionId,
+      proposal.revisionId &&
+      !proposal.application,
   );
 
   for (const review of approvedRelations) {

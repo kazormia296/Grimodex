@@ -224,6 +224,51 @@ describe("startCodexStructureExtraction product safety", () => {
     ).toBe(false);
   });
 
+  it("returns projection without publishing to the store (Dialog owns setProjection)", async () => {
+    const projection = await startCodexStructureExtraction({
+      projectId: "p1",
+      folderId: "f1",
+      sceneIds: ["s1"],
+      authority: {
+        projectId: "p1",
+        currentProjectId: () => "p1",
+        workspacePath: "/w",
+        workspaceOpenRevision: 1,
+      },
+      workspacePath: "/w",
+      openRevision: 1,
+      useAi: false,
+      skipNativePersist: true,
+      typeCatalog: [
+        {
+          ref: "T0001",
+          sourceKey: "character",
+          slug: "character",
+          label: "character",
+          coarseClassHints: ["person"],
+          expectedVersion: 1,
+        },
+      ],
+      heuristicSeeds: [
+        {
+          surface: "ライカ",
+          typeRef: "T0001",
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカ",
+              documentRef: "D000001",
+              method: "exact",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(projection.proposals.length).toBeGreaterThan(0);
+    expect(useCodexStructureExtractionStore.getState().projection).toBeNull();
+  });
+
   it("persists Native run/proposal revisions when not skipped", async () => {
     const projection = await startCodexStructureExtraction({
       projectId: "p1",
@@ -862,6 +907,164 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
       status: {},
       commitMap: { entityBindings: {} },
     });
+  });
+
+  it("skips already-applied proposals and only commits pending approved rows", async () => {
+    const applied = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-applied",
+        canonicalName: "ライカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ライカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-applied" },
+    );
+    const pending = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-pending",
+        canonicalName: "ベルカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ベルカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-pending" },
+    );
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId: "run-partial-apply",
+      projectId: "p1",
+      workspacePath: "/w",
+      openRevision: 1,
+      proposalSetId: "ps-1",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-applied",
+          revisionId: "rev-a",
+          proposalKey: "ne-applied",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ライカ",
+          proposal: applied,
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "create-new",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact"],
+            hasExistingCandidates: false,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+          compiledOperation: {
+            kind: "codex.entry.create",
+            payload: {
+              entryId: "entry-applied",
+              typeSlug: "character",
+              name: "ライカ",
+              summary: null,
+              aliases: [],
+              parentId: null,
+              content: '{"type":"doc","content":[]}',
+              narrativeEntityId: "ne-applied",
+            },
+          },
+          application: {
+            revisionId: "rev-a",
+            appliedEntityKind: "codex_entry",
+            appliedEntityId: "entry-applied",
+          },
+        },
+        {
+          proposalId: "prop-pending",
+          revisionId: "rev-b",
+          proposalKey: "ne-pending",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ベルカ",
+          proposal: pending,
+          evidence: [
+            {
+              anchorId: "a2",
+              quote: "ベルカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "create-new",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact"],
+            hasExistingCandidates: false,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+          compiledOperation: {
+            kind: "codex.entry.create",
+            payload: {
+              entryId: "entry-pending",
+              typeSlug: "character",
+              name: "ベルカ",
+              summary: null,
+              aliases: [],
+              parentId: null,
+              content: '{"type":"doc","content":[]}',
+              narrativeEntityId: "ne-pending",
+            },
+          },
+        },
+      ],
+      relationProposals: [],
+      entityCount: 2,
+      relationCount: 0,
+      unresolvedCount: 0,
+      approvedCount: 1,
+      catalog: {
+        entities: [],
+        types: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+          },
+        ],
+      },
+    });
+
+    const count = await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: [],
+    });
+
+    expect(count).toBe(1);
+    expect(prepareApplyMock).toHaveBeenCalledTimes(1);
+    const ops = prepareApplyMock.mock.calls[0]?.[0]?.operations;
+    expect(ops).toHaveLength(1);
+    expect(ops[0]?.proposalId).toBe("prop-pending");
   });
 
   it("resolves K/T via catalog and emits bind-existing when patch is empty", async () => {

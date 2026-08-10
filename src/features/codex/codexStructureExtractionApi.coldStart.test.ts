@@ -287,6 +287,519 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     ]);
   });
 
+  it("attaches Native application and excludes applied rows from approvedCount", async () => {
+    const entityA = sampleEntityProposal("prop-entity-a");
+    const entityB = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-2",
+        canonicalName: "ベルカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ベルカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-entity-b" },
+    );
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "quote",
+        documentRef: "doc:1",
+        method: "exact" as const,
+      },
+    ];
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-partial",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-partial",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art",
+          runId: "run-partial",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "set-partial",
+            evidenceByProposalId: {
+              "prop-entity-a": evidence,
+              "prop-entity-b": evidence,
+            },
+            relationLabelsByProposalId: {},
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "2026-01-01T00:00:30.000Z",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "set-partial",
+        runId: "run-partial",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {},
+        },
+        createdAt: "2026-01-01T00:00:40.000Z",
+        updatedAt: "2026-01-01T00:00:40.000Z",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-entity-a",
+          proposalSetId: "set-partial",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "approved",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entityA.payload,
+            compiledOperation: {
+              kind: "codex.entry.create",
+              payload: {
+                entryId: "entry-a",
+                typeSlug: "character",
+                name: "ライカ",
+                summary: null,
+                aliases: [],
+                parentId: null,
+                content: '{"type":"doc","content":[]}',
+                narrativeEntityId: "ne-1",
+              },
+            },
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-a",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: {
+            decisionId: "d-a",
+            proposalId: "prop-entity-a",
+            revisionId: "rev-a",
+            decision: "approved",
+            decisionJson: {},
+            createdAt: "t",
+            createdBy: "r",
+          },
+          application: {
+            commitId: "commit-1",
+            revisionId: "rev-a",
+            appliedEntityKind: "codex_entry",
+            appliedEntityId: "entry-a",
+            createdAt: "t",
+          },
+        },
+        {
+          proposalId: "prop-entity-b",
+          proposalSetId: "set-partial",
+          proposalKey: "ne-2",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "approved",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entityB.payload,
+            compiledOperation: {
+              kind: "codex.entry.create",
+              payload: {
+                entryId: "entry-b",
+                typeSlug: "character",
+                name: "ベルカ",
+                summary: null,
+                aliases: [],
+                parentId: null,
+                content: '{"type":"doc","content":[]}',
+                narrativeEntityId: "ne-2",
+              },
+            },
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-b",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: {
+            decisionId: "d-b",
+            proposalId: "prop-entity-b",
+            revisionId: "rev-b",
+            decision: "approved",
+            decisionJson: {},
+            createdAt: "t",
+            createdBy: "r",
+          },
+          application: null,
+        },
+      ],
+    });
+
+    const restored = await getCodexStructureExtractionReview("run-partial", {
+      projectId: "project-cold",
+      workspacePath: "/ws",
+      openRevision: 1,
+      folderId: "folder-cold",
+    });
+
+    expect(restored.proposals[0]?.application?.appliedEntityId).toBe("entry-a");
+    expect(restored.proposals[1]?.application).toBeNull();
+    expect(restored.approvedCount).toBe(1);
+  });
+
+  it("ignores already-satisfied decisions bound to a prior revision", async () => {
+    const entity = sampleEntityProposal("prop-entity-cold");
+    const relation = sampleRelationProposal("prop-rel-edited", [
+      "prop-entity-cold",
+    ]);
+    const swappedPayload = {
+      ...relation.payload,
+      subjectEntityId: "ne-2",
+      objectEntityId: "ne-1",
+    };
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "quote",
+        documentRef: "doc:1",
+        method: "exact" as const,
+      },
+    ];
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-stale-decision",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-stale-decision",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art",
+          runId: "run-stale-decision",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "set-stale",
+            evidenceByProposalId: {
+              "prop-entity-cold": evidence,
+              "prop-rel-edited": evidence,
+            },
+            relationLabelsByProposalId: {
+              "prop-rel-edited": {
+                subjectLabel: "ライカ",
+                objectLabel: "ベルカ",
+              },
+            },
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "t",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "set-stale",
+        runId: "run-stale-decision",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {
+            "prop-rel-edited": [
+              { kind: "requires-resolution", proposalId: "prop-entity-cold" },
+            ],
+          },
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-entity-cold",
+          proposalSetId: "set-stale",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "approved",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entity.payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-entity",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: {
+            decisionId: "d1",
+            proposalId: "prop-entity-cold",
+            revisionId: "rev-entity",
+            decision: "approved",
+            decisionJson: {},
+            createdAt: "t",
+            createdBy: "r",
+          },
+          application: null,
+        },
+        {
+          proposalId: "prop-rel-edited",
+          proposalSetId: "set-stale",
+          proposalKey: "rel-edited",
+          kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: swappedPayload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-rel-2",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: {
+            decisionId: "d-old",
+            proposalId: "prop-rel-edited",
+            revisionId: "rev-rel-1",
+            decision: "deferred",
+            decisionJson: {
+              reason: "already-satisfied",
+              existingRelationRef: "rel-old",
+            },
+            createdAt: "t",
+            createdBy: "r",
+          },
+          application: null,
+        },
+      ],
+    });
+
+    const restored = await getCodexStructureExtractionReview(
+      "run-stale-decision",
+      {
+        projectId: "project-cold",
+        workspacePath: "/ws",
+        openRevision: 1,
+        folderId: "folder-cold",
+      },
+    );
+
+    expect(restored.relationProposals[0]?.applicability).not.toBe(
+      "already-satisfied",
+    );
+  });
+
+  it("prefers entityTitles over artifact labels after endpoint swap", async () => {
+    const entityA = sampleEntityProposal("prop-entity-a");
+    const entityB = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-2",
+        canonicalName: "ベルカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ベルカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-entity-b" },
+    );
+    const relation = sampleRelationProposal("prop-rel-swap", [
+      "prop-entity-a",
+      "prop-entity-b",
+    ]);
+    const swappedPayload = {
+      ...relation.payload,
+      subjectEntityId: "ne-2",
+      objectEntityId: "ne-1",
+    };
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "quote",
+        documentRef: "doc:1",
+        method: "exact" as const,
+      },
+    ];
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-swap",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-swap",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art",
+          runId: "run-swap",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "set-swap",
+            evidenceByProposalId: {
+              "prop-entity-a": evidence,
+              "prop-entity-b": evidence,
+              "prop-rel-swap": evidence,
+            },
+            relationLabelsByProposalId: {
+              "prop-rel-swap": {
+                subjectLabel: "ライカ",
+                objectLabel: "ベルカ",
+              },
+            },
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "t",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "set-swap",
+        runId: "run-swap",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {
+            "prop-rel-swap": [
+              { kind: "requires-resolution", proposalId: "prop-entity-a" },
+              { kind: "requires-resolution", proposalId: "prop-entity-b" },
+            ],
+          },
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-entity-a",
+          proposalSetId: "set-swap",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entityA.payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-a",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+          application: null,
+        },
+        {
+          proposalId: "prop-entity-b",
+          proposalSetId: "set-swap",
+          proposalKey: "ne-2",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entityB.payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-b",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+          application: null,
+        },
+        {
+          proposalId: "prop-rel-swap",
+          proposalSetId: "set-swap",
+          proposalKey: "rel-swap",
+          kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: swappedPayload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-rel",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+          application: null,
+        },
+      ],
+    });
+
+    const restored = await getCodexStructureExtractionReview("run-swap", {
+      projectId: "project-cold",
+      workspacePath: "/ws",
+      openRevision: 1,
+      folderId: "folder-cold",
+    });
+
+    const row = restored.relationProposals[0];
+    expect(row?.proposal.payload.subjectEntityId).toBe("ne-2");
+    expect(row?.proposal.payload.objectEntityId).toBe("ne-1");
+    expect(row?.subjectLabel).toBe("ベルカ");
+    expect(row?.objectLabel).toBe("ライカ");
+    expect(row?.displayTitle).toBe("ベルカ → 友人 → ライカ");
+  });
+
   it("rejects folder mismatch before hydrate", async () => {
     getRunMock.mockResolvedValue({
       run: {
