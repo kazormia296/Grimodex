@@ -5,6 +5,7 @@ allSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
+  - narrative-runtime
 rules:
   - id: quality-foundation
     reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
@@ -231,5 +232,22 @@ rules:
       - GDX-TRACE-001
     suites:
       - ai-routing
+      - tool-policy
+  - id: narrative-runtime-authority
+    reason: Narrative runtime policy, protected writers, and Native SQL origin gates must stay fail-closed.
+    paths:
+      - policies/narrative/**
+      - src/features/narrative-extraction/**
+      - src-tauri/crates/grimodex-db/src/narrative_runtime_policy.rs
+      - src-tauri/crates/grimodex-db/src/protected_writers.rs
+      - src-tauri/crates/grimodex-db/src/execute.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_runtime_authority.rs
+      - scripts/quality/validate-narrative-writers.mjs
+      - scripts/quality/validate-narrative-writers.test.mjs
+    requirements:
+      - GDX-POLICY-001
+      - GDX-TRACE-001
+    suites:
+      - narrative-runtime
       - tool-policy
 default: all

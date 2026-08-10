@@ -52,7 +52,7 @@ pub(crate) fn db_execute(
 ) -> Result<QueryResult, AppError> {
     let started = Instant::now();
     let result = with_db(&ws_state, |db| {
-        let rows = db.execute(&sql, &params, &method)?;
+        let rows = db.execute_renderer(&sql, &params, &method)?;
         Ok(QueryResult { rows })
     });
     let total_ms = started.elapsed().as_millis();
@@ -81,7 +81,7 @@ pub(crate) async fn db_execute_batch(
             .map(|s| sql_prefix(&s.sql))
             .unwrap_or_default();
         let result = with_db(&ws_state, |db| {
-            let rows = db.execute_batch_tx(&statements)?;
+            let rows = db.execute_batch_tx_renderer(&statements)?;
             Ok(QueryResult { rows })
         });
         let total_ms = started.elapsed().as_millis();
