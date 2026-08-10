@@ -775,6 +775,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               toThreadId: action.toThreadId,
               atNodeId: action.atNodeId,
               kind: action.kind,
+              semanticKey: `${action.fromThreadId}|${action.toThreadId}|${action.atNodeId}|${action.kind}`,
+              version: 0,
               createdAt: "",
               updatedAt: "",
             },

@@ -83,6 +83,8 @@ pub struct PlotThreadPatch {
     color: Option<Option<String>>,
     description: Option<Option<String>>,
     sort_order: Option<String>,
+    #[serde(default)]
+    base_version: Option<i64>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -686,10 +688,23 @@ pub fn update(db: &Database, id: String, patch: PlotThreadPatch) -> anyhow::Resu
             "get",
         )?));
     }
+    sets.push("version = version + 1");
     sets.push("updated_at = datetime('now')");
-    params.push(Value::String(id.clone()));
     let sql = format!("UPDATE plot_threads SET {} WHERE id = ?", sets.join(", "));
-    db.execute(&sql, &params, "run")?;
+    params.push(Value::String(id.clone()));
+    if let Some(base_version) = patch.base_version {
+        let full_sql = format!("{sql} AND version = ?");
+        params.push(Value::Number(base_version.into()));
+        let updated = db.with_conn(|conn| {
+            Database::execute_with_conn(conn, &full_sql, &params, "run")?;
+            Ok(conn.changes())
+        })?;
+        if updated == 0 {
+            anyhow::bail!("plot thread '{id}' version conflict during update");
+        }
+    } else {
+        db.execute(&sql, &params, "run")?;
+    }
     Ok(one(db.execute(
         "SELECT * FROM plot_threads WHERE id = ?",
         &[Value::String(id)],
@@ -753,11 +768,12 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
                     )
                 }
             };
+            let semantic_key = format!("{thread_id}|{node_id}|{phase_type}");
             Database::execute_with_conn(
                 conn,
                 "INSERT INTO plot_thread_scene_links
-                     (id, thread_id, node_id, phase_type, note, sort_order)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                     (id, thread_id, node_id, phase_type, note, sort_order, semantic_key, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
                 &[
                     Value::String(id.clone()),
                     Value::String(thread_id.clone()),
@@ -768,6 +784,7 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
                         .clone()
                         .map(Value::String)
                         .unwrap_or(Value::Null),
+                    Value::String(semantic_key),
                 ],
                 "run",
             )
@@ -954,11 +971,15 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
                 ),
             }
 
+            let semantic_key = format!(
+                "{from_thread_id}|{to_thread_id}|{at_node_id}|{kind}"
+            );
             Database::execute_with_conn(
                 conn,
                 "INSERT INTO plot_thread_branches
-                     (id, project_id, from_thread_id, to_thread_id, at_node_id, kind)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                     (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
+                      semantic_key, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
                 &[
                     Value::String(id.clone()),
                     Value::String(project_id.clone()),
@@ -966,6 +987,7 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
                     Value::String(to_thread_id.clone()),
                     Value::String(at_node_id.clone()),
                     Value::String(kind.clone()),
+                    Value::String(semantic_key),
                 ],
                 "run",
             )

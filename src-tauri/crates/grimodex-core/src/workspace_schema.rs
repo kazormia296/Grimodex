@@ -435,15 +435,9 @@ pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     )
 }
 
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 10 adds the Temporal Constraint Graph
-/// persistence tables (`narrative_temporal_nodes`,
-/// `narrative_temporal_constraints`, `narrative_temporal_projections`) on top
+/// SCHEMA 10 checkpoint: Temporal Constraint Graph persistence tables on top
 /// of every v9 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 10 || !has_v3_physical_invariants(conn)? {
-        return Ok(false);
-    }
+pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     if !has_v9_checkpoint_invariants(conn)? {
         return Ok(false);
     }
@@ -472,6 +466,29 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
     )
 }
 
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 11 adds Plot Thread OCC
+/// (`plot_threads.version`, marker/branch `version` + `semantic_key`) on top
+/// of every v10 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 11 || !has_v3_physical_invariants(conn)? {
+        return Ok(false);
+    }
+    if !has_v10_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    let threads = table_columns(conn, "plot_threads")?;
+    let links = table_columns(conn, "plot_thread_scene_links")?;
+    let branches = table_columns(conn, "plot_thread_branches")?;
+    Ok(
+        has_occ_integer_column(&threads, "version")
+            && has_occ_integer_column(&links, "version")
+            && has_text_column(&links, "semantic_key")
+            && has_occ_integer_column(&branches, "version")
+            && has_text_column(&branches, "semantic_key"),
+    )
+}
+
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
     columns.iter().any(|column| {
         column.name == name
@@ -486,6 +503,12 @@ fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
         column.name == name
             && column.declared_type == "TEXT"
             && column.not_null
+    })
+}
+
+fn has_text_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name && column.declared_type == "TEXT" && column.not_null
     })
 }
 

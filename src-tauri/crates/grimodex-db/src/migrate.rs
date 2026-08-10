@@ -1922,6 +1922,7 @@ impl Database {
                 -- シーン削除で ON DELETE SET NULL → override 解除 (スレッド自体は残る)。
                 start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 end_node_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                version       INTEGER NOT NULL DEFAULT 0,
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -1955,13 +1956,17 @@ impl Database {
                               CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')),
                 note        TEXT,
                 sort_order  TEXT,
+                semantic_key TEXT NOT NULL DEFAULT '',
+                version     INTEGER NOT NULL DEFAULT 0,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_thread
                 ON plot_thread_scene_links(thread_id);
             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_node
-                ON plot_thread_scene_links(node_id);",
+                ON plot_thread_scene_links(node_id);
+            CREATE INDEX IF NOT EXISTS idx_plot_thread_links_semantic_key
+                ON plot_thread_scene_links(semantic_key);",
         )?;
 
         // プロットスレッドの分岐 / 合流エッジ。特定シーン(at_node_id)で from→to の
@@ -1977,6 +1982,8 @@ impl Database {
                 at_node_id      TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
                 kind            TEXT NOT NULL
                                   CHECK(kind IN ('branch','merge')),
+                semantic_key    TEXT NOT NULL DEFAULT '',
+                version         INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -2391,7 +2398,7 @@ impl Database {
             );",
         )?;
 
-        // Temporal Constraint Graph persistence (SCHEMA_VERSION 9): Nodes /
+        // Temporal Constraint Graph persistence (SCHEMA_VERSION 10): Nodes /
         // Constraints / Projections. Mirrors src/db/schema.ts. Kind-specific
         // shapes are polymorphic JSON blobs (subject_json / payload_json), not
         // exploded into columns, matching the TS domain model in
@@ -2460,6 +2467,76 @@ impl Database {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_temporal_projections_target
                 ON narrative_temporal_projections(project_id, target_kind, target_id);",
+        )?;
+
+        // SCHEMA_VERSION 11: Plot Thread / Marker / Branch OCC + semantic keys.
+        Self::add_column_if_missing(
+            &conn,
+            "plot_threads",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_scene_links",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_scene_links",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_branches",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_branches",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        // Backfill semantic keys. Duplicate groups get `#dup:{id}` suffix so we
+        // never delete legacy rows while keeping keys unique for new writers.
+        conn.execute_batch(
+            "UPDATE plot_thread_scene_links
+                SET semantic_key = thread_id || '|' || node_id || '|' || phase_type
+              WHERE semantic_key = '' OR semantic_key IS NULL;
+             UPDATE plot_thread_scene_links
+                SET semantic_key = semantic_key || '#dup:' || id
+              WHERE id IN (
+                SELECT id FROM plot_thread_scene_links a
+                 WHERE EXISTS (
+                   SELECT 1 FROM plot_thread_scene_links b
+                    WHERE b.semantic_key = a.semantic_key
+                      AND b.rowid < a.rowid
+                 )
+              );
+             UPDATE plot_thread_branches
+                SET semantic_key = from_thread_id || '|' || to_thread_id || '|' || at_node_id || '|' || kind
+              WHERE semantic_key = '' OR semantic_key IS NULL;
+             UPDATE plot_thread_branches
+                SET semantic_key = semantic_key || '#dup:' || id
+              WHERE id IN (
+                SELECT id FROM plot_thread_branches a
+                 WHERE EXISTS (
+                   SELECT 1 FROM plot_thread_branches b
+                    WHERE b.semantic_key = a.semantic_key
+                      AND b.rowid < a.rowid
+                 )
+              );
+             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_semantic_key
+                ON plot_thread_scene_links(semantic_key);
+             CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_semantic_key
+                ON plot_thread_branches(semantic_key);
+             CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_thread_links_semantic_key
+                ON plot_thread_scene_links(semantic_key);
+             CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_thread_branches_semantic_key
+                ON plot_thread_branches(semantic_key);",
         )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.

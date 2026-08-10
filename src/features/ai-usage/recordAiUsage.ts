@@ -34,7 +34,11 @@ export type AiUsageSurface =
   | "narrative_detail_compose"
   | "narrative_temporal_attach"
   | "narrative_temporal_synthesize"
-  | "narrative_structured_repair";
+  | "narrative_structured_repair"
+  | "narrative_plot_thread_synthesize"
+  | "narrative_plot_development_classify"
+  | "narrative_plot_marker_assign"
+  | "narrative_plot_relation_synthesize";
 
 export interface RecordAiUsageInput {
   surface: AiUsageSurface;

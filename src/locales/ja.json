@@ -1503,7 +1503,11 @@
         "narrative_detail_compose": "Narrative Detail 整形",
         "narrative_temporal_attach": "時間表現 Attachment",
         "narrative_temporal_synthesize": "時間関係 Synthesis",
-        "narrative_structured_repair": "Narrative JSON 修復"
+        "narrative_structured_repair": "Narrative JSON 修復",
+        "narrative_plot_thread_synthesize": "プロットスレッド候補 統合",
+        "narrative_plot_development_classify": "プロット進展 分類",
+        "narrative_plot_marker_assign": "プロットマーカー 補助",
+        "narrative_plot_relation_synthesize": "プロット関係 統合"
       }
     }
   },
@@ -5717,6 +5721,24 @@
       },
       "failed": "抽出に失敗しました",
       "none": "抽出できるサブプロットが見つかりませんでした。"
+    },
+    "reviewExtract": {
+      "button": "抽出プレビュー",
+      "title": "プロットスレッド候補レビュー",
+      "hint": "AI が提案したプロットスレッド候補をレビューします（プレビュー機能）。",
+      "empty": "レビュー待ちの提案はまだありません。",
+      "markerCount": "マーカー {{n}} 件",
+      "blocked": "要確認",
+      "binding": {
+        "createNew": "新規作成",
+        "bindExisting": "既存スレッドへ統合",
+        "unresolved": "候補が複数あり未解決"
+      },
+      "prominence": {
+        "primary": "主要",
+        "supporting": "補助",
+        "minor": "小規模"
+      }
     },
     "structure": {
       "title": "構造分析",

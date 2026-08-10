@@ -1394,6 +1394,8 @@ export const plotThreads = sqliteTable(
     }),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    // OCC generation. SCHEMA_VERSION 11.
+    version: integer("version").notNull().default(0),
   },
   (table) => [index("idx_plot_threads_project").on(table.projectId)],
 );
@@ -1413,12 +1415,17 @@ export const plotThreadSceneLinks = sqliteTable(
     phaseType: text("phase_type").notNull(),
     note: text("note"),
     sortOrder: text("sort_order"),
+    // OCC + semantic identity. SCHEMA_VERSION 11.
+    // semantic_key = thread_id|node_id|phase_type (dup suffix allowed for legacy)
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_plot_thread_links_thread").on(table.threadId),
     index("idx_plot_thread_links_node").on(table.nodeId),
+    index("idx_plot_thread_links_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -1457,6 +1464,10 @@ export const plotThreadBranches = sqliteTable(
       .references(() => treeNodes.id, { onDelete: "cascade" }),
     // 'branch' | 'merge'
     kind: text("kind").notNull(),
+    // OCC + semantic identity. SCHEMA_VERSION 11.
+    // semantic_key = from|to|at_node|kind
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
@@ -1464,6 +1475,7 @@ export const plotThreadBranches = sqliteTable(
     index("idx_plot_thread_branches_project").on(table.projectId),
     index("idx_plot_thread_branches_from").on(table.fromThreadId),
     index("idx_plot_thread_branches_to").on(table.toThreadId),
+    index("idx_plot_thread_branches_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -2311,7 +2323,7 @@ export const narrativeCommitJournals = sqliteTable(
   },
 );
 
-/** Temporal Constraint Graph nodes (SCHEMA_VERSION 9). */
+/** Temporal Constraint Graph nodes (SCHEMA_VERSION 10). */
 export const narrativeTemporalNodes = sqliteTable(
   "narrative_temporal_nodes",
   {

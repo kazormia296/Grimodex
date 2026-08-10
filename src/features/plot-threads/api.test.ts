@@ -22,6 +22,7 @@ describe("plot-threads api normalization", () => {
       sortOrder: "a0",
       startNodeId: null,
       endNodeId: null,
+      version: 0,
       createdAt: "2026-06-22T00:00:00Z",
       updatedAt: "2026-06-22T00:00:00Z",
     });
@@ -85,6 +86,8 @@ describe("plot-threads api normalization", () => {
       toThreadId: "t2",
       atNodeId: "s1",
       kind: "merge",
+      semanticKey: "",
+      version: 0,
       createdAt: "",
       updatedAt: "",
     });

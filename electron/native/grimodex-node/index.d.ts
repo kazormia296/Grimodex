@@ -744,7 +744,7 @@ export declare class Backend {
   narrativeExtractionApplyCommit(payload: any): Promise<string>;
   narrativeExtractionGetCommitStatus(payload: any): Promise<string>;
   narrativeExtractionUndoCommit(payload: any): Promise<string>;
-  narrativeExtractionRedoCommit(payload: any): Promise<string>;>>>>>>> origin/cursor/fix-504-hold-review-f1c4
+  narrativeExtractionRedoCommit(payload: any): Promise<string>;
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(
     projectId: string,

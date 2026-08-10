@@ -42,6 +42,11 @@ export interface PlotThreadRow {
   /** 束ねレイアウトの生存スパン明示指定（NULL=最初/最後のマーカーから導出）。 */
   startNodeId: string | null;
   endNodeId: string | null;
+  /**
+   * OCC generation (SCHEMA_VERSION 10). Optional on in-memory fixtures /
+   * optimistic rows; `normalizeThread` always materializes a number.
+   */
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,6 +58,11 @@ export interface PlotThreadLinkRow {
   phaseType: PlotPhaseType;
   note: string | null;
   sortOrder: string | null;
+  /**
+   * `threadId|nodeId|phaseType`. Optional on fixtures; normalize fills it.
+   */
+  semanticKey?: string;
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -77,6 +87,7 @@ export function normalizeThread(raw: unknown): PlotThreadRow {
       sortOrder: s(r.sortOrder ?? r.sort_order, "a0"),
       startNodeId: nullable(r.startNodeId ?? r.start_node_id),
       endNodeId: nullable(r.endNodeId ?? r.end_node_id),
+      version: Number(r.version ?? 0),
       createdAt: s(r.createdAt ?? r.created_at),
       updatedAt: s(r.updatedAt ?? r.updated_at),
     },
@@ -94,6 +105,11 @@ export function normalizeLink(raw: unknown): PlotThreadLinkRow {
       phaseType: s(r.phaseType ?? r.phase_type, "develop") as PlotPhaseType,
       note: nullable(r.note),
       sortOrder: nullable(r.sortOrder ?? r.sort_order),
+      semanticKey: s(
+        r.semanticKey ?? r.semantic_key,
+        `${s(r.threadId ?? r.thread_id)}|${s(r.nodeId ?? r.node_id)}|${s(r.phaseType ?? r.phase_type, "develop")}`,
+      ),
+      version: Number(r.version ?? 0),
       createdAt: s(r.createdAt ?? r.created_at),
       updatedAt: s(r.updatedAt ?? r.updated_at),
     },
@@ -155,7 +171,7 @@ export async function updatePlotThread(
   id: string,
   patch: Partial<
     Pick<PlotThreadRow, "name" | "color" | "description" | "sortOrder">
-  >,
+  > & { baseVersion?: number },
 ): Promise<PlotThreadRow> {
   if (nativeBackend()) {
     const p: Record<string, unknown> = {};
@@ -163,13 +179,32 @@ export async function updatePlotThread(
     if (patch.color !== undefined) p.color = patch.color;
     if (patch.description !== undefined) p.description = patch.description;
     if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
+    if (patch.baseVersion !== undefined) p.baseVersion = patch.baseVersion;
     return normalizeThread(
       await invoke("plot_thread_update", { id, patch: p }),
     );
   }
+  const [current] = await db
+    .select()
+    .from(plotThreads)
+    .where(eq(plotThreads.id, id));
+  if (!current) throw new Error(`plot thread not found: ${id}`);
+  if (
+    patch.baseVersion !== undefined &&
+    Number(current.version ?? 0) !== patch.baseVersion
+  ) {
+    throw new Error(
+      `PLOT_THREAD_VERSION_MISMATCH: expected ${patch.baseVersion}, found ${current.version}`,
+    );
+  }
+  const { baseVersion: _baseVersion, ...fields } = patch;
   await db
     .update(plotThreads)
-    .set({ ...patch, updatedAt: new Date().toISOString() })
+    .set({
+      ...fields,
+      version: Number(current.version ?? 0) + 1,
+      updatedAt: new Date().toISOString(),
+    })
     .where(eq(plotThreads.id, id));
   const [updated] = await db
     .select()
@@ -321,20 +356,34 @@ export interface PlotThreadBranchRow {
   toThreadId: string;
   atNodeId: string;
   kind: PlotBranchKind;
+  /**
+   * `from|to|at|kind`. Optional on fixtures; normalize fills it.
+   */
+  semanticKey?: string;
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
 
 export function normalizeBranch(raw: unknown): PlotThreadBranchRow {
   const r = (raw ?? {}) as Record<string, unknown>;
+  const fromThreadId = s(r.fromThreadId ?? r.from_thread_id);
+  const toThreadId = s(r.toThreadId ?? r.to_thread_id);
+  const atNodeId = s(r.atNodeId ?? r.at_node_id);
+  const kind = s(r.kind, "branch") as PlotBranchKind;
   return attachCreateResultMetadata(
     {
       id: s(r.id),
       projectId: s(r.projectId ?? r.project_id),
-      fromThreadId: s(r.fromThreadId ?? r.from_thread_id),
-      toThreadId: s(r.toThreadId ?? r.to_thread_id),
-      atNodeId: s(r.atNodeId ?? r.at_node_id),
-      kind: s(r.kind, "branch") as PlotBranchKind,
+      fromThreadId,
+      toThreadId,
+      atNodeId,
+      kind,
+      semanticKey: s(
+        r.semanticKey ?? r.semantic_key,
+        `${fromThreadId}|${toThreadId}|${atNodeId}|${kind}`,
+      ),
+      version: Number(r.version ?? 0),
       createdAt: s(r.createdAt ?? r.created_at),
       updatedAt: s(r.updatedAt ?? r.updated_at),
     },
@@ -566,11 +615,44 @@ export async function updatePlotThreadBranch(
   id: string,
   patch: Partial<
     Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
-  >,
+  > & { baseVersion?: number },
 ): Promise<PlotThreadBranchRow> {
+  // Branch update remains Drizzle until Native CAS IPC exists; OCC version is
+  // still advanced so AI apply / human writers share the same column.
+  const [current] = await db
+    .select()
+    .from(plotThreadBranches)
+    .where(eq(plotThreadBranches.id, id));
+  if (!current) {
+    throw new Error(`plot thread branch not found: ${id}`);
+  }
+  if (
+    patch.baseVersion !== undefined &&
+    Number(current.version ?? 0) !== patch.baseVersion
+  ) {
+    throw new Error(
+      `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${patch.baseVersion}, found ${current.version}`,
+    );
+  }
+  const nextVersion = Number(current.version ?? 0) + 1;
+  const fromThreadId = patch.fromThreadId ?? current.fromThreadId;
+  const toThreadId = patch.toThreadId ?? current.toThreadId;
+  const atNodeId = patch.atNodeId ?? current.atNodeId;
+  const semanticKey = `${fromThreadId}|${toThreadId}|${atNodeId}|${current.kind}`;
   await db
     .update(plotThreadBranches)
-    .set({ ...patch, updatedAt: new Date().toISOString() })
+    .set({
+      ...(patch.fromThreadId !== undefined
+        ? { fromThreadId: patch.fromThreadId }
+        : {}),
+      ...(patch.toThreadId !== undefined
+        ? { toThreadId: patch.toThreadId }
+        : {}),
+      ...(patch.atNodeId !== undefined ? { atNodeId: patch.atNodeId } : {}),
+      semanticKey,
+      version: nextVersion,
+      updatedAt: new Date().toISOString(),
+    })
     .where(eq(plotThreadBranches.id, id));
   const [updated] = await db
     .select()
@@ -582,7 +664,22 @@ export async function updatePlotThreadBranch(
   return normalizeBranch(updated);
 }
 
-export async function deletePlotThreadBranch(id: string): Promise<void> {
+export async function deletePlotThreadBranch(
+  id: string,
+  options?: { baseVersion?: number },
+): Promise<void> {
+  if (options?.baseVersion !== undefined) {
+    const [current] = await db
+      .select()
+      .from(plotThreadBranches)
+      .where(eq(plotThreadBranches.id, id));
+    if (!current) return;
+    if (Number(current.version ?? 0) !== options.baseVersion) {
+      throw new Error(
+        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${options.baseVersion}, found ${current.version}`,
+      );
+    }
+  }
   await db.delete(plotThreadBranches).where(eq(plotThreadBranches.id, id));
 }
 

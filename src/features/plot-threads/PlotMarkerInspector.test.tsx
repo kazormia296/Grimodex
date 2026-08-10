@@ -25,6 +25,7 @@ const thread: PlotThreadRow = {
   sortOrder: "a0",
   startNodeId: null,
   endNodeId: null,
+  version: 0,
   createdAt: "",
   updatedAt: "",
 };
@@ -35,6 +36,8 @@ const link: PlotThreadLinkRow = {
   phaseType: "introduce",
   note: null,
   sortOrder: null,
+  semanticKey: "",
+  version: 0,
   createdAt: "",
   updatedAt: "",
 };
@@ -161,6 +164,8 @@ describe("PlotMarkerInspector", () => {
           toThreadId: "t1", // l1(t1@s1) が merge の流入先＝アンカー
           atNodeId: "s1",
           kind: "merge",
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },

@@ -1504,7 +1504,11 @@
         "narrative_detail_compose": "Narrative detail compose",
         "narrative_temporal_attach": "Narrative temporal attach",
         "narrative_temporal_synthesize": "Narrative temporal synthesize",
-        "narrative_structured_repair": "Narrative structured repair"
+        "narrative_structured_repair": "Narrative structured repair",
+        "narrative_plot_thread_synthesize": "Narrative plot thread synthesize",
+        "narrative_plot_development_classify": "Narrative plot development classify",
+        "narrative_plot_marker_assign": "Narrative plot marker assign",
+        "narrative_plot_relation_synthesize": "Narrative plot relation synthesize"
       }
     }
   },
@@ -5726,6 +5730,24 @@
       },
       "failed": "Extraction failed",
       "none": "No sub-plots could be extracted."
+    },
+    "reviewExtract": {
+      "button": "Extraction preview",
+      "title": "Plot thread proposal review",
+      "hint": "Review AI-proposed plot thread candidates (preview feature).",
+      "empty": "No proposals awaiting review yet.",
+      "markerCount": "{{n}} marker(s)",
+      "blocked": "Needs review",
+      "binding": {
+        "createNew": "Create new",
+        "bindExisting": "Bind to existing thread",
+        "unresolved": "Multiple candidates, unresolved"
+      },
+      "prominence": {
+        "primary": "Primary",
+        "supporting": "Supporting",
+        "minor": "Minor"
+      }
     },
     "structure": {
       "title": "Structure",

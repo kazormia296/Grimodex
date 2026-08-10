@@ -23,6 +23,10 @@ use super::temporal_nodes::OP_KIND_NODE_ENSURE;
 use super::temporal_operations::{
     OP_KIND_EVENT_METADATA_PATCH, OP_KIND_SCENE_METADATA_PATCH, OP_KIND_STORY_ORDER_MATERIALIZE,
 };
+use super::plot_thread_operations::{
+    OP_KIND_PLOT_BRANCH_CREATE, OP_KIND_PLOT_MARKER_CREATE, OP_KIND_PLOT_THREAD_CREATE,
+    OP_KIND_PLOT_THREAD_PATCH,
+};
 use super::temporal_projections::OP_KIND_PROJECTION_RECORD;
 
 pub(crate) const OP_KIND_EVENT_CREATE: &str = "chronicle.event.create";
@@ -126,6 +130,7 @@ pub(crate) struct CodexRelationCreateTxResult {
 #[derive(Debug, Clone)]
 pub(crate) struct CommitMap {
     bindings: HashMap<String, CodexEntityBinding>,
+    plot_thread_bindings: HashMap<String, PlotThreadBinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,10 +140,18 @@ pub(crate) struct CodexEntityBinding {
     pub source: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PlotThreadBinding {
+    pub hypothesis_id: String,
+    pub plot_thread_id: String,
+    pub source: String,
+}
+
 impl CommitMap {
     pub fn new() -> Self {
         Self {
             bindings: HashMap::new(),
+            plot_thread_bindings: HashMap::new(),
         }
     }
 
@@ -160,10 +173,23 @@ impl CommitMap {
         Ok(())
     }
 
+    pub fn insert_plot_thread_binding(&mut self, binding: PlotThreadBinding) {
+        self.plot_thread_bindings
+            .insert(binding.hypothesis_id.clone(), binding);
+    }
+
     pub fn resolve(&self, narrative_entity_id: &str) -> anyhow::Result<&CodexEntityBinding> {
         self.bindings.get(narrative_entity_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "NEX_COMMIT_MAP_MISSING: narrative entity '{narrative_entity_id}' has no CommitMap binding"
+            )
+        })
+    }
+
+    pub fn resolve_plot_thread(&self, hypothesis_id: &str) -> anyhow::Result<&PlotThreadBinding> {
+        self.plot_thread_bindings.get(hypothesis_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_COMMIT_MAP_MISSING: plot hypothesis '{hypothesis_id}' has no CommitMap binding"
             )
         })
     }
@@ -180,6 +206,18 @@ impl CommitMap {
                 }),
             );
         }
+        let mut plot_obj = serde_json::Map::new();
+        for (hypothesis_id, binding) in &self.plot_thread_bindings {
+            plot_obj.insert(
+                hypothesis_id.clone(),
+                json!({
+                    "hypothesisId": binding.hypothesis_id,
+                    "plotThreadId": binding.plot_thread_id,
+                    "source": binding.source,
+                }),
+            );
+        }
+        obj.insert("plotThreadBindings".to_string(), Value::Object(plot_obj));
         Value::Object(obj)
     }
 }
@@ -203,6 +241,10 @@ pub(crate) fn ensure_operation_kind(kind: &str) -> anyhow::Result<()> {
                 | OP_KIND_EVENT_METADATA_PATCH
                 | OP_KIND_STORY_ORDER_MATERIALIZE
                 | OP_KIND_PROJECTION_RECORD
+                | OP_KIND_PLOT_THREAD_CREATE
+                | OP_KIND_PLOT_THREAD_PATCH
+                | OP_KIND_PLOT_MARKER_CREATE
+                | OP_KIND_PLOT_BRANCH_CREATE
         ),
         "unsupported commit operation kind: {kind}"
     );

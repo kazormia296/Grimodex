@@ -5,6 +5,7 @@ import {
   ChevronRight,
   ClipboardCopy,
   Check,
+  ListChecks,
   Sparkles,
   X,
 } from "lucide-react";
@@ -30,6 +31,7 @@ import {
 import { buildPlotThreadsMarkdown } from "./plotThreadMarkdown";
 import { PlotThreadAnalysisRow } from "./PlotThreadAnalysisRow";
 import { PlotThreadExtractDialog } from "./PlotThreadExtractDialog";
+import { PlotThreadExtractionDialog } from "./extraction-ui/PlotThreadExtractionDialog";
 
 /**
  * Timeline 下部の構造分析ドロワー（読み取り専用）。
@@ -51,6 +53,7 @@ export function PlotStructureAnalysis() {
   const [collapsed, setCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
+  const [reviewExtractOpen, setReviewExtractOpen] = useState(false);
 
   const phaseLabels = useMemo(() => {
     const m = {} as Record<PlotPhaseType, string>;
@@ -184,6 +187,18 @@ export function PlotStructureAnalysis() {
             {t("plotThread.extract.button", "抽出")}
           </button>
           <button
+            data-testid="plot-structure-review-extract"
+            onClick={() => setReviewExtractOpen(true)}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent/50 focus:outline-none"
+            title={t(
+              "plotThread.reviewExtract.title",
+              "プロットスレッド候補レビュー",
+            )}
+          >
+            <ListChecks className="h-3.5 w-3.5" aria-hidden />
+            {t("plotThread.reviewExtract.button", "抽出プレビュー")}
+          </button>
+          <button
             data-testid="plot-structure-copy"
             onClick={handleCopy}
             disabled={threads.length === 0}
@@ -234,6 +249,14 @@ export function PlotStructureAnalysis() {
       <PlotThreadExtractDialog
         open={extractOpen}
         onOpenChange={setExtractOpen}
+      />
+      <PlotThreadExtractionDialog
+        open={reviewExtractOpen}
+        onOpenChange={setReviewExtractOpen}
+        phaseLabel={(p) => phaseLabels[p]}
+        documentLabel={(documentRef) =>
+          maps.titleByNodeId.get(documentRef) ?? documentRef
+        }
       />
     </div>
   );
