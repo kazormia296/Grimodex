@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { isSetupEvaluationStale } from "./staleness";
+import {
+  describeSetupStaleReason,
+  isSetupEvaluationStale,
+  isSetupEvaluationStaleCompat,
+} from "./staleness";
 import type { ForeshadowSetupRow } from "./types";
 
 function makeSetup(
@@ -96,5 +100,59 @@ describe("isSetupEvaluationStale", () => {
     expect(
       isSetupEvaluationStale(setup, "2026-01-01T00:00:00.000Z", undefined),
     ).toBe(false);
+  });
+});
+
+describe("isSetupEvaluationStaleCompat", () => {
+  it("matches isSetupEvaluationStale for the same inputs", () => {
+    const setup = makeSetup({
+      lastEvaluatedAt: new Date("2026-01-10T00:00:00.000Z"),
+    });
+    expect(
+      isSetupEvaluationStaleCompat(setup, "2026-01-01T00:00:00.000Z"),
+    ).toBe(isSetupEvaluationStale(setup, "2026-01-01T00:00:00.000Z"));
+    expect(
+      isSetupEvaluationStaleCompat(setup, "2026-01-15T00:00:00.000Z"),
+    ).toBe(isSetupEvaluationStale(setup, "2026-01-15T00:00:00.000Z"));
+  });
+});
+
+describe("describeSetupStaleReason", () => {
+  it("returns never-evaluated when lastEvaluatedAt is null", () => {
+    const setup = makeSetup({ lastEvaluatedAt: null });
+    expect(describeSetupStaleReason(setup, "2026-01-01T00:00:00.000Z")).toBe(
+      "never-evaluated",
+    );
+  });
+
+  it("returns scene-updated when the scene changed after evaluation", () => {
+    const setup = makeSetup({
+      lastEvaluatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    expect(describeSetupStaleReason(setup, "2026-01-02T00:00:00.000Z")).toBe(
+      "scene-updated",
+    );
+  });
+
+  it("returns codex-link-dirty when a linked codex changed after evaluation", () => {
+    const setup = makeSetup({
+      lastEvaluatedAt: new Date("2026-01-10T00:00:00.000Z"),
+    });
+    expect(
+      describeSetupStaleReason(
+        setup,
+        "2026-01-01T00:00:00.000Z",
+        new Date("2026-01-15T00:00:00.000Z"),
+      ),
+    ).toBe("codex-link-dirty");
+  });
+
+  it("returns fresh when nothing changed since evaluation", () => {
+    const setup = makeSetup({
+      lastEvaluatedAt: new Date("2026-01-10T00:00:00.000Z"),
+    });
+    expect(describeSetupStaleReason(setup, "2026-01-01T00:00:00.000Z")).toBe(
+      "fresh",
+    );
   });
 });

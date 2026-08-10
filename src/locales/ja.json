@@ -6294,5 +6294,21 @@
       "titleRequired": "タイトルを入力してください",
       "contentRequired": "本文を入力してください"
     }
+  },
+  "narrativeMaintenance": {
+    "title": "構造の健全性",
+    "shortLabel": "健全性",
+    "openPreview": "構造の健全性（プレビュー）",
+    "previewNote": "プレビュー: Change Feed 確定後に実数へ切り替わります。既定は決定的 Maintenance のみで、AI は自動適用しません。",
+    "modeLabel": "モード",
+    "principles": "変更検知・再解析・既存構造の書き換えは別段階です。Reanchor 候補は決定的に計算しますが自動適用しません。",
+    "health": {
+      "fresh": "正常",
+      "reanchorable": "位置の再確認が必要",
+      "contentStale": "本文が変更された",
+      "contextStale": "周辺文脈が変更された",
+      "coverageStale": "分析範囲が変わった",
+      "sourceMissing": "根拠が見つからない"
+    }
   }
 }

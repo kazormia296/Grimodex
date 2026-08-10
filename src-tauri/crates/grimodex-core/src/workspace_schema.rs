@@ -432,7 +432,11 @@ pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
 /// Version 10 adds Plot Thread OCC (`plot_threads.version`, marker/branch
 /// `version` + `semantic_key`) on top of every v9 invariant.
 pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 10 && SCHEMA_VERSION != 11 && SCHEMA_VERSION != 12 && SCHEMA_VERSION != 13
+    if SCHEMA_VERSION != 10
+        && SCHEMA_VERSION != 11
+        && SCHEMA_VERSION != 12
+        && SCHEMA_VERSION != 13
+        && SCHEMA_VERSION != 14
         || !has_v9_checkpoint_invariants(conn)?
     {
         return Ok(false);
@@ -533,14 +537,29 @@ pub fn has_v12_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     .all(|name| columns.iter().any(|column| column.name == *name)))
 }
 
-/// Whether the physical schema satisfies the current v13 checkpoint. Version
-/// 13 adds durable Import Capture inventories, blobs, decoded resources, and
-/// generic extraction schema revisions.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+/// Whether the physical schema satisfies the historical v13 checkpoint.
+/// Version 13 adds durable Import Capture inventories, blobs, decoded
+/// resources, and generic extraction schema revisions on top of every v12
+/// invariant.
+pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     Ok(
-        SCHEMA_VERSION == 13
+        (SCHEMA_VERSION == 13 || SCHEMA_VERSION == 14)
             && has_v12_checkpoint_invariants(conn)?
             && table_exists(conn, "import_captures")?,
+    )
+}
+
+/// Whether the physical schema satisfies the current v14 checkpoint. Version
+/// 14 adds the Narrative Maintenance Change Feed foundation (ordered change
+/// transactions/events, consumer cursors, change sets, dependency edges,
+/// freshness records, application contribution/health tracking, and
+/// maintenance resolution/compatibility history) on top of every v13
+/// invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    Ok(
+        SCHEMA_VERSION == 14
+            && has_v13_checkpoint_invariants(conn)?
+            && table_exists(conn, "narrative_change_transactions")?,
     )
 }
 

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 13,
+  "schemaVersion": 14,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6096,6 +6096,183 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE map_stickies ( id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE, title TEXT, body TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}', preview_text TEXT, palette_id TEXT NOT NULL DEFAULT 'post-it-playful', color_slot INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0), ai_branch_id TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL, -- AI由来フラグ。ai_branch_id は「現在の所属 branch」(採用で NULL 化)、 -- こちらは「AI が生成した付箋か」という出自で採用後も保持する。 ai_derived INTEGER NOT NULL DEFAULT 0, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "narrative_application_contributions": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "baseline_sequence": {
+          "ordinal": 10,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "committed_value_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_digest": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "health": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "maintenance_ownership": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "proposal_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "role": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_path": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_application_contributions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, application_id TEXT NOT NULL, proposal_id TEXT NOT NULL, revision_id TEXT, target_json TEXT NOT NULL, target_path TEXT NOT NULL, role TEXT NOT NULL, committed_value_digest TEXT, dependency_digest TEXT NOT NULL, baseline_sequence INTEGER NOT NULL, maintenance_ownership TEXT NOT NULL, health TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "narrative_application_health": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evaluated_at_sequence": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "health": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "summary_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "application_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_application_health ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, application_id TEXT NOT NULL, health TEXT NOT NULL, summary_json TEXT NOT NULL, evaluated_at_sequence INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id, application_id) )"
+    },
     "narrative_apply_commits": {
       "kind": "table",
       "columns": {
@@ -6270,6 +6447,323 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_apply_operations ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, operation_index INTEGER NOT NULL, operation_kind TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', result_entity_kind TEXT, result_entity_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL )"
     },
+    "narrative_change_cursors": {
+      "kind": "table",
+      "columns": {
+        "acknowledged_through_sequence": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "consumer_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "last_error": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "lease_expires_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "lease_owner": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "updated_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_change_cursors ( project_id TEXT NOT NULL, consumer_id TEXT NOT NULL, acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, last_error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (project_id, consumer_id) )"
+    },
+    "narrative_change_events": {
+      "kind": "table",
+      "columns": {
+        "after_digest": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "after_version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "before_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "before_version": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "cause_json": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "change_kind": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "changed_paths_json": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "event_ordinal": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "object_key_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "occurred_at": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_sequence": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "structural_impact_json": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "text_impact_json": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "transaction_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_change_transactions",
+          "from": "transaction_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "project_sequence",
+            "event_ordinal"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_change_events ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, transaction_id TEXT NOT NULL REFERENCES narrative_change_transactions(id) ON DELETE CASCADE, project_sequence INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, object_key_json TEXT NOT NULL, change_kind TEXT NOT NULL, before_version INTEGER, before_digest TEXT, after_version INTEGER, after_digest TEXT, changed_paths_json TEXT NOT NULL, text_impact_json TEXT, structural_impact_json TEXT, cause_json TEXT NOT NULL, occurred_at TEXT NOT NULL, UNIQUE(project_id, project_sequence, event_ordinal) )"
+    },
+    "narrative_change_sets": {
+      "kind": "table",
+      "columns": {
+        "affected_objects_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "causes_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "event_ids_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "from_sequence_exclusive": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "through_sequence_inclusive": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_change_sets ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, from_sequence_exclusive INTEGER NOT NULL, through_sequence_inclusive INTEGER NOT NULL, event_ids_json TEXT NOT NULL, affected_objects_json TEXT NOT NULL, causes_json TEXT NOT NULL, digest TEXT NOT NULL, created_at TEXT NOT NULL )"
+    },
+    "narrative_change_transactions": {
+      "kind": "table",
+      "columns": {
+        "cause_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_sequence": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "project_sequence"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_change_transactions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, project_sequence INTEGER NOT NULL, cause_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(project_id, project_sequence) )"
+    },
     "narrative_commit_journals": {
       "kind": "table",
       "columns": {
@@ -6330,6 +6824,142 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_commit_journals ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, before_json TEXT, after_json TEXT, created_at TEXT NOT NULL )"
+    },
+    "narrative_component_compatibility": {
+      "kind": "table",
+      "columns": {
+        "component_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "from_version": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "impact": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "to_version": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "component_id",
+            "from_version",
+            "to_version"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_component_compatibility ( id TEXT PRIMARY KEY, component_id TEXT NOT NULL, from_version TEXT NOT NULL, to_version TEXT NOT NULL, impact TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(component_id, from_version, to_version) )"
+    },
+    "narrative_dependency_edges": {
+      "kind": "table",
+      "columns": {
+        "consumer_json": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_by_artifact_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "expected_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "invalidation_policy": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_dependency_edges ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, consumer_json TEXT NOT NULL, source_json TEXT NOT NULL, kind TEXT NOT NULL, expected_json TEXT NOT NULL, invalidation_policy TEXT NOT NULL, created_by_artifact_id TEXT, digest TEXT NOT NULL, created_at TEXT NOT NULL )"
     },
     "narrative_extraction_artifacts": {
       "kind": "table",
@@ -6773,6 +7403,121 @@
       "foreignKeys": [],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_extraction_tasks ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_kind TEXT NOT NULL, status TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT, priority INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
+    },
+    "narrative_freshness_records": {
+      "kind": "table",
+      "columns": {
+        "consumer_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evaluated_at_sequence": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "freshness": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reasons_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "refresh_availability": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "consumer_kind",
+            "consumer_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_freshness_records ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, consumer_kind TEXT NOT NULL, consumer_id TEXT NOT NULL, freshness TEXT NOT NULL, refresh_availability TEXT NOT NULL, reasons_json TEXT NOT NULL, evaluated_at_sequence INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id, consumer_kind, consumer_id) )"
+    },
+    "narrative_maintenance_resolutions": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resolution_json": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_maintenance_resolutions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL, resolution_json TEXT NOT NULL, created_at TEXT NOT NULL )"
     },
     "narrative_proposal_applications": {
       "kind": "table",
@@ -12183,6 +12928,106 @@
         }
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
+    },
+    "idx_narrative_application_contributions_target": {
+      "table": "narrative_application_contributions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "application_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_application_contributions_target ON narrative_application_contributions(project_id, application_id)"
+    },
+    "idx_narrative_application_health_health": {
+      "table": "narrative_application_health",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "health"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_application_health_health ON narrative_application_health(project_id, health)"
+    },
+    "idx_narrative_change_cursors_project": {
+      "table": "narrative_change_cursors",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "consumer_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_change_cursors_project ON narrative_change_cursors(project_id, consumer_id)"
+    },
+    "idx_narrative_change_events_project_seq": {
+      "table": "narrative_change_events",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "project_sequence"
+        },
+        {
+          "ordinal": 2,
+          "column": "event_ordinal"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_change_events_project_seq ON narrative_change_events(project_id, project_sequence, event_ordinal)"
+    },
+    "idx_narrative_dependency_edges_project_kind": {
+      "table": "narrative_dependency_edges",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "kind"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_edges_project_kind ON narrative_dependency_edges(project_id, kind)"
+    },
+    "idx_narrative_freshness_records_freshness": {
+      "table": "narrative_freshness_records",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "freshness"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_freshness_records_freshness ON narrative_freshness_records(project_id, freshness)"
     },
     "idx_narrative_temporal_constraints_project": {
       "table": "narrative_temporal_constraints",

@@ -1,5 +1,6 @@
 //! Persistent run runtime for Narrative Extraction (Chronicle + Codex Vertical Slice).
 
+pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
 mod codex_snapshots;
@@ -25,6 +26,9 @@ mod temporal_snapshots;
 mod temporal_undo;
 mod undo;
 
+pub use change_feed::{
+    AppendChangeEventInput, AppendChangeTransactionInput, ChangeEventRecord,
+};
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ClaimTaskPayload,
     CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
@@ -134,4 +138,28 @@ pub fn narrative_extraction_redo_commit(
     payload: UndoCommitPayload,
 ) -> anyhow::Result<Value> {
     undo::narrative_extraction_redo_commit(db, payload)
+}
+
+pub fn narrative_change_feed_append_transaction(
+    db: &Database,
+    input: AppendChangeTransactionInput,
+) -> anyhow::Result<Value> {
+    change_feed::append_change_transaction(db, input)
+}
+
+pub fn narrative_change_feed_get_changes_since(
+    db: &Database,
+    project_id: String,
+    after_sequence: i64,
+) -> anyhow::Result<Vec<ChangeEventRecord>> {
+    change_feed::get_changes_since(db, &project_id, after_sequence)
+}
+
+pub fn narrative_change_feed_acknowledge_cursor(
+    db: &Database,
+    project_id: String,
+    consumer_id: String,
+    through_sequence: i64,
+) -> anyhow::Result<Value> {
+    change_feed::acknowledge_cursor(db, &project_id, &consumer_id, through_sequence)
 }

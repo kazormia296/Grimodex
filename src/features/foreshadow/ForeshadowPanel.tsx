@@ -29,6 +29,8 @@ import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { isSetupEvaluationStale } from "./staleness";
 import { safeParseAiEvaluation } from "./types";
 import { setSetupStrength, getSceneForeshadowInfo } from "./api";
+import { isNarrativeMaintenancePipelinePreferred } from "@/features/narrative-extraction/maintenance/maintenanceFlags";
+import { StructureHealthPanel } from "@/features/narrative-extraction/maintenance-ui/StructureHealthPanel";
 import type {
   DerivedLabel,
   ForeshadowLoadBearing,
@@ -280,6 +282,7 @@ export function ForeshadowPanel() {
     adoptInsertedNewSetup,
   } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [structureHealthOpen, setStructureHealthOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<ForeshadowWithLabel | null>(
     null,
   );
@@ -409,17 +412,37 @@ export function ForeshadowPanel() {
         panelId="foreshadow"
         count={items.length > 0 ? `(${items.length})` : undefined}
         actions={
-          <button
-            type="button"
-            data-testid="foreshadow-new-button"
-            onClick={() => setDialogOpen(true)}
-            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            title={t("foreshadow.panel.newButton")}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-0.5">
+            {isNarrativeMaintenancePipelinePreferred() && (
+              <button
+                type="button"
+                data-testid="structure-health-preview-button"
+                onClick={() => setStructureHealthOpen(true)}
+                className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                title={t(
+                  "narrativeMaintenance.openPreview",
+                  "構造の健全性（プレビュー）",
+                )}
+              >
+                {t("narrativeMaintenance.shortLabel", "健全性")}
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="foreshadow-new-button"
+              onClick={() => setDialogOpen(true)}
+              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              title={t("foreshadow.panel.newButton")}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </div>
         }
       />
+
+      {structureHealthOpen && (
+        <StructureHealthPanel onClose={() => setStructureHealthOpen(false)} />
+      )}
 
       {/* Tab switcher */}
       <div className="flex border-b border-border">

@@ -2871,6 +2871,140 @@ impl Database {
                 ON generic_extraction_schemas(digest);",
         )?;
 
+        // SCHEMA_VERSION 14: Narrative Maintenance Change Feed foundation. An
+        // ordered, per-project change transaction/event log plus consumer
+        // cursors, change-set batching, dependency edges, freshness records,
+        // application contribution/health tracking, and maintenance
+        // resolution/compatibility history.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_change_transactions (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL,
+                project_sequence  INTEGER NOT NULL,
+                cause_json        TEXT NOT NULL,
+                created_at        TEXT NOT NULL,
+                UNIQUE(project_id, project_sequence)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_events (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                transaction_id         TEXT NOT NULL REFERENCES narrative_change_transactions(id) ON DELETE CASCADE,
+                project_sequence       INTEGER NOT NULL,
+                event_ordinal          INTEGER NOT NULL,
+                object_key_json        TEXT NOT NULL,
+                change_kind            TEXT NOT NULL,
+                before_version         INTEGER,
+                before_digest          TEXT,
+                after_version          INTEGER,
+                after_digest           TEXT,
+                changed_paths_json     TEXT NOT NULL,
+                text_impact_json       TEXT,
+                structural_impact_json TEXT,
+                cause_json             TEXT NOT NULL,
+                occurred_at            TEXT NOT NULL,
+                UNIQUE(project_id, project_sequence, event_ordinal)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_cursors (
+                project_id                    TEXT NOT NULL,
+                consumer_id                   TEXT NOT NULL,
+                acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0,
+                lease_owner                   TEXT,
+                lease_expires_at              TEXT,
+                last_error                    TEXT,
+                updated_at                    TEXT NOT NULL,
+                PRIMARY KEY (project_id, consumer_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_sets (
+                id                         TEXT PRIMARY KEY,
+                project_id                 TEXT NOT NULL,
+                from_sequence_exclusive    INTEGER NOT NULL,
+                through_sequence_inclusive INTEGER NOT NULL,
+                event_ids_json             TEXT NOT NULL,
+                affected_objects_json      TEXT NOT NULL,
+                causes_json                TEXT NOT NULL,
+                digest                     TEXT NOT NULL,
+                created_at                 TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_edges (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                consumer_json          TEXT NOT NULL,
+                source_json            TEXT NOT NULL,
+                kind                   TEXT NOT NULL,
+                expected_json          TEXT NOT NULL,
+                invalidation_policy    TEXT NOT NULL,
+                created_by_artifact_id TEXT,
+                digest                 TEXT NOT NULL,
+                created_at             TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_freshness_records (
+                id                    TEXT PRIMARY KEY,
+                project_id            TEXT NOT NULL,
+                consumer_kind         TEXT NOT NULL,
+                consumer_id           TEXT NOT NULL,
+                freshness             TEXT NOT NULL,
+                refresh_availability  TEXT NOT NULL,
+                reasons_json          TEXT NOT NULL,
+                evaluated_at_sequence INTEGER NOT NULL,
+                updated_at            TEXT NOT NULL,
+                UNIQUE(project_id, consumer_kind, consumer_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_application_contributions (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                application_id         TEXT NOT NULL,
+                proposal_id            TEXT NOT NULL,
+                revision_id            TEXT,
+                target_json            TEXT NOT NULL,
+                target_path            TEXT NOT NULL,
+                role                   TEXT NOT NULL,
+                committed_value_digest TEXT,
+                dependency_digest      TEXT NOT NULL,
+                baseline_sequence      INTEGER NOT NULL,
+                maintenance_ownership  TEXT NOT NULL,
+                health                 TEXT NOT NULL,
+                created_at             TEXT NOT NULL,
+                updated_at             TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_application_health (
+                id                    TEXT PRIMARY KEY,
+                project_id            TEXT NOT NULL,
+                application_id        TEXT NOT NULL,
+                health                TEXT NOT NULL,
+                summary_json          TEXT NOT NULL,
+                evaluated_at_sequence INTEGER NOT NULL,
+                updated_at            TEXT NOT NULL,
+                UNIQUE(project_id, application_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_resolutions (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL,
+                resolution_json TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_component_compatibility (
+                id           TEXT PRIMARY KEY,
+                component_id TEXT NOT NULL,
+                from_version TEXT NOT NULL,
+                to_version   TEXT NOT NULL,
+                impact       TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                UNIQUE(component_id, from_version, to_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_events_project_seq
+                ON narrative_change_events(project_id, project_sequence, event_ordinal);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_project_kind
+                ON narrative_dependency_edges(project_id, kind);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_target
+                ON narrative_application_contributions(project_id, application_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_health_health
+                ON narrative_application_health(project_id, health);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_cursors_project
+                ON narrative_change_cursors(project_id, consumer_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_freshness_records_freshness
+                ON narrative_freshness_records(project_id, freshness);",
+        )?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a

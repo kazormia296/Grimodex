@@ -2584,6 +2584,229 @@ export const genericExtractionSchemas = sqliteTable(
   ],
 );
 
+// =========================================================================
+// Narrative Maintenance Change Feed foundation: an ordered, per-project
+// change transaction/event log plus consumer cursors, change-set batching,
+// dependency edges, freshness records, application contribution/health
+// tracking, and maintenance resolution/compatibility history. Physical DDL
+// is mirrored in migrate.rs (SCHEMA_VERSION 14).
+// =========================================================================
+export const narrativeChangeTransactions = sqliteTable(
+  "narrative_change_transactions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    projectSequence: integer("project_sequence").notNull(),
+    causeJson: text("cause_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_narrative_change_transactions_2").on(
+      table.projectId,
+      table.projectSequence,
+    ),
+  ],
+);
+
+export const narrativeChangeEvents = sqliteTable(
+  "narrative_change_events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    transactionId: text("transaction_id")
+      .notNull()
+      .references(() => narrativeChangeTransactions.id, {
+        onDelete: "cascade",
+      }),
+    projectSequence: integer("project_sequence").notNull(),
+    eventOrdinal: integer("event_ordinal").notNull(),
+    objectKeyJson: text("object_key_json").notNull(),
+    changeKind: text("change_kind").notNull(),
+    beforeVersion: integer("before_version"),
+    beforeDigest: text("before_digest"),
+    afterVersion: integer("after_version"),
+    afterDigest: text("after_digest"),
+    changedPathsJson: text("changed_paths_json").notNull(),
+    textImpactJson: text("text_impact_json"),
+    structuralImpactJson: text("structural_impact_json"),
+    causeJson: text("cause_json").notNull(),
+    occurredAt: text("occurred_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_narrative_change_events_2").on(
+      table.projectId,
+      table.projectSequence,
+      table.eventOrdinal,
+    ),
+    index("idx_narrative_change_events_project_seq").on(
+      table.projectId,
+      table.projectSequence,
+      table.eventOrdinal,
+    ),
+  ],
+);
+
+export const narrativeChangeCursors = sqliteTable(
+  "narrative_change_cursors",
+  {
+    projectId: text("project_id").notNull(),
+    consumerId: text("consumer_id").notNull(),
+    acknowledgedThroughSequence: integer("acknowledged_through_sequence")
+      .notNull()
+      .default(0),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    lastError: text("last_error"),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.consumerId] }),
+    index("idx_narrative_change_cursors_project").on(
+      table.projectId,
+      table.consumerId,
+    ),
+  ],
+);
+
+export const narrativeChangeSets = sqliteTable("narrative_change_sets", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  fromSequenceExclusive: integer("from_sequence_exclusive").notNull(),
+  throughSequenceInclusive: integer("through_sequence_inclusive").notNull(),
+  eventIdsJson: text("event_ids_json").notNull(),
+  affectedObjectsJson: text("affected_objects_json").notNull(),
+  causesJson: text("causes_json").notNull(),
+  digest: text("digest").notNull(),
+  createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+});
+
+export const narrativeDependencyEdges = sqliteTable(
+  "narrative_dependency_edges",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    consumerJson: text("consumer_json").notNull(),
+    sourceJson: text("source_json").notNull(),
+    kind: text("kind").notNull(),
+    expectedJson: text("expected_json").notNull(),
+    invalidationPolicy: text("invalidation_policy").notNull(),
+    createdByArtifactId: text("created_by_artifact_id"),
+    digest: text("digest").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_narrative_dependency_edges_project_kind").on(
+      table.projectId,
+      table.kind,
+    ),
+  ],
+);
+
+export const narrativeFreshnessRecords = sqliteTable(
+  "narrative_freshness_records",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerId: text("consumer_id").notNull(),
+    freshness: text("freshness").notNull(),
+    refreshAvailability: text("refresh_availability").notNull(),
+    reasonsJson: text("reasons_json").notNull(),
+    evaluatedAtSequence: integer("evaluated_at_sequence").notNull(),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_narrative_freshness_records_2").on(
+      table.projectId,
+      table.consumerKind,
+      table.consumerId,
+    ),
+    index("idx_narrative_freshness_records_freshness").on(
+      table.projectId,
+      table.freshness,
+    ),
+  ],
+);
+
+export const narrativeApplicationContributions = sqliteTable(
+  "narrative_application_contributions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    applicationId: text("application_id").notNull(),
+    proposalId: text("proposal_id").notNull(),
+    revisionId: text("revision_id"),
+    targetJson: text("target_json").notNull(),
+    targetPath: text("target_path").notNull(),
+    role: text("role").notNull(),
+    committedValueDigest: text("committed_value_digest"),
+    dependencyDigest: text("dependency_digest").notNull(),
+    baselineSequence: integer("baseline_sequence").notNull(),
+    maintenanceOwnership: text("maintenance_ownership").notNull(),
+    health: text("health").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_narrative_application_contributions_target").on(
+      table.projectId,
+      table.applicationId,
+    ),
+  ],
+);
+
+export const narrativeApplicationHealth = sqliteTable(
+  "narrative_application_health",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    applicationId: text("application_id").notNull(),
+    health: text("health").notNull(),
+    summaryJson: text("summary_json").notNull(),
+    evaluatedAtSequence: integer("evaluated_at_sequence").notNull(),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_narrative_application_health_2").on(
+      table.projectId,
+      table.applicationId,
+    ),
+    index("idx_narrative_application_health_health").on(
+      table.projectId,
+      table.health,
+    ),
+  ],
+);
+
+export const narrativeMaintenanceResolutions = sqliteTable(
+  "narrative_maintenance_resolutions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    resolutionJson: text("resolution_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+);
+
+export const narrativeComponentCompatibility = sqliteTable(
+  "narrative_component_compatibility",
+  {
+    id: text("id").primaryKey(),
+    componentId: text("component_id").notNull(),
+    fromVersion: text("from_version").notNull(),
+    toVersion: text("to_version").notNull(),
+    impact: text("impact").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_narrative_component_compatibility_2").on(
+      table.componentId,
+      table.fromVersion,
+      table.toVersion,
+    ),
+  ],
+);
+
 /** Temporal Constraint Graph nodes (SCHEMA_VERSION 9). */
 export const narrativeTemporalNodes = sqliteTable(
   "narrative_temporal_nodes",
