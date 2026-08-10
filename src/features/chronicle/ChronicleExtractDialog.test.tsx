@@ -28,6 +28,8 @@ vi.mock("@/features/editor/editorSaveRegistry", () => editorMocks);
 
 const treeApiMocks = vi.hoisted(() => ({
   loadSceneContents: vi.fn(),
+  listNodes: vi.fn(),
+  loadProjectNarrativeSourceRows: vi.fn(),
 }));
 vi.mock("@/features/tree/api", () => treeApiMocks);
 
@@ -153,7 +155,12 @@ function seedProjection(
     openRevision: SCOPE_A.openRevision,
     proposalSetId: "proposal-set-1",
     status: "completed",
-    coverage: { mode: "complete", windowCount: 1, completedWindows: 1, gaps: [] },
+    coverage: {
+      mode: "complete",
+      windowCount: 1,
+      completedWindows: 1,
+      gaps: [],
+    },
     taskCounts: {
       queued: 0,
       running: 0,
@@ -229,7 +236,9 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
 
     await waitFor(() =>
-      expect(extractionMocks.applyChronicleExtractionReview).toHaveBeenCalledWith(
+      expect(
+        extractionMocks.applyChronicleExtractionReview,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "project-a",
         }),
@@ -256,7 +265,9 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-    expect(extractionMocks.applyChronicleExtractionReview).not.toHaveBeenCalled();
+    expect(
+      extractionMocks.applyChronicleExtractionReview,
+    ).not.toHaveBeenCalled();
     expect(toastMocks.success).not.toHaveBeenCalled();
   });
 
@@ -295,7 +306,9 @@ describe("ChronicleExtractDialog run-path cutover", () => {
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(screen.queryByText("抽出候補")).toBeNull();
-    expect(extractionMocks.applyChronicleExtractionReview).not.toHaveBeenCalled();
+    expect(
+      extractionMocks.applyChronicleExtractionReview,
+    ).not.toHaveBeenCalled();
   });
 
   it("非アクティブ化するとPortal上のDialogも閉じる", async () => {
