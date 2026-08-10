@@ -238,6 +238,7 @@ fn build_apply_payload(
         applications,
         expected_tail_ordinal: None,
         entity_bindings: vec![],
+        expected_calendar_version: None,
     }
 }
 
@@ -685,6 +686,7 @@ fn apply_commit_creates_three_events_atomically() {
             applications: payload.applications.clone(),
             expected_tail_ordinal: None,
             entity_bindings: vec![],
+            expected_calendar_version: None,
         },
     )
     .expect("prepare");

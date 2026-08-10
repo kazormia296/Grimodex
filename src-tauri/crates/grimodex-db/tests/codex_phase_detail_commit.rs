@@ -151,6 +151,7 @@ fn build_apply(
         applications,
         expected_tail_ordinal: None,
         entity_bindings,
+        expected_calendar_version: None,
     }
 }
 
