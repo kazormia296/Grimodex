@@ -432,7 +432,9 @@ pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
 /// Version 10 adds Plot Thread OCC (`plot_threads.version`, marker/branch
 /// `version` + `semantic_key`) on top of every v9 invariant.
 pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 10 && SCHEMA_VERSION != 11 || !has_v9_checkpoint_invariants(conn)? {
+    if SCHEMA_VERSION != 10 && SCHEMA_VERSION != 11 && SCHEMA_VERSION != 12
+        || !has_v9_checkpoint_invariants(conn)?
+    {
         return Ok(false);
     }
     let threads = table_columns(conn, "plot_threads")?;
@@ -447,10 +449,10 @@ pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     )
 }
 
-/// Whether the physical schema satisfies the current v11 checkpoint. Version
+/// Whether the physical schema satisfies the historical v11 checkpoint. Version
 /// 11 adds root Foreshadow OCC and supports multiple payoffs linked to setups.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 11 || !has_v10_checkpoint_invariants(conn)? {
+pub fn has_v11_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v10_checkpoint_invariants(conn)? {
         return Ok(false);
     }
     for table in ["foreshadows", "foreshadow_setups", "foreshadow_payoffs", "foreshadow_setup_payoff_links"] {
@@ -505,6 +507,30 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
             .iter()
             .all(|name| links.iter().any(|column| column.name == *name)),
     )
+}
+
+/// Whether the physical schema satisfies the current v12 checkpoint. Version
+/// 12 adds durable Import Session and Native import commit persistence.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 12 || !has_v11_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "import_sessions")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "import_sessions")?;
+    Ok([
+        "id",
+        "state",
+        "target_json",
+        "extraction_run_ids_json",
+        "proposal_set_ids_json",
+        "version",
+        "created_at",
+        "updated_at",
+    ]
+    .iter()
+    .all(|name| columns.iter().any(|column| column.name == *name)))
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {

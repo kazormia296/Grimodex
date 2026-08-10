@@ -9,6 +9,7 @@ import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
 import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
 import { NovelImportFlow } from "./flows/NovelImportFlow";
 import { ScanImportFlow } from "./flows/ScanImportFlow";
+import { ImportWizard } from "./wizard/ImportWizard";
 
 interface Props {
   open: boolean;
@@ -51,6 +52,7 @@ export function ImportDialogBody({
   const [flowKey, setFlowKey] = useState(0);
   const [flowBusy, setFlowBusy] = useState(false);
   const [flowFailed, setFlowFailed] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const interactionLocked = flowBusy || flowFailed;
 
   const handleBusyChange = useCallback(
@@ -131,6 +133,26 @@ export function ImportDialogBody({
         {t("import.dialogTitleUnified")}
       </h2>
 
+      <div className="flex shrink-0 justify-end">
+        <button
+          type="button"
+          data-testid="import-wizard-entry"
+          disabled={interactionLocked}
+          onClick={() => setWizardOpen(true)}
+          className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        >
+          新インポート（プレビュー）
+        </button>
+      </div>
+
+      {wizardOpen ? (
+        <ImportWizard
+          onClose={() => {
+            setWizardOpen(false);
+          }}
+        />
+      ) : (
+        <>
       <div
         className="flex shrink-0 flex-wrap gap-1"
         role="tablist"
@@ -210,6 +232,8 @@ export function ImportDialogBody({
           />
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }

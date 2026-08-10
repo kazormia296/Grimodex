@@ -2714,6 +2714,99 @@ impl Database {
                 ON foreshadow_setup_payoff_links(payoff_id);",
         )?;
 
+        // SCHEMA_VERSION 12: Import Session persistence and native import commit
+        // receipts. Scan staging remains independent until import orchestration
+        // is wired through this durable session boundary.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS import_sessions (
+                id                         TEXT PRIMARY KEY,
+                state                      TEXT NOT NULL,
+                adapter_id                 TEXT,
+                adapter_version            TEXT,
+                target_json                TEXT NOT NULL,
+                source_package_digest      TEXT,
+                source_package_ref         TEXT,
+                extraction_run_ids_json    TEXT NOT NULL DEFAULT '[]',
+                proposal_set_ids_json      TEXT NOT NULL DEFAULT '[]',
+                error_message              TEXT,
+                version                    INTEGER NOT NULL DEFAULT 0,
+                created_at                 TEXT NOT NULL,
+                updated_at                 TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_source_packages (
+                id                 TEXT PRIMARY KEY,
+                session_id         TEXT NOT NULL REFERENCES import_sessions(id) ON DELETE CASCADE,
+                digest             TEXT NOT NULL,
+                adapter_id         TEXT NOT NULL,
+                adapter_version    TEXT NOT NULL,
+                package_json       TEXT NOT NULL,
+                created_at         TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_source_mappings (
+                id                      TEXT PRIMARY KEY,
+                source_set_id           TEXT NOT NULL,
+                source_object_key       TEXT NOT NULL,
+                source_object_kind      TEXT NOT NULL,
+                target_kind             TEXT NOT NULL,
+                target_id               TEXT NOT NULL,
+                source_record_digest    TEXT NOT NULL,
+                target_state_digest     TEXT NOT NULL,
+                adapter_id              TEXT NOT NULL,
+                adapter_version         TEXT NOT NULL,
+                first_import_session_id TEXT NOT NULL,
+                last_import_session_id  TEXT NOT NULL,
+                status                  TEXT NOT NULL DEFAULT 'active',
+                version                 INTEGER NOT NULL DEFAULT 0,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_source_baselines (
+                mapping_id              TEXT PRIMARY KEY REFERENCES import_source_mappings(id) ON DELETE CASCADE,
+                source_digest           TEXT NOT NULL,
+                target_digest           TEXT NOT NULL,
+                normalized_body_digest  TEXT,
+                target_version          INTEGER,
+                adapter_version         TEXT NOT NULL,
+                normalizer_version      TEXT NOT NULL,
+                committed_at            TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_commits (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL,
+                request_id      TEXT NOT NULL,
+                plan_digest     TEXT NOT NULL,
+                project_id      TEXT,
+                status          TEXT NOT NULL,
+                receipt_json    TEXT,
+                error_message   TEXT,
+                created_at      TEXT NOT NULL,
+                UNIQUE(request_id)
+            );
+            CREATE TABLE IF NOT EXISTS import_evidence_bindings (
+                id                        TEXT PRIMARY KEY,
+                session_id                TEXT NOT NULL,
+                evidence_anchor_id        TEXT NOT NULL,
+                source_document_key       TEXT NOT NULL,
+                target_scene_id           TEXT NOT NULL,
+                source_document_digest    TEXT NOT NULL,
+                committed_storage_digest  TEXT NOT NULL,
+                projection_status         TEXT NOT NULL,
+                committed_at              TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_sessions_state
+                ON import_sessions(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_import_source_packages_session
+                ON import_source_packages(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_import_source_mappings_source
+                ON import_source_mappings(source_set_id, source_object_key);
+            CREATE INDEX IF NOT EXISTS idx_import_source_mappings_target
+                ON import_source_mappings(target_kind, target_id);
+            CREATE INDEX IF NOT EXISTS idx_import_commits_session
+                ON import_commits(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_import_evidence_bindings_session
+                ON import_evidence_bindings(session_id, target_scene_id);",
+        )?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 11,
+  "schemaVersion": 12,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -4246,6 +4246,516 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE impact_review_baselines ( entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, snapshot_json TEXT NOT NULL, content_hash TEXT NOT NULL, reviewed_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "import_commits": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "error_message": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "plan_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "receipt_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "request_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE import_commits ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, project_id TEXT, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, created_at TEXT NOT NULL, UNIQUE(request_id) )"
+    },
+    "import_evidence_bindings": {
+      "kind": "table",
+      "columns": {
+        "committed_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "committed_storage_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_anchor_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "projection_status": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_document_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_document_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_scene_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_evidence_bindings ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL, evidence_anchor_id TEXT NOT NULL, source_document_key TEXT NOT NULL, target_scene_id TEXT NOT NULL, source_document_digest TEXT NOT NULL, committed_storage_digest TEXT NOT NULL, projection_status TEXT NOT NULL, committed_at TEXT NOT NULL )"
+    },
+    "import_sessions": {
+      "kind": "table",
+      "columns": {
+        "adapter_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "adapter_version": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "error_message": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "extraction_run_ids_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "proposal_set_ids_json": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "source_package_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_package_ref": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 10,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_sessions ( id TEXT PRIMARY KEY, state TEXT NOT NULL, adapter_id TEXT, adapter_version TEXT, target_json TEXT NOT NULL, source_package_digest TEXT, source_package_ref TEXT, extraction_run_ids_json TEXT NOT NULL DEFAULT '[]', proposal_set_ids_json TEXT NOT NULL DEFAULT '[]', error_message TEXT, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "import_source_baselines": {
+      "kind": "table",
+      "columns": {
+        "adapter_version": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "committed_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "mapping_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "normalized_body_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "normalizer_version": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_digest": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_digest": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_version": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_source_mappings",
+          "from": "mapping_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_source_baselines ( mapping_id TEXT PRIMARY KEY REFERENCES import_source_mappings(id) ON DELETE CASCADE, source_digest TEXT NOT NULL, target_digest TEXT NOT NULL, normalized_body_digest TEXT, target_version INTEGER, adapter_version TEXT NOT NULL, normalizer_version TEXT NOT NULL, committed_at TEXT NOT NULL )"
+    },
+    "import_source_mappings": {
+      "kind": "table",
+      "columns": {
+        "adapter_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "adapter_version": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "first_import_session_id": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "last_import_session_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_object_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_object_kind": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_record_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_set_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'active'",
+          "primaryKey": 0
+        },
+        "target_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_state_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 13,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_source_mappings ( id TEXT PRIMARY KEY, source_set_id TEXT NOT NULL, source_object_key TEXT NOT NULL, source_object_kind TEXT NOT NULL, target_kind TEXT NOT NULL, target_id TEXT NOT NULL, source_record_digest TEXT NOT NULL, target_state_digest TEXT NOT NULL, adapter_id TEXT NOT NULL, adapter_version TEXT NOT NULL, first_import_session_id TEXT NOT NULL, last_import_session_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "import_source_packages": {
+      "kind": "table",
+      "columns": {
+        "adapter_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "adapter_version": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "package_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_sessions",
+          "from": "session_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_source_packages ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES import_sessions(id) ON DELETE CASCADE, digest TEXT NOT NULL, adapter_id TEXT NOT NULL, adapter_version TEXT NOT NULL, package_json TEXT NOT NULL, created_at TEXT NOT NULL )"
     },
     "labels": {
       "kind": "table",
@@ -10795,6 +11305,102 @@
         }
       ],
       "createSql": "CREATE INDEX idx_impact_baselines_project ON impact_review_baselines(project_id)"
+    },
+    "idx_import_commits_session": {
+      "table": "import_commits",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "created_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_commits_session ON import_commits(session_id, created_at)"
+    },
+    "idx_import_evidence_bindings_session": {
+      "table": "import_evidence_bindings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_scene_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_evidence_bindings_session ON import_evidence_bindings(session_id, target_scene_id)"
+    },
+    "idx_import_sessions_state": {
+      "table": "import_sessions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "state"
+        },
+        {
+          "ordinal": 1,
+          "column": "updated_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_sessions_state ON import_sessions(state, updated_at)"
+    },
+    "idx_import_source_mappings_source": {
+      "table": "import_source_mappings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "source_set_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "source_object_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_source_mappings_source ON import_source_mappings(source_set_id, source_object_key)"
+    },
+    "idx_import_source_mappings_target": {
+      "table": "import_source_mappings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "target_kind"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_source_mappings_target ON import_source_mappings(target_kind, target_id)"
+    },
+    "idx_import_source_packages_session": {
+      "table": "import_source_packages",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "created_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_source_packages_session ON import_source_packages(session_id, created_at)"
     },
     "idx_labels_project": {
       "table": "labels",

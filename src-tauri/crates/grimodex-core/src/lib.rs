@@ -1,8 +1,8 @@
 //! Lightweight shared primitives for Grimodex AI writes (no ort/lindera).
 
-pub const SCHEMA_VERSION: i32 = 11;
-pub const PREVIOUS_COMPATIBLE_SCHEMA_VERSION: i32 = 10;
-pub const PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION: i32 = 11;
+pub const SCHEMA_VERSION: i32 = 12;
+pub const PREVIOUS_COMPATIBLE_SCHEMA_VERSION: i32 = 11;
+pub const PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION: i32 = 12;
 
 /// Commit a manually-opened transaction, rolling back if the COMMIT itself
 /// fails. On the shared single connection a failed COMMIT (deferred FK check,

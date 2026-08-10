@@ -553,6 +553,7 @@ pub mod foreshadow;
 mod fts;
 mod idempotency;
 pub mod ime_export;
+pub mod import;
 mod integrity;
 pub mod lint_ignores;
 pub mod lint_terms;

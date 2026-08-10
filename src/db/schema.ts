@@ -2367,6 +2367,128 @@ export const narrativeCommitJournals = sqliteTable("narrative_commit_journals", 
   createdAt: text("created_at").notNull(),
 });
 
+// =========================================================================
+// Import Sessions: durable adapter packages, source identity, and commits.
+// Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 12).
+// =========================================================================
+export const importSessions = sqliteTable(
+  "import_sessions",
+  {
+    id: text("id").primaryKey(),
+    state: text("state").notNull(),
+    adapterId: text("adapter_id"),
+    adapterVersion: text("adapter_version"),
+    targetJson: text("target_json").notNull(),
+    sourcePackageDigest: text("source_package_digest"),
+    sourcePackageRef: text("source_package_ref"),
+    extractionRunIdsJson: text("extraction_run_ids_json").notNull().default("[]"),
+    proposalSetIdsJson: text("proposal_set_ids_json").notNull().default("[]"),
+    errorMessage: text("error_message"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [index("idx_import_sessions_state").on(table.state, table.updatedAt)],
+);
+
+export const importSourcePackages = sqliteTable(
+  "import_source_packages",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => importSessions.id, { onDelete: "cascade" }),
+    digest: text("digest").notNull(),
+    adapterId: text("adapter_id").notNull(),
+    adapterVersion: text("adapter_version").notNull(),
+    packageJson: text("package_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [index("idx_import_source_packages_session").on(table.sessionId, table.createdAt)],
+);
+
+export const importSourceMappings = sqliteTable(
+  "import_source_mappings",
+  {
+    id: text("id").primaryKey(),
+    sourceSetId: text("source_set_id").notNull(),
+    sourceObjectKey: text("source_object_key").notNull(),
+    sourceObjectKind: text("source_object_kind").notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetId: text("target_id").notNull(),
+    sourceRecordDigest: text("source_record_digest").notNull(),
+    targetStateDigest: text("target_state_digest").notNull(),
+    adapterId: text("adapter_id").notNull(),
+    adapterVersion: text("adapter_version").notNull(),
+    firstImportSessionId: text("first_import_session_id").notNull(),
+    lastImportSessionId: text("last_import_session_id").notNull(),
+    status: text("status").notNull().default("active"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_source_mappings_source").on(
+      table.sourceSetId,
+      table.sourceObjectKey,
+    ),
+    index("idx_import_source_mappings_target").on(table.targetKind, table.targetId),
+  ],
+);
+
+export const importSourceBaselines = sqliteTable("import_source_baselines", {
+  mappingId: text("mapping_id")
+    .primaryKey()
+    .references(() => importSourceMappings.id, { onDelete: "cascade" }),
+  sourceDigest: text("source_digest").notNull(),
+  targetDigest: text("target_digest").notNull(),
+  normalizedBodyDigest: text("normalized_body_digest"),
+  targetVersion: integer("target_version"),
+  adapterVersion: text("adapter_version").notNull(),
+  normalizerVersion: text("normalizer_version").notNull(),
+  committedAt: text("committed_at").notNull().$defaultFn(nowInstantString),
+});
+
+export const importCommits = sqliteTable(
+  "import_commits",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    requestId: text("request_id").notNull(),
+    planDigest: text("plan_digest").notNull(),
+    projectId: text("project_id"),
+    status: text("status").notNull(),
+    receiptJson: text("receipt_json"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_import_commits_1").on(table.requestId),
+    index("idx_import_commits_session").on(table.sessionId, table.createdAt),
+  ],
+);
+
+export const importEvidenceBindings = sqliteTable(
+  "import_evidence_bindings",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    evidenceAnchorId: text("evidence_anchor_id").notNull(),
+    sourceDocumentKey: text("source_document_key").notNull(),
+    targetSceneId: text("target_scene_id").notNull(),
+    sourceDocumentDigest: text("source_document_digest").notNull(),
+    committedStorageDigest: text("committed_storage_digest").notNull(),
+    projectionStatus: text("projection_status").notNull(),
+    committedAt: text("committed_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_evidence_bindings_session").on(
+      table.sessionId,
+      table.targetSceneId,
+    ),
+  ],
+);
+
 /** Temporal Constraint Graph nodes (SCHEMA_VERSION 9). */
 export const narrativeTemporalNodes = sqliteTable(
   "narrative_temporal_nodes",
