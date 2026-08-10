@@ -107,6 +107,8 @@ pub fn live_user_version(workspace: &Path) -> i32 {
 
 pub fn assert_previous_release_fixture_shape(db_path: &Path) {
     let conn = Connection::open(db_path).expect("open pre-migration fixture");
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+        .expect("preserve dirty WAL while probing previous-release fixture");
     assert_previous_release_schema_on_connection(&conn);
 }
 
