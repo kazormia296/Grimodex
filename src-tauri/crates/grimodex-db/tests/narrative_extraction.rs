@@ -1377,7 +1377,7 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
 
-    // In-progress run is always resumable.
+    // In-progress run without a ProposalSet is NOT review-resumable.
     create_run_with_task(&db, "run-resumable-pending", "task-resumable-pending");
     db.execute(
         "UPDATE narrative_extraction_runs SET status = 'running' WHERE id = ?",
@@ -1443,9 +1443,66 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
         .iter()
         .map(|row| row["runId"].as_str().unwrap())
         .collect();
-    assert!(ids.contains(&"run-resumable-pending"));
+    assert!(
+        !ids.contains(&"run-resumable-pending"),
+        "running without ProposalSet must not hide review restores"
+    );
     assert!(ids.contains(&"run-resumable-review"));
     assert!(!ids.contains(&"run-applied"));
     // pairs used to keep approved revision alive for review run
     assert!(!pairs.is_empty());
+}
+
+#[test]
+fn list_resumable_runs_prefers_older_review_over_crashed_running() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+
+    // Older completed review with unapplied proposals.
+    let review_payloads = [event_create_payload("event-old", "Old", "scene-1", 0)];
+    let _pairs = seed_approved_proposals(
+        &db,
+        "run-old-review",
+        "set-old-review",
+        &review_payloads,
+    );
+    db.execute(
+        "UPDATE narrative_extraction_runs
+            SET status = 'completed',
+                started_at = '2026-01-01T00:00:00.000Z',
+                completed_at = '2026-01-01T00:01:00.000Z'
+          WHERE id = ?",
+        &[Value::String("run-old-review".to_string())],
+        "run",
+    )
+    .expect("mark old completed");
+
+    // Newer crashed running run without ProposalSet.
+    create_run_with_task(&db, "run-crash-running", "task-crash-running");
+    db.execute(
+        "UPDATE narrative_extraction_runs
+            SET status = 'running',
+                started_at = '2026-01-02T00:00:00.000Z'
+          WHERE id = ?",
+        &[Value::String("run-crash-running".to_string())],
+        "run",
+    )
+    .expect("mark crash running");
+
+    let listed = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("list");
+    let ids: Vec<&str> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["runId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["run-old-review"]);
 }

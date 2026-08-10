@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
+const listResumableRunsMock = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "@/application/narrative-extraction/nativeApi",
@@ -20,7 +21,7 @@ vi.mock(
 
 vi.mock("@/application/narrative-extraction/runRepository", () => ({
   getRun: (...args: unknown[]) => getRunMock(...args),
-  listResumableRuns: vi.fn(),
+  listResumableRuns: listResumableRunsMock,
 }));
 
 import { resetNarrativeArtifactIndexForTests } from "@/application/narrative-extraction/artifactRepository";
@@ -29,6 +30,7 @@ import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative
 import {
   getChronicleExtractionReview,
   resetChronicleExtractionApiCachesForTests,
+  restoreChronicleExtractionReview,
 } from "./chronicleExtractionApi";
 import { resetChronicleExtractionStoreForTests } from "./chronicleExtractionStore";
 
@@ -63,6 +65,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
     resetChronicleExtractionApiCachesForTests();
     getRunReviewBundleMock.mockReset();
     getRunMock.mockReset();
+    listResumableRunsMock.mockReset();
   });
 
   it("hydrates Map from Native bundle and restores proposals with Native revision ids", async () => {
@@ -276,5 +279,127 @@ describe("getChronicleExtractionReview cold-start restore", () => {
         openRevision: 1,
       }),
     ).rejects.toThrow(/no Native proposal set/);
+  });
+});
+
+describe("restoreChronicleExtractionReview candidate fallback", () => {
+  beforeEach(() => {
+    resetNarrativeArtifactIndexForTests();
+    resetChronicleExtractionStoreForTests();
+    resetChronicleExtractionApiCachesForTests();
+    getRunReviewBundleMock.mockReset();
+    getRunMock.mockReset();
+    listResumableRunsMock.mockReset();
+  });
+
+  it("skips a newer running run without ProposalSet and restores the older review", async () => {
+    listResumableRunsMock.mockResolvedValue([
+      {
+        run: {
+          runId: "run-crash",
+          projectId: "project-cold",
+          surfacePathId: "chronicle.extract",
+          status: "running",
+        },
+      },
+      {
+        run: {
+          runId: "run-old-review",
+          projectId: "project-cold",
+          surfacePathId: "chronicle.extract",
+          status: "completed",
+        },
+      },
+    ]);
+
+    getRunMock.mockImplementation(async (runId: string) => ({
+      run: {
+        runId,
+        projectId: "project-cold",
+        surfacePathId: "chronicle.extract",
+        scopeJson: {},
+        specJson: {},
+        specDigest: "spec",
+        snapshotDigest: null,
+        catalogDigest: null,
+        registryDigest: null,
+        status: runId === "run-crash" ? "running" : "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+      },
+    }));
+
+    getRunReviewBundleMock.mockImplementation(
+      async (args: { runId: string }) => {
+        if (args.runId === "run-crash") {
+          return {
+            runId: "run-crash",
+            projectId: "project-cold",
+            artifacts: [],
+            proposalSet: null,
+            proposals: [],
+          };
+        }
+        const proposal = sampleProposal({
+          eventId: "ev-old",
+          title: "Older review event",
+        });
+        return {
+          runId: "run-old-review",
+          projectId: "project-cold",
+          artifacts: [],
+          proposalSet: {
+            proposalSetId: "set-old",
+            runId: "run-old-review",
+            projectId: "project-cold",
+            setKind: "chronicle.extract.review@1",
+            status: "draft",
+            summaryJson: {},
+            createdAt: "2026-01-01T00:00:40.000Z",
+            updatedAt: "2026-01-01T00:00:40.000Z",
+            version: 0,
+          },
+          proposals: [
+            {
+              proposalId: "prop-old",
+              proposalSetId: "set-old",
+              proposalKey: "ev-old:0",
+              kind: "chronicle.create-event@1",
+              status: "approved",
+              payloadJson: proposal,
+              currentRevisionId: "rev-old",
+              createdAt: "2026-01-01T00:00:40.000Z",
+              updatedAt: "2026-01-01T00:00:50.000Z",
+              latestDecision: null,
+            },
+          ],
+        };
+      },
+    );
+
+    const restored = await restoreChronicleExtractionReview({
+      projectId: "project-cold",
+      workspacePath: "/ws/cold",
+      openRevision: 3,
+    });
+
+    expect(restored?.runId).toBe("run-old-review");
+    expect(restored?.proposals[0]?.displayTitle).toBe("Older review event");
+    expect(listResumableRunsMock).toHaveBeenCalled();
+    expect(
+      getRunReviewBundleMock.mock.calls.map((call) => call[0]?.runId),
+    ).toEqual(["run-crash", "run-old-review"]);
   });
 });

@@ -23,11 +23,7 @@ export type RelationCommitment =
   | "speculation"
   | "conflicted";
 
-export type RelationSupport =
-  | "direct"
-  | "corroborated"
-  | "inferred"
-  | "weak";
+export type RelationSupport = "direct" | "corroborated" | "inferred" | "weak";
 
 export type RelationNarrativeFrame =
   | "primary"

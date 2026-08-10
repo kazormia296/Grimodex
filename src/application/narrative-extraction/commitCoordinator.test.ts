@@ -10,12 +10,16 @@ const sampleOp: CommitOperation = {
 };
 
 describe("computePlanDigest", () => {
-  it("defaults entityBindings to empty so Chronicle digests stay stable", async () => {
+  it("omits empty entityBindings so digests match pre-binding Chronicle plans", async () => {
     const without = await computePlanDigest([sampleOp], null);
     const withEmpty = await computePlanDigest([sampleOp], null, []);
     const withNull = await computePlanDigest([sampleOp], null, null);
     expect(without).toBe(withEmpty);
     expect(without).toBe(withNull);
+    // Fixture from the pre-entityBindings canonical plan shape.
+    expect(without).toBe(
+      "21eae6ea2277cefe9feca7b65b57c6e7c61fa09ca629c6c082e0c6a7a356c4eb",
+    );
   });
 
   it("includes entityBindings in the digest when provided", async () => {

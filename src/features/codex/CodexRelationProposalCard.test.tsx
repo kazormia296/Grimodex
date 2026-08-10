@@ -81,7 +81,9 @@ describe("CodexRelationProposalCard", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("ライカ → 師匠 → ベルカ")).toBeInTheDocument();
     expect(screen.getByText(/directed/)).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("codex-relation-approve-rel-proposal-1"));
+    fireEvent.click(
+      screen.getByTestId("codex-relation-approve-rel-proposal-1"),
+    );
     expect(decisions).toEqual(["approved"]);
   });
 });

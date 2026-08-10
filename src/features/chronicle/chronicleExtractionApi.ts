@@ -643,9 +643,16 @@ export async function restoreChronicleExtractionReview(scope: {
       surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
       limit: 5,
     });
-    const candidate = resumable[0];
-    if (!candidate) return null;
-    return await getChronicleExtractionReview(candidate.run.runId, scope);
+    for (const candidate of resumable) {
+      try {
+        return await getChronicleExtractionReview(candidate.run.runId, scope);
+      } catch {
+        // Newer crashed runs without a durable ProposalSet must not hide
+        // older completed reviews that still hydrate.
+        continue;
+      }
+    }
+    return null;
   } catch {
     return null;
   }

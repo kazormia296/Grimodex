@@ -72,7 +72,8 @@ export async function computePlanDigest(
   const plan = canonicalize({
     expectedTailOrdinal: expectedTailOrdinal ?? null,
     operations,
-    entityBindings: bindings,
+    // Omit empty bindings so digests stay compatible with pre-binding Chronicle plans.
+    ...(bindings.length > 0 ? { entityBindings: bindings } : {}),
   });
   return sha256Hex(JSON.stringify(plan));
 }

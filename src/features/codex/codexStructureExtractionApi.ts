@@ -52,6 +52,7 @@ import {
 import {
   buildCodexEntityProposalSafetyFlags,
   emptyCodexTaskCounts,
+  relationEndpointsReady,
   useCodexStructureExtractionStore,
   type CodexCompiledDomainOperation,
   type CodexEntityReviewProposal,
@@ -116,13 +117,74 @@ export interface CodexStructureExtractionRelationSeed {
   readonly objectLabel?: string;
   readonly dependencyProposalIds?: readonly string[];
   readonly quote?: string;
+  readonly documentRef?: string;
+  readonly anchorId?: string;
 }
 
 const MAX_DERIVED_RELATION_SEEDS = 20;
+const MAX_RELATION_QUOTE_CHARS = 240;
+
+type CoMentionEntity = {
+  readonly surface: string;
+  readonly narrativeEntityId: string;
+  readonly proposalId: string;
+};
 
 /**
- * Conservative co-mention relation seeds: a builtin vocabulary forwardLabel must
- * appear in a shared document text window that also contains both entity surfaces.
+ * Resolve directed subject/object from conservative Japanese patterns.
+ * Returns null when orientation cannot be determined from the quote.
+ */
+function resolveDirectedEndpoints(
+  quote: string,
+  left: CoMentionEntity,
+  right: CoMentionEntity,
+  label: string,
+): { subject: CoMentionEntity; object: CoMentionEntity } | null {
+  const patterns: Array<(a: CoMentionEntity, b: CoMentionEntity) => boolean> = [
+    // 「ベルカはライカの父」→ subject=ベルカ, object=ライカ
+    (subject, object) =>
+      quote.includes(`${subject.surface}は${object.surface}の${label}`),
+    // 「ライカの父はベルカ」→ subject=ベルカ, object=ライカ
+    (subject, object) =>
+      quote.includes(`${object.surface}の${label}は${subject.surface}`),
+  ];
+  for (const matches of patterns) {
+    if (matches(left, right)) return { subject: left, object: right };
+    if (matches(right, left)) return { subject: right, object: left };
+  }
+  return null;
+}
+
+/** Minimal span that still contains every required surface (capped). */
+function quoteSpanCovering(
+  quote: string,
+  parts: readonly string[],
+): string | null {
+  let start = quote.length;
+  let end = 0;
+  for (const part of parts) {
+    const index = quote.indexOf(part);
+    if (index < 0) return null;
+    start = Math.min(start, index);
+    end = Math.max(end, index + part.length);
+  }
+  if (end <= start) return null;
+  const span = quote.slice(start, end);
+  if (span.length <= MAX_RELATION_QUOTE_CHARS) return span;
+  // Prefer a window that still contains all parts when possible.
+  for (let windowStart = start; windowStart < end; windowStart += 1) {
+    const windowEnd = windowStart + MAX_RELATION_QUOTE_CHARS;
+    if (windowEnd > quote.length) break;
+    const window = quote.slice(windowStart, windowEnd);
+    if (parts.every((part) => window.includes(part))) return window;
+  }
+  return null;
+}
+
+/**
+ * Conservative co-mention relation seeds: both entity surfaces and a builtin
+ * vocabulary label must appear in the *same* Evidence quote. Document-bag joins
+ * across separate anchors are intentionally rejected.
  */
 export function deriveRelationSeedsFromCoMentions(input: {
   readonly proposals: readonly {
@@ -137,71 +199,116 @@ export function deriveRelationSeedsFromCoMentions(input: {
   const vocabulary = input.vocabulary ?? BUILTIN_CODEX_RELATION_VOCABULARY;
   const maxSeeds = input.maxSeeds ?? MAX_DERIVED_RELATION_SEEDS;
 
-  const entitiesByDocument = new Map<
-    string,
-    Map<string, { narrativeEntityId: string; proposalId: string }>
-  >();
-  const windowsByDocument = new Map<string, string[]>();
+  type AnchorWindow = {
+    readonly documentRef: string;
+    readonly anchorId: string;
+    readonly quote: string;
+    readonly entities: CoMentionEntity[];
+  };
+
+  const windowsByKey = new Map<string, AnchorWindow>();
 
   for (const proposal of input.proposals) {
     for (const row of proposal.evidence) {
-      if (!row.documentRef || row.blocked) continue;
-      const pieces = [row.quote].filter((part) => part.length > 0);
-      if (pieces.length === 0) continue;
-      let entities = entitiesByDocument.get(row.documentRef);
-      if (!entities) {
-        entities = new Map();
-        entitiesByDocument.set(row.documentRef, entities);
+      if (!row.documentRef || row.blocked || !row.quote) continue;
+      if (!row.quote.includes(proposal.displayTitle)) continue;
+      // Same document quote text is one span even when prepass assigned distinct
+      // anchor ids to each entity mention inside that quote.
+      const key = `${row.documentRef}\0${row.quote}`;
+      let window = windowsByKey.get(key);
+      if (!window) {
+        window = {
+          documentRef: row.documentRef,
+          anchorId: row.anchorId,
+          quote: row.quote,
+          entities: [],
+        };
+        windowsByKey.set(key, window);
       }
-      entities.set(proposal.displayTitle, {
-        narrativeEntityId: proposal.narrativeEntityId,
-        proposalId: proposal.proposalId,
-      });
-      const windows = windowsByDocument.get(row.documentRef) ?? [];
-      windows.push(...pieces);
-      windowsByDocument.set(row.documentRef, windows);
+      if (
+        !window.entities.some(
+          (entity) => entity.narrativeEntityId === proposal.narrativeEntityId,
+        )
+      ) {
+        window.entities.push({
+          surface: proposal.displayTitle,
+          narrativeEntityId: proposal.narrativeEntityId,
+          proposalId: proposal.proposalId,
+        });
+      }
     }
   }
 
   const seeds: CodexStructureExtractionRelationSeed[] = [];
   const seen = new Set<string>();
 
-  for (const [documentRef, entities] of entitiesByDocument) {
-    const surfaces = [...entities.entries()];
-    if (surfaces.length < 2) continue;
-    const windows = windowsByDocument.get(documentRef) ?? [];
-    // Also consider the concatenated document bag as one window (prepass quotes).
-    const candidateWindows = [...windows, windows.join("\n")];
-    for (let i = 0; i < surfaces.length; i += 1) {
-      for (let j = i + 1; j < surfaces.length; j += 1) {
-        const [surfaceA, metaA] = surfaces[i]!;
-        const [surfaceB, metaB] = surfaces[j]!;
-        for (const window of candidateWindows) {
-          if (!window.includes(surfaceA) || !window.includes(surfaceB)) {
-            continue;
+  for (const window of windowsByKey.values()) {
+    if (window.entities.length < 2) continue;
+    for (let i = 0; i < window.entities.length; i += 1) {
+      for (let j = i + 1; j < window.entities.length; j += 1) {
+        const left = window.entities[i]!;
+        const right = window.entities[j]!;
+        if (
+          !window.quote.includes(left.surface) ||
+          !window.quote.includes(right.surface)
+        ) {
+          continue;
+        }
+        for (const vocab of vocabulary) {
+          const label = normalizeRelationLabel(vocab.forwardLabel);
+          if (!label || !window.quote.includes(label)) continue;
+
+          let subject = left;
+          let object = right;
+          if (vocab.directionality === "directed") {
+            const resolved = resolveDirectedEndpoints(
+              window.quote,
+              left,
+              right,
+              label,
+            );
+            if (!resolved) continue;
+            subject = resolved.subject;
+            object = resolved.object;
+          } else if (
+            left.narrativeEntityId.localeCompare(right.narrativeEntityId) > 0
+          ) {
+            subject = right;
+            object = left;
           }
-          for (const vocab of vocabulary) {
-            const label = normalizeRelationLabel(vocab.forwardLabel);
-            if (!label || !window.includes(label)) continue;
-            const key = `${metaA.narrativeEntityId}\0${metaB.narrativeEntityId}\0${vocab.relationType}\0${label}`;
-            const keyRev = `${metaB.narrativeEntityId}\0${metaA.narrativeEntityId}\0${vocab.relationType}\0${label}`;
-            if (seen.has(key) || seen.has(keyRev)) continue;
-            seen.add(key);
-            seeds.push({
-              subjectEntityId: metaA.narrativeEntityId,
-              objectEntityId: metaB.narrativeEntityId,
-              predicate: vocab.relationType,
-              forwardLabel: vocab.forwardLabel,
-              inverseLabel: vocab.inverseLabel,
-              directionality: vocab.directionality,
-              validity: "current",
-              subjectLabel: surfaceA,
-              objectLabel: surfaceB,
-              dependencyProposalIds: [metaA.proposalId, metaB.proposalId],
-              quote: window.slice(0, 240),
-            });
-            if (seeds.length >= maxSeeds) return seeds;
+
+          const quote = quoteSpanCovering(window.quote, [
+            subject.surface,
+            object.surface,
+            label,
+          ]);
+          if (!quote) continue;
+
+          const key = `${subject.narrativeEntityId}\0${object.narrativeEntityId}\0${vocab.relationType}\0${label}\0${window.anchorId}`;
+          if (seen.has(key)) continue;
+          // Symmetric undirected pairs still collapse A↔B; directed opposites stay distinct.
+          if (vocab.directionality === "symmetric") {
+            const keyRev = `${object.narrativeEntityId}\0${subject.narrativeEntityId}\0${vocab.relationType}\0${label}\0${window.anchorId}`;
+            if (seen.has(keyRev)) continue;
+            seen.add(keyRev);
           }
+          seen.add(key);
+          seeds.push({
+            subjectEntityId: subject.narrativeEntityId,
+            objectEntityId: object.narrativeEntityId,
+            predicate: vocab.relationType,
+            forwardLabel: vocab.forwardLabel,
+            inverseLabel: vocab.inverseLabel,
+            directionality: vocab.directionality,
+            validity: "current",
+            subjectLabel: subject.surface,
+            objectLabel: object.surface,
+            dependencyProposalIds: [subject.proposalId, object.proposalId],
+            quote,
+            documentRef: window.documentRef,
+            anchorId: window.anchorId,
+          });
+          if (seeds.length >= maxSeeds) return seeds;
         }
       }
     }
@@ -686,14 +793,21 @@ export async function startCodexStructureExtraction(
         seed.objectLabel ??
         entityLabelById.get(seed.objectEntityId) ??
         seed.objectEntityId;
-      const blockedDeps = (seed.dependencyProposalIds ?? []).some((depId) => {
-        const entity = proposals.find((item) => item.proposalId === depId);
-        return (
-          !entity ||
-          entity.applicability === "blocked" ||
-          entity.proposal.payload.binding.kind === "unresolved"
-        );
-      });
+      const blockedDeps = !relationEndpointsReady(
+        {
+          proposalId: created.proposalId,
+          revisionId: null,
+          proposalKey: hypothesis.hypothesisId,
+          status: "unreviewed",
+          applicability: "applicable",
+          displayTitle: "",
+          proposal: created,
+          evidence: [],
+          subjectLabel,
+          objectLabel,
+        },
+        proposals,
+      );
       return [
         {
           proposalId: created.proposalId,
@@ -707,17 +821,20 @@ export async function startCodexStructureExtraction(
           proposal: created,
           evidence: [
             {
-              anchorId: `rel-anchor-${created.proposalId}`,
+              anchorId: seed.anchorId ?? `rel-anchor-${created.proposalId}`,
               quote: seed.quote ?? "",
-              documentRef: "",
-              method: seed.quote ? ("exact" as const) : ("unknown" as const),
-              blocked: !seed.quote,
+              documentRef: seed.documentRef ?? "",
+              method:
+                seed.quote && seed.documentRef
+                  ? ("exact" as const)
+                  : ("unknown" as const),
+              blocked: !(seed.quote && seed.documentRef),
             },
           ],
           subjectLabel,
           objectLabel,
           blockedReason: blockedDeps
-            ? "両端 Entity Binding が未解決です"
+            ? "先に両端の Entity proposal を承認してください"
             : undefined,
           hypothesisId: hypothesis.hypothesisId,
         } satisfies CodexRelationReviewProposal,
@@ -776,7 +893,12 @@ export async function startCodexStructureExtraction(
         ...relationProposals.map((proposal) => ({
           proposalKey: proposal.proposalKey,
           kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
-          payloadJson: proposal.proposal.payload,
+          // Persist dependencies alongside the domain payload so cold-start
+          // restore can rebuild Relation gates after Native ID remapping.
+          payloadJson: {
+            ...proposal.proposal.payload,
+            dependencies: proposal.proposal.dependencies,
+          },
         })),
       ],
     });
@@ -798,6 +920,12 @@ export async function startCodexStructureExtraction(
         status: seed.status ?? proposal.status,
       };
     });
+    const nativeIdByLocalProposalId = new Map(
+      proposals.map((proposal, index) => {
+        const native = finalProposals[index];
+        return [proposal.proposalId, native!.proposalId] as const;
+      }),
+    );
     finalRelations = relationProposals.map((proposal) => {
       const seed = byKey.get(proposal.proposalKey);
       if (!seed?.revisionId) {
@@ -805,11 +933,23 @@ export async function startCodexStructureExtraction(
           `Missing Native revision for relation key ${proposal.proposalKey}`,
         );
       }
+      const remappedDependencies = proposal.proposal.dependencies.map(
+        (dependency) => ({
+          ...dependency,
+          proposalId:
+            nativeIdByLocalProposalId.get(dependency.proposalId) ??
+            dependency.proposalId,
+        }),
+      );
       return {
         ...proposal,
         proposalId: seed.proposalId,
         revisionId: seed.revisionId,
         status: seed.status ?? proposal.status,
+        proposal: {
+          ...proposal.proposal,
+          dependencies: remappedDependencies,
+        },
       };
     });
   } else {
@@ -1103,6 +1243,12 @@ export async function decideCodexStructureProposal(args: {
         >,
       };
     } else {
+      const relation = proposal as CodexRelationReviewProposal;
+      if (!relationEndpointsReady(relation, projection.proposals)) {
+        throw new Error(
+          `Cannot approve Relation ${args.proposalId}: 先に両端の Entity proposal を承認してください`,
+        );
+      }
       // Relation compile needs CommitMap of approved entity bindings; use provisional map
       // from already-approved entity compiled ops + this run's create targets.
       let commitMap = emptyCommitMap();
@@ -1127,7 +1273,6 @@ export async function decideCodexStructureProposal(args: {
           );
         }
       }
-      const relation = proposal as CodexRelationReviewProposal;
       const operation = compileCreateCodexRelationOperation(
         relation.proposal,
         commitMap,

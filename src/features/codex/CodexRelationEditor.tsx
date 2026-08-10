@@ -7,6 +7,7 @@ export interface CodexRelationEditorProps {
     forwardLabel?: string;
     inverseLabel?: string | null;
   }) => void;
+  readonly onSwapEndpoints?: () => void;
   readonly disabled?: boolean;
 }
 
@@ -16,6 +17,7 @@ export interface CodexRelationEditorProps {
 export function CodexRelationEditor({
   proposal,
   onChange,
+  onSwapEndpoints,
   disabled = false,
 }: CodexRelationEditorProps) {
   const relation = proposal.proposal.payload.relation;
@@ -37,6 +39,15 @@ export function CodexRelationEditor({
           <p className="truncate font-medium">{proposal.objectLabel}</p>
         </div>
       </div>
+      <button
+        type="button"
+        className="self-start rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:opacity-40"
+        disabled={disabled || !onSwapEndpoints}
+        onClick={() => onSwapEndpoints?.()}
+        data-testid="codex-relation-swap-endpoints"
+      >
+        Subject / Object を入れ替え
+      </button>
 
       <label className="flex flex-col gap-1 text-xs">
         <span className="text-muted-foreground">Directionality</span>
@@ -72,9 +83,7 @@ export function CodexRelationEditor({
         <input
           className="rounded border border-input bg-background px-2 py-1 text-sm disabled:opacity-50"
           value={
-            symmetric
-              ? relation.forwardLabel
-              : (relation.inverseLabel ?? "")
+            symmetric ? relation.forwardLabel : (relation.inverseLabel ?? "")
           }
           disabled={disabled || symmetric}
           onChange={(event) =>

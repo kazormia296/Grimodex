@@ -82,8 +82,9 @@ describe("planExtractionWindows", () => {
   });
 
   it("splits long scenes on block boundaries without owned gaps or overlaps", async () => {
-    const paragraphs = Array.from({ length: 40 }, (_, index) =>
-      `段落${index}。${"あ".repeat(80)}`,
+    const paragraphs = Array.from(
+      { length: 40 },
+      (_, index) => `段落${index}。${"あ".repeat(80)}`,
     );
     const built = await buildNarrativeCorpusSnapshot(
       snapshotInput([

@@ -12,6 +12,7 @@ import {
   type CodexEntityReviewProposal,
   type CodexStructureExtractionReviewProjection,
 } from "./codexStructureExtractionStore";
+import { createCodexRelationProposalFromHypothesis } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
 
 const basePayloadFields = {
   narrativeEntityId: "ne-1",
@@ -102,9 +103,9 @@ describe("isSafeForCodexEntityBulkApprove", () => {
     });
     expect(isSafeForCodexEntityBulkApprove(safe)).toBe(true);
 
-    expect(
-      isSafeForCodexEntityBulkApprove({ ...safe, createNew: false }),
-    ).toBe(false);
+    expect(isSafeForCodexEntityBulkApprove({ ...safe, createNew: false })).toBe(
+      false,
+    );
     expect(
       isSafeForCodexEntityBulkApprove({
         ...safe,
@@ -175,9 +176,7 @@ describe("codexStructureExtractionStore", () => {
           ...basePayloadFields,
           binding: {
             kind: "unresolved",
-            candidates: [
-              { ref: "K0001", score: 90, methods: ["exact-name"] },
-            ],
+            candidates: [{ ref: "K0001", score: 90, methods: ["exact-name"] }],
             allowCreateNew: true,
           },
         },
@@ -221,5 +220,270 @@ describe("codexStructureExtractionStore", () => {
     expect(updated?.displayTitle).toBe("雷牙");
     // Native appendRevision must supply the next revisionId (store keeps OCC base).
     expect(updated?.revisionId).toBe("rev-1");
+  });
+
+  it("blocks Relation approval until both endpoint Entities are approved", () => {
+    const subject = safeCreateProposal({
+      proposalId: "ent-1",
+      status: "unreviewed",
+    });
+    const object = safeCreateProposal({
+      proposalId: "ent-2",
+      proposal: createNewBindCodexEntityProposal(
+        {
+          ...basePayloadFields,
+          narrativeEntityId: "ne-2",
+          canonicalName: "ベルカ",
+          binding: {
+            kind: "create-new",
+            entry: { name: "ベルカ", aliases: [], summary: null },
+          },
+        },
+        { proposalId: "ent-2" },
+      ),
+      displayTitle: "ベルカ",
+    });
+    const relation = createCodexRelationProposalFromHypothesis({
+      hypothesis: {
+        hypothesisId: "h-rel",
+        observationRefs: ["obs"],
+        subjectResolved: true,
+        objectResolved: true,
+        payload: {
+          subjectEntityId: "ne-1",
+          objectEntityId: "ne-2",
+          predicate: "friend",
+          family: "social",
+          validity: "current",
+          directionality: "symmetric",
+          forwardLabelSuggestion: "友人",
+          inverseLabelSuggestion: "友人",
+        },
+        epistemic: {
+          polarity: "affirmed",
+          commitment: "story-fact",
+          support: "direct",
+          narrativeFrame: "primary",
+        },
+      },
+      gate: { kind: "proposal", validity: "current" },
+      logicalRef: "rel-1",
+      relation: {
+        relationType: "friend",
+        directionality: "symmetric",
+        forwardLabel: "友人",
+        inverseLabel: "友人",
+      },
+      dependencyProposalIds: ["ent-1", "ent-2"],
+      createId: () => "rel-1",
+    });
+    if (!relation) throw new Error("expected relation");
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...projection([subject, object]),
+      relationProposals: [
+        {
+          proposalId: "rel-1",
+          revisionId: "rev-rel",
+          proposalKey: "key-rel",
+          status: "unreviewed",
+          applicability: "blocked",
+          blockedReason: "先に両端の Entity proposal を承認してください",
+          displayTitle: "ライカ → 友人 → ベルカ",
+          proposal: relation,
+          evidence: [],
+          subjectLabel: "ライカ",
+          objectLabel: "ベルカ",
+        },
+      ],
+      relationCount: 1,
+      unresolvedCount: 1,
+    });
+
+    useCodexStructureExtractionStore
+      .getState()
+      .updateRelationProposalStatus("rel-1", "approved");
+    expect(
+      useCodexStructureExtractionStore.getState().projection
+        ?.relationProposals[0]?.status,
+    ).toBe("unreviewed");
+
+    useCodexStructureExtractionStore
+      .getState()
+      .updateProposalStatus("ent-1", "approved");
+    useCodexStructureExtractionStore
+      .getState()
+      .updateProposalStatus("ent-2", "approved");
+
+    const afterEntities =
+      useCodexStructureExtractionStore.getState().projection
+        ?.relationProposals[0];
+    expect(afterEntities?.applicability).toBe("applicable");
+    expect(afterEntities?.blockedReason).toBeUndefined();
+
+    useCodexStructureExtractionStore
+      .getState()
+      .updateRelationProposalStatus("rel-1", "approved");
+    expect(
+      useCodexStructureExtractionStore.getState().projection
+        ?.relationProposals[0]?.status,
+    ).toBe("approved");
+  });
+
+  it("re-blocks dependent Relations when an endpoint is rejected", () => {
+    const subject = safeCreateProposal({
+      proposalId: "ent-1",
+      status: "approved",
+    });
+    const object = safeCreateProposal({
+      proposalId: "ent-2",
+      status: "approved",
+      proposal: createNewBindCodexEntityProposal(
+        {
+          ...basePayloadFields,
+          narrativeEntityId: "ne-2",
+          canonicalName: "ベルカ",
+          binding: {
+            kind: "create-new",
+            entry: { name: "ベルカ", aliases: [], summary: null },
+          },
+        },
+        { proposalId: "ent-2" },
+      ),
+      displayTitle: "ベルカ",
+    });
+    const relation = createCodexRelationProposalFromHypothesis({
+      hypothesis: {
+        hypothesisId: "h-rel",
+        observationRefs: ["obs"],
+        subjectResolved: true,
+        objectResolved: true,
+        payload: {
+          subjectEntityId: "ne-1",
+          objectEntityId: "ne-2",
+          predicate: "friend",
+          family: "social",
+          validity: "current",
+          directionality: "symmetric",
+          forwardLabelSuggestion: "友人",
+          inverseLabelSuggestion: "友人",
+        },
+        epistemic: {
+          polarity: "affirmed",
+          commitment: "story-fact",
+          support: "direct",
+          narrativeFrame: "primary",
+        },
+      },
+      gate: { kind: "proposal", validity: "current" },
+      logicalRef: "rel-1",
+      relation: {
+        relationType: "friend",
+        directionality: "symmetric",
+        forwardLabel: "友人",
+        inverseLabel: "友人",
+      },
+      dependencyProposalIds: ["ent-1", "ent-2"],
+      createId: () => "rel-1",
+    });
+    if (!relation) throw new Error("expected relation");
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...projection([subject, object]),
+      relationProposals: [
+        {
+          proposalId: "rel-1",
+          revisionId: "rev-rel",
+          proposalKey: "key-rel",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ライカ → 友人 → ベルカ",
+          proposal: relation,
+          evidence: [],
+          subjectLabel: "ライカ",
+          objectLabel: "ベルカ",
+        },
+      ],
+      relationCount: 1,
+      approvedCount: 3,
+    });
+
+    useCodexStructureExtractionStore
+      .getState()
+      .updateProposalStatus("ent-1", "rejected");
+    const rel =
+      useCodexStructureExtractionStore.getState().projection
+        ?.relationProposals[0];
+    expect(rel?.applicability).toBe("blocked");
+    expect(rel?.blockedReason).toContain("Entity");
+    expect(rel?.status).toBe("unreviewed");
+  });
+
+  it("swaps Relation subject and object endpoints", () => {
+    const relation = createCodexRelationProposalFromHypothesis({
+      hypothesis: {
+        hypothesisId: "h-rel",
+        observationRefs: ["obs"],
+        subjectResolved: true,
+        objectResolved: true,
+        payload: {
+          subjectEntityId: "ne-1",
+          objectEntityId: "ne-2",
+          predicate: "父",
+          family: "social",
+          validity: "current",
+          directionality: "directed",
+          forwardLabelSuggestion: "父",
+          inverseLabelSuggestion: "子",
+        },
+        epistemic: {
+          polarity: "affirmed",
+          commitment: "story-fact",
+          support: "direct",
+          narrativeFrame: "primary",
+        },
+      },
+      gate: { kind: "proposal", validity: "current" },
+      logicalRef: "rel-1",
+      relation: {
+        relationType: "父",
+        directionality: "directed",
+        forwardLabel: "父",
+        inverseLabel: "子",
+      },
+      dependencyProposalIds: [],
+      createId: () => "rel-1",
+    });
+    if (!relation) throw new Error("expected relation");
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...projection([]),
+      relationProposals: [
+        {
+          proposalId: "rel-1",
+          revisionId: "rev-rel",
+          proposalKey: "key-rel",
+          status: "unreviewed",
+          applicability: "applicable",
+          displayTitle: "ライカ → 父 → ベルカ",
+          proposal: relation,
+          evidence: [],
+          subjectLabel: "ライカ",
+          objectLabel: "ベルカ",
+        },
+      ],
+      relationCount: 1,
+    });
+
+    useCodexStructureExtractionStore.getState().swapRelationEndpoints("rel-1");
+    const swapped =
+      useCodexStructureExtractionStore.getState().projection
+        ?.relationProposals[0];
+    expect(swapped?.proposal.payload.subjectEntityId).toBe("ne-2");
+    expect(swapped?.proposal.payload.objectEntityId).toBe("ne-1");
+    expect(swapped?.subjectLabel).toBe("ベルカ");
+    expect(swapped?.objectLabel).toBe("ライカ");
+    expect(swapped?.displayTitle).toContain("ベルカ");
+    expect(swapped?.status).toBe("unreviewed");
   });
 });

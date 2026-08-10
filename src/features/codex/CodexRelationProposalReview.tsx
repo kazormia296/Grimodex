@@ -38,6 +38,9 @@ export function CodexRelationProposalReview({
   const reviseRelationFields = useCodexStructureExtractionStore(
     (s) => s.reviseRelationFields,
   );
+  const swapRelationEndpoints = useCodexStructureExtractionStore(
+    (s) => s.swapRelationEndpoints,
+  );
 
   const proposals = proposalsProp ?? storeProjection?.relationProposals ?? [];
   const selectedProposalId =
@@ -117,6 +120,9 @@ export function CodexRelationProposalReview({
                 proposal={selected}
                 onChange={(patch) =>
                   reviseRelationFields(selected.proposalId, patch)
+                }
+                onSwapEndpoints={() =>
+                  swapRelationEndpoints(selected.proposalId)
                 }
               />
             )}

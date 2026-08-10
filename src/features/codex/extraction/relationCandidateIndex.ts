@@ -17,9 +17,7 @@ export interface RelationCandidateIndex {
 }
 
 export interface BuildRelationCandidateIndexOptions {
-  readonly resolveEntityId: (
-    ref: EntityReference,
-  ) => NarrativeEntityId | null;
+  readonly resolveEntityId: (ref: EntityReference) => NarrativeEntityId | null;
   readonly createId?: () => string;
 }
 

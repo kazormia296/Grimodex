@@ -237,6 +237,8 @@ interface CodexStructureExtractionState {
       inverseLabel?: string | null;
     },
   ) => void;
+  /** Swap subject/object endpoints (and labels) for directed corrections. */
+  swapRelationEndpoints: (proposalId: string) => void;
   bulkApproveSafe: () => number;
 }
 
@@ -309,6 +311,39 @@ function relationEndpointsReady(
   return ready(subject) && ready(object);
 }
 
+export { relationEndpointsReady };
+
+const RELATION_ENDPOINT_BLOCKED_REASON =
+  "先に両端の Entity proposal を承認してください";
+
+function withEvaluatedRelationApplicability(
+  relation: CodexRelationReviewProposal,
+  entities: readonly CodexEntityReviewProposal[],
+): CodexRelationReviewProposal {
+  if (!relationEndpointsReady(relation, entities)) {
+    return {
+      ...relation,
+      applicability: "blocked",
+      blockedReason: RELATION_ENDPOINT_BLOCKED_REASON,
+      status: relation.status === "approved" ? "unreviewed" : relation.status,
+    };
+  }
+  return {
+    ...relation,
+    applicability: "applicable",
+    blockedReason: undefined,
+  };
+}
+
+function reevaluateRelationProposals(
+  entities: readonly CodexEntityReviewProposal[],
+  relations: readonly CodexRelationReviewProposal[],
+): readonly CodexRelationReviewProposal[] {
+  return relations.map((relation) =>
+    withEvaluatedRelationApplicability(relation, entities),
+  );
+}
+
 export const useCodexStructureExtractionStore =
   create<CodexStructureExtractionState>((set, get) => ({
     projection: null,
@@ -316,9 +351,15 @@ export const useCodexStructureExtractionStore =
     selectedRelationProposalId: null,
 
     setProjection: (projection) => {
+      const entities = projection.proposals;
+      const relationProposals = reevaluateRelationProposals(
+        entities,
+        projection.relationProposals ?? [],
+      );
       const withRelations: CodexStructureExtractionReviewProjection = {
         ...projection,
-        relationProposals: projection.relationProposals ?? [],
+        relationProposals,
+        ...recount(entities, relationProposals),
       };
       const selected =
         withRelations.proposals.find(
@@ -390,11 +431,16 @@ export const useCodexStructureExtractionStore =
         ...current,
         status,
       });
+      const relationProposals = reevaluateRelationProposals(
+        proposals,
+        projection.relationProposals,
+      );
       set({
         projection: {
           ...projection,
           proposals,
-          ...recount(proposals, projection.relationProposals),
+          relationProposals,
+          ...recount(proposals, relationProposals),
         },
       });
     },
@@ -501,11 +547,16 @@ export const useCodexStructureExtractionStore =
           hasRelationDeps: !current.safety.noRelationDeps,
         }),
       });
+      const relationProposals = reevaluateRelationProposals(
+        proposals,
+        projection.relationProposals,
+      );
       set({
         projection: {
           ...projection,
           proposals,
-          ...recount(proposals, projection.relationProposals),
+          relationProposals,
+          ...recount(proposals, relationProposals),
         },
       });
     },
@@ -614,11 +665,16 @@ export const useCodexStructureExtractionStore =
           hasRelationDeps: !current.safety.noRelationDeps,
         }),
       });
+      const relationProposals = reevaluateRelationProposals(
+        proposals,
+        projection.relationProposals,
+      );
       set({
         projection: {
           ...projection,
           proposals,
-          ...recount(proposals, projection.relationProposals),
+          relationProposals,
+          ...recount(proposals, relationProposals),
         },
       });
     },
@@ -669,6 +725,49 @@ export const useCodexStructureExtractionStore =
           revisionId: current.revisionId,
           status: "unreviewed",
         },
+      );
+      set({
+        projection: {
+          ...projection,
+          relationProposals,
+          ...recount(projection.proposals, relationProposals),
+        },
+      });
+    },
+
+    swapRelationEndpoints: (proposalId) => {
+      const projection = get().projection;
+      if (!projection) return;
+      const current = projection.relationProposals.find(
+        (proposal) => proposal.proposalId === proposalId,
+      );
+      if (!current) return;
+      const payload = current.proposal.payload;
+      const nextProposal: CreateCodexRelationProposal = {
+        ...current.proposal,
+        payload: {
+          ...payload,
+          subjectEntityId: payload.objectEntityId,
+          objectEntityId: payload.subjectEntityId,
+        },
+      };
+      const subjectLabel = current.objectLabel;
+      const objectLabel = current.subjectLabel;
+      const relationProposals = replaceRelationProposal(
+        projection.relationProposals,
+        proposalId,
+        withEvaluatedRelationApplicability(
+          {
+            ...current,
+            proposal: nextProposal,
+            subjectLabel,
+            objectLabel,
+            displayTitle: `${subjectLabel} → ${payload.relation.forwardLabel} → ${objectLabel}`,
+            revisionId: current.revisionId,
+            status: "unreviewed",
+          },
+          projection.proposals,
+        ),
       );
       set({
         projection: {

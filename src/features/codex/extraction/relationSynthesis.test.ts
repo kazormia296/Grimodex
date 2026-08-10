@@ -58,9 +58,8 @@ describe("evaluateRelationDomainGate", () => {
       ).kind,
     ).toBe("report-only");
     expect(
-      evaluateRelationDomainGate(
-        hypothesis({ payload: { validity: "ended" } }),
-      ).kind,
+      evaluateRelationDomainGate(hypothesis({ payload: { validity: "ended" } }))
+        .kind,
     ).toBe("report-only");
     expect(
       evaluateRelationDomainGate(

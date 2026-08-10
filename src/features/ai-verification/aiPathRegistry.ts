@@ -257,6 +257,12 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
     auditProperty: "pathId",
   },
   {
+    pathId: "codex_judgment",
+    sourceRef: "src/features/codex/candidateJudgment.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
     pathId: "codex_yomi",
     sourceRef: "src/features/codex/codexYomi.ts",
     dispatchCall: "sendChatMessageWithThinking",

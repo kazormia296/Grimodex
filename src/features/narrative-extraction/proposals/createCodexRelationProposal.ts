@@ -7,11 +7,7 @@ import type { RelationDomainGateDecision } from "@/features/codex/extraction/rel
 export const CODEX_RELATION_CREATE_PROPOSAL_KIND =
   "codex.relation.create" as const;
 
-export interface ProposalBase<
-  Kind extends string,
-  Target,
-  Payload,
-> {
+export interface ProposalBase<Kind extends string, Target, Payload> {
   readonly proposalId: string;
   readonly kind: Kind;
   readonly target: Target;

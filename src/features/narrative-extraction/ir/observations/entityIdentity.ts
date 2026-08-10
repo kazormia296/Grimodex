@@ -69,11 +69,7 @@ export interface EntityIdentityPayload {
         readonly kind: "same-as";
         readonly other: EntityReference;
       };
-  readonly temporalMode:
-    | "timeless"
-    | "current"
-    | "historical"
-    | "unknown";
+  readonly temporalMode: "timeless" | "current" | "historical" | "unknown";
 }
 
 export type EntityIdentityObservation = ObservationBase<

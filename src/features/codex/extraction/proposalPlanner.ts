@@ -34,9 +34,7 @@ export interface PlannedBindCodexEntityProposal {
   readonly blockedReason?: string;
 }
 
-function explicitAliases(
-  hypothesis: CodexEntityHypothesis,
-): AliasCandidate[] {
+function explicitAliases(hypothesis: CodexEntityHypothesis): AliasCandidate[] {
   return hypothesis.payload.aliases
     .filter((alias) => alias.status === "explicit")
     .map((alias) => ({
@@ -61,8 +59,7 @@ function isPronounOnly(hypothesis: CodexEntityHypothesis): boolean {
   const forms = hypothesis.payload.mentionSurfaces;
   if (forms.length === 0) return true;
   return forms.every(
-    (mention) =>
-      mention.form === "pronoun" || mention.form === "implicit",
+    (mention) => mention.form === "pronoun" || mention.form === "implicit",
   );
 }
 

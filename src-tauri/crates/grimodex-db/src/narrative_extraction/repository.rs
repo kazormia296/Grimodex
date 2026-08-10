@@ -221,9 +221,9 @@ pub fn get_run(db: &Database, run_id: String, project_id: String) -> anyhow::Res
     })
 }
 
-/// List runs that can still be resumed for review / apply after process restart.
-/// Excludes cancelled/failed runs and completed runs whose proposals are already
-/// applied (or only rejected).
+/// List runs that still have a durable, unapplied ProposalSet for review restore.
+/// In-progress runs without a ProposalSet are intentionally excluded — those are
+/// task-resume candidates, not Review-resume candidates.
 pub fn list_resumable_runs(
     db: &Database,
     payload: ListResumableRunsPayload,
@@ -237,9 +237,7 @@ pub fn list_resumable_runs(
               WHERE r.project_id = ?1
                 AND (?2 IS NULL OR r.surface_path_id = ?2)
                 AND r.status IN ('pending', 'running', 'completed')
-                AND (
-                  r.status IN ('pending', 'running')
-                  OR EXISTS (
+                AND EXISTS (
                     SELECT 1
                       FROM narrative_proposal_sets ps
                       JOIN narrative_proposals p ON p.proposal_set_id = ps.id
@@ -252,7 +250,6 @@ pub fn list_resumable_runs(
                           WHERE a.proposal_id = p.id
                        )
                   )
-                )
               ORDER BY COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
                        r.id DESC
               LIMIT ?3",

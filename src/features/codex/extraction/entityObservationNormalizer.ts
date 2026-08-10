@@ -74,7 +74,9 @@ function isOneOf<T extends string>(
   value: unknown,
   allowed: readonly T[],
 ): value is T {
-  return typeof value === "string" && (allowed as readonly string[]).includes(value);
+  return (
+    typeof value === "string" && (allowed as readonly string[]).includes(value)
+  );
 }
 
 function parseEvidence(
@@ -115,13 +117,19 @@ function parseAssertion(value: unknown): NarrativeAssertionContext | null {
 function parseEntityReference(value: unknown): EntityReference | null {
   if (!isRecord(value) || typeof value.kind !== "string") return null;
   if (value.kind === "local") {
-    if (typeof value.localId !== "string" || value.localId.trim().length === 0) {
+    if (
+      typeof value.localId !== "string" ||
+      value.localId.trim().length === 0
+    ) {
       return null;
     }
     return { kind: "local", localId: value.localId.trim() };
   }
   if (value.kind === "surface") {
-    if (typeof value.surface !== "string" || value.surface.trim().length === 0) {
+    if (
+      typeof value.surface !== "string" ||
+      value.surface.trim().length === 0
+    ) {
       return null;
     }
     return { kind: "surface", surface: value.surface.trim() };
@@ -145,7 +153,10 @@ function parseMentionPayload(value: unknown): EntityMentionPayload | null {
     value.mentionForm !== "collective"
   ) {
     // proper-name / alias / title / description need a surface on Evidence.
-    if (typeof value.surface !== "string" || value.surface.trim().length === 0) {
+    if (
+      typeof value.surface !== "string" ||
+      value.surface.trim().length === 0
+    ) {
       return null;
     }
   }
@@ -176,10 +187,7 @@ function parseIdentityPayload(value: unknown): EntityIdentityPayload | null {
   if (!isRecord(value.identity) || typeof value.identity.kind !== "string") {
     return null;
   }
-  if (
-    value.identity.kind === "alias" ||
-    value.identity.kind === "renamed-to"
-  ) {
+  if (value.identity.kind === "alias" || value.identity.kind === "renamed-to") {
     if (
       typeof value.identity.surface !== "string" ||
       value.identity.surface.trim().length === 0

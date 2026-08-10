@@ -122,10 +122,7 @@ function evaluateNormalizedObservations(
   const actual: NarrativeActualGraph = {
     observations: observations.map((observation, index) => ({
       id: observation.localId || `observation-${index}`,
-      semanticKey: observationSemanticKey(
-        observation.payload.predicate,
-        index,
-      ),
+      semanticKey: observationSemanticKey(observation.payload.predicate, index),
       dimensions: {
         eventDetection: { status: "observed", value: true },
         actuality: {

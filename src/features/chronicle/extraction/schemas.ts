@@ -22,12 +22,7 @@ const DURATION_KINDS = [
 
 const HYPOTHESIS_ACTUALITIES = ["actual", "attempted", "prevented"] as const;
 
-const SIGNIFICANCES = [
-  "major",
-  "scene-level",
-  "minor",
-  "incidental",
-] as const;
+const SIGNIFICANCES = ["major", "scene-level", "minor", "incidental"] as const;
 
 const SYNTHESIS_RESOLUTIONS = [
   "single-event",
@@ -57,7 +52,9 @@ function isOneOf<T extends string>(
   value: unknown,
   allowed: readonly T[],
 ): value is T {
-  return typeof value === "string" && (allowed as readonly string[]).includes(value);
+  return (
+    typeof value === "string" && (allowed as readonly string[]).includes(value)
+  );
 }
 
 function parseEvidence(
@@ -128,7 +125,8 @@ function parseAssertion(
     return null;
   }
   return {
-    attribution: attribution as RawChronicleEventObservation["assertion"]["attribution"],
+    attribution:
+      attribution as RawChronicleEventObservation["assertion"]["attribution"],
     narrativeFrame: value.narrativeFrame,
   };
 }
@@ -147,22 +145,24 @@ export function parseRawChronicleEventObservation(
   if (!Array.isArray(value.evidence) || value.evidence.length === 0) {
     errors.push("evidence: non-empty array required");
   }
-  const evidence =
-    Array.isArray(value.evidence)
-      ? value.evidence
-          .map((item, index) => parseEvidence(item, `evidence[${index}]`, errors))
-          .filter(
-            (item): item is RawChronicleEventObservation["evidence"][number] =>
-              item !== null,
-          )
-      : [];
+  const evidence = Array.isArray(value.evidence)
+    ? value.evidence
+        .map((item, index) => parseEvidence(item, `evidence[${index}]`, errors))
+        .filter(
+          (item): item is RawChronicleEventObservation["evidence"][number] =>
+            item !== null,
+        )
+    : [];
   const assertion = parseAssertion(value.assertion, "assertion", errors);
   if (!isRecord(value.payload)) {
     errors.push("payload: expected object");
     return { ok: false, errors };
   }
   const payload = value.payload;
-  if (typeof payload.predicate !== "string" || payload.predicate.trim().length === 0) {
+  if (
+    typeof payload.predicate !== "string" ||
+    payload.predicate.trim().length === 0
+  ) {
     errors.push("payload.predicate: non-empty string required");
   }
   if (!isOneOf(payload.actuality, OBSERVATION_ACTUALITIES)) {
@@ -210,7 +210,8 @@ export function parseRawChronicleEventObservation(
         ...(typeof payload.semanticType === "string"
           ? { semanticType: payload.semanticType.trim() }
           : {}),
-        actuality: payload.actuality as RawChronicleEventObservation["payload"]["actuality"],
+        actuality:
+          payload.actuality as RawChronicleEventObservation["payload"]["actuality"],
         participants,
         ...(typeof payload.locationSurface === "string"
           ? { locationSurface: payload.locationSurface.trim() }
@@ -269,8 +270,13 @@ export function parseRawEventSynthesisResult(
         errors.push(`events[${index}]: expected object`);
         continue;
       }
-      if (!Array.isArray(raw.observationRefs) || raw.observationRefs.length === 0) {
-        errors.push(`events[${index}].observationRefs: non-empty array required`);
+      if (
+        !Array.isArray(raw.observationRefs) ||
+        raw.observationRefs.length === 0
+      ) {
+        errors.push(
+          `events[${index}].observationRefs: non-empty array required`,
+        );
         continue;
       }
       const observationRefs = raw.observationRefs.filter(
