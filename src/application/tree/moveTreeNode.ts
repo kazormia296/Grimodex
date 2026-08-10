@@ -3,6 +3,7 @@ import { cmpKeys, generateKeyBetween } from "@/features/tree/fractionalIndex";
 import type { HistoryCommand } from "@/store/globalHistoryStore";
 
 export interface MoveTreeNodePorts {
+  tryAcquireNavigationAuthority(): { release(): void } | null;
   getNodes(): readonly TreeNodeData[];
   applyNodes(nodes: TreeNodeData[]): void;
   persist(
@@ -58,6 +59,21 @@ export async function moveTreeNode(
   afterId: string | null | undefined,
   ports: MoveTreeNodePorts,
 ): Promise<void> {
+  const navigationAuthority = ports.tryAcquireNavigationAuthority();
+  if (!navigationAuthority) return;
+  try {
+    await moveTreeNodeWithAuthority(id, newParentId, afterId, ports);
+  } finally {
+    navigationAuthority.release();
+  }
+}
+
+async function moveTreeNodeWithAuthority(
+  id: string,
+  newParentId: string | null,
+  afterId: string | null | undefined,
+  ports: MoveTreeNodePorts,
+): Promise<void> {
   const nodes = [...ports.getNodes()];
   const node = nodes.find((candidate) => candidate.id === id);
   if (!node) return;
@@ -104,18 +120,30 @@ export async function moveTreeNode(
       label: ports.movedLabel,
       entityId: id,
       async undo() {
-        const persisted = await ports.persist(id, {
-          parentId: oldParentId,
-          sortOrder: oldSortOrder,
-        });
-        apply(oldParentId, oldSortOrder, persisted?.updatedAt);
+        const navigationAuthority = ports.tryAcquireNavigationAuthority();
+        if (!navigationAuthority) return;
+        try {
+          const persisted = await ports.persist(id, {
+            parentId: oldParentId,
+            sortOrder: oldSortOrder,
+          });
+          apply(oldParentId, oldSortOrder, persisted?.updatedAt);
+        } finally {
+          navigationAuthority.release();
+        }
       },
       async redo() {
-        const persisted = await ports.persist(id, {
-          parentId: newParentId,
-          sortOrder,
-        });
-        apply(newParentId, sortOrder, persisted?.updatedAt);
+        const navigationAuthority = ports.tryAcquireNavigationAuthority();
+        if (!navigationAuthority) return;
+        try {
+          const persisted = await ports.persist(id, {
+            parentId: newParentId,
+            sortOrder,
+          });
+          apply(newParentId, sortOrder, persisted?.updatedAt);
+        } finally {
+          navigationAuthority.release();
+        }
       },
     });
   }

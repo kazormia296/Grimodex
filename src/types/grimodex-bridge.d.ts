@@ -102,6 +102,8 @@ export interface GrimodexBridge {
       opts: { width: number; height: number; title: string },
     ): Promise<void>;
     focusByLabel(label: string): Promise<boolean>;
+    /** Compatibility fallback is kept renderer-side for older preload mocks. */
+    existsByLabel?(label: string): Promise<boolean>;
   };
 }
 

@@ -114,6 +114,46 @@ export function isExclusiveDocumentLeaseActive(
   );
 }
 
+export function hasPendingCoordinatedDocumentMutation(
+  documentKey: DocumentKey,
+): boolean {
+  const encoded = encodeDocumentKey(documentKey);
+  return (
+    saveTails.has(encoded) ||
+    (exclusiveDocumentLeaseCounts.get(encoded) ?? 0) > 0
+  );
+}
+
+/** Drain only persistence/replacement work for the requested documents. */
+export async function awaitCoordinatedDocumentMutationsForDocuments(
+  documentKeys: readonly DocumentKey[],
+): Promise<void> {
+  const targets = new Set<string>(documentKeys.map(encodeDocumentKey));
+  const failures: unknown[] = [];
+  for (let round = 0; round < MAX_COORDINATOR_DRAIN_ROUNDS; round += 1) {
+    const pending = [...saveTails.entries()]
+      .filter(([encoded]) => targets.has(encoded))
+      .map(([, task]) => task);
+    if (pending.length === 0) {
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          "One or more scoped document mutations failed",
+        );
+      }
+      return;
+    }
+    const results = await Promise.allSettled([...new Set(pending)]);
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
+  }
+  throw new AggregateError(
+    failures,
+    "Scoped document mutations did not reach quiescence",
+  );
+}
+
 export function subscribeExclusiveDocumentLease(
   documentKey: DocumentKey | null,
   listener: () => void,

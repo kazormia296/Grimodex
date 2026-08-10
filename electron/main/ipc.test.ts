@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   >(),
   buildShellCommandHandlers: vi.fn(() => ({})),
   registerShellBridgeHandlers: vi.fn(),
+  focusPanelWindow: vi.fn(),
+  hasPanelWindow: vi.fn(),
+  openPanelWindow: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
@@ -40,8 +43,9 @@ vi.mock("./shellCommands.js", () => ({
 }));
 
 vi.mock("./windows.js", () => ({
-  focusPanelWindow: vi.fn(),
-  openPanelWindow: vi.fn(),
+  focusPanelWindow: mocks.focusPanelWindow,
+  hasPanelWindow: mocks.hasPanelWindow,
+  openPanelWindow: mocks.openPanelWindow,
 }));
 
 const { registerIpcRouter } = await import("./ipc.js");
@@ -68,6 +72,16 @@ afterEach(() => {
 });
 
 describe("registerIpcRouter fail-soft logging", () => {
+  it("injects the side-effect-free panel existence delegate", () => {
+    registerIpcRouter(null);
+
+    expect(mocks.registerShellBridgeHandlers).toHaveBeenCalledWith({
+      open: mocks.openPanelWindow,
+      focusByLabel: mocks.focusPanelWindow,
+      existsByLabel: mocks.hasPanelWindow,
+    });
+  });
+
   it("does not copy an unimplemented renderer command into production logs", async () => {
     const sentinel = "SECRET_NOVEL_SENTINEL";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

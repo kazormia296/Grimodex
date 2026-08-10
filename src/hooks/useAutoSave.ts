@@ -206,6 +206,11 @@ export function hasPendingOrFailedAutoSaveForDocument(
   );
 }
 
+/** Monotonic topology revision used by cross-registry scoped drains. */
+export function getAutoSaveRegistryRevision(): number {
+  return autoSaveRegistryRevision;
+}
+
 /** Explicit destructive lifecycle path used only after user confirmation. */
 export function discardAllAutoSaves(): void {
   const instances = new Set([

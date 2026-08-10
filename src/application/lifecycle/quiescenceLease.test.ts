@@ -6,6 +6,7 @@ import {
   isAuthorityBlockingLifecycleIdle,
   isQuiescenceLeaseActive,
   subscribeQuiescenceLease,
+  waitForQuiescenceMutationAdmission,
 } from "./quiescenceLease";
 import { enqueueIpc, resetIpcQueueForTests } from "@/lib/ipcQueue";
 import {
@@ -326,5 +327,63 @@ describe("quiescence lease", () => {
     workspaceLease.release();
     expect(listener).toHaveBeenCalledTimes(2);
     unsubscribe();
+  });
+
+  it("keeps narrative source mutation admission closed during its read phase", async () => {
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+    const sourceRead = vi.fn(async () => "sealed-source");
+
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(false);
+    expect(() => acquireQuiescenceLease("project-load")).toThrow(
+      "while a narrative snapshot is active",
+    );
+
+    lease.openControlledReadPhase();
+    await expect(
+      enqueueIpc("narrative-source-read", sourceRead, 10_000, "read"),
+    ).resolves.toBe("sealed-source");
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+
+    lease.release();
+    expect(canScheduleQuiescenceMutation()).toBe(true);
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(true);
+  });
+
+  it("isolates throwing observers so a lease can still be released", () => {
+    const unsubscribe = subscribeQuiescenceLease(() => {
+      throw new Error("observer failed");
+    });
+
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    lease.release();
+
+    expect(canScheduleQuiescenceMutation()).toBe(true);
+    unsubscribe();
+  });
+
+  it("queues newly observed mutations behind non-authority lifecycle leases", async () => {
+    const lease = acquireQuiescenceLease("audit-export");
+    let settled = false;
+    const admission = waitForQuiescenceMutationAdmission().then((value) => {
+      settled = true;
+      return value;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    lease.release();
+    await expect(admission).resolves.toBe(true);
+  });
+
+  it("does not reopen mutation admission after renderer teardown", async () => {
+    const lease = acquireQuiescenceLease("window-close");
+    const admission = waitForQuiescenceMutationAdmission();
+
+    lease.release({ disposition: "renderer-teardown" });
+
+    await expect(admission).resolves.toBe(false);
   });
 });

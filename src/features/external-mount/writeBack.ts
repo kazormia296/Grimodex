@@ -49,6 +49,10 @@ export function hasPendingWriteBack(sceneId: string): boolean {
   );
 }
 
+function hasPendingWriteBackForScenes(sceneIds: ReadonlySet<string>): boolean {
+  return [...sceneIds].some((sceneId) => hasPendingWriteBack(sceneId));
+}
+
 /**
  * Cancel a debounced draft and wait for an already-started native write to
  * settle. A reload-conflict winner can then rewrite the chosen external
@@ -166,6 +170,66 @@ export async function flushAllWriteBacksStrict(): Promise<void> {
   }
 
   throw new Error("External write-backs did not reach quiescence");
+}
+
+/**
+ * Flush only the external-file drafts owned by a narrative corpus. Other
+ * mounted Scenes remain debounced and cannot block an unrelated snapshot.
+ */
+export async function flushWriteBacksForScenes(
+  sceneIds: readonly string[],
+): Promise<void> {
+  const targets = new Set(sceneIds);
+  if (targets.size === 0) return;
+
+  const retryableAtStart = [...failedWrites.entries()].filter(([sceneId]) =>
+    targets.has(sceneId),
+  );
+  for (const [sceneId] of retryableAtStart) failedWrites.delete(sceneId);
+
+  for (let round = 0; round < MAX_STRICT_DRAIN_ROUNDS; round++) {
+    for (const [sceneId, scheduled] of [...scheduledWrites]) {
+      if (!targets.has(sceneId)) continue;
+      clearTimeout(scheduled.timer);
+      scheduledWrites.delete(sceneId);
+      failedWrites.delete(sceneId);
+      startWriteBack(sceneId, scheduled);
+    }
+    if (round === 0) {
+      for (const [sceneId, failed] of retryableAtStart) {
+        if (!inFlightWrites.has(sceneId) && !scheduledWrites.has(sceneId)) {
+          startWriteBack(sceneId, failed.draft);
+        }
+      }
+    }
+
+    const targetWrites = [...inFlightWrites.entries()]
+      .filter(([sceneId]) => targets.has(sceneId))
+      .map(([, write]) => write);
+    if (targetWrites.length > 0) {
+      await Promise.allSettled([...new Set(targetWrites)]);
+    }
+
+    if (hasPendingWriteBackForScenes(targets)) {
+      const failures = [...failedWrites.entries()].filter(([sceneId]) =>
+        targets.has(sceneId),
+      );
+      const hasActiveTarget = [...targets].some(
+        (sceneId) =>
+          scheduledWrites.has(sceneId) || inFlightWrites.has(sceneId),
+      );
+      if (!hasActiveTarget && failures.length > 0) {
+        throw new AggregateError(
+          failures.map(([, { error }]) => error),
+          "One or more scoped external write-backs failed",
+        );
+      }
+      continue;
+    }
+    return;
+  }
+
+  throw new Error("Scoped external write-backs did not reach quiescence");
 }
 
 registerQuiescenceProvider({
