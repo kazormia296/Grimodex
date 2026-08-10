@@ -126,12 +126,21 @@ fn safe_mode_lists_opaque_candidate_ids_for_backups_and_snapshots() {
     }
 
     let listed = list_safe_mode_candidates(&ws_state).expect("list");
+    let automatic = listed
+        .iter()
+        .find(|c| c.kind == RecoveryCandidateKind::AutomaticBackup)
+        .expect("automatic backup");
+    let verified = verify_safe_mode_candidate(&ws_state, &automatic.id).expect("verify");
+    assert_eq!(verified.id, automatic.id);
+
     let migration = listed
         .iter()
         .find(|c| c.kind == RecoveryCandidateKind::MigrationSnapshot)
         .expect("migration snapshot");
-    let verified = verify_safe_mode_candidate(&ws_state, &migration.id).expect("verify");
-    assert_eq!(verified.id, migration.id);
+    assert_eq!(
+        migration.checksum_status,
+        grimodex_db::recovery::ChecksumStatus::Unverified
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

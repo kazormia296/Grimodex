@@ -1006,7 +1006,8 @@ fn live_invariants_ok(db_path: &Path) -> Result<bool, MigrationSupervisorError> 
     Ok(has_current_schema_checkpoint_invariants(&conn)?)
 }
 
-fn verify_migrated_db(path: &Path) -> anyhow::Result<()> {
+/// Shared post-migrate verification used by Migration Supervisor and restore preflight.
+pub fn verify_migrated_db(path: &Path) -> anyhow::Result<()> {
     let db = Database::new(path)?;
     let version: i32 =
         db.with_conn(|conn| Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?))?;
@@ -1187,7 +1188,7 @@ fn sync_file(path: &Path) -> io::Result<()> {
     file.sync_all()
 }
 
-fn workspace_identity(workspace: &Path) -> String {
+pub(crate) fn workspace_identity(workspace: &Path) -> String {
     let meta = workspace.join(".grimodex/workspace.json");
     if let Ok(bytes) = fs::read(&meta) {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {

@@ -9,14 +9,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::backup_restore::{
-    install_staged_workspace_db, list_backups_in, materialize_candidate_to_plain,
-    preflight_candidate, verify_sqlite_ok, BackupInfo, InstallStagedOptions,
+    create_persistent_live_safety_artifact, install_staged_workspace_db, list_backups_in,
+    materialize_candidate_to_plain, preflight_candidate, verify_sqlite_ok, BackupInfo,
+    InstallStagedOptions,
 };
 use crate::error::{AppError, AppResult};
 use crate::migration_supervisor::{
@@ -258,6 +259,14 @@ impl SafeModeState {
 pub fn build_candidate_registry(
     workspace: &Path,
 ) -> AppResult<HashMap<String, RecoveryCandidateRecord>> {
+    // Fail the whole registry only when the workspace root itself is unusable.
+    let _ws_canon = workspace.canonicalize().map_err(|e| {
+        AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_WORKSPACE_UNREADABLE: cannot canonicalize {}: {e}",
+            workspace.display()
+        ))
+    })?;
+
     let mut records = HashMap::new();
     let backups_dir = workspace.join("backups");
     for backup in list_backups_in(&backups_dir) {
@@ -267,7 +276,7 @@ pub fn build_candidate_registry(
         } else {
             RecoveryCandidateKind::AutomaticBackup
         };
-        push_record(
+        if let Err(error) = push_record(
             &mut records,
             workspace,
             RecoveryCandidateSeed {
@@ -280,7 +289,12 @@ pub fn build_candidate_registry(
                 app_version: None,
                 checksum_status: ChecksumStatus::Unverified,
             },
-        )?;
+        ) {
+            tracing::warn!(
+                "recovery: skipping backup candidate {}: {error}",
+                backup.file_name
+            );
+        }
     }
 
     let migrations = workspace.join("backups/migrations");
@@ -305,7 +319,7 @@ pub fn build_candidate_registry(
                 .unwrap_or(0);
             let (schema_version, app_version, checksum_status) =
                 inspect_migration_snapshot(&absolute);
-            push_record(
+            if let Err(error) = push_record(
                 &mut records,
                 workspace,
                 RecoveryCandidateSeed {
@@ -318,7 +332,9 @@ pub fn build_candidate_registry(
                     app_version,
                     checksum_status,
                 },
-            )?;
+            ) {
+                tracing::warn!("recovery: skipping migration candidate {name}: {error}");
+            }
         }
     }
     Ok(records)
@@ -509,9 +525,9 @@ pub fn verify_candidate_record(record: &RecoveryCandidateRecord) -> AppResult<Re
         RecoveryCandidateKind::MigrationSnapshot => {
             let (_, _, status) = inspect_migration_snapshot(&record.absolute_path);
             candidate.checksum_status = status;
-            if status == ChecksumStatus::Invalid {
+            if status != ChecksumStatus::Verified {
                 return Err(AppError::Anyhow(anyhow::anyhow!(
-                    "RECOVERY_CHECKSUM_INVALID: {}",
+                    "RECOVERY_CHECKSUM_INVALID: migration snapshot must have a verified manifest ({})",
                     record.relative_key
                 )));
             }
@@ -552,22 +568,128 @@ pub fn preflight_restore_candidate(record: &RecoveryCandidateRecord) -> AppResul
     result
 }
 
-fn copy_sqlite_image(source: &Path, dest: &Path) -> AppResult<()> {
-    // Prefer VACUUM INTO when source is a live SQLite image so WAL frames are included.
-    match Database::new(source) {
-        Ok(db) => {
-            let dest_str = dest.to_string_lossy().replace('\'', "''");
-            db.with_conn(|conn| {
-                conn.execute(&format!("VACUUM INTO '{dest_str}'"), [])?;
-                Ok(())
-            })?;
-            Ok(())
-        }
-        Err(_) => {
-            fs::copy(source, dest).map_err(anyhow::Error::from)?;
-            Ok(())
-        }
+/// Materialize a restore candidate under exclusive lease after re-validating
+/// migration snapshot identity (manifest SHA / size / workspace).
+fn materialize_candidate_for_restore(
+    workspace: &Path,
+    absolute_path: &Path,
+    relative_key: &str,
+    kind: RecoveryCandidateKind,
+    dest: &Path,
+) -> AppResult<()> {
+    let mut file = File::open(absolute_path).map_err(anyhow::Error::from)?;
+    let meta = file.metadata().map_err(anyhow::Error::from)?;
+    if kind == RecoveryCandidateKind::MigrationSnapshot {
+        reverify_migration_snapshot_locked(
+            workspace,
+            absolute_path,
+            relative_key,
+            &mut file,
+            &meta,
+        )?;
+        file.seek(SeekFrom::Start(0)).map_err(anyhow::Error::from)?;
+        materialize_open_file_to_plain(&mut file, false, dest)?;
+    } else {
+        let is_gz = relative_key.ends_with(".db.gz");
+        file.seek(SeekFrom::Start(0)).map_err(anyhow::Error::from)?;
+        materialize_open_file_to_plain(&mut file, is_gz, dest)?;
     }
+    Ok(())
+}
+
+fn reverify_migration_snapshot_locked(
+    workspace: &Path,
+    absolute_path: &Path,
+    relative_key: &str,
+    file: &mut File,
+    meta: &fs::Metadata,
+) -> AppResult<MigrationSnapshotManifest> {
+    let manifest_path = sidecar_manifest(absolute_path);
+    let raw = fs::read_to_string(&manifest_path).map_err(|_| {
+        AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_MANIFEST_MISSING: refusing restore of {relative_key} without manifest"
+        ))
+    })?;
+    let manifest: MigrationSnapshotManifest = serde_json::from_str(&raw).map_err(|error| {
+        AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_MANIFEST_INVALID: {relative_key}: {error}"
+        ))
+    })?;
+    let file_name = absolute_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if manifest.database_file_name != file_name {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_MANIFEST_NAME_MISMATCH: manifest databaseFileName={} path={file_name}",
+            manifest.database_file_name
+        )));
+    }
+    if meta.len() != manifest.size_bytes {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_MANIFEST_SIZE_MISMATCH: manifest size={} file size={}",
+            manifest.size_bytes,
+            meta.len()
+        )));
+    }
+    let expected_identity = migration_supervisor::workspace_identity(workspace);
+    if manifest.source_workspace_identity != expected_identity {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_WORKSPACE_IDENTITY_MISMATCH: manifest identity={} workspace identity={expected_identity}",
+            manifest.source_workspace_identity
+        )));
+    }
+    file.seek(SeekFrom::Start(0)).map_err(anyhow::Error::from)?;
+    let actual = sha256_reader(file)?;
+    if !actual.eq_ignore_ascii_case(&manifest.sha256) {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "RECOVERY_CHECKSUM_INVALID: snapshot content diverged from manifest for {relative_key}"
+        )));
+    }
+    Ok(manifest)
+}
+
+fn materialize_open_file_to_plain(input: &mut File, is_gz: bool, dest: &Path) -> AppResult<()> {
+    use flate2::read::GzDecoder;
+    use std::fs::OpenOptions;
+    use std::io::BufReader;
+
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .map_err(anyhow::Error::from)?;
+    let copy_result = if is_gz {
+        let mut decoder = GzDecoder::new(BufReader::new(input));
+        io::copy(&mut decoder, &mut output).map_err(anyhow::Error::from)
+    } else {
+        io::copy(input, &mut output).map_err(anyhow::Error::from)
+    };
+    if let Err(error) = copy_result {
+        drop(output);
+        let _ = fs::remove_file(dest);
+        return Err(error.into());
+    }
+    if let Err(error) = output.sync_all() {
+        drop(output);
+        let _ = fs::remove_file(dest);
+        return Err(anyhow::Error::from(error).into());
+    }
+    drop(output);
+    Ok(())
+}
+
+fn sha256_reader(file: &mut File) -> AppResult<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(anyhow::Error::from)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Legacy BackupInfo list used by Gate A supervisor messages; map into candidates.
@@ -617,13 +739,14 @@ pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str
         }
     }
 
-    let (workspace_path, absolute_path, relative_key) =
+    let (workspace_path, absolute_path, relative_key, kind) =
         ws_state.safe_mode.with_session(|session| {
             let record = session.resolve(candidate_id)?;
             Ok((
                 session.workspace_path.clone(),
                 record.absolute_path.clone(),
                 record.relative_key.clone(),
+                record.candidate.kind,
             ))
         })?;
 
@@ -635,7 +758,13 @@ pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str
     // materialize so symlink/hardlink TOCTOU cannot race the copy.
     let exclusive = workspace_lease::acquire_exclusive_for_migration(&workspace_path)?;
     ensure_path_inside_workspace(&workspace_path, &absolute_path)?;
-    materialize_candidate_to_plain(&absolute_path, &relative_key, &staged)?;
+    materialize_candidate_for_restore(
+        &workspace_path,
+        &absolute_path,
+        &relative_key,
+        kind,
+        &staged,
+    )?;
     preflight_candidate(&staged)?;
 
     let result = install_staged_workspace_db(
@@ -659,16 +788,14 @@ pub fn quarantine_live_database(ws_state: &WorkspaceState) -> AppResult<String> 
                 "RECOVERY_LIVE_MISSING: grimodex.db is not present"
             )));
         }
-        let quarantine_dir = session.workspace_path.join("backups");
-        fs::create_dir_all(&quarantine_dir).map_err(anyhow::Error::from)?;
-        let stamp = Utc::now().format("%Y%m%d-%H%M%S%3f");
-        let dest = quarantine_dir.join(format!("grimodex-quarantine-{stamp}.db"));
-        copy_sqlite_image(&db_path, &dest)?;
-        Ok(dest
+        let artifact = create_persistent_live_safety_artifact(&session.workspace_path, &db_path)?;
+        let name = artifact
+            .retained_path()
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("grimodex-quarantine.db")
-            .to_string())
+            .unwrap_or("grimodex-pre-restore")
+            .to_string();
+        Ok(name)
     })
 }
 
@@ -966,6 +1093,7 @@ mod tests {
 
         let ws = temp_ws("restore-fp-snap");
         create_migrated_db(&ws.join("grimodex.db"), "live");
+        commit_wal_only_marker(&ws.join("grimodex.db"));
         create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
         let state = safe_mode_state(&ws);
         let staged = ws.join("staged-restore.db");
@@ -987,6 +1115,17 @@ mod tests {
             "err={err}"
         );
         assert_eq!(marker_at(&ws.join("grimodex.db")), "live");
+        assert_eq!(
+            wal_only_marker_at(&ws.join("grimodex.db")),
+            "committed only in wal"
+        );
+        assert!(
+            ws.join("grimodex.db-wal").exists(),
+            "live WAL must survive AfterRollbackSnapshot"
+        );
+        // Persistent safety artifact must already contain the WAL-only row.
+        let safety = latest_pre_restore_logical(&ws);
+        assert_eq!(wal_only_marker_at(&safety), "committed only in wal");
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -1000,10 +1139,13 @@ mod tests {
         fs::create_dir(ws.join("grimodex.db-wal")).expect("make undeletable sidecar");
 
         let error = restore_safe_mode_candidate(&state, &candidate_id)
-            .expect_err("sidecar removal failure must abort restore");
+            .expect_err("sidecar / safety failure must abort restore");
 
         assert!(
-            error.to_string().contains("sidecar"),
+            error.to_string().contains("sidecar")
+                || error.to_string().contains("RESTORE_LIVE_SAFETY")
+                || error.to_string().contains("FORENSIC")
+                || error.to_string().contains("安全コピー"),
             "unexpected error: {error}"
         );
         fs::remove_dir(ws.join("grimodex.db-wal")).expect("remove sidecar dir");
@@ -1043,6 +1185,174 @@ mod tests {
         assert_eq!(marker_at(&ws.join("grimodex.db")), "backup");
         let shared = workspace_lease::try_acquire_shared(&ws).expect("shared lease available");
         drop(shared);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    fn commit_wal_only_marker(db_path: &Path) {
+        use rusqlite::config::DbConfig;
+        use rusqlite::params;
+        let conn = rusqlite::Connection::open(db_path).expect("open for dirty WAL");
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .expect("no ckpt");
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .expect("wal");
+        conn.pragma_update(None, "wal_autocheckpoint", 0)
+            .expect("autocheckpoint");
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+            params!["gate-a2.wal-only", "committed only in wal"],
+        )
+        .expect("wal-only commit");
+    }
+
+    fn wal_only_marker_at(db_path: &Path) -> String {
+        use rusqlite::config::DbConfig;
+        let conn = rusqlite::Connection::open(db_path).expect("open");
+        let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true);
+        conn.query_row(
+            "SELECT value FROM app_settings WHERE key = 'gate-a2.wal-only'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("wal-only row")
+    }
+
+    fn latest_pre_restore_logical(ws: &Path) -> PathBuf {
+        let mut paths = fs::read_dir(ws.join("backups"))
+            .expect("backups")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("grimodex-pre-restore-") && name.ends_with(".db")
+                    })
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.pop().expect("pre-restore logical artifact")
+    }
+
+    fn sha256_of(path: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let bytes = fs::read(path).expect("read");
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    fn write_migration_manifest(db_path: &Path, workspace: &Path) {
+        let sha = sha256_of(db_path);
+        let size = fs::metadata(db_path).expect("meta").len();
+        let manifest = MigrationSnapshotManifest {
+            version: 1,
+            source_schema_version: grimodex_core::SCHEMA_VERSION,
+            target_schema_version: grimodex_core::SCHEMA_VERSION,
+            app_version: "test".into(),
+            database_file_name: db_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("x.db")
+                .to_string(),
+            size_bytes: size,
+            sha256: sha,
+            created_at: Utc::now().to_rfc3339(),
+            source_workspace_identity: migration_supervisor::workspace_identity(workspace),
+            migration_id: Uuid::new_v4().to_string(),
+        };
+        fs::write(
+            db_path.with_extension("json"),
+            serde_json::to_vec_pretty(&manifest).expect("json"),
+        )
+        .expect("write manifest");
+    }
+
+    #[test]
+    fn safe_mode_restore_success_retains_pre_restore_artifact_with_wal_row() {
+        let ws = temp_ws("retain-safety");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        commit_wal_only_marker(&ws.join("grimodex.db"));
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db");
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("restore");
+        let safety = latest_pre_restore_logical(&ws);
+        assert_eq!(wal_only_marker_at(&safety), "committed only in wal");
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "backup");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn migration_snapshot_content_swap_after_list_is_rejected() {
+        let ws = temp_ws("swap-snap");
+        fs::create_dir_all(ws.join("backups/migrations")).expect("dirs");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        let before = sha256_of(&ws.join("grimodex.db"));
+        let snap = ws.join("backups/migrations/migration-demo.db");
+        create_migrated_db(&snap, "snap-a");
+        write_migration_manifest(&snap, &ws);
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, "migration-demo.db");
+
+        // Replace snapshot bytes while keeping the same relative key / opaque id.
+        create_migrated_db(&snap, "snap-b");
+
+        let err = restore_safe_mode_candidate(&state, &candidate_id)
+            .expect_err("swapped snapshot must be rejected");
+        assert!(
+            err.to_string().contains("RECOVERY_CHECKSUM_INVALID")
+                || err.to_string().contains("SIZE_MISMATCH")
+                || err.to_string().contains("CHECKSUM"),
+            "err={err}"
+        );
+        assert_eq!(sha256_of(&ws.join("grimodex.db")), before);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn migration_snapshot_without_manifest_is_rejected_on_restore() {
+        let ws = temp_ws("no-manifest");
+        fs::create_dir_all(ws.join("backups/migrations")).expect("dirs");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        let before = sha256_of(&ws.join("grimodex.db"));
+        let snap = ws.join("backups/migrations/migration-demo.db");
+        create_migrated_db(&snap, "snap");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, "migration-demo.db");
+
+        let err = restore_safe_mode_candidate(&state, &candidate_id)
+            .expect_err("missing manifest must refuse restore");
+        assert!(
+            err.to_string().contains("RECOVERY_MANIFEST_MISSING"),
+            "err={err}"
+        );
+        assert_eq!(sha256_of(&ws.join("grimodex.db")), before);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_candidate_is_skipped_without_blocking_registry() {
+        let ws = temp_ws("hardlink-skip");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "good");
+        let target = ws.join("backups/grimodex-real.db");
+        create_migrated_db(&target, "linked");
+        let link = ws.join("backups/grimodex-hardlink.db");
+        fs::hard_link(&target, &link).expect("hardlink");
+
+        let registry = build_candidate_registry(&ws).expect("registry must succeed");
+        assert!(
+            registry
+                .values()
+                .any(|record| { record.relative_key == "grimodex-auto.db" }),
+            "valid backup must remain listed: {registry:?}"
+        );
+        assert!(
+            registry
+                .values()
+                .all(|record| record.relative_key != "grimodex-hardlink.db"),
+            "hardlink candidate must be skipped"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 }

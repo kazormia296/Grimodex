@@ -220,6 +220,129 @@ pub fn restore_backup_core(
     result
 }
 
+pub enum LiveSafetyArtifact {
+    /// Consistent SQLite image that includes committed WAL frames (VACUUM INTO).
+    LogicalDb { path: PathBuf },
+    /// Raw main+wal+shm copies when the live DB cannot be opened as SQLite.
+    ForensicBundle { dir: PathBuf },
+}
+
+impl LiveSafetyArtifact {
+    pub fn retained_path(&self) -> &Path {
+        match self {
+            Self::LogicalDb { path } => path,
+            Self::ForensicBundle { dir } => dir,
+        }
+    }
+
+    fn rollback_source_db(&self) -> PathBuf {
+        match self {
+            Self::LogicalDb { path } => path.clone(),
+            Self::ForensicBundle { dir } => dir.join("grimodex.db"),
+        }
+    }
+}
+
+/// Capture a persistent pre-restore safety artifact **before** mutating live
+/// sidecars. Prefer a logical VACUUM INTO snapshot (WAL frames included); fall
+/// back to a raw db+wal+shm forensic bundle when SQLite cannot open the live image.
+pub fn create_persistent_live_safety_artifact(
+    workspace: &Path,
+    db_path: &Path,
+) -> AppResult<LiveSafetyArtifact> {
+    let backups_dir = workspace.join("backups");
+    std::fs::create_dir_all(&backups_dir).map_err(anyhow::Error::from)?;
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%3f");
+
+    let logical = backups_dir.join(format!("grimodex-pre-restore-{stamp}.db"));
+    match vacuum_live_into(db_path, &logical) {
+        Ok(()) => {
+            sync_path(&logical)?;
+            verify_sqlite_ok(&logical)?;
+            Ok(LiveSafetyArtifact::LogicalDb { path: logical })
+        }
+        Err(logical_error) => {
+            cleanup_path_best_effort(&logical);
+            tracing::warn!(
+                "restore: logical live safety snapshot failed ({logical_error}); writing forensic bundle"
+            );
+            let dir = backups_dir.join(format!("grimodex-pre-restore-{stamp}.forensic"));
+            std::fs::create_dir_all(&dir).map_err(anyhow::Error::from)?;
+            copy_raw_sqlite_forensic_bundle(db_path, &dir)?;
+            Ok(LiveSafetyArtifact::ForensicBundle { dir })
+        }
+    }
+}
+
+fn vacuum_live_into(db_path: &Path, dest: &Path) -> AppResult<()> {
+    // Do **not** TRUNCATE-checkpoint the live DB first — callers must keep
+    // WAL-only commits recoverable on live until after this snapshot succeeds.
+    let conn = rusqlite::Connection::open(db_path).map_err(anyhow::Error::from)?;
+    if dest.exists() {
+        std::fs::remove_file(dest).map_err(anyhow::Error::from)?;
+    }
+    let dest_str = dest
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("safety artifact path is not valid UTF-8"))?;
+    conn.execute("VACUUM INTO ?1", rusqlite::params![dest_str])
+        .map_err(anyhow::Error::from)?;
+    Ok(())
+}
+
+fn copy_raw_sqlite_forensic_bundle(db_path: &Path, dir: &Path) -> AppResult<()> {
+    let dest_db = dir.join("grimodex.db");
+    std::fs::copy(db_path, &dest_db).map_err(anyhow::Error::from)?;
+    sync_path(&dest_db)?;
+    for suffix in ["-wal", "-shm"] {
+        let src = sidecar(db_path, suffix);
+        match std::fs::symlink_metadata(&src) {
+            Ok(meta) if meta.file_type().is_file() => {
+                let dest = dir.join(format!("grimodex.db{suffix}"));
+                std::fs::copy(&src, &dest).map_err(anyhow::Error::from)?;
+                sync_path(&dest)?;
+            }
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "RESTORE_FORENSIC_SIDECAR_NOT_FILE: {}",
+                    src.display()
+                )
+                .into());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "RESTORE_FORENSIC_SIDECAR_STAT_FAILED: {}: {error}",
+                    src.display()
+                )
+                .into());
+            }
+        }
+    }
+    let meta_path = dir.join("forensic-meta.json");
+    let meta = serde_json::json!({
+        "version": 1,
+        "sourceMain": db_path.display().to_string(),
+        "capturedAt": chrono::Utc::now().to_rfc3339(),
+    });
+    std::fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&meta).map_err(anyhow::Error::from)?,
+    )
+    .map_err(anyhow::Error::from)?;
+    sync_path(&meta_path)?;
+    Ok(())
+}
+
+fn sync_path(path: &Path) -> AppResult<()> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(anyhow::Error::from)?;
+    file.sync_all().map_err(anyhow::Error::from)?;
+    Ok(())
+}
+
 pub fn install_staged_workspace_db(
     ws_state: &WorkspaceState,
     ws_path: &Path,
@@ -263,9 +386,8 @@ pub fn install_staged_workspace_db(
             return Err(error);
         }
 
-        // Best-effort safety copy of the state being replaced. Restore must
-        // remain available when the live DB itself is damaged, so backup
-        // failure is logged.
+        // Best-effort user-visible gzip remains optional; mandatory WAL-preserving
+        // safety is created below under exclusive lease before sidecar removal.
         if let Err(error) = std::fs::create_dir_all(&backups_dir) {
             tracing::warn!("restore: cannot create backups dir for safety copy: {error}");
         } else {
@@ -306,22 +428,6 @@ pub fn install_staged_workspace_db(
         },
     };
 
-    // A stale WAL can replay frames from the old DB into the restored main
-    // file. Failure to remove either sidecar is therefore fatal, not a warning.
-    if let Err(error) = remove_db_sidecars(&db_path) {
-        drop(exclusive_lease);
-        return Err(abort_install(
-            ws_state,
-            &db_path,
-            ws_path,
-            detached_active,
-            anyhow::anyhow!("復元前のSQLite sidecar削除に失敗したため中止しました: {error}"),
-        ));
-    }
-
-    // Keep a mandatory byte-for-byte rollback copy until the restored DB has
-    // reopened. The user-visible gzip safety backup above remains best-effort,
-    // but internal failure recovery must never depend on it.
     let live_exists = match std::fs::symlink_metadata(&db_path) {
         Ok(meta) if meta.file_type().is_file() => true,
         Ok(_) => {
@@ -349,7 +455,71 @@ pub fn install_staged_workspace_db(
             ));
         }
     };
-    let (rollback_path, mut rollback_cleanup) = if live_exists {
+
+    // 1) Seal staged + digest before any live mutation.
+    let installed =
+        match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
+            crate::migration_supervisor::seal_sqlite_image(staged_plain)?;
+            crate::migration_supervisor::installed_image_token_from_sealed(
+                staged_plain,
+                grimodex_core::SCHEMA_VERSION,
+                None,
+            )
+        })() {
+            Ok(token) => token,
+            Err(error) => {
+                drop(exclusive_lease);
+                return Err(abort_install(
+                    ws_state,
+                    &db_path,
+                    ws_path,
+                    detached_active,
+                    anyhow::anyhow!(
+                    "復元候補の seal／digest 取得に失敗したため中止しました（live未置換）: {error}"
+                ),
+                ));
+            }
+        };
+
+    // 2) Persistent WAL-preserving safety artifact (retained after success).
+    let safety_artifact = if live_exists {
+        match create_persistent_live_safety_artifact(ws_path, &db_path) {
+            Ok(artifact) => Some(artifact),
+            Err(error) => {
+                drop(exclusive_lease);
+                return Err(abort_install(
+                    ws_state,
+                    &db_path,
+                    ws_path,
+                    detached_active,
+                    anyhow::anyhow!(
+                        "RESTORE_LIVE_SAFETY_FAILED: live変更前の安全コピー作成に失敗しました: {error}"
+                    ),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
+    #[cfg(feature = "test-failpoints")]
+    if options.failpoint == Some(RestoreFailpoint::AfterRollbackSnapshot) {
+        drop(exclusive_lease);
+        return Err(abort_install(
+            ws_state,
+            &db_path,
+            ws_path,
+            detached_active,
+            anyhow::anyhow!(
+                "RESTORE_FAILPOINT: {}",
+                RestoreFailpoint::AfterRollbackSnapshot.as_str()
+            ),
+        ));
+    }
+
+    // 3) Mandatory rollback image for CAS (from safety artifact — not a
+    // post-WAL-delete main-file copy).
+    let (rollback_path, mut rollback_cleanup) = if let Some(artifact) = safety_artifact.as_ref() {
         let (rollback_path, mut rollback_output) = match create_unique_sidecar(&db_path, "rollback")
         {
             Ok(created) => created,
@@ -365,7 +535,8 @@ pub fn install_staged_workspace_db(
             }
         };
         let rollback_cleanup = CleanupPath::new(rollback_path.clone());
-        if let Err(error) = copy_path_into(&db_path, &mut rollback_output) {
+        let source = artifact.rollback_source_db();
+        if let Err(error) = copy_path_into(&source, &mut rollback_output) {
             drop(rollback_output);
             drop(exclusive_lease);
             return Err(abort_install(
@@ -393,46 +564,18 @@ pub fn install_staged_workspace_db(
         (None, None)
     };
 
-    #[cfg(feature = "test-failpoints")]
-    if options.failpoint == Some(RestoreFailpoint::AfterRollbackSnapshot) {
+    // 4) Only now is it safe to drop live WAL/SHM — frames are in the retained
+    // safety artifact (and rollback copy).
+    if let Err(error) = remove_db_sidecars(&db_path) {
         drop(exclusive_lease);
         return Err(abort_install(
             ws_state,
             &db_path,
             ws_path,
             detached_active,
-            anyhow::anyhow!(
-                "RESTORE_FAILPOINT: {}",
-                RestoreFailpoint::AfterRollbackSnapshot.as_str()
-            ),
+            anyhow::anyhow!("復元前のSQLite sidecar削除に失敗したため中止しました: {error}"),
         ));
     }
-
-    // Seal the staged candidate and capture its digest *before* live replace so
-    // Windows (and all platforms) never need a post-replace seal just to CAS.
-    let installed =
-        match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
-            crate::migration_supervisor::seal_sqlite_image(staged_plain)?;
-            crate::migration_supervisor::installed_image_token_from_sealed(
-                staged_plain,
-                grimodex_core::SCHEMA_VERSION,
-                None,
-            )
-        })() {
-            Ok(token) => token,
-            Err(error) => {
-                drop(exclusive_lease);
-                return Err(abort_install(
-                    ws_state,
-                    &db_path,
-                    ws_path,
-                    detached_active,
-                    anyhow::anyhow!(
-                    "復元候補の seal／digest 取得に失敗したため中止しました（live未置換）: {error}"
-                ),
-                ));
-            }
-        };
 
     if let Err(error) = atomic_replace(staged_plain, &db_path) {
         let primary = anyhow::anyhow!("復元DBの適用に失敗しました: {error}");
@@ -455,6 +598,9 @@ pub fn install_staged_workspace_db(
         }
         return Err(primary.into());
     }
+
+    // Retained pre-restore artifact must outlive success (Safe Mode + normal).
+    let _retained_safety = safety_artifact;
 
     #[cfg(feature = "test-failpoints")]
     if options.failpoint == Some(RestoreFailpoint::AfterReplace)
@@ -796,6 +942,8 @@ pub(crate) fn preflight_candidate(path: &Path) -> AppResult<()> {
         if let Err(error) = database.optimize() {
             tracing::warn!("PRAGMA optimize during restore preflight failed: {error}");
         }
+        drop(database);
+        crate::migration_supervisor::verify_migrated_db(path)?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -803,7 +951,6 @@ pub(crate) fn preflight_candidate(path: &Path) -> AppResult<()> {
         cleanup_path_best_effort(&sidecar(path, "-shm"));
         return Err(anyhow::anyhow!("このバックアップは現在のアプリで開けません: {error}").into());
     }
-    verify_sqlite_ok(path)?;
     remove_db_sidecars(path)
         .map_err(|e| anyhow::anyhow!("復元候補のSQLite sidecarを整理できませんでした: {e}"))?;
     Ok(())
