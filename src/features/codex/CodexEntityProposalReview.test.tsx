@@ -88,8 +88,12 @@ function projection(
     },
     proposals,
     relationProposals: [],
+    baseDetailProposals: [],
+    phaseProposals: [],
     entityCount: proposals.length,
     relationCount: 0,
+    baseDetailCount: 0,
+    phaseCount: 0,
     unresolvedCount: 1,
     approvedCount: 0,
   };

@@ -4,6 +4,14 @@ import {
   registerCreatedBinding,
   registerExistingBinding,
 } from "@/features/codex/extraction/compiler";
+import { compileSetCodexBaseDetailOperation } from "@/features/codex/extraction/detailCompiler";
+import {
+  compileCreateCodexPhaseOperation,
+  compilePatchCodexPhaseOperation,
+} from "@/features/codex/extraction/phaseCompiler";
+import type { BindCodexPhaseProposal } from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
+import type { SetCodexBaseDetailProposal } from "@/features/narrative-extraction/proposals/setCodexBaseDetailProposal";
+import type { PhaseDetailWrite } from "@/features/codex/details/semanticBindingTypes";
 
 import type {
   ApplyCommitPayload,
@@ -36,8 +44,102 @@ export interface CommitCodexOperationsInput {
     readonly proposalId: string;
     readonly revisionId: string;
   }[];
-  /** Existing-only bindings (no domain write) used by Relation compile / CommitMap. */
+  /** Existing-only bindings (no domain write) used by Relation/Phase/Detail compile / CommitMap. */
   readonly existingBindings?: readonly EntityBindingSeed[];
+}
+
+export interface CompilePhaseDetailOpsAfterEntitiesInput {
+  readonly commitMap: CommitMap;
+  readonly phaseProposals?: readonly {
+    readonly proposal: BindCodexPhaseProposal;
+    readonly proposalId: string;
+    readonly revisionId: string;
+    readonly existingOverrides?: readonly {
+      readonly definitionId: string;
+      readonly value: string | null;
+    }[];
+  }[];
+  readonly baseDetailProposals?: readonly {
+    readonly proposal: SetCodexBaseDetailProposal;
+    readonly proposalId: string;
+    readonly revisionId: string;
+    readonly existingVersion?: number;
+    readonly detailValueId?: string;
+  }[];
+  readonly resolveDefinitionId: (definitionRef: string) => string;
+  readonly encodeBaseValue: (
+    value: SetCodexBaseDetailProposal["payload"]["value"],
+  ) => string | null;
+  readonly encodePhaseWrite: (
+    definitionId: string,
+    write: PhaseDetailWrite,
+  ) => string | null | undefined;
+  readonly resolveAnchorNodeId?: (documentRef: string) => string | null;
+}
+
+/**
+ * After entity bindings are registered in CommitMap, compile Phase / Base Detail
+ * ops so entryId resolution uses created or existing bindings.
+ */
+export function compilePhaseAndDetailOpsAfterEntities(
+  input: CompilePhaseDetailOpsAfterEntitiesInput,
+): {
+  readonly operation: CodexDomainOperationV1;
+  readonly proposalId: string;
+  readonly revisionId: string;
+}[] {
+  const out: {
+    operation: CodexDomainOperationV1;
+    proposalId: string;
+    revisionId: string;
+  }[] = [];
+
+  for (const item of input.baseDetailProposals ?? []) {
+    out.push({
+      proposalId: item.proposalId,
+      revisionId: item.revisionId,
+      operation: compileSetCodexBaseDetailOperation({
+        proposal: item.proposal,
+        commitMap: input.commitMap,
+        resolveDefinitionId: input.resolveDefinitionId,
+        encodeValue: input.encodeBaseValue,
+        existingVersion: item.existingVersion,
+        detailValueId: item.detailValueId,
+      }),
+    });
+  }
+
+  for (const item of input.phaseProposals ?? []) {
+    const binding = item.proposal.payload.binding;
+    if (binding.kind === "create-new") {
+      out.push({
+        proposalId: item.proposalId,
+        revisionId: item.revisionId,
+        operation: compileCreateCodexPhaseOperation({
+          proposal: item.proposal,
+          commitMap: input.commitMap,
+          resolveDefinitionId: input.resolveDefinitionId,
+          encodeWrite: input.encodePhaseWrite,
+          resolveAnchorNodeId: input.resolveAnchorNodeId,
+        }),
+      });
+    } else if (binding.kind === "bind-existing") {
+      out.push({
+        proposalId: item.proposalId,
+        revisionId: item.revisionId,
+        operation: compilePatchCodexPhaseOperation({
+          proposal: item.proposal,
+          phaseId: binding.phaseRef,
+          baseVersion: binding.expectedVersion,
+          existingOverrides: item.existingOverrides ?? [],
+          resolveDefinitionId: input.resolveDefinitionId,
+          encodeWrite: input.encodePhaseWrite,
+        }),
+      });
+    }
+  }
+
+  return out;
 }
 
 function toEntityBindingSeeds(commitMap: CommitMap): EntityBindingSeed[] {

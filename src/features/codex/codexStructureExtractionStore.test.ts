@@ -82,8 +82,12 @@ function projection(
     },
     proposals,
     relationProposals: [],
+    baseDetailProposals: [],
+    phaseProposals: [],
     entityCount: proposals.length,
     relationCount: 0,
+    baseDetailCount: 0,
+    phaseCount: 0,
     unresolvedCount: proposals.filter((p) => p.status === "unreviewed").length,
     approvedCount: proposals.filter((p) => p.status === "approved").length,
   };
