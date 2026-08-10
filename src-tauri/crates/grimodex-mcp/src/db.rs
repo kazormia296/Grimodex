@@ -3329,13 +3329,18 @@ pub(crate) mod tests {
                 field_config TEXT,
                 sort_order REAL NOT NULL DEFAULT 0.0,
                 include_in_context INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                version INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE codex_detail_values (
                 id TEXT PRIMARY KEY,
                 entry_id TEXT NOT NULL,
                 definition_id TEXT NOT NULL,
-                value TEXT
+                value TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE codex_entry_phases (
                 id TEXT PRIMARY KEY,

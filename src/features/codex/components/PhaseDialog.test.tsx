@@ -149,6 +149,46 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
     expect(save).toBeDisabled();
   });
 
+  it("Detail-only Phase: existingDetailOverrideCount > 0 なら root override 無しでも保存できる", async () => {
+    render(
+      <PhaseDialog
+        entryId="entry-1"
+        phase={{
+          id: "phase-1",
+          entryId: "entry-1",
+          label: "詳細のみ",
+          anchorNodeId: "scene-1",
+          summaryOverride: null,
+          contentOverride: null,
+          contextModeOverride: null,
+          version: 2,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        }}
+        onClose={() => {}}
+        resolveCurrentContent={() => "{}"}
+        existingDetailOverrideCount={2}
+      />,
+    );
+
+    const save = screen.getByRole("button", { name: /保存|Save/ });
+    expect(save).not.toBeDisabled();
+    fireEvent.click(save);
+
+    await waitFor(() => {
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        expect.objectContaining({
+          label: "詳細のみ",
+          anchorNodeId: "scene-1",
+          summaryOverride: null,
+          contentOverride: null,
+          contextModeOverride: null,
+        }),
+      );
+    });
+  });
+
   it("新規 Content は選択したアンカー時点の解決値を保存する", async () => {
     const resolveCurrentContent = vi.fn(
       (anchorNodeId: string) => `${anchorNodeId}-resolved-content`,

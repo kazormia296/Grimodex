@@ -258,7 +258,9 @@ impl Database {
                 field_config      TEXT,
                 sort_order        REAL NOT NULL DEFAULT 0.0,
                 include_in_context INTEGER NOT NULL DEFAULT 0,
+                version           INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(project_id, type_slug, name),
                 -- Composite FK: (project_id, type_slug) must reference a row in codex_types.
                 FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
@@ -300,6 +302,9 @@ impl Database {
                 entry_id      TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
                 value         TEXT,
+                version       INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(entry_id, definition_id)
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_values_entry
@@ -2541,6 +2546,48 @@ impl Database {
             "codex_entry_phases",
             "version",
             "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        // SCHEMA_VERSION 8: Detail Definition / Detail Value OCC columns.
+        // ALTER TABLE cannot use non-constant defaults (datetime('now')), so
+        // timestamps use a constant sentinel and are backfilled immediately.
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_definitions",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_definitions",
+            "updated_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_values",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_values",
+            "created_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_values",
+            "updated_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        conn.execute_batch(
+            "UPDATE codex_detail_definitions
+                SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, datetime('now'))
+              WHERE updated_at = '';
+             UPDATE codex_detail_values
+                SET created_at = COALESCE(NULLIF(created_at, ''), datetime('now')),
+                    updated_at = COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), datetime('now'))
+              WHERE created_at = '' OR updated_at = '';",
         )?;
         Ok(())
     }
@@ -4886,6 +4933,89 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(version, 0, "legacy phase version should default to zero");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_backfills_occ_columns_on_legacy_codex_details() {
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            // Minimal pre-v8 tables: only the columns that existed before OCC.
+            // Do not stub projects/codex_entries — migrate() creates the full
+            // tables via CREATE TABLE IF NOT EXISTS.
+            conn.execute_batch(
+                "CREATE TABLE codex_detail_definitions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    type_slug TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    field_type TEXT NOT NULL DEFAULT 'text',
+                    field_config TEXT,
+                    sort_order REAL NOT NULL DEFAULT 0.0,
+                    include_in_context INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 CREATE TABLE codex_detail_values (
+                    id TEXT PRIMARY KEY,
+                    entry_id TEXT NOT NULL,
+                    definition_id TEXT NOT NULL,
+                    value TEXT
+                 );
+                 INSERT INTO codex_detail_definitions
+                   (id, project_id, type_slug, name)
+                   VALUES ('d1', 'p1', 'character', '年齢');
+                 INSERT INTO codex_detail_values (id, entry_id, definition_id, value)
+                   VALUES ('v1', 'e1', 'd1', '17');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        db.migrate().unwrap();
+
+        db.with_conn(|conn| {
+            let def_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(codex_detail_definitions)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                def_cols.iter().any(|c| c == "version"),
+                "definition version column should be backfilled"
+            );
+            assert!(
+                def_cols.iter().any(|c| c == "updated_at"),
+                "definition updated_at column should be backfilled"
+            );
+            let value_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(codex_detail_values)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                value_cols.iter().any(|c| c == "version"),
+                "value version column should be backfilled"
+            );
+            assert!(
+                value_cols.iter().any(|c| c == "created_at"),
+                "value created_at column should be backfilled"
+            );
+            assert!(
+                value_cols.iter().any(|c| c == "updated_at"),
+                "value updated_at column should be backfilled"
+            );
+            let def_version: i64 = conn.query_row(
+                "SELECT version FROM codex_detail_definitions WHERE id = 'd1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let value_version: i64 = conn.query_row(
+                "SELECT version FROM codex_detail_values WHERE id = 'v1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(def_version, 0);
+            assert_eq!(value_version, 0);
             Ok(())
         })
         .unwrap();

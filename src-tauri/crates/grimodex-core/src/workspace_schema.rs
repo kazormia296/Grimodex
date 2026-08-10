@@ -2,16 +2,14 @@
 //!
 //! # Gate B2 schema renumbering (append-only)
 //!
-//! Merging Gate B Foundation (`narrative_runtime_policy` as SCHEMA 4 on master)
-//! with Narrative Extraction (which had used 4=detail bindings, 5=calendar OCC,
-//! 6=narrative extraction) and Codex Entity/Relation yields:
-//!
 //! - **v3** — physical invariants (ai_audit, stickies, live-comment repair, …)
 //! - **v4** — `narrative_runtime_policy` singleton (Gate B Foundation)
-//! - **v5** — `codex_detail_semantic_bindings` (was Narrative Extraction's v4)
-//! - **v6** — project_calendar OCC `version` column (was Narrative Extraction's v5)
-//! - **v7** — Narrative Extraction persistence tables (was Narrative Extraction's v6)
-//! - **v8** — Codex relation directionality / semantic_key / version (was stack's v7)
+//! - **v5** — `codex_detail_semantic_bindings`
+//! - **v6** — project_calendar OCC `version` column
+//! - **v7** — Narrative Extraction persistence tables
+//! - **v8** — Codex relation directionality / semantic_key / version
+//! - **v9** — Detail Definition / Detail Value OCC columns
+//!
 //!
 //! These probes deliberately avoid exact whole-schema comparison because
 //! legitimate upgraded databases can differ from a freshly-created database in
@@ -387,13 +385,8 @@ pub fn has_v7_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
         && table_exists(conn, "narrative_apply_commits")?)
 }
 
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 8 adds Codex relation directionality,
-/// inverse_label, semantic_key, and version on top of every v7 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 8 || !has_v3_physical_invariants(conn)? {
-        return Ok(false);
-    }
+/// SCHEMA 8 checkpoint: Codex relation directionality / semantic_key / version.
+pub fn has_v8_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     if !has_v7_checkpoint_invariants(conn)? {
         return Ok(false);
     }
@@ -417,6 +410,49 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
             && column.default.as_deref() == Some("1")
     });
     Ok(has_directionality && has_inverse_label && has_semantic_key && has_version)
+}
+
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 9 adds Detail Definition / Detail Value OCC
+/// columns on top of every v8 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 9 || !has_v3_physical_invariants(conn)? {
+        return Ok(false);
+    }
+    if !has_v8_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_detail_definitions")?
+        || !table_exists(conn, "codex_detail_values")?
+    {
+        return Ok(false);
+    }
+    let definitions = table_columns(conn, "codex_detail_definitions")?;
+    let values = table_columns(conn, "codex_detail_values")?;
+    Ok(
+        has_occ_integer_column(&definitions, "version")
+            && has_timestamp_text_column(&definitions, "updated_at")
+            && has_occ_integer_column(&values, "version")
+            && has_timestamp_text_column(&values, "created_at")
+            && has_timestamp_text_column(&values, "updated_at"),
+    )
+}
+
+
+fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("0")
+    })
+}
+fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name
+            && column.declared_type == "TEXT"
+            && column.not_null
+    })
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {

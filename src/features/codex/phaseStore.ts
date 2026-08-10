@@ -61,8 +61,16 @@ export interface PhaseState {
     phaseId: string,
     definitionId: string,
     value: string | null,
+    opts?: { baseVersion?: number },
   ): Promise<void>;
-  deleteDetailOverride(phaseId: string, definitionId: string): Promise<void>;
+  deleteDetailOverride(
+    phaseId: string,
+    definitionId: string,
+    opts?: { baseVersion?: number },
+  ): Promise<void>;
+  patchPhaseAggregate(
+    input: phaseApi.PatchPhaseAggregateInput,
+  ): Promise<phaseApi.PatchPhaseAggregateResult | null>;
   recomputeSceneOrder(nodes: TreeNodeData[]): void;
   setResolutionMode(mode: PhaseResolutionMode): void;
   resolveForScene(
@@ -554,7 +562,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       async undo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
         invalidatePhaseEntryLoads(cap.phase.entryId);
-        const restored = await phaseApi.createPhase({
+        let restored = await phaseApi.createPhase({
           id: cap.phase.id,
           entryId: cap.phase.entryId,
           anchorNodeId: cap.phase.anchorNodeId ?? null,
@@ -578,13 +586,24 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
           restored.version,
         );
         if (get().projectEpoch !== cap.projectEpoch) return;
-        // Restore detail overrides
-        for (const ov of cap.overrides) {
+        // Restore detail overrides in one aggregate write (single version bump).
+        let restoredOverrides = cap.overrides;
+        if (cap.overrides.length > 0) {
           if (get().projectEpoch !== cap.projectEpoch) return;
-          await phaseApi.upsertDetailOverride(
+          const patched = await phaseApi.patchPhaseAggregate({
+            phaseId: cap.phase.id,
+            baseVersion: restored.version,
+            detailOverrides: cap.overrides.map((ov) => ({
+              definitionId: ov.definitionId,
+              value: ov.value ?? null,
+            })),
+          });
+          restored = patched.phase;
+          restoredOverrides = patched.overrides;
+          advancePhaseHistoryVersion(
             cap.phase.id,
-            ov.definitionId,
-            ov.value ?? null,
+            cap.logicalVersion,
+            restored.version,
           );
         }
         if (get().projectEpoch !== cap.projectEpoch) return;
@@ -601,7 +620,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
             },
             detailOverrides: {
               ...state.detailOverrides,
-              [cap.phase.id]: cap.overrides,
+              [cap.phase.id]: restoredOverrides,
             },
           };
         });
@@ -636,32 +655,100 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     });
   },
 
-  async upsertDetailOverride(phaseId, definitionId, value) {
+  async patchPhaseAggregate(input) {
+    const epoch = get().projectEpoch;
+    const entryId = findEntryIdForPhase(get(), input.phaseId);
+    invalidatePhaseEntryLoads(entryId);
+    try {
+      const result = await phaseApi.patchPhaseAggregate(input);
+      if (get().projectEpoch !== epoch) return null;
+      invalidatePhaseEntryLoads(entryId);
+      set((state) => {
+        if (state.projectEpoch !== epoch) return state;
+        const phases = (state.phasesByEntry[entryId ?? ""] ?? []).map((p) =>
+          p.id === result.phase.id ? result.phase : p,
+        );
+        return {
+          phasesByEntry: entryId
+            ? { ...state.phasesByEntry, [entryId]: phases }
+            : state.phasesByEntry,
+          detailOverrides: {
+            ...state.detailOverrides,
+            [result.phase.id]: result.overrides,
+          },
+        };
+      });
+      return result;
+    } catch (error) {
+      if (error instanceof PhaseVersionConflictError) {
+        toast.error(i18next.t("phase.editConflict"));
+      } else {
+        toast.error(i18next.t("phase.updateFailed"));
+        debugLog.error("PhaseStore", "patchPhaseAggregate", errorDetail(error));
+      }
+      return null;
+    }
+  },
+
+  async upsertDetailOverride(phaseId, definitionId, value, opts) {
     const epoch = get().projectEpoch;
     const entryId = findEntryIdForPhase(get(), phaseId);
+    const phase =
+      (entryId
+        ? (get().phasesByEntry[entryId] ?? []).find((p) => p.id === phaseId)
+        : undefined) ?? (await phaseApi.getPhase(phaseId));
+    if (!phase) {
+      toast.error(i18next.t("phase.updateMissing"));
+      return;
+    }
+    const loadedVersion = opts?.baseVersion ?? phase.version;
     invalidatePhaseEntryLoads(entryId);
-    // Capture before-state: was there an existing override?
     const beforeOverride = (get().detailOverrides[phaseId] ?? []).find(
       (ov) => ov.definitionId === definitionId,
     );
     const beforeValue = beforeOverride ? beforeOverride.value : undefined;
+    const detailOverrides = [
+      ...(get().detailOverrides[phaseId] ?? [])
+        .filter((ov) => ov.definitionId !== definitionId)
+        .map((ov) => ({
+          definitionId: ov.definitionId,
+          value: ov.value ?? null,
+        })),
+      { definitionId, value },
+    ];
 
-    const override = await phaseApi.upsertDetailOverride(
-      phaseId,
-      definitionId,
-      value,
-    );
+    let result: phaseApi.PatchPhaseAggregateResult;
+    try {
+      result = await phaseApi.patchPhaseAggregate({
+        phaseId,
+        baseVersion: loadedVersion,
+        detailOverrides,
+      });
+    } catch (error) {
+      if (error instanceof PhaseVersionConflictError) {
+        toast.error(i18next.t("phase.editConflict"));
+      } else {
+        toast.error(i18next.t("phase.updateFailed"));
+        debugLog.error("PhaseStore", "upsertDetailOverride", errorDetail(error));
+      }
+      return;
+    }
     if (get().projectEpoch !== epoch) return;
     invalidatePhaseEntryLoads(entryId);
     set((state) => {
       if (state.projectEpoch !== epoch) return state;
-      const existing = (state.detailOverrides[phaseId] ?? []).filter(
-        (ov) => ov.definitionId !== definitionId,
-      );
+      const phases = entryId
+        ? (state.phasesByEntry[entryId] ?? []).map((p) =>
+            p.id === phaseId ? result.phase : p,
+          )
+        : undefined;
       return {
+        ...(entryId && phases
+          ? { phasesByEntry: { ...state.phasesByEntry, [entryId]: phases } }
+          : {}),
         detailOverrides: {
           ...state.detailOverrides,
-          [phaseId]: [...existing, override],
+          [phaseId]: result.overrides,
         },
       };
     });
@@ -681,95 +768,183 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       label: i18next.t("phase.history.detailOverrideUpdated"),
       async undo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
+        const currentPhase =
+          (cap.entryId
+            ? (get().phasesByEntry[cap.entryId] ?? []).find(
+                (p) => p.id === cap.phaseId,
+              )
+            : undefined) ?? (await phaseApi.getPhase(cap.phaseId));
+        if (!currentPhase) return;
+        const next =
+          cap.beforeValue === undefined
+            ? (get().detailOverrides[cap.phaseId] ?? [])
+                .filter((ov) => ov.definitionId !== cap.definitionId)
+                .map((ov) => ({
+                  definitionId: ov.definitionId,
+                  value: ov.value ?? null,
+                }))
+            : [
+                ...(get().detailOverrides[cap.phaseId] ?? [])
+                  .filter((ov) => ov.definitionId !== cap.definitionId)
+                  .map((ov) => ({
+                    definitionId: ov.definitionId,
+                    value: ov.value ?? null,
+                  })),
+                {
+                  definitionId: cap.definitionId,
+                  value: cap.beforeValue,
+                },
+              ];
         invalidatePhaseEntryLoads(cap.entryId);
-        if (cap.beforeValue === undefined) {
-          // Was missing → delete
-          await phaseApi.deleteDetailOverride(cap.phaseId, cap.definitionId);
+        try {
+          const patched = await phaseApi.patchPhaseAggregate({
+            phaseId: cap.phaseId,
+            baseVersion: currentPhase.version,
+            detailOverrides: next,
+          });
           if (get().projectEpoch !== cap.projectEpoch) return;
           invalidatePhaseEntryLoads(cap.entryId);
           set((state) => {
             if (state.projectEpoch !== cap.projectEpoch) return state;
+            const phases = cap.entryId
+              ? (state.phasesByEntry[cap.entryId] ?? []).map((p) =>
+                  p.id === cap.phaseId ? patched.phase : p,
+                )
+              : undefined;
             return {
+              ...(cap.entryId && phases
+                ? {
+                    phasesByEntry: {
+                      ...state.phasesByEntry,
+                      [cap.entryId]: phases,
+                    },
+                  }
+                : {}),
               detailOverrides: {
                 ...state.detailOverrides,
-                [cap.phaseId]: (
-                  state.detailOverrides[cap.phaseId] ?? []
-                ).filter((ov) => ov.definitionId !== cap.definitionId),
+                [cap.phaseId]: patched.overrides,
               },
             };
           });
-        } else {
-          const restored = await phaseApi.upsertDetailOverride(
-            cap.phaseId,
-            cap.definitionId,
-            cap.beforeValue,
-          );
-          if (get().projectEpoch !== cap.projectEpoch) return;
-          invalidatePhaseEntryLoads(cap.entryId);
-          set((state) => {
-            if (state.projectEpoch !== cap.projectEpoch) return state;
-            return {
-              detailOverrides: {
-                ...state.detailOverrides,
-                [cap.phaseId]: [
-                  ...(state.detailOverrides[cap.phaseId] ?? []).filter(
-                    (ov) => ov.definitionId !== cap.definitionId,
-                  ),
-                  restored,
-                ],
-              },
-            };
-          });
+        } catch (error) {
+          if (error instanceof PhaseVersionConflictError) {
+            toast.error(i18next.t("phase.editConflict"));
+          }
         }
       },
       async redo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
+        const currentPhase =
+          (cap.entryId
+            ? (get().phasesByEntry[cap.entryId] ?? []).find(
+                (p) => p.id === cap.phaseId,
+              )
+            : undefined) ?? (await phaseApi.getPhase(cap.phaseId));
+        if (!currentPhase) return;
+        const next = [
+          ...(get().detailOverrides[cap.phaseId] ?? [])
+            .filter((ov) => ov.definitionId !== cap.definitionId)
+            .map((ov) => ({
+              definitionId: ov.definitionId,
+              value: ov.value ?? null,
+            })),
+          { definitionId: cap.definitionId, value: cap.afterValue },
+        ];
         invalidatePhaseEntryLoads(cap.entryId);
-        const reapplied = await phaseApi.upsertDetailOverride(
-          cap.phaseId,
-          cap.definitionId,
-          cap.afterValue,
-        );
-        if (get().projectEpoch !== cap.projectEpoch) return;
-        invalidatePhaseEntryLoads(cap.entryId);
-        set((state) => {
-          if (state.projectEpoch !== cap.projectEpoch) return state;
-          return {
-            detailOverrides: {
-              ...state.detailOverrides,
-              [cap.phaseId]: [
-                ...(state.detailOverrides[cap.phaseId] ?? []).filter(
-                  (ov) => ov.definitionId !== cap.definitionId,
-                ),
-                reapplied,
-              ],
-            },
-          };
-        });
+        try {
+          const patched = await phaseApi.patchPhaseAggregate({
+            phaseId: cap.phaseId,
+            baseVersion: currentPhase.version,
+            detailOverrides: next,
+          });
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.entryId);
+          set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
+            const phases = cap.entryId
+              ? (state.phasesByEntry[cap.entryId] ?? []).map((p) =>
+                  p.id === cap.phaseId ? patched.phase : p,
+                )
+              : undefined;
+            return {
+              ...(cap.entryId && phases
+                ? {
+                    phasesByEntry: {
+                      ...state.phasesByEntry,
+                      [cap.entryId]: phases,
+                    },
+                  }
+                : {}),
+              detailOverrides: {
+                ...state.detailOverrides,
+                [cap.phaseId]: patched.overrides,
+              },
+            };
+          });
+        } catch (error) {
+          if (error instanceof PhaseVersionConflictError) {
+            toast.error(i18next.t("phase.editConflict"));
+          }
+        }
       },
     });
   },
 
-  async deleteDetailOverride(phaseId, definitionId) {
+  async deleteDetailOverride(phaseId, definitionId, opts) {
     const epoch = get().projectEpoch;
     const entryId = findEntryIdForPhase(get(), phaseId);
+    const phase =
+      (entryId
+        ? (get().phasesByEntry[entryId] ?? []).find((p) => p.id === phaseId)
+        : undefined) ?? (await phaseApi.getPhase(phaseId));
+    if (!phase) {
+      toast.error(i18next.t("phase.updateMissing"));
+      return;
+    }
+    const loadedVersion = opts?.baseVersion ?? phase.version;
     invalidatePhaseEntryLoads(entryId);
     const beforeOverride = (get().detailOverrides[phaseId] ?? []).find(
       (ov) => ov.definitionId === definitionId,
     );
+    const detailOverrides = (get().detailOverrides[phaseId] ?? [])
+      .filter((ov) => ov.definitionId !== definitionId)
+      .map((ov) => ({
+        definitionId: ov.definitionId,
+        value: ov.value ?? null,
+      }));
 
-    await phaseApi.deleteDetailOverride(phaseId, definitionId);
+    let result: phaseApi.PatchPhaseAggregateResult;
+    try {
+      result = await phaseApi.patchPhaseAggregate({
+        phaseId,
+        baseVersion: loadedVersion,
+        detailOverrides,
+      });
+    } catch (error) {
+      if (error instanceof PhaseVersionConflictError) {
+        toast.error(i18next.t("phase.editConflict"));
+      } else {
+        toast.error(i18next.t("phase.updateFailed"));
+        debugLog.error("PhaseStore", "deleteDetailOverride", errorDetail(error));
+      }
+      return;
+    }
     if (get().projectEpoch !== epoch) return;
     invalidatePhaseEntryLoads(entryId);
     set((state) => {
       if (state.projectEpoch !== epoch) return state;
-      const filtered = (state.detailOverrides[phaseId] ?? []).filter(
-        (ov) => ov.definitionId !== definitionId,
-      );
+      const phases = entryId
+        ? (state.phasesByEntry[entryId] ?? []).map((p) =>
+            p.id === phaseId ? result.phase : p,
+          )
+        : undefined;
       return {
+        ...(entryId && phases
+          ? { phasesByEntry: { ...state.phasesByEntry, [entryId]: phases } }
+          : {}),
         detailOverrides: {
           ...state.detailOverrides,
-          [phaseId]: filtered,
+          [phaseId]: result.overrides,
         },
       };
     });
@@ -787,49 +962,113 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       label: i18next.t("phase.history.detailOverrideDeleted"),
       async undo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
+        const currentPhase =
+          (cap.entryId
+            ? (get().phasesByEntry[cap.entryId] ?? []).find(
+                (p) => p.id === cap.override.phaseId,
+              )
+            : undefined) ?? (await phaseApi.getPhase(cap.override.phaseId));
+        if (!currentPhase) return;
+        const next = [
+          ...(get().detailOverrides[cap.override.phaseId] ?? [])
+            .filter((ov) => ov.definitionId !== cap.override.definitionId)
+            .map((ov) => ({
+              definitionId: ov.definitionId,
+              value: ov.value ?? null,
+            })),
+          {
+            definitionId: cap.override.definitionId,
+            value: cap.override.value ?? null,
+          },
+        ];
         invalidatePhaseEntryLoads(cap.entryId);
-        const restored = await phaseApi.upsertDetailOverride(
-          cap.override.phaseId,
-          cap.override.definitionId,
-          cap.override.value ?? null,
-        );
-        if (get().projectEpoch !== cap.projectEpoch) return;
-        invalidatePhaseEntryLoads(cap.entryId);
-        set((state) => {
-          if (state.projectEpoch !== cap.projectEpoch) return state;
-          return {
-            detailOverrides: {
-              ...state.detailOverrides,
-              [cap.override.phaseId]: [
-                ...(state.detailOverrides[cap.override.phaseId] ?? []).filter(
-                  (ov) => ov.definitionId !== cap.override.definitionId,
-                ),
-                restored,
-              ],
-            },
-          };
-        });
+        try {
+          const patched = await phaseApi.patchPhaseAggregate({
+            phaseId: cap.override.phaseId,
+            baseVersion: currentPhase.version,
+            detailOverrides: next,
+          });
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.entryId);
+          set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
+            const phases = cap.entryId
+              ? (state.phasesByEntry[cap.entryId] ?? []).map((p) =>
+                  p.id === cap.override.phaseId ? patched.phase : p,
+                )
+              : undefined;
+            return {
+              ...(cap.entryId && phases
+                ? {
+                    phasesByEntry: {
+                      ...state.phasesByEntry,
+                      [cap.entryId]: phases,
+                    },
+                  }
+                : {}),
+              detailOverrides: {
+                ...state.detailOverrides,
+                [cap.override.phaseId]: patched.overrides,
+              },
+            };
+          });
+        } catch (error) {
+          if (error instanceof PhaseVersionConflictError) {
+            toast.error(i18next.t("phase.editConflict"));
+          }
+        }
       },
       async redo() {
         if (get().projectEpoch !== cap.projectEpoch) return;
+        const currentPhase =
+          (cap.entryId
+            ? (get().phasesByEntry[cap.entryId] ?? []).find(
+                (p) => p.id === cap.override.phaseId,
+              )
+            : undefined) ?? (await phaseApi.getPhase(cap.override.phaseId));
+        if (!currentPhase) return;
+        const next = (get().detailOverrides[cap.override.phaseId] ?? [])
+          .filter((ov) => ov.definitionId !== cap.override.definitionId)
+          .map((ov) => ({
+            definitionId: ov.definitionId,
+            value: ov.value ?? null,
+          }));
         invalidatePhaseEntryLoads(cap.entryId);
-        await phaseApi.deleteDetailOverride(
-          cap.override.phaseId,
-          cap.override.definitionId,
-        );
-        if (get().projectEpoch !== cap.projectEpoch) return;
-        invalidatePhaseEntryLoads(cap.entryId);
-        set((state) => {
-          if (state.projectEpoch !== cap.projectEpoch) return state;
-          return {
-            detailOverrides: {
-              ...state.detailOverrides,
-              [cap.override.phaseId]: (
-                state.detailOverrides[cap.override.phaseId] ?? []
-              ).filter((ov) => ov.definitionId !== cap.override.definitionId),
-            },
-          };
-        });
+        try {
+          const patched = await phaseApi.patchPhaseAggregate({
+            phaseId: cap.override.phaseId,
+            baseVersion: currentPhase.version,
+            detailOverrides: next,
+          });
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.entryId);
+          set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
+            const phases = cap.entryId
+              ? (state.phasesByEntry[cap.entryId] ?? []).map((p) =>
+                  p.id === cap.override.phaseId ? patched.phase : p,
+                )
+              : undefined;
+            return {
+              ...(cap.entryId && phases
+                ? {
+                    phasesByEntry: {
+                      ...state.phasesByEntry,
+                      [cap.entryId]: phases,
+                    },
+                  }
+                : {}),
+              detailOverrides: {
+                ...state.detailOverrides,
+                [cap.override.phaseId]: patched.overrides,
+              },
+            };
+          });
+        } catch (error) {
+          if (error instanceof PhaseVersionConflictError) {
+            toast.error(i18next.t("phase.editConflict"));
+          }
+        }
       },
     });
   },

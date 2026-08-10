@@ -87,6 +87,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
   const { t } = useTranslation();
   const rawPhases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const phases = rawPhases ?? EMPTY_PHASES;
+  const detailOverrides = usePhaseStore((s) => s.detailOverrides);
   const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
   const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const loadPhasesForEntry = usePhaseStore((s) => s.loadPhasesForEntry);
@@ -254,6 +255,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
             phase={null}
             onClose={handleClose}
             resolveCurrentContent={resolveContentAtAnchor}
+            existingDetailOverrideCount={0}
           />
         )}
       </div>
@@ -568,6 +570,11 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           phase={editingPhase}
           onClose={handleClose}
           resolveCurrentContent={resolveContentAtAnchor}
+          existingDetailOverrideCount={
+            editingPhase
+              ? (detailOverrides[editingPhase.id]?.length ?? 0)
+              : 0
+          }
         />
       )}
 
