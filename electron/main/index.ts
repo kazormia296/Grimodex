@@ -140,6 +140,10 @@ if (!gotSingleInstanceLock) {
 
   void app.whenReady().then(async () => {
     performance.mark("grimodex:electron-when-ready");
+    // Migration / audit metadata must see the desktop app version, not the
+    // grimodex-db crate version. Prefer an explicit override when present.
+    const { resolveAppVersion } = await import("./shellCommands.js");
+    process.env.GRIMODEX_APP_VERSION ??= resolveAppVersion();
     applySessionPermissionPolicy();
     // 本番ロード（§8 S8）: vite build 成果物 dist/ を app://bundle/ で配信。
     // main.cjs は <repo>/dist-electron/ に出るため dist は 1 つ上の隣。

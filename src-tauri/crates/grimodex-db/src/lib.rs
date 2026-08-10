@@ -570,16 +570,21 @@ pub mod undo_journal;
 
 pub mod error;
 pub mod events;
+pub mod migration_supervisor;
 pub mod open;
 pub mod state;
 pub mod web_editor_handoff;
 pub mod workspace;
+pub mod workspace_lease;
 
 // 旧 `commands/mod.rs` から移動した state / 契約型はクレートルートでも公開する
 // (src-tauri の互換シム `pub(crate) use grimodex_db::{…}` と napi 側の両方が
 // フラットに import できるように)。
 pub use error::{AppError, AppResult, QueryResult};
-pub use state::{with_db_state, ActiveWorkspace, GlobalSettingsPath, WorkspaceState};
+pub use state::{
+    with_db_state, ActiveWorkspace, GlobalSettingsPath, PinnedWorkspaceDb, WorkspaceAuthority,
+    WorkspaceState,
+};
 
 #[cfg(test)]
 mod seed_schema_parity;

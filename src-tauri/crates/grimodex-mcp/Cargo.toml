@@ -18,6 +18,7 @@ licensing = []
 
 [dependencies]
 grimodex-core = { path = "../grimodex-core" }
+grimodex-db = { path = "../grimodex-db" }
 rmcp = { version = "2.1", features = ["server", "transport-io", "macros"] }
 schemars = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
@@ -33,6 +34,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 dirs = "6"
 chrono = "0.4"
-
-[dev-dependencies]
-grimodex-db = { path = "../grimodex-db" }

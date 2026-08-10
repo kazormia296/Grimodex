@@ -218,7 +218,7 @@ fn pin_scoped_semantic_request(
         .pin_request(|| {
             let workspace = active_workspace_snapshot(&state.ws)?;
             let active = workspace
-                .path
+                .path()
                 .canonicalize()
                 .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
             let expected = PathBuf::from(expected_workspace_path)
@@ -231,7 +231,7 @@ fn pin_scoped_semantic_request(
                     active.display()
                 )));
             }
-            Ok(workspace.db)
+            Ok(Arc::clone(workspace.db()))
         })
         .map_err(app_err_to_napi)
 }
@@ -297,11 +297,11 @@ fn validate_ime_workspace(
     expected_workspace_path: &str,
 ) -> std::result::Result<(), AppError> {
     let expected = PathBuf::from(expected_workspace_path);
-    if workspace.path != expected {
+    if workspace.path() != expected {
         return Err(AppError::Anyhow(anyhow::anyhow!(
             "IME_WORKSPACE_CHANGED: expected {}, active {}",
             expected.display(),
-            workspace.path.display()
+            workspace.path().display()
         )));
     }
     Ok(())
@@ -312,7 +312,7 @@ fn validate_codex_workspace(
     expected_workspace_path: &str,
 ) -> std::result::Result<(), AppError> {
     let active = workspace
-        .path
+        .path()
         .canonicalize()
         .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
     // Canonicalize on the same side of the N-API boundary. Node and Rust can
@@ -337,7 +337,7 @@ fn validate_ai_audit_workspace(
     expected_workspace_path: &str,
 ) -> std::result::Result<(), AppError> {
     let active = workspace
-        .path
+        .path()
         .canonicalize()
         .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
     let expected = PathBuf::from(expected_workspace_path)
@@ -605,6 +605,18 @@ impl NativeAiAuditAppender for Database {
         events: &[AppendAiAuditEvent],
     ) -> anyhow::Result<()> {
         self.append_ai_audit_events_for_scope(project_id, events)
+            .map(|_| ())
+    }
+}
+
+impl NativeAiAuditAppender for grimodex_db::WorkspaceAuthority {
+    fn append(
+        &self,
+        project_id: Option<&str>,
+        events: &[AppendAiAuditEvent],
+    ) -> anyhow::Result<()> {
+        self.db()
+            .append_ai_audit_events_for_scope(project_id, events)
             .map(|_| ())
     }
 }
@@ -947,7 +959,7 @@ fn pin_native_ai_audit_workspace(
     let workspace = active_workspace_snapshot(&state.ws)?;
     validate_ai_audit_workspace(&workspace, &context.expected_workspace_path)?;
     workspace
-        .db
+        .db()
         .validate_ai_audit_dispatch_precondition(
             context.project_id.as_deref(),
             &context.execution_id,
@@ -968,7 +980,7 @@ fn attach_native_ai_http_observer(
     let route = NativeAiHttpAuditRoute::from_params(settings, params);
     let effective_request_configuration =
         NativeAiEffectiveRequestConfiguration::from_params(params);
-    let appender: Arc<dyn NativeAiAuditAppender> = workspace.db.clone();
+    let appender: Arc<dyn NativeAiAuditAppender> = workspace.db().clone();
     params.http_retry_observer = Some(Arc::new(NativeAiHttpAuditObserver {
         appender,
         context,
@@ -1737,7 +1749,7 @@ impl Backend {
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
             let binding =
                 workspace
-                    .db
+                    .db()
                     .get_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
             Ok(serde_json::to_string(&binding).map_err(anyhow::Error::from)?)
         })
@@ -1760,7 +1772,7 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
-            workspace.db.upsert_chat_runtime_thread_binding(&binding)?;
+            workspace.db().upsert_chat_runtime_thread_binding(&binding)?;
             Ok(())
         })
         .await
@@ -1786,7 +1798,7 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
-            Ok(workspace.db.advance_chat_runtime_thread_history_revision(
+            Ok(workspace.db().advance_chat_runtime_thread_history_revision(
                 &project_id,
                 &session_id,
                 &runtime,
@@ -1814,7 +1826,7 @@ impl Backend {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_codex_workspace(&workspace, &expected_workspace_path)?;
             workspace
-                .db
+                .db()
                 .delete_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
             Ok(())
         })
@@ -1966,7 +1978,7 @@ impl Backend {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
             let result = workspace
-                .db
+                .db()
                 .append_ai_audit_events_for_scope(project_id.as_deref(), &events)?;
             Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
@@ -1991,7 +2003,7 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
-            let result = workspace.db.claim_cli_ai_audit_dispatch(
+            let result = workspace.db().claim_cli_ai_audit_dispatch(
                 project_id.as_deref(),
                 &execution_id,
                 &operation_id,
@@ -2019,7 +2031,7 @@ impl Backend {
         run_blocking(move || {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
-            let snapshot = workspace.db.read_ai_audit_snapshot_for_scope(
+            let snapshot = workspace.db().read_ai_audit_snapshot_for_scope(
                 project_id.as_deref(),
                 after_sequence,
                 high_water_sequence,
@@ -2044,7 +2056,7 @@ impl Backend {
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
             let result = workspace
-                .db
+                .db()
                 .verify_ai_audit_chain_for_scope(project_id.as_deref(), high_water_sequence)?;
             Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
@@ -2079,7 +2091,7 @@ impl Backend {
                 return Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?);
             }
             let status = refresh_project_export(
-                workspace.db.as_ref(),
+                workspace.db().as_ref(),
                 &state.ime_root,
                 &project_id,
                 &options,
@@ -2218,7 +2230,7 @@ impl Backend {
                 }
                 return Ok(());
             }
-            remove_project_export_if_absent(workspace.db.as_ref(), &state.ime_root, &project_id)?;
+            remove_project_export_if_absent(workspace.db().as_ref(), &state.ime_root, &project_id)?;
             Ok(())
         })
         .await
@@ -4404,7 +4416,7 @@ impl Backend {
             openrouter_provider_pin: None,
             fusion: None,
         };
-        let appender: Arc<dyn NativeAiAuditAppender> = audit_workspace.db.clone();
+        let appender: Arc<dyn NativeAiAuditAppender> = audit_workspace.db().clone();
         let observer = NativeAiHttpAuditObserver {
             appender,
             context: audit_context,
@@ -5280,10 +5292,13 @@ mod ime_workspace_tests {
         let workspace_path = dir.join("workspace-a");
         std::fs::create_dir_all(&workspace_path).expect("workspace dir");
         let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
-            db: Arc::new(db),
-            path: workspace_path.clone(),
-        });
+        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
+            db,
+            workspace_path.clone(),
+        )
+        .expect("authority");
+        *state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(authority));
         let options = ImeExportOptions {
             mode: ImeIntegrationMode::On,
             exclude_hidden: false,
@@ -5324,10 +5339,13 @@ mod ime_workspace_tests {
         let nested = workspace_path.join("nested");
         std::fs::create_dir_all(&nested).expect("workspace dirs");
         let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
-            db: Arc::new(db),
-            path: workspace_path.clone(),
-        });
+        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
+            db,
+            workspace_path.clone(),
+        )
+        .expect("authority");
+        *state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(authority));
         let snapshot = active_workspace_snapshot(&state.ws).expect("workspace snapshot");
         let equivalent_but_noncanonical = nested.join("..");
 
@@ -5421,10 +5439,14 @@ mod semantic_reranker_lane_tests {
         let resources = dir.join("missing-semantic-resources");
         let state =
             AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
-            db: Arc::clone(&database),
-            path: workspace_path,
-        });
+        let database = Arc::into_inner(database).expect("database Arc must be unique");
+        let authority = grimodex_db::WorkspaceAuthority::from_database_for_test(
+            database,
+            workspace_path,
+        )
+        .expect("authority");
+        *state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(authority));
         let backend = Backend {
             state: Arc::new(state),
         };
@@ -5450,9 +5472,14 @@ mod semantic_reranker_lane_tests {
             "unexpected reranker preparation error: {error}"
         );
 
-        let snapshot = database
-            .read_ai_audit_snapshot("project-a", None, None, None)
-            .expect("read native reranker audit");
+        let snapshot = {
+            let guard = backend.state.ws.inner.lock().expect("workspace lock");
+            let active = guard.as_ref().expect("workspace still open");
+            active
+                .db()
+                .read_ai_audit_snapshot("project-a", None, None, None)
+                .expect("read native reranker audit")
+        };
         assert_eq!(
             snapshot
                 .events
@@ -5512,7 +5539,6 @@ mod semantic_reranker_lane_tests {
         assert_eq!(failed.payload["onnxSessionRunObserved"], false);
 
         drop(backend);
-        drop(database);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

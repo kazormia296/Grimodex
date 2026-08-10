@@ -2,25 +2,88 @@
 //! Phase 2 S1 で移動)。tauri:: 非依存 — Tauri 側は `app.manage(...)` で、
 //! napi 側は `Backend` の `AppState` でこの型をそのまま保持する。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AppError, AppResult};
+use crate::workspace_lease::WorkspaceLease;
 use crate::Database;
 
-/// Holds the currently-open workspace's DB.
+/// Inseparable workspace DB authority: a live [`Database`] handle always keeps
+/// the matching shared file lease alive for the same duration.
+///
+/// Background tasks must pin [`Arc<WorkspaceAuthority>`] (via
+/// [`active_workspace_snapshot`] / [`active_database`]), never a bare
+/// `Arc<Database>`. Dropping the last authority Arc releases the lease and
+/// allows cross-process exclusive migration / restore.
+pub struct WorkspaceAuthority {
+    db: Database,
+    path: PathBuf,
+    lease: WorkspaceLease,
+}
+
+impl WorkspaceAuthority {
+    pub fn new(db: Database, path: PathBuf, lease: WorkspaceLease) -> Self {
+        Self { db, path, lease }
+    }
+
+    pub fn db(&self) -> &Database {
+        &self.db
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn lease(&self) -> &WorkspaceLease {
+        &self.lease
+    }
+
+    /// Build authority for tests / fixtures (acquires a shared lease on `path`).
+    pub fn from_database_for_test(db: Database, path: PathBuf) -> AppResult<Arc<Self>> {
+        std::fs::create_dir_all(&path).map_err(anyhow::Error::from)?;
+        let lease = crate::workspace_lease::try_acquire_shared(&path)?;
+        Ok(Arc::new(Self::new(db, path, lease)))
+    }
+}
+
+impl std::ops::Deref for WorkspaceAuthority {
+    type Target = Database;
+
+    fn deref(&self) -> &Database {
+        &self.db
+    }
+}
+
+/// Pinned workspace DB. Cloning keeps both the SQLite handle and the shared
+/// lease alive — the Gate A invariant for long-lived background work.
+pub type PinnedWorkspaceDb = Arc<WorkspaceAuthority>;
+
+/// Holds the currently-open workspace authority.
 /// Wrapped in Option so it can be None before a workspace is opened.
 ///
-/// `db` は `Arc<Database>` にして `with_db_state` が clone-then-drop できる
+/// `authority` は `Arc` にして `with_db_state` が clone-then-drop できる
 /// ようにしている: ws_state.inner ロックを SQL 実行の前に解放し、遅いライタ
-/// の背後で全リーダ/ライタが直列化されるのを防ぐ (アーキ監査 2026-07 の見出し
-/// 「ws_state Mutex を DB コール全体で保持」の解消)。swap 中に発行済みの
-/// コマンドは pre-swap で clone した Arc (旧 DB) に着弾するので、新 DB への
-/// 混入は起きない (open_workspace の swap 不変条件と両立)。実際の DB 直列化は
-/// Database 内部の conn: Mutex<Connection> が引き続き担う。
+/// の背後で全リーダ/ライタが直列化されるのを防ぐ。swap 中に発行済みの
+/// コマンドは pre-swap で clone した Arc (旧 authority) に着弾するので、新 DB
+/// への混入は起きない。旧 authority を保持している間は shared lease も生き、
+/// 別プロセスの exclusive migration を阻む。
 pub struct ActiveWorkspace {
-    pub db: Arc<Database>,
-    pub path: PathBuf,
+    pub authority: PinnedWorkspaceDb,
+}
+
+impl ActiveWorkspace {
+    pub fn new(authority: PinnedWorkspaceDb) -> Self {
+        Self { authority }
+    }
+
+    pub fn db(&self) -> &Database {
+        self.authority.db()
+    }
+
+    pub fn path(&self) -> &Path {
+        self.authority.path()
+    }
 }
 
 pub struct WorkspaceState {
@@ -38,13 +101,23 @@ pub struct WorkspaceState {
     pub open_lock: Mutex<()>,
 }
 
-/// Database and path captured under one `WorkspaceState::inner` lock.
+/// Authority captured under one `WorkspaceState::inner` lock.
 /// Long-running shell adapters keep this value instead of resolving the
-/// active workspace again after entering a blocking queue.
+/// active workspace again after entering a blocking queue. The pinned Arc
+/// keeps the shared lease alive for the task lifetime.
 #[derive(Clone)]
 pub struct ActiveWorkspaceSnapshot {
-    pub db: Arc<Database>,
-    pub path: PathBuf,
+    pub authority: PinnedWorkspaceDb,
+}
+
+impl ActiveWorkspaceSnapshot {
+    pub fn db(&self) -> &PinnedWorkspaceDb {
+        &self.authority
+    }
+
+    pub fn path(&self) -> &Path {
+        self.authority.path()
+    }
 }
 
 /// Path to the global settings file in AppData.
@@ -59,20 +132,13 @@ pub struct GlobalSettingsPath {
     pub write_lock: Mutex<()>,
 }
 
-/// 現在 workspace の DB を1回だけ解決する。
+/// 現在 workspace の authority を1回だけ解決する。
 ///
 /// 長寿命の background task は開始時にこの `Arc` を保持し、workspace switch 後も
-/// 同じ DB へ完了/失敗を保存する。通常の短命 command は `with_db_state` 経由で毎回
-/// 解決する。どちらも switching / no-workspace の fail-closed 契約は同一。
+/// 同じ DB（と shared lease）へ完了/失敗を保存する。通常の短命 command は
+/// `with_db_state` 経由で毎回解決する。どちらも switching / no-workspace の
+/// fail-closed 契約は同一。
 pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveWorkspaceSnapshot> {
-    // ws_state.inner はアクティブ workspace の解決 (Option → Arc<Database>) と
-    // switching チェックのためだけに取得し、Arc を呼び出し元へ返す前に必ず解放する。
-    // 以前は closure をロック保持下で走らせていたため、ws_state Mutex が DB コール
-    // 全体を直列化し、遅いライタの背後で全リーダが待たされていた (アーキ監査
-    // 2026-07 の見出し指摘)。db を Arc<Database> にしたことで clone-then-drop
-    // でき、実際の DB 直列化は Database 内部の conn: Mutex<Connection> が担う。
-    // Phase 5 instrumentation: ws_state lock 取得待ちが 50ms 以上なら警告
-    // (以前ほど長く保持しないが、取得待ち自体はリーダ数のシグナルとして残す)。
     let lock_started = std::time::Instant::now();
     {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -80,28 +146,22 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
         if ws_lock_ms >= 50 {
             tracing::warn!("with_db ws_state.lock wait={}ms", ws_lock_ms);
         }
-        // workspace 切替中の DB アクセスは明示エラーで拒否する (M3)。フロントは
-        // 保存失敗 toast + dirty 維持でリトライに任せる。切替を跨いだ write が
-        // 別 workspace の DB へ黙って落ちる (UPDATE は 0行 hit の黙示ロスト、
-        // INSERT は行混入) のを防ぐ。
-        // 安定マーカー "WORKSPACE_SWITCHING" は AppError::WorkspaceSwitching の
-        // Display が担う (timelapse recorder の再送抑止 / 保存失敗 toast の文言
-        // 差し替え)。TS 側の対の定数は src/features/concurrency/
-        // workspaceSwitching.ts の WORKSPACE_SWITCHING_MARKER。変更時は両方同時に。
         if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(AppError::WorkspaceSwitching);
         }
         let ws = inner.as_ref().ok_or(AppError::NoWorkspace)?;
         Ok(ActiveWorkspaceSnapshot {
-            db: Arc::clone(&ws.db),
-            path: ws.path.clone(),
+            authority: Arc::clone(&ws.authority),
         })
-        // inner guard はこのブロック終端で drop = 呼び出し元の DB 操作前に解放。
     }
 }
 
-pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
-    Ok(active_workspace_snapshot(ws_state)?.db)
+/// Pin the active workspace authority (Database + shared lease).
+///
+/// Named for historical call sites; the returned Arc is [`WorkspaceAuthority`],
+/// not a bare Database.
+pub fn active_database(ws_state: &WorkspaceState) -> AppResult<PinnedWorkspaceDb> {
+    Ok(active_workspace_snapshot(ws_state)?.authority)
 }
 
 /// Resolve the currently-open workspace directory without exposing the
@@ -109,7 +169,7 @@ pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
 /// contract as [`active_database`] applies, so an MCP config can never capture
 /// a path midway through a native workspace swap.
 pub fn active_workspace_path(ws_state: &WorkspaceState) -> AppResult<PathBuf> {
-    Ok(active_workspace_snapshot(ws_state)?.path)
+    Ok(active_workspace_snapshot(ws_state)?.path().to_path_buf())
 }
 
 /// `tauri::State` を剥がした `with_db` 本体。単体テストや napi 側から
@@ -118,8 +178,8 @@ pub fn with_db_state<T>(
     ws_state: &WorkspaceState,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
 ) -> AppResult<T> {
-    let db = active_database(ws_state)?;
-    Ok(f(&db)?)
+    let authority = active_database(ws_state)?;
+    Ok(f(authority.db())?)
 }
 
 #[cfg(test)]
@@ -128,12 +188,15 @@ mod tests {
     use std::path::Path;
 
     fn workspace_state_with_db() -> WorkspaceState {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-state-test-ws-{}",
+            uuid::Uuid::new_v4()
+        ));
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(db, path).expect("test authority");
         WorkspaceState {
-            inner: Mutex::new(Some(ActiveWorkspace {
-                db: Arc::new(db),
-                path: PathBuf::from("/tmp/test-ws"),
-            })),
+            inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         }
@@ -158,7 +221,6 @@ mod tests {
         );
         assert!(!ran, "switching 中はクロージャを実行しない");
 
-        // フラグ解除後は通常どおり実行される。
         state
             .switching
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -186,11 +248,6 @@ mod tests {
 
     #[test]
     fn with_db_releases_inner_lock_before_running_closure() {
-        // ③ DB並行 Slice1 の不変条件: with_db_state は f を走らせる前に
-        // ws_state.inner ロックを解放しなければならない (監査見出し「ws_state
-        // Mutex を DB コール全体で保持」の解消)。同一スレッドからの try_lock
-        // 成功で検証する — 旧実装 (ロック保持のまま f) では std::sync::Mutex は
-        // 非再帰なので try_lock が WouldBlock で失敗し、このテストは red になる。
         let state = workspace_state_with_db();
         let lock_was_free = with_db_state(&state, |_db| Ok(state.inner.try_lock().is_ok()))
             .expect("workspace が開いていれば成功する");
@@ -227,9 +284,13 @@ mod tests {
     #[test]
     fn active_workspace_path_returns_the_pinned_directory() {
         let state = workspace_state_with_db();
+        let expected = active_workspace_snapshot(&state)
+            .expect("snapshot")
+            .path()
+            .to_path_buf();
         assert_eq!(
             active_workspace_path(&state).expect("workspace path"),
-            PathBuf::from("/tmp/test-ws")
+            expected
         );
     }
 
@@ -244,22 +305,38 @@ mod tests {
     }
 
     #[test]
-    fn active_workspace_snapshot_pins_database_and_path_from_one_workspace() {
+    fn active_workspace_snapshot_pins_authority_including_lease() {
         let state = workspace_state_with_db();
         let snapshot = active_workspace_snapshot(&state).expect("workspace snapshot");
+        let original_path = snapshot.path().to_path_buf();
 
+        let replacement_path = std::env::temp_dir().join(format!(
+            "grimodex-state-replacement-{}",
+            uuid::Uuid::new_v4()
+        ));
         let replacement = Database::new(Path::new(":memory:")).expect("replacement db");
-        *state.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
-            db: Arc::new(replacement),
-            path: PathBuf::from("/tmp/replacement-ws"),
-        });
+        let replacement_authority =
+            WorkspaceAuthority::from_database_for_test(replacement, replacement_path)
+                .expect("replacement authority");
+        *state.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(replacement_authority));
 
-        assert_eq!(snapshot.path, PathBuf::from("/tmp/test-ws"));
+        assert_eq!(snapshot.path(), original_path.as_path());
         assert!(!Arc::ptr_eq(
-            &snapshot.db,
+            &snapshot.authority,
             &active_workspace_snapshot(&state)
                 .expect("replacement snapshot")
-                .db,
+                .authority,
         ));
+        // Pinned snapshot still holds the original shared lease.
+        let exclusive = crate::workspace_lease::acquire_exclusive(
+            &original_path,
+            std::time::Duration::from_millis(50),
+        );
+        assert!(
+            exclusive.is_err(),
+            "snapshot must keep shared lease alive after workspace swap"
+        );
+        drop(snapshot);
     }
 }

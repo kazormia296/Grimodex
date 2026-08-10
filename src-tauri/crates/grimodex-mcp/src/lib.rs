@@ -70,6 +70,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             cli.workspace.display()
         );
     }
+    // Hold a shared workspace lease for the MCP process lifetime so Electron
+    // migration / restore cannot replace the live DB out from under us.
+    let _workspace_lease = grimodex_db::workspace_lease::try_acquire_shared(&cli.workspace)
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to acquire workspace shared lease ({}): {error}",
+                error.code()
+            )
+        })?;
+
     // Open DB
     let conn = db::open_db(&db_path)?;
 

@@ -142,6 +142,18 @@ impl SemanticAuditAppender for Database {
     }
 }
 
+impl SemanticAuditAppender for grimodex_db::WorkspaceAuthority {
+    fn append(
+        &self,
+        project_id: Option<&str>,
+        events: &[AppendAiAuditEvent],
+    ) -> anyhow::Result<()> {
+        self.db()
+            .append_ai_audit_events_for_scope(project_id, events)
+            .map(|_| ())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SemanticAuditContext {
     pub project_id: Option<String>,

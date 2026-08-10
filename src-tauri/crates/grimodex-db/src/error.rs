@@ -39,6 +39,12 @@ pub enum AppError {
     Anyhow(#[from] anyhow::Error),
 }
 
+impl From<crate::workspace_lease::LeaseError> for AppError {
+    fn from(value: crate::workspace_lease::LeaseError) -> Self {
+        AppError::Anyhow(anyhow::anyhow!("{value}"))
+    }
+}
+
 impl Serialize for AppError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // 文字列ワイヤ (上記コメント参照)。object 化は FE 移行と同時 (Slice2)

@@ -859,6 +859,7 @@ dependencies = [
  "flate2",
  "grimodex-core",
  "hex",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

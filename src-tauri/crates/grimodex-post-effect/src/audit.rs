@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
-use grimodex_db::Database;
+use grimodex_db::{Database, WorkspaceAuthority};
 use rusqlite::params;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -19,6 +19,12 @@ pub(crate) trait PostEffectAuditAppender: Send + Sync + 'static {
 impl PostEffectAuditAppender for Database {
     fn append(&self, project_id: &str, events: &[AppendAiAuditEvent]) -> anyhow::Result<()> {
         self.append_ai_audit_events(project_id, events).map(|_| ())
+    }
+}
+
+impl PostEffectAuditAppender for WorkspaceAuthority {
+    fn append(&self, project_id: &str, events: &[AppendAiAuditEvent]) -> anyhow::Result<()> {
+        self.db().append_ai_audit_events(project_id, events).map(|_| ())
     }
 }
 

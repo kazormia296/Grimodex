@@ -11,7 +11,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::state::{ActiveWorkspace, GlobalSettingsPath, WorkspaceState};
+use crate::state::{
+    ActiveWorkspace, GlobalSettingsPath, WorkspaceAuthority, WorkspaceState,
+};
 use crate::workspace;
 use crate::{AppError, Database};
 
@@ -510,8 +512,18 @@ pub(crate) fn spawn_workspace_maintenance_worker(
         .name("grimodex-workspace-maintenance".to_string())
         .spawn(move || {
             let _claim = claim;
-            // Atomic tmp+rename writes make an unlocked read safe here: the
-            // worker sees either complete version of the settings file.
+            // Cross-process file lease: migration/restore cannot replace the live
+            // DB while this detached connection is open.
+            let _lease = match crate::workspace_lease::try_acquire_shared(&workspace_path) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    tracing::warn!(
+                        "workspace maintenance: shared lease unavailable ({}); skipping",
+                        error.code()
+                    );
+                    return;
+                }
+            };
             let settings = workspace::read_global_settings(&global_settings_path);
             match Database::new_for_workspace_maintenance(&db_path) {
                 Ok(maintenance_database) => {
@@ -539,6 +551,8 @@ pub struct OpenWorkspaceResult {
     name: String,
     is_existing: bool,
     workspace_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    migration: Option<crate::migration_supervisor::OpenMigrationInfo>,
 }
 
 /// `open_workspace` は renderer 供給のパスにディレクトリ + SQLite DB を作成する。
@@ -634,6 +648,121 @@ fn is_system_directory(path: &Path) -> bool {
 /// `backup_restore::restore_backup_core` も同じガードを使う。
 pub struct SwitchingGuard<'a>(pub &'a std::sync::atomic::AtomicBool);
 
+/// Same-path reopen quiesce: wait for sole authority owner, drop the old
+/// authority (releasing its shared lease), hold the maintenance exclusive claim
+/// through open, and on pre-replace failure best-effort republish a
+/// current-schema authority via DDL-free reopen (never re-run the full
+/// Migration Supervisor).
+struct QuiescedSamePath<'a> {
+    ws_state: &'a WorkspaceState,
+    ws_path: PathBuf,
+    did_quiesce: bool,
+    /// When true, Drop must not republish (Safe Mode / RecoveryRequired /
+    /// successful replacement).
+    abandon_restore: bool,
+    _maintenance: Option<WorkspaceMaintenanceClaim>,
+}
+
+impl<'a> QuiescedSamePath<'a> {
+    fn begin(ws_state: &'a WorkspaceState, ws_path: &Path) -> Result<Self, AppError> {
+        let mut guard = Self {
+            ws_state,
+            ws_path: ws_path.to_path_buf(),
+            did_quiesce: false,
+            abandon_restore: false,
+            _maintenance: None,
+        };
+        let old = {
+            let mut inner = ws_state
+                .inner
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            match inner.as_ref() {
+                Some(active) if paths_equal_for_workspace(active.path(), ws_path) => {
+                    inner.take()
+                }
+                _ => None,
+            }
+        };
+        let Some(old) = old else {
+            return Ok(guard);
+        };
+        if let Err(error) = crate::backup_restore::wait_for_sole_owner(&old.authority) {
+            let mut inner = ws_state
+                .inner
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            *inner = Some(old);
+            return Err(error);
+        }
+        let maintenance = match claim_workspace_maintenance_exclusive(ws_path) {
+            Ok(claim) => claim,
+            Err(error) => {
+                let mut inner = ws_state
+                    .inner
+                    .lock()
+                    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+                *inner = Some(old);
+                return Err(error);
+            }
+        };
+        drop(old);
+        guard._maintenance = Some(maintenance);
+        guard.did_quiesce = true;
+        Ok(guard)
+    }
+
+    fn commit_success(&mut self) {
+        self.abandon_restore = true;
+        // Release before schedule_workspace_maintenance so a new worker can claim.
+        self._maintenance = None;
+    }
+
+    fn commit_safe_mode(&mut self) {
+        self.abandon_restore = true;
+        self._maintenance = None;
+    }
+}
+
+impl Drop for QuiescedSamePath<'_> {
+    fn drop(&mut self) {
+        if !self.did_quiesce || self.abandon_restore {
+            return;
+        }
+        // Release in-process maintenance exclusive before acquiring shared lease.
+        self._maintenance = None;
+        match crate::migration_supervisor::reopen_existing_current_authority(&self.ws_path) {
+            Ok(opened) => {
+                let authority = Arc::new(WorkspaceAuthority::new(
+                    opened.database,
+                    self.ws_path.clone(),
+                    opened.lease,
+                ));
+                if let Ok(mut inner) = self.ws_state.inner.lock() {
+                    if inner.is_none() {
+                        *inner = Some(ActiveWorkspace::new(authority));
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!(
+                    "WORKSPACE_REACTIVATION_FAILED during same-path pre-replace recovery: {error}"
+                );
+            }
+        }
+    }
+}
+
+fn paths_equal_for_workspace(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 impl Drop for SwitchingGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -708,46 +837,61 @@ fn open_workspace_sync_impl(
             Ok::<_, AppError>((ws_path, is_existing, workspace_meta))
         })?;
 
-    // Open database
-    let db_path = ws_path.join("grimodex.db");
-    let database = trace.record_result(NativeWorkspaceOpenSpanName::DatabaseOpen, || {
-        Database::new(&db_path).map_err(AppError::from)
-    })?;
-    let maintenance_workspace_path = ws_path.clone();
-    let maintenance_settings_path = gs_path.path.clone();
-    trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
-        database.migrate().map_err(AppError::from)
-    })?;
-    if let Err(error) = trace.record_result(NativeWorkspaceOpenSpanName::Optimize, || {
-        database.optimize_without_wait()
-    }) {
-        tracing::warn!("non-blocking PRAGMA optimize on workspace open skipped: {error}");
-    }
-    // slim バックアップ復元後などで FTS 索引が空なら content から再構築（自己修復。
-    // restore の happy path 以外＝再オープン失敗経由の reload や手動昇格でも検索が
-    // 無音故障しないようにする。通常 DB では count だけで no-op）。
-    if let Err(e) = trace.record_result(NativeWorkspaceOpenSpanName::FtsCheck, || {
-        database.rebuild_fts_if_stale()
-    }) {
-        tracing::warn!("rebuild_fts_if_stale on workspace open failed: {e}");
-    }
-    let database = Arc::new(database);
-
-    // swap 直前で switching を立てる (Fix I3)。ここまでの migrate /
-    // VACUUM / prune の数秒間は旧 DB への正当な読み書き (切替中も
-    // 生きている旧 UI の検索・チャット・保存) を通したままにし、
-    // swap 区間だけ with_db を明示エラーで拒否する。swap 前に
-    // 走り出した with_db は inner ロックで直列化されるので安全性は
-    // 同等。ガードの Drop 復帰 (正常・エラー・panic) は維持。
-    // _open_guard より後に宣言 = 先に drop されるので、open_lock
-    // 解放時には必ずフラグは戻っている。
-    let swap_span = trace.begin_span(NativeWorkspaceOpenSpanName::WorkspaceSwapLock);
+    // Same-path reopen: raise switching first (WORKSPACE_SWITCHING, not
+    // NoWorkspace), quiesce authority + maintenance, then run supervisor.
     ws_state
         .switching
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let _switching_guard = SwitchingGuard(&ws_state.switching);
 
-    // Set as active workspace
+    let mut quiesced = trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
+        QuiescedSamePath::begin(ws_state, &ws_path)
+    })?;
+
+    let db_path = ws_path.join("grimodex.db");
+    let _ = db_path;
+    let maintenance_workspace_path = ws_path.clone();
+    let maintenance_settings_path = gs_path.path.clone();
+    let prepare_result =
+        trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
+            crate::migration_supervisor::prepare_database_for_open(&ws_path)
+        });
+    let (opened, migration_info) = match prepare_result {
+        Ok(value) => value,
+        Err(error) => {
+            if error.to_string().contains("WORKSPACE_SAFE_MODE") {
+                quiesced.commit_safe_mode();
+            }
+            return Err(error);
+        }
+    };
+    if let Some(info) = migration_info.as_ref() {
+        tracing::info!(
+            "workspace migrated schema {} -> {} (receipt={})",
+            info.from_schema,
+            info.to_schema,
+            info.receipt_path
+        );
+    }
+    let database = opened.database;
+    if let Err(error) = trace.record_result(NativeWorkspaceOpenSpanName::Optimize, || {
+        database.optimize_without_wait()
+    }) {
+        tracing::warn!("non-blocking PRAGMA optimize on workspace open skipped: {error}");
+    }
+    if let Err(e) = trace.record_result(NativeWorkspaceOpenSpanName::FtsCheck, || {
+        database.rebuild_fts_if_stale()
+    }) {
+        tracing::warn!("rebuild_fts_if_stale on workspace open failed: {e}");
+    }
+    let authority = Arc::new(WorkspaceAuthority::new(
+        database,
+        ws_path.clone(),
+        opened.lease,
+    ));
+
+    // Final authority publish under the existing switching guard.
+    let swap_span = trace.begin_span(NativeWorkspaceOpenSpanName::WorkspaceSwapLock);
     let mut inner = match ws_state.inner.lock() {
         Ok(inner) => inner,
         Err(error) => {
@@ -755,13 +899,8 @@ fn open_workspace_sync_impl(
             return Err(AppError::Anyhow(anyhow::anyhow!("{error}")));
         }
     };
-    *inner = Some(ActiveWorkspace {
-        db: database,
-        path: ws_path,
-    });
-    // Shell swap hooks may wait for other subsystem writers (IME snapshot
-    // barrier, semantic epoch rotation). Do not retain the workspace mutex
-    // across those waits; `switching=true` already rejects fresh DB pins.
+    *inner = Some(ActiveWorkspace::new(authority));
+    quiesced.commit_success();
     drop(inner);
     trace.finish_span(swap_span);
 
@@ -823,6 +962,7 @@ fn open_workspace_sync_impl(
         name,
         is_existing,
         workspace_id: workspace_meta.id,
+        migration: migration_info,
     })
 }
 
@@ -1129,9 +1269,8 @@ mod tests {
         let gs_file = dir.join("global-settings.json");
         std::fs::create_dir_all(&ws_dir).expect("create reopen fixture");
 
-        let previous_database = Arc::new(
-            Database::new(&ws_dir.join("grimodex.db")).expect("open previous active database"),
-        );
+        let previous_database =
+            Database::new(&ws_dir.join("grimodex.db")).expect("open previous active database");
         previous_database.migrate().expect("migrate fixture");
         previous_database
             .with_conn(|conn| {
@@ -1153,13 +1292,15 @@ mod tests {
                 Ok(())
             })
             .expect("seed maintenance fixture");
-        let previous_weak = Arc::downgrade(&previous_database);
+        let previous_authority = WorkspaceAuthority::from_database_for_test(
+            previous_database,
+            ws_dir.clone(),
+        )
+        .expect("previous authority");
+        let previous_weak = Arc::downgrade(&previous_authority);
 
         let ws_state = Arc::new(WorkspaceState {
-            inner: Mutex::new(Some(ActiveWorkspace {
-                db: previous_database,
-                path: ws_dir.clone(),
-            })),
+            inner: Mutex::new(Some(ActiveWorkspace::new(previous_authority))),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         });
@@ -1168,9 +1309,9 @@ mod tests {
             write_lock: Mutex::new(()),
         });
 
-        // Stop the real worker after its detached connection and path claim
-        // exist. Reopening must neither wait for this gate nor keep the old
-        // active Arc alive through the worker.
+        // Stop the real worker after its detached connection, path claim, and
+        // shared file lease exist. Same-path reopen must wait for that worker
+        // (Gate A) before dropping authority / taking exclusive migration.
         let (maintenance_started_tx, maintenance_started_rx) = std::sync::mpsc::channel();
         let (release_maintenance_tx, release_maintenance_rx) = std::sync::mpsc::channel();
         let maintenance = spawn_workspace_maintenance_worker(&ws_dir, &gs_file, move || {
@@ -1197,26 +1338,28 @@ mod tests {
             let _ = reopened_tx.send(result);
         });
 
-        let reopened = match reopened_rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(result) => result,
-            Err(error) => {
-                let _ = release_maintenance_tx.send(());
-                let _ = maintenance.join();
-                let _ = reopen.join();
-                panic!("same-path reopen waited for detached maintenance: {error}");
-            }
-        };
-        reopened.expect("same-path reopen");
-        reopen.join().expect("reopen thread");
+        // Reopen must block while maintenance holds the path claim.
         assert!(
-            previous_weak.upgrade().is_none(),
-            "maintenance worker must not retain the previous active Database"
+            reopened_rx
+                .recv_timeout(Duration::from_millis(200))
+                .is_err(),
+            "same-path reopen must wait for detached maintenance"
         );
 
         release_maintenance_tx
             .send(())
             .expect("release production maintenance worker");
+        let reopened = reopened_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("same-path reopen after maintenance");
+        reopened.expect("same-path reopen");
+        reopen.join().expect("reopen thread");
         maintenance.join().expect("maintenance worker");
+        assert!(
+            previous_weak.upgrade().is_none(),
+            "maintenance worker must not retain the previous active authority"
+        );
+
         with_db_state(&ws_state, |db| {
             let remaining: i64 = db.with_conn(|conn| {
                 Ok(conn.query_row(
