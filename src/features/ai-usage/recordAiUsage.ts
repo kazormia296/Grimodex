@@ -38,7 +38,11 @@ export type AiUsageSurface =
   | "narrative_plot_thread_synthesize"
   | "narrative_plot_development_classify"
   | "narrative_plot_marker_assign"
-  | "narrative_plot_relation_synthesize";
+  | "narrative_plot_relation_synthesize"
+  | "narrative_foreshadow_signal_synthesize"
+  | "narrative_setup_payoff_link"
+  | "narrative_foreshadow_global_reconcile"
+  | "narrative_foreshadow_quality_evaluate";
 
 export interface RecordAiUsageInput {
   surface: AiUsageSurface;

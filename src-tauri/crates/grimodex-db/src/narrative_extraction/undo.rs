@@ -894,6 +894,10 @@ fn preflight_undo_entity(
                 );
             }
         }
+        "foreshadow" => {
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
+            super::foreshadow_undo::ensure_unchanged(conn, project_id, entity_id, expected_version)?;
+        }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),
     }
     Ok(())
@@ -1178,6 +1182,16 @@ fn undo_one_entity(
                 .and_then(Value::as_str)
                 .unwrap_or("");
             undo_created_plot_branch(conn, entity_id, expected_version, semantic_key)?;
+        }
+        "foreshadow" => {
+            let op_kind = entity.get("opKind").and_then(Value::as_str).unwrap_or("create");
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
+            if op_kind == "patch" {
+                let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| anyhow::anyhow!("foreshadow patch journal missing beforeSnapshot"))?;
+                super::foreshadow_undo::restore_patch(conn, entity_id, &before, expected_version, now)?;
+            } else {
+                super::foreshadow_undo::undo_created(conn, project_id, entity_id, expected_version)?;
+            }
         }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),
     }

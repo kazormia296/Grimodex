@@ -1155,6 +1155,8 @@ impl Database {
                 abandoned        INTEGER NOT NULL DEFAULT 0,
                 secret           INTEGER NOT NULL DEFAULT 1,
                 load_bearing     TEXT,
+                mechanism        TEXT,
+                version          INTEGER NOT NULL DEFAULT 0,
                 codex_link_dirty_at INTEGER,
                 created_at       INTEGER NOT NULL,
                 updated_at       INTEGER NOT NULL
@@ -1171,6 +1173,7 @@ impl Database {
                 from_pos           INTEGER NOT NULL,
                 to_pos             INTEGER NOT NULL,
                 kind               TEXT NOT NULL,
+                role               TEXT NOT NULL DEFAULT 'unspecified',
                 strength           TEXT,
                 ai_strength        TEXT,
                 ai_reasoning       TEXT,
@@ -1178,6 +1181,8 @@ impl Database {
                 ai_rationale       TEXT,
                 last_evaluated_at  INTEGER,
                 is_orphan          INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key       TEXT NOT NULL DEFAULT '',
                 created_at         INTEGER NOT NULL,
                 updated_at         INTEGER NOT NULL
             );
@@ -2577,6 +2582,136 @@ impl Database {
                 ON plot_thread_scene_links(semantic_key);
              CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_thread_branches_semantic_key
                 ON plot_thread_branches(semantic_key);",
+        )?;
+
+        // SCHEMA_VERSION 11: Foreshadow root OCC and multi-payoff persistence.
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadows",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(&conn, "foreshadows", "mechanism", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadow_setups",
+            "role",
+            "TEXT NOT NULL DEFAULT 'unspecified'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadow_setups",
+            "evidence_anchor_id",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadow_setups",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS foreshadow_payoffs (
+                id                 TEXT PRIMARY KEY,
+                foreshadow_id      TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                scene_id           TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                from_pos           INTEGER,
+                to_pos             INTEGER,
+                role               TEXT NOT NULL DEFAULT 'unspecified',
+                confirmed          INTEGER NOT NULL DEFAULT 0,
+                is_primary         INTEGER NOT NULL DEFAULT 0,
+                attribution        TEXT NOT NULL DEFAULT 'human',
+                ai_rationale       TEXT,
+                is_orphan          INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key       TEXT NOT NULL DEFAULT '',
+                created_at         INTEGER NOT NULL,
+                updated_at         INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS foreshadow_setup_payoff_links (
+                foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                setup_id      TEXT NOT NULL REFERENCES foreshadow_setups(id) ON DELETE CASCADE,
+                payoff_id     TEXT NOT NULL REFERENCES foreshadow_payoffs(id) ON DELETE CASCADE,
+                bridge_kind   TEXT NOT NULL DEFAULT 'unspecified',
+                explanation   TEXT,
+                created_at    INTEGER NOT NULL,
+                PRIMARY KEY (foreshadow_id, setup_id, payoff_id)
+            );
+
+            UPDATE foreshadow_setups
+               SET role = 'unspecified'
+             WHERE role IS NULL OR role = '';
+            UPDATE foreshadow_setups
+               SET semantic_key = foreshadow_id || '|' || scene_id || '|' || from_pos || '|' || to_pos
+             WHERE semantic_key IS NULL OR semantic_key = '';
+            UPDATE foreshadow_setups
+               SET semantic_key = semantic_key || '#dup:' || id
+             WHERE id IN (
+                SELECT id FROM foreshadow_setups a
+                 WHERE EXISTS (
+                    SELECT 1 FROM foreshadow_setups b
+                     WHERE b.semantic_key = a.semantic_key
+                       AND b.rowid < a.rowid
+                 )
+             );
+
+            INSERT INTO foreshadow_payoffs (
+                id, foreshadow_id, scene_id, from_pos, to_pos, role, confirmed,
+                is_primary, attribution, ai_rationale, is_orphan, evidence_anchor_id,
+                semantic_key, created_at, updated_at
+            )
+            SELECT
+                'legacy-payoff:' || id,
+                id,
+                payoff_scene_id,
+                payoff_from_pos,
+                payoff_to_pos,
+                'unspecified',
+                payoff_confirmed,
+                1,
+                'human',
+                NULL,
+                0,
+                NULL,
+                id || '|' || payoff_scene_id || '|' || COALESCE(payoff_from_pos, '') || '|' || COALESCE(payoff_to_pos, ''),
+                created_at,
+                updated_at
+              FROM foreshadows root
+             WHERE payoff_scene_id IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM foreshadow_payoffs payoff
+                    WHERE payoff.id = 'legacy-payoff:' || root.id
+               );
+            UPDATE foreshadow_payoffs
+               SET semantic_key = foreshadow_id || '|' || scene_id || '|' || COALESCE(from_pos, '') || '|' || COALESCE(to_pos, '')
+             WHERE semantic_key IS NULL OR semantic_key = '';
+            UPDATE foreshadow_payoffs
+               SET semantic_key = semantic_key || '#dup:' || id
+             WHERE id IN (
+                SELECT id FROM foreshadow_payoffs a
+                 WHERE EXISTS (
+                    SELECT 1 FROM foreshadow_payoffs b
+                     WHERE b.semantic_key = a.semantic_key
+                       AND b.rowid < a.rowid
+                 )
+             );
+
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_semantic_key
+                ON foreshadow_setups(semantic_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_fs_setup_semantic_key
+                ON foreshadow_setups(semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_fid
+                ON foreshadow_payoffs(foreshadow_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_scene
+                ON foreshadow_payoffs(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_semantic_key
+                ON foreshadow_payoffs(semantic_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_fs_payoff_semantic_key
+                ON foreshadow_payoffs(semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_link_setup
+                ON foreshadow_setup_payoff_links(setup_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_link_payoff
+                ON foreshadow_setup_payoff_links(payoff_id);",
         )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.

@@ -1782,6 +1782,8 @@ export const foreshadows = sqliteTable(
 
     // Phase 6: load_bearing 軸（critical / supporting / optional / null）
     loadBearing: text("load_bearing"),
+    mechanism: text("mechanism"),
+    version: integer("version").notNull().default(0),
 
     // impact-review: リンク先 Codex が変更された時刻。setup の lastEvaluatedAt より
     // 新しければ「Codex 変更により再評価が必要」として stale 判定する（null=未変更）。
@@ -1813,6 +1815,7 @@ export const foreshadowSetups = sqliteTable(
 
     // Metadata
     kind: text("kind").notNull(), // 'designated_existing' | 'inserted_new' | 'rewritten'
+    role: text("role").notNull().default("unspecified"),
     strength: text("strength"), // 'subtle' | 'moderate' | 'overt' | null
     aiStrength: text("ai_strength"),
     aiReasoning: text("ai_reasoning"),
@@ -1823,6 +1826,8 @@ export const foreshadowSetups = sqliteTable(
     isOrphan: integer("is_orphan", { mode: "boolean" })
       .notNull()
       .default(false),
+    evidenceAnchorId: text("evidence_anchor_id"),
+    semanticKey: text("semantic_key").notNull().default(""),
 
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
@@ -1831,6 +1836,68 @@ export const foreshadowSetups = sqliteTable(
     index("idx_fs_setup_fid").on(t.foreshadowId),
     index("idx_fs_setup_scene").on(t.sceneId),
     index("idx_fs_setup_orphan").on(t.isOrphan),
+    index("idx_fs_setup_semantic_key").on(t.semanticKey),
+    uniqueIndex("uq_fs_setup_semantic_key").on(t.semanticKey),
+  ],
+);
+
+export const foreshadowPayoffs = sqliteTable(
+  "foreshadow_payoffs",
+  {
+    id: text("id").primaryKey(),
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    fromPos: integer("from_pos"),
+    toPos: integer("to_pos"),
+    role: text("role").notNull().default("unspecified"),
+    confirmed: integer("confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    isPrimary: integer("is_primary", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    attribution: text("attribution").notNull().default("human"),
+    aiRationale: text("ai_rationale"),
+    isOrphan: integer("is_orphan", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    evidenceAnchorId: text("evidence_anchor_id"),
+    semanticKey: text("semantic_key").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    index("idx_fs_payoff_fid").on(t.foreshadowId),
+    index("idx_fs_payoff_scene").on(t.sceneId),
+    index("idx_fs_payoff_semantic_key").on(t.semanticKey),
+    uniqueIndex("uq_fs_payoff_semantic_key").on(t.semanticKey),
+  ],
+);
+
+export const foreshadowSetupPayoffLinks = sqliteTable(
+  "foreshadow_setup_payoff_links",
+  {
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    setupId: text("setup_id")
+      .notNull()
+      .references(() => foreshadowSetups.id, { onDelete: "cascade" }),
+    payoffId: text("payoff_id")
+      .notNull()
+      .references(() => foreshadowPayoffs.id, { onDelete: "cascade" }),
+    bridgeKind: text("bridge_kind").notNull().default("unspecified"),
+    explanation: text("explanation"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.foreshadowId, t.setupId, t.payoffId] }),
+    index("idx_fs_payoff_link_setup").on(t.setupId),
+    index("idx_fs_payoff_link_payoff").on(t.payoffId),
   ],
 );
 
@@ -2879,6 +2946,12 @@ export type Foreshadow = typeof foreshadows.$inferSelect;
 export type NewForeshadow = typeof foreshadows.$inferInsert;
 export type ForeshadowSetup = typeof foreshadowSetups.$inferSelect;
 export type NewForeshadowSetup = typeof foreshadowSetups.$inferInsert;
+export type ForeshadowPayoff = typeof foreshadowPayoffs.$inferSelect;
+export type NewForeshadowPayoff = typeof foreshadowPayoffs.$inferInsert;
+export type ForeshadowSetupPayoffLink =
+  typeof foreshadowSetupPayoffLinks.$inferSelect;
+export type NewForeshadowSetupPayoffLink =
+  typeof foreshadowSetupPayoffLinks.$inferInsert;
 export type ForeshadowCodexLink = typeof foreshadowCodexLinks.$inferSelect;
 export type NewForeshadowCodexLink = typeof foreshadowCodexLinks.$inferInsert;
 

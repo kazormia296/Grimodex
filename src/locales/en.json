@@ -1508,7 +1508,11 @@
         "narrative_plot_thread_synthesize": "Narrative plot thread synthesize",
         "narrative_plot_development_classify": "Narrative plot development classify",
         "narrative_plot_marker_assign": "Narrative plot marker assign",
-        "narrative_plot_relation_synthesize": "Narrative plot relation synthesize"
+        "narrative_plot_relation_synthesize": "Narrative plot relation synthesize",
+        "narrative_foreshadow_signal_synthesize": "Foreshadow setup signal synthesize",
+        "narrative_setup_payoff_link": "Setup/payoff link",
+        "narrative_foreshadow_global_reconcile": "Foreshadow global reconcile",
+        "narrative_foreshadow_quality_evaluate": "Foreshadow quality evaluate"
       }
     }
   },

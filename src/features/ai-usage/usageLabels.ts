@@ -42,6 +42,10 @@ const SURFACE_KEYS = {
   narrative_plot_development_classify: true,
   narrative_plot_marker_assign: true,
   narrative_plot_relation_synthesize: true,
+  narrative_foreshadow_signal_synthesize: true,
+  narrative_setup_payoff_link: true,
+  narrative_foreshadow_global_reconcile: true,
+  narrative_foreshadow_quality_evaluate: true,
 } satisfies Record<AiUsageSurface, true>;
 
 export const KNOWN_SURFACES = Object.keys(SURFACE_KEYS) as AiUsageSurface[];

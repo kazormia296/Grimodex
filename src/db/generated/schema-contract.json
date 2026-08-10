@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -3477,41 +3477,41 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE foreshadow_codex_links ( foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, PRIMARY KEY (foreshadow_id, codex_entry_id) )"
     },
-    "foreshadow_setups": {
+    "foreshadow_payoffs": {
       "kind": "table",
       "columns": {
         "ai_rationale": {
-          "ordinal": 10,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "ai_reasoning": {
-          "ordinal": 8,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "ai_strength": {
-          "ordinal": 7,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "attribution": {
-          "ordinal": 9,
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "'human'",
+          "primaryKey": 0
+        },
+        "confirmed": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         },
         "created_at": {
           "ordinal": 13,
           "declaredType": "INTEGER",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_anchor_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -3525,7 +3525,7 @@
         "from_pos": {
           "ordinal": 3,
           "declaredType": "INTEGER",
-          "notNull": true,
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -3537,24 +3537,24 @@
           "primaryKey": 1
         },
         "is_orphan": {
-          "ordinal": 12,
+          "ordinal": 10,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": "0",
           "primaryKey": 0
         },
-        "kind": {
+        "is_primary": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "role": {
           "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "last_evaluated_at": {
-          "ordinal": 11,
-          "declaredType": "INTEGER",
-          "notNull": false,
-          "default": null,
+          "default": "'unspecified'",
           "primaryKey": 0
         },
         "scene_id": {
@@ -3564,17 +3564,17 @@
           "default": null,
           "primaryKey": 0
         },
-        "strength": {
-          "ordinal": 6,
+        "semantic_key": {
+          "ordinal": 12,
           "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
+          "notNull": true,
+          "default": "''",
           "primaryKey": 0
         },
         "to_pos": {
           "ordinal": 4,
           "declaredType": "INTEGER",
-          "notNull": true,
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -3609,7 +3609,243 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE foreshadow_setups ( id TEXT PRIMARY KEY, foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, from_pos INTEGER NOT NULL, to_pos INTEGER NOT NULL, kind TEXT NOT NULL, strength TEXT, ai_strength TEXT, ai_reasoning TEXT, attribution TEXT NOT NULL DEFAULT 'human', ai_rationale TEXT, last_evaluated_at INTEGER, is_orphan INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
+      "createSql": "CREATE TABLE foreshadow_payoffs ( id TEXT PRIMARY KEY, foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, from_pos INTEGER, to_pos INTEGER, role TEXT NOT NULL DEFAULT 'unspecified', confirmed INTEGER NOT NULL DEFAULT 0, is_primary INTEGER NOT NULL DEFAULT 0, attribution TEXT NOT NULL DEFAULT 'human', ai_rationale TEXT, is_orphan INTEGER NOT NULL DEFAULT 0, evidence_anchor_id TEXT, semantic_key TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
+    },
+    "foreshadow_setup_payoff_links": {
+      "kind": "table",
+      "columns": {
+        "bridge_kind": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'unspecified'",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "explanation": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "foreshadow_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "payoff_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "setup_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "foreshadow_payoffs",
+          "from": "payoff_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "foreshadow_setups",
+          "from": "setup_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
+          "sequence": 0,
+          "table": "foreshadows",
+          "from": "foreshadow_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE foreshadow_setup_payoff_links ( foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, setup_id TEXT NOT NULL REFERENCES foreshadow_setups(id) ON DELETE CASCADE, payoff_id TEXT NOT NULL REFERENCES foreshadow_payoffs(id) ON DELETE CASCADE, bridge_kind TEXT NOT NULL DEFAULT 'unspecified', explanation TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (foreshadow_id, setup_id, payoff_id) )"
+    },
+    "foreshadow_setups": {
+      "kind": "table",
+      "columns": {
+        "ai_rationale": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "ai_reasoning": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "ai_strength": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "attribution": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'human'",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 16,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_anchor_id": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "foreshadow_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "from_pos": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "is_orphan": {
+          "ordinal": 13,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "kind": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "last_evaluated_at": {
+          "ordinal": 12,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "role": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'unspecified'",
+          "primaryKey": 0
+        },
+        "scene_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_key": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
+        "strength": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "to_pos": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 17,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "tree_nodes",
+          "from": "scene_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "foreshadows",
+          "from": "foreshadow_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE foreshadow_setups ( id TEXT PRIMARY KEY, foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, from_pos INTEGER NOT NULL, to_pos INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'unspecified', strength TEXT, ai_strength TEXT, ai_reasoning TEXT, attribution TEXT NOT NULL DEFAULT 'human', ai_rationale TEXT, last_evaluated_at INTEGER, is_orphan INTEGER NOT NULL DEFAULT 0, evidence_anchor_id TEXT, semantic_key TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
     },
     "foreshadows": {
       "kind": "table",
@@ -3622,14 +3858,14 @@
           "primaryKey": 0
         },
         "codex_link_dirty_at": {
-          "ordinal": 12,
+          "ordinal": 14,
           "declaredType": "INTEGER",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 13,
+          "ordinal": 15,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": null,
@@ -3651,6 +3887,13 @@
         },
         "load_bearing": {
           "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "mechanism": {
+          "ordinal": 12,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -3713,10 +3956,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 14,
+          "ordinal": 16,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 13,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -3743,7 +3993,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE foreshadows ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL, intent TEXT, notes TEXT, payoff_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, payoff_from_pos INTEGER, payoff_to_pos INTEGER, payoff_confirmed INTEGER NOT NULL DEFAULT 0, abandoned INTEGER NOT NULL DEFAULT 0, secret INTEGER NOT NULL DEFAULT 1, load_bearing TEXT, codex_link_dirty_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
+      "createSql": "CREATE TABLE foreshadows ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL, intent TEXT, notes TEXT, payoff_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, payoff_from_pos INTEGER, payoff_to_pos INTEGER, payoff_confirmed INTEGER NOT NULL DEFAULT 0, abandoned INTEGER NOT NULL DEFAULT 0, secret INTEGER NOT NULL DEFAULT 1, load_bearing TEXT, mechanism TEXT, version INTEGER NOT NULL DEFAULT 0, codex_link_dirty_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
     },
     "fts_meta": {
       "kind": "table",
@@ -10382,6 +10632,66 @@
       ],
       "createSql": "CREATE INDEX idx_fs_codex_codex ON foreshadow_codex_links(codex_entry_id)"
     },
+    "idx_fs_payoff_fid": {
+      "table": "foreshadow_payoffs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "foreshadow_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_fid ON foreshadow_payoffs(foreshadow_id)"
+    },
+    "idx_fs_payoff_link_payoff": {
+      "table": "foreshadow_setup_payoff_links",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "payoff_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_link_payoff ON foreshadow_setup_payoff_links(payoff_id)"
+    },
+    "idx_fs_payoff_link_setup": {
+      "table": "foreshadow_setup_payoff_links",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "setup_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_link_setup ON foreshadow_setup_payoff_links(setup_id)"
+    },
+    "idx_fs_payoff_scene": {
+      "table": "foreshadow_payoffs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scene_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_scene ON foreshadow_payoffs(scene_id)"
+    },
+    "idx_fs_payoff_semantic_key": {
+      "table": "foreshadow_payoffs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_semantic_key ON foreshadow_payoffs(semantic_key)"
+    },
     "idx_fs_setup_fid": {
       "table": "foreshadow_setups",
       "unique": false,
@@ -10417,6 +10727,18 @@
         }
       ],
       "createSql": "CREATE INDEX idx_fs_setup_scene ON foreshadow_setups(scene_id)"
+    },
+    "idx_fs_setup_semantic_key": {
+      "table": "foreshadow_setups",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_setup_semantic_key ON foreshadow_setups(semantic_key)"
     },
     "idx_generation_logs_project_trace": {
       "table": "generation_logs",
@@ -11817,6 +12139,30 @@
         }
       ],
       "createSql": "CREATE UNIQUE INDEX uq_codex_detail_semantic_binding_definition_facet ON codex_detail_semantic_bindings(definition_id, facet_key)"
+    },
+    "uq_fs_payoff_semantic_key": {
+      "table": "foreshadow_payoffs",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_fs_payoff_semantic_key ON foreshadow_payoffs(semantic_key)"
+    },
+    "uq_fs_setup_semantic_key": {
+      "table": "foreshadow_setups",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_fs_setup_semantic_key ON foreshadow_setups(semantic_key)"
     },
     "uq_narrative_temporal_constraints_semantic_key": {
       "table": "narrative_temporal_constraints",
