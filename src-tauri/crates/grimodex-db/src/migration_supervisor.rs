@@ -5,7 +5,8 @@
 //! 1. acquires a shared lease and inspects the live DB
 //! 2. on upgrade: drops shared, takes exclusive, re-inspects, seals WAL
 //! 3. creates a checksummed migration snapshot under `backups/migrations/`
-//! 4. migrates a staged copy
+//! 4. migrates a staged copy, seals it, and records an installed-image digest
+//!    from that sealed staged file
 //! 5. atomically replaces the live DB; post-replace failures **while exclusive
 //!    is still held** roll back from the verified snapshot and return
 //!    restore-only Safe Mode (no Database authority)
@@ -348,6 +349,13 @@ fn shadow_migrate(
         drop(db);
         seal_sqlite_image(&staged)?;
     }
+    // Capture CAS token from the sealed staged image *before* live replace so
+    // post-replace seal/sync is not required to know what we installed.
+    let installed = installed_image_token_from_sealed(
+        &staged,
+        SCHEMA_VERSION,
+        Some(snapshot.migration_id.clone()),
+    )?;
     hit_failpoint(failpoint, Failpoint::AfterMigrate)?;
 
     // Seal live image before any replacement. Rollback source is the verified
@@ -357,13 +365,14 @@ fn shadow_migrate(
     atomic_replace(&staged, db_path)?;
     staged_cleanup.disarm();
 
-    // --- LiveReplaced: every failure from here must attempt snapshot rollback
-    // and must never auto-delete the snapshot / recovery artifacts. ---
+    // --- LiveReplaced: failures while exclusive is still held roll back from
+    // the verified snapshot. After exclusive→shared handoff, never blind-rollback.
     finish_after_live_replaced(
         workspace,
         db_path,
         &snapshot,
         &inspection,
+        installed,
         exclusive,
         failpoint,
     )
@@ -374,6 +383,7 @@ fn finish_after_live_replaced(
     db_path: &Path,
     snapshot: &SnapshotArtifacts,
     inspection: &WorkspaceSchemaInspection,
+    installed: InstalledImageToken,
     exclusive: WorkspaceLease,
     failpoint: Option<Failpoint>,
 ) -> Result<WorkspaceOpenDbOutcome, MigrationSupervisorError> {
@@ -429,15 +439,8 @@ fn finish_after_live_replaced(
         }
     };
 
-    // Record the verified installed image under exclusive, then hand off.
-    // Shared-lease failure after this point must NOT blind-rollback: another
-    // process may have completed restore/migration in the gap.
-    let installed = capture_installed_image(
-        db_path,
-        SCHEMA_VERSION,
-        Some(snapshot.migration_id.clone()),
-    )?;
-
+    // Shared-lease failure after verified install must NOT blind-rollback:
+    // another process may have completed restore/migration in the gap.
     match handoff_verified_live_to_shared(
         workspace,
         exclusive,
@@ -469,18 +472,36 @@ fn finish_after_live_replaced(
     }
 }
 
-/// Capture a sealed live-image digest for later CAS rollback checks.
+/// Build a CAS token from an already-sealed SQLite image (hash only, no re-seal).
+pub fn installed_image_token_from_sealed(
+    sealed_path: &Path,
+    schema_version: i32,
+    migration_id: Option<String>,
+) -> Result<InstalledImageToken, MigrationSupervisorError> {
+    let digest = sha256_file(sealed_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "hash sealed SQLite image {}: {error}",
+                sealed_path.display()
+            ),
+        )
+    })?;
+    Ok(InstalledImageToken {
+        digest,
+        schema_version,
+        migration_id,
+    })
+}
+
+/// Seal a path then capture its installed-image token.
 pub fn capture_installed_image(
     db_path: &Path,
     schema_version: i32,
     migration_id: Option<String>,
 ) -> Result<InstalledImageToken, MigrationSupervisorError> {
     seal_sqlite_image(db_path)?;
-    Ok(InstalledImageToken {
-        digest: sha256_file(db_path)?,
-        schema_version,
-        migration_id,
-    })
+    installed_image_token_from_sealed(db_path, schema_version, migration_id)
 }
 
 /// True when the sealed live DB still matches `installed.digest`.
@@ -978,7 +999,12 @@ pub fn seal_sqlite_image(db_path: &Path) -> Result<(), MigrationSupervisorError>
         }
     }
     remove_db_sidecars(db_path)?;
-    sync_file(db_path)?;
+    sync_file(db_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("sync sealed SQLite image {}: {error}", db_path.display()),
+        )
+    })?;
     Ok(())
 }
 
@@ -1029,7 +1055,8 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> io::Result<()> {
 }
 
 fn sync_file(path: &Path) -> io::Result<()> {
-    let file = File::open(path)?;
+    // Windows denies FlushFileBuffers on a read-only handle (os error 5).
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
     file.sync_all()
 }
 

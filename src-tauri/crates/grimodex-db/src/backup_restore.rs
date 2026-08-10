@@ -238,6 +238,30 @@ pub fn restore_backup_core(
     }
     drop(rollback_output);
 
+    // Seal the staged candidate and capture its digest *before* live replace so
+    // Windows (and all platforms) never need a post-replace seal just to CAS.
+    let installed = match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
+        crate::migration_supervisor::seal_sqlite_image(&staged_plain)?;
+        crate::migration_supervisor::installed_image_token_from_sealed(
+            &staged_plain,
+            grimodex_core::SCHEMA_VERSION,
+            None,
+        )
+    })() {
+        Ok(token) => token,
+        Err(error) => {
+            drop(exclusive_lease);
+            return Err(abort_after_detach(
+                ws_state,
+                &db_path,
+                &ws_path,
+                anyhow::anyhow!(
+                    "復元候補の seal／digest 取得に失敗したため中止しました（live未置換）: {error}"
+                ),
+            ));
+        }
+    };
+
     if let Err(error) = atomic_replace(&staged_plain, &db_path) {
         let primary = anyhow::anyhow!("復元DBの適用に失敗しました: {error}");
         drop(exclusive_lease);
@@ -251,22 +275,6 @@ pub fn restore_backup_core(
         return Err(primary.into());
     }
     staged_cleanup.disarm();
-
-    let installed = match crate::migration_supervisor::capture_installed_image(
-        &db_path,
-        grimodex_core::SCHEMA_VERSION,
-        None,
-    ) {
-        Ok(token) => token,
-        Err(error) => {
-            // Candidate is already live; keep rollback artifact and try CAS rollback.
-            rollback_cleanup.disarm();
-            return Err(anyhow::anyhow!(
-                "RESTORE_SESSION_LOST: installed image digest capture failed after replace: {error}; rollback at {rollback_path:?}"
-            )
-            .into());
-        }
-    };
 
     match publish_active_workspace(ws_state, ws_path.clone(), exclusive_lease) {
         Ok(()) => {

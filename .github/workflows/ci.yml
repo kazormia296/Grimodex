@@ -612,6 +612,11 @@ jobs:
           cargo test --locked --manifest-path src-tauri/Cargo.toml
           -p grimodex-db --lib restore_waits_for_detached_workspace_maintenance_before_detaching_live_db
 
+      - name: Test migration supervisor smoke on Windows
+        run: >-
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          -p grimodex-db --test workspace_migration_supervisor
+
       - name: Test same-path workspace reopen during maintenance on Windows
         run: >-
           cargo test --locked --manifest-path src-tauri/Cargo.toml

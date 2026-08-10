@@ -603,6 +603,31 @@ fn rollback_cas_applies_when_live_image_unchanged() {
 }
 
 #[test]
+fn sealed_staged_token_matches_live_after_replace_semantics() {
+    let ws = temp_workspace("staged-token");
+    let staged = ws.join("staged.db");
+    let live = ws.join("grimodex.db");
+    {
+        let db = Database::new(&staged).expect("new staged");
+        db.migrate().expect("migrate");
+    }
+    migration_supervisor::seal_sqlite_image(&staged).expect("seal staged");
+    let installed = migration_supervisor::installed_image_token_from_sealed(
+        &staged,
+        SCHEMA_VERSION,
+        Some("pre-replace".into()),
+    )
+    .expect("token from staged");
+
+    // Atomic replace semantics: live receives the same sealed bytes.
+    fs::copy(&staged, &live).expect("install live");
+    assert!(
+        migration_supervisor::installed_image_unchanged(&live, &installed).expect("cas"),
+        "live must still match the pre-replace staged digest without re-capturing"
+    );
+}
+
+#[test]
 fn reopen_existing_current_authority_is_ddl_free_ready() {
     let ws = temp_workspace("reactivate");
     let db_path = ws.join("grimodex.db");
