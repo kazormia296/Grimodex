@@ -101,3 +101,31 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 | 「リリースノート」「広報文」「告知文」「README冒頭」「日英リリースノート」                                  | /write-grimodex-copy       | 正本確認→事実整理→日英整合→公開前確認  |
 | 「バージョン上げて」「リリースタグ」「リリース準備」                                                        | /bump-version              | version→文面→PR→tag→Draft確認          |
 | 「PR出して」「プルリク作って」「pushしてマージ」「shipして」                                                | /ship-branch               | push→PR→CI・レビュー→squash merge      |
+
+## Cursor Cloud specific instructions
+
+Cursor Cloud VM 固有の非自明な注意点だけを記す。コマンド一覧は上の「コマンド」節が正本。
+起動時の update script は `pnpm install --frozen-lockfile` と Electron バイナリ取得のみを行う。
+
+- **sudo は使用不可**（cloud harness がブロックする）。Electron 実行 / N-API ビルドに必要な
+  システムライブラリ（`libgtk-3-0t64` / `libnss3` / `libgbm1` / `libsecret-1-dev` / build-essential 等）は
+  ベースイメージに導入済みなので、通常は追加の apt インストールは不要。新しい system パッケージが
+  どうしても要る場合は、勝手に回避策を探さずユーザーへ依頼する。
+- **Rust の C++ リンク（重要・非自明）**: 新しめの stable Rust は x86_64-unknown-linux-gnu で
+  self-contained な `rust-lld` を既定リンカにするが、これは gcc 私有ディレクトリを検索しないため、
+  C++ を引く crate（tokenizers / ort / lindera＝`grimodex-node` や共有 Rust のテストバイナリ）が
+  `unable to find library -lstdc++` で失敗する。マシン全体の cargo 設定
+  `/usr/local/cargo/config.toml`（CARGO_HOME）に `-L /usr/lib/gcc/x86_64-linux-gnu/13` を追加して
+  回避済み。この 1 行が消えると `pnpm napi:build` と `cargo test/clippy --all-targets` が壊れる。
+- **N-API ネイティブモジュール**: `electron/native/grimodex-node/grimodex-node.node`（約260MB）は
+  snapshot に prebuild 済み。`src-tauri/crates/*` か N-API crate（`electron/native/grimodex-node`）を
+  変更したときだけ `pnpm napi:build` で再ビルドする（release ビルドで約3〜5分）。未ビルドでも
+  Electron は fail-soft 起動し、DB/AI 系 IPC が `IPC_BACKEND_UNAVAILABLE` を返すだけになる。
+- **Electron バイナリ**: `.npmrc` に `ignore-scripts=true` があるため `pnpm install` では
+  Electron 本体バイナリがダウンロードされない。`node node_modules/electron/install.js`（冪等）で取得する。
+  update script がこれを実行するので通常は手動不要。
+- **アプリの起動（GUI）**: `DISPLAY=:1` の Xvfb 上で動く。コンテナに Chromium サンドボックスが無いため
+  `ELECTRON_DISABLE_SANDBOX=1 pnpm electron:dev` で起動すること。起動ログに出る
+  `Failed to connect to the bus`（dbus）系エラーは system D-Bus 不在によるもので無害。
+  `pnpm electron:dev` は Vite(1430) + esbuild watch + Electron を一括起動する。初回は利用規約同意
+  ダイアログ→ランチャー→「新規プロジェクト...」の順で入る。
