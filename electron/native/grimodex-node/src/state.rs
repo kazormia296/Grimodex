@@ -335,6 +335,7 @@ impl AppState {
         Ok(Self {
             ws: WorkspaceState {
                 inner: Mutex::new(None),
+                safe_mode: grimodex_db::recovery::SafeModeState::default(),
                 switching: std::sync::atomic::AtomicBool::new(false),
                 open_lock: Mutex::new(()),
             },

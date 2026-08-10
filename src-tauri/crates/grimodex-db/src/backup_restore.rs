@@ -633,6 +633,7 @@ mod tests {
             .expect("fixture authority");
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(authority))),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: AtomicBool::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
@@ -710,6 +711,7 @@ mod tests {
     fn list_and_restore_reject_when_workspace_is_not_open() {
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: AtomicBool::new(false),
             open_lock: std::sync::Mutex::new(()),
         };

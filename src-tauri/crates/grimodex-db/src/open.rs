@@ -11,6 +11,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::recovery::{
+    OpenWorkspacePayload, WorkspaceOpenOutcome,
+};
 use crate::state::{
     ActiveWorkspace, GlobalSettingsPath, WorkspaceAuthority, WorkspaceState,
 };
@@ -788,7 +791,7 @@ pub fn open_workspace_sync(
     ws_state: &WorkspaceState,
     deps: &mut OpenDeps<'_>,
     path: &str,
-) -> Result<OpenWorkspaceResult, AppError> {
+) -> Result<WorkspaceOpenOutcome, AppError> {
     let mut trace = NativeWorkspaceOpenTrace::new(false);
     let gs_path = deps.gs_path;
     let on_swapped = &mut *deps.on_swapped;
@@ -797,14 +800,15 @@ pub fn open_workspace_sync(
 }
 
 /// Traced N-API entrypoint. Its data contract remains internal to the native
-/// backend; the renderer-facing `open_workspace` result is unchanged.
+/// backend; the renderer-facing `open_workspace` result is a
+/// [`WorkspaceOpenOutcome`] discriminated union (Gate A2).
 pub fn open_workspace_sync_traced(
     ws_state: &WorkspaceState,
     gs_path: &GlobalSettingsPath,
     path: &str,
     trace: &mut NativeWorkspaceOpenTrace,
     on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
-) -> Result<OpenWorkspaceResult, AppError> {
+) -> Result<WorkspaceOpenOutcome, AppError> {
     open_workspace_sync_impl(ws_state, gs_path, path, trace, on_swapped)
 }
 
@@ -814,7 +818,7 @@ fn open_workspace_sync_impl(
     path: &str,
     trace: &mut NativeWorkspaceOpenTrace,
     on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
-) -> Result<OpenWorkspaceResult, AppError> {
+) -> Result<WorkspaceOpenOutcome, AppError> {
     // open 自体を直列化 (併走 migrate の check-then-act / 二重
     // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
     // の一方向のみ (with_db は inner のみ取るので循環しない)。
@@ -848,21 +852,82 @@ fn open_workspace_sync_impl(
         QuiescedSamePath::begin(ws_state, &ws_path)
     })?;
 
-    let db_path = ws_path.join("grimodex.db");
-    let _ = db_path;
     let maintenance_workspace_path = ws_path.clone();
     let maintenance_settings_path = gs_path.path.clone();
-    let prepare_result =
-        trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
-            crate::migration_supervisor::prepare_database_for_open(&ws_path)
-        });
-    let (opened, migration_info) = match prepare_result {
-        Ok(value) => value,
-        Err(error) => {
-            if error.to_string().contains("WORKSPACE_SAFE_MODE") {
-                quiesced.commit_safe_mode();
+    let db_outcome = trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
+        crate::migration_supervisor::open_or_migrate_workspace_db(&ws_path)
+            .map_err(AppError::from)
+    })?;
+
+    // Gate A2: Safe Mode / RecoveryRequired are structured Ok outcomes.
+    // Never publish WorkspaceAuthority; enter restore-only SafeModeSession.
+    if let Some(session) =
+        crate::recovery::session_from_db_outcome(&ws_path, &db_outcome)?
+    {
+        quiesced.commit_safe_mode();
+        // Drop any leftover authority for this path and clear prior session.
+        {
+            let mut inner = ws_state
+                .inner
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            *inner = None;
+        }
+        let outcome = match &db_outcome {
+            crate::migration_supervisor::WorkspaceOpenDbOutcome::RecoveryRequired {
+                reason,
+                error_code,
+                ..
+            } => WorkspaceOpenOutcome::RecoveryRequired {
+                reason: reason.clone(),
+                error_code: error_code.clone(),
+                snapshot_id: session.snapshot_id.clone(),
+                candidates: session.candidates(),
+            },
+            crate::migration_supervisor::WorkspaceOpenDbOutcome::SafeMode { reason, .. } => {
+                WorkspaceOpenOutcome::SafeMode {
+                    reason: reason.clone(),
+                    candidates: session.candidates(),
+                }
             }
-            return Err(error);
+            crate::migration_supervisor::WorkspaceOpenDbOutcome::Ready { .. }
+            | crate::migration_supervisor::WorkspaceOpenDbOutcome::Migrated { .. } => {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "internal: Safe Mode session built for authority-publishing outcome"
+                )));
+            }
+        };
+        ws_state.safe_mode.enter(session)?;
+        return Ok(outcome);
+    }
+
+    // Clear any prior Safe Mode when a normal open succeeds.
+    ws_state.safe_mode.clear()?;
+
+    let (opened, migration_info) = match db_outcome {
+        crate::migration_supervisor::WorkspaceOpenDbOutcome::Ready { opened, .. } => {
+            (opened, None)
+        }
+        crate::migration_supervisor::WorkspaceOpenDbOutcome::Migrated {
+            opened,
+            from_schema,
+            to_schema,
+            receipt_path,
+        } => (
+            opened,
+            Some(crate::migration_supervisor::OpenMigrationInfo {
+                from_schema,
+                to_schema,
+                receipt_path: receipt_path.display().to_string(),
+                recovered: false,
+                error_code: None,
+            }),
+        ),
+        crate::migration_supervisor::WorkspaceOpenDbOutcome::RecoveryRequired { .. }
+        | crate::migration_supervisor::WorkspaceOpenDbOutcome::SafeMode { .. } => {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "internal: restore-only outcome missing Safe Mode session"
+            )));
         }
     };
     if let Some(info) = migration_info.as_ref() {
@@ -958,11 +1023,17 @@ fn open_workspace_sync_impl(
     trace.finish_span(maintenance_span);
 
     let name = workspace::workspace_name(path);
-    Ok(OpenWorkspaceResult {
+    let workspace = OpenWorkspacePayload {
         name,
         is_existing,
         workspace_id: workspace_meta.id,
-        migration: migration_info,
+    };
+    Ok(match migration_info {
+        Some(info) => WorkspaceOpenOutcome::Migrated {
+            workspace,
+            migration: info.into(),
+        },
+        None => WorkspaceOpenOutcome::Ready { workspace },
     })
 }
 
@@ -1079,6 +1150,7 @@ mod tests {
         ));
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         };
@@ -1301,6 +1373,7 @@ mod tests {
 
         let ws_state = Arc::new(WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(previous_authority))),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         });
@@ -1392,6 +1465,7 @@ mod tests {
 
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         };
@@ -1408,11 +1482,10 @@ mod tests {
         };
         let ws_dir_str = ws_dir.to_string_lossy().into_owned();
         let first = open_workspace_sync(&ws_state, &mut deps, &ws_dir_str).expect("first open");
-        assert_eq!(
-            serde_json::to_value(&first).expect("json")["isExisting"],
-            false
-        );
-        let first_workspace_id = serde_json::to_value(&first).expect("json")["workspaceId"]
+        let first_json = serde_json::to_value(&first).expect("json");
+        assert_eq!(first_json["status"], "ready");
+        assert_eq!(first_json["workspace"]["isExisting"], false);
+        let first_workspace_id = first_json["workspace"]["workspaceId"]
             .as_str()
             .expect("workspace id")
             .to_string();
@@ -1443,12 +1516,11 @@ mod tests {
             on_swapped: &mut on_swapped2,
         };
         let second = open_workspace_sync(&ws_state, &mut deps2, &ws_dir_str).expect("reopen");
+        let second_json = serde_json::to_value(&second).expect("json");
+        assert_eq!(second_json["status"], "ready");
+        assert_eq!(second_json["workspace"]["isExisting"], true);
         assert_eq!(
-            serde_json::to_value(&second).expect("json")["isExisting"],
-            true
-        );
-        assert_eq!(
-            serde_json::to_value(&second).expect("json")["workspaceId"],
+            second_json["workspace"]["workspaceId"],
             first_workspace_id
         );
 

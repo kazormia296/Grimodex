@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AppError, AppResult};
+use crate::recovery::SafeModeState;
 use crate::workspace_lease::WorkspaceLease;
 use crate::Database;
 
@@ -88,6 +89,8 @@ impl ActiveWorkspace {
 
 pub struct WorkspaceState {
     pub inner: Mutex<Option<ActiveWorkspace>>,
+    /// Restore-only Safe Mode session (mutually exclusive with `inner` authority).
+    pub safe_mode: SafeModeState,
     /// `open_workspace` 実行中フラグ。DB コマンドの async 化 (M3) で
     /// open_workspace と他コマンドが真に並行するようになったため、切替中の
     /// DB アクセスを `with_db` で明示エラーにする (swap を跨いだ write が
@@ -149,6 +152,9 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
         if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(AppError::WorkspaceSwitching);
         }
+        if ws_state.safe_mode.is_active() {
+            return Err(AppError::SafeModeActive);
+        }
         let ws = inner.as_ref().ok_or(AppError::NoWorkspace)?;
         Ok(ActiveWorkspaceSnapshot {
             authority: Arc::clone(&ws.authority),
@@ -197,6 +203,7 @@ mod tests {
             WorkspaceAuthority::from_database_for_test(db, path).expect("test authority");
         WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         }
@@ -261,6 +268,7 @@ mod tests {
     fn with_db_errors_when_no_workspace_open() {
         let state = WorkspaceState {
             inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         };
@@ -272,6 +280,7 @@ mod tests {
     fn active_database_errors_when_no_workspace_open() {
         let state = WorkspaceState {
             inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
             switching: std::sync::atomic::AtomicBool::new(false),
             open_lock: Mutex::new(()),
         };
