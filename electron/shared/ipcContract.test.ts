@@ -85,7 +85,7 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     openWorkspace: record(
       "openWorkspace",
       Promise.resolve(
-        '{"name":"ws","isExisting":true,"workspaceId":"workspace-id"}',
+        '{"status":"ready","workspace":{"name":"ws","isExisting":true,"workspaceId":"workspace-id"}}',
       ),
     ) as never,
     validateWorkspacePath: record("validateWorkspacePath", true) as never,
@@ -823,6 +823,34 @@ describe("dispatchInvoke", () => {
     });
   });
 
+  it("native Safe Mode active marker は WORKSPACE_SAFE_MODE typed envelope にする", async () => {
+    const { backend } = fakeBackend({
+      dbExecute: () =>
+        Promise.reject(
+          new Error(
+            "WORKSPACE_SAFE_MODE: restore-only session is active; Database authority is not published",
+          ),
+        ),
+    });
+    const env = await dispatchInvoke(
+      "db_execute",
+      { sql: "SELECT 1", params: [], method: "all" },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({
+      ok: false,
+      error:
+        "WORKSPACE_SAFE_MODE: restore-only session is active; Database authority is not published",
+      errorInfo: {
+        code: "WORKSPACE_SAFE_MODE",
+        message:
+          "WORKSPACE_SAFE_MODE: restore-only session is active; Database authority is not published",
+        retryable: false,
+        outcome: "failed",
+      },
+    });
+  });
+
   it("同期 throw も envelope に畳む（決して reject しない）", async () => {
     const { backend } = fakeBackend({
       validateWorkspacePath: () => {
@@ -1117,9 +1145,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   it.each([
     ["semantic_search", "semanticSearch", { query: "storm", limit: 5 }],
     ["semantic_reindex_all", "semanticReindexAll", {}],
-    ["codex_semantic_search", "codexSemanticSearch", { query: "hero", limit: 5 }],
+    [
+      "codex_semantic_search",
+      "codexSemanticSearch",
+      { query: "hero", limit: 5 },
+    ],
     ["codex_reindex_all", "codexReindexAll", {}],
-    ["events_semantic_search", "eventsSemanticSearch", { query: "storm", limit: 5 }],
+    [
+      "events_semantic_search",
+      "eventsSemanticSearch",
+      { query: "storm", limit: 5 },
+    ],
     ["events_reindex_all", "eventsReindexAll", {}],
     ["chat_message_search", "chatMessageSearch", { query: "memory", limit: 5 }],
     ["chat_reindex_all", "chatReindexAll", {}],
@@ -1998,9 +2034,60 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({
       ok: true,
       value: {
-        name: "ws",
-        isExisting: true,
-        workspaceId: "workspace-id",
+        status: "ready",
+        workspace: {
+          name: "ws",
+          isExisting: true,
+          workspaceId: "workspace-id",
+        },
+      },
+    });
+  });
+
+  it("open_workspace: safe-mode outcome を discriminated union のまま返す", async () => {
+    const { backend } = fakeBackend();
+    Object.assign(backend, {
+      openWorkspace: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          status: "safe-mode",
+          reason: "migration failed",
+          candidates: [
+            {
+              id: "rc_migration_1",
+              kind: "migration-snapshot",
+              createdAt: "2026-08-10T00:00:00Z",
+              schemaVersion: 27,
+              appVersion: "0.1.0",
+              sizeBytes: 123,
+              checksumStatus: "verified",
+            },
+          ],
+        }),
+      ),
+    });
+
+    const env = await dispatchInvoke(
+      "open_workspace",
+      { path: "/tmp/ws" },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        status: "safe-mode",
+        reason: "migration failed",
+        candidates: [
+          {
+            id: "rc_migration_1",
+            kind: "migration-snapshot",
+            createdAt: "2026-08-10T00:00:00Z",
+            schemaVersion: 27,
+            appVersion: "0.1.0",
+            sizeBytes: 123,
+            checksumStatus: "verified",
+          },
+        ],
       },
     });
   });
@@ -2194,6 +2281,189 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       expect(restoreBackup).not.toHaveBeenCalled();
     },
   );
+
+  it("list_recovery_candidates: native JSON を RecoveryCandidate 配列へ戻す", async () => {
+    const { backend } = fakeBackend();
+    const listRecoveryCandidates = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          id: "rc_auto_1",
+          kind: "automatic-backup",
+          createdAt: "2026-08-10T00:00:00Z",
+          schemaVersion: null,
+          appVersion: null,
+          sizeBytes: 456,
+          checksumStatus: "unverified",
+        },
+      ]),
+    );
+    Object.assign(backend, { listRecoveryCandidates });
+
+    const env = await dispatchInvoke(
+      "list_recovery_candidates",
+      {},
+      { backend, shell: noShell },
+    );
+
+    expect(listRecoveryCandidates).toHaveBeenCalledOnce();
+    expect(env).toEqual({
+      ok: true,
+      value: [
+        {
+          id: "rc_auto_1",
+          kind: "automatic-backup",
+          createdAt: "2026-08-10T00:00:00Z",
+          schemaVersion: null,
+          appVersion: null,
+          sizeBytes: 456,
+          checksumStatus: "unverified",
+        },
+      ],
+    });
+  });
+
+  it("verify_recovery_candidate: rc_ candidateId だけを native へ渡す", async () => {
+    const { backend } = fakeBackend();
+    const verifyRecoveryCandidate = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        id: "rc_manual_1",
+        kind: "manual-backup",
+        createdAt: "2026-08-10T00:00:00Z",
+        schemaVersion: 27,
+        appVersion: "0.1.0",
+        sizeBytes: 789,
+        checksumStatus: "verified",
+      }),
+    );
+    Object.assign(backend, { verifyRecoveryCandidate });
+
+    const env = await dispatchInvoke(
+      "verify_recovery_candidate",
+      { candidateId: "rc_manual_1" },
+      { backend, shell: noShell },
+    );
+
+    expect(verifyRecoveryCandidate).toHaveBeenCalledExactlyOnceWith(
+      "rc_manual_1",
+    );
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        id: "rc_manual_1",
+        kind: "manual-backup",
+        createdAt: "2026-08-10T00:00:00Z",
+        schemaVersion: 27,
+        appVersion: "0.1.0",
+        sizeBytes: 789,
+        checksumStatus: "verified",
+      },
+    });
+  });
+
+  it("restore_recovery_candidate: rc_ candidateId を写像し unit を null にする", async () => {
+    const { backend } = fakeBackend();
+    const restoreRecoveryCandidate = vi.fn().mockResolvedValue(undefined);
+    Object.assign(backend, { restoreRecoveryCandidate });
+
+    const env = await dispatchInvoke(
+      "restore_recovery_candidate",
+      { candidateId: "rc_auto_1" },
+      { backend, shell: noShell },
+    );
+
+    expect(restoreRecoveryCandidate).toHaveBeenCalledExactlyOnceWith(
+      "rc_auto_1",
+    );
+    expect(env).toEqual({ ok: true, value: null });
+  });
+
+  it("safe-mode recovery は renderer 由来の filesystem path を candidateId として拒否する", async () => {
+    const { backend } = fakeBackend();
+    const verifyRecoveryCandidate = vi.fn().mockResolvedValue("{}");
+    const restoreRecoveryCandidate = vi.fn().mockResolvedValue(undefined);
+    Object.assign(backend, {
+      verifyRecoveryCandidate,
+      restoreRecoveryCandidate,
+    });
+
+    for (const [command, method] of [
+      ["verify_recovery_candidate", verifyRecoveryCandidate],
+      ["restore_recovery_candidate", restoreRecoveryCandidate],
+    ] as const) {
+      for (const candidateId of [
+        undefined,
+        null,
+        42,
+        "",
+        "backup-1",
+        "../rc_escape",
+        "rc_/tmp/grimodex.db",
+        "rc_..\\escape",
+      ]) {
+        const env = await dispatchInvoke(
+          command,
+          { candidateId },
+          { backend, shell: noShell },
+        );
+
+        expect(env.ok).toBe(false);
+        if (!env.ok) {
+          expect(env.error).toContain(
+            `invalid args \`candidateId\` for command \`${command}\``,
+          );
+        }
+      }
+      expect(method).not.toHaveBeenCalled();
+    }
+  });
+
+  it("safe-mode recovery file commands は JSON encoded string を文字列へ戻す", async () => {
+    const { backend } = fakeBackend();
+    const quarantineLiveDatabase = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify("grimodex-quarantine-1.db"));
+    const exportSafeModeDiagnostics = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify("/tmp/ws/safe-mode-diagnostics.json"));
+    Object.assign(backend, {
+      quarantineLiveDatabase,
+      exportSafeModeDiagnostics,
+    });
+
+    await expect(
+      dispatchInvoke(
+        "quarantine_live_database",
+        {},
+        { backend, shell: noShell },
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      value: "grimodex-quarantine-1.db",
+    });
+    await expect(
+      dispatchInvoke(
+        "export_safe_mode_diagnostics",
+        {},
+        { backend, shell: noShell },
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      value: "/tmp/ws/safe-mode-diagnostics.json",
+    });
+  });
+
+  it("safe-mode recovery command は backend 不在を command 単位で明示する", async () => {
+    const env = await dispatchInvoke(
+      "list_recovery_candidates",
+      {},
+      { backend: null, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} list_recovery_candidates`,
+    });
+  });
 
   it("get_global_settings: 引数なし、JSON parse 済みで返す", async () => {
     const { backend, calls } = fakeBackend();
@@ -2819,6 +3089,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "events_index_status",
       "events_reindex_all",
       "events_semantic_search",
+      "export_safe_mode_diagnostics",
       "extract_codex_candidates",
       "foreshadow_create",
       "foreshadow_delete",
@@ -2871,6 +3142,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_annotations_for_scene",
       "list_backups",
       "list_post_effect_runs",
+      "list_recovery_candidates",
       "list_scene_lens_for_project",
       "list_system_fonts",
       "map_write_bundle",
@@ -2890,9 +3162,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "project_snapshot_apply_restore",
       "project_snapshot_create",
       "project_snapshot_restore_context",
+      "quarantine_live_database",
       "repair_integrity",
       "reply_to_annotation",
       "restore_backup",
+      "restore_recovery_candidate",
       "revalidate_license",
       "save_ai_settings",
       "save_global_settings",
@@ -2927,6 +3201,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "update_annotation_status",
       "vacuum_database",
       "validate_workspace_path",
+      "verify_recovery_candidate",
     ]);
   });
 
@@ -5650,11 +5925,11 @@ describe("Post-effect Phase 3d コマンド", () => {
         endpoint_id_override: "role-endpoint",
       };
 
-      const env = await dispatchInvoke(
-        cmd,
-        startArgs(args),
-        { backend, shell: noShell, secrets: keyStore },
-      );
+      const env = await dispatchInvoke(cmd, startArgs(args), {
+        backend,
+        shell: noShell,
+        secrets: keyStore,
+      });
 
       expect(env.ok).toBe(true);
       expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
@@ -5867,11 +6142,10 @@ describe("Post-effect Phase 3d コマンド", () => {
     async (cmd) => {
       const { backend, methods } = makeBackend();
       const invokeArgs = cmd.endsWith("_multi") ? multiArgs : singleArgs;
-      const env = await dispatchInvoke(
-        cmd,
-        startArgs(invokeArgs),
-        { backend, shell: noShell },
-      );
+      const env = await dispatchInvoke(cmd, startArgs(invokeArgs), {
+        backend,
+        shell: noShell,
+      });
 
       expect(env).toMatchObject({
         ok: false,

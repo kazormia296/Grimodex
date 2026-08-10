@@ -71,6 +71,10 @@ use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::project_snapshots::{
     self, ApplyProjectSnapshotRestorePayload, CreateProjectSnapshotPayload, RestoreScope,
 };
+use grimodex_db::recovery::{
+    export_safe_mode_diagnostics, list_safe_mode_candidates, quarantine_live_database,
+    restore_safe_mode_candidate, verify_safe_mode_candidate,
+};
 use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
@@ -1868,6 +1872,57 @@ impl Backend {
                 serde_json::json!({ "path": path, "reason": "restore" }),
             );
             Ok(())
+        })
+        .await
+    }
+
+    /// Safe Mode中の復元候補をopaque idだけで列挙する。
+    #[napi]
+    pub async fn list_recovery_candidates(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let candidates = list_safe_mode_candidates(&state.ws)?;
+            Ok(serde_json::to_string(&candidates).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// candidate idを検証し、復元前の候補メタデータを返す。
+    #[napi]
+    pub async fn verify_recovery_candidate(&self, candidate_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let candidate = verify_safe_mode_candidate(&state.ws, &candidate_id)?;
+            Ok(serde_json::to_string(&candidate).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Safe Mode候補を復元する。復元後はrendererがopen_workspaceを再実行する。
+    #[napi]
+    pub async fn restore_recovery_candidate(&self, candidate_id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || restore_safe_mode_candidate(&state.ws, &candidate_id)).await
+    }
+
+    /// 現在の破損live DBをworkspace内の隔離名へ移動し、そのfile nameを返す。
+    #[napi]
+    pub async fn quarantine_live_database(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let file_name = quarantine_live_database(&state.ws)?;
+            Ok(serde_json::to_string(&file_name).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Safe Mode診断JSONを書き出し、そのpath文字列を返す。
+    #[napi]
+    pub async fn export_safe_mode_diagnostics(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let path = export_safe_mode_diagnostics(&state.ws)?;
+            Ok(serde_json::to_string(&path).map_err(anyhow::Error::from)?)
         })
         .await
     }

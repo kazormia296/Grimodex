@@ -170,6 +170,16 @@ export declare class Backend {
    * rotateして復元前DBへのlate writeを不可視にする。
    */
   restoreBackup(fileName: string): Promise<void>
+  /** Safe Mode中の復元候補をopaque idだけで列挙する。 */
+  listRecoveryCandidates(): Promise<string>
+  /** candidate idを検証し、復元前の候補メタデータを返す。 */
+  verifyRecoveryCandidate(candidateId: string): Promise<string>
+  /** Safe Mode候補を復元する。復元後はrendererがopen_workspaceを再実行する。 */
+  restoreRecoveryCandidate(candidateId: string): Promise<void>
+  /** 現在の破損live DBをworkspace内の隔離名へ移動し、そのfile nameを返す。 */
+  quarantineLiveDatabase(): Promise<string>
+  /** Safe Mode診断JSONを書き出し、そのpath文字列を返す。 */
+  exportSafeModeDiagnostics(): Promise<string>
   /**
    * 起動時に必ず呼ばれる (workspace/store.ts:152)。
    * 返り値: `GlobalSettings` の JSON 文字列 (camelCase — Tauri ワイヤと同形)。

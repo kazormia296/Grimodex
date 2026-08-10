@@ -25,6 +25,7 @@
 
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"
+  | "WORKSPACE_SAFE_MODE"
   | "NO_WORKSPACE_OPEN"
   | "RERANKER_BUSY"
   | "IPC_UNIMPLEMENTED"
@@ -62,6 +63,57 @@ export type Envelope<T = unknown> =
        * の `{type, data}` 分岐を保存するため（§5.2 の例外規定）。
        */
       errorValue?: unknown;
+    };
+
+export type RecoveryCandidateKind =
+  | "automatic-backup"
+  | "manual-backup"
+  | "migration-snapshot";
+
+export type RecoveryChecksumStatus = "verified" | "unverified" | "invalid";
+
+export interface RecoveryCandidate {
+  id: string;
+  kind: RecoveryCandidateKind;
+  createdAt: string;
+  schemaVersion: number | null;
+  appVersion: string | null;
+  sizeBytes: number;
+  checksumStatus: RecoveryChecksumStatus;
+}
+
+export interface MigrationReceipt {
+  fromSchema: number;
+  toSchema: number;
+  receiptPath: string;
+  recovered: boolean;
+  errorCode?: string;
+}
+
+export interface OpenWorkspacePayload {
+  name: string;
+  isExisting: boolean;
+  workspaceId: string;
+}
+
+export type WorkspaceOpenOutcome =
+  | { status: "ready"; workspace: OpenWorkspacePayload }
+  | {
+      status: "migrated";
+      workspace: OpenWorkspacePayload;
+      migration: MigrationReceipt;
+    }
+  | {
+      status: "recovery-required";
+      reason: string;
+      errorCode: string;
+      snapshotId?: string;
+      candidates: RecoveryCandidate[];
+    }
+  | {
+      status: "safe-mode";
+      reason: string;
+      candidates: RecoveryCandidate[];
     };
 
 /**
@@ -120,6 +172,9 @@ export function classifyKnownIpcError(
   };
   if (message.includes("WORKSPACE_SWITCHING")) {
     return { ...base, code: "WORKSPACE_SWITCHING", retryable: true };
+  }
+  if (message.includes("WORKSPACE_SAFE_MODE")) {
+    return { ...base, code: "WORKSPACE_SAFE_MODE", retryable: false };
   }
   if (/No workspace is open/i.test(message)) {
     return { ...base, code: "NO_WORKSPACE_OPEN", retryable: true };
@@ -405,6 +460,11 @@ export interface NapiBackendLike {
   ): Promise<void>;
   listBackups?(): Promise<string>;
   restoreBackup?(fileName: string): Promise<void>;
+  listRecoveryCandidates?(): Promise<string>;
+  verifyRecoveryCandidate?(candidateId: string): Promise<string>;
+  restoreRecoveryCandidate?(candidateId: string): Promise<void>;
+  quarantineLiveDatabase?(): Promise<string>;
+  exportSafeModeDiagnostics?(): Promise<string>;
   getGlobalSettings(): Promise<string>;
   saveGlobalSettings(settings: unknown): Promise<void>;
   seedSampleWorkspace?(language: string, aiPolicy: string): Promise<string>;
@@ -797,6 +857,20 @@ function requireBackupFileName(args: CommandArgs): string {
   ) {
     throw new Error(
       `invalid args \`${key}\` for command \`${command}\`: expected a safe grimodex-*.db or grimodex-*.db.gz basename`,
+    );
+  }
+  return value;
+}
+
+function requireRecoveryCandidateId(
+  args: CommandArgs,
+  command: string,
+): string {
+  const key = "candidateId";
+  const value = requireString(args, key, command);
+  if (!/^rc_[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected an opaque rc_ recovery candidate id`,
     );
   }
   return value;
@@ -3148,9 +3222,7 @@ async function sha256HexUtf8(value: string): Promise<string> {
   ).join("");
 }
 
-async function cliDispatchRequestSha256(
-  args: CommandArgs,
-): Promise<string> {
+async function cliDispatchRequestSha256(args: CommandArgs): Promise<string> {
   const input = cliDispatchRequestDigestInput(args);
   return sha256HexUtf8(JSON.stringify(input));
 }
@@ -3679,6 +3751,56 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  list_recovery_candidates: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.listRecoveryCandidates,
+          "listRecoveryCandidates",
+        )(),
+      ),
+  },
+  verify_recovery_candidate: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.verifyRecoveryCandidate,
+          "verifyRecoveryCandidate",
+        )(requireRecoveryCandidateId(a, "verify_recovery_candidate")),
+      ),
+  },
+  restore_recovery_candidate: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.restoreRecoveryCandidate,
+        "restoreRecoveryCandidate",
+      )(requireRecoveryCandidateId(a, "restore_recovery_candidate"));
+      return null;
+    },
+  },
+  quarantine_live_database: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.quarantineLiveDatabase,
+          "quarantineLiveDatabase",
+        )(),
+      ),
+  },
+  export_safe_mode_diagnostics: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.exportSafeModeDiagnostics,
+          "exportSafeModeDiagnostics",
+        )(),
+      ),
+  },
   get_global_settings: {
     run: async (b) => parseWire(await b.getGlobalSettings()),
   },
@@ -4024,11 +4146,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await requireNapiMethod(b, b.semanticSearch, "semanticSearch")(
-          requireNonEmptyString(
-            a,
-            "expectedWorkspacePath",
-            "semantic_search",
-          ),
+          requireNonEmptyString(a, "expectedWorkspacePath", "semantic_search"),
           requireString(a, "projectId", "semantic_search"),
           requireString(a, "query", "semantic_search"),
           requireUnsignedInteger(a, "limit", "semantic_search"),
@@ -4214,11 +4332,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.chatReindexAll,
           "chatReindexAll",
         )(
-          requireNonEmptyString(
-            a,
-            "expectedWorkspacePath",
-            "chat_reindex_all",
-          ),
+          requireNonEmptyString(a, "expectedWorkspacePath", "chat_reindex_all"),
           requireString(a, "projectId", "chat_reindex_all"),
         ),
       ),
@@ -4236,11 +4350,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   semantic_reindex_all: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.semanticReindexAll,
-          "semanticReindexAll",
-        )(
+        await requireNapiMethod(b, b.semanticReindexAll, "semanticReindexAll")(
           requireNonEmptyString(
             a,
             "expectedWorkspacePath",
