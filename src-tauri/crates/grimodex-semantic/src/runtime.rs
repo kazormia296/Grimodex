@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use grimodex_db::events::EventSink;
-use grimodex_db::Database;
+use grimodex_db::{Database, PinnedWorkspaceDb};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 #[cfg(feature = "semantic-embedding")]
@@ -144,17 +144,17 @@ impl SemanticEpoch {
 
 #[derive(Clone)]
 pub struct SemanticRequest {
-    db: Arc<Database>,
+    db: PinnedWorkspaceDb,
     epoch: SemanticEpoch,
     operation_id: String,
 }
 
 impl SemanticRequest {
     pub fn db(&self) -> &Database {
-        &self.db
+        self.db.db()
     }
 
-    pub fn database(&self) -> Arc<Database> {
+    pub fn database(&self) -> PinnedWorkspaceDb {
         Arc::clone(&self.db)
     }
 
@@ -388,7 +388,7 @@ impl SemanticRuntime {
     /// attempted inside the swap window fails closed through the resolver.
     pub fn pin_request<E>(
         &self,
-        mut resolve_database: impl FnMut() -> std::result::Result<Arc<Database>, E>,
+        mut resolve_database: impl FnMut() -> std::result::Result<PinnedWorkspaceDb, E>,
     ) -> std::result::Result<SemanticRequest, E> {
         loop {
             let epoch = self.snapshot_epoch();
@@ -1989,6 +1989,7 @@ impl Drop for ModelDownloadJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grimodex_db::WorkspaceAuthority;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2006,7 +2007,11 @@ mod tests {
         }
     }
 
-    fn database(project_id: &str) -> Arc<Database> {
+    fn database(project_id: &str) -> PinnedWorkspaceDb {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-semantic-{}",
+            uuid::Uuid::new_v4()
+        ));
         let db = Database::new(Path::new(":memory:")).unwrap();
         db.migrate().unwrap();
         db.with_conn(|connection| {
@@ -2017,7 +2022,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        Arc::new(db)
+        WorkspaceAuthority::from_database_for_test(db, path).unwrap()
     }
 
     fn runtime(events: Arc<RecordingEvents>) -> Arc<SemanticRuntime> {

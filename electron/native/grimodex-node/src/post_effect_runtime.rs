@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::state::active_workspace_snapshot;
-use grimodex_db::{with_db_state, AppError, Database};
+use grimodex_db::{with_db_state, AppError, Database, PinnedWorkspaceDb};
 use grimodex_post_effect::{
     apply_model_override, PostEffectAiClient, PostEffectAiDispatch, PostEffectAiOutput,
     PostEffectAiRequest, PostEffectAiResolvedRoute, PostEffectRuntime,
@@ -22,7 +22,7 @@ use crate::state::AppState;
 #[derive(Clone)]
 pub(crate) struct NodePostEffectRuntime {
     state: Arc<AppState>,
-    db: Option<Arc<Database>>,
+    db: Option<PinnedWorkspaceDb>,
 }
 
 impl NodePostEffectRuntime {
@@ -36,7 +36,7 @@ impl NodePostEffectRuntime {
     ) -> Result<Self, AppError> {
         let workspace = active_workspace_snapshot(&state.ws)?;
         let active = workspace
-            .path
+            .path()
             .canonicalize()
             .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
         let expected = PathBuf::from(expected_workspace_path)
@@ -51,7 +51,7 @@ impl NodePostEffectRuntime {
         }
         Ok(Self {
             state,
-            db: Some(workspace.db),
+            db: Some(Arc::clone(workspace.db())),
         })
     }
 }
@@ -68,7 +68,7 @@ impl PostEffectRuntime for NodePostEffectRuntime {
         })
     }
 
-    fn pinned_database(&self) -> Option<Arc<Database>> {
+    fn pinned_database(&self) -> Option<PinnedWorkspaceDb> {
         self.db.as_ref().map(Arc::clone)
     }
 
@@ -77,7 +77,7 @@ impl PostEffectRuntime for NodePostEffectRuntime {
         F: FnOnce(&Database) -> anyhow::Result<T>,
     {
         if let Some(db) = &self.db {
-            return Ok(f(db)?);
+            return Ok(f(db.db())?);
         }
         with_db_state(&self.state.ws, f)
     }

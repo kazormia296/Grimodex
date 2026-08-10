@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use uuid::Uuid;
 
 use grimodex_ai::{AiProvider, AiSettings};
-use grimodex_db::{read_sqlite_source_revision, AppError, Database};
+use grimodex_db::{read_sqlite_source_revision, AppError, Database, PinnedWorkspaceDb};
 
 mod audit;
 use audit::*;
@@ -38,7 +38,7 @@ pub trait PostEffectRuntime: Clone + Send + Sync + 'static {
     fn pin_database(&self) -> Result<Self, AppError>;
 
     /// pin 済み DB。新規 run を abort registry へ束縛するために使う。
-    fn pinned_database(&self) -> Option<Arc<Database>>;
+    fn pinned_database(&self) -> Option<PinnedWorkspaceDb>;
 
     fn with_db<T, F>(&self, f: F) -> Result<T, AppError>
     where
@@ -62,7 +62,7 @@ pub trait PostEffectRuntime: Clone + Send + Sync + 'static {
     /// 開始する TOCTOU window は存在しない。
     fn request_abort_if<F>(&self, run_id: &str, request: F) -> Result<bool, AppError>
     where
-        F: FnOnce(Option<&Arc<Database>>) -> Result<bool, AppError>,
+        F: FnOnce(Option<&PinnedWorkspaceDb>) -> Result<bool, AppError>,
     {
         self.abort_registry().request_if(run_id, request)
     }
@@ -224,7 +224,7 @@ struct PostEffectAbortState {
     aborted: HashSet<String>,
     /// start 時の pinned DB。workspace switch 後の abort command も開始元 run を
     /// cancel できるよう run_id と一緒に保持する。
-    databases: HashMap<String, Arc<Database>>,
+    databases: HashMap<String, PinnedWorkspaceDb>,
 }
 
 #[derive(Clone, Default)]
@@ -246,7 +246,7 @@ impl PostEffectAbortRegistry {
         self.lock().aborted.insert(run_id.to_string());
     }
 
-    pub fn bind_database(&self, run_id: &str, db: Arc<Database>) {
+    pub fn bind_database(&self, run_id: &str, db: PinnedWorkspaceDb) {
         self.lock().databases.insert(run_id.to_string(), db);
     }
 
@@ -254,7 +254,7 @@ impl PostEffectAbortRegistry {
     /// abort flag を立てる。`request` callback は binding 済み DB を優先利用する。
     pub fn request_if<F>(&self, run_id: &str, request: F) -> Result<bool, AppError>
     where
-        F: FnOnce(Option<&Arc<Database>>) -> Result<bool, AppError>,
+        F: FnOnce(Option<&PinnedWorkspaceDb>) -> Result<bool, AppError>,
     {
         let mut state = self.lock();
         let changed = request(state.databases.get(run_id))?;
@@ -6465,6 +6465,7 @@ pub fn abort_post_effect_run<R: PostEffectRuntime>(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod runtime_contract_tests {
     use super::*;
+    use grimodex_db::WorkspaceAuthority;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Notify;
@@ -6474,7 +6475,7 @@ mod runtime_contract_tests {
 
     #[derive(Clone)]
     struct FakeRuntime {
-        db: Arc<Database>,
+        db: PinnedWorkspaceDb,
         events: Arc<Mutex<Vec<(String, Value)>>>,
         aborts: PostEffectAbortRegistry,
     }
@@ -6484,7 +6485,7 @@ mod runtime_contract_tests {
             Ok(self.clone())
         }
 
-        fn pinned_database(&self) -> Option<Arc<Database>> {
+        fn pinned_database(&self) -> Option<PinnedWorkspaceDb> {
             Some(Arc::clone(&self.db))
         }
 
@@ -6512,8 +6513,8 @@ mod runtime_contract_tests {
     /// active B を見る一方、worker側 clone は A を保持する状況を再現できる。
     #[derive(Clone)]
     struct SwitchingRuntime {
-        active: Arc<Mutex<Arc<Database>>>,
-        pinned: Option<Arc<Database>>,
+        active: Arc<Mutex<PinnedWorkspaceDb>>,
+        pinned: Option<PinnedWorkspaceDb>,
         events: Arc<Mutex<Vec<(String, Value)>>>,
         aborts: PostEffectAbortRegistry,
     }
@@ -6529,7 +6530,7 @@ mod runtime_contract_tests {
             Err(AppError::NoWorkspace)
         }
 
-        fn pinned_database(&self) -> Option<Arc<Database>> {
+        fn pinned_database(&self) -> Option<PinnedWorkspaceDb> {
             None
         }
 
@@ -6568,7 +6569,7 @@ mod runtime_contract_tests {
             })
         }
 
-        fn pinned_database(&self) -> Option<Arc<Database>> {
+        fn pinned_database(&self) -> Option<PinnedWorkspaceDb> {
             self.pinned.as_ref().map(Arc::clone)
         }
 
@@ -6700,8 +6701,12 @@ mod runtime_contract_tests {
         }
     }
 
-    fn seeded_db() -> Arc<Database> {
-        let db = Arc::new(Database::new(Path::new(":memory:")).expect("in-memory db"));
+    fn seeded_db() -> PinnedWorkspaceDb {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-post-effect-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::new(Path::new(":memory:")).expect("in-memory db");
         db.migrate().expect("migrate");
         db.with_conn(|conn| {
             conn.execute(
@@ -6720,10 +6725,10 @@ mod runtime_contract_tests {
             Ok(())
         })
         .expect("seed");
-        db
+        WorkspaceAuthority::from_database_for_test(db, path).expect("authority")
     }
 
-    fn switching_runtime(db: Arc<Database>) -> SwitchingRuntime {
+    fn switching_runtime(db: PinnedWorkspaceDb) -> SwitchingRuntime {
         SwitchingRuntime {
             active: Arc::new(Mutex::new(db)),
             pinned: None,
@@ -7052,7 +7057,7 @@ mod runtime_contract_tests {
         let runtime = runtime();
         let ai = FakeAi::default();
         let mut args = multi_args("scene-own");
-        args.source_guard = Some(source_guard(&runtime.db));
+        args.source_guard = Some(source_guard(runtime.db.db()));
 
         let error = start_post_effect_run_multi(runtime.clone(), ai.clone(), args)
             .await
@@ -7203,7 +7208,7 @@ mod runtime_contract_tests {
     #[test]
     fn matching_source_guard_creates_run_at_atomic_acceptance_point() {
         let runtime = runtime();
-        let guard = source_guard(&runtime.db);
+        let guard = source_guard(runtime.db.db());
 
         let outcome = ensure_post_effect_run(
             &runtime,
@@ -7226,7 +7231,7 @@ mod runtime_contract_tests {
     fn stale_same_connection_guard_rejects_before_cache_lookup() {
         let runtime = runtime();
         insert_impact_cache(&runtime, "guard-cache");
-        let guard = source_guard(&runtime.db);
+        let guard = source_guard(runtime.db.db());
         runtime
             .with_db(|db| {
                 db.execute(
@@ -7261,14 +7266,16 @@ mod runtime_contract_tests {
             "grimodex-post-effect-source-guard-{}.db",
             Uuid::new_v4()
         ));
-        let db = Arc::new(Database::new(&path).expect("file database"));
+        let db = Database::new(&path).expect("file database");
         db.migrate().expect("migrate file database");
+        let db = WorkspaceAuthority::from_database_for_test(db, path.parent().unwrap().to_path_buf())
+            .expect("authority");
         let runtime = FakeRuntime {
             db: Arc::clone(&db),
             events: Arc::new(Mutex::new(Vec::new())),
             aborts: PostEffectAbortRegistry::new(),
         };
-        let guard = source_guard(&db);
+        let guard = source_guard(db.db());
         let external = rusqlite::Connection::open(&path).expect("external connection");
         external
             .execute(
@@ -7303,7 +7310,7 @@ mod runtime_contract_tests {
     fn guard_from_replaced_database_is_rejected_by_connection_epoch() {
         let runtime_a = runtime();
         let runtime_b = runtime();
-        let guard = source_guard(&runtime_a.db);
+        let guard = source_guard(runtime_a.db.db());
 
         let error = ensure_post_effect_run(
             &runtime_b,

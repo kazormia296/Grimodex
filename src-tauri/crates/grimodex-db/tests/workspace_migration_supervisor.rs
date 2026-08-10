@@ -4,14 +4,15 @@
 //! supervisor API rather than `Database::migrate()` on the live path.
 
 use grimodex_core::SCHEMA_VERSION;
-use grimodex_db::migration_supervisor::{
-    self, Failpoint, MigrationSupervisorError, WorkspaceOpenDbOutcome,
-};
+use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
 use grimodex_db::Database;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+#[cfg(feature = "test-failpoints")]
+use grimodex_db::migration_supervisor::{Failpoint, MigrationSupervisorError};
 
 fn temp_workspace(label: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -186,6 +187,23 @@ fn current_marker_missing_invariants_uses_shadow_path() {
     assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
 }
 
+
+#[test]
+fn prepare_database_refuses_safe_mode_authority() {
+    let newer_ws = temp_workspace("prep-newer");
+    seed_legacy_db(&newer_ws.join("grimodex.db"), SCHEMA_VERSION + 3);
+    let err = migration_supervisor::prepare_database_for_open(&newer_ws).expect_err("safe mode");
+    assert!(
+        err.to_string().contains("WORKSPACE_SAFE_MODE"),
+        "err={err}"
+    );
+}
+
+
+#[cfg(feature = "test-failpoints")]
+mod failpoint_tests {
+    use super::*;
+
 #[test]
 fn failpoint_after_snapshot_leaves_live_unchanged() {
     let ws = temp_workspace("fp-snapshot");
@@ -330,31 +348,6 @@ fn failpoint_reopen_failure_restores_without_publishing_database() {
     assert!(snapshot_still_present(&ws));
 }
 
-#[test]
-fn prepare_database_refuses_recovery_required_authority() {
-    let ws = temp_workspace("prep-refuse");
-    let db_path = ws.join("grimodex.db");
-    seed_legacy_db(&db_path, 0);
-    let outcome = migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
-        &ws,
-        Some(Failpoint::ReopenFailure),
-    )
-    .expect("recovery");
-    assert!(matches!(
-        outcome,
-        WorkspaceOpenDbOutcome::RecoveryRequired { .. }
-    ));
-
-    // Directly exercise the prepare mapping by replaying SafeMode.
-    seed_legacy_db(&ws.join("grimodex-newer.db"), SCHEMA_VERSION + 3);
-    // SafeMode via prepare on a newer live DB:
-    let newer_ws = temp_workspace("prep-newer");
-    seed_legacy_db(&newer_ws.join("grimodex.db"), SCHEMA_VERSION + 3);
-    let err = migration_supervisor::prepare_database_for_open(&newer_ws).expect_err("safe mode");
-    assert!(
-        err.to_string().contains("WORKSPACE_SAFE_MODE"),
-        "err={err}"
-    );
 }
 
 #[test]

@@ -581,7 +581,10 @@ pub mod workspace_lease;
 // (src-tauri の互換シム `pub(crate) use grimodex_db::{…}` と napi 側の両方が
 // フラットに import できるように)。
 pub use error::{AppError, AppResult, QueryResult};
-pub use state::{with_db_state, ActiveWorkspace, GlobalSettingsPath, WorkspaceState};
+pub use state::{
+    with_db_state, ActiveWorkspace, GlobalSettingsPath, PinnedWorkspaceDb, WorkspaceAuthority,
+    WorkspaceState,
+};
 
 #[cfg(test)]
 mod seed_schema_parity;

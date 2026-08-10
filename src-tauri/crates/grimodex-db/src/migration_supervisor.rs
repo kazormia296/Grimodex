@@ -263,20 +263,15 @@ fn create_fresh_workspace_db(
         let db = Database::new(&staged)?;
         db.migrate()?;
         verify_migrated_db(&staged)?;
+        drop(db);
         seal_sqlite_image(&staged)?;
     }
     hit_failpoint(failpoint, Failpoint::AfterMigrate)?;
     atomic_replace(&staged, db_path)?;
     staged_cleanup.disarm();
-    drop(exclusive);
-
-    let shared = workspace_lease::try_acquire_shared(workspace)?;
-    let database = Database::new(db_path)?;
+    let opened = reopen_under_shared_lease(workspace, exclusive)?;
     Ok(WorkspaceOpenDbOutcome::Ready {
-        opened: OpenedWorkspaceDb {
-            database,
-            lease: shared,
-        },
+        opened,
         from_schema: 0,
         to_schema: SCHEMA_VERSION,
     })
@@ -384,6 +379,18 @@ fn finish_after_live_replaced(
         );
     }
 
+    // Verify under exclusive with a temporary connection, then close all handles
+    // before the exclusive→shared handoff (no DB may remain open unlocked).
+    if let Err(error) = verify_migrated_db(db_path) {
+        return rollback_after_live_replaced(
+            workspace,
+            db_path,
+            snapshot,
+            "MIGRATION_REOPEN_FAILED",
+            error.to_string(),
+            exclusive,
+        );
+    }
     if failpoint == Some(Failpoint::ReopenFailure) {
         return rollback_after_live_replaced(
             workspace,
@@ -395,51 +402,79 @@ fn finish_after_live_replaced(
         );
     }
 
-    match reopen_migrated(db_path) {
-        Ok(database) => {
-            // Receipt is best-effort relative to authority publish: a missing
-            // receipt must not undo a successful migration, and must not delete
-            // the recovery snapshot.
-            let receipt_path = match write_receipt(workspace, snapshot, inspection) {
-                Ok(path) => path,
-                Err(error) => {
-                    tracing::warn!(
-                        "migration receipt write failed after successful reopen: {error}"
-                    );
-                    snapshot.manifest_path.clone()
-                }
-            };
-            drop(exclusive);
-            let shared = workspace_lease::try_acquire_shared(workspace)?;
-            // Re-bind database under shared lease (previous handle opened under exclusive).
-            drop(database);
-            let database = Database::new(db_path)?;
-            database.recover_open_time_state_without_schema_ddl()?;
-            Ok(WorkspaceOpenDbOutcome::Migrated {
-                opened: OpenedWorkspaceDb {
-                    database,
-                    lease: shared,
-                },
-                from_schema: inspection.current_schema_version,
-                to_schema: SCHEMA_VERSION,
-                receipt_path,
-            })
+    let receipt_path = match write_receipt(workspace, snapshot, inspection) {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!("migration receipt write failed after successful verify: {error}");
+            snapshot.manifest_path.clone()
         }
-        Err(error) => rollback_after_live_replaced(
-            workspace,
-            db_path,
-            snapshot,
-            "MIGRATION_REOPEN_FAILED",
-            error.to_string(),
-            exclusive,
-        ),
+    };
+
+    match reopen_under_shared_lease(workspace, exclusive) {
+        Ok(opened) => Ok(WorkspaceOpenDbOutcome::Migrated {
+            opened,
+            from_schema: inspection.current_schema_version,
+            to_schema: SCHEMA_VERSION,
+            receipt_path,
+        }),
+        Err(error) => {
+            // Shared handoff failed after verify — attempt snapshot rollback under a
+            // fresh exclusive if possible; otherwise session lost.
+            match workspace_lease::acquire_exclusive_for_migration(workspace) {
+                Ok(exclusive_again) => rollback_after_live_replaced(
+                    workspace,
+                    db_path,
+                    snapshot,
+                    "MIGRATION_REOPEN_FAILED",
+                    error.to_string(),
+                    exclusive_again,
+                ),
+                Err(lease_error) => Err(MigrationSupervisorError::Message(format!(
+                    "MIGRATION_SESSION_LOST: rollbackPath={} detail={error}; lease={lease_error}",
+                    snapshot.db_path.display()
+                ))),
+            }
+        }
     }
 }
 
-fn reopen_migrated(db_path: &Path) -> anyhow::Result<Database> {
-    let database = Database::new(db_path)?;
-    verify_migrated_db(db_path)?;
-    Ok(database)
+/// Close exclusive, acquire shared, then open+reinspect the live DB.
+///
+/// Callers must drop every Database handle on `workspace` before invoking this.
+pub fn reopen_under_shared_lease(
+    workspace: &Path,
+    exclusive: WorkspaceLease,
+) -> Result<OpenedWorkspaceDb, MigrationSupervisorError> {
+    drop(exclusive);
+    let lease = workspace_lease::try_acquire_shared(workspace)?;
+    let db_path = workspace.join("grimodex.db");
+    let database = Database::new(&db_path)?;
+    reinspect_current_authority(&database)?;
+    database.recover_open_time_state_without_schema_ddl()?;
+    Ok(OpenedWorkspaceDb { database, lease })
+}
+
+fn reinspect_current_authority(database: &Database) -> Result<(), MigrationSupervisorError> {
+    let version: i32 = database.with_conn(|conn| {
+        Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
+    })?;
+    if version != SCHEMA_VERSION {
+        return Err(MigrationSupervisorError::Message(format!(
+            "WORKSPACE_SAFE_MODE: reopened db user_version {version} != {SCHEMA_VERSION}"
+        )));
+    }
+    let ok = database.with_conn(has_current_schema_checkpoint_invariants)?;
+    if !ok {
+        return Err(MigrationSupervisorError::Message(
+            "WORKSPACE_SAFE_MODE: reopened db failed current schema invariants".to_string(),
+        ));
+    }
+    if let Some(error) = database.quick_check()? {
+        return Err(MigrationSupervisorError::Message(format!(
+            "MIGRATION_SOURCE_INTEGRITY_FAILED: reopened quick_check={error}"
+        )));
+    }
+    Ok(())
 }
 
 fn rollback_after_live_replaced(
