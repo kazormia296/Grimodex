@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  unresolvedBindCodexEntityProposal,
-} from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
+import { unresolvedBindCodexEntityProposal } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
 import { createCodexRelationProposalFromHypothesis } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
 import { buildCodexRelationSemanticKey } from "./extraction/relationVocabulary";
 import {
@@ -43,7 +41,13 @@ function entityRow(
       },
       { proposalId: overrides.proposalId },
     );
-  const { proposalId, narrativeEntityId, name, proposal: _p, ...rest } = overrides;
+  const {
+    proposalId,
+    narrativeEntityId,
+    name,
+    proposal: _p,
+    ...rest
+  } = overrides;
   return {
     proposalId,
     revisionId: overrides.revisionId ?? `rev-${proposalId}`,
