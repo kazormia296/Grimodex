@@ -1501,6 +1501,8 @@
         "narrative_state_synthesize": "Narrative State 統合",
         "narrative_phase_synthesize": "Narrative Phase 統合",
         "narrative_detail_compose": "Narrative Detail 整形",
+        "narrative_temporal_attach": "時間表現 Attachment",
+        "narrative_temporal_synthesize": "時間関係 Synthesis",
         "narrative_structured_repair": "Narrative JSON 修復"
       }
     }

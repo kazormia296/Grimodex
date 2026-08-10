@@ -32,6 +32,8 @@ export type AiUsageSurface =
   | "narrative_state_synthesize"
   | "narrative_phase_synthesize"
   | "narrative_detail_compose"
+  | "narrative_temporal_attach"
+  | "narrative_temporal_synthesize"
   | "narrative_structured_repair";
 
 export interface RecordAiUsageInput {

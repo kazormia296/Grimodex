@@ -1502,6 +1502,8 @@
         "narrative_state_synthesize": "Narrative state synthesize",
         "narrative_phase_synthesize": "Narrative phase synthesize",
         "narrative_detail_compose": "Narrative detail compose",
+        "narrative_temporal_attach": "Narrative temporal attach",
+        "narrative_temporal_synthesize": "Narrative temporal synthesize",
         "narrative_structured_repair": "Narrative structured repair"
       }
     }

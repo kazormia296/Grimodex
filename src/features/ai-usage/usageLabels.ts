@@ -35,6 +35,8 @@ const SURFACE_KEYS = {
   narrative_state_synthesize: true,
   narrative_phase_synthesize: true,
   narrative_detail_compose: true,
+  narrative_temporal_attach: true,
+  narrative_temporal_synthesize: true,
   narrative_structured_repair: true,
 } satisfies Record<AiUsageSurface, true>;
 

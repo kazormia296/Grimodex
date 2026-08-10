@@ -265,6 +265,20 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
     auditProperty: "pathId",
   },
   {
+    pathId: "narrative_temporal_attach",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runTemporalAttachmentTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
+    pathId: "narrative_temporal_synthesize",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runTemporalSynthesisTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
     pathId: "narrative_structured_repair",
     sourceRef:
       "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
@@ -679,6 +693,38 @@ export const AI_PATHS: AiPathEntry[] = [
     note: "Detail 値整形。dropdown は opaque optionRef のみ。clear≠inherit≠set を混同しない。",
   },
   {
+    id: "narrative_temporal_attach",
+    label: "Narrative Temporal Attachment",
+    surface:
+      "narrative-extraction/aiTasks/runTemporalAttachmentTask.ts runTemporalAttachmentTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_temporal_attach",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_temporal_attach",
+    note: "時間表現の Attachment。候補 Temporal Node Ref のみ。実 Scene/Event ID・epoch day は送らない／採用しない。",
+  },
+  {
+    id: "narrative_temporal_synthesize",
+    label: "Narrative Temporal Relation Synthesis",
+    surface:
+      "narrative-extraction/aiTasks/runTemporalSynthesisTask.ts runTemporalSynthesisTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_temporal_synthesize",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_temporal_synthesize",
+    note: "時間関係候補。暦計算と STN Solver は決定的コード側。AI は関係候補のみ。",
+  },
+  {
     id: "narrative_structured_repair",
     label: "Narrative Structured JSON Repair",
     surface:
@@ -1065,7 +1111,7 @@ export const AI_PATHS: AiPathEntry[] = [
       "audit_records_exact_request_route_and_raw_response_before_returning",
     verifier: "rust-live",
     testRef: POST_EFFECT_RUST,
-    note: "同上。multi-scene 系も同一の call_post_effect_api を通るため Rust ライブテストで到達検証。",
+    note: "校閲: timeline consistency。数値矛盾・負閉路は Temporal Solver の Conflict Artifact を読む消費者へ移行する（本文からの独立日時再抽出はしない）。multi-scene 系も同一の call_post_effect_api を通るため Rust ライブテストで到達検証。",
   },
   {
     id: "post_effect_pseudo_comment",
