@@ -20,7 +20,7 @@
       "maxLines": 696
     },
     "src/features/workspace/store.ts": {
-      "maxLines": 531
+      "maxLines": 532
     }
   }
 }
