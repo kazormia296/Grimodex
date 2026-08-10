@@ -1,20 +1,23 @@
-# Release Gate B — Narrative Runtime Authority / SQL Protection
+# Release Gate B Foundation — Narrative Runtime Authority / SQL Protection
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Native 境界で Narrative Engine を fail-closed に止め、untrusted SQL から protected domain writer を守り、設定欠損時も `review-only` へ倒す。
 
-**Architecture:** schema-neutral。Runtime Mode は `app_settings`、Writer 保護は JSON registry + SQLite authorizer、`SqlOrigin` で Renderer／MCP／Trusted を分岐。Narrative Extraction 本体は未マージのため guard API を先に公開し、stack rebase 時に配線する。
+**Status:** Gate B **Foundation**（完成の Gate B PASS ではない）。Domain cutover と Apply 入口配線は #493〜#501 restack 後。
+
+**Architecture:** Runtime Mode は Native-owned `narrative_runtime_policy` singleton（SCHEMA 4）。Writer 保護は JSON registry + SQLite authorizer、`SqlOrigin` で Renderer／MCP／Trusted を分岐。
 
 **Tech Stack:** Rust (`grimodex-db`)、TypeScript runtime policy、Node CI validator、既存 Electron／Tauri／MCP DB 経路
 
 ## Global Constraints
 
-- schema version を増やさない（sidecar / app_settings のみ）
+- Runtime Authority は Native-owned `narrative_runtime_policy`（SCHEMA 4）。`app_settings` の `narrative.*` は移行後に削除し、Renderer generic SQL からは書換不能
 - AI policy の fail-open は維持し、Narrative だけ fail-closed
 - Undo は emergency disable 中も許可
-- 既存 domain の Drizzle cutover は #493〜#499 側。Gate B は registry に `ciEnforce` を持ち、cutover 済み table だけ CI 0 件を強制する
+- 既存 domain の Drizzle cutover は #493〜#499 側。Gate B Foundation は registry に `enforcement` を持ち、cutover 済み table だけ CI 0 件を強制する
 - production build に test-only 経路を入れない
+- 本 PR は Gate B Foundation。完全な Gate B PASS は Domain cutover＋Apply 入口配線後
 
 ---
 

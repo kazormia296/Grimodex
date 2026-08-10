@@ -12,6 +12,7 @@ lightSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
+  - narrative-runtime
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -209,6 +210,7 @@ requirements:
       - eval-tool-hermes-write
       - eval-policy-propose-body
       - eval-policy-delete-relation
+      - eval-narrative-runtime-authority-fail-closed
   - id: GDX-GROUND-001
     title: Answers and prompts preserve current, attributable grounding.
     definedIn: policies/quality/iron-laws.md#GDX-GROUND-001
@@ -341,6 +343,7 @@ requirements:
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
       - scripts/semantic-reranker-release.test.mjs
+      - scripts/quality/validate-narrative-writers.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
@@ -353,6 +356,7 @@ requirements:
       - eval-artifact-create-event
       - eval-prompt-post-effect-json
       - eval-route-search-scenes
+      - eval-narrative-runtime-authority-fail-closed
 heavyEvaluations:
   - id: heavy-agent-tool-loop
     suiteId: tool-policy

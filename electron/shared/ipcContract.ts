@@ -384,6 +384,8 @@ export function clampZoomFactor(factor: unknown): number {
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
+  narrativeRuntimePolicyGet?(): Promise<string>;
+  narrativeRuntimePolicySet?(payload: unknown): Promise<string>;
   editorStickyList?(projectId: string, documentKey: string): Promise<string>;
   editorStickyCreate?(payload: unknown): Promise<string>;
   editorStickyUpdate?(payload: unknown): Promise<string>;
@@ -3402,6 +3404,30 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requirePresent(a, "statements", "db_execute_batch"),
         ),
       ),
+  },
+  narrative_runtime_policy_get: {
+    run: async (b) => {
+      if (!b.narrativeRuntimePolicyGet) {
+        throw new Error(
+          "IPC_BACKEND_UNAVAILABLE: narrative_runtime_policy_get",
+        );
+      }
+      return parseWire(await b.narrativeRuntimePolicyGet());
+    },
+  },
+  narrative_runtime_policy_set: {
+    run: async (b, a) => {
+      if (!b.narrativeRuntimePolicySet) {
+        throw new Error(
+          "IPC_BACKEND_UNAVAILABLE: narrative_runtime_policy_set",
+        );
+      }
+      return parseWire(
+        await b.narrativeRuntimePolicySet(
+          requirePresent(a, "payload", "narrative_runtime_policy_set"),
+        ),
+      );
+    },
   },
   editor_sticky_list: {
     run: async (b, a) =>

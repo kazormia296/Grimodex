@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -4814,6 +4814,56 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE map_stickies ( id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE, title TEXT, body TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}', preview_text TEXT, palette_id TEXT NOT NULL DEFAULT 'post-it-playful', color_slot INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0), ai_branch_id TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL, -- AI由来フラグ。ai_branch_id は「現在の所属 branch」(採用で NULL 化)、 -- こちらは「AI が生成した付箋か」という出自で採用後も保持する。 ai_derived INTEGER NOT NULL DEFAULT 0, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "narrative_runtime_policy": {
+      "kind": "table",
+      "columns": {
+        "background_ai_enabled": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "generic_import_enabled": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "maintenance_enabled": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "runtime_mode": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "singleton_id": {
+          "ordinal": 0,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "version": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "1",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_runtime_policy ( singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1), runtime_mode TEXT NOT NULL CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')), maintenance_enabled INTEGER NOT NULL CHECK (maintenance_enabled IN (0, 1)), generic_import_enabled INTEGER NOT NULL CHECK (generic_import_enabled IN (0, 1)), background_ai_enabled INTEGER NOT NULL CHECK (background_ai_enabled IN (0, 1)), version INTEGER NOT NULL DEFAULT 1 )"
     },
     "plot_thread_branches": {
       "kind": "table",

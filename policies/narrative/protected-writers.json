@@ -86,12 +86,24 @@
     "protection": "columns",
     "columns": [
       "story_time_order",
+      "story_time_label",
       "chronicle_start_time",
+      "chronicle_start_minute",
+      "chronicle_start_granularity",
       "chronicle_end_time",
+      "chronicle_end_minute",
+      "chronicle_end_granularity",
       "chronicle_precision"
     ],
     "versionColumn": "version",
     "writer": "temporal.scene",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "temporal-calendar",
+    "table": "project_calendar",
+    "protection": "table",
+    "writer": "temporal.calendar",
     "enforcement": "deferred"
   },
   {
@@ -133,6 +145,14 @@
     "versionColumn": "version",
     "writer": "codex.detail",
     "enforcement": "deferred"
+  },
+  {
+    "aggregate": "narrative-runtime",
+    "table": "narrative_runtime_policy",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "narrative.runtime_policy",
+    "enforcement": "active"
   },
   {
     "aggregate": "gate-b-fixture",

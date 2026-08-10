@@ -11,11 +11,21 @@ export interface NarrativeRuntimePolicy {
   backgroundAiEnabled: boolean;
 }
 
+/**
+ * @deprecated Legacy app_settings keys. Authority now lives in the Native-owned
+ * `narrative_runtime_policy` table. Do not write these keys from renderer SQL.
+ */
 export const NARRATIVE_RUNTIME_SETTING_KEYS = {
   runtimeMode: "narrative.runtimeMode",
   maintenanceEnabled: "narrative.maintenanceEnabled",
   genericImportEnabled: "narrative.genericImportEnabled",
   backgroundAiEnabled: "narrative.backgroundAiEnabled",
+} as const;
+
+/** IPC commands for the Native-owned policy singleton. */
+export const NARRATIVE_RUNTIME_POLICY_COMMANDS = {
+  get: "narrative_runtime_policy_get",
+  set: "narrative_runtime_policy_set",
 } as const;
 
 /** Public release Stage 1 defaults — Preview / review only. */

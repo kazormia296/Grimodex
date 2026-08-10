@@ -68,6 +68,8 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   codex_entry_phases: ["codexEntryPhases"],
   codex_detail_definitions: ["codexDetailDefinitions"],
   codex_detail_values: ["codexDetailValues"],
+  narrative_runtime_policy: ["narrativeRuntimePolicy"],
+  project_calendar: ["projectCalendar"],
   narrative_protected_fixture: ["narrativeProtectedFixture"],
   narrative_protected_shared_fixture: ["narrativeProtectedSharedFixture"],
 };

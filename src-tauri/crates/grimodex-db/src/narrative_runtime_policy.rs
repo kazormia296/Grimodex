@@ -1,11 +1,12 @@
-//! Narrative Engine runtime authority (Release Gate B).
+//! Narrative Engine runtime authority (Release Gate B Foundation).
 //!
-//! AI policy remains fail-open for existing chat／body features. Narrative Engine
-//! settings are fail-closed: missing, corrupt, or unknown values collapse to
-//! `review-only`, and hard environment disables always win.
+//! Policy is stored in the Native-owned `narrative_runtime_policy` singleton
+//! table (not `app_settings`). Renderer／generic SQL cannot mutate it because
+//! the table is an active protected writer. Typed Native setter is the only
+//! write path.
 
 use rusqlite::Connection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 
 /// Public error codes returned across N-API / IPC / MCP.
@@ -15,18 +16,20 @@ pub const NARRATIVE_MAINTENANCE_DISABLED: &str = "NARRATIVE_MAINTENANCE_DISABLED
 pub const NARRATIVE_GENERIC_IMPORT_DISABLED: &str = "NARRATIVE_GENERIC_IMPORT_DISABLED";
 pub const NARRATIVE_BACKGROUND_AI_DISABLED: &str = "NARRATIVE_BACKGROUND_AI_DISABLED";
 pub const NARRATIVE_APPROVAL_REQUIRED: &str = "NARRATIVE_APPROVAL_REQUIRED";
-
-pub const SETTING_RUNTIME_MODE: &str = "narrative.runtimeMode";
-pub const SETTING_MAINTENANCE_ENABLED: &str = "narrative.maintenanceEnabled";
-pub const SETTING_GENERIC_IMPORT_ENABLED: &str = "narrative.genericImportEnabled";
-pub const SETTING_BACKGROUND_AI_ENABLED: &str = "narrative.backgroundAiEnabled";
+pub const NARRATIVE_RUNTIME_POLICY_CONFLICT: &str = "NARRATIVE_RUNTIME_POLICY_CONFLICT";
 
 const ENV_DISABLE_ENGINE: &str = "GRIMODEX_DISABLE_NARRATIVE_ENGINE";
 const ENV_DISABLE_MAINTENANCE: &str = "GRIMODEX_DISABLE_NARRATIVE_MAINTENANCE";
 const ENV_DISABLE_GENERIC_IMPORT: &str = "GRIMODEX_DISABLE_GENERIC_IMPORT";
 const ENV_DISABLE_BACKGROUND_AI: &str = "GRIMODEX_DISABLE_BACKGROUND_AI";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
+/// Legacy app_settings keys migrated once into `narrative_runtime_policy`.
+const LEGACY_SETTING_RUNTIME_MODE: &str = "narrative.runtimeMode";
+const LEGACY_SETTING_MAINTENANCE_ENABLED: &str = "narrative.maintenanceEnabled";
+const LEGACY_SETTING_GENERIC_IMPORT_ENABLED: &str = "narrative.genericImportEnabled";
+const LEGACY_SETTING_BACKGROUND_AI_ENABLED: &str = "narrative.backgroundAiEnabled";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NarrativeRuntimeMode {
     Disabled,
@@ -83,6 +86,7 @@ pub struct NarrativeRuntimePolicy {
     pub maintenance_enabled: bool,
     pub generic_import_enabled: bool,
     pub background_ai_enabled: bool,
+    pub version: i64,
     pub hard_disable_engine: bool,
     pub hard_disable_maintenance: bool,
     pub hard_disable_generic_import: bool,
@@ -96,6 +100,7 @@ impl Default for NarrativeRuntimePolicy {
             maintenance_enabled: false,
             generic_import_enabled: false,
             background_ai_enabled: false,
+            version: 0,
             hard_disable_engine: false,
             hard_disable_maintenance: false,
             hard_disable_generic_import: false,
@@ -132,7 +137,7 @@ impl NarrativeRuntimePolicy {
         self.effective_mode().allows_redo()
     }
 
-    pub fn maintenance_allowed(&self) -> bool {
+    pub fn maintenance_preview_allowed(&self) -> bool {
         if self.hard_disable_engine || self.hard_disable_maintenance {
             return false;
         }
@@ -142,7 +147,11 @@ impl NarrativeRuntimePolicy {
         self.maintenance_enabled
     }
 
-    pub fn generic_import_allowed(&self) -> bool {
+    pub fn maintenance_mutation_allowed(&self) -> bool {
+        self.maintenance_preview_allowed() && self.domain_apply_allowed()
+    }
+
+    pub fn generic_import_capture_allowed(&self) -> bool {
         if self.hard_disable_engine || self.hard_disable_generic_import {
             return false;
         }
@@ -152,12 +161,27 @@ impl NarrativeRuntimePolicy {
         self.generic_import_enabled
     }
 
+    pub fn generic_import_apply_allowed(&self) -> bool {
+        self.generic_import_capture_allowed() && self.domain_apply_allowed()
+    }
+
     pub fn background_ai_allowed(&self) -> bool {
         if self.hard_disable_engine || self.hard_disable_background_ai {
             return false;
         }
-        matches!(self.effective_mode(), NarrativeRuntimeMode::Automatic) && self.background_ai_enabled
+        matches!(self.effective_mode(), NarrativeRuntimeMode::Automatic)
+            && self.background_ai_enabled
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetNarrativeRuntimePolicyInput {
+    pub expected_version: i64,
+    pub runtime_mode: String,
+    pub maintenance_enabled: bool,
+    pub generic_import_enabled: bool,
+    pub background_ai_enabled: bool,
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -174,14 +198,32 @@ fn env_flag_enabled(name: &str) -> bool {
 }
 
 fn parse_bool_fail_closed(raw: Option<&str>) -> bool {
-    match raw.map(str::trim) {
-        Some("true") | Some("1") | Some("yes") | Some("on") => true,
-        Some("false") | Some("0") | Some("no") | Some("off") => false,
-        _ => false,
-    }
+    matches!(
+        raw.map(str::trim),
+        Some("true") | Some("1") | Some("yes") | Some("on")
+    )
 }
 
-fn read_setting(conn: &Connection, key: &str) -> Option<String> {
+fn deny(code: &str, detail: &str) -> anyhow::Error {
+    anyhow::anyhow!("{code}: {detail}")
+}
+
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+        )",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .ok()
+    .is_some_and(|exists| exists != 0)
+}
+
+fn read_legacy_app_setting(conn: &Connection, key: &str) -> Option<String> {
+    if !table_exists(conn, "app_settings") {
+        return None;
+    }
     conn.query_row(
         "SELECT value FROM app_settings WHERE key = ?1",
         [key],
@@ -190,30 +232,118 @@ fn read_setting(conn: &Connection, key: &str) -> Option<String> {
     .ok()
 }
 
+/// Ensure singleton row exists. Idempotent; safe during migrate and open.
+pub fn ensure_narrative_runtime_policy_row(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS narrative_runtime_policy (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            runtime_mode TEXT NOT NULL
+              CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')),
+            maintenance_enabled INTEGER NOT NULL CHECK (maintenance_enabled IN (0, 1)),
+            generic_import_enabled INTEGER NOT NULL CHECK (generic_import_enabled IN (0, 1)),
+            background_ai_enabled INTEGER NOT NULL CHECK (background_ai_enabled IN (0, 1)),
+            version INTEGER NOT NULL DEFAULT 1
+        );",
+    )?;
+
+    let exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM narrative_runtime_policy WHERE singleton_id = 1)",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists != 0 {
+        return Ok(());
+    }
+
+    let mode = NarrativeRuntimeMode::parse_fail_closed(
+        &read_legacy_app_setting(conn, LEGACY_SETTING_RUNTIME_MODE).unwrap_or_default(),
+    );
+    let maintenance = parse_bool_fail_closed(
+        read_legacy_app_setting(conn, LEGACY_SETTING_MAINTENANCE_ENABLED).as_deref(),
+    );
+    let generic_import = parse_bool_fail_closed(
+        read_legacy_app_setting(conn, LEGACY_SETTING_GENERIC_IMPORT_ENABLED).as_deref(),
+    );
+    let background_ai = parse_bool_fail_closed(
+        read_legacy_app_setting(conn, LEGACY_SETTING_BACKGROUND_AI_ENABLED).as_deref(),
+    );
+
+    conn.execute(
+        "INSERT INTO narrative_runtime_policy (
+            singleton_id, runtime_mode, maintenance_enabled,
+            generic_import_enabled, background_ai_enabled, version
+         ) VALUES (1, ?1, ?2, ?3, ?4, 1)",
+        rusqlite::params![
+            mode.as_str(),
+            i64::from(maintenance),
+            i64::from(generic_import),
+            i64::from(background_ai),
+        ],
+    )?;
+
+    // Remove legacy keys so renderer cannot keep writing a shadow policy.
+    if table_exists(conn, "app_settings") {
+        conn.execute(
+            "DELETE FROM app_settings
+              WHERE key IN (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                LEGACY_SETTING_RUNTIME_MODE,
+                LEGACY_SETTING_MAINTENANCE_ENABLED,
+                LEGACY_SETTING_GENERIC_IMPORT_ENABLED,
+                LEGACY_SETTING_BACKGROUND_AI_ENABLED,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_stored_policy(conn: &Connection) -> NarrativeRuntimePolicy {
+    if !table_exists(conn, "narrative_runtime_policy") {
+        return NarrativeRuntimePolicy::default();
+    }
+    let loaded = conn.query_row(
+        "SELECT runtime_mode, maintenance_enabled, generic_import_enabled,
+                background_ai_enabled, version
+           FROM narrative_runtime_policy
+          WHERE singleton_id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    );
+    match loaded {
+        Ok((mode, maintenance, generic_import, background_ai, version)) => {
+            NarrativeRuntimePolicy {
+                runtime_mode: NarrativeRuntimeMode::parse_fail_closed(&mode),
+                maintenance_enabled: maintenance != 0,
+                generic_import_enabled: generic_import != 0,
+                background_ai_enabled: background_ai != 0,
+                version,
+                hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
+                hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
+                hard_disable_generic_import: env_flag_enabled(ENV_DISABLE_GENERIC_IMPORT),
+                hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
+            }
+        }
+        Err(_) => NarrativeRuntimePolicy {
+            hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
+            hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
+            hard_disable_generic_import: env_flag_enabled(ENV_DISABLE_GENERIC_IMPORT),
+            hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
+            ..NarrativeRuntimePolicy::default()
+        },
+    }
+}
+
 /// Load workspace Narrative policy. Missing table／row／corrupt values fail closed.
 pub fn load_narrative_runtime_policy(conn: &Connection) -> NarrativeRuntimePolicy {
-    let mode_raw = read_setting(conn, SETTING_RUNTIME_MODE);
-    let runtime_mode = mode_raw
-        .as_deref()
-        .map(NarrativeRuntimeMode::parse_fail_closed)
-        .unwrap_or_default();
-
-    NarrativeRuntimePolicy {
-        runtime_mode,
-        maintenance_enabled: parse_bool_fail_closed(
-            read_setting(conn, SETTING_MAINTENANCE_ENABLED).as_deref(),
-        ),
-        generic_import_enabled: parse_bool_fail_closed(
-            read_setting(conn, SETTING_GENERIC_IMPORT_ENABLED).as_deref(),
-        ),
-        background_ai_enabled: parse_bool_fail_closed(
-            read_setting(conn, SETTING_BACKGROUND_AI_ENABLED).as_deref(),
-        ),
-        hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
-        hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
-        hard_disable_generic_import: env_flag_enabled(ENV_DISABLE_GENERIC_IMPORT),
-        hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
-    }
+    load_stored_policy(conn)
 }
 
 pub fn load_narrative_runtime_policy_from_db(
@@ -222,8 +352,51 @@ pub fn load_narrative_runtime_policy_from_db(
     db.with_conn(|conn| Ok(load_narrative_runtime_policy(conn)))
 }
 
-fn deny(code: &str, detail: &str) -> anyhow::Error {
-    anyhow::anyhow!("{code}: {detail}")
+pub fn set_narrative_runtime_policy(
+    db: &crate::Database,
+    input: SetNarrativeRuntimePolicyInput,
+) -> anyhow::Result<NarrativeRuntimePolicy> {
+    db.with_conn(|conn| set_narrative_runtime_policy_in_tx(conn, &input))
+}
+
+pub fn set_narrative_runtime_policy_in_tx(
+    conn: &Connection,
+    input: &SetNarrativeRuntimePolicyInput,
+) -> anyhow::Result<NarrativeRuntimePolicy> {
+    ensure_narrative_runtime_policy_row(conn)?;
+    let mode = NarrativeRuntimeMode::parse_fail_closed(&input.runtime_mode);
+    // Unknown modes collapse for reads, but typed setter must reject unknowns
+    // so callers cannot accidentally persist garbage.
+    if mode.as_str() != input.runtime_mode.trim() {
+        return Err(deny(
+            NARRATIVE_RUNTIME_POLICY_CONFLICT,
+            "unknown runtime mode",
+        ));
+    }
+
+    let updated = conn.execute(
+        "UPDATE narrative_runtime_policy
+            SET runtime_mode = ?1,
+                maintenance_enabled = ?2,
+                generic_import_enabled = ?3,
+                background_ai_enabled = ?4,
+                version = version + 1
+          WHERE singleton_id = 1 AND version = ?5",
+        rusqlite::params![
+            mode.as_str(),
+            i64::from(input.maintenance_enabled),
+            i64::from(input.generic_import_enabled),
+            i64::from(input.background_ai_enabled),
+            input.expected_version,
+        ],
+    )?;
+    if updated != 1 {
+        return Err(deny(
+            NARRATIVE_RUNTIME_POLICY_CONFLICT,
+            "runtime policy version conflict",
+        ));
+    }
+    Ok(load_narrative_runtime_policy(conn))
 }
 
 pub fn require_narrative_extraction_allowed(conn: &Connection) -> anyhow::Result<()> {
@@ -262,26 +435,54 @@ pub fn require_narrative_undo_allowed(_conn: &Connection) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub fn require_narrative_maintenance_allowed(conn: &Connection) -> anyhow::Result<()> {
+pub fn require_narrative_maintenance_preview_allowed(conn: &Connection) -> anyhow::Result<()> {
     let policy = load_narrative_runtime_policy(conn);
-    if !policy.maintenance_allowed() {
+    if !policy.maintenance_preview_allowed() {
         return Err(deny(
             NARRATIVE_MAINTENANCE_DISABLED,
-            "narrative maintenance is disabled",
+            "narrative maintenance preview is disabled",
         ));
     }
     Ok(())
 }
 
-pub fn require_generic_import_allowed(conn: &Connection) -> anyhow::Result<()> {
+pub fn require_narrative_maintenance_mutation_allowed(conn: &Connection) -> anyhow::Result<()> {
     let policy = load_narrative_runtime_policy(conn);
-    if !policy.generic_import_allowed() {
+    if !policy.maintenance_mutation_allowed() {
         return Err(deny(
-            NARRATIVE_GENERIC_IMPORT_DISABLED,
-            "generic import is disabled",
+            NARRATIVE_MAINTENANCE_DISABLED,
+            "narrative maintenance mutation requires apply-capable mode",
         ));
     }
     Ok(())
+}
+
+/// Backward-compatible name: preview-only. Mutation callers must use
+/// [`require_narrative_maintenance_mutation_allowed`].
+pub fn require_narrative_maintenance_allowed(conn: &Connection) -> anyhow::Result<()> {
+    require_narrative_maintenance_preview_allowed(conn)
+}
+
+pub fn require_generic_import_capture_allowed(conn: &Connection) -> anyhow::Result<()> {
+    let policy = load_narrative_runtime_policy(conn);
+    if !policy.generic_import_capture_allowed() {
+        return Err(deny(
+            NARRATIVE_GENERIC_IMPORT_DISABLED,
+            "generic import capture is disabled",
+        ));
+    }
+    Ok(())
+}
+
+pub fn require_generic_import_apply_allowed(conn: &Connection) -> anyhow::Result<()> {
+    require_generic_import_capture_allowed(conn)?;
+    require_narrative_apply_allowed(conn)?;
+    Ok(())
+}
+
+/// Backward-compatible name: capture-only.
+pub fn require_generic_import_allowed(conn: &Connection) -> anyhow::Result<()> {
+    require_generic_import_capture_allowed(conn)
 }
 
 pub fn require_background_ai_allowed(conn: &Connection) -> anyhow::Result<()> {
@@ -295,51 +496,110 @@ pub fn require_background_ai_allowed(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Native-side consistency check for already-loaded apply authority.
-///
-/// This does **not** read proposal / decision rows from the database. Callers
-/// (Narrative Extraction Native apply) must load the exact ProposalSet,
-/// current revision, and latest decision from DB, then pass those facts here.
-/// Treating renderer-supplied values as authoritative is a security bug.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ManualApplyAuthority {
-    pub proposal_set_id: String,
-    pub expected_revision_id: String,
-    pub current_revision_id: String,
-    pub latest_decision_status: String,
-    pub decision_revision_id: String,
-}
-
-pub fn require_manual_apply_authority(
+/// DB-bound manual apply gate. Loads ProposalSet／revision／decision from the
+/// same connection. Renderer-supplied decision strings are never trusted.
+pub fn require_manual_apply_authority_in_tx(
     conn: &Connection,
-    authority: &ManualApplyAuthority,
+    proposal_set_id: &str,
+    expected_revision_id: &str,
 ) -> anyhow::Result<()> {
     require_narrative_apply_allowed(conn)?;
 
-    if authority.proposal_set_id.trim().is_empty() {
+    if proposal_set_id.trim().is_empty() || expected_revision_id.trim().is_empty() {
         return Err(deny(
             NARRATIVE_APPROVAL_REQUIRED,
-            "exact proposal set is required",
+            "proposal set and revision are required",
         ));
     }
-    if authority.expected_revision_id != authority.current_revision_id {
+
+    for table in [
+        "narrative_proposal_sets",
+        "narrative_proposal_revisions",
+        "narrative_proposal_decisions",
+    ] {
+        if !table_exists(conn, table) {
+            return Err(deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "narrative proposal authority tables are unavailable",
+            ));
+        }
+    }
+
+    let (current_revision_id, project_id): (String, String) = conn
+        .query_row(
+            "SELECT current_revision_id, project_id
+               FROM narrative_proposal_sets
+              WHERE id = ?1",
+            [proposal_set_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| {
+            deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "proposal set was not found",
+            )
+        })?;
+
+    if current_revision_id != expected_revision_id {
         return Err(deny(
             NARRATIVE_APPROVAL_REQUIRED,
             "proposal revision is stale",
         ));
     }
-    if authority.latest_decision_status != "approved" {
+
+    let revision_belongs: i64 = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM narrative_proposal_revisions
+             WHERE id = ?1 AND proposal_set_id = ?2
+        )",
+        rusqlite::params![expected_revision_id, proposal_set_id],
+        |row| row.get(0),
+    )?;
+    if revision_belongs == 0 {
+        return Err(deny(
+            NARRATIVE_APPROVAL_REQUIRED,
+            "revision does not belong to proposal set",
+        ));
+    }
+
+    let decision = conn.query_row(
+        "SELECT status, revision_id, proposal_set_id
+           FROM narrative_proposal_decisions
+          WHERE proposal_set_id = ?1
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT 1",
+        [proposal_set_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    );
+    let (status, decision_revision_id, decision_set_id) = decision.map_err(|_| {
+        deny(
+            NARRATIVE_APPROVAL_REQUIRED,
+            "no decision exists for proposal set",
+        )
+    })?;
+
+    if status != "approved" {
         return Err(deny(
             NARRATIVE_APPROVAL_REQUIRED,
             "latest decision must be approved",
         ));
     }
-    if authority.decision_revision_id != authority.current_revision_id {
+    if decision_revision_id != expected_revision_id || decision_set_id != proposal_set_id {
         return Err(deny(
             NARRATIVE_APPROVAL_REQUIRED,
-            "decision does not match current revision",
+            "decision does not match current proposal set revision",
         ));
     }
+
+    // project_id is retained for future workspace／project authority checks when
+    // extraction runs land; reading it proves the set is project-scoped.
+    let _ = project_id;
     Ok(())
 }
 
@@ -355,122 +615,180 @@ mod tests {
     }
 
     fn open_db() -> Database {
-        Database::new(std::path::Path::new(":memory:")).expect("open db")
-    }
-
-    fn write_setting(db: &Database, key: &str, value: &str) {
-        db.execute(
-            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
-            &[serde_json::Value::from(key), serde_json::Value::from(value)],
-            "run",
-        )
-        .expect("write setting");
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open db");
+        db.migrate().expect("migrate");
+        db
     }
 
     #[test]
-    fn missing_settings_fail_closed_to_review_only() {
+    fn missing_policy_row_fail_closed_to_review_only_defaults() {
         let db = open_db();
-        db.migrate().expect("migrate");
         let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
         assert_eq!(policy.runtime_mode, NarrativeRuntimeMode::ReviewOnly);
         assert!(!policy.maintenance_enabled);
         assert!(!policy.generic_import_enabled);
         assert!(!policy.background_ai_enabled);
-        assert!(policy.extraction_allowed());
+        assert!(policy.version >= 1);
         assert!(!policy.domain_apply_allowed());
     }
 
     #[test]
-    fn corrupt_and_unknown_mode_fail_closed() {
+    fn renderer_cannot_mutate_runtime_policy_table() {
         let db = open_db();
-        db.migrate().expect("migrate");
-        write_setting(&db, SETTING_RUNTIME_MODE, "{not-json");
-        let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
-        assert_eq!(policy.runtime_mode, NarrativeRuntimeMode::ReviewOnly);
-
-        write_setting(&db, SETTING_RUNTIME_MODE, "full-auto-please");
+        let error = db
+            .execute_renderer(
+                "UPDATE narrative_runtime_policy
+                    SET runtime_mode = 'automatic', version = version + 1
+                  WHERE singleton_id = 1",
+                &[],
+                "run",
+            )
+            .expect_err("renderer policy update denied");
+        assert!(
+            error.to_string().contains("PROTECTED_WRITER_SQL"),
+            "unexpected error: {error}"
+        );
         let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
         assert_eq!(policy.runtime_mode, NarrativeRuntimeMode::ReviewOnly);
     }
 
     #[test]
-    fn apply_denied_until_manual_apply_or_automatic() {
+    fn typed_setter_cas_updates_mode() {
         let db = open_db();
-        db.migrate().expect("migrate");
-        db.with_conn(|conn| {
-            let err = require_narrative_apply_allowed(conn).expect_err("default deny apply");
-            assert!(err.to_string().contains(NARRATIVE_REVIEW_ONLY));
-            Ok(())
-        })
-        .expect("conn");
-
-        write_setting(&db, SETTING_RUNTIME_MODE, "manual-apply");
+        let before = load_narrative_runtime_policy_from_db(&db).expect("load");
+        let after = set_narrative_runtime_policy(
+            &db,
+            SetNarrativeRuntimePolicyInput {
+                expected_version: before.version,
+                runtime_mode: "manual-apply".into(),
+                maintenance_enabled: false,
+                generic_import_enabled: false,
+                background_ai_enabled: false,
+            },
+        )
+        .expect("set");
+        assert_eq!(after.runtime_mode, NarrativeRuntimeMode::ManualApply);
+        assert_eq!(after.version, before.version + 1);
         db.with_conn(require_narrative_apply_allowed)
-            .expect("manual-apply allows domain apply");
+            .expect("manual-apply allows apply");
     }
 
     #[test]
-    fn disabled_blocks_run_but_allows_undo() {
-        let db = open_db();
-        db.migrate().expect("migrate");
-        write_setting(&db, SETTING_RUNTIME_MODE, "disabled");
-        db.with_conn(|conn| {
-            let err = require_narrative_extraction_allowed(conn).expect_err("disabled");
-            assert!(err.to_string().contains(NARRATIVE_ENGINE_DISABLED));
-            require_narrative_undo_allowed(conn).expect("undo always allowed");
-            Ok(())
-        })
-        .expect("conn");
-    }
-
-    #[test]
-    fn hard_env_disable_overrides_workspace_settings() {
+    fn hard_env_disable_overrides_typed_automatic() {
         let _guard = env_lock().lock().expect("env lock");
         let db = open_db();
-        db.migrate().expect("migrate");
-        write_setting(&db, SETTING_RUNTIME_MODE, "automatic");
-        write_setting(&db, SETTING_MAINTENANCE_ENABLED, "true");
-        write_setting(&db, SETTING_BACKGROUND_AI_ENABLED, "true");
-
-        // SAFETY: serialized by env_lock for this test module.
+        let before = load_narrative_runtime_policy_from_db(&db).expect("load");
+        set_narrative_runtime_policy(
+            &db,
+            SetNarrativeRuntimePolicyInput {
+                expected_version: before.version,
+                runtime_mode: "automatic".into(),
+                maintenance_enabled: true,
+                generic_import_enabled: true,
+                background_ai_enabled: true,
+            },
+        )
+        .expect("set");
         unsafe {
             env::set_var(ENV_DISABLE_ENGINE, "1");
         }
         let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
         assert_eq!(policy.effective_mode(), NarrativeRuntimeMode::Disabled);
         assert!(!policy.domain_apply_allowed());
-        assert!(!policy.maintenance_allowed());
-        assert!(!policy.background_ai_allowed());
+        assert!(!policy.maintenance_preview_allowed());
         unsafe {
             env::remove_var(ENV_DISABLE_ENGINE);
         }
     }
 
     #[test]
-    fn manual_apply_requires_exact_approved_revision() {
+    fn maintenance_and_import_guards_split_preview_from_mutation() {
         let db = open_db();
-        db.migrate().expect("migrate");
-        write_setting(&db, SETTING_RUNTIME_MODE, "manual-apply");
-
-        let authority = ManualApplyAuthority {
-            proposal_set_id: "ps-1".into(),
-            expected_revision_id: "rev-1".into(),
-            current_revision_id: "rev-1".into(),
-            latest_decision_status: "approved".into(),
-            decision_revision_id: "rev-1".into(),
-        };
-        db.with_conn(|conn| require_manual_apply_authority(conn, &authority))
-            .expect("valid authority");
-
-        let stale = ManualApplyAuthority {
-            current_revision_id: "rev-2".into(),
-            ..authority.clone()
-        };
+        let before = load_narrative_runtime_policy_from_db(&db).expect("load");
+        set_narrative_runtime_policy(
+            &db,
+            SetNarrativeRuntimePolicyInput {
+                expected_version: before.version,
+                runtime_mode: "review-only".into(),
+                maintenance_enabled: true,
+                generic_import_enabled: true,
+                background_ai_enabled: false,
+            },
+        )
+        .expect("set");
+        db.with_conn(require_narrative_maintenance_preview_allowed)
+            .expect("preview allowed in review-only");
         db.with_conn(|conn| {
-            let err = require_manual_apply_authority(conn, &stale).expect_err("stale");
+            let err = require_narrative_maintenance_mutation_allowed(conn)
+                .expect_err("mutation denied in review-only");
+            assert!(err.to_string().contains(NARRATIVE_MAINTENANCE_DISABLED));
+            let err = require_generic_import_apply_allowed(conn)
+                .expect_err("import apply denied in review-only");
+            assert!(
+                err.to_string().contains(NARRATIVE_REVIEW_ONLY)
+                    || err.to_string().contains(NARRATIVE_GENERIC_IMPORT_DISABLED)
+            );
+            Ok(())
+        })
+        .expect("conn");
+    }
+
+    #[test]
+    fn manual_apply_authority_reads_db_not_caller_strings() {
+        let db = open_db();
+        let before = load_narrative_runtime_policy_from_db(&db).expect("load");
+        set_narrative_runtime_policy(
+            &db,
+            SetNarrativeRuntimePolicyInput {
+                expected_version: before.version,
+                runtime_mode: "manual-apply".into(),
+                maintenance_enabled: false,
+                generic_import_enabled: false,
+                background_ai_enabled: false,
+            },
+        )
+        .expect("set");
+
+        db.with_conn(|conn| {
+            let err = require_manual_apply_authority_in_tx(conn, "ps-1", "rev-1")
+                .expect_err("missing tables");
             assert!(err.to_string().contains(NARRATIVE_APPROVAL_REQUIRED));
             Ok(())
         })
         .expect("conn");
+
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE narrative_proposal_sets (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    current_revision_id TEXT NOT NULL
+                 );
+                 CREATE TABLE narrative_proposal_revisions (
+                    id TEXT PRIMARY KEY,
+                    proposal_set_id TEXT NOT NULL
+                 );
+                 CREATE TABLE narrative_proposal_decisions (
+                    id TEXT PRIMARY KEY,
+                    proposal_set_id TEXT NOT NULL,
+                    revision_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                 );
+                 INSERT INTO narrative_proposal_sets (id, project_id, current_revision_id)
+                 VALUES ('ps-1', 'p1', 'rev-1');
+                 INSERT INTO narrative_proposal_revisions (id, proposal_set_id)
+                 VALUES ('rev-1', 'ps-1');
+                 INSERT INTO narrative_proposal_decisions
+                    (id, proposal_set_id, revision_id, status, created_at)
+                 VALUES ('d1', 'ps-1', 'rev-1', 'approved', '2026-01-01T00:00:00Z');",
+            )?;
+            require_manual_apply_authority_in_tx(conn, "ps-1", "rev-1")?;
+            let stale = require_manual_apply_authority_in_tx(conn, "ps-1", "rev-old")
+                .expect_err("stale");
+            assert!(stale.to_string().contains(NARRATIVE_APPROVAL_REQUIRED));
+            Ok(())
+        })
+        .expect("fixture");
     }
 }

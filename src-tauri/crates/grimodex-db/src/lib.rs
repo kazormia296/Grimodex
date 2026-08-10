@@ -587,14 +587,18 @@ pub use error::{AppError, AppResult, QueryResult};
 pub use execute::{SqlOrigin, RENDERER_SQL_SECURITY_ERROR};
 pub use protected_writers::PROTECTED_WRITER_SQL_ERROR;
 pub use narrative_runtime_policy::{
-    load_narrative_runtime_policy, load_narrative_runtime_policy_from_db,
-    require_background_ai_allowed, require_generic_import_allowed, require_manual_apply_authority,
+    ensure_narrative_runtime_policy_row, load_narrative_runtime_policy,
+    load_narrative_runtime_policy_from_db, require_background_ai_allowed,
+    require_generic_import_allowed, require_generic_import_apply_allowed,
+    require_generic_import_capture_allowed, require_manual_apply_authority_in_tx,
     require_narrative_apply_allowed, require_narrative_extraction_allowed,
-    require_narrative_maintenance_allowed, require_narrative_redo_allowed,
-    require_narrative_undo_allowed, ManualApplyAuthority, NarrativeRuntimeMode,
-    NarrativeRuntimePolicy, NARRATIVE_APPROVAL_REQUIRED, NARRATIVE_BACKGROUND_AI_DISABLED,
+    require_narrative_maintenance_allowed, require_narrative_maintenance_mutation_allowed,
+    require_narrative_maintenance_preview_allowed, require_narrative_redo_allowed,
+    require_narrative_undo_allowed, set_narrative_runtime_policy,
+    set_narrative_runtime_policy_in_tx, NarrativeRuntimeMode, NarrativeRuntimePolicy,
+    SetNarrativeRuntimePolicyInput, NARRATIVE_APPROVAL_REQUIRED, NARRATIVE_BACKGROUND_AI_DISABLED,
     NARRATIVE_ENGINE_DISABLED, NARRATIVE_GENERIC_IMPORT_DISABLED, NARRATIVE_MAINTENANCE_DISABLED,
-    NARRATIVE_REVIEW_ONLY,
+    NARRATIVE_REVIEW_ONLY, NARRATIVE_RUNTIME_POLICY_CONFLICT,
 };
 pub use recovery::{
     MigrationReceipt, OpenWorkspacePayload, RecoveryCandidate, RecoveryCandidateKind,

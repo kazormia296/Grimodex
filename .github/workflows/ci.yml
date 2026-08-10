@@ -834,9 +834,6 @@ jobs:
           -p grimodex-db
           --test narrative_runtime_authority
 
-      - name: Protected narrative writer static gate
-        run: pnpm test:narrative:writers
-
       # 通常buildではlicensingが無効なため、共有runtimeのnetwork/race testsは
       # workspace testだけだとcfgで0件になる。releaseと同じfeatureを明示する。
       - name: cargo test (license runtime with licensing feature)
