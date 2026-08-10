@@ -29,6 +29,33 @@ pub struct BackupInfo {
     pub format: String,
 }
 
+pub struct InstallStagedOptions<'a> {
+    pub detach_active_workspace: bool,
+    pub publish_workspace_authority: bool,
+    pub on_reopened: Option<Box<dyn FnOnce() + 'a>>,
+    pub exclusive_lease: Option<workspace_lease::WorkspaceLease>,
+}
+
+impl<'a> InstallStagedOptions<'a> {
+    pub fn normal_restore(on_reopened: impl FnOnce() + 'a) -> Self {
+        Self {
+            detach_active_workspace: true,
+            publish_workspace_authority: true,
+            on_reopened: Some(Box::new(on_reopened)),
+            exclusive_lease: None,
+        }
+    }
+
+    pub fn safe_mode(exclusive_lease: workspace_lease::WorkspaceLease) -> Self {
+        Self {
+            detach_active_workspace: false,
+            publish_workspace_authority: false,
+            on_reopened: None,
+            exclusive_lease: Some(exclusive_lease),
+        }
+    }
+}
+
 /// List backups for the active workspace. A missing backups directory is an
 /// empty list; an unopened workspace is the shared `No workspace is open`
 /// error contract.
@@ -109,12 +136,15 @@ pub fn restore_backup_core(
 
     let ws_path = {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        inner.as_ref().ok_or(AppError::NoWorkspace)?.path().to_path_buf()
+        inner
+            .as_ref()
+            .ok_or(AppError::NoWorkspace)?
+            .path()
+            .to_path_buf()
     };
     let (source, is_gz) = open_backup_source(&ws_path, file_name)?;
 
     let db_path = ws_path.join("grimodex.db");
-    let backups_dir = ws_path.join("backups");
     // Remove the legacy fixed-name staging file without following symlinks.
     // New restores use an unpredictable create_new path below.
     cleanup_path_best_effort(&sidecar(&db_path, ".restore-tmp"));
@@ -137,12 +167,41 @@ pub fn restore_backup_core(
     // the live DB so an incompatible backup leaves the current session intact.
     preflight_candidate(&staged_plain)?;
 
+    let result = install_staged_workspace_db(
+        ws_state,
+        &ws_path,
+        &staged_plain,
+        InstallStagedOptions::normal_restore(on_reopened),
+    );
+    if result.is_ok() {
+        staged_cleanup.disarm();
+    }
+    result
+}
+
+pub fn install_staged_workspace_db(
+    ws_state: &WorkspaceState,
+    ws_path: &Path,
+    staged_plain: &Path,
+    mut options: InstallStagedOptions<'_>,
+) -> AppResult<()> {
+    if !options.publish_workspace_authority && options.on_reopened.is_some() {
+        return Err(anyhow::anyhow!("restore install callback requires publish").into());
+    }
+
+    let db_path = ws_path.join("grimodex.db");
+    let backups_dir = ws_path.join("backups");
+
     // Detached backup maintenance owns an independent SQLite connection, so
     // `wait_for_sole_owner(old.db)` cannot observe it. Wait for the path-scoped
     // worker lease before detaching the active handle, and keep the exclusive
     // claim through sidecar removal, replacement, rollback, and reopen. The
     // candidate preflight above remains parallel with maintenance.
-    let _maintenance_claim = claim_workspace_maintenance_exclusive(&ws_path)?;
+    let _maintenance_claim = if options.detach_active_workspace {
+        Some(claim_workspace_maintenance_exclusive(ws_path)?)
+    } else {
+        None
+    };
 
     // Quiesce new DB access before detaching the active handle. This closes the
     // write-loss window between the safety snapshot and replacement.
@@ -150,52 +209,71 @@ pub fn restore_backup_core(
         .switching
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let _switching_guard = SwitchingGuard(&ws_state.switching);
-    let old = {
-        let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        inner.take()
-    };
-    let old = old.ok_or(AppError::NoWorkspace)?;
+    let detached_active = if options.detach_active_workspace {
+        let old = {
+            let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            inner.take()
+        };
+        let old = old.ok_or(AppError::NoWorkspace)?;
 
-    if let Err(error) = wait_for_sole_owner(&old.authority) {
-        let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        *inner = Some(old);
-        return Err(error);
-    }
-
-    // Best-effort safety copy of the state being replaced. Restore must remain
-    // available when the live DB itself is damaged, so backup failure is logged.
-    if let Err(error) = std::fs::create_dir_all(&backups_dir) {
-        tracing::warn!("restore: cannot create backups dir for safety copy: {error}");
-    } else {
-        let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%3f");
-        let safety = backups_dir.join(format!("grimodex-{timestamp}.db.gz"));
-        if let Err(error) = old.authority.db().backup_to(&safety) {
-            tracing::warn!("restore: pre-restore safety backup failed (continuing): {error}");
+        if let Err(error) = wait_for_sole_owner(&old.authority) {
+            let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            *inner = Some(old);
+            return Err(error);
         }
-    }
 
-    // Drop the last authority owner so Windows releases the live file handle,
-    // and release the shared workspace lease before exclusive replace work.
-    drop(old);
+        // Best-effort safety copy of the state being replaced. Restore must
+        // remain available when the live DB itself is damaged, so backup
+        // failure is logged.
+        if let Err(error) = std::fs::create_dir_all(&backups_dir) {
+            tracing::warn!("restore: cannot create backups dir for safety copy: {error}");
+        } else {
+            let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%3f");
+            let safety = backups_dir.join(format!("grimodex-{timestamp}.db.gz"));
+            if let Err(error) = old.authority.db().backup_to(&safety) {
+                tracing::warn!("restore: pre-restore safety backup failed (continuing): {error}");
+            }
+        }
 
-    let exclusive_lease = workspace_lease::acquire_exclusive_for_migration(&ws_path)
-        .map_err(|error| {
-            abort_after_detach(
-                ws_state,
-                &db_path,
-                &ws_path,
-                anyhow::anyhow!("復元用 exclusive lease を取得できませんでした: {error}"),
-            )
-        })?;
+        // Drop the last authority owner so Windows releases the live file
+        // handle, and release the shared workspace lease before exclusive work.
+        drop(old);
+        true
+    } else {
+        let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        if inner.is_some() {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "RECOVERY_AUTHORITY_STILL_PUBLISHED: refuse Safe Mode restore while Database authority exists"
+            )));
+        }
+        false
+    };
+
+    let exclusive_lease = match options.exclusive_lease.take() {
+        Some(exclusive) => exclusive,
+        None => match workspace_lease::acquire_exclusive_for_migration(ws_path) {
+            Ok(exclusive) => exclusive,
+            Err(error) => {
+                return Err(abort_install(
+                    ws_state,
+                    &db_path,
+                    ws_path,
+                    detached_active,
+                    anyhow::anyhow!("復元用 exclusive lease を取得できませんでした: {error}"),
+                ));
+            }
+        },
+    };
 
     // A stale WAL can replay frames from the old DB into the restored main
     // file. Failure to remove either sidecar is therefore fatal, not a warning.
     if let Err(error) = remove_db_sidecars(&db_path) {
         drop(exclusive_lease);
-        return Err(abort_after_detach(
+        return Err(abort_install(
             ws_state,
             &db_path,
-            &ws_path,
+            ws_path,
+            detached_active,
             anyhow::anyhow!("復元前のSQLite sidecar削除に失敗したため中止しました: {error}"),
         ));
     }
@@ -203,96 +281,185 @@ pub fn restore_backup_core(
     // Keep a mandatory byte-for-byte rollback copy until the restored DB has
     // reopened. The user-visible gzip safety backup above remains best-effort,
     // but internal failure recovery must never depend on it.
-    let (rollback_path, mut rollback_output) = match create_unique_sidecar(&db_path, "rollback") {
-        Ok(created) => created,
-        Err(error) => {
+    let live_exists = match std::fs::symlink_metadata(&db_path) {
+        Ok(meta) if meta.file_type().is_file() => true,
+        Ok(_) => {
             drop(exclusive_lease);
-            return Err(abort_after_detach(
+            return Err(abort_install(
                 ws_state,
                 &db_path,
-                &ws_path,
-                anyhow::anyhow!("{error}"),
-            ));
-        }
-    };
-    let mut rollback_cleanup = CleanupPath::new(rollback_path.clone());
-    if let Err(error) = copy_path_into(&db_path, &mut rollback_output) {
-        drop(rollback_output);
-        drop(exclusive_lease);
-        return Err(abort_after_detach(
-            ws_state,
-            &db_path,
-            &ws_path,
-            anyhow::anyhow!("復元ロールバック用DBの作成に失敗しました: {error}"),
-        ));
-    }
-    if let Err(error) = rollback_output.sync_all() {
-        drop(rollback_output);
-        drop(exclusive_lease);
-        return Err(abort_after_detach(
-            ws_state,
-            &db_path,
-            &ws_path,
-            anyhow::anyhow!("復元ロールバック用DBの同期に失敗しました: {error}"),
-        ));
-    }
-    drop(rollback_output);
-
-    // Seal the staged candidate and capture its digest *before* live replace so
-    // Windows (and all platforms) never need a post-replace seal just to CAS.
-    let installed = match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
-        crate::migration_supervisor::seal_sqlite_image(&staged_plain)?;
-        crate::migration_supervisor::installed_image_token_from_sealed(
-            &staged_plain,
-            grimodex_core::SCHEMA_VERSION,
-            None,
-        )
-    })() {
-        Ok(token) => token,
-        Err(error) => {
-            drop(exclusive_lease);
-            return Err(abort_after_detach(
-                ws_state,
-                &db_path,
-                &ws_path,
+                ws_path,
+                detached_active,
                 anyhow::anyhow!(
-                    "復元候補の seal／digest 取得に失敗したため中止しました（live未置換）: {error}"
+                    "復元対象のlive DBが通常ファイルではありません: {}",
+                    db_path.display()
                 ),
             ));
         }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => {
+            drop(exclusive_lease);
+            return Err(abort_install(
+                ws_state,
+                &db_path,
+                ws_path,
+                detached_active,
+                anyhow::anyhow!("復元対象のlive DBを確認できませんでした: {error}"),
+            ));
+        }
     };
+    let (rollback_path, mut rollback_cleanup) = if live_exists {
+        let (rollback_path, mut rollback_output) = match create_unique_sidecar(&db_path, "rollback")
+        {
+            Ok(created) => created,
+            Err(error) => {
+                drop(exclusive_lease);
+                return Err(abort_install(
+                    ws_state,
+                    &db_path,
+                    ws_path,
+                    detached_active,
+                    anyhow::anyhow!("{error}"),
+                ));
+            }
+        };
+        let rollback_cleanup = CleanupPath::new(rollback_path.clone());
+        if let Err(error) = copy_path_into(&db_path, &mut rollback_output) {
+            drop(rollback_output);
+            drop(exclusive_lease);
+            return Err(abort_install(
+                ws_state,
+                &db_path,
+                ws_path,
+                detached_active,
+                anyhow::anyhow!("復元ロールバック用DBの作成に失敗しました: {error}"),
+            ));
+        }
+        if let Err(error) = rollback_output.sync_all() {
+            drop(rollback_output);
+            drop(exclusive_lease);
+            return Err(abort_install(
+                ws_state,
+                &db_path,
+                ws_path,
+                detached_active,
+                anyhow::anyhow!("復元ロールバック用DBの同期に失敗しました: {error}"),
+            ));
+        }
+        drop(rollback_output);
+        (Some(rollback_path), Some(rollback_cleanup))
+    } else {
+        (None, None)
+    };
+
+    // Seal the staged candidate and capture its digest *before* live replace so
+    // Windows (and all platforms) never need a post-replace seal just to CAS.
+    let installed =
+        match (|| -> Result<_, crate::migration_supervisor::MigrationSupervisorError> {
+            crate::migration_supervisor::seal_sqlite_image(&staged_plain)?;
+            crate::migration_supervisor::installed_image_token_from_sealed(
+                &staged_plain,
+                grimodex_core::SCHEMA_VERSION,
+                None,
+            )
+        })() {
+            Ok(token) => token,
+            Err(error) => {
+                drop(exclusive_lease);
+                return Err(abort_install(
+                    ws_state,
+                    &db_path,
+                    ws_path,
+                    detached_active,
+                    anyhow::anyhow!(
+                    "復元候補の seal／digest 取得に失敗したため中止しました（live未置換）: {error}"
+                ),
+                ));
+            }
+        };
 
     if let Err(error) = atomic_replace(&staged_plain, &db_path) {
         let primary = anyhow::anyhow!("復元DBの適用に失敗しました: {error}");
         drop(exclusive_lease);
-        if let Err(reactivate_error) = reactivate_workspace(ws_state, &db_path, &ws_path) {
-            rollback_cleanup.disarm();
+        if !detached_active {
+            return Err(primary.into());
+        }
+        if let Err(reactivate_error) = reactivate_workspace(ws_state, &db_path, ws_path) {
+            if let Some(cleanup) = rollback_cleanup.as_mut() {
+                cleanup.disarm();
+            }
+            let rollback_detail = rollback_path
+                .as_ref()
+                .map(|path| format!("ロールバック用DBは {path:?} に保持しています"))
+                .unwrap_or_else(|| "ロールバック用DBは作成されていません".to_string());
             return Err(anyhow::anyhow!(
-                "RESTORE_SESSION_LOST: {primary}; 元DBの再オープンにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: {reactivate_error}"
+                "RESTORE_SESSION_LOST: {primary}; 元DBの再オープンにも失敗しました。{rollback_detail}: {reactivate_error}"
             )
             .into());
         }
         return Err(primary.into());
     }
-    staged_cleanup.disarm();
 
-    match publish_active_workspace(ws_state, ws_path.clone(), exclusive_lease) {
+    match crate::migration_supervisor::installed_image_unchanged(&db_path, &installed) {
+        Ok(true) => {}
+        Ok(false) => {
+            drop(exclusive_lease);
+            return restore_rollback_error(
+                ws_path,
+                &db_path,
+                rollback_path.as_deref(),
+                rollback_cleanup.as_mut(),
+                &installed,
+                "RESTORE_DIGEST_CONFLICT",
+                "復元DBのdigest検証に失敗しました",
+            );
+        }
+        Err(error) => {
+            drop(exclusive_lease);
+            return restore_rollback_error(
+                ws_path,
+                &db_path,
+                rollback_path.as_deref(),
+                rollback_cleanup.as_mut(),
+                &installed,
+                "RESTORE_DIGEST_CONFLICT",
+                &format!("復元DBのdigest検証に失敗しました: {error}"),
+            );
+        }
+    }
+
+    if !options.publish_workspace_authority {
+        drop(exclusive_lease);
+        return Ok(());
+    }
+
+    match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive_lease) {
         Ok(()) => {
-            on_reopened();
+            if let Some(on_reopened) = options.on_reopened.take() {
+                on_reopened();
+            }
             Ok(())
         }
         Err(restore_error) => {
             let restore_error_msg = restore_error.to_string();
+            let Some(rollback_path) = rollback_path.as_deref() else {
+                return Err(anyhow::anyhow!(
+                    "RESTORE_SESSION_LOST: 復元DBを再オープンできず、live DB不在のためロールバック用DBもありません: restore={restore_error_msg}"
+                )
+                .into());
+            };
             match crate::migration_supervisor::rollback_if_installed_image_unchanged(
-                &ws_path,
+                ws_path,
                 &db_path,
-                &rollback_path,
+                rollback_path,
                 &installed,
                 "RESTORE_HANDOFF_CONFLICT",
             ) {
                 Ok(exclusive) => {
-                    rollback_cleanup.disarm();
-                    match publish_active_workspace(ws_state, ws_path, exclusive) {
+                    if let Some(cleanup) = rollback_cleanup.as_mut() {
+                        cleanup.disarm();
+                    }
+                    match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive) {
                         Ok(()) => Err(anyhow::anyhow!(
                             "復元DBを再オープンできなかったため元のDBへ戻しました: {restore_error_msg}"
                         )
@@ -306,13 +473,17 @@ pub fn restore_backup_core(
                 Err(conflict) => {
                     let conflict_msg = conflict.to_string();
                     if conflict_msg.contains("RESTORE_HANDOFF_CONFLICT") {
-                        rollback_cleanup.disarm();
+                        if let Some(cleanup) = rollback_cleanup.as_mut() {
+                            cleanup.disarm();
+                        }
                         Err(anyhow::anyhow!(
                             "{conflict_msg}; originalPublishError={restore_error_msg}"
                         )
                         .into())
                     } else {
-                        rollback_cleanup.disarm();
+                        if let Some(cleanup) = rollback_cleanup.as_mut() {
+                            cleanup.disarm();
+                        }
                         Err(anyhow::anyhow!(
                             "RESTORE_SESSION_LOST: 復元DBを再オープンできず、CASロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: restore={restore_error_msg}; rollback={conflict_msg}"
                         )
@@ -324,16 +495,69 @@ pub fn restore_backup_core(
     }
 }
 
+fn abort_install(
+    ws_state: &WorkspaceState,
+    db_path: &Path,
+    ws_path: &Path,
+    detached_active: bool,
+    primary: anyhow::Error,
+) -> AppError {
+    if detached_active {
+        abort_after_detach(ws_state, db_path, ws_path, primary)
+    } else {
+        primary.into()
+    }
+}
+
+fn restore_rollback_error(
+    ws_path: &Path,
+    db_path: &Path,
+    rollback_path: Option<&Path>,
+    rollback_cleanup: Option<&mut CleanupPath>,
+    installed: &crate::migration_supervisor::InstalledImageToken,
+    conflict_code: &str,
+    primary: &str,
+) -> AppResult<()> {
+    let Some(rollback_path) = rollback_path else {
+        return Err(anyhow::anyhow!(
+            "RESTORE_SESSION_LOST: {primary}; live DB不在のためロールバック用DBもありません"
+        )
+        .into());
+    };
+    match crate::migration_supervisor::rollback_if_installed_image_unchanged(
+        ws_path,
+        db_path,
+        rollback_path,
+        installed,
+        conflict_code,
+    ) {
+        Ok(exclusive) => {
+            drop(exclusive);
+            if let Some(cleanup) = rollback_cleanup {
+                cleanup.disarm();
+            }
+            Err(anyhow::anyhow!("{primary}; 元のDBへ戻しました").into())
+        }
+        Err(error) => {
+            if let Some(cleanup) = rollback_cleanup {
+                cleanup.disarm();
+            }
+            Err(anyhow::anyhow!(
+                "RESTORE_SESSION_LOST: {primary}; CASロールバックにも失敗しました。ロールバック用DBは {rollback_path:?} に保持しています: {error}"
+            )
+            .into())
+        }
+    }
+}
+
 fn publish_active_workspace(
     ws_state: &WorkspaceState,
     ws_path: PathBuf,
     exclusive: workspace_lease::WorkspaceLease,
 ) -> AppResult<()> {
-    let opened = crate::migration_supervisor::reopen_under_shared_lease_for_restore(
-        &ws_path,
-        exclusive,
-    )
-    .map_err(|error| anyhow::anyhow!("workspace shared handoff after restore: {error}"))?;
+    let opened =
+        crate::migration_supervisor::reopen_under_shared_lease_for_restore(&ws_path, exclusive)
+            .map_err(|error| anyhow::anyhow!("workspace shared handoff after restore: {error}"))?;
     if let Err(error) = opened.database.rebuild_fts_if_stale() {
         tracing::warn!("restore: fts rebuild after restore failed: {error}");
     }
@@ -431,7 +655,7 @@ fn cleanup_path_best_effort(path: &Path) {
 
 /// Reserve an unpredictable sibling path with create_new, closing the fixed
 /// name/dangling-symlink escape that existed in the legacy implementation.
-fn create_unique_sidecar(db_path: &Path, purpose: &str) -> AppResult<(PathBuf, File)> {
+pub(crate) fn create_unique_sidecar(db_path: &Path, purpose: &str) -> AppResult<(PathBuf, File)> {
     for _ in 0..16 {
         let path = sidecar(db_path, &format!(".{purpose}-{}.tmp", uuid::Uuid::new_v4()));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -460,13 +684,38 @@ fn materialize_backup(input: File, is_gz: bool, output: &mut File) -> AppResult<
     Ok(())
 }
 
+pub(crate) fn materialize_candidate_to_plain(
+    absolute_path: &Path,
+    relative_key: &str,
+    dest: &Path,
+) -> AppResult<()> {
+    let input = File::open(absolute_path).map_err(anyhow::Error::from)?;
+    let is_gz = relative_key.ends_with(".db.gz");
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .map_err(anyhow::Error::from)?;
+    if let Err(error) = materialize_backup(input, is_gz, &mut output) {
+        drop(output);
+        cleanup_path_best_effort(dest);
+        return Err(error);
+    }
+    if let Err(error) = output.sync_all() {
+        drop(output);
+        cleanup_path_best_effort(dest);
+        return Err(anyhow::anyhow!("復元DBの同期に失敗しました: {error}").into());
+    }
+    Ok(())
+}
+
 fn copy_path_into(src: &Path, output: &mut File) -> io::Result<()> {
     let mut reader = BufReader::new(File::open(src)?);
     io::copy(&mut reader, output)?;
     Ok(())
 }
 
-fn preflight_candidate(path: &Path) -> AppResult<()> {
+pub(crate) fn preflight_candidate(path: &Path) -> AppResult<()> {
     let result = (|| -> anyhow::Result<()> {
         let database = Database::new(path)?;
         database.migrate_for_restore_preflight()?;
@@ -486,19 +735,19 @@ fn preflight_candidate(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn remove_db_sidecars(db_path: &Path) -> io::Result<()> {
+pub(crate) fn remove_db_sidecars(db_path: &Path) -> io::Result<()> {
     remove_path_no_follow(&sidecar(db_path, "-wal"))?;
     remove_path_no_follow(&sidecar(db_path, "-shm"))?;
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
     std::fs::rename(staged, destination)
 }
 
 #[cfg(windows)]
-fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
 
@@ -584,7 +833,7 @@ fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool)
     Ok((file, is_gz))
 }
 
-fn verify_sqlite_ok(path: &Path) -> AppResult<()> {
+pub(crate) fn verify_sqlite_ok(path: &Path) -> AppResult<()> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| anyhow::anyhow!("バックアップを開けません: {e}"))?;
@@ -629,8 +878,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("backups")).expect("create fixture");
         let db = Database::new(&dir.join("grimodex.db")).expect("open fixture db");
         db.migrate().expect("migrate fixture db");
-        let authority = WorkspaceAuthority::from_database_for_test(db, dir.clone())
-            .expect("fixture authority");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(db, dir.clone()).expect("fixture authority");
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
@@ -906,6 +1155,31 @@ mod tests {
         std::fs::create_dir(sidecar(&db_path, "-wal")).expect("make undeletable-as-file WAL");
 
         assert!(remove_db_sidecars(&db_path).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn atomic_replace_failure_leaves_staged_file_without_copy_fallback() {
+        let dir = std::env::temp_dir().join(format!("grimodex-atomic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let staged = dir.join("staged.db");
+        let destination = dir.join("grimodex.db");
+        std::fs::write(&staged, b"new image").expect("write staged");
+        std::fs::create_dir(&destination).expect("make destination non-file");
+
+        let error = atomic_replace(&staged, &destination).expect_err("replace must fail");
+
+        assert!(
+            error.kind() == io::ErrorKind::IsADirectory
+                || error.kind() == io::ErrorKind::PermissionDenied
+                || error.kind() == io::ErrorKind::Other,
+            "unexpected error kind: {error:?}"
+        );
+        assert_eq!(
+            std::fs::read(&staged).expect("staged remains"),
+            b"new image"
+        );
+        assert!(destination.is_dir());
         let _ = std::fs::remove_dir_all(dir);
     }
 

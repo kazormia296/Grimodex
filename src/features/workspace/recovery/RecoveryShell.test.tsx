@@ -55,6 +55,9 @@ describe("RecoveryShell", () => {
     expect(
       screen.getByText(/normal workspace panels are unavailable/i),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create quarantine copy/i }),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /restore/i }));
 

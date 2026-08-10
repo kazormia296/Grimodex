@@ -189,7 +189,7 @@ export function RecoveryShell({
             onClick={handleQuarantine}
             disabled={busy}
           >
-            Quarantine live DB
+            Create quarantine copy
           </Button>
           <Button
             type="button"

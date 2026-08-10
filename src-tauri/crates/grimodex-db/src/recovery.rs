@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use uuid::Uuid;
 
-use crate::backup_restore::{list_backups_in, BackupInfo};
+use crate::backup_restore::{
+    install_staged_workspace_db, list_backups_in, materialize_candidate_to_plain,
+    preflight_candidate, verify_sqlite_ok, BackupInfo, InstallStagedOptions,
+};
 use crate::error::{AppError, AppResult};
 use crate::migration_supervisor::{
     self, MigrationSnapshotManifest, OpenMigrationInfo, WorkspaceOpenDbOutcome,
@@ -518,16 +521,9 @@ pub fn verify_candidate_record(record: &RecoveryCandidateRecord) -> AppResult<Re
             let tmp = record
                 .absolute_path
                 .with_extension(format!("verify-{}.db", Uuid::new_v4()));
-            fs::copy(&record.absolute_path, &tmp).map_err(anyhow::Error::from)?;
+            materialize_candidate_to_plain(&record.absolute_path, &record.relative_key, &tmp)?;
             let result = (|| -> AppResult<()> {
-                let db = Database::new(&tmp)?;
-                db.with_conn(|conn| {
-                    let ok: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
-                    if ok != "ok" {
-                        anyhow::bail!("RECOVERY_QUICK_CHECK_FAILED: {ok}");
-                    }
-                    Ok(())
-                })?;
+                verify_sqlite_ok(&tmp)?;
                 Ok(())
             })();
             let _ = fs::remove_file(&tmp);
@@ -544,7 +540,7 @@ pub fn preflight_restore_candidate(record: &RecoveryCandidateRecord) -> AppResul
     let tmp = record
         .absolute_path
         .with_extension(format!("preflight-{}.db", Uuid::new_v4()));
-    copy_sqlite_image(&record.absolute_path, &tmp)?;
+    materialize_candidate_to_plain(&record.absolute_path, &record.relative_key, &tmp)?;
     let result = (|| -> AppResult<()> {
         let db = Database::new(&tmp)?;
         db.migrate_for_restore_preflight()?;
@@ -635,50 +631,28 @@ pub fn restore_safe_mode_candidate(ws_state: &WorkspaceState, candidate_id: &str
     let staged = db_path.with_extension(format!("safe-restore-{}.db", Uuid::new_v4()));
     let mut staged_cleanup = StagingCleanup::new(staged.clone());
 
-    ws_state
-        .switching
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let _switching = SwitchingFlag(&ws_state.switching);
-
     // Exclusive first, then re-validate the candidate path immediately before
     // materialize so symlink/hardlink TOCTOU cannot race the copy.
     let exclusive = workspace_lease::acquire_exclusive_for_migration(&workspace_path)?;
     ensure_path_inside_workspace(&workspace_path, &absolute_path)?;
     materialize_candidate_to_plain(&absolute_path, &relative_key, &staged)?;
-    {
-        let db = Database::new(&staged)?;
-        db.migrate_for_restore_preflight()?;
-    }
-    migration_supervisor::seal_sqlite_image(&staged)
-        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+    preflight_candidate(&staged)?;
 
-    // Keep a quarantine copy of the current live image when present.
-    if db_path.exists() {
-        let quarantine_dir = workspace_path.join("backups");
-        let _ = fs::create_dir_all(&quarantine_dir);
-        let stamp = Utc::now().format("%Y%m%d-%H%M%S%3f");
-        let quarantine = quarantine_dir.join(format!("grimodex-quarantine-{stamp}.db"));
-        let _ = copy_sqlite_image(&db_path, &quarantine);
+    let result = install_staged_workspace_db(
+        ws_state,
+        &workspace_path,
+        &staged,
+        InstallStagedOptions::safe_mode(exclusive),
+    );
+    if result.is_ok() {
+        staged_cleanup.disarm();
     }
-
-    remove_sqlite_sidecars(&db_path);
-    if let Err(rename_error) = fs::rename(&staged, &db_path) {
-        fs::copy(&staged, &db_path).map_err(|e| {
-            AppError::Anyhow(anyhow::anyhow!(
-                "RECOVERY_RESTORE_REPLACE_FAILED: rename={rename_error}; copy={e}"
-            ))
-        })?;
-        let _ = fs::remove_file(&staged);
-    }
-    staged_cleanup.disarm();
-    migration_supervisor::seal_sqlite_image(&db_path)
-        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
-    drop(exclusive);
-    Ok(())
+    result
 }
 
 pub fn quarantine_live_database(ws_state: &WorkspaceState) -> AppResult<String> {
     ws_state.safe_mode.with_session(|session| {
+        let _lease = workspace_lease::try_acquire_shared(&session.workspace_path)?;
         let db_path = session.workspace_path.join("grimodex.db");
         if !db_path.exists() {
             return Err(AppError::Anyhow(anyhow::anyhow!(
@@ -724,34 +698,6 @@ pub fn export_safe_mode_diagnostics(ws_state: &WorkspaceState) -> AppResult<Stri
     })
 }
 
-fn materialize_candidate_to_plain(
-    absolute_path: &Path,
-    relative_key: &str,
-    dest: &Path,
-) -> AppResult<()> {
-    if relative_key.ends_with(".db.gz") {
-        use flate2::read::GzDecoder;
-        use std::io::copy;
-        let file = File::open(absolute_path).map_err(anyhow::Error::from)?;
-        let mut decoder = GzDecoder::new(file);
-        let mut out = File::create(dest).map_err(anyhow::Error::from)?;
-        copy(&mut decoder, &mut out).map_err(anyhow::Error::from)?;
-        out.sync_all().map_err(anyhow::Error::from)?;
-        Ok(())
-    } else {
-        copy_sqlite_image(absolute_path, dest)
-    }
-}
-
-fn remove_sqlite_sidecars(db_path: &Path) {
-    let _ = fs::remove_file(format!("{}-wal", db_path.display()));
-    let _ = fs::remove_file(format!("{}-shm", db_path.display()));
-    let wal = PathBuf::from(format!("{}-wal", db_path.display()));
-    let shm = PathBuf::from(format!("{}-shm", db_path.display()));
-    let _ = fs::remove_file(wal);
-    let _ = fs::remove_file(shm);
-}
-
 struct StagingCleanup {
     path: PathBuf,
     armed: bool,
@@ -770,22 +716,22 @@ impl Drop for StagingCleanup {
     fn drop(&mut self) {
         if self.armed {
             let _ = fs::remove_file(&self.path);
-            remove_sqlite_sidecars(&self.path);
+            let _ = crate::backup_restore::remove_db_sidecars(&self.path);
         }
-    }
-}
-
-struct SwitchingFlag<'a>(&'a std::sync::atomic::AtomicBool);
-
-impl Drop for SwitchingFlag<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::open::{open_workspace_sync_traced, NativeWorkspaceOpenTrace};
+    use crate::state::GlobalSettingsPath;
+    use crate::state::WorkspaceState;
+    use crate::workspace_lease;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_ws(label: &str) -> PathBuf {
@@ -796,6 +742,75 @@ mod tests {
         let path = std::env::temp_dir().join(format!("grimodex-recovery-{label}-{nanos}"));
         fs::create_dir_all(path.join("backups/migrations")).expect("mkdir");
         path
+    }
+
+    fn safe_mode_state(ws: &Path) -> WorkspaceState {
+        let state = WorkspaceState {
+            inner: Mutex::new(None),
+            safe_mode: SafeModeState::default(),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let session = SafeModeSession::from_workspace(
+            ws.to_path_buf(),
+            "test safe mode".to_string(),
+            Some("TEST_SAFE_MODE".to_string()),
+            None,
+        )
+        .expect("safe mode session");
+        state.safe_mode.enter(session).expect("enter safe mode");
+        state
+    }
+
+    fn create_migrated_db(path: &Path, marker: &str) {
+        let db = Database::new(path).expect("db");
+        db.migrate().expect("migrate");
+        db.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('recovery-test', ?)",
+            &[serde_json::Value::String(marker.to_string())],
+            "run",
+        )
+        .expect("set marker");
+    }
+
+    fn marker_at(path: &Path) -> String {
+        let db = Database::new(path).expect("db");
+        let rows = db
+            .execute(
+                "SELECT value FROM app_settings WHERE key = 'recovery-test'",
+                &[],
+                "get",
+            )
+            .expect("read marker");
+        rows[0]["value"].as_str().unwrap_or_default().to_string()
+    }
+
+    fn gzip_file(source: &Path, dest: &Path) {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let bytes = fs::read(source).expect("read source db");
+        encoder.write_all(&bytes).expect("gzip write");
+        fs::write(dest, encoder.finish().expect("gzip finish")).expect("write gzip");
+    }
+
+    fn candidate_id_for(state: &WorkspaceState, suffix: &str) -> String {
+        state
+            .safe_mode
+            .with_session(|session| {
+                session
+                    .candidates()
+                    .into_iter()
+                    .find(|candidate| {
+                        session
+                            .resolve(&candidate.id)
+                            .map(|record| record.relative_key.ends_with(suffix))
+                            .unwrap_or(false)
+                    })
+                    .map(|candidate| candidate.id)
+                    .ok_or_else(|| {
+                        AppError::Anyhow(anyhow::anyhow!("candidate not found: {suffix}"))
+                    })
+            })
+            .expect("candidate id")
     }
 
     #[test]
@@ -850,6 +865,92 @@ mod tests {
             err.to_string().contains("RECOVERY_CANDIDATE_SYMLINK"),
             "err={err}"
         );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn verifies_plain_backup_candidate_via_materialized_sqlite() {
+        let ws = temp_ws("verify-plain");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "plain");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db");
+
+        let verified =
+            verify_safe_mode_candidate(&state, &candidate_id).expect("plain candidate verifies");
+
+        assert_eq!(verified.checksum_status, ChecksumStatus::Unverified);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn verifies_gzip_backup_candidate_via_materialized_sqlite() {
+        let ws = temp_ws("verify-gzip");
+        let plain = ws.join("source.db");
+        create_migrated_db(&plain, "gzip");
+        gzip_file(&plain, &ws.join("backups/grimodex-auto.db.gz"));
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db.gz");
+
+        let verified =
+            verify_safe_mode_candidate(&state, &candidate_id).expect("gzip candidate verifies");
+
+        assert_eq!(verified.checksum_status, ChecksumStatus::Unverified);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn safe_mode_restore_aborts_on_live_sidecar_remove_failure_before_replace() {
+        let ws = temp_ws("sidecar-abort");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db");
+        fs::create_dir(ws.join("grimodex.db-wal")).expect("make undeletable sidecar");
+
+        let error = restore_safe_mode_candidate(&state, &candidate_id)
+            .expect_err("sidecar removal failure must abort restore");
+
+        assert!(
+            error.to_string().contains("sidecar"),
+            "unexpected error: {error}"
+        );
+        fs::remove_dir(ws.join("grimodex.db-wal")).expect("remove sidecar dir");
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "live");
+        assert!(state.safe_mode.is_active());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn safe_mode_restore_of_automatic_backup_reopens_ready() {
+        let ws = temp_ws("restore-ready");
+        create_migrated_db(&ws.join("grimodex.db"), "live");
+        create_migrated_db(&ws.join("backups/grimodex-auto.db"), "backup");
+        let state = safe_mode_state(&ws);
+        let candidate_id = candidate_id_for(&state, ".db");
+
+        restore_safe_mode_candidate(&state, &candidate_id).expect("restore safe mode candidate");
+
+        assert!(state.safe_mode.is_active());
+        let gs_path = GlobalSettingsPath {
+            path: ws.join("global-settings.json"),
+            write_lock: Mutex::new(()),
+        };
+        let mut trace = NativeWorkspaceOpenTrace::new(false);
+        let mut on_swapped = |_trace: &mut NativeWorkspaceOpenTrace| {};
+        let outcome = open_workspace_sync_traced(
+            &state,
+            &gs_path,
+            ws.to_str().expect("utf8 workspace"),
+            &mut trace,
+            &mut on_swapped,
+        )
+        .expect("reopen workspace");
+
+        assert!(outcome.is_authority_published());
+        assert!(!state.safe_mode.is_active());
+        assert_eq!(marker_at(&ws.join("grimodex.db")), "backup");
+        let shared = workspace_lease::try_acquire_shared(&ws).expect("shared lease available");
+        drop(shared);
         let _ = fs::remove_dir_all(&ws);
     }
 }
