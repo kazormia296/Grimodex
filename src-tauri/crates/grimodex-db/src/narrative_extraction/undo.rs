@@ -1,14 +1,21 @@
-//! Atomic undo / redo for narrative apply commits.
+//! Atomic undo / redo for narrative apply commits (Chronicle + Codex).
 
 use chrono::Utc;
 use rusqlite::params;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::codex_undo::{
+    delete_codex_relation_checked, reapply_codex_entry_create_snapshot,
+    reapply_codex_relation_snapshot, restore_codex_entry_patch, undo_created_codex_entry,
+};
 use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
 use super::models::UndoCommitPayload;
 use super::task_leases::with_immediate_transaction;
-use crate::agent_writes::{apply_event_snapshot, collect_event_snapshot, delete_event_cascade};
+use crate::agent_writes::{
+    apply_event_snapshot, collect_codex_entry_snapshot, collect_event_snapshot,
+    delete_event_cascade,
+};
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::Database;
 
@@ -58,42 +65,15 @@ fn mutate_commit(
                         "NEX_COMMIT_NOT_UNDOABLE: status is '{}'",
                         commit.status
                     );
-                    // Refuse if any event diverged from the commit-time snapshot.
+
+                    // Preflight: refuse if any committed entity diverged.
                     for entity in &entities {
-                        let entity_id = entity_id(entity)?;
-                        let expected = entity
-                            .get("snapshot")
-                            .cloned()
-                            .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
-                        let current = collect_event_snapshot(conn, entity_id)?;
-                        if normalize_snapshot_for_compare(&current)
-                            != normalize_snapshot_for_compare(&expected)
-                        {
-                            anyhow::bail!(
-                                "NEX_COMMIT_EVENT_EDITED: event '{entity_id}' was modified after commit"
-                            );
-                        }
+                        preflight_undo_entity(conn, &payload.project_id, entity)?;
                     }
 
+                    // Reverse order: relations first, then entry delete/patch restore, then events.
                     for entity in entities.iter().rev() {
-                        let entity_id = entity_id(entity)?;
-                        let version = entity
-                            .get("version")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(1);
-                        // Current version may have advanced only via redo; use live version.
-                        let live_version: i64 = conn.query_row(
-                            "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
-                            params![entity_id, payload.project_id],
-                            |row| row.get(0),
-                        )?;
-                        delete_event_cascade(
-                            conn,
-                            &payload.project_id,
-                            entity_id,
-                            Some(live_version),
-                        )?;
-                        let _ = version;
+                        undo_one_entity(conn, &payload.project_id, entity, &now)?;
                     }
 
                     let change_uid = Uuid::new_v4().to_string();
@@ -135,28 +115,106 @@ fn mutate_commit(
 
                     let mut restored = Vec::new();
                     for entity in &entities {
+                        let entity_kind = entity_kind(entity)?;
                         let entity_id = entity_id(entity)?;
                         let snapshot = entity
                             .get("snapshot")
                             .cloned()
                             .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
-                        let previous_version = entity
-                            .get("version")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(1);
-                        // Do not reuse the original version generation.
-                        let replay_version = previous_version
-                            .checked_add(1)
-                            .ok_or_else(|| anyhow::anyhow!("event version overflow during redo"))?;
-                        apply_event_snapshot(
-                            conn,
-                            &payload.project_id,
-                            &snapshot,
-                            Some(replay_version),
-                            true,
-                        )?;
+                        let replay_version = match entity_kind {
+                            "event" => {
+                                let previous_version = entity
+                                    .get("version")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(1);
+                                let replay_version = previous_version
+                                    .checked_add(1)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("event version overflow during redo")
+                                    })?;
+                                apply_event_snapshot(
+                                    conn,
+                                    &payload.project_id,
+                                    &snapshot,
+                                    Some(replay_version),
+                                    true,
+                                )?;
+                                replay_version
+                            }
+                            "codex_entry" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                if op_kind == "patch" {
+                                    // Redo of patch: re-apply after snapshot fields with OCC.
+                                    let after_version = entity
+                                        .get("version")
+                                        .and_then(Value::as_i64)
+                                        .unwrap_or(1);
+                                    // Current should be undo-restored version (after_version + 1 typically).
+                                    let live_version: i64 = conn.query_row(
+                                        "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+                                        params![entity_id, payload.project_id],
+                                        |row| row.get(0),
+                                    )?;
+                                    let aliases = snapshot.get("aliases").cloned().unwrap_or(Value::Null);
+                                    let summary = snapshot
+                                        .get("summary")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let aliases_sql = match &aliases {
+                                        Value::Null => None,
+                                        Value::String(s) => Some(s.clone()),
+                                        other => Some(other.to_string()),
+                                    };
+                                    let next = live_version
+                                        .checked_add(1)
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("codex entry version overflow during redo")
+                                        })?;
+                                    let updated = conn.execute(
+                                        "UPDATE codex_entries
+                                            SET aliases = ?1,
+                                                summary = ?2,
+                                                version = ?3,
+                                                updated_at = ?4
+                                          WHERE id = ?5 AND project_id = ?6 AND version = ?7",
+                                        params![
+                                            aliases_sql,
+                                            summary,
+                                            next,
+                                            now,
+                                            entity_id,
+                                            payload.project_id,
+                                            live_version
+                                        ],
+                                    )?;
+                                    anyhow::ensure!(
+                                        updated == 1,
+                                        "NEX_COMMIT_ENTRY_EDITED: entry '{entity_id}' redo patch conflict"
+                                    );
+                                    let _ = after_version;
+                                    next
+                                } else {
+                                    reapply_codex_entry_create_snapshot(
+                                        conn,
+                                        &payload.project_id,
+                                        &snapshot,
+                                        &now,
+                                    )?
+                                }
+                            }
+                            "codex_relation" => reapply_codex_relation_snapshot(
+                                conn,
+                                &payload.project_id,
+                                &snapshot,
+                                &now,
+                            )?,
+                            other => anyhow::bail!("unsupported journal entity kind '{other}'"),
+                        };
                         restored.push(json!({
-                            "entityKind": "event",
+                            "entityKind": entity_kind,
                             "entityId": entity_id,
                             "version": replay_version,
                         }));
@@ -191,6 +249,138 @@ fn mutate_commit(
             }
         })
     })
+}
+
+fn preflight_undo_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity: &Value,
+) -> anyhow::Result<()> {
+    let entity_kind = entity_kind(entity)?;
+    let entity_id = entity_id(entity)?;
+    match entity_kind {
+        "event" => {
+            let expected = entity
+                .get("snapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+            let current = collect_event_snapshot(conn, entity_id)?;
+            if normalize_snapshot_for_compare(&current) != normalize_snapshot_for_compare(&expected)
+            {
+                anyhow::bail!("NEX_COMMIT_EVENT_EDITED: event '{entity_id}' was modified after commit");
+            }
+        }
+        "codex_entry" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1);
+                let live_version: i64 = conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+                    params![entity_id, project_id],
+                    |row| row.get(0),
+                )?;
+                if live_version != expected_version {
+                    anyhow::bail!(
+                        "NEX_COMMIT_ENTRY_EDITED: entry '{entity_id}' was modified after commit"
+                    );
+                }
+            } else {
+                let expected = entity
+                    .get("snapshot")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+                let current = collect_codex_entry_snapshot(conn, entity_id)?;
+                let expected_version = expected.get("version").and_then(Value::as_i64);
+                let current_version = current.get("version").and_then(Value::as_i64);
+                if expected_version != current_version {
+                    anyhow::bail!(
+                        "NEX_COMMIT_ENTRY_EDITED: entry '{entity_id}' was modified after commit"
+                    );
+                }
+            }
+        }
+        "codex_relation" => {
+            let expected = entity
+                .get("snapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+            let current = super::codex_operations::collect_codex_relation_snapshot(conn, entity_id)?;
+            if current.get("version") != expected.get("version")
+                || current.get("semanticKey") != expected.get("semanticKey")
+            {
+                anyhow::bail!(
+                    "NEX_COMMIT_RELATION_EDITED: relation '{entity_id}' was modified after commit"
+                );
+            }
+        }
+        other => anyhow::bail!("unsupported journal entity kind '{other}'"),
+    }
+    Ok(())
+}
+
+fn undo_one_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity: &Value,
+    now: &str,
+) -> anyhow::Result<()> {
+    let entity_kind = entity_kind(entity)?;
+    let entity_id = entity_id(entity)?;
+    match entity_kind {
+        "event" => {
+            let live_version: i64 = conn.query_row(
+                "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+                params![entity_id, project_id],
+                |row| row.get(0),
+            )?;
+            delete_event_cascade(conn, project_id, entity_id, Some(live_version))?;
+        }
+        "codex_relation" => {
+            let snapshot = entity
+                .get("snapshot")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
+            delete_codex_relation_checked(conn, project_id, entity_id, &snapshot)?;
+        }
+        "codex_entry" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let before = entity
+                    .get("beforeSnapshot")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("patch journal missing beforeSnapshot"))?;
+                let expected_after_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1);
+                restore_codex_entry_patch(
+                    conn,
+                    project_id,
+                    entity_id,
+                    &before,
+                    expected_after_version,
+                    now,
+                )?;
+            } else {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1);
+                undo_created_codex_entry(conn, project_id, entity_id, expected_version)?;
+            }
+        }
+        other => anyhow::bail!("unsupported journal entity kind '{other}'"),
+    }
+    Ok(())
 }
 
 fn resolve_commit(
@@ -237,9 +427,14 @@ fn entity_id(entity: &Value) -> anyhow::Result<&str> {
         .ok_or_else(|| anyhow::anyhow!("journal entity missing entityId"))
 }
 
+fn entity_kind(entity: &Value) -> anyhow::Result<&str> {
+    entity
+        .get("entityKind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("journal entity missing entityKind"))
+}
+
 fn normalize_snapshot_for_compare(value: &Value) -> Value {
-    // Ignore updatedAt / createdAt drift if any writer touched timestamps without semantic edits.
-    // Human edits still change title/note/detail/participants/links/version.
     let mut cloned = value.clone();
     if let Some(event_data) = cloned.get_mut("eventData").and_then(Value::as_object_mut) {
         event_data.remove("updatedAt");

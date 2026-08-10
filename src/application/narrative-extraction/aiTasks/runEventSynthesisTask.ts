@@ -95,7 +95,7 @@ export async function runEventSynthesisTask(
     ov.endpointId,
   );
   void recordAiUsage({
-    surface: "chronicle_extract",
+    surface: "narrative_event_synthesize",
     model: ov.model,
     provider: ov.provider,
     tokensIn: response.inputTokens,

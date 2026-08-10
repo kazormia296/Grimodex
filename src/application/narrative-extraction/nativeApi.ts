@@ -172,6 +172,12 @@ export interface CommitOperation {
   readonly revisionId?: string;
 }
 
+export interface EntityBindingSeed {
+  readonly narrativeEntityId: string;
+  readonly codexEntryId: string;
+  readonly source?: "created" | "existing";
+}
+
 export interface PrepareCommitPayload {
   readonly projectId: string;
   readonly runId: string;
@@ -183,6 +189,7 @@ export interface PrepareCommitPayload {
   readonly operations: readonly CommitOperation[];
   readonly applications?: readonly CommitApplicationRef[];
   readonly expectedTailOrdinal?: string | null;
+  readonly entityBindings?: readonly EntityBindingSeed[];
 }
 
 export type ApplyCommitPayload = PrepareCommitPayload;
@@ -209,6 +216,16 @@ export interface ApplyCommitResult {
     readonly proposalId?: string | null;
     readonly revisionId?: string | null;
   }[];
+  readonly entityBindings?: Readonly<
+    Record<
+      string,
+      {
+        readonly narrativeEntityId: string;
+        readonly codexEntryId: string;
+        readonly source: string;
+      }
+    >
+  >;
   readonly idempotentReplay?: boolean;
 }
 

@@ -1,9 +1,10 @@
 //! Read-only compatibility probes shared by desktop workspace open and MCP.
 //!
 //! Historical checkpoints cover the live-comment/audit repairs in v3,
-//! durable Detail semantic bindings in v4, and Calendar OCC in v5. The current
-//! checkpoint extends them with Narrative Extraction persistence tables. These
-//! probes deliberately avoid exact whole-schema comparison because legitimate
+//! durable Detail semantic bindings in v4, Calendar OCC in v5, and Narrative
+//! Extraction persistence in v6. The current checkpoint extends them with
+//! Codex relation directionality / semantic_key columns. These probes
+//! deliberately avoid exact whole-schema comparison because legitimate
 //! upgraded databases can differ from fresh databases in column order and
 //! normalized DDL while remaining compatible.
 
@@ -308,16 +309,45 @@ pub fn has_v5_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     }))
 }
 
-/// Whether the physical schema satisfies the checkpoint represented by the
-/// current workspace version. Version 6 adds Narrative Extraction persistence
-/// tables on top of every v5 invariant.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 6 || !has_v5_checkpoint_invariants(conn)? {
+/// Whether the physical schema satisfies the historical v6 checkpoint.
+/// Version 6 adds Narrative Extraction persistence tables on top of every v5
+/// invariant.
+pub fn has_v6_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v5_checkpoint_invariants(conn)? {
         return Ok(false);
     }
     Ok(table_exists(conn, "narrative_extraction_runs")?
         && table_exists(conn, "narrative_proposals")?
         && table_exists(conn, "narrative_apply_commits")?)
+}
+
+/// Whether the physical schema satisfies the checkpoint represented by the
+/// current workspace version. Version 7 adds Codex relation directionality,
+/// inverse_label, semantic_key, and version on top of every v6 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 7 || !has_v6_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_relations")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "codex_relations")?;
+    let has_directionality = columns.iter().any(|column| {
+        column.name == "directionality"
+            && column.declared_type == "TEXT"
+            && column.not_null
+    });
+    let has_inverse_label = columns.iter().any(|column| column.name == "inverse_label");
+    let has_semantic_key = columns.iter().any(|column| {
+        column.name == "semantic_key" && column.declared_type == "TEXT" && column.not_null
+    });
+    let has_version = columns.iter().any(|column| {
+        column.name == "version"
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("1")
+    });
+    Ok(has_directionality && has_inverse_label && has_semantic_key && has_version)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
