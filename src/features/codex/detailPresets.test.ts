@@ -48,6 +48,15 @@ function allPresetLists(): ReadonlyArray<readonly DetailFieldPreset[]> {
   return [...Object.values(BASE_DETAIL_PRESETS), ...genreLists];
 }
 
+function findPreset(
+  fields: readonly DetailFieldPreset[],
+  name: string,
+): DetailFieldPreset {
+  const field = fields.find((candidate) => candidate.name === name);
+  if (!field) throw new Error(`Missing preset field: ${name}`);
+  return field;
+}
+
 describe("detailPresets registry", () => {
   it("has a non-empty base set for every builtin type", () => {
     for (const slug of BUILTIN_SLUGS) {
@@ -104,6 +113,47 @@ describe("detailPresets registry", () => {
       }
     }
   });
+
+  it("attaches semantic metadata to the three canonical character facets", () => {
+    expect(findPreset(BASE_DETAIL_PRESETS.character, "役割").semantic).toEqual({
+      facetKey: "role.current",
+      projectionKind: "enum",
+      temporalPolicy: "base-and-phase",
+    });
+    expect(findPreset(BASE_DETAIL_PRESETS.character, "年齢").semantic).toEqual({
+      facetKey: "identity.age",
+      projectionKind: "scalar-text",
+      temporalPolicy: "derived",
+    });
+    expect(
+      findPreset(BASE_DETAIL_PRESETS.character, "動機・目的").semantic,
+    ).toEqual({
+      facetKey: "goal.active",
+      projectionKind: "summary-text",
+      temporalPolicy: "phase-on-durable-change",
+    });
+  });
+
+  it("keeps every semantic projection compatible with its preset field type", () => {
+    for (const list of [
+      ...allPresetLists(),
+      ...Object.values(BASE_DETAIL_PRESETS_EN),
+      ...Object.values(GENRE_DETAIL_PRESETS_EN).flatMap((byType) =>
+        byType ? Object.values(byType) : [],
+      ),
+    ]) {
+      for (const field of list) {
+        if (!field.semantic) continue;
+        if (field.fieldType === "dropdown") {
+          expect(field.semantic.projectionKind).toBe("enum");
+        } else {
+          expect(["scalar-text", "summary-text"]).toContain(
+            field.semantic.projectionKind,
+          );
+        }
+      }
+    }
+  });
 });
 
 describe("English presets (en projects)", () => {
@@ -142,6 +192,19 @@ describe("English presets (en projects)", () => {
       for (const slug of Object.keys(ja)) {
         expect(en[slug]?.length).toBe(ja[slug]?.length);
       }
+    }
+  });
+
+  it("mirrors semantic metadata across translated fields", () => {
+    const pairs = [
+      ["役割", "Role"],
+      ["年齢", "Age"],
+      ["動機・目的", "Motivation & goals"],
+    ] as const;
+    for (const [jaName, enName] of pairs) {
+      expect(
+        findPreset(BASE_DETAIL_PRESETS_EN.character, enName).semantic,
+      ).toEqual(findPreset(BASE_DETAIL_PRESETS.character, jaName).semantic);
     }
   });
 
@@ -284,6 +347,9 @@ describe("applyDetailPreset", () => {
       expect(data.projectId).toBe("proj-1");
       expect(data.typeSlug).toBe("character");
       expect(data.id).toBeTruthy();
+      // PR1 only describes semantics. Existing Definition writes stay on the
+      // legacy payload until a later transactional Definition+Binding writer.
+      expect(data).not.toHaveProperty("semantic");
     }
   });
 

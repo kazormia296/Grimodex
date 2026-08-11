@@ -50,6 +50,9 @@ interface BridgeUnderTest {
       content: string;
     } | null>;
   };
+  panelWindow: {
+    existsByLabel(label: string): Promise<boolean>;
+  };
   windowControls: {
     toggleFullscreen(): Promise<boolean>;
     isFullscreen(): Promise<boolean>;
@@ -83,6 +86,18 @@ describe("window fullscreen bridge", () => {
       IPC.windowControl,
       "isFullscreen",
     );
+  });
+});
+
+describe("panel window bridge", () => {
+  it("maps the read-only existence probe onto its dedicated channel", async () => {
+    const bridge = await loadPreload();
+    mocks.invoke.mockResolvedValueOnce({ ok: true, value: true });
+
+    await expect(
+      bridge.panelWindow.existsByLabel("panel-scenes"),
+    ).resolves.toBe(true);
+    expect(mocks.invoke).toHaveBeenCalledWith(IPC.panelExists, "panel-scenes");
   });
 });
 

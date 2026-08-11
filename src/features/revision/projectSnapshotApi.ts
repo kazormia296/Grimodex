@@ -18,6 +18,7 @@ import {
   type EntityBaselineRef,
 } from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 import {
   emptySkipReport,
   fullRestoreScopeSet,
@@ -455,6 +456,9 @@ async function restoreStructural(
     for (const row of auxByScope.get("codex_detail_definitions") ?? []) {
       pushStmt(buildInsert("codex_detail_definitions", row));
     }
+    for (const row of auxByScope.get("codex_detail_semantic_bindings") ?? []) {
+      pushStmt(buildInsert("codex_detail_semantic_bindings", row));
+    }
     for (const row of auxByScope.get("codex_entry_tags") ?? []) {
       pushStmt(buildInsert("codex_entry_tags", row));
     }
@@ -658,7 +662,10 @@ async function restoreStructural(
       pushStmt(buildInsert("event_relations", row));
     }
     for (const row of auxByScope.get("project_calendar") ?? []) {
-      pushStmt(buildInsert("project_calendar", row));
+      // The restore backend replaces this placeholder with a generation
+      // derived from trusted live/snapshot DB state. Snapshot versions are
+      // history, not valid write tokens for the restored Calendar.
+      pushStmt(buildInsert("project_calendar", { ...row, version: 0 }));
     }
   }
 
@@ -951,6 +958,16 @@ async function recordRestoreAndRebaseline(
 }
 
 export async function restoreProjectSnapshot(
+  snapshotId: string,
+  snapshotName: string,
+  options: RestoreOptions = {},
+): Promise<RestoreResult> {
+  return runTreeTopologyMutation(() =>
+    restoreProjectSnapshotWithAuthority(snapshotId, snapshotName, options),
+  );
+}
+
+async function restoreProjectSnapshotWithAuthority(
   snapshotId: string,
   snapshotName: string,
   options: RestoreOptions = {},

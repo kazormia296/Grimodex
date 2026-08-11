@@ -241,19 +241,35 @@ function analyzeFile(filePath, activeTables, protectedIdents) {
 export function validateNarrativeWriters({
   repoRoot = REPO_ROOT,
   registryPath = REGISTRY_PATH,
+  includeDeferred = false,
 } = {}) {
   const registry = JSON.parse(readFileSync(registryPath, "utf8"));
   const active = registry.filter((entry) => entry.enforcement === "active");
   const deferred = registry.filter((entry) => entry.enforcement === "deferred");
   const files = collectScanFiles(repoRoot);
+  const scanEntries = includeDeferred ? [...active, ...deferred] : active;
   const activeTables = active.map((entry) => entry.table);
-  const protectedIdents = protectedIdentifiersForTables(activeTables);
-  const tableToEntry = new Map(active.map((entry) => [entry.table, entry]));
+  const scanTables = scanEntries.map((entry) => entry.table);
+  const protectedIdents = protectedIdentifiersForTables(scanTables);
+  const tableToEntry = new Map(scanEntries.map((entry) => [entry.table, entry]));
   const violations = [];
+  /** @type {Map<string, { aggregate: string, table: string, enforcement: string, nativeWriter: string, legacyWriters: Set<string> }>} */
+  const inventoryByTable = new Map();
+
+  for (const entry of registry) {
+    inventoryByTable.set(entry.table, {
+      aggregate: entry.aggregate ?? entry.writer ?? entry.table,
+      table: entry.table,
+      enforcement: entry.enforcement,
+      nativeWriter: entry.writer ?? entry.nativeWriter ?? null,
+      legacyWriters: new Set(),
+    });
+  }
 
   for (const file of files) {
-    const { drizzleHits, sqlHits } = analyzeFile(file, activeTables, protectedIdents);
+    const { drizzleHits, sqlHits } = analyzeFile(file, scanTables, protectedIdents);
     const hitTables = new Set();
+    const relative = path.relative(repoRoot, file);
 
     for (const ident of drizzleHits) {
       for (const [table, idents] of Object.entries(TABLE_TO_DRIZZLE_IDENTIFIERS)) {
@@ -271,6 +287,10 @@ export function validateNarrativeWriters({
 
     for (const table of hitTables) {
       const entry = tableToEntry.get(table);
+      const inventory = inventoryByTable.get(table);
+      if (inventory) inventory.legacyWriters.add(relative);
+      // Active violations fail the gate; deferred are inventory-only unless required.
+      if (entry.enforcement !== "active") continue;
       const identifiers =
         TABLE_TO_DRIZZLE_IDENTIFIERS[table] ?? [table];
       const matchedIdents = [
@@ -278,7 +298,7 @@ export function validateNarrativeWriters({
         ...sqlHits.filter((hit) => hit === table),
       ];
       violations.push({
-        file: path.relative(repoRoot, file),
+        file: relative,
         table,
         writer: entry.writer,
         identifiers: matchedIdents.length > 0 ? matchedIdents : identifiers,
@@ -286,16 +306,71 @@ export function validateNarrativeWriters({
     }
   }
 
+  const inventory = [...inventoryByTable.values()].map((entry) => ({
+    aggregate: entry.aggregate,
+    table: entry.table,
+    enforcement: entry.enforcement,
+    nativeWriter: entry.nativeWriter,
+    legacyWriters: [...entry.legacyWriters].sort(),
+  }));
+
   return {
     activeCount: active.length,
     deferredCount: deferred.length,
     scannedFiles: files.length,
     violations,
+    inventory,
+  };
+}
+
+function parseArgs(argv) {
+  return {
+    json: argv.includes("--json"),
+    reportDeferred: argv.includes("--report-deferred"),
+    requireNoDeferred: argv.includes("--require-no-deferred"),
   };
 }
 
 function main() {
-  const result = validateNarrativeWriters();
+  const args = parseArgs(process.argv.slice(2));
+  const result = validateNarrativeWriters({
+    includeDeferred: args.reportDeferred || args.json || args.requireNoDeferred,
+  });
+
+  if (args.json) {
+    console.log(
+      JSON.stringify(
+        {
+          activeCount: result.activeCount,
+          deferredCount: result.deferredCount,
+          scannedFiles: result.scannedFiles,
+          violations: result.violations,
+          inventory: result.inventory,
+        },
+        null,
+        2,
+      ),
+    );
+  } else if (args.reportDeferred) {
+    const deferredInventory = result.inventory.filter(
+      (entry) => entry.enforcement === "deferred",
+    );
+    for (const entry of deferredInventory) {
+      console.log(
+        JSON.stringify({
+          aggregate: entry.aggregate,
+          table: entry.table,
+          legacyWriters: entry.legacyWriters,
+          nativeWriter: entry.nativeWriter,
+          enforcement: entry.enforcement,
+        }),
+      );
+    }
+    console.log(
+      `validate-narrative-writers: deferred inventory (${deferredInventory.length} tables, scanned=${result.scannedFiles})`,
+    );
+  }
+
   if (result.violations.length > 0) {
     console.error(
       "Active protected Narrative writers still have production Drizzle/SQL mutations:",
@@ -308,9 +383,20 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  console.log(
-    `validate-narrative-writers: ok (active=${result.activeCount}, deferred=${result.deferredCount}, scanned=${result.scannedFiles})`,
-  );
+
+  if (args.requireNoDeferred && result.deferredCount > 0) {
+    console.error(
+      `validate-narrative-writers: expected deferred=0, found ${result.deferredCount}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!args.json && !args.reportDeferred) {
+    console.log(
+      `validate-narrative-writers: ok (active=${result.activeCount}, deferred=${result.deferredCount}, scanned=${result.scannedFiles})`,
+    );
+  }
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

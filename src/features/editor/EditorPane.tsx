@@ -2817,6 +2817,10 @@ export function EditorPane({
 
   useQuiescentDraftParticipant({
     id: `editor-title:${titleDocumentIdentity}`,
+    scope:
+      titleDocumentKey?.kind === "tree"
+        ? { kind: "tree-node", entityId: titleDocumentKey.id }
+        : undefined,
     enabled: titleEditingCurrentDocument,
     isDirty: () => titleController.dirty,
     flush: handleTitleSave,

@@ -32,8 +32,19 @@ test("package scripts expose one canonical quality workflow", async () => {
     packageJson.scripts["eval:impact"],
     "node scripts/quality/impact-map.mjs",
   );
+  assert.match(packageJson.scripts["eval:narrative"], /narrative-extraction/);
+  assert.match(
+    packageJson.scripts["eval:narrative"],
+    /ChronicleCalendarPopover\.test\.tsx/,
+  );
+  assert.match(
+    packageJson.scripts["eval:narrative"],
+    /ChronicleToolbar\.test\.tsx/,
+  );
+  assert.match(packageJson.scripts["eval:narrative:live"], /chronicleLegacy/);
   assert.match(packageJson.scripts["verify:quality"], /test:quality/);
   assert.match(packageJson.scripts["verify:quality"], /eval:fixtures/);
+  assert.match(packageJson.scripts["verify:quality"], /eval:narrative/);
 });
 
 test("CI runs the diff gate with full history and selected light suites", async () => {
@@ -189,6 +200,12 @@ test("the Iron Laws carry stable IDs used by the machine-readable manifest", asy
     "GDX-POLICY-001",
     "GDX-GROUND-001",
     "GDX-ARTIFACT-001",
+    "GDX-NARR-EVAL-001",
+    "GDX-NARR-EVIDENCE-001",
+    "GDX-NARR-SEMANTIC-001",
+    "GDX-NARR-COVERAGE-001",
+    "GDX-NARR-DETAIL-001",
+    "GDX-NARR-TEMPORAL-001",
     "GDX-ISOLATION-001",
     "GDX-TRACE-001",
   ];

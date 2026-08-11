@@ -344,6 +344,7 @@ function TreeNodeItemImpl({
 
   useQuiescentDraftParticipant({
     id: `tree-title:${node.id}`,
+    scope: { kind: "tree-node", entityId: node.id },
     enabled: isEditing,
     isDirty: () => editingRef.current && titleController.dirty,
     flush: finishEdit,

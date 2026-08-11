@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::Database;
 
-enum ConvergedV2Finalize {
+enum ConvergedPreviousFinalize {
     Finalized,
     Busy,
     NeedsFullMigration,
@@ -41,11 +41,13 @@ impl Database {
         );
         if !force_full {
             if current == SCHEMA_VERSION {
-                // Additive tables introduced after a marker must still be present
-                // before the healthy read-only fast path returns.
-                if !Self::has_editor_stickies_table(&conn)?
-                    || !grimodex_core::workspace_schema::has_v4_checkpoint_invariants(&conn)?
-                {
+                // A current marker is not sufficient when an interrupted or
+                // prerelease migration left required physical objects absent.
+                // The checkpoint is read-only, so a healthy workspace retains
+                // the non-blocking open path.
+                if !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                    &conn,
+                )? {
                     // Fall through to the idempotent DDL below.
                 } else {
                     // Crash recovery is an open-time operational invariant, not a
@@ -58,26 +60,26 @@ impl Database {
             }
 
             if current == grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
-                && grimodex_core::workspace_schema::is_converged_v2_workspace_schema(&conn)?
+                && grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    &conn,
+                )?
             {
-                // Version 3 introduced the read-only open fast path, not new
-                // DDL. A v2 database that already satisfies every post-v2
-                // invariant must not replay the full idempotent migration just
-                // to write the marker. Finalization rechecks the invariant
-                // under a zero-wait write reservation so an older v2 process
-                // cannot add unrepaired data between the probe and the stamp.
-                // If another writer is active, retain v2 and let a later open
-                // retry instead of blocking input-ready.
+                // The immediately previous marker may already carry every
+                // current physical invariant after a prerelease/interrupted
+                // marker update. Avoid replaying the full migration merely to
+                // advance the marker. Finalization rechecks the invariant under
+                // a zero-wait write reservation so an older process cannot
+                // mutate the schema between the probe and stamp.
                 let recovery_required = Self::has_interrupted_post_effect_runs(&conn)?;
-                match Self::try_finalize_converged_v2_without_wait(&conn, SCHEMA_VERSION)? {
-                    ConvergedV2Finalize::Finalized => return Ok(()),
-                    ConvergedV2Finalize::Busy if !recovery_required => return Ok(()),
-                    ConvergedV2Finalize::Busy => {
+                match Self::try_finalize_previous_schema_without_wait(&conn, SCHEMA_VERSION)? {
+                    ConvergedPreviousFinalize::Finalized => return Ok(()),
+                    ConvergedPreviousFinalize::Busy if !recovery_required => return Ok(()),
+                    ConvergedPreviousFinalize::Busy => {
                         anyhow::bail!(
                             "workspace crash recovery is blocked by another SQLite writer; retry after it finishes"
                         )
                     }
-                    ConvergedV2Finalize::NeedsFullMigration => {}
+                    ConvergedPreviousFinalize::NeedsFullMigration => {}
                 }
             }
         }
@@ -263,6 +265,34 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
                 ON codex_detail_definitions(project_id, type_slug, sort_order);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_codex_detail_defs_project_id
+                ON codex_detail_definitions(project_id, id);
+
+            CREATE TABLE IF NOT EXISTS codex_detail_semantic_bindings (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                definition_id     TEXT NOT NULL,
+                facet_key         TEXT NOT NULL,
+                projection_kind   TEXT NOT NULL
+                                    CHECK(projection_kind IN ('scalar-text', 'summary-text', 'enum', 'entity-reference')),
+                temporal_policy   TEXT NOT NULL
+                                    CHECK(temporal_policy IN ('base-only', 'phase-on-durable-change', 'base-and-phase', 'derived', 'manual-only')),
+                source            TEXT NOT NULL
+                                    CHECK(source IN ('preset', 'user', 'reviewed-ai')),
+                confirmed         INTEGER NOT NULL DEFAULT 0
+                                    CHECK(confirmed IN (0, 1)),
+                version           INTEGER NOT NULL DEFAULT 0
+                                    CHECK(version >= 0),
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id, definition_id)
+                  REFERENCES codex_detail_definitions(project_id, id)
+                  ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_detail_semantic_bindings_project_facet
+                ON codex_detail_semantic_bindings(project_id, facet_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_codex_detail_semantic_binding_definition_facet
+                ON codex_detail_semantic_bindings(definition_id, facet_key);
 
             CREATE TABLE IF NOT EXISTS codex_detail_values (
                 id            TEXT PRIMARY KEY,
@@ -2060,6 +2090,7 @@ impl Database {
                 reform            TEXT NOT NULL DEFAULT 'null',
                 timezone          TEXT NOT NULL DEFAULT 'null',
                 lunar_tz_minutes  INTEGER NOT NULL DEFAULT 480,
+                version           INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
@@ -2132,6 +2163,14 @@ impl Database {
             "lunar_tz_minutes",
             "INTEGER NOT NULL DEFAULT 480",
         )?;
+        // Temporal extraction snapshots and Calendar Editor writes use this
+        // generation token for compare-and-swap and stale-artifact detection.
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。
         // src/db/schema.ts の eventRelations とミラー。event 削除で CASCADE。
@@ -2185,6 +2224,158 @@ impl Database {
         // SCHEMA 4: Native-owned Narrative runtime policy (Release Gate B Foundation).
         // Must exist before the marker advances so renderer cannot own authority.
         crate::narrative_runtime_policy::ensure_narrative_runtime_policy_row(&conn)?;
+        // Narrative Extraction persistence (Run / Proposal / Apply).
+        // Mirrors src/db/schema.ts and the ensure_test_schema shape in
+        // narrative_extraction/repository.rs, plus Apply／Provenance tables.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                snapshot_digest TEXT,
+                catalog_digest TEXT,
+                registry_digest TEXT,
+                status TEXT NOT NULL,
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                outcome_summary_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_tasks (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_json TEXT NOT NULL DEFAULT '{}',
+                output_json TEXT,
+                priority INTEGER NOT NULL DEFAULT 0,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_task_edges (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                from_task_id TEXT NOT NULL,
+                to_task_id TEXT NOT NULL,
+                edge_kind TEXT NOT NULL DEFAULT 'depends_on',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_attempts (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                error_message TEXT,
+                output_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_artifacts (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_id TEXT,
+                attempt_id TEXT,
+                artifact_kind TEXT NOT NULL,
+                payload_storage TEXT NOT NULL DEFAULT 'inline-json',
+                payload_json TEXT,
+                payload_ref TEXT,
+                payload_digest TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_sets (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                set_kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposals (
+                id TEXT PRIMARY KEY,
+                proposal_set_id TEXT NOT NULL,
+                proposal_key TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unreviewed',
+                payload_json TEXT NOT NULL,
+                current_revision_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_revisions (
+                id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL,
+                revision_number INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                created_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (
+                id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                decision_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                created_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_apply_commits (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id TEXT,
+                proposal_set_id TEXT,
+                request_id TEXT NOT NULL,
+                plan_digest TEXT NOT NULL,
+                status TEXT NOT NULL,
+                receipt_json TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_apply_operations (
+                id TEXT PRIMARY KEY,
+                commit_id TEXT NOT NULL,
+                operation_index INTEGER NOT NULL,
+                operation_kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                result_entity_kind TEXT,
+                result_entity_id TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_applications (
+                id TEXT PRIMARY KEY,
+                commit_id TEXT NOT NULL,
+                proposal_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                applied_entity_kind TEXT NOT NULL,
+                applied_entity_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_commit_journals (
+                id TEXT PRIMARY KEY,
+                commit_id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                before_json TEXT,
+                after_json TEXT,
+                created_at TEXT NOT NULL
+            );",
+        )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -2218,17 +2409,6 @@ impl Database {
         Ok(())
     }
 
-    fn has_editor_stickies_table(conn: &Connection) -> anyhow::Result<bool> {
-        Ok(conn.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM sqlite_master
-                 WHERE type = 'table' AND name = 'editor_stickies'
-            )",
-            [],
-            |row| row.get(0),
-        )?)
-    }
-
     fn has_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<bool> {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM post_effect_runs WHERE status = 'running' LIMIT 1)",
@@ -2242,13 +2422,13 @@ impl Database {
     /// revision without ever waiting for another SQLite writer.
     ///
     /// The compatibility probe is repeated after `BEGIN IMMEDIATE`; otherwise
-    /// an older v2 process could commit unrepaired data between the initial
-    /// read probe and the v3 stamp. SQLITE_BUSY/LOCKED leaves both data and the
-    /// previous marker untouched. All other failures remain fatal.
-    fn try_finalize_converged_v2_without_wait(
+    /// an older process could mutate the schema between the initial read probe
+    /// and marker stamp. SQLITE_BUSY/LOCKED leaves both data and the previous
+    /// marker untouched. All other failures remain fatal.
+    fn try_finalize_previous_schema_without_wait(
         conn: &Connection,
         schema_version: i32,
-    ) -> anyhow::Result<ConvergedV2Finalize> {
+    ) -> anyhow::Result<ConvergedPreviousFinalize> {
         let original_timeout_ms: i64 =
             conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
         anyhow::ensure!(
@@ -2260,14 +2440,14 @@ impl Database {
         let finalize_result = match conn.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {
                 let transaction_result = (|| {
-                    if !grimodex_core::workspace_schema::is_converged_v2_workspace_schema(conn)? {
+                    if !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(conn)? {
                         conn.execute_batch("ROLLBACK")?;
-                        return Ok(ConvergedV2Finalize::NeedsFullMigration);
+                        return Ok(ConvergedPreviousFinalize::NeedsFullMigration);
                     }
                     Self::recover_interrupted_post_effect_runs(conn)?;
                     conn.pragma_update(None, "user_version", schema_version)?;
                     grimodex_core::commit_or_rollback(conn)?;
-                    Ok(ConvergedV2Finalize::Finalized)
+                    Ok(ConvergedPreviousFinalize::Finalized)
                 })();
                 if transaction_result.is_err() && !conn.is_autocommit() {
                     let _ = conn.execute_batch("ROLLBACK");
@@ -2280,7 +2460,7 @@ impl Database {
                     Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
                 ) =>
             {
-                Ok(ConvergedV2Finalize::Busy)
+                Ok(ConvergedPreviousFinalize::Busy)
             }
             Err(error) => Err(error.into()),
         };
@@ -3827,17 +4007,84 @@ mod tests {
     }
 
     #[test]
+    fn converged_previous_schema_migrate_does_not_wait_for_writer() {
+        let path = temp_database_path("converged-previous-version-lock");
+        let db = Database::new(&path).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            Ok(())
+        })
+        .expect("mark database as the previous schema version");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .busy_timeout(Duration::from_millis(50))
+            .expect("set competing busy timeout");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let started = Instant::now();
+        db.migrate()
+            .expect("converged previous schema must use the non-blocking fast path");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "converged previous schema waited behind an unrelated writer"
+        );
+        let version_while_locked: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read version after failed migration");
+        assert_eq!(
+            version_while_locked,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
+        let restored_timeout_ms: i64 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read restored busy timeout");
+        assert_eq!(restored_timeout_ms, 5_000);
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        db.migrate()
+            .expect("retry marker update after lock release");
+        let migrated_version: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read migrated version");
+        assert_eq!(migrated_version, grimodex_core::SCHEMA_VERSION);
+
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
     fn converged_previous_schema_migrate_repairs_missing_editor_stickies() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.execute_batch(
-                "DROP TABLE editor_stickies;
-                 PRAGMA user_version = 2;",
+            conn.execute_batch("DROP TABLE editor_stickies;")?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
             )?;
             Ok(())
         })
-        .expect("simulate converged v2 workspace missing sticky table");
+        .expect("simulate previous workspace missing sticky table");
 
         db.migrate()
             .expect("one migration must recreate editor stickies");
@@ -3864,7 +4111,11 @@ mod tests {
             Database::new(std::path::Path::new(":memory:")).expect("open crash recovery fixture");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             conn.execute(
                 "INSERT INTO post_effect_runs
                     (id, project_id, effect_type, scope_type, model, prompt_version, status)
@@ -3874,7 +4125,7 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("create interrupted v2 run");
+        .expect("create interrupted previous-schema run");
 
         db.migrate()
             .expect("recover interrupted run before marker finalization");
@@ -3927,17 +4178,80 @@ mod tests {
     }
 
     #[test]
+    fn converged_previous_schema_reports_blocked_recovery_without_waiting() {
+        let path = temp_database_path("blocked-previous-crash-recovery");
+        let db = Database::new(&path).expect("open crash recovery fixture");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, model, prompt_version, status)
+                 VALUES ('interrupted-run', 'default-project', 'review', 'project',
+                         'model', 'v1', 'running')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("create interrupted previous-schema run");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let started = Instant::now();
+        let error = db
+            .migrate()
+            .expect_err("blocked recovery must remain retryable");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "blocked recovery waited for SQLite's normal busy timeout"
+        );
+        assert!(
+            error.to_string().contains("crash recovery is blocked"),
+            "unexpected blocked recovery error: {error:#}"
+        );
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let status: String = conn.query_row(
+                "SELECT status FROM post_effect_runs WHERE id = 'interrupted-run'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,);
+            assert_eq!(status, "running");
+            Ok(())
+        })
+        .expect("blocked recovery must not partially mutate state");
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
     fn incomplete_previous_schema_still_runs_full_migration() {
         let path = temp_database_path("incomplete-previous-version-lock");
         let db = Database::new(&path).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
             conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")?;
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             conn.busy_timeout(Duration::from_millis(50))?;
             Ok(())
         })
-        .expect("create incomplete schema version 2");
+        .expect("create incomplete previous schema");
 
         let locker = Connection::open(&path).expect("open competing connection");
         locker
@@ -3949,7 +4263,7 @@ mod tests {
 
         let error = db
             .migrate()
-            .expect_err("incomplete version 2 must retain the full migration");
+            .expect_err("incomplete previous schema must retain the full migration");
         assert!(
             error.to_string().contains("database is locked"),
             "expected SQLITE_BUSY from the migration write, got {error:#}"
@@ -3960,7 +4274,10 @@ mod tests {
                     .map_err(Into::into)
             })
             .expect("read version after blocked full migration");
-        assert_eq!(version_while_locked, 2);
+        assert_eq!(
+            version_while_locked,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
 
         locker.execute_batch("ROLLBACK").expect("release writer");
         db.migrate().expect("repair incomplete schema after retry");
@@ -3998,7 +4315,11 @@ mod tests {
                     SELECT * FROM ai_audit_events_valid;
                  DROP TABLE ai_audit_events_valid;",
             )?;
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             Ok(())
         })
         .expect("replace audit ledger with malformed same-name table");
@@ -4018,7 +4339,10 @@ mod tests {
                     .map_err(Into::into)
             })
             .expect("read retained schema version");
-        assert_eq!(retained_version, 2);
+        assert_eq!(
+            retained_version,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
     }
 
     #[test]
