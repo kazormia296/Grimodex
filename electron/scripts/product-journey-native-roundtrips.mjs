@@ -131,23 +131,28 @@ function chronicleJourney(configureWorkspace, log) {
         write: async ({ harness: current, page, projectId }) => {
           const eventId = `native-event-${randomUUID()}`;
           const requestId = `native-chronicle-${randomUUID()}`;
-          const now = new Date().toISOString();
-          await current.invokeOk(page, "db_execute", {
-            sql: `INSERT INTO events
-              (id, project_id, title, ordinal, start_time,
-               start_granularity, end_granularity, precision, kind,
-               created_at, updated_at, version)
-              VALUES (?, ?, ?, 'native-roundtrip', NULL,
-                      'none', 'none', 'exact', 'generic', ?, ?, 0)`,
-            params: [
+          const created = await current.invokeOk(page, "agent_event_create", {
+            payload: {
+              requestId: `native-create-request-${randomUUID()}`,
               eventId,
               projectId,
-              "Native Chronicle round-trip",
-              now,
-              now,
-            ],
-            method: "run",
+              sessionId: `native-create-session-${randomUUID()}`,
+              surface: "manual",
+              title: "Native Chronicle round-trip",
+              ordinal: "native-roundtrip",
+              startGranularity: "none",
+              endGranularity: "none",
+              precision: "exact",
+              kind: "generic",
+              participantCodexIds: [],
+              sceneIds: [],
+            },
           });
+          if (created?.entityId !== eventId || created?.version !== 1) {
+            throw new Error(
+              `${id}: Chronicle create did not acknowledge version 1`,
+            );
+          }
           const result = await current.invokeOk(
             page,
             "agent_chronicle_bulk_mutate",
@@ -161,7 +166,7 @@ function chronicleJourney(configureWorkspace, log) {
                   {
                     kind: "eventSetDate",
                     eventId,
-                    baseVersion: 0,
+                    baseVersion: created.version,
                     startTime: CHRONICLE_START_TIME,
                     startMinute: null,
                     startGranularity: "day",
@@ -178,13 +183,13 @@ function chronicleJourney(configureWorkspace, log) {
           );
           if (
             eventResult?.kind !== "eventSetDate" ||
-            eventResult?.version !== 1
+            eventResult?.version !== created.version + 1
           ) {
             throw new Error(
-              `${id}: Chronicle bulk result did not acknowledge version 1`,
+              `${id}: Chronicle bulk result did not advance the event version`,
             );
           }
-          return { eventId, requestId };
+          return { eventId, requestId, version: eventResult.version };
         },
         verify: async ({ harness: current, page, state, phase }) => {
           const row = requireRow(
@@ -212,7 +217,7 @@ function chronicleJourney(configureWorkspace, log) {
             row.endTime !== null ||
             row.endMinute !== null ||
             row.endGranularity !== "none" ||
-            row.version !== 1
+            row.version !== state.version
           ) {
             throw new Error(
               `${id}/${phase}: persisted Chronicle aggregate did not match the typed mutation`,
@@ -463,33 +468,32 @@ function snapshotJourney(configureWorkspace, log) {
           const snapshotId = `native-snapshot-${randomUUID()}`;
           const snapshotName = `Native snapshot ${randomUUID()}`;
           const now = new Date().toISOString();
-          await current.invokeOk(page, "db_execute_batch", {
-            statements: [
-              {
-                sql: `INSERT INTO tree_nodes
-                  (id, project_id, node_type, title, sort_order, status,
-                   content, char_count, created_at, updated_at)
-                  VALUES (?, ?, 'scene', 'Native snapshot scene',
-                          'native-roundtrip', 'draft', ?, ?, ?, ?)`,
-                params: [
-                  sceneId,
-                  projectId,
-                  SNAPSHOT_CONTENT,
-                  "NATIVE-SNAPSHOT-ROUNDTRIP".length,
-                  now,
-                  now,
-                ],
-                method: "run",
-              },
-              {
-                sql: `INSERT INTO content_versions
-                  (id, entity_type, entity_id, content, version_number,
-                   snapshot_type, created_at)
-                  VALUES (?, 'scene', ?, ?, 1, 'manual', ?)`,
-                params: [versionId, sceneId, SNAPSHOT_CONTENT, now],
-                method: "run",
-              },
-            ],
+          const scene = await current.invokeOk(page, "tree_node_create", {
+            payload: {
+              id: sceneId,
+              projectId,
+              parentId: null,
+              nodeType: "scene",
+              title: "Native snapshot scene",
+              sortOrder: "native-roundtrip",
+              status: "draft",
+              content: SNAPSHOT_CONTENT,
+            },
+          });
+          if (
+            scene?.id !== sceneId ||
+            scene?.projectId !== projectId ||
+            scene?.content !== SNAPSHOT_CONTENT
+          ) {
+            throw new Error(`${id}: typed scene seed was not persisted`);
+          }
+          await current.invokeOk(page, "db_execute", {
+            sql: `INSERT INTO content_versions
+              (id, entity_type, entity_id, content, version_number,
+               snapshot_type, created_at)
+              VALUES (?, 'scene', ?, ?, 1, 'manual', ?)`,
+            params: [versionId, sceneId, SNAPSHOT_CONTENT, now],
+            method: "run",
           });
           await current.invokeOk(page, "project_snapshot_create", {
             payload: {
