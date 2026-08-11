@@ -122,6 +122,7 @@ const WRITER_TO_MODULES = {
   ],
   "codex.detail": [
     "src-tauri/crates/grimodex-db/src/codex_writes.rs",
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/detail_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_operations.rs",
