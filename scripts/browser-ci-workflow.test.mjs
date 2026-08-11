@@ -101,6 +101,7 @@ test("browser configs isolate deterministic WebGL from the normal suite", async 
     "ZenShaderAbbaResearchRunner",
     "ZenShaderCadenceResearchRunner",
     "ZenShaderBaselineResearchRunner",
+    "ZenShaderUpscaleResearchRunner",
   ]) {
     assert.match(
       normalSuiteExclusions,
