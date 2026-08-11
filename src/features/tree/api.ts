@@ -382,7 +382,7 @@ export function updateNode(
       "chroniclePrecision",
     ]);
     if (Object.keys(data).some((key) => temporalKeys.has(key))) {
-      const value = <T>(key: keyof NewTreeNode, fallback: T): T =>
+      const value = <K extends keyof typeof data, T>(key: K, fallback: T): T =>
         data[key] === undefined ? fallback : (data[key] as T);
       const temporalResult = await updateTemporalScene(current.projectId, id, {
         storyTimeOrder: value("storyTimeOrder", current.storyTimeOrder ?? null),
