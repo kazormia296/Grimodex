@@ -941,61 +941,30 @@ export async function updateForeshadow(
     >
   >,
 ): Promise<void> {
-  if (isTauriRuntime()) {
-    const tauriPatch: Record<string, unknown> = {};
-    if (patch.title !== undefined) tauriPatch.title = patch.title;
-    if (patch.intent !== undefined) tauriPatch.intent = patch.intent;
-    if (patch.notes !== undefined) tauriPatch.notes = patch.notes;
-    if (patch.payoffSceneId !== undefined) {
-      tauriPatch.payoffSceneId = patch.payoffSceneId;
-    }
-    if (patch.payoffFromPos !== undefined) {
-      tauriPatch.payoffFromPos = patch.payoffFromPos;
-    }
-    if (patch.payoffToPos !== undefined)
-      tauriPatch.payoffToPos = patch.payoffToPos;
-    if (patch.payoffConfirmed !== undefined) {
-      tauriPatch.payoffConfirmed = patch.payoffConfirmed;
-    }
-    if (patch.abandoned !== undefined) tauriPatch.abandoned = patch.abandoned;
-    if (patch.secret !== undefined) tauriPatch.secret = patch.secret;
-    if (patch.loadBearing !== undefined)
-      tauriPatch.loadBearing = patch.loadBearing;
-
-    await invoke("foreshadow_update", {
-      id,
-      patch: tauriPatch,
-    });
-    recordForeshadow("update", id, {
-      foreshadowId: id,
-      fields: Object.keys(patch),
-    });
-    return;
+  const tauriPatch: Record<string, unknown> = {};
+  if (patch.title !== undefined) tauriPatch.title = patch.title;
+  if (patch.intent !== undefined) tauriPatch.intent = patch.intent;
+  if (patch.notes !== undefined) tauriPatch.notes = patch.notes;
+  if (patch.payoffSceneId !== undefined) {
+    tauriPatch.payoffSceneId = patch.payoffSceneId;
   }
-
-  if (patch.payoffSceneId !== undefined && patch.payoffSceneId !== null) {
-    const [owner, payoffScene] = await Promise.all([
-      db
-        .select({ projectId: foreshadows.projectId })
-        .from(foreshadows)
-        .where(eq(foreshadows.id, id))
-        .then((rows) => rows[0]),
-      db
-        .select({ projectId: treeNodes.projectId })
-        .from(treeNodes)
-        .where(eq(treeNodes.id, patch.payoffSceneId))
-        .then((rows) => rows[0]),
-    ]);
-    if (owner && payoffScene?.projectId !== owner.projectId) {
-      throw new Error(
-        "foreshadow payoff scene must belong to the same project",
-      );
-    }
+  if (patch.payoffFromPos !== undefined) {
+    tauriPatch.payoffFromPos = patch.payoffFromPos;
   }
-  await db
-    .update(foreshadows)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(foreshadows.id, id));
+  if (patch.payoffToPos !== undefined)
+    tauriPatch.payoffToPos = patch.payoffToPos;
+  if (patch.payoffConfirmed !== undefined) {
+    tauriPatch.payoffConfirmed = patch.payoffConfirmed;
+  }
+  if (patch.abandoned !== undefined) tauriPatch.abandoned = patch.abandoned;
+  if (patch.secret !== undefined) tauriPatch.secret = patch.secret;
+  if (patch.loadBearing !== undefined)
+    tauriPatch.loadBearing = patch.loadBearing;
+
+  await invoke("foreshadow_update", {
+    id,
+    patch: tauriPatch,
+  });
   recordForeshadow("update", id, {
     foreshadowId: id,
     fields: Object.keys(patch),
@@ -1004,11 +973,7 @@ export async function updateForeshadow(
 
 export async function deleteForeshadow(id: string): Promise<void> {
   recordForeshadow("delete", id, { foreshadowId: id });
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_delete", { id });
-    return;
-  }
-  await db.delete(foreshadows).where(eq(foreshadows.id, id));
+  await invoke("foreshadow_delete", { id });
 }
 
 // ── ForeshadowSetup CRUD ──────────────────────────────────────────
@@ -1016,39 +981,29 @@ export async function deleteForeshadow(id: string): Promise<void> {
 export async function createForeshadowSetup(
   data: Omit<NewForeshadowSetup, "createdAt" | "updatedAt">,
 ): Promise<ForeshadowSetupRow> {
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_setup_create_ai", {
-      id: data.id,
-      foreshadowId: data.foreshadowId,
-      sceneId: data.sceneId,
-      fromPos: data.fromPos,
-      toPos: data.toPos,
-      kind: data.kind ?? "designated_existing",
-      strength: data.strength ?? null,
-      aiStrength: data.aiStrength ?? null,
-      attribution: data.attribution ?? "human",
-      aiRationale: data.aiRationale ?? null,
-      aiReasoning: data.aiReasoning ?? null,
-      lastEvaluatedAt: data.lastEvaluatedAt
-        ? data.lastEvaluatedAt.getTime()
-        : null,
-    });
-    const now = new Date();
-    return {
-      ...data,
-      createdAt: now,
-      updatedAt: now,
-      sceneUpdatedAt: undefined,
-    } as ForeshadowSetupRow;
-  }
+  await invoke("foreshadow_setup_create_ai", {
+    id: data.id,
+    foreshadowId: data.foreshadowId,
+    sceneId: data.sceneId,
+    fromPos: data.fromPos,
+    toPos: data.toPos,
+    kind: data.kind ?? "designated_existing",
+    strength: data.strength ?? null,
+    aiStrength: data.aiStrength ?? null,
+    attribution: data.attribution ?? "human",
+    aiRationale: data.aiRationale ?? null,
+    aiReasoning: data.aiReasoning ?? null,
+    lastEvaluatedAt: data.lastEvaluatedAt
+      ? data.lastEvaluatedAt.getTime()
+      : null,
+  });
   const now = new Date();
-  const row: NewForeshadowSetup = { ...data, createdAt: now, updatedAt: now };
-  await db.insert(foreshadowSetups).values(row);
-  const [created] = await db
-    .select()
-    .from(foreshadowSetups)
-    .where(eq(foreshadowSetups.id, data.id));
-  return created as ForeshadowSetupRow;
+  return {
+    ...data,
+    createdAt: now,
+    updatedAt: now,
+    sceneUpdatedAt: undefined,
+  } as ForeshadowSetupRow;
 }
 
 export async function listSetups(
@@ -1085,125 +1040,65 @@ export async function updateSetup(
     >
   >,
 ): Promise<void> {
-  if (isTauriRuntime()) {
-    const tauriPatch: Record<string, unknown> = {};
-    if (patch.strength !== undefined) tauriPatch.strength = patch.strength;
-    if (patch.aiStrength !== undefined)
-      tauriPatch.aiStrength = patch.aiStrength;
-    if (patch.aiReasoning !== undefined) {
-      tauriPatch.aiReasoning = patch.aiReasoning;
-    }
-    if (patch.isOrphan !== undefined) tauriPatch.isOrphan = patch.isOrphan;
-    if (patch.lastEvaluatedAt !== undefined) {
-      tauriPatch.lastEvaluatedAt = patch.lastEvaluatedAt
-        ? patch.lastEvaluatedAt.getTime()
-        : null;
-    }
-    await invoke("foreshadow_update_setup", { id, patch: tauriPatch });
-    return;
+  const tauriPatch: Record<string, unknown> = {};
+  if (patch.strength !== undefined) tauriPatch.strength = patch.strength;
+  if (patch.aiStrength !== undefined) tauriPatch.aiStrength = patch.aiStrength;
+  if (patch.aiReasoning !== undefined) {
+    tauriPatch.aiReasoning = patch.aiReasoning;
   }
-
-  await db
-    .update(foreshadowSetups)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(foreshadowSetups.id, id));
+  if (patch.isOrphan !== undefined) tauriPatch.isOrphan = patch.isOrphan;
+  if (patch.lastEvaluatedAt !== undefined) {
+    tauriPatch.lastEvaluatedAt = patch.lastEvaluatedAt
+      ? patch.lastEvaluatedAt.getTime()
+      : null;
+  }
+  await invoke("foreshadow_update_setup", { id, patch: tauriPatch });
 }
 
 export async function deleteSetup(id: string): Promise<void> {
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_resolve_orphan", {
-      payload: { setupId: id, action: "delete" },
-    });
-    return;
-  }
-  await db.delete(foreshadowSetups).where(eq(foreshadowSetups.id, id));
+  await invoke("foreshadow_resolve_orphan", {
+    payload: { setupId: id, action: "delete" },
+  });
 }
 
 export async function reanchorOrphanSetup(
   setupId: string,
   anchor: { sceneId: string; fromPos: number; toPos: number },
 ): Promise<void> {
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_resolve_orphan", {
-      payload: {
-        setupId,
-        action: "reanchor",
-        sceneId: anchor.sceneId,
-        fromPos: anchor.fromPos,
-        toPos: anchor.toPos,
-      },
-    });
-    return;
-  }
-
-  await db
-    .update(foreshadowSetups)
-    .set({
+  await invoke("foreshadow_resolve_orphan", {
+    payload: {
+      setupId,
+      action: "reanchor",
       sceneId: anchor.sceneId,
       fromPos: anchor.fromPos,
       toPos: anchor.toPos,
-      isOrphan: false,
-      updatedAt: new Date(),
-    })
-    .where(eq(foreshadowSetups.id, setupId));
+    },
+  });
 }
 
 export async function reinsertOrphanSetup(
   setupId: string,
   anchor: { sceneId: string; fromPos: number; toPos: number },
 ): Promise<ForeshadowSetupRow> {
-  if (isTauriRuntime()) {
-    const newId = await invoke<string | null>("foreshadow_resolve_orphan", {
-      payload: {
-        setupId,
-        action: "reinsert",
-        sceneId: anchor.sceneId,
-        fromPos: anchor.fromPos,
-        toPos: anchor.toPos,
-      },
-    });
-    if (!newId) {
-      throw new Error(`reinserted setup not found for: ${setupId}`);
-    }
-    const created = await invoke<unknown | null>("foreshadow_get_setup", {
-      setupId: newId,
-    });
-    if (!created) {
-      throw new Error(`reinserted setup row missing: ${newId}`);
-    }
-    return normalizeSetupRow(created);
+  const newId = await invoke<string | null>("foreshadow_resolve_orphan", {
+    payload: {
+      setupId,
+      action: "reinsert",
+      sceneId: anchor.sceneId,
+      fromPos: anchor.fromPos,
+      toPos: anchor.toPos,
+    },
+  });
+  if (!newId) {
+    throw new Error(`reinserted setup not found for: ${setupId}`);
   }
-
-  const [existing] = await db
-    .select()
-    .from(foreshadowSetups)
-    .where(eq(foreshadowSetups.id, setupId));
-  if (!existing) {
-    throw new Error(`setup not found: ${setupId}`);
+  const created = await invoke<unknown | null>("foreshadow_get_setup", {
+    setupId: newId,
+  });
+  if (!created) {
+    throw new Error(`reinserted setup row missing: ${newId}`);
   }
-
-  const now = new Date();
-  const newId = crypto.randomUUID();
-  const row: NewForeshadowSetup = {
-    ...existing,
-    id: newId,
-    sceneId: anchor.sceneId,
-    fromPos: anchor.fromPos,
-    toPos: anchor.toPos,
-    kind: "inserted_new",
-    isOrphan: false,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await db.insert(foreshadowSetups).values(row);
-  await db.delete(foreshadowSetups).where(eq(foreshadowSetups.id, setupId));
-
-  const [created] = await db
-    .select()
-    .from(foreshadowSetups)
-    .where(eq(foreshadowSetups.id, newId));
-  return created as ForeshadowSetupRow;
+  return normalizeSetupRow(created);
 }
 
 // ── Codex link CRUD ───────────────────────────────────────────────
@@ -1212,40 +1107,20 @@ export async function addCodexLink(
   foreshadowId: string,
   codexEntryId: string,
 ): Promise<void> {
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_link_codex", {
-      foreshadowId,
-      codexId: codexEntryId,
-    });
-    return;
-  }
-
-  await db
-    .insert(foreshadowCodexLinks)
-    .values({ foreshadowId, codexEntryId })
-    .onConflictDoNothing();
+  await invoke("foreshadow_link_codex", {
+    foreshadowId,
+    codexId: codexEntryId,
+  });
 }
 
 export async function removeCodexLink(
   foreshadowId: string,
   codexEntryId: string,
 ): Promise<void> {
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_unlink_codex", {
-      foreshadowId,
-      codexId: codexEntryId,
-    });
-    return;
-  }
-
-  await db
-    .delete(foreshadowCodexLinks)
-    .where(
-      and(
-        eq(foreshadowCodexLinks.foreshadowId, foreshadowId),
-        eq(foreshadowCodexLinks.codexEntryId, codexEntryId),
-      ),
-    );
+  await invoke("foreshadow_unlink_codex", {
+    foreshadowId,
+    codexId: codexEntryId,
+  });
 }
 
 type LinkedCodexEntry = Pick<CodexEntry, "id" | "name">;
@@ -1278,15 +1153,7 @@ export async function setSetupStrength(
   setupId: string,
   strength: ForeshadowStrength | null,
 ): Promise<void> {
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_set_setup_strength", { setupId, strength });
-    return;
-  }
-
-  await db
-    .update(foreshadowSetups)
-    .set({ strength })
-    .where(eq(foreshadowSetups.id, setupId));
+  await invoke("foreshadow_set_setup_strength", { setupId, strength });
 }
 
 /** Codex エントリに紐付いた伏線を、派生ラベル付きで返す。 */
@@ -1576,9 +1443,7 @@ function isValidAuditCandidate(c: unknown): c is AuditCandidate {
  * callers should route users to extraction-ui/ForeshadowExtractionReview instead.
  */
 export function isNewForeshadowExtractionPipelinePreferred(): boolean {
-  return (
-    import.meta.env.VITE_GRIMODEX_FORESHADOW_EXTRACTION_PIPELINE === "new"
-  );
+  return import.meta.env.VITE_GRIMODEX_FORESHADOW_EXTRACTION_PIPELINE === "new";
 }
 
 export async function auditChapter(

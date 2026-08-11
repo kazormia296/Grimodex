@@ -945,6 +945,33 @@ pub fn unlink_codex(db: &Database, foreshadow_id: String, codex_id: String) -> a
     Ok(())
 }
 
+/// impact-review: Codex 埋め込み対象フィールド更新時に、リンク伏線へ再評価ダーティ印を付ける。
+pub fn mark_linked_codex_dirty(
+    db: &Database,
+    project_id: String,
+    codex_entry_id: String,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    db.execute(
+        "UPDATE foreshadows
+            SET codex_link_dirty_at = ?, updated_at = ?
+          WHERE project_id = ?
+            AND id IN (
+                SELECT foreshadow_id
+                  FROM foreshadow_codex_links
+                 WHERE codex_entry_id = ?
+            )",
+        &[
+            Value::Number(now.into()),
+            Value::Number(now.into()),
+            Value::String(project_id),
+            Value::String(codex_entry_id),
+        ],
+        "run",
+    )?;
+    Ok(())
+}
+
 pub fn list_linked_codex(db: &Database, foreshadow_id: String) -> anyhow::Result<Vec<Value>> {
     let rows = db.execute(
         "SELECT ce.* FROM codex_entries ce \

@@ -64,9 +64,9 @@ use grimodex_db::open::{
     NativeWorkspaceOpenTrace,
 };
 use grimodex_db::plot_threads::{
-    self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
-    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
-    PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
+    self, PlotThreadBranchCreatePayload, PlotThreadBranchPatch, PlotThreadCreatePayload,
+    PlotThreadDeleteSnapshotPayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
+    PlotThreadMoveMarkerBundlePayload, PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::project_snapshots::{
@@ -3560,6 +3560,38 @@ impl Backend {
         .await
     }
 
+    /// プロットスレッド分岐/合流更新 (OCC baseVersion 任意)。
+    #[napi]
+    pub async fn plot_thread_branch_update(
+        &self,
+        id: String,
+        patch: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let patch: PlotThreadBranchPatch = from_wire("patch", patch)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::branch_update(db, id, patch)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド分岐/合流削除 (OCC baseVersion 任意)。
+    #[napi]
+    pub async fn plot_thread_branch_delete(
+        &self,
+        id: String,
+        base_version: Option<i64>,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| plot_threads::branch_delete(db, id, base_version))
+        })
+        .await
+    }
+
     /// Marker move + branch create/update/delete. Full before/after snapshots,
     /// durable replay identity, and all writes share one Rust transaction.
     #[napi]
@@ -3848,6 +3880,22 @@ impl Backend {
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
                 foreshadow::unlink_codex(db, foreshadow_id, codex_id)
+            })
+        })
+        .await
+    }
+
+    /// Codex 更新に連動してリンク伏線へ codex_link_dirty_at を付与する。
+    #[napi]
+    pub async fn foreshadow_mark_linked_codex_dirty(
+        &self,
+        project_id: String,
+        codex_entry_id: String,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                foreshadow::mark_linked_codex_dirty(db, project_id, codex_entry_id)
             })
         })
         .await

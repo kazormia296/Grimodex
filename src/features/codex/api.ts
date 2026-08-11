@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
-import { codexEntries, foreshadows, foreshadowCodexLinks } from "@/db/schema";
-import { eq, and, inArray, isNull } from "drizzle-orm";
+import { codexEntries } from "@/db/schema";
+import { eq, and, isNull } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { CodexVersionConflictError } from "./occ";
@@ -42,23 +43,10 @@ async function markLinkedForeshadowsDirty(
   projectId: string,
   entryId: string,
 ): Promise<void> {
-  const links = await db
-    .select({ foreshadowId: foreshadowCodexLinks.foreshadowId })
-    .from(foreshadowCodexLinks)
-    .where(eq(foreshadowCodexLinks.codexEntryId, entryId));
-  if (links.length === 0) return;
-  await db
-    .update(foreshadows)
-    .set({ codexLinkDirtyAt: new Date() })
-    .where(
-      and(
-        eq(foreshadows.projectId, projectId),
-        inArray(
-          foreshadows.id,
-          links.map((l) => l.foreshadowId),
-        ),
-      ),
-    );
+  await invoke("foreshadow_mark_linked_codex_dirty", {
+    projectId,
+    codexEntryId: entryId,
+  });
 }
 
 export type CodexEntry = typeof codexEntries.$inferSelect;

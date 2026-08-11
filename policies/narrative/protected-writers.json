@@ -5,28 +5,28 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "foreshadow.aggregate",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "foreshadow",
     "table": "foreshadow_setups",
     "protection": "table",
     "writer": "foreshadow.aggregate",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "foreshadow",
     "table": "foreshadow_payoffs",
     "protection": "table",
     "writer": "foreshadow.aggregate",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "foreshadow",
     "table": "foreshadow_codex_links",
     "protection": "table",
     "writer": "foreshadow.aggregate",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "plot-thread",
@@ -34,14 +34,14 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "plot_threads.aggregate",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "plot-thread",
     "table": "plot_thread_scene_links",
     "protection": "table",
     "writer": "plot_threads.aggregate",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "plot-thread",
@@ -49,7 +49,7 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "plot_threads.branch",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "chronicle-event",

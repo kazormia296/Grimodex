@@ -133,65 +133,9 @@ export async function saveForeshadowAnchors(
     return;
   }
 
-  // dev-only browser fallback (used by `pnpm dev`; not transactional)
-  const now = new Date();
-
-  for (const s of setups) {
-    await db
-      .insert(foreshadowSetups)
-      .values({
-        id: s.id,
-        foreshadowId: s.foreshadowId,
-        sceneId: s.sceneId,
-        fromPos: s.fromPos,
-        toPos: s.toPos,
-        kind: "designated_existing",
-        attribution: "human",
-        isOrphan: false,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: foreshadowSetups.id,
-        set: {
-          fromPos: s.fromPos,
-          toPos: s.toPos,
-          isOrphan: false,
-          updatedAt: now,
-        },
-      });
-  }
-
-  for (const p of payoffs) {
-    await db
-      .update(foreshadows)
-      .set({
-        payoffSceneId: p.sceneId,
-        payoffFromPos: p.fromPos,
-        payoffToPos: p.toPos,
-        updatedAt: now,
-      })
-      .where(eq(foreshadows.id, p.foreshadowId));
-  }
-
-  const setupIds = setups.map((s) => s.id);
-  const existingSceneSetups = await db
-    .select({ id: foreshadowSetups.id })
-    .from(foreshadowSetups)
-    .where(eq(foreshadowSetups.sceneId, sceneId));
-  const orphanIds = existingSceneSetups
-    .map((s) => s.id)
-    .filter((id) => !setupIds.includes(id));
-
-  for (const orphanId of orphanIds) {
-    await db
-      .update(foreshadowSetups)
-      .set({
-        isOrphan: true,
-        updatedAt: now,
-      })
-      .where(eq(foreshadowSetups.id, orphanId));
-  }
+  throw new Error(
+    "foreshadow_save_anchors_for_scene requires native backend (Tauri/Electron)",
+  );
 }
 
 /**

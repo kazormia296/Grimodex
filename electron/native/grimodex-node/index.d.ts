@@ -106,7 +106,7 @@ export declare class Backend {
    * Project Calendar create/update, single-row OCC (see `chronicle` module
    * docs). Returns the persisted row as JSON, or JSON `null` on conflict.
    */
-  projectCalendarUpsert(payload: any): Promise<string>
+  projectCalendarUpsert(payload: any): Promise<string>;
   /**
    * Renderer domain aggregates that previously crossed the preload
    * boundary as renderer-authored SQL batches.
@@ -591,6 +591,13 @@ export declare class Backend {
    * insert を共有 Rust の単一 transaction で実行する。
    */
   plotThreadBranchCreate(payload: any): Promise<string>;
+  /** プロットスレッド分岐/合流更新 (OCC baseVersion 任意)。 */
+  plotThreadBranchUpdate(id: string, patch: any): Promise<string>;
+  /** プロットスレッド分岐/合流削除 (OCC baseVersion 任意)。 */
+  plotThreadBranchDelete(
+    id: string,
+    baseVersion?: number | null,
+  ): Promise<void>;
   /**
    * Marker move + branch create/update/delete. Full before/after snapshots,
    * durable replay identity, and all writes share one Rust transaction.
@@ -672,6 +679,11 @@ export declare class Backend {
   foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>;
   /** 伏線↔codex リンク削除。 */
   foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>;
+  /** Codex 更新に連動してリンク伏線へ codex_link_dirty_at を付与する。 */
+  foreshadowMarkLinkedCodexDirty(
+    projectId: string,
+    codexEntryId: string,
+  ): Promise<void>;
   /**
    * 伏線に紐づく codex エントリ一覧。返り値: codex_entries.* 行 (snake_case)
    * の JSON 文字列。

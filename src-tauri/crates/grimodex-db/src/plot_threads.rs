@@ -123,6 +123,15 @@ pub struct PlotThreadBranchCreatePayload {
     kind: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlotThreadBranchPatch {
+    from_thread_id: Option<String>,
+    to_thread_id: Option<String>,
+    at_node_id: Option<String>,
+    base_version: Option<i64>,
+}
+
 /// Full persisted row used by history restore. Timestamps are intentionally
 /// retained: undo/redo restores identity and ordering metadata, not a new
 /// logical entity.
@@ -1032,6 +1041,142 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
         |conn| load_row(conn, "plot_thread_branches", &id),
     )
     .map(|outcome| outcome.into_wire_value())
+}
+
+pub fn branch_update(
+    db: &Database,
+    id: String,
+    patch: PlotThreadBranchPatch,
+) -> anyhow::Result<Value> {
+    let current_rows = db.execute(
+        "SELECT * FROM plot_thread_branches WHERE id = ?",
+        &[Value::String(id.clone())],
+        "get",
+    )?;
+    let Some(current) = current_rows.first() else {
+        anyhow::bail!("plot thread branch not found: {id}");
+    };
+    let current_version = current
+        .get("version")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if let Some(base_version) = patch.base_version {
+        if current_version != base_version {
+            anyhow::bail!(
+                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {base_version}, found {current_version}"
+            );
+        }
+    }
+
+    let project_id = current
+        .get("project_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("plot thread branch missing project_id"))?
+        .to_string();
+    let kind = current
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("plot thread branch missing kind"))?
+        .to_string();
+
+    let from_thread_id = patch.from_thread_id.clone().unwrap_or_else(|| {
+        current
+            .get("from_thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    });
+    let to_thread_id = patch.to_thread_id.clone().unwrap_or_else(|| {
+        current
+            .get("to_thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    });
+    let at_node_id = patch.at_node_id.clone().unwrap_or_else(|| {
+        current
+            .get("at_node_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    });
+
+    if from_thread_id == to_thread_id {
+        anyhow::bail!("plot thread branch cannot reference the same thread twice");
+    }
+
+    if patch.from_thread_id.is_none()
+        && patch.to_thread_id.is_none()
+        && patch.at_node_id.is_none()
+    {
+        return Ok(one(current_rows));
+    }
+
+    db.with_conn(|conn| {
+        let from_project = project_of_conn(conn, "plot_threads", &from_thread_id)?;
+        let to_project = project_of_conn(conn, "plot_threads", &to_thread_id)?;
+        let node_project = project_of_conn(conn, "tree_nodes", &at_node_id)?;
+        match (from_project, to_project, node_project) {
+            (Some(from), Some(to), Some(node))
+                if from == project_id && to == project_id && node == project_id => {}
+            _ => anyhow::bail!(
+                "plot thread branch must reference a project, threads, and scene in the same project"
+            ),
+        }
+        Ok(())
+    })?;
+
+    let semantic_key = format!("{from_thread_id}|{to_thread_id}|{at_node_id}|{kind}");
+    let next_version = current_version + 1;
+    db.execute(
+        "UPDATE plot_thread_branches
+            SET from_thread_id = ?, to_thread_id = ?, at_node_id = ?,
+                semantic_key = ?, version = ?, updated_at = datetime('now')
+          WHERE id = ?",
+        &[
+            Value::String(from_thread_id),
+            Value::String(to_thread_id),
+            Value::String(at_node_id),
+            Value::String(semantic_key),
+            Value::Number(next_version.into()),
+            Value::String(id.clone()),
+        ],
+        "run",
+    )?;
+
+    Ok(one(db.execute(
+        "SELECT * FROM plot_thread_branches WHERE id = ?",
+        &[Value::String(id)],
+        "get",
+    )?))
+}
+
+pub fn branch_delete(db: &Database, id: String, base_version: Option<i64>) -> anyhow::Result<()> {
+    if let Some(expected) = base_version {
+        let rows = db.execute(
+            "SELECT version FROM plot_thread_branches WHERE id = ?",
+            &[Value::String(id.clone())],
+            "get",
+        )?;
+        let Some(current) = rows.first() else {
+            return Ok(());
+        };
+        let current_version = current
+            .get("version")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if current_version != expected {
+            anyhow::bail!(
+                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {expected}, found {current_version}"
+            );
+        }
+    }
+    db.execute(
+        "DELETE FROM plot_thread_branches WHERE id = ?",
+        &[Value::String(id)],
+        "run",
+    )?;
+    Ok(())
 }
 
 fn validate_move_link_row(label: &str, row: &PlotThreadLinkSnapshotRow) -> anyhow::Result<()> {
