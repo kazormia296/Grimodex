@@ -42,6 +42,7 @@ export default defineConfig({
       "src/features/editor/zen/ZenBlurResearchCanvas.browser.test.tsx",
       "src/features/editor/zen/ZenShaderResearchSurface.browser.test.tsx",
       "src/features/editor/zen/ZenShaderResearchAbba.browser.test.tsx",
+      "src/features/editor/zen/ZenShaderUpscaleResearch.browser.test.tsx",
     ],
   },
 });

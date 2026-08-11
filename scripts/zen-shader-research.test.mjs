@@ -233,6 +233,32 @@ test("parseZenShaderResearchArguments builds a fixed ABBA experiment", () => {
   assert.equal(parsed.timing, "frame");
 });
 
+test("parseZenShaderResearchArguments builds the fixed upscale matrix experiment", () => {
+  const parsed = parseZenShaderResearchArguments(
+    argv(
+      "--output",
+      "results/upscale.json",
+      "--experiment",
+      "upscale",
+      "--shader",
+      "representative",
+      "--cycles",
+      "4",
+      "--sequence-start",
+      "baab",
+      "--frames",
+      "48",
+    ),
+  );
+
+  assert.equal(parsed.experiment, "upscale");
+  assert.equal(parsed.shader, "representative");
+  assert.equal(parsed.cycles, 4);
+  assert.equal(parsed.sequenceStart, "baab");
+  assert.equal(parsed.frames, 48);
+  assert.equal(parsed.timing, "frame");
+});
+
 test("parseZenShaderResearchArguments rejects invalid paths and values", () => {
   assert.throws(() => parseZenShaderResearchArguments(argv()), /output/i);
 
@@ -327,6 +353,7 @@ test("parseZenShaderResearchArguments rejects invalid paths and values", () => {
     ["cadence", ["--headed", "--cycles", "8"], /cycles|cadence/i],
     ["baselines", ["--cadence", "native-raf"], /cadence|baseline/i],
     ["abba", ["--resolution", "960x540"], /resolution|abba/i],
+    ["upscale", ["--resolution", "960x540"], /resolution|upscale/i],
   ]) {
     assert.throws(
       () =>
