@@ -112,6 +112,12 @@ import {
   matchExistingCodexRelation,
   type ExistingRelationCatalogRecord,
 } from "./extraction/existingRelationMatcher";
+import {
+  patchBindCodexEntityPayload,
+  patchCreateCodexRelationPayload,
+  resolveBindCodexEntityPayload,
+  swapCreateCodexRelationEndpoints,
+} from "./extraction/reviewEditPayload";
 
 const CODEX_STRUCTURE_LEASE_OWNER = "codex-structure-extract";
 const CODEX_STRUCTURE_TASK_KIND = "codex.entity.resolve";
@@ -901,9 +907,95 @@ function buildApplyPlanFingerprint(
   return `${runId}\0${proposalSetId}\0${sortedOps}`;
 }
 
+/** Per-proposal edit queue so blur saves never race on the same revision. */
+const proposalEditQueues = new Map<string, Promise<unknown>>();
+
+type ReviewEditScope = {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly workspacePath: string | null;
+  readonly openRevision: number | null;
+  readonly folderId: string | null;
+};
+
+function captureReviewEditScope(
+  projection: CodexStructureExtractionReviewProjection,
+): ReviewEditScope {
+  return {
+    runId: projection.runId,
+    projectId: projection.projectId,
+    workspacePath: projection.workspacePath,
+    openRevision: projection.openRevision,
+    folderId: projection.folderId ?? null,
+  };
+}
+
+function reviewEditScopeMatches(
+  projection: CodexStructureExtractionReviewProjection | null,
+  scope: ReviewEditScope,
+): boolean {
+  if (!projection) return false;
+  return (
+    projection.runId === scope.runId &&
+    projection.projectId === scope.projectId &&
+    projection.workspacePath === scope.workspacePath &&
+    projection.openRevision === scope.openRevision &&
+    (projection.folderId ?? null) === scope.folderId
+  );
+}
+
+function enqueueProposalEdit<T>(
+  proposalId: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const previous = proposalEditQueues.get(proposalId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(work);
+  proposalEditQueues.set(
+    proposalId,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
+async function resyncReviewAfterEditFailure(
+  scope: ReviewEditScope,
+): Promise<void> {
+  if (
+    !reviewEditScopeMatches(
+      useCodexStructureExtractionStore.getState().projection,
+      scope,
+    )
+  ) {
+    return;
+  }
+  try {
+    const refreshed = await getCodexStructureExtractionReview(scope.runId, {
+      projectId: scope.projectId,
+      workspacePath: scope.workspacePath ?? undefined,
+      openRevision: scope.openRevision ?? undefined,
+      folderId: scope.folderId ?? undefined,
+    });
+    if (
+      !reviewEditScopeMatches(
+        useCodexStructureExtractionStore.getState().projection,
+        scope,
+      )
+    ) {
+      return;
+    }
+    useCodexStructureExtractionStore.getState().setProjection(refreshed);
+  } catch {
+    // Leave local state untouched; do not resurrect a cleared/foreign projection.
+  }
+}
+
 export function resetCodexStructureExtractionApiCachesForTests(): void {
   lastRunId = null;
   applyRequestIdByPlanFingerprint.clear();
+  proposalEditQueues.clear();
 }
 
 /**
@@ -1791,6 +1883,32 @@ function existingRelationsFromSummaryJson(
   return Array.isArray(raw) ? (raw as ExistingRelationCatalogRecord[]) : [];
 }
 
+function assertReviewEvidenceComplete(args: {
+  readonly runId: string;
+  readonly proposals: readonly ReviewBundleProposal[];
+  readonly evidenceByProposalId: ReadonlyMap<
+    string,
+    readonly CodexReviewEvidenceQuote[]
+  >;
+}): void {
+  for (const proposal of args.proposals) {
+    if (proposal.application) continue;
+    const evidence = args.evidenceByProposalId.get(proposal.proposalId);
+    if (!evidence || evidence.length === 0) {
+      throw new Error(
+        `Codex structure extraction run ${args.runId} missing evidence for proposal ${proposal.proposalId}`,
+      );
+    }
+    for (const row of evidence) {
+      if (!row.documentRef || !row.anchorId) {
+        throw new Error(
+          `Codex structure extraction run ${args.runId} evidence for proposal ${proposal.proposalId} missing documentRef/anchorId`,
+        );
+      }
+    }
+  }
+}
+
 function parseEvidenceArtifact(
   raw: CodexStructureReviewArtifactPayload | null,
 ): {
@@ -2142,10 +2260,12 @@ export async function getCodexStructureExtractionReview(
     );
   }
   const artifact = parseEvidenceArtifact(artifactPayload);
-  if (
-    artifact.proposalSetId &&
-    artifact.proposalSetId !== bundle.proposalSet.proposalSetId
-  ) {
+  if (!artifact.proposalSetId) {
+    throw new Error(
+      `Codex structure extraction run ${runId} review artifact missing proposalSetId`,
+    );
+  }
+  if (artifact.proposalSetId !== bundle.proposalSet.proposalSetId) {
     throw new Error(
       `Codex structure extraction run ${runId} review artifact proposalSetId mismatch`,
     );
@@ -2165,6 +2285,12 @@ export async function getCodexStructureExtractionReview(
   const relationNatives = bundle.proposals.filter(
     (row) => row.kind === CODEX_RELATION_CREATE_PROPOSAL_KIND,
   );
+
+  assertReviewEvidenceComplete({
+    runId,
+    proposals: [...entityNatives, ...relationNatives],
+    evidenceByProposalId: artifact.evidenceByProposalId,
+  });
 
   const proposals = entityNatives.flatMap((native) => {
     const row = rebuildEntityFromNative({
@@ -2855,53 +2981,58 @@ export async function reviseCodexStructureProposal(args: {
     typeRef?: string;
   };
 }): Promise<void> {
-  const store = useCodexStructureExtractionStore.getState();
-  const projection = store.projection;
-  if (!projection)
-    throw new Error("No active codex structure extraction review");
-  const current = projection.proposals.find(
-    (item) => item.proposalId === args.proposalId,
-  );
-  if (!current?.revisionId) {
-    throw new Error(`Proposal ${args.proposalId} missing revisionId`);
-  }
-  assertProposalNotApplied(current, "revise");
-  const snapshot = projection;
-  store.reviseProposalFields(args.proposalId, args.patch);
-  const updated = useCodexStructureExtractionStore
-    .getState()
-    .projection?.proposals.find((item) => item.proposalId === args.proposalId);
-  if (!updated) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw new Error(`Proposal ${args.proposalId} missing after revise`);
-  }
-  let result;
-  try {
-    result = await appendRevision({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: args.proposalId,
-      expectedCurrentRevisionId: current.revisionId,
-      payloadJson: buildCodexReviewRevisionEnvelope({
-        reviewPayload: updated.proposal.payload,
-      }) as unknown as Readonly<Record<string, unknown>>,
-      createdBy: "codex-structure-extract-dialog",
+  return enqueueProposalEdit(args.proposalId, async () => {
+    const store = useCodexStructureExtractionStore.getState();
+    const projection = store.projection;
+    if (!projection)
+      throw new Error("No active codex structure extraction review");
+    const scope = captureReviewEditScope(projection);
+    const current = projection.proposals.find(
+      (item) => item.proposalId === args.proposalId,
+    );
+    if (!current?.revisionId) {
+      throw new Error(`Proposal ${args.proposalId} missing revisionId`);
+    }
+    assertProposalNotApplied(current, "revise");
+    const nextPayload = patchBindCodexEntityPayload(
+      current.proposal.payload,
+      args.patch,
+    );
+    let result: { revisionId: string };
+    try {
+      result = await appendRevision({
+        runId: projection.runId,
+        projectId: projection.projectId,
+        proposalId: args.proposalId,
+        expectedCurrentRevisionId: current.revisionId,
+        payloadJson: buildCodexReviewRevisionEnvelope({
+          reviewPayload: nextPayload,
+        }) as unknown as Readonly<Record<string, unknown>>,
+        createdBy: "codex-structure-extract-dialog",
+      });
+    } catch (error) {
+      await resyncReviewAfterEditFailure(scope);
+      throw error;
+    }
+    const latest = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(latest, scope) || !latest) return;
+    const before = latest;
+    store.reviseProposalFields(args.proposalId, args.patch);
+    const mid = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(mid, scope) || !mid) return;
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...mid,
+      proposals: mid.proposals.map((proposal) =>
+        proposal.proposalId === args.proposalId
+          ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+          : proposal,
+      ),
     });
-  } catch (error) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw error;
-  }
-  const latest = useCodexStructureExtractionStore.getState().projection;
-  if (!latest) return;
-  useCodexStructureExtractionStore.getState().setProjection({
-    ...latest,
-    proposals: latest.proposals.map((proposal) =>
-      proposal.proposalId === args.proposalId
-        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
-        : proposal,
-    ),
+    const after = useCodexStructureExtractionStore.getState().projection;
+    if (after && reviewEditScopeMatches(after, scope)) {
+      await persistNewlySatisfiedRelationDecisions(before, after);
+    }
   });
-  await persistNewlySatisfiedRelationDecisions(projection, latest);
 }
 
 async function persistNewlySatisfiedRelationDecisions(
@@ -2943,55 +3074,58 @@ export async function resolveCodexStructureBinding(args: {
     | { readonly kind: "create-new" }
     | { readonly kind: "bind-existing"; readonly entityRef: string };
 }): Promise<void> {
-  const store = useCodexStructureExtractionStore.getState();
-  const projection = store.projection;
-  if (!projection)
-    throw new Error("No active codex structure extraction review");
-  const current = projection.proposals.find(
-    (item) => item.proposalId === args.proposalId,
-  );
-  if (!current?.revisionId) {
-    throw new Error(`Proposal ${args.proposalId} missing revisionId`);
-  }
-  assertProposalNotApplied(current, "resolve binding");
-  const snapshot = projection;
-  store.resolveBinding(args.proposalId, args.resolution);
-  const updated = useCodexStructureExtractionStore
-    .getState()
-    .projection?.proposals.find((item) => item.proposalId === args.proposalId);
-  if (!updated) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw new Error(`Proposal ${args.proposalId} missing after resolve`);
-  }
-  let result;
-  try {
-    result = await appendRevision({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: args.proposalId,
-      expectedCurrentRevisionId: current.revisionId,
-      payloadJson: buildCodexReviewRevisionEnvelope({
-        reviewPayload: updated.proposal.payload,
-      }) as unknown as Readonly<Record<string, unknown>>,
-      createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+  return enqueueProposalEdit(args.proposalId, async () => {
+    const store = useCodexStructureExtractionStore.getState();
+    const projection = store.projection;
+    if (!projection)
+      throw new Error("No active codex structure extraction review");
+    const scope = captureReviewEditScope(projection);
+    const current = projection.proposals.find(
+      (item) => item.proposalId === args.proposalId,
+    );
+    if (!current?.revisionId) {
+      throw new Error(`Proposal ${args.proposalId} missing revisionId`);
+    }
+    assertProposalNotApplied(current, "resolve binding");
+    const nextPayload = resolveBindCodexEntityPayload(
+      current.proposal,
+      args.resolution,
+    );
+    let result: { revisionId: string };
+    try {
+      result = await appendRevision({
+        runId: projection.runId,
+        projectId: projection.projectId,
+        proposalId: args.proposalId,
+        expectedCurrentRevisionId: current.revisionId,
+        payloadJson: buildCodexReviewRevisionEnvelope({
+          reviewPayload: nextPayload,
+        }) as unknown as Readonly<Record<string, unknown>>,
+        createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+      });
+    } catch (error) {
+      await resyncReviewAfterEditFailure(scope);
+      throw error;
+    }
+    const latest = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(latest, scope) || !latest) return;
+    const before = latest;
+    store.resolveBinding(args.proposalId, args.resolution);
+    const mid = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(mid, scope) || !mid) return;
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...mid,
+      proposals: mid.proposals.map((proposal) =>
+        proposal.proposalId === args.proposalId
+          ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+          : proposal,
+      ),
     });
-  } catch (error) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw error;
-  }
-  const mid = useCodexStructureExtractionStore.getState().projection;
-  if (!mid) return;
-  useCodexStructureExtractionStore.getState().setProjection({
-    ...mid,
-    proposals: mid.proposals.map((proposal) =>
-      proposal.proposalId === args.proposalId
-        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
-        : proposal,
-    ),
+    const after = useCodexStructureExtractionStore.getState().projection;
+    if (after && reviewEditScopeMatches(after, scope)) {
+      await persistNewlySatisfiedRelationDecisions(before, after);
+    }
   });
-  const latest = useCodexStructureExtractionStore.getState().projection;
-  if (!latest) return;
-  await persistNewlySatisfiedRelationDecisions(projection, latest);
 }
 
 export async function reviseCodexStructureRelation(args: {
@@ -3002,111 +3136,115 @@ export async function reviseCodexStructureRelation(args: {
     inverseLabel?: string | null;
   };
 }): Promise<void> {
-  const store = useCodexStructureExtractionStore.getState();
-  const projection = store.projection;
-  if (!projection)
-    throw new Error("No active codex structure extraction review");
-  const current = projection.relationProposals.find(
-    (item) => item.proposalId === args.proposalId,
-  );
-  if (!current?.revisionId) {
-    throw new Error(`Relation ${args.proposalId} missing revisionId`);
-  }
-  assertProposalNotApplied(current, "revise");
-  const snapshot = projection;
-  store.reviseRelationFields(args.proposalId, args.patch);
-  const updated = useCodexStructureExtractionStore
-    .getState()
-    .projection?.relationProposals.find(
+  return enqueueProposalEdit(args.proposalId, async () => {
+    const store = useCodexStructureExtractionStore.getState();
+    const projection = store.projection;
+    if (!projection)
+      throw new Error("No active codex structure extraction review");
+    const scope = captureReviewEditScope(projection);
+    const current = projection.relationProposals.find(
       (item) => item.proposalId === args.proposalId,
     );
-  if (!updated) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw new Error(`Relation ${args.proposalId} missing after revise`);
-  }
-  let result;
-  try {
-    result = await appendRevision({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: args.proposalId,
-      expectedCurrentRevisionId: current.revisionId,
-      payloadJson: buildCodexReviewRevisionEnvelope({
-        reviewPayload: updated.proposal.payload,
-      }) as unknown as Readonly<Record<string, unknown>>,
-      createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+    if (!current?.revisionId) {
+      throw new Error(`Relation ${args.proposalId} missing revisionId`);
+    }
+    assertProposalNotApplied(current, "revise");
+    const nextPayload = patchCreateCodexRelationPayload(
+      current.proposal.payload,
+      args.patch,
+    );
+    if (!nextPayload) {
+      throw new Error(`Relation ${args.proposalId} patch produced empty label`);
+    }
+    let result: { revisionId: string };
+    try {
+      result = await appendRevision({
+        runId: projection.runId,
+        projectId: projection.projectId,
+        proposalId: args.proposalId,
+        expectedCurrentRevisionId: current.revisionId,
+        payloadJson: buildCodexReviewRevisionEnvelope({
+          reviewPayload: nextPayload,
+        }) as unknown as Readonly<Record<string, unknown>>,
+        createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+      });
+    } catch (error) {
+      await resyncReviewAfterEditFailure(scope);
+      throw error;
+    }
+    const latest = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(latest, scope) || !latest) return;
+    const before = latest;
+    store.reviseRelationFields(args.proposalId, args.patch);
+    const mid = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(mid, scope) || !mid) return;
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...mid,
+      relationProposals: mid.relationProposals.map((proposal) =>
+        proposal.proposalId === args.proposalId
+          ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+          : proposal,
+      ),
     });
-  } catch (error) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw error;
-  }
-  const mid = useCodexStructureExtractionStore.getState().projection;
-  if (!mid) return;
-  useCodexStructureExtractionStore.getState().setProjection({
-    ...mid,
-    relationProposals: mid.relationProposals.map((proposal) =>
-      proposal.proposalId === args.proposalId
-        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
-        : proposal,
-    ),
+    const after = useCodexStructureExtractionStore.getState().projection;
+    if (after && reviewEditScopeMatches(after, scope)) {
+      await persistNewlySatisfiedRelationDecisions(before, after);
+    }
   });
-  const latest = useCodexStructureExtractionStore.getState().projection;
-  if (!latest) return;
-  await persistNewlySatisfiedRelationDecisions(projection, latest);
 }
 
 export async function swapCodexStructureRelationEndpoints(args: {
   readonly proposalId: string;
 }): Promise<void> {
-  const store = useCodexStructureExtractionStore.getState();
-  const projection = store.projection;
-  if (!projection)
-    throw new Error("No active codex structure extraction review");
-  const current = projection.relationProposals.find(
-    (item) => item.proposalId === args.proposalId,
-  );
-  if (!current?.revisionId) {
-    throw new Error(`Relation ${args.proposalId} missing revisionId`);
-  }
-  assertProposalNotApplied(current, "swap endpoints");
-  const snapshot = projection;
-  store.swapRelationEndpoints(args.proposalId);
-  const updated = useCodexStructureExtractionStore
-    .getState()
-    .projection?.relationProposals.find(
+  return enqueueProposalEdit(args.proposalId, async () => {
+    const store = useCodexStructureExtractionStore.getState();
+    const projection = store.projection;
+    if (!projection)
+      throw new Error("No active codex structure extraction review");
+    const scope = captureReviewEditScope(projection);
+    const current = projection.relationProposals.find(
       (item) => item.proposalId === args.proposalId,
     );
-  if (!updated) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw new Error(`Relation ${args.proposalId} missing after swap`);
-  }
-  let result;
-  try {
-    result = await appendRevision({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: args.proposalId,
-      expectedCurrentRevisionId: current.revisionId,
-      payloadJson: buildCodexReviewRevisionEnvelope({
-        reviewPayload: updated.proposal.payload,
-      }) as unknown as Readonly<Record<string, unknown>>,
-      createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+    if (!current?.revisionId) {
+      throw new Error(`Relation ${args.proposalId} missing revisionId`);
+    }
+    assertProposalNotApplied(current, "swap endpoints");
+    const nextPayload = swapCreateCodexRelationEndpoints(
+      current.proposal.payload,
+    );
+    let result: { revisionId: string };
+    try {
+      result = await appendRevision({
+        runId: projection.runId,
+        projectId: projection.projectId,
+        proposalId: args.proposalId,
+        expectedCurrentRevisionId: current.revisionId,
+        payloadJson: buildCodexReviewRevisionEnvelope({
+          reviewPayload: nextPayload,
+        }) as unknown as Readonly<Record<string, unknown>>,
+        createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+      });
+    } catch (error) {
+      await resyncReviewAfterEditFailure(scope);
+      throw error;
+    }
+    const latest = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(latest, scope) || !latest) return;
+    const before = latest;
+    store.swapRelationEndpoints(args.proposalId);
+    const mid = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(mid, scope) || !mid) return;
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...mid,
+      relationProposals: mid.relationProposals.map((proposal) =>
+        proposal.proposalId === args.proposalId
+          ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+          : proposal,
+      ),
     });
-  } catch (error) {
-    useCodexStructureExtractionStore.getState().setProjection(snapshot);
-    throw error;
-  }
-  const mid = useCodexStructureExtractionStore.getState().projection;
-  if (!mid) return;
-  useCodexStructureExtractionStore.getState().setProjection({
-    ...mid,
-    relationProposals: mid.relationProposals.map((proposal) =>
-      proposal.proposalId === args.proposalId
-        ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
-        : proposal,
-    ),
+    const after = useCodexStructureExtractionStore.getState().projection;
+    if (after && reviewEditScopeMatches(after, scope)) {
+      await persistNewlySatisfiedRelationDecisions(before, after);
+    }
   });
-  const latest = useCodexStructureExtractionStore.getState().projection;
-  if (!latest) return;
-  await persistNewlySatisfiedRelationDecisions(projection, latest);
 }

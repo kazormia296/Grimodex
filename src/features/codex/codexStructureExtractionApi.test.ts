@@ -60,6 +60,7 @@ import {
   buildRelationCoMentionQuote,
   bulkApproveSafeCodexStructureProposals,
   resetCodexStructureExtractionApiCachesForTests,
+  reviseCodexStructureProposal,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
 import {
@@ -895,6 +896,133 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
       useCodexStructureExtractionStore.getState().projection?.proposals[0]
         ?.compiledOperation,
     ).toBeTruthy();
+  });
+});
+
+describe("reviseCodexStructureProposal concurrency", () => {
+  beforeEach(() => {
+    resetCodexStructureExtractionStoreForTests();
+    resetCodexStructureExtractionApiCachesForTests();
+    appendRevisionMock.mockReset();
+  });
+
+  function seedEditableEntity() {
+    const proposal = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-1",
+        canonicalName: "ライカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ライカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-edit" },
+    );
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId: "run-edit",
+      projectId: "p1",
+      workspacePath: "/w",
+      openRevision: 1,
+      proposalSetId: "ps-1",
+      folderId: "folder-a",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-edit",
+          revisionId: "rev-1",
+          proposalKey: "ne-1",
+          status: "unreviewed",
+          applicability: "applicable",
+          displayTitle: "ライカ",
+          proposal,
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "create-new",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact"],
+            hasExistingCandidates: false,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+        },
+      ],
+      relationProposals: [],
+      entityCount: 1,
+      relationCount: 0,
+      unresolvedCount: 0,
+      approvedCount: 0,
+      catalog: { entities: [], types: [] },
+    });
+  }
+
+  it("keeps first successful revision when a later queued edit fails", async () => {
+    seedEditableEntity();
+    appendRevisionMock
+      .mockResolvedValueOnce({ revisionId: "rev-2" })
+      .mockRejectedValueOnce(new Error("NEX_PROPOSAL_REVISION_CONFLICT"));
+
+    const first = reviseCodexStructureProposal({
+      proposalId: "prop-edit",
+      patch: { canonicalName: "灰の目" },
+    });
+    const second = reviseCodexStructureProposal({
+      proposalId: "prop-edit",
+      patch: { summary: "監察官" },
+    });
+
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).rejects.toThrow(/NEX_PROPOSAL_REVISION_CONFLICT/);
+
+    const row =
+      useCodexStructureExtractionStore.getState().projection?.proposals[0];
+    expect(row?.revisionId).toBe("rev-2");
+    expect(row?.displayTitle).toBe("灰の目");
+    expect(row?.proposal.payload.canonicalName).toBe("灰の目");
+  });
+
+  it("does not resurrect cleared projection when a late edit fails after folder change", async () => {
+    seedEditableEntity();
+    let release: ((value: { revisionId: string }) => void) | undefined;
+    appendRevisionMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    const pending = reviseCodexStructureProposal({
+      proposalId: "prop-edit",
+      patch: { canonicalName: "灰の目" },
+    });
+
+    // Wait until Native appendRevision is in-flight (release captured).
+    await vi.waitFor(() => {
+      expect(release).toEqual(expect.any(Function));
+    });
+
+    // Folder change clears projection while Native is still in flight.
+    resetCodexStructureExtractionStoreForTests();
+    release!({ revisionId: "rev-2" });
+    await expect(pending).resolves.toBeUndefined();
+    expect(useCodexStructureExtractionStore.getState().projection).toBeNull();
   });
 });
 

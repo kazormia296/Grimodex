@@ -8,7 +8,7 @@ import type { NarrativeExtractionArtifact } from "@/features/narrative-extractio
 
 const inlineArtifactIndex = new Map<string, NarrativeExtractionArtifact>();
 
-/** In-flight / completed Native hydrate per run+project (cold-start restore). */
+/** In-flight Native hydrate only (mutable proposal/decision/application must re-fetch). */
 const hydrateInFlight = new Map<
   string,
   Promise<GetRunReviewBundleResult | null>
@@ -123,23 +123,20 @@ export async function hydrateInlineArtifactsFromNative(input: {
   const pending = narrativeExtractionGetRunReviewBundle({
     runId: input.runId,
     projectId: input.projectId,
-  })
-    .then((bundle) => {
-      for (const artifact of bundle.artifacts) {
-        rememberBundleArtifact(artifact);
-      }
-      return bundle;
-    })
-    .catch((error: unknown) => {
-      hydrateInFlight.delete(key);
-      throw error;
-    });
+  }).then((bundle) => {
+    for (const artifact of bundle.artifacts) {
+      rememberBundleArtifact(artifact);
+    }
+    return bundle;
+  });
 
   hydrateInFlight.set(key, pending);
   try {
     return await pending;
   } finally {
-    // Keep resolved promise for coalescing concurrent callers in the same session.
+    // Drop completed/failed entry so later restores re-read mutable proposal state.
+    // Concurrent callers still coalesce via the in-flight Map entry above.
+    hydrateInFlight.delete(key);
   }
 }
 

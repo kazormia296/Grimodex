@@ -987,6 +987,329 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     ).rejects.toThrow(/NEX_APPLICATION_REVISION_MISMATCH/);
   });
 
+  it("re-fetches Native review bundle on second restore (no completed-promise cache)", async () => {
+    const entityA = sampleEntityProposal("prop-a");
+    const entityB = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-2",
+        canonicalName: "ベルカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ベルカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-b" },
+    );
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "quote",
+        documentRef: "doc:1",
+        method: "exact" as const,
+      },
+    ];
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-refetch",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+
+    const baseArtifact = {
+      artifactId: "art",
+      runId: "run-refetch",
+      taskId: "t1",
+      attemptId: "a1",
+      artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+      payloadStorage: "inline-json" as const,
+      payloadJson: {
+        proposalSetId: "set-refetch",
+        evidenceByProposalId: {
+          "prop-a": evidence,
+          "prop-b": evidence,
+        },
+        relationLabelsByProposalId: {},
+      },
+      payloadRef: null,
+      payloadDigest: null,
+      createdAt: "t",
+    };
+    const baseSet = {
+      proposalSetId: "set-refetch",
+      runId: "run-refetch",
+      projectId: "project-cold",
+      setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+      status: "draft",
+      summaryJson: {
+        catalog: { entities: [], types: [] },
+        existingRelations: [],
+        relationDependencies: {},
+      },
+      createdAt: "t",
+      updatedAt: "t",
+      version: 0,
+    };
+
+    getRunReviewBundleMock
+      .mockResolvedValueOnce({
+        runId: "run-refetch",
+        projectId: "project-cold",
+        artifacts: [baseArtifact],
+        proposalSet: baseSet,
+        proposals: [
+          {
+            proposalId: "prop-a",
+            proposalSetId: "set-refetch",
+            proposalKey: "ne-1",
+            kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+            status: "approved",
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: entityA.payload,
+            }) as unknown as Record<string, unknown>,
+            currentRevisionId: "rev-a",
+            createdAt: "t",
+            updatedAt: "t",
+            latestDecision: {
+              decisionId: "d-a",
+              proposalId: "prop-a",
+              revisionId: "rev-a",
+              decision: "approved",
+              decisionJson: {},
+              createdAt: "t",
+              createdBy: "r",
+            },
+            application: {
+              commitId: "c1",
+              revisionId: "rev-a",
+              appliedEntityKind: "codex_entry",
+              appliedEntityId: "entry-a",
+              createdAt: "t",
+            },
+          },
+          {
+            proposalId: "prop-b",
+            proposalSetId: "set-refetch",
+            proposalKey: "ne-2",
+            kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+            status: "unreviewed",
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: entityB.payload,
+            }) as unknown as Record<string, unknown>,
+            currentRevisionId: "rev-b1",
+            createdAt: "t",
+            updatedAt: "t",
+            latestDecision: null,
+            application: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        runId: "run-refetch",
+        projectId: "project-cold",
+        artifacts: [baseArtifact],
+        proposalSet: baseSet,
+        proposals: [
+          {
+            proposalId: "prop-a",
+            proposalSetId: "set-refetch",
+            proposalKey: "ne-1",
+            kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+            status: "approved",
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: entityA.payload,
+            }) as unknown as Record<string, unknown>,
+            currentRevisionId: "rev-a",
+            createdAt: "t",
+            updatedAt: "t",
+            latestDecision: {
+              decisionId: "d-a",
+              proposalId: "prop-a",
+              revisionId: "rev-a",
+              decision: "approved",
+              decisionJson: {},
+              createdAt: "t",
+              createdBy: "r",
+            },
+            application: {
+              commitId: "c1",
+              revisionId: "rev-a",
+              appliedEntityKind: "codex_entry",
+              appliedEntityId: "entry-a",
+              createdAt: "t",
+            },
+          },
+          {
+            proposalId: "prop-b",
+            proposalSetId: "set-refetch",
+            proposalKey: "ne-2",
+            kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+            status: "approved",
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: entityB.payload,
+            }) as unknown as Record<string, unknown>,
+            currentRevisionId: "rev-b2",
+            createdAt: "t",
+            updatedAt: "t",
+            latestDecision: {
+              decisionId: "d-b",
+              proposalId: "prop-b",
+              revisionId: "rev-b2",
+              decision: "approved",
+              decisionJson: {},
+              createdAt: "t",
+              createdBy: "r",
+            },
+            application: {
+              commitId: "c2",
+              revisionId: "rev-b2",
+              appliedEntityKind: "codex_entry",
+              appliedEntityId: "entry-b",
+              createdAt: "t",
+            },
+          },
+        ],
+      });
+
+    const scope = {
+      projectId: "project-cold",
+      workspacePath: "/ws",
+      openRevision: 1,
+      folderId: "folder-cold",
+    };
+
+    const first = await getCodexStructureExtractionReview("run-refetch", scope);
+    expect(
+      first.proposals.find((p) => p.proposalId === "prop-b")?.application,
+    ).toBeNull();
+    expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1);
+
+    // Simulate Dialog Apply clear — do not reset artifact index between restores.
+    resetCodexStructureExtractionStoreForTests();
+    resetCodexStructureExtractionApiCachesForTests();
+
+    const second = await getCodexStructureExtractionReview(
+      "run-refetch",
+      scope,
+    );
+    expect(getRunReviewBundleMock).toHaveBeenCalledTimes(2);
+    expect(
+      second.proposals.find((p) => p.proposalId === "prop-b")?.application
+        ?.appliedEntityId,
+    ).toBe("entry-b");
+    expect(second.approvedCount).toBe(0);
+  });
+
+  it("fails closed when an unapplied proposal lacks Evidence entries", async () => {
+    const entity = sampleEntityProposal("prop-no-ev");
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-no-ev",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-no-ev",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art",
+          runId: "run-no-ev",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "set-no-ev",
+            evidenceByProposalId: {},
+            relationLabelsByProposalId: {},
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "t",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "set-no-ev",
+        runId: "run-no-ev",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {},
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-no-ev",
+          proposalSetId: "set-no-ev",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entity.payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-1",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+          application: null,
+        },
+      ],
+    });
+
+    await expect(
+      getCodexStructureExtractionReview("run-no-ev", {
+        projectId: "project-cold",
+        workspacePath: "/ws",
+        openRevision: 1,
+        folderId: "folder-cold",
+      }),
+    ).rejects.toThrow(/missing evidence for proposal prop-no-ev/);
+  });
+
   it("rejects folder mismatch before hydrate", async () => {
     getRunMock.mockResolvedValue({
       run: {
