@@ -1969,9 +1969,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_thread
                 ON plot_thread_scene_links(thread_id);
             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_node
-                ON plot_thread_scene_links(node_id);
-            CREATE INDEX IF NOT EXISTS idx_plot_thread_links_semantic_key
-                ON plot_thread_scene_links(semantic_key);",
+                ON plot_thread_scene_links(node_id);"
+            // semantic_key index is created only after SCHEMA 11
+            // add_column_if_missing, so schema-2 → current upgrades do not
+            // CREATE INDEX against a pre-OCC table that still lacks the column.
         )?;
 
         // プロットスレッドの分岐 / 合流エッジ。特定シーン(at_node_id)で from→to の
