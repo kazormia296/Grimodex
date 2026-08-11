@@ -90,10 +90,25 @@ test("browser configs isolate deterministic WebGL from the normal suite", async 
   const webglConfig = await read("vitest.webgl.config.ts");
 
   assert.match(browserConfig, /provider:\s*playwright\(\)/);
-  assert.match(
+  const normalSuiteExclusions = /exclude:\s*\[([\s\S]*?)\]/.exec(
     browserConfig,
-    /exclude:\s*\[[\s\S]*?"src\/features\/editor\/zen\/ZenMultipassCanvas\.browser\.test\.tsx",?[\s\S]*?"src\/features\/editor\/zen\/ZenBlurResearchRunner\.browser\.test\.tsx",?[\s\S]*?\]/,
-  );
+  )?.[1];
+  assert.ok(normalSuiteExclusions, "normal browser exclusions are required");
+  for (const dedicatedRunner of [
+    "ZenMultipassCanvas",
+    "ZenBlurResearchRunner",
+    "ZenShaderResearchRunner",
+    "ZenShaderAbbaResearchRunner",
+    "ZenShaderCadenceResearchRunner",
+    "ZenShaderBaselineResearchRunner",
+  ]) {
+    assert.match(
+      normalSuiteExclusions,
+      new RegExp(
+        `src/features/editor/zen/${dedicatedRunner}\\.browser\\.test\\.tsx`,
+      ),
+    );
+  }
   assert.doesNotMatch(browserConfig, /swiftshader/i);
   assert.doesNotMatch(browserConfig, /connectTimeout/);
   assert.doesNotMatch(browserConfig, /api:\s*\{/);
@@ -136,6 +151,7 @@ test("CI runs Browser, WebGL, and Storybook as independent jobs", async () => {
 
   const webglCommands = allRunCommands(webgl);
 
+  assert.match(webglCommands, /pnpm test:zen-shader-webgl --run/);
   assert.doesNotMatch(allRunCommands(browser), /--suite storybook/);
   assert.doesNotMatch(allRunCommands(browser), /--suite webgl/);
   assert.doesNotMatch(webglCommands, /--suite browser|--suite storybook/);

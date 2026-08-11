@@ -39,6 +39,10 @@ export default defineConfig({
     exclude: [
       "src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx",
       "src/features/editor/zen/ZenBlurResearchRunner.browser.test.tsx",
+      "src/features/editor/zen/ZenShaderResearchRunner.browser.test.tsx",
+      "src/features/editor/zen/ZenShaderAbbaResearchRunner.browser.test.tsx",
+      "src/features/editor/zen/ZenShaderCadenceResearchRunner.browser.test.tsx",
+      "src/features/editor/zen/ZenShaderBaselineResearchRunner.browser.test.tsx",
     ],
   },
 });

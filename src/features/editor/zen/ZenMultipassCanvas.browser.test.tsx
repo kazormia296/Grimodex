@@ -22,6 +22,7 @@ import type { ZenShaderLayouts } from "./useZenShaderLayouts";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
+  buildZenMultipassSceneFragment,
 } from "./zenMultipassPipeline";
 import { buildZenMultipassCompositeFragment as buildZenBlurResearchCompositeFragment } from "./zenBlurResearchPipeline";
 
@@ -126,6 +127,13 @@ precision highp float;
 out vec4 fragColor;
 void main() {
   fragColor = vec4(vec3(0.5), 1.0);
+}`;
+
+const TRANSLUCENT_STATIC_SCENE = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(0.25, 0.5, 0.75, 0.25);
 }`;
 
 const STATIC_UNIFORM_SCENE = `#version 300 es
@@ -1001,6 +1009,13 @@ function canvasFrom(container: HTMLElement) {
 const WEBGL_ATTRIBUTES = {
   alpha: false,
   antialias: false,
+  preserveDrawingBuffer: true,
+} satisfies WebGLContextAttributes;
+
+const PRODUCTION_WEBGL_ATTRIBUTES = {
+  alpha: true,
+  antialias: false,
+  premultipliedAlpha: true,
   preserveDrawingBuffer: true,
 } satisfies WebGLContextAttributes;
 
@@ -2121,6 +2136,93 @@ describe("ZenMultipassCanvas live updates", () => {
     } finally {
       clear.mockRestore();
     }
+  });
+
+  it("switches direct and multipass rendering in one context with identical opaque pixels", () => {
+    const frames = new ManualAnimationFrames();
+    _setZenMultipassFaultInjectionForTests({ animationFrameDriver: frames });
+    const ref = createRef<PaperShaderElement>();
+    const props = {
+      ref,
+      "data-paper-shader": "product-direct-probe",
+      sceneFragment: buildZenMultipassSceneFragment(TRANSLUCENT_STATIC_SCENE),
+      sceneUniforms: {
+        ...SIZING_UNIFORMS,
+        u_zenDitherStrength: 1,
+        u_zenDitherSize: 3,
+        u_zenDitherLevels: 4,
+        u_zenHalftoneStrength: 0.6,
+        u_zenHalftoneSize: 8,
+        u_zenHalftoneAngle: 27,
+        u_zenHalftoneSoftness: 1,
+      },
+      compositeFragment: STATIC_UNIFORM_COMPOSITE,
+      compositeUniforms: {
+        u_compositeTint: [1, 1, 1],
+        u_zenGlassEnabled: 0,
+        u_zenGlassBlur: 0,
+      },
+      minPixelRatio: 1,
+      maxPixelCount: 96 * 64,
+      speed: 0,
+      style: { position: "relative" as const, width: 64, height: 64 },
+      webGlContextAttributes: PRODUCTION_WEBGL_ATTRIBUTES,
+    };
+    const view = render(
+      <ZenMultipassCanvas {...props} renderPipeline="direct" />,
+    );
+    const canvas = canvasFrom(view.container);
+    const gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 context is unavailable");
+
+    frames.step(0);
+    const directPixels = readCanvasPixels(canvas);
+    expect(directPixels[3]).toBe(255);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 1,
+      renderPipeline: "direct",
+      sceneTargetWidth: 0,
+      sceneTargetHeight: 0,
+      isStaticFrameReady: true,
+    });
+
+    ref.current?.paperShaderMount?.resetPerformanceStats?.();
+    view.rerender(<ZenMultipassCanvas {...props} renderPipeline="multipass" />);
+    expect(canvas.getContext("webgl2")).toBe(gl);
+    frames.step(16);
+    const multipassPixels = readCanvasPixels(canvas);
+    expect(multipassPixels).toEqual(directPixels);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 2,
+      renderPipeline: "multipass",
+      sceneTargetWidth: 64,
+      sceneTargetHeight: 64,
+      isStaticFrameReady: true,
+    });
+
+    ref.current?.paperShaderMount?.resetPerformanceStats?.();
+    view.rerender(
+      <ZenMultipassCanvas
+        {...props}
+        renderPipeline="direct"
+        style={{ position: "relative", width: 96, height: 48 }}
+      />,
+    );
+    window.dispatchEvent(new Event("resize"));
+    frames.step(32);
+    expect(canvas.getContext("webgl2")).toBe(gl);
+    expect(canvas.width).toBe(96);
+    expect(canvas.height).toBe(48);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 1,
+      renderPipeline: "direct",
+      sceneTargetWidth: 64,
+      sceneTargetHeight: 64,
+      isStaticFrameReady: true,
+    });
   });
 
   it("publishes one coherent GPU timing sample with actual draw calls", async () => {

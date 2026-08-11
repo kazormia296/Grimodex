@@ -511,7 +511,9 @@ void main() {
   vec4 sceneColor = fragColor;
   sceneColor.rgb = applyZenDither(sceneColor.rgb);
   sceneColor.rgb = applyZenColorHalftone(sceneColor.rgb);
-  fragColor = sceneColor;
+  // Composite always produces an opaque canvas. Keep the Scene program
+  // equally opaque when it is routed directly to the default framebuffer.
+  fragColor = vec4(sceneColor.rgb, 1.0);
 }
 `;
 
