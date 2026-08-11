@@ -33,14 +33,35 @@ export interface AgentCodexCreateInput {
   sourceChatMessageId?: string;
   model?: string | null;
   traceId?: string | null;
+  excludedAliases?: string | null;
+  readings?: string | null;
+  tagsCache?: string | null;
+}
+
+export interface TrackedWriteOpts {
+  /** undo_journal/change-event に記録する書き込み面。 */
+  surface?: string;
+  /** AI policy gate を UI の手動編集経路では省略する。 */
+  skipPolicyGate?: boolean;
+  /** 明示 project スコープ。 */
+  projectId?: string;
 }
 
 export interface AgentCodexUpdateInput {
   entryId: string;
-  name?: string;
-  summary?: string;
-  content?: string;
-  aliases?: string;
+  type?: string;
+  name?: string | null;
+  summary?: string | null;
+  content?: string | null;
+  aliases?: string | null;
+  excludedAliases?: string | null;
+  readings?: string | null;
+  tagsCache?: string | null;
+  parentId?: string | null;
+  contextMode?: string | null;
+  icon?: string | null;
+  childrenBudget?: string | null;
+  notes?: string | null;
   model?: string | null;
   traceId?: string | null;
 }
@@ -114,12 +135,13 @@ function applyAiMarkToDoc(
 export async function agentCreateCodexEntry(
   input: AgentCodexCreateInput,
   chatMessageId?: string | null,
+  writeOpts?: TrackedWriteOpts,
 ): Promise<CodexEntry> {
-  if (blockIfPolicyOff("knowledgeWrite")) {
+  if (!writeOpts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
 
-  const projectId = getCurrentProjectId();
+  const projectId = writeOpts?.projectId ?? getCurrentProjectId();
   const entryId = input.entryId ?? crypto.randomUUID();
   const content = input.content
     ? markCodexContentAsAi(input.content, {
@@ -144,11 +166,15 @@ export async function agentCreateCodexEntry(
       entryId,
       projectId,
       sessionId: getRecorderSessionId(),
+      surface: writeOpts?.surface ?? null,
       typeSlug: input.type,
       name: input.name,
       summary: input.summary ?? null,
       content: content ?? null,
       aliases: input.aliases ?? null,
+      excludedAliases: input.excludedAliases ?? null,
+      readings: input.readings ?? null,
+      tagsCache: input.tagsCache ?? null,
       parentId: input.parentId ?? null,
       sourceChatMessageId: input.sourceChatMessageId ?? chatMessageId ?? null,
       model: input.model ?? null,
@@ -201,13 +227,16 @@ export async function agentCreateCodexEntry(
 export async function agentUpdateCodexEntry(
   input: AgentCodexUpdateInput,
   chatMessageId?: string | null,
-  options?: { restoreHuman?: boolean },
+  options?: { restoreHuman?: boolean; writeOpts?: TrackedWriteOpts },
 ): Promise<CodexEntry> {
-  if (blockIfPolicyOff("knowledgeWrite")) {
+  if (
+    !options?.writeOpts?.skipPolicyGate &&
+    blockIfPolicyOff("knowledgeWrite")
+  ) {
     throw new Error("knowledgeWrite policy is off");
   }
 
-  const projectId = getCurrentProjectId();
+  const projectId = options?.writeOpts?.projectId ?? getCurrentProjectId();
   const before = useCodexStore
     .getState()
     .entries.find((e) => e.id === input.entryId);
@@ -241,12 +270,52 @@ export async function agentUpdateCodexEntry(
     payload: {
       projectId,
       sessionId: getRecorderSessionId(),
+      surface: options?.writeOpts?.surface ?? null,
       entryId: input.entryId,
       baseVersion: await getCodexEntryVersion(projectId, input.entryId),
-      name: input.name ?? null,
-      summary: input.summary ?? null,
-      content: content ?? null,
-      aliases: input.aliases ?? null,
+      ...(input.type !== undefined ? { typeSlug: input.type } : {}),
+      ...(input.name !== undefined
+        ? { name: input.name === null ? "" : input.name }
+        : {}),
+      ...(input.summary !== undefined
+        ? { summary: input.summary === null ? "" : input.summary }
+        : {}),
+      ...(input.content !== undefined
+        ? { content: content === null ? "" : content }
+        : {}),
+      ...(input.aliases !== undefined
+        ? { aliases: input.aliases === null ? "" : input.aliases }
+        : {}),
+      ...(input.excludedAliases !== undefined
+        ? {
+            excludedAliases:
+              input.excludedAliases === null ? "" : input.excludedAliases,
+          }
+        : {}),
+      ...(input.readings !== undefined
+        ? { readings: input.readings === null ? "" : input.readings }
+        : {}),
+      ...(input.tagsCache !== undefined
+        ? { tagsCache: input.tagsCache === null ? "" : input.tagsCache }
+        : {}),
+      ...(input.parentId !== undefined
+        ? { parentId: input.parentId === null ? "" : input.parentId }
+        : {}),
+      ...(input.contextMode !== undefined
+        ? { contextMode: input.contextMode === null ? "" : input.contextMode }
+        : {}),
+      ...(input.icon !== undefined
+        ? { icon: input.icon === null ? "" : input.icon }
+        : {}),
+      ...(input.childrenBudget !== undefined
+        ? {
+            childrenBudget:
+              input.childrenBudget === null ? "" : input.childrenBudget,
+          }
+        : {}),
+      ...(input.notes !== undefined
+        ? { notes: input.notes === null ? "" : input.notes }
+        : {}),
       model: restoreHuman ? null : (input.model ?? null),
       chatMessageId: chatMessageId ?? null,
       traceId: input.traceId ?? null,

@@ -37,8 +37,10 @@ use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent}
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
+use grimodex_db::codex_writes::AgentCodexMutationPayload;
 use grimodex_db::domain_writes::{
-    self, CodexRenameUndoPayload, CreateScanStagingProjectPayload, ReplaceAuthorshipLanePayload,
+    self, CodexRenameApplyPayload, CodexRenameUndoPayload, CreateScanStagingProjectPayload,
+    ReplaceAuthorshipLanePayload,
     SetEntityTagsPayload, UndoTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
@@ -1891,6 +1893,20 @@ impl Backend {
             let payload: CodexRenameUndoPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
                 domain_writes::undo_codex_rename(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_rename_apply(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CodexRenameApplyPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::apply_codex_rename(
+                    db, payload,
+                )?)?)
             })
         })
         .await
@@ -4022,6 +4038,28 @@ impl Backend {
             "payload",
             payload,
             agent_writes::agent_codex_update_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_codex_delete(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::agent_writes::agent_codex_delete_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_codex_mutate(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::codex_writes::agent_codex_mutate_impl,
         )
         .await
     }

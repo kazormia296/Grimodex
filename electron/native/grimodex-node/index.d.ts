@@ -114,6 +114,7 @@ export declare class Backend {
   authorshipReplaceLane(payload: any): Promise<void>;
   entityTagsSet(payload: any): Promise<void>;
   codexRenameUndo(payload: any): Promise<void>;
+  codexRenameApply(payload: any): Promise<string>;
   scanStagingProjectCreate(payload: any): Promise<void>;
   treePlanUndo(payload: any): Promise<void>;
   mapWriteBundle(payload: any): Promise<void>;
@@ -723,6 +724,8 @@ export declare class Backend {
   foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
   agentCodexCreate(payload: any): Promise<string>;
   agentCodexUpdate(payload: any): Promise<string>;
+  agentCodexDelete(payload: any): Promise<string>;
+  agentCodexMutate(payload: any): Promise<string>;
   agentWriteBundle(payload: any): Promise<string>;
   agentSnippetCreate(payload: any): Promise<string>;
   agentProposeSceneBody(payload: any): Promise<string>;

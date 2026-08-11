@@ -18,6 +18,7 @@ import {
   type EntityBaselineRef,
 } from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 import {
   emptySkipReport,
@@ -350,10 +351,31 @@ async function restoreLegacyContentOnly(snapshotId: string): Promise<number> {
         })
         .where(eq(treeNodes.id, v.entityId));
     } else if (v.entityType === "codex_entry") {
-      await db
-        .update(codexEntries)
-        .set({ content: v.content, updatedAt: now })
-        .where(eq(codexEntries.id, v.entityId));
+      const live = await db
+        .select({
+          projectId: codexEntries.projectId,
+          version: codexEntries.version,
+        })
+        .from(codexEntries)
+        .where(eq(codexEntries.id, v.entityId))
+        .limit(1);
+      if (live[0]) {
+        await invoke("agent_codex_update", {
+          payload: {
+            projectId: live[0].projectId,
+            sessionId: getRecorderSessionId(),
+            surface: "manual",
+            entryId: v.entityId,
+            baseVersion: live[0].version,
+            content: v.content,
+            model: null,
+            chatMessageId: null,
+            traceId: null,
+            authorshipSpans: null,
+            authorshipSpanLanes: null,
+          },
+        });
+      }
     } else if (v.entityType === "snippet") {
       await db
         .update(snippets)

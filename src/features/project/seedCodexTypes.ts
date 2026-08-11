@@ -8,6 +8,8 @@ import {
   codexEntryTags,
 } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
+import { createCodexEntry } from "@/features/codex/api";
+import { createDefinition, upsertValue } from "@/features/codex/detailApi";
 
 /**
  * Run a SELECT keyed by an id list in chunks so the bound-parameter count
@@ -140,7 +142,7 @@ export async function seedCodexTypesFromProject(
       }
       const newDefId = crypto.randomUUID();
       definitionIdMap.set(def.id, newDefId);
-      await db.insert(codexDetailDefinitions).values({
+      await createDefinition({
         id: newDefId,
         projectId: targetProjectId,
         typeSlug: def.typeSlug,
@@ -149,7 +151,6 @@ export async function seedCodexTypesFromProject(
         fieldConfig: def.fieldConfig,
         sortOrder: def.sortOrder,
         includeInContext: def.includeInContext,
-        createdAt: new Date().toISOString(),
       });
     }
 
@@ -170,7 +171,7 @@ export async function seedCodexTypesFromProject(
         ? (entryIdMap.get(entry.parentId) ?? null)
         : null;
 
-      await db.insert(codexEntries).values({
+      await createCodexEntry({
         id: newEntryId,
         projectId: targetProjectId,
         parentId: newParentId,
@@ -186,8 +187,6 @@ export async function seedCodexTypesFromProject(
         childrenBudget: entry.childrenBudget,
         sourceChatMessageId: null,
         notes: entry.notes,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
       });
     }
   }
@@ -207,12 +206,7 @@ export async function seedCodexTypesFromProject(
     const newDefId = definitionIdMap.get(val.definitionId);
     if (!newEntryId || !newDefId) continue;
 
-    await db.insert(codexDetailValues).values({
-      id: crypto.randomUUID(),
-      entryId: newEntryId,
-      definitionId: newDefId,
-      value: val.value,
-    });
+    await upsertValue(newEntryId, newDefId, val.value);
   }
 
   await copyEntryTags(copiedSourceEntryIds, entryIdMap, targetProjectId);

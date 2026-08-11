@@ -15,14 +15,9 @@ import {
   markImpactBaselinePhaseVisibleDeleted,
 } from "./impactBaselineVisibility";
 import { PhaseVersionConflictError } from "./phaseOcc";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 
 export type { CodexEntryPhase, CodexPhaseDetailOverride };
-
-type BatchStatement = { sql: string; params: unknown[]; method: string };
-
-function toRun(query: { sql: string; params: unknown[] }): BatchStatement {
-  return { sql: query.sql, params: query.params, method: "run" };
-}
 
 function isAiVisibleMode(mode: unknown): boolean {
   return mode === "always" || mode === "mentioned";
@@ -101,14 +96,22 @@ export async function createPhase(
     // the fail-closed marker before the row becomes active.
     await markImpactBaselinePhasesRestricted(data.entryId);
   }
-  const now = new Date().toISOString();
-  const createdAt = data.createdAt ?? now;
+  const createdAt = data.createdAt ?? new Date().toISOString();
   let rows: CodexEntryPhase[];
   try {
-    rows = await db
-      .insert(codexEntryPhases)
-      .values({
-        id: data.id,
+    await invoke("agent_codex_mutate", {
+      payload: {
+        operation: "phase.create",
+        projectId: (
+          await db
+            .select({ projectId: codexEntries.projectId })
+            .from(codexEntries)
+            .where(eq(codexEntries.id, data.entryId))
+            .limit(1)
+        )[0]?.projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        phaseId: data.id,
         entryId: data.entryId,
         anchorNodeId: data.anchorNodeId ?? null,
         label: data.label,
@@ -117,12 +120,12 @@ export async function createPhase(
         contextModeOverride: data.contextModeOverride ?? null,
         version: data.version ?? 0,
         createdAt,
-        updatedAt: data.updatedAt ?? createdAt,
-      })
-      .returning();
+        detailOverrides: [],
+      },
+    });
+    const created = await getPhase(data.id);
+    rows = created ? [created] : [];
   } catch (error) {
-    // History resurrection must never overwrite/reuse an id that appeared
-    // after the original row was deleted. Preserve unrelated DB errors.
     const existing = await getPhase(data.id).catch(() => undefined);
     if (existing) throw new PhaseVersionConflictError(data.id);
     throw error;
@@ -164,37 +167,51 @@ export async function updatePhase(
     data,
     "contextModeOverride",
   );
-  const current = changesContextMode ? await getPhase(id) : undefined;
-  if (changesContextMode && !current) return undefined;
+  const current = await getPhase(id);
+  if (!current) return undefined;
   const nextContextMode = data.contextModeOverride;
   if (current && changesContextMode && !isAiVisibleMode(nextContextMode)) {
     // null is inherited and therefore not proof of visibility.
     await markImpactBaselinePhasesRestricted(current.entryId);
   }
-  const rows = await db
-    .update(codexEntryPhases)
-    .set({
-      ...data,
-      version: opts.baseVersion + 1,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(
-      and(
-        eq(codexEntryPhases.id, id),
-        eq(codexEntryPhases.version, opts.baseVersion),
-      ),
-    )
-    .returning();
-  const updated = rows[0];
-  if (!updated) {
-    const exists = await db
-      .select({ id: codexEntryPhases.id })
-      .from(codexEntryPhases)
-      .where(eq(codexEntryPhases.id, id))
-      .limit(1);
-    if (exists[0]) throw new PhaseVersionConflictError(id);
-    return undefined;
+  try {
+    await invoke("agent_codex_mutate", {
+      payload: {
+        operation: "phase.update",
+        projectId: (
+          await db
+            .select({ projectId: codexEntries.projectId })
+            .from(codexEntries)
+            .where(eq(codexEntries.id, current.entryId))
+            .limit(1)
+        )[0]?.projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        phaseId: id,
+        baseVersion: opts.baseVersion,
+        ...(data.label !== undefined ? { label: data.label } : {}),
+        ...(data.anchorNodeId !== undefined
+          ? { anchorNodeId: data.anchorNodeId }
+          : {}),
+        ...(data.summaryOverride !== undefined
+          ? { summaryOverride: data.summaryOverride }
+          : {}),
+        ...(data.contentOverride !== undefined
+          ? { contentOverride: data.contentOverride }
+          : {}),
+        ...(data.contextModeOverride !== undefined
+          ? { contextModeOverride: data.contextModeOverride }
+          : {}),
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new PhaseVersionConflictError(id);
+    }
+    throw error;
   }
+  const updated = await getPhase(id);
+  if (!updated) return undefined;
   if (updated && changesContextMode && isAiVisibleMode(nextContextMode)) {
     // Post-write failure remains fail-closed: Impact will keep redacting.
     await markImpactBaselinePhaseVisible(updated.entryId, id).catch(() => {});
@@ -228,22 +245,28 @@ export async function deletePhase(
     // failed DELETE only causes an extra redaction and cannot expose content.
     await markImpactBaselinePhasesRestricted(phase.entryId);
   }
-  const deleted = await db
-    .delete(codexEntryPhases)
-    .where(
-      opts?.expectedVersion === undefined
-        ? eq(codexEntryPhases.id, id)
-        : and(
-            eq(codexEntryPhases.id, id),
-            eq(codexEntryPhases.version, opts.expectedVersion),
-          ),
-    )
-    .returning({ id: codexEntryPhases.id });
-  if (!deleted[0]) {
+  try {
+    await invoke("agent_codex_mutate", {
+      payload: {
+        operation: "phase.delete",
+        projectId: (
+          await db
+            .select({ projectId: codexEntries.projectId })
+            .from(codexEntries)
+            .where(eq(codexEntries.id, phase.entryId))
+            .limit(1)
+        )[0]?.projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        phaseId: id,
+        expectedVersion: opts?.expectedVersion ?? null,
+      },
+    });
+  } catch (error) {
     if (opts?.expectedVersion !== undefined) {
       throw new PhaseVersionConflictError(id);
     }
-    return false;
+    throw error;
   }
   if (provablyVisible) {
     // The row is already gone. If this best-effort marker fails, missing
@@ -321,77 +344,37 @@ export async function patchPhaseAggregate(
     await markImpactBaselinePhasesRestricted(current.entryId);
   }
 
-  const now = new Date().toISOString();
-  const resultVersion = input.baseVersion + 1;
-  const patch: Partial<{
-    label: string;
-    anchorNodeId: string | null;
-    summaryOverride: string | null;
-    contentOverride: string | null;
-    contextModeOverride: string | null;
-  }> = {};
-  if (input.label !== undefined) patch.label = input.label;
-  if (Object.prototype.hasOwnProperty.call(input, "anchorNodeId")) {
-    patch.anchorNodeId = input.anchorNodeId ?? null;
-  }
-  if (Object.prototype.hasOwnProperty.call(input, "summary")) {
-    patch.summaryOverride = input.summary ?? null;
-  }
-  if (Object.prototype.hasOwnProperty.call(input, "content")) {
-    patch.contentOverride = input.content ?? null;
-  }
-  if (changesContextMode) {
-    patch.contextModeOverride = nextContextMode;
-  }
-
-  const statements: BatchStatement[] = [
-    toRun(
-      db
-        .update(codexEntryPhases)
-        .set({
-          ...patch,
-          version: resultVersion,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(codexEntryPhases.id, input.phaseId),
-            eq(codexEntryPhases.version, input.baseVersion),
-          ),
-        )
-        .toSQL(),
-    ),
-    // Abort the whole transaction when the CAS UPDATE matched no rows.
-    {
-      sql: "SELECT CASE WHEN changes() = 0 THEN RAISE(ABORT, 'Phase version conflict') END",
-      params: [],
-      method: "run",
-    },
-    toRun(
-      db
-        .delete(codexPhaseDetailOverrides)
-        .where(eq(codexPhaseDetailOverrides.phaseId, input.phaseId))
-        .toSQL(),
-    ),
-  ];
-
-  for (const override of input.detailOverrides) {
-    statements.push(
-      toRun(
-        db
-          .insert(codexPhaseDetailOverrides)
-          .values({
-            phaseId: input.phaseId,
-            definitionId: override.definitionId,
-            value: override.value,
-          })
-          .toSQL(),
-      ),
-    );
-  }
-
   try {
-    await invoke("db_execute_batch", { statements });
+    await invoke("agent_codex_mutate", {
+      payload: {
+        operation: "phase.aggregate",
+        projectId: (
+          await db
+            .select({ projectId: codexEntries.projectId })
+            .from(codexEntries)
+            .where(eq(codexEntries.id, current.entryId))
+            .limit(1)
+        )[0]?.projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        phaseId: input.phaseId,
+        baseVersion: input.baseVersion,
+        ...(input.label !== undefined ? { label: input.label } : {}),
+        ...(Object.prototype.hasOwnProperty.call(input, "anchorNodeId")
+          ? { anchorNodeId: input.anchorNodeId }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(input, "summary")
+          ? { summaryOverride: input.summary ?? null }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(input, "content")
+          ? { contentOverride: input.content ?? null }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(input, "contextMode")
+          ? { contextModeOverride: input.contextMode ?? null }
+          : {}),
+        detailOverrides: input.detailOverrides,
+      },
+    });
   } catch (error) {
     const message = String(error);
     if (
@@ -404,7 +387,7 @@ export async function patchPhaseAggregate(
   }
 
   const phase = await getPhase(input.phaseId);
-  if (!phase || phase.version !== resultVersion) {
+  if (!phase || phase.version !== input.baseVersion + 1) {
     throw new PhaseVersionConflictError(input.phaseId);
   }
   const overrides = await listDetailOverridesByPhase(input.phaseId);
