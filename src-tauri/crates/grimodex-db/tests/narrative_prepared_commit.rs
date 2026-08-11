@@ -263,3 +263,84 @@ fn apply_requires_prepared_commit_id_and_matching_session() {
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"][0]["entityId"], "event-prepared-1");
 }
+
+#[test]
+fn prepare_is_idempotent_for_same_request_and_native_digest() {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+
+    let first_payload = build_prepare(&run_id, &set_id, &proposal_id, &revision_id);
+    let first = narrative_extraction::narrative_extraction_prepare_commit(&db, first_payload.clone())
+        .expect("first prepare");
+    let second = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        PrepareCommitPayload {
+            plan_digest: "different-client-digest".to_string(),
+            ..first_payload
+        },
+    )
+    .expect("same native plan must replay");
+
+    assert_eq!(second["preparedCommitId"], first["preparedCommitId"]);
+    assert_eq!(second["planDigest"], first["planDigest"]);
+    assert_eq!(second["idempotentReplay"], true);
+}
+
+#[test]
+fn prepare_rejects_same_request_with_different_native_plan() {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+
+    let first_payload = build_prepare(&run_id, &set_id, &proposal_id, &revision_id);
+    narrative_extraction::narrative_extraction_prepare_commit(&db, first_payload.clone())
+        .expect("first prepare");
+    let mut changed_payload = first_payload;
+    changed_payload.operations[0].payload["title"] = json!("forged");
+
+    let err = narrative_extraction::narrative_extraction_prepare_commit(&db, changed_payload)
+        .expect_err("native plan change must conflict");
+    assert!(err
+        .to_string()
+        .contains("NEX_COMMIT_IDEMPOTENCY_CONFLICT"));
+}
+
+#[test]
+fn apply_version_cas_rejects_stale_version_without_poisoning_prepared_commit() {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+    )
+    .expect("prepare");
+    let prepared_commit_id = prepared["preparedCommitId"].as_str().unwrap().to_string();
+
+    let stale = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared_commit_id.clone(),
+            request_id: "req-prepared-1".to_string(),
+            session_id: "sess-prepared".to_string(),
+            expected_version: Some(99),
+        },
+    )
+    .expect_err("stale version");
+    assert!(stale.to_string().contains("NEX_COMMIT_VERSION_MISMATCH"));
+
+    let applied = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id,
+            request_id: "req-prepared-1".to_string(),
+            session_id: "sess-prepared".to_string(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("retry after stale version");
+    assert_eq!(applied["status"], "applied");
+}
