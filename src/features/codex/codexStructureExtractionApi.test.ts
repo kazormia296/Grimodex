@@ -79,6 +79,7 @@ import {
   reviseCodexStructureProposal,
   reviseCodexStructureRelation,
   startCodexStructureExtraction,
+  swapCodexStructureRelationEndpoints,
 } from "./codexStructureExtractionApi";
 import {
   buildCodexEntityProposalSafetyFlags,
@@ -1631,13 +1632,13 @@ describe("already-satisfied Relation auto-decision queue", () => {
                 coarseClass: "person",
                 typeResolution: { status: "resolved", typeRef: "T0001" },
                 binding: {
-          kind: "bind-existing",
-          entityRef: "K0001",
-          enrichment: {
-            aliasesToAdd: [],
-            summary: { kind: "leave" },
-          },
-        },
+                  kind: "bind-existing",
+                  entityRef: "K0001",
+                  enrichment: {
+                    aliasesToAdd: [],
+                    summary: { kind: "leave" },
+                  },
+                },
               },
               { proposalId: "ent-1" },
             ).payload,
@@ -1662,13 +1663,13 @@ describe("already-satisfied Relation auto-decision queue", () => {
                 coarseClass: "person",
                 typeResolution: { status: "resolved", typeRef: "T0001" },
                 binding: {
-          kind: "bind-existing",
-          entityRef: "K0002",
-          enrichment: {
-            aliasesToAdd: [],
-            summary: { kind: "leave" },
-          },
-        },
+                  kind: "bind-existing",
+                  entityRef: "K0002",
+                  enrichment: {
+                    aliasesToAdd: [],
+                    summary: { kind: "leave" },
+                  },
+                },
               },
               { proposalId: "ent-2" },
             ).payload,
@@ -1740,6 +1741,321 @@ describe("already-satisfied Relation auto-decision queue", () => {
       .projection?.proposals.find((row) => row.proposalId === "ent-2");
     expect(entity?.revisionId).toBe("rev-e2b");
     expect(entity?.proposal.payload.binding.kind).toBe("bind-existing");
+  });
+});
+
+describe("Relation self-edit already-satisfied without queue re-entry", () => {
+  const entitySafety = buildCodexEntityProposalSafetyFlags({
+    bindingKind: "bind-existing",
+    typeStatus: "resolved",
+    evidenceMethods: ["exact"],
+    hasExistingCandidates: true,
+    hasProperNameMention: true,
+    aliasesAllExplicit: true,
+  });
+
+  function seedBoundEntities(args: {
+    readonly relationDirectionality: "directed" | "symmetric";
+    readonly forwardLabel: string;
+    readonly inverseLabel: string | null;
+    readonly subjectEntityId: string;
+    readonly objectEntityId: string;
+    readonly existing: {
+      readonly fromCodexId: string;
+      readonly toCodexId: string;
+      readonly forwardLabel: string;
+      readonly inverseLabel: string | null;
+      readonly directionality: "directed" | "symmetric";
+    };
+  }) {
+    const left = bindExistingCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-1",
+        canonicalName: "ライカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "bind-existing",
+          entityRef: "K0001",
+          enrichment: {
+            aliasesToAdd: [],
+            summary: { kind: "leave" },
+          },
+        },
+      },
+      { proposalId: "ent-1" },
+    );
+    const right = bindExistingCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-2",
+        canonicalName: "ベルカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "bind-existing",
+          entityRef: "K0002",
+          enrichment: {
+            aliasesToAdd: [],
+            summary: { kind: "leave" },
+          },
+        },
+      },
+      { proposalId: "ent-2" },
+    );
+    const relationProposal = createCodexRelationProposalFromHypothesis({
+      hypothesis: {
+        hypothesisId: "hyp-rel-self",
+        observationRefs: [],
+        subjectResolved: true,
+        objectResolved: true,
+        payload: {
+          subjectEntityId: args.subjectEntityId,
+          objectEntityId: args.objectEntityId,
+          predicate: "friend_of",
+          family: "social",
+          validity: "current",
+          directionality: args.relationDirectionality,
+          forwardLabelSuggestion: args.forwardLabel,
+          inverseLabelSuggestion: args.inverseLabel,
+        },
+        epistemic: {
+          polarity: "affirmed",
+          commitment: "story-fact",
+          support: "direct",
+          narrativeFrame: "primary",
+        },
+      },
+      gate: { kind: "proposal", validity: "current" },
+      logicalRef: "rel-self",
+      relation: {
+        relationType: "friend_of",
+        directionality: args.relationDirectionality,
+        forwardLabel: args.forwardLabel,
+        inverseLabel: args.inverseLabel,
+      },
+      dependencyProposalIds: ["ent-1", "ent-2"],
+      createId: () => "rel-self",
+    })!;
+    const semanticKey = buildCodexRelationSemanticKey({
+      projectId: "p1",
+      fromCodexId: args.existing.fromCodexId,
+      toCodexId: args.existing.toCodexId,
+      relationType: "friend_of",
+      directionality: args.existing.directionality,
+      forwardLabel: args.existing.forwardLabel,
+      inverseLabel: args.existing.inverseLabel,
+    });
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId: "run-self",
+      projectId: "p1",
+      workspacePath: "/w",
+      openRevision: 1,
+      proposalSetId: "ps-1",
+      folderId: "folder-a",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: [
+        {
+          proposalId: "ent-1",
+          revisionId: "rev-e1",
+          proposalKey: "ne-1",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ライカ",
+          proposal: left,
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: entitySafety,
+        },
+        {
+          proposalId: "ent-2",
+          revisionId: "rev-e2",
+          proposalKey: "ne-2",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ベルカ",
+          proposal: right,
+          evidence: [
+            {
+              anchorId: "a2",
+              quote: "ベルカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: entitySafety,
+        },
+      ],
+      relationProposals: [
+        {
+          proposalId: "rel-self",
+          revisionId: "rev-rel-1",
+          proposalKey: "rel-self-key",
+          status: "unreviewed",
+          applicability: "applicable",
+          displayTitle: `${args.subjectEntityId === "ne-1" ? "ライカ" : "ベルカ"} → ${args.forwardLabel} → ${args.objectEntityId === "ne-2" ? "ベルカ" : "ライカ"}`,
+          proposal: relationProposal,
+          evidence: [
+            {
+              anchorId: "a3",
+              quote: args.forwardLabel,
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          subjectLabel: args.subjectEntityId === "ne-1" ? "ライカ" : "ベルカ",
+          objectLabel: args.objectEntityId === "ne-2" ? "ベルカ" : "ライカ",
+        },
+      ],
+      entityCount: 2,
+      relationCount: 1,
+      unresolvedCount: 0,
+      approvedCount: 2,
+      catalog: {
+        entities: [
+          {
+            ref: "K0001",
+            sourceKey: "entry-laika",
+            name: "ライカ",
+            typeRef: "T0001",
+          },
+          {
+            ref: "K0002",
+            sourceKey: "entry-belka",
+            name: "ベルカ",
+            typeRef: "T0001",
+          },
+        ],
+        types: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+          },
+        ],
+      },
+      existingRelations: [
+        {
+          ref: "R0001",
+          sourceKey: "rel-existing",
+          semanticKey,
+          fromCodexId: args.existing.fromCodexId,
+          toCodexId: args.existing.toCodexId,
+          relationType: "friend_of",
+          directionality: args.existing.directionality,
+          forwardLabel: args.existing.forwardLabel,
+          inverseLabel: args.existing.inverseLabel,
+        },
+      ],
+    });
+  }
+
+  beforeEach(() => {
+    resetCodexStructureExtractionStoreForTests();
+    resetCodexStructureExtractionApiCachesForTests();
+    appendRevisionMock.mockReset();
+    appendDecisionMock.mockReset();
+  });
+
+  it("completes revise→already-satisfied and decides the post-revision id", async () => {
+    seedBoundEntities({
+      relationDirectionality: "symmetric",
+      forwardLabel: "仲間",
+      inverseLabel: "仲間",
+      subjectEntityId: "ne-1",
+      objectEntityId: "ne-2",
+      existing: {
+        fromCodexId: "entry-laika",
+        toCodexId: "entry-belka",
+        forwardLabel: "友人",
+        inverseLabel: "友人",
+        directionality: "symmetric",
+      },
+    });
+    appendRevisionMock.mockResolvedValueOnce({ revisionId: "rev-rel-2" });
+    appendDecisionMock.mockResolvedValueOnce({ decisionId: "dec-1" });
+
+    await expect(
+      reviseCodexStructureRelation({
+        proposalId: "rel-self",
+        patch: { forwardLabel: "友人", inverseLabel: "友人" },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(appendDecisionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proposalId: "rel-self",
+        revisionId: "rev-rel-2",
+        decision: "deferred",
+        decisionJson: expect.objectContaining({
+          reason: "already-satisfied",
+          existingRelationRef: "R0001",
+        }),
+      }),
+    );
+    const row = useCodexStructureExtractionStore
+      .getState()
+      .projection?.relationProposals.find(
+        (item) => item.proposalId === "rel-self",
+      );
+    expect(row?.applicability).toBe("already-satisfied");
+    expect(row?.revisionId).toBe("rev-rel-2");
+  });
+
+  it("completes endpoint swap→already-satisfied and decides the post-revision id", async () => {
+    seedBoundEntities({
+      relationDirectionality: "directed",
+      forwardLabel: "師匠",
+      inverseLabel: "弟子",
+      // Extracted as reverse of the existing directed edge.
+      subjectEntityId: "ne-2",
+      objectEntityId: "ne-1",
+      existing: {
+        fromCodexId: "entry-laika",
+        toCodexId: "entry-belka",
+        forwardLabel: "師匠",
+        inverseLabel: "弟子",
+        directionality: "directed",
+      },
+    });
+    appendRevisionMock.mockResolvedValueOnce({ revisionId: "rev-rel-2" });
+    appendDecisionMock.mockResolvedValueOnce({ decisionId: "dec-1" });
+
+    await expect(
+      swapCodexStructureRelationEndpoints({ proposalId: "rel-self" }),
+    ).resolves.toBeUndefined();
+
+    expect(appendDecisionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proposalId: "rel-self",
+        revisionId: "rev-rel-2",
+        decision: "deferred",
+      }),
+    );
+    const row = useCodexStructureExtractionStore
+      .getState()
+      .projection?.relationProposals.find(
+        (item) => item.proposalId === "rel-self",
+      );
+    expect(row?.applicability).toBe("already-satisfied");
+    expect(row?.revisionId).toBe("rev-rel-2");
   });
 });
 

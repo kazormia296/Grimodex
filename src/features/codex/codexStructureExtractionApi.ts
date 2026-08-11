@@ -3097,11 +3097,46 @@ export async function reviseCodexStructureProposal(args: {
   });
 }
 
+async function appendAlreadySatisfiedDecisionUnderLock(
+  proposalId: string,
+  scope: ReviewEditScope,
+): Promise<void> {
+  const latest = useCodexStructureExtractionStore.getState().projection;
+  if (!reviewEditScopeMatches(latest, scope) || !latest) return;
+  const current = latest.relationProposals.find(
+    (item) => item.proposalId === proposalId,
+  );
+  if (
+    current?.applicability !== "already-satisfied" ||
+    !current.revisionId ||
+    current.application
+  ) {
+    return;
+  }
+  await appendDecision({
+    runId: latest.runId,
+    projectId: latest.projectId,
+    proposalId: current.proposalId,
+    revisionId: current.revisionId,
+    decision: "deferred",
+    decisionJson: {
+      reason: "already-satisfied",
+      existingRelationRef: current.existingRelationRef ?? null,
+    },
+    createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+  });
+}
+
 async function persistNewlySatisfiedRelationDecisions(
   before: CodexStructureExtractionReviewProjection,
   after: CodexStructureExtractionReviewProjection,
+  options?: {
+    /** Proposal IDs whose mutation queue is already held by the caller. */
+    readonly alreadyLockedProposalIds?: readonly string[];
+  },
 ): Promise<void> {
   const scope = captureReviewEditScope(after);
+  const alreadyLocked = new Set(options?.alreadyLockedProposalIds ?? []);
   for (const relation of after.relationProposals) {
     if (
       relation.applicability !== "already-satisfied" ||
@@ -3115,35 +3150,20 @@ async function persistNewlySatisfiedRelationDecisions(
     if (previous?.applicability === "already-satisfied") continue;
 
     // Relation auto-decision must share the proposal mutation queue with
-    // revise/swap/decide. Failures must not reject the parent Entity edit —
-    // Entity revision is already committed on Native.
+    // revise/swap/decide — except when the caller already holds that lock
+    // (Relation self-edit), to avoid outer→inner→outer deadlock.
+    // Failures must not reject the parent edit; Native revision is committed.
     try {
-      await enqueueProposalEdit(relation.proposalId, async () => {
-        const latest = useCodexStructureExtractionStore.getState().projection;
-        if (!reviewEditScopeMatches(latest, scope) || !latest) return;
-        const current = latest.relationProposals.find(
-          (item) => item.proposalId === relation.proposalId,
+      if (alreadyLocked.has(relation.proposalId)) {
+        await appendAlreadySatisfiedDecisionUnderLock(
+          relation.proposalId,
+          scope,
         );
-        if (
-          current?.applicability !== "already-satisfied" ||
-          !current.revisionId ||
-          current.application
-        ) {
-          return;
-        }
-        await appendDecision({
-          runId: latest.runId,
-          projectId: latest.projectId,
-          proposalId: current.proposalId,
-          revisionId: current.revisionId,
-          decision: "deferred",
-          decisionJson: {
-            reason: "already-satisfied",
-            existingRelationRef: current.existingRelationRef ?? null,
-          },
-          createdBy: CODEX_STRUCTURE_LEASE_OWNER,
-        });
-      });
+      } else {
+        await enqueueProposalEdit(relation.proposalId, () =>
+          appendAlreadySatisfiedDecisionUnderLock(relation.proposalId, scope),
+        );
+      }
     } catch {
       await resyncReviewAfterEditFailure(scope);
     }
@@ -3273,7 +3293,9 @@ export async function reviseCodexStructureRelation(args: {
     });
     const after = useCodexStructureExtractionStore.getState().projection;
     if (after && reviewEditScopeMatches(after, scope)) {
-      await persistNewlySatisfiedRelationDecisions(before, after);
+      await persistNewlySatisfiedRelationDecisions(before, after, {
+        alreadyLockedProposalIds: [args.proposalId],
+      });
     }
   });
 }
@@ -3329,7 +3351,9 @@ export async function swapCodexStructureRelationEndpoints(args: {
     });
     const after = useCodexStructureExtractionStore.getState().projection;
     if (after && reviewEditScopeMatches(after, scope)) {
-      await persistNewlySatisfiedRelationDecisions(before, after);
+      await persistNewlySatisfiedRelationDecisions(before, after, {
+        alreadyLockedProposalIds: [args.proposalId],
+      });
     }
   });
 }
