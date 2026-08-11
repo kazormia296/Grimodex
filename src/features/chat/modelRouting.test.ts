@@ -51,6 +51,9 @@ describe("resolveModelForPath — ロール設定時", () => {
       "gpt-4o",
     );
     expect(resolveModelForPath("tree_scaffold", getter)).toBe("gpt-4o");
+    expect(resolveModelForPath("narrative_entity_resolve", getter)).toBe(
+      "gpt-4o",
+    );
     expect(resolveModelForPath("codex_judgment", getter)).toBe("gpt-4o");
     // 別ロールは影響を受けない
     expect(resolveModelForPath("session_title", getter)).toBeUndefined();

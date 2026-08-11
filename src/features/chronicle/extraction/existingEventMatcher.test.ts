@@ -5,9 +5,7 @@ import {
   type ExistingChronicleEventCatalogRecord,
 } from "./existingEventMatcher";
 
-function hypothesis(
-  overrides: Partial<EventHypothesis> = {},
-): EventHypothesis {
+function hypothesis(overrides: Partial<EventHypothesis> = {}): EventHypothesis {
   return {
     hypothesisId: "hyp-1",
     clusterRef: "cluster-0001",

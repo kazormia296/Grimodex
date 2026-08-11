@@ -3344,6 +3344,7 @@ fn test_migrate_codex_relations_schema_matches_new_db() {
         )
         .expect("legacy schema");
     Database::migrate_codex_relations_source_map_edge_id(&legacy_conn).expect("upgrade");
+    Database::migrate_codex_relations_v7(&legacy_conn).expect("upgrade v7");
     let upgraded_cols = table_column_signature(&legacy_conn, "codex_relations");
     let upgraded_fks = fk_columns(&legacy_conn, "codex_relations");
 

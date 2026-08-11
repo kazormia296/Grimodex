@@ -103,6 +103,11 @@ export declare class Backend {
   eventGetVersion(projectId: string, eventId: string): Promise<string>;
   eventSetParticipants(payload: any): Promise<string>;
   /**
+   * Project Calendar create/update, single-row OCC (see `chronicle` module
+   * docs). Returns the persisted row as JSON, or JSON `null` on conflict.
+   */
+  projectCalendarUpsert(payload: any): Promise<string>
+  /**
    * Renderer domain aggregates that previously crossed the preload
    * boundary as renderer-authored SQL batches.
    */
@@ -734,11 +739,12 @@ export declare class Backend {
   narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>;
   narrativeExtractionAppendRevision(payload: any): Promise<string>;
   narrativeExtractionAppendDecision(payload: any): Promise<string>;
+  narrativeExtractionReviseAndDecide(payload: any): Promise<string>;
   narrativeExtractionPrepareCommit(payload: any): Promise<string>;
   narrativeExtractionApplyCommit(payload: any): Promise<string>;
   narrativeExtractionGetCommitStatus(payload: any): Promise<string>;
   narrativeExtractionUndoCommit(payload: any): Promise<string>;
-  narrativeExtractionRedoCommit(payload: any): Promise<string>;
+  narrativeExtractionRedoCommit(payload: any): Promise<string>;>>>>>>> origin/cursor/fix-504-hold-review-f1c4
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(
     projectId: string,

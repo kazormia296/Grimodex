@@ -23,11 +23,18 @@ function blockingKeyFor(observation: RawChronicleEventObservation): string {
     .sort()
     .join(",");
   const semantic = normalizeSurface(observation.payload.semanticType ?? "");
-  const predicate = normalizeSurface(observation.payload.predicate).slice(0, 48);
-  // Blocking key — not a full pairwise similarity. Same key → same cluster.
-  return [semantic || "unk", participants || "-", location || "-", temporal || "-", predicate].join(
-    "|",
+  const predicate = normalizeSurface(observation.payload.predicate).slice(
+    0,
+    48,
   );
+  // Blocking key — not a full pairwise similarity. Same key → same cluster.
+  return [
+    semantic || "unk",
+    participants || "-",
+    location || "-",
+    temporal || "-",
+    predicate,
+  ].join("|");
 }
 
 /**

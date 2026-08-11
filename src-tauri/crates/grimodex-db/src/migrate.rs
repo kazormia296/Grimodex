@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, ErrorCode};
 use std::time::Duration;
 
+use super::codex_relation_keys::build_codex_relation_semantic_key;
 use super::Database;
 
 enum ConvergedPreviousFinalize {
@@ -1293,6 +1294,11 @@ impl Database {
                 to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 relation_type       TEXT NOT NULL DEFAULT 'custom',
                 label               TEXT,
+                directionality      TEXT NOT NULL DEFAULT 'directed'
+                    CHECK (directionality IN ('directed', 'symmetric')),
+                inverse_label       TEXT,
+                semantic_key        TEXT NOT NULL DEFAULT '',
+                version             INTEGER NOT NULL DEFAULT 1,
                 depth_hint          INTEGER,
                 source_map_edge_id  TEXT,
                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1303,9 +1309,12 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_codex_relations_from
                 ON codex_relations(from_codex_id);
             CREATE INDEX IF NOT EXISTS idx_codex_relations_to
-                ON codex_relations(to_codex_id);",
+                ON codex_relations(to_codex_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
+                ON codex_relations(semantic_key);",
         )?;
         Self::migrate_codex_relations_source_map_edge_id(&conn)?;
+        Self::migrate_codex_relations_v7(&conn)?;
 
         // Beat-level POV override cache for Matrix ★ display.
         conn.execute_batch(
@@ -3745,6 +3754,27 @@ impl Database {
         }
 
         conn.pragma_update(None, "foreign_keys", false)?;
+        // Ensure v7 columns exist before rebuild so SELECT can always project them
+        // whether the legacy table already had SCHEMA 7 columns or not.
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "directionality",
+            "TEXT NOT NULL DEFAULT 'directed'",
+        )?;
+        Self::add_column_if_missing(conn, "codex_relations", "inverse_label", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "version",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
         conn.execute_batch(
             "BEGIN;
             CREATE TABLE codex_relations_new (
@@ -3754,6 +3784,11 @@ impl Database {
                 to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 relation_type       TEXT NOT NULL DEFAULT 'custom',
                 label               TEXT,
+                directionality      TEXT NOT NULL DEFAULT 'directed'
+                    CHECK (directionality IN ('directed', 'symmetric')),
+                inverse_label       TEXT,
+                semantic_key        TEXT NOT NULL DEFAULT '',
+                version             INTEGER NOT NULL DEFAULT 1,
                 depth_hint          INTEGER,
                 source_map_edge_id  TEXT,
                 created_at          TEXT NOT NULL,
@@ -3761,8 +3796,10 @@ impl Database {
             );
             INSERT INTO codex_relations_new
                 (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                 directionality, inverse_label, semantic_key, version,
                  depth_hint, source_map_edge_id, created_at, updated_at)
             SELECT id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                   directionality, inverse_label, semantic_key, version,
                    depth_hint, source_map_edge_id, created_at, updated_at
             FROM codex_relations;
             DROP TABLE codex_relations;
@@ -3773,6 +3810,8 @@ impl Database {
                 ON codex_relations(from_codex_id);
             CREATE INDEX IF NOT EXISTS idx_codex_relations_to
                 ON codex_relations(to_codex_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
+                ON codex_relations(semantic_key);
             COMMIT;",
         )?;
         conn.pragma_update(None, "foreign_keys", true)?;
@@ -3794,6 +3833,84 @@ impl Database {
                 fk_errors.join("; ")
             );
         }
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 7: directionality / inverse_label / semantic_key / version.
+    /// Existing rows stay directed; semantic_key is backfilled without deleting
+    /// legacy duplicates. Index is non-unique on purpose.
+    pub(super) fn migrate_codex_relations_v7(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'codex_relations'",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_exists == 0 {
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "directionality",
+            "TEXT NOT NULL DEFAULT 'directed'",
+        )?;
+        Self::add_column_if_missing(conn, "codex_relations", "inverse_label", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "version",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+
+        let mut select = conn.prepare(
+            "SELECT id, project_id, from_codex_id, to_codex_id, relation_type, label, inverse_label, directionality
+               FROM codex_relations
+              WHERE semantic_key = '' OR semantic_key IS NULL",
+        )?;
+        let rows = select
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(select);
+
+        let mut update =
+            conn.prepare("UPDATE codex_relations SET semantic_key = ?1 WHERE id = ?2")?;
+        for (id, project_id, from_id, to_id, relation_type, label, inverse_label, directionality) in
+            rows
+        {
+            let key = build_codex_relation_semantic_key(
+                &project_id,
+                &from_id,
+                &to_id,
+                &relation_type,
+                &directionality,
+                label.as_deref().unwrap_or(""),
+                inverse_label.as_deref(),
+            );
+            update.execute(rusqlite::params![key, id])?;
+        }
+
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
+                ON codex_relations(semantic_key);",
+        )?;
         Ok(())
     }
 
@@ -5569,5 +5686,73 @@ mod tests {
             Ok(())
         })
         .expect("verify metadata repair");
+    }
+
+    #[test]
+    fn migrate_codex_relations_v7_backfills_directed_semantic_keys_without_deleting_duplicates() {
+        let conn = Connection::open_in_memory().expect("open fixture db");
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             CREATE TABLE codex_entries (id TEXT PRIMARY KEY);
+             INSERT INTO projects (id) VALUES ('p1');
+             INSERT INTO codex_entries (id) VALUES ('a'), ('b');
+             CREATE TABLE codex_relations (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                from_codex_id TEXT NOT NULL,
+                to_codex_id TEXT NOT NULL,
+                relation_type TEXT NOT NULL DEFAULT 'custom',
+                label TEXT,
+                depth_hint INTEGER,
+                source_map_edge_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO codex_relations
+                (id, project_id, from_codex_id, to_codex_id, relation_type, label)
+             VALUES
+                ('r1', 'p1', 'a', 'b', 'friend', '友人'),
+                ('r2', 'p1', 'a', 'b', 'friend', '友人');",
+        )
+        .expect("create legacy relations fixture");
+
+        Database::migrate_codex_relations_v7(&conn).expect("migrate v7 columns");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM codex_relations", [], |row| row.get(0))
+            .expect("count relations");
+        assert_eq!(count, 2, "legacy duplicates must be retained");
+
+        let keys: Vec<String> = conn
+            .prepare("SELECT semantic_key FROM codex_relations ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], keys[1]);
+        assert!(keys[0].starts_with("d\t"), "legacy rows stay directed");
+        assert!(keys[0].contains("友人"));
+
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'index' AND name = 'idx_codex_relations_semantic_key'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index probe");
+        assert_eq!(index_exists, 1);
+
+        let unique: i64 = conn
+            .query_row(
+                "SELECT \"unique\" FROM pragma_index_list('codex_relations')
+                  WHERE name = 'idx_codex_relations_semantic_key'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unique probe");
+        assert_eq!(unique, 0, "semantic_key index must remain non-unique");
     }
 }

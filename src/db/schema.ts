@@ -1342,6 +1342,12 @@ export const codexRelations = sqliteTable(
       .references(() => codexEntries.id, { onDelete: "cascade" }),
     relationType: text("relation_type").notNull().default("custom"),
     label: text("label"),
+    // CHECK(directionality IN ('directed','symmetric')) は SQL 側。
+    directionality: text("directionality").notNull().default("directed"),
+    inverseLabel: text("inverse_label"),
+    // migrate が既存行を directed semantic key で backfill する。初期 default は空文字。
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(1),
     depthHint: integer("depth_hint"),
     sourceMapEdgeId: text("source_map_edge_id"),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -1351,6 +1357,8 @@ export const codexRelations = sqliteTable(
     index("idx_codex_relations_project").on(table.projectId),
     index("idx_codex_relations_from").on(table.fromCodexId),
     index("idx_codex_relations_to").on(table.toCodexId),
+    // non-unique: 既存 duplicate を壊さない。unique 化は後続 PR。
+    index("idx_codex_relations_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -2281,16 +2289,19 @@ export const narrativeProposalApplications = sqliteTable(
   },
 );
 
-export const narrativeCommitJournals = sqliteTable("narrative_commit_journals", {
-  id: text("id").primaryKey(),
-  commitId: text("commit_id").notNull(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  beforeJson: text("before_json"),
-  afterJson: text("after_json"),
-  createdAt: text("created_at").notNull(),
-});
+export const narrativeCommitJournals = sqliteTable(
+  "narrative_commit_journals",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+    createdAt: text("created_at").notNull(),
+  },
+);
 
 // Trash bin: holds deleted text fragments (Phase 1) and structure items (Phase 4-5).
 // payload / preview_meta は素の TEXT で JSON.stringify を保持（aiReasoning と同流儀）。

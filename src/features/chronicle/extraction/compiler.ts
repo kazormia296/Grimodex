@@ -3,10 +3,7 @@ import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative
 
 export type DomainOperationKind = "chronicle.event.create";
 
-export interface DomainOperationBase<
-  TKind extends string,
-  TPayload,
-> {
+export interface DomainOperationBase<TKind extends string, TPayload> {
   readonly kind: TKind;
   readonly payload: TPayload;
 }
@@ -41,11 +38,10 @@ export interface CreateChronicleEventOperationPayloadV1 {
   readonly semanticType?: string;
 }
 
-export interface CreateChronicleEventOperationV1
-  extends DomainOperationBase<
-    "chronicle.event.create",
-    CreateChronicleEventOperationPayloadV1
-  > {}
+export type CreateChronicleEventOperationV1 = DomainOperationBase<
+  "chronicle.event.create",
+  CreateChronicleEventOperationPayloadV1
+>;
 
 export interface CompileChronicleProposalOptions {
   readonly snapshot: NarrativeCorpusSnapshot;
@@ -104,7 +100,9 @@ export function compileCreateChronicleEventOperation(
     linksByScene.set(sceneId, existing);
   }
 
-  const revealDocument = documentByRef.get(proposal.disclosure.revealDocumentRef);
+  const revealDocument = documentByRef.get(
+    proposal.disclosure.revealDocumentRef,
+  );
   if (!revealDocument || revealDocument.origin.kind !== "project-node") {
     throw new Error(
       `Unknown reveal document ref: ${proposal.disclosure.revealDocumentRef}`,

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -2440,17 +2440,24 @@
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 8,
+          "ordinal": 12,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
           "primaryKey": 0
         },
         "depth_hint": {
-          "ordinal": 6,
+          "ordinal": 10,
           "declaredType": "INTEGER",
           "notNull": false,
           "default": null,
+          "primaryKey": 0
+        },
+        "directionality": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'directed'",
           "primaryKey": 0
         },
         "from_codex_id": {
@@ -2466,6 +2473,13 @@
           "notNull": false,
           "default": null,
           "primaryKey": 1
+        },
+        "inverse_label": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
         },
         "label": {
           "ordinal": 5,
@@ -2488,8 +2502,15 @@
           "default": "'custom'",
           "primaryKey": 0
         },
+        "semantic_key": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "source_map_edge_id": {
-          "ordinal": 7,
+          "ordinal": 11,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -2503,10 +2524,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 9,
+          "ordinal": 13,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "1",
           "primaryKey": 0
         }
       },
@@ -2543,7 +2571,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE codex_relations ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, to_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, relation_type TEXT NOT NULL DEFAULT 'custom', label TEXT, depth_hint INTEGER, source_map_edge_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE codex_relations ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, to_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, relation_type TEXT NOT NULL DEFAULT 'custom', label TEXT, directionality TEXT NOT NULL DEFAULT 'directed' CHECK (directionality IN ('directed', 'symmetric')), inverse_label TEXT, semantic_key TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, depth_hint INTEGER, source_map_edge_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "codex_tags": {
       "kind": "table",
@@ -9742,6 +9770,18 @@
         }
       ],
       "createSql": "CREATE INDEX idx_codex_relations_project ON codex_relations(project_id)"
+    },
+    "idx_codex_relations_semantic_key": {
+      "table": "codex_relations",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_codex_relations_semantic_key ON codex_relations(semantic_key)"
     },
     "idx_codex_relations_to": {
       "table": "codex_relations",

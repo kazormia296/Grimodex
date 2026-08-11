@@ -378,4 +378,3 @@ export async function applyChronicleExtractionReview(args: {
     proposals: approved,
   });
 }
-

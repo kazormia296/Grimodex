@@ -9,7 +9,9 @@ export interface ChronicleProposalCardProps {
   readonly proposal: ChronicleReviewProposal;
   readonly selected?: boolean;
   readonly onSelect?: () => void;
-  readonly onDecide?: (status: Exclude<NarrativeProposalStatus, "unreviewed">) => void;
+  readonly onDecide?: (
+    status: Exclude<NarrativeProposalStatus, "unreviewed">,
+  ) => void;
   readonly onDuplicateChoice?: (choice: ProbableDuplicateChoice) => void;
 }
 
@@ -34,9 +36,7 @@ export function ChronicleProposalCard({
 }: ChronicleProposalCardProps) {
   const alreadySatisfied = proposal.applicability === "already-satisfied";
   const probable =
-    proposal.match.status === "probable-duplicate"
-      ? proposal.match
-      : null;
+    proposal.match.status === "probable-duplicate" ? proposal.match : null;
   const safeHint =
     !alreadySatisfied &&
     proposal.status === "unreviewed" &&
@@ -80,7 +80,7 @@ export function ChronicleProposalCard({
         </span>
       </button>
 
-      {!alreadySatisfied && (
+      {!alreadySatisfied && !probable && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"

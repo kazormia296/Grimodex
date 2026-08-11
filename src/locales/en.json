@@ -1494,7 +1494,12 @@
         "codex_judgment": "Proper-noun candidate judgment",
         "codex_yomi": "Reading estimation",
         "plot_thread_extract": "Plot thread extraction",
-        "chronicle_extract": "Chronicle event extraction"
+        "chronicle_extract": "Chronicle event extraction",
+        "narrative_observation_extract": "Narrative observation extract",
+        "narrative_event_synthesize": "Narrative event synthesize",
+        "narrative_entity_resolve": "Narrative entity resolve",
+        "narrative_relation_synthesize": "Narrative relation synthesize",
+        "narrative_structured_repair": "Narrative structured repair"
       }
     }
   },

@@ -6,8 +6,6 @@ use serde_json::Value;
 
 use crate::agent_writes::{apply_event_create_in_tx, EventCreateTxInput, EventCreateTxResult};
 
-const OP_KIND_EVENT_CREATE: &str = "chronicle.event.create";
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FractionalPlacement {
@@ -70,14 +68,6 @@ pub(crate) struct ChronicleEventCreatePayload {
 pub(crate) fn parse_event_create_payload(payload: &Value) -> anyhow::Result<ChronicleEventCreatePayload> {
     serde_json::from_value(payload.clone())
         .map_err(|err| anyhow::anyhow!("invalid chronicle.event.create payload: {err}"))
-}
-
-pub(crate) fn ensure_operation_kind(kind: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        kind == OP_KIND_EVENT_CREATE,
-        "unsupported commit operation kind: {kind}"
-    );
-    Ok(())
 }
 
 pub(crate) fn project_tail_ordinal(

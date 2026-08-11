@@ -153,6 +153,35 @@ pub struct AppendDecisionPayload {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReviseAndDecidePayload {
+    pub run_id: String,
+    pub project_id: String,
+    pub proposal_id: String,
+    pub payload_json: Value,
+    /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
+    pub expected_current_revision_id: String,
+    pub decision: String,
+    #[serde(default)]
+    pub decision_json: Option<Value>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityBindingSeed {
+    pub narrative_entity_id: String,
+    pub codex_entry_id: String,
+    #[serde(default = "default_existing_source")]
+    pub source: String,
+}
+
+fn default_existing_source() -> String {
+    "existing".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PrepareCommitPayload {
     pub project_id: String,
     pub run_id: String,
@@ -169,6 +198,9 @@ pub struct PrepareCommitPayload {
     /// Compiler-observed tail ordinal (`null` when the project had no events).
     #[serde(default)]
     pub expected_tail_ordinal: Option<String>,
+    /// Existing-only NarrativeEntityId → Codex entry bindings for CommitMap.
+    #[serde(default)]
+    pub entity_bindings: Vec<EntityBindingSeed>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -186,6 +218,8 @@ pub struct ApplyCommitPayload {
     pub applications: Vec<CommitApplicationRef>,
     #[serde(default)]
     pub expected_tail_ordinal: Option<String>,
+    #[serde(default)]
+    pub entity_bindings: Vec<EntityBindingSeed>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

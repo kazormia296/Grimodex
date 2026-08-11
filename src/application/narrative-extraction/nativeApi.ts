@@ -162,6 +162,14 @@ export interface ReviewBundleLatestDecision {
   readonly createdBy: string;
 }
 
+export interface ReviewBundleProposalApplication {
+  readonly commitId: string;
+  readonly revisionId: string;
+  readonly appliedEntityKind: string;
+  readonly appliedEntityId: string;
+  readonly createdAt: string;
+}
+
 export interface ReviewBundleProposal {
   readonly proposalId: string;
   readonly proposalSetId: string;
@@ -173,6 +181,8 @@ export interface ReviewBundleProposal {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly latestDecision: ReviewBundleLatestDecision | null;
+  /** Present when Native already applied this proposal (partial Apply / cold-start). */
+  readonly application?: ReviewBundleProposalApplication | null;
 }
 
 export interface GetRunReviewBundleResult {
@@ -218,6 +228,27 @@ export interface AppendDecisionResult {
   readonly status: NarrativeProposalStatus;
 }
 
+export interface ReviseAndDecidePayload {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly proposalId: string;
+  readonly payloadJson: Readonly<Record<string, unknown>>;
+  /** Must match Native `current_revision_id` (OCC). */
+  readonly expectedCurrentRevisionId: string;
+  readonly decision: NarrativeProposalDecision;
+  readonly decisionJson?: Readonly<Record<string, unknown>>;
+  readonly createdBy?: string;
+}
+
+export interface ReviseAndDecideResult {
+  readonly proposalId: string;
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+  readonly decisionId: string;
+  readonly decision: NarrativeProposalDecision;
+  readonly status: NarrativeProposalStatus;
+}
+
 export interface CommitApplicationRef {
   readonly proposalId: string;
   readonly revisionId: string;
@@ -228,6 +259,12 @@ export interface CommitOperation {
   readonly payload: Readonly<Record<string, unknown>>;
   readonly proposalId: string;
   readonly revisionId: string;
+}
+
+export interface EntityBindingSeed {
+  readonly narrativeEntityId: string;
+  readonly codexEntryId: string;
+  readonly source?: "created" | "existing";
 }
 
 export interface PrepareCommitPayload {
@@ -241,6 +278,7 @@ export interface PrepareCommitPayload {
   readonly operations: readonly CommitOperation[];
   readonly applications: readonly CommitApplicationRef[];
   readonly expectedTailOrdinal?: string | null;
+  readonly entityBindings?: readonly EntityBindingSeed[];
 }
 
 export type ApplyCommitPayload = PrepareCommitPayload;
@@ -267,6 +305,16 @@ export interface ApplyCommitResult {
     readonly proposalId?: string | null;
     readonly revisionId?: string | null;
   }[];
+  readonly entityBindings?: Readonly<
+    Record<
+      string,
+      {
+        readonly narrativeEntityId: string;
+        readonly codexEntryId: string;
+        readonly source: string;
+      }
+    >
+  >;
   readonly idempotentReplay?: boolean;
 }
 
@@ -396,6 +444,15 @@ export async function narrativeExtractionAppendDecision(
   return invoke<AppendDecisionResult>("narrative_extraction_append_decision", {
     payload,
   });
+}
+
+export async function narrativeExtractionReviseAndDecide(
+  payload: ReviseAndDecidePayload,
+): Promise<ReviseAndDecideResult> {
+  return invoke<ReviseAndDecideResult>(
+    "narrative_extraction_revise_and_decide",
+    { payload },
+  );
 }
 
 export async function narrativeExtractionPrepareCommit(

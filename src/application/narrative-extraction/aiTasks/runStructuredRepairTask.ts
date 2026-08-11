@@ -52,7 +52,7 @@ ${input.brokenText}`;
     ov.endpointId,
   );
   void recordAiUsage({
-    surface: "chronicle_extract",
+    surface: "narrative_structured_repair",
     model: ov.model,
     provider: ov.provider,
     tokensIn: response.inputTokens,

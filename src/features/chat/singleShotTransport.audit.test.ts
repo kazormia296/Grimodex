@@ -78,6 +78,8 @@ const SINGLE_SHOT_PATHS = [
   "AI audit path: chronicle_extract",
   "AI audit path: narrative_observation_extract",
   "AI audit path: narrative_event_synthesize",
+  "AI audit path: narrative_entity_resolve",
+  "AI audit path: narrative_relation_synthesize",
   "AI audit path: narrative_structured_repair",
   "AI audit path: beat_role",
   "AI audit path: codex_judgment",

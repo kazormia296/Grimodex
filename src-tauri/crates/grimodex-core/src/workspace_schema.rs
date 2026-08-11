@@ -4,13 +4,14 @@
 //!
 //! Merging Gate B Foundation (`narrative_runtime_policy` as SCHEMA 4 on master)
 //! with Narrative Extraction (which had used 4=detail bindings, 5=calendar OCC,
-//! 6=narrative extraction) yields:
+//! 6=narrative extraction) and Codex Entity/Relation yields:
 //!
 //! - **v3** — physical invariants (ai_audit, stickies, live-comment repair, …)
 //! - **v4** — `narrative_runtime_policy` singleton (Gate B Foundation)
 //! - **v5** — `codex_detail_semantic_bindings` (was Narrative Extraction's v4)
 //! - **v6** — project_calendar OCC `version` column (was Narrative Extraction's v5)
 //! - **v7** — Narrative Extraction persistence tables (was Narrative Extraction's v6)
+//! - **v8** — Codex relation directionality / semantic_key / version (was stack's v7)
 //!
 //! These probes deliberately avoid exact whole-schema comparison because
 //! legitimate upgraded databases can differ from a freshly-created database in
@@ -106,22 +107,6 @@ pub fn is_previous_workspace_schema_write_compatible(conn: &Connection) -> anyho
     }
 
     has_current_schema_checkpoint_invariants(conn)
-}
-
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Schema PRs must update this function (or the helpers it
-/// calls) when they introduce new tables / indexes that the open fast path must
-/// prove before skipping shadow migration.
-pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != 7 || !has_v3_physical_invariants(conn)? {
-        return Ok(false);
-    }
-    if !has_v6_checkpoint_invariants(conn)? {
-        return Ok(false);
-    }
-    Ok(table_exists(conn, "narrative_extraction_runs")?
-        && table_exists(conn, "narrative_proposals")?
-        && table_exists(conn, "narrative_apply_commits")?)
 }
 
 /// Compatibility wrapper used by older call sites／tests that still name the
@@ -388,6 +373,50 @@ pub fn has_v6_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
             && column.default.as_deref() == Some("0")
             && column.primary_key == 0
     }))
+}
+
+
+/// SCHEMA 7 checkpoint: Narrative Extraction persistence on top of every v6
+/// invariant.
+pub fn has_v7_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v6_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    Ok(table_exists(conn, "narrative_extraction_runs")?
+        && table_exists(conn, "narrative_proposals")?
+        && table_exists(conn, "narrative_apply_commits")?)
+}
+
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 8 adds Codex relation directionality,
+/// inverse_label, semantic_key, and version on top of every v7 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if SCHEMA_VERSION != 8 || !has_v3_physical_invariants(conn)? {
+        return Ok(false);
+    }
+    if !has_v7_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_relations")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "codex_relations")?;
+    let has_directionality = columns.iter().any(|column| {
+        column.name == "directionality"
+            && column.declared_type == "TEXT"
+            && column.not_null
+    });
+    let has_inverse_label = columns.iter().any(|column| column.name == "inverse_label");
+    let has_semantic_key = columns.iter().any(|column| {
+        column.name == "semantic_key" && column.declared_type == "TEXT" && column.not_null
+    });
+    let has_version = columns.iter().any(|column| {
+        column.name == "version"
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("1")
+    });
+    Ok(has_directionality && has_inverse_label && has_semantic_key && has_version)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {

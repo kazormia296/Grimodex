@@ -3,7 +3,7 @@ use grimodex_db::narrative_extraction::{
     self, ensure_test_schema, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     FinishTaskPayload, GetCommitStatusPayload, ListResumableRunsPayload, PrepareCommitPayload,
-    ProposalSeed, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    ProposalSeed, ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -137,7 +137,7 @@ fn seed_approved_proposals(
     db: &Database,
     run_id: &str,
     proposal_set_id: &str,
-    events: &[(&str, &str)],
+    payloads: &[Value],
 ) -> Vec<(String, String)> {
     narrative_extraction::narrative_extraction_create_run(
         db,
@@ -157,19 +157,14 @@ fn seed_approved_proposals(
     )
     .expect("create run");
 
-    let proposals: Vec<ProposalSeed> = events
+    let proposals: Vec<ProposalSeed> = payloads
         .iter()
         .enumerate()
-        .map(|(index, (event_id, title))| ProposalSeed {
+        .map(|(index, payload)| ProposalSeed {
             proposal_id: Some(format!("{run_id}-prop-{index}")),
             proposal_key: format!("{run_id}-key-{index}"),
             kind: "chronicle.event.create@1".to_string(),
-            payload_json: json!({
-                "eventId": event_id,
-                "title": title,
-                "note": null,
-                "disclosure": { "secret": false, "revealDocumentRef": "doc:scene-1" },
-            }),
+            payload_json: payload.clone(),
         })
         .collect();
 
@@ -242,6 +237,7 @@ fn build_apply_payload(
         operations,
         applications,
         expected_tail_ordinal: None,
+        entity_bindings: vec![],
     }
 }
 
@@ -649,23 +645,27 @@ fn cancel_run_marks_active_tasks_cancelled() {
 fn apply_commit_creates_three_events_atomically() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 3);
-    let pairs = seed_approved_proposals(&db, "run-commit-1", "set-1", &[("event-a", "A"), ("event-b", "B"), ("event-c", "C")]);
-
+    let payloads = [
+        event_create_payload("event-a", "A", "scene-1", 3),
+        event_create_payload("event-b", "B", "scene-1", 3),
+        event_create_payload("event-c", "C", "scene-1", 3),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-1", "set-1", &payloads);
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-a", "A", "scene-1", 3),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-b", "B", "scene-1", 3),
+            payloads[1].clone(),
         ),
         (
             pairs[2].0.clone(),
             pairs[2].1.clone(),
-            event_create_payload("event-c", "C", "scene-1", 3),
+            payloads[2].clone(),
         ),
     ];
     let payload =
@@ -684,6 +684,7 @@ fn apply_commit_creates_three_events_atomically() {
             operations: payload.operations.clone(),
             applications: payload.applications.clone(),
             expected_tail_ordinal: None,
+            entity_bindings: vec![],
         },
     )
     .expect("prepare");
@@ -729,19 +730,22 @@ fn apply_commit_creates_three_events_atomically() {
 fn apply_commit_rolls_back_all_on_failure() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 1);
-    let pairs = seed_approved_proposals(&db, "run-commit-2", "set-2", &[("event-ok", "A"), ("event-bad", "B")]);
-
+    let payloads = [
+        event_create_payload("event-ok", "A", "scene-1", 1),
+        event_create_payload("event-bad", "B", "scene-1", 99),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-2", "set-2", &payloads);
     // Second op expects wrong scene version → whole commit fails.
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-ok", "A", "scene-1", 1),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-bad", "B", "scene-1", 99),
+            payloads[1].clone(),
         ),
     ];
     let payload =
@@ -787,11 +791,12 @@ fn apply_commit_rolls_back_all_on_failure() {
 fn apply_commit_is_idempotent_for_same_request_and_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-3", "set-3", &[("event-only", "Only")]);
+    let payloads = [event_create_payload("event-only", "Only", "scene-1", 0)];
+    let pairs = seed_approved_proposals(&db, "run-commit-3", "set-3", &payloads);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
-        event_create_payload("event-only", "Only", "scene-1", 0),
+        payloads[0].clone(),
     )];
     let payload =
         build_apply_payload("req-idem-1", "digest-idem-1", "set-3", "run-commit-3", ops);
@@ -814,11 +819,12 @@ fn apply_commit_is_idempotent_for_same_request_and_digest() {
 fn apply_commit_rejects_same_request_with_different_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-4", "set-4", &[("event-only-2", "Only")]);
+    let payloads = [event_create_payload("event-only-2", "Only", "scene-1", 0)];
+    let pairs = seed_approved_proposals(&db, "run-commit-4", "set-4", &payloads);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
-        event_create_payload("event-only-2", "Only", "scene-1", 0),
+        payloads[0].clone(),
     )];
     let first =
         build_apply_payload("req-conflict-1", "digest-a", "set-4", "run-commit-4", ops.clone());
@@ -834,17 +840,21 @@ fn apply_commit_rejects_same_request_with_different_digest() {
 fn undo_commit_removes_all_events_and_refuses_edited() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &[("event-u1", "A"), ("event-u2", "B")]);
+    let payloads = [
+        event_create_payload("event-u1", "A", "scene-1", 0),
+        event_create_payload("event-u2", "B", "scene-1", 0),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &payloads);
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-u1", "A", "scene-1", 0),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-u2", "B", "scene-1", 0),
+            payloads[1].clone(),
         ),
     ];
     let payload =
@@ -918,17 +928,21 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
 fn undo_redo_cycles_without_event_edited_false_positive() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &[("event-cycle-1", "A"), ("event-cycle-2", "B")]);
+    let payloads = [
+        event_create_payload("event-cycle-1", "A", "scene-1", 0),
+        event_create_payload("event-cycle-2", "B", "scene-1", 0),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &payloads);
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-cycle-1", "A", "scene-1", 0),
+            payloads[0].clone(),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
-            event_create_payload("event-cycle-2", "B", "scene-1", 0),
+            payloads[1].clone(),
         ),
     ];
     let payload =
@@ -1104,6 +1118,246 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
     .expect("current revision approve");
 }
 
+/// Create a run + a single-proposal ProposalSet, returning (proposalId, rev1).
+fn seed_single_proposal(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    proposal_id: &str,
+) -> (String, String) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create run");
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(proposal_set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: format!("{proposal_id}-key"),
+                kind: "chronicle.event.create@1".to_string(),
+                payload_json: json!({ "title": "Rev1" }),
+            }],
+        },
+    )
+    .expect("save proposal set");
+
+    let rev1 = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (proposal_id.to_string(), rev1)
+}
+
+fn count_revisions(db: &Database, proposal_id: &str) -> i64 {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = ?1",
+            rusqlite::params![proposal_id],
+            |row| row.get(0),
+        )?)
+    })
+    .unwrap()
+}
+
+#[test]
+fn revise_and_decide_approves_atomically_with_new_revision() {
+    let db = migrated_db();
+    let (proposal_id, rev1) =
+        seed_single_proposal(&db, "run-rad-happy", "set-rad-happy", "prop-rad-happy");
+    assert_eq!(count_revisions(&db, &proposal_id), 1);
+
+    let result = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-rad-happy".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev2" }),
+            expected_current_revision_id: rev1.clone(),
+            decision: "approved".to_string(),
+            decision_json: Some(json!({ "source": "test" })),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("revise and decide");
+
+    let new_revision_id = result["revisionId"].as_str().unwrap().to_string();
+    assert_ne!(new_revision_id, rev1);
+    assert_eq!(result["revisionNumber"], 2);
+    assert_eq!(result["decision"], "approved");
+    assert_eq!(result["status"], "approved");
+    assert_eq!(result["proposalId"], proposal_id);
+    assert!(result["decisionId"].is_string());
+
+    // Both writes landed atomically.
+    assert_eq!(count_revisions(&db, &proposal_id), 2);
+
+    let (status, current_revision): (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "approved");
+    assert_eq!(current_revision, new_revision_id);
+
+    let decision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_decisions
+                  WHERE proposal_id = ?1 AND revision_id = ?2 AND decision = 'approved'",
+                rusqlite::params![proposal_id, new_revision_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(decision_count, 1);
+}
+
+#[test]
+fn revise_and_decide_rolls_back_revision_on_invalid_decision() {
+    let db = migrated_db();
+    let (proposal_id, rev1) =
+        seed_single_proposal(&db, "run-rad-bad", "set-rad-bad", "prop-rad-bad");
+    assert_eq!(count_revisions(&db, &proposal_id), 1);
+
+    let err = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-rad-bad".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev2" }),
+            expected_current_revision_id: rev1.clone(),
+            decision: "totally-bogus".to_string(),
+            decision_json: None,
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect_err("invalid decision must fail");
+    assert!(
+        err.to_string().contains("unsupported proposal decision"),
+        "unexpected error: {err}"
+    );
+
+    // The would-be revision must be rolled back with the failed decision.
+    assert_eq!(count_revisions(&db, &proposal_id), 1);
+
+    let (status, current_revision): (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "unreviewed");
+    assert_eq!(current_revision, rev1);
+
+    let decision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                rusqlite::params![proposal_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(decision_count, 0);
+}
+
+#[test]
+fn revise_and_decide_rejects_stale_expected_current_revision() {
+    let db = migrated_db();
+    let (proposal_id, rev1) =
+        seed_single_proposal(&db, "run-rad-stale", "set-rad-stale", "prop-rad-stale");
+
+    // Advance the current revision so rev1 becomes stale.
+    let rev2 = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-rad-stale".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev2" }),
+            expected_current_revision_id: rev1.clone(),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect("append rev2");
+    let rev2_id = rev2["revisionId"].as_str().unwrap().to_string();
+    assert_eq!(count_revisions(&db, &proposal_id), 2);
+
+    let err = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-rad-stale".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: json!({ "title": "Rev3" }),
+            expected_current_revision_id: rev1.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("stale-window".to_string()),
+        },
+    )
+    .expect_err("stale expected revision must conflict");
+    assert!(
+        err.to_string().contains("NEX_PROPOSAL_REVISION_CONFLICT"),
+        "unexpected error: {err}"
+    );
+
+    // No third revision, no decision, current stays at rev2, status unreviewed.
+    assert_eq!(count_revisions(&db, &proposal_id), 2);
+
+    let (status, current_revision): (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+                rusqlite::params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(status, "unreviewed");
+    assert_eq!(current_revision, rev2_id);
+
+    let decision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+                rusqlite::params![proposal_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(decision_count, 0);
+}
+
 #[test]
 fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
     let db = test_db();
@@ -1247,7 +1501,8 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
 fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let pairs = seed_approved_proposals(&db, "run-failopen", "set-failopen", &[("event-x", "X")]);
+    let payloads = [event_create_payload("event-x", "X", "scene-1", 0)];
+    let pairs = seed_approved_proposals(&db, "run-failopen", "set-failopen", &payloads);
 
     let mut payload = build_apply_payload(
         "req-failopen-1",
@@ -1257,7 +1512,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
         vec![(
             pairs[0].0.clone(),
             pairs[0].1.clone(),
-            event_create_payload("event-x", "X", "scene-1", 0),
+            payloads[0].clone(),
         )],
     );
     payload.applications.clear();
@@ -1287,6 +1542,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
         },
     )
     .expect("create");
+    let unapproved_payload = event_create_payload("event-unapproved", "Nope", "scene-1", 0);
     let saved = narrative_extraction::narrative_extraction_save_proposal_set(
         &db,
         SaveProposalSetPayload {
@@ -1299,12 +1555,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
                 proposal_id: Some("prop-unapproved".to_string()),
                 proposal_key: "key-unapproved".to_string(),
                 kind: "chronicle.event.create@1".to_string(),
-                payload_json: json!({
-                    "eventId": "event-unapproved",
-                    "title": "Nope",
-                    "note": null,
-                    "disclosure": { "secret": false }
-                }),
+                payload_json: unapproved_payload.clone(),
             }],
         },
     )
@@ -1321,7 +1572,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
         vec![(
             "prop-unapproved".to_string(),
             revision_id,
-            event_create_payload("event-unapproved", "Nope", "scene-1", 0),
+            unapproved_payload,
         )],
     );
     let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
@@ -1336,12 +1587,13 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
 fn apply_commit_rejects_revision_payload_mismatch() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
+    let approved = [event_create_payload("event-m", "M", "scene-1", 0)];
     let pairs =
-        seed_approved_proposals(&db, "run-rev-mismatch", "set-rev-mismatch", &[("event-m", "M")]);
+        seed_approved_proposals(&db, "run-rev-mismatch", "set-rev-mismatch", &approved);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
-        // Title diverges from approved revision.
+        // Title diverges from approved revision → digest mismatch.
         event_create_payload("event-m", "Different", "scene-1", 0),
     )];
     let payload = build_apply_payload(
@@ -1355,7 +1607,7 @@ fn apply_commit_rejects_revision_payload_mismatch() {
         .expect_err("title mismatch must fail");
     assert!(
         err.to_string()
-            .contains("NEX_REVISION_PAYLOAD_MISMATCH"),
+            .contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         "unexpected error: {err}"
     );
 }
@@ -1365,7 +1617,7 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
 
-    // In-progress run is always resumable.
+    // In-progress run without a ProposalSet is NOT review-resumable.
     create_run_with_task(&db, "run-resumable-pending", "task-resumable-pending");
     db.execute(
         "UPDATE narrative_extraction_runs SET status = 'running' WHERE id = ?",
@@ -1375,11 +1627,12 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
     .expect("mark running");
 
     // Completed + approved but unapplied → resumable.
+    let review_payloads = [event_create_payload("event-r", "R", "scene-1", 0)];
     let pairs = seed_approved_proposals(
         &db,
         "run-resumable-review",
         "set-resumable-review",
-        &[("event-r", "R")],
+        &review_payloads,
     );
     db.execute(
         "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
@@ -1389,11 +1642,12 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
     .expect("mark completed");
 
     // Completed + applied → not resumable.
+    let applied_payloads = [event_create_payload("event-applied", "Applied", "scene-1", 0)];
     let applied_pairs = seed_approved_proposals(
         &db,
         "run-applied",
         "set-applied",
-        &[("event-applied", "Applied")],
+        &applied_payloads,
     );
     let payload = build_apply_payload(
         "req-applied",
@@ -1403,7 +1657,7 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
         vec![(
             applied_pairs[0].0.clone(),
             applied_pairs[0].1.clone(),
-            event_create_payload("event-applied", "Applied", "scene-1", 0),
+            applied_payloads[0].clone(),
         )],
     );
     narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("apply");
@@ -1429,9 +1683,424 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
         .iter()
         .map(|row| row["runId"].as_str().unwrap())
         .collect();
-    assert!(ids.contains(&"run-resumable-pending"));
+    assert!(
+        !ids.contains(&"run-resumable-pending"),
+        "running without ProposalSet must not hide review restores"
+    );
     assert!(ids.contains(&"run-resumable-review"));
     assert!(!ids.contains(&"run-applied"));
     // pairs used to keep approved revision alive for review run
     assert!(!pairs.is_empty());
+}
+
+#[test]
+fn list_resumable_runs_prefers_older_review_over_crashed_running() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+
+    // Older completed review with unapplied proposals.
+    let review_payloads = [event_create_payload("event-old", "Old", "scene-1", 0)];
+    let _pairs = seed_approved_proposals(
+        &db,
+        "run-old-review",
+        "set-old-review",
+        &review_payloads,
+    );
+    db.execute(
+        "UPDATE narrative_extraction_runs
+            SET status = 'completed',
+                started_at = '2026-01-01T00:00:00.000Z',
+                completed_at = '2026-01-01T00:01:00.000Z'
+          WHERE id = ?",
+        &[Value::String("run-old-review".to_string())],
+        "run",
+    )
+    .expect("mark old completed");
+
+    // Newer crashed running run without ProposalSet.
+    create_run_with_task(&db, "run-crash-running", "task-crash-running");
+    db.execute(
+        "UPDATE narrative_extraction_runs
+            SET status = 'running',
+                started_at = '2026-01-02T00:00:00.000Z'
+          WHERE id = ?",
+        &[Value::String("run-crash-running".to_string())],
+        "run",
+    )
+    .expect("mark crash running");
+
+    let listed = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("list");
+    let ids: Vec<&str> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["runId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["run-old-review"]);
+}
+
+#[test]
+fn relation_dependencies_in_summary_json_survive_append_revision() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    create_run_with_task(&db, "run-rel-deps", "task-rel-deps");
+
+    let entity_a = "prop-entity-a";
+    let entity_b = "prop-entity-b";
+    let relation_id = "prop-relation-1";
+    let summary = json!({
+        "relationDependencies": {
+            relation_id: [
+                { "kind": "requires-resolution", "proposalId": entity_a },
+                { "kind": "requires-resolution", "proposalId": entity_b }
+            ]
+        }
+    });
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-rel-deps".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-rel-deps".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(summary.clone()),
+            proposals: vec![
+                ProposalSeed {
+                    proposal_id: Some(entity_a.to_string()),
+                    proposal_key: "entity-a".to_string(),
+                    kind: "codex.entity.bind@1".to_string(),
+                    payload_json: json!({ "narrativeEntityId": "ne-a", "canonicalName": "ライカ" }),
+                },
+                ProposalSeed {
+                    proposal_id: Some(entity_b.to_string()),
+                    proposal_key: "entity-b".to_string(),
+                    kind: "codex.entity.bind@1".to_string(),
+                    payload_json: json!({ "narrativeEntityId": "ne-b", "canonicalName": "ベルカ" }),
+                },
+                ProposalSeed {
+                    proposal_id: Some(relation_id.to_string()),
+                    proposal_key: "relation-1".to_string(),
+                    kind: "codex.relation.create@1".to_string(),
+                    payload_json: json!({
+                        "subjectEntityId": "ne-a",
+                        "objectEntityId": "ne-b",
+                        "relation": {
+                            "relationType": "friend",
+                            "directionality": "symmetric",
+                            "forwardLabel": "友人",
+                            "inverseLabel": "友人"
+                        },
+                        "validity": "current"
+                    }),
+                },
+            ],
+        },
+    )
+    .expect("save");
+
+    let proposals = saved["proposals"].as_array().expect("proposals");
+    assert_eq!(proposals.len(), 3);
+    for proposal in proposals {
+        let id = proposal["proposalId"].as_str().unwrap();
+        assert!(
+            id == entity_a || id == entity_b || id == relation_id,
+            "stable client proposalId must be preserved, got {id}"
+        );
+    }
+
+    let relation = proposals
+        .iter()
+        .find(|row| row["proposalId"] == relation_id)
+        .expect("relation");
+    let revision_id = relation["revisionId"].as_str().unwrap().to_string();
+
+    // Approve-style revision overwrites domain payload without dependencies.
+    narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-rel-deps".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: relation_id.to_string(),
+            expected_current_revision_id: revision_id,
+            payload_json: json!({
+                "kind": "codex.relation.create",
+                "fromCodexId": "codex-a",
+                "toCodexId": "codex-b",
+                "relationType": "friend",
+                "forwardLabel": "友人",
+                "inverseLabel": "友人",
+                "directionality": "symmetric",
+                "semanticKey": "friend:a:b"
+            }),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("append revision");
+
+    let bundle = narrative_extraction::narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: "run-rel-deps".to_string(),
+            project_id: "project-1".to_string(),
+        },
+    )
+    .expect("bundle");
+
+    let summary_json = &bundle["proposalSet"]["summaryJson"];
+    assert_eq!(
+        summary_json["relationDependencies"][relation_id][0]["proposalId"],
+        entity_a
+    );
+    assert_eq!(
+        summary_json["relationDependencies"][relation_id][1]["proposalId"],
+        entity_b
+    );
+
+    let relation_row = bundle["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .find(|row| row["proposalId"] == relation_id)
+        .expect("relation row");
+    assert!(
+        relation_row["payloadJson"]
+            .get("dependencies")
+            .is_none(),
+        "domain payload must not carry dependencies after approve revision"
+    );
+}
+
+#[test]
+fn client_proposal_ids_collide_across_runs_when_reused() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+
+    create_run_with_task(&db, "run-collide-1", "task-collide-1");
+    narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-collide-1".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-collide-1".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("codex-bind-1".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect("first save should succeed");
+
+    create_run_with_task(&db, "run-collide-2", "task-collide-2");
+    let err = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-collide-2".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-collide-2".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("codex-bind-1".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect_err("reused client proposalId across runs must violate PRIMARY KEY");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("UNIQUE")
+            || message.contains("unique")
+            || message.contains("constraint")
+            || message.contains("PRIMARY"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn distinct_client_proposal_ids_persist_across_consecutive_runs() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+
+    create_run_with_task(&db, "run-unique-1", "task-unique-1");
+    let first = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-unique-1".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-unique-1".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect("first unique save");
+
+    create_run_with_task(&db, "run-unique-2", "task-unique-2");
+    let second = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: "run-unique-2".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some("set-unique-2".to_string()),
+            set_kind: "codex.structure.extract.review@1".to_string(),
+            summary_json: Some(json!({ "proposalCount": 1 })),
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("22222222-2222-4222-8222-222222222222".to_string()),
+                proposal_key: "entity-1".to_string(),
+                kind: "codex.entity.bind@1".to_string(),
+                payload_json: json!({ "canonicalName": "ライカ" }),
+            }],
+        },
+    )
+    .expect("second unique save");
+
+    assert_eq!(
+        first["proposals"][0]["proposalId"],
+        "11111111-1111-4111-8111-111111111111"
+    );
+    assert_eq!(
+        second["proposals"][0]["proposalId"],
+        "22222222-2222-4222-8222-222222222222"
+    );
+}
+
+fn seed_deferred_proposal_with_decision(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    proposal_id: &str,
+    decision_json: Value,
+) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create run");
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(proposal_set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: format!("{proposal_id}-key"),
+                kind: "chronicle.event.create@1".to_string(),
+                payload_json: json!({ "title": "Deferred proposal" }),
+            }],
+        },
+    )
+    .expect("save proposal set");
+
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    narrative_extraction::narrative_extraction_append_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.to_string(),
+            revision_id,
+            decision: "deferred".to_string(),
+            decision_json: Some(decision_json),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("defer");
+}
+
+#[test]
+fn list_resumable_runs_excludes_already_satisfied_deferred_only() {
+    let db = migrated_db();
+
+    seed_deferred_proposal_with_decision(
+        &db,
+        "run-deferred-satisfied",
+        "set-deferred-satisfied",
+        "prop-deferred-satisfied",
+        json!({ "reason": "already-satisfied" }),
+    );
+    db.execute(
+        "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+        &[Value::String("run-deferred-satisfied".to_string())],
+        "run",
+    )
+    .expect("mark completed");
+
+    seed_deferred_proposal_with_decision(
+        &db,
+        "run-deferred-open",
+        "set-deferred-open",
+        "prop-deferred-open",
+        json!({ "reason": "needs-more-context" }),
+    );
+    db.execute(
+        "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+        &[Value::String("run-deferred-open".to_string())],
+        "run",
+    )
+    .expect("mark completed");
+
+    let listed = narrative_extraction::narrative_extraction_list_resumable_runs(
+        &db,
+        ListResumableRunsPayload {
+            project_id: "project-1".to_string(),
+            surface_path_id: Some("chronicle.extract".to_string()),
+            limit: Some(20),
+        },
+    )
+    .expect("list");
+    let ids: Vec<&str> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["runId"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        !ids.contains(&"run-deferred-satisfied"),
+        "already-satisfied deferred alone must not keep run resumable"
+    );
+    assert!(
+        ids.contains(&"run-deferred-open"),
+        "deferred without already-satisfied must remain resumable"
+    );
 }

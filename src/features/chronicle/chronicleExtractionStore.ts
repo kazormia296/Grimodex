@@ -260,7 +260,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
           ? "held"
           : choice === "skip-as-same"
             ? "rejected"
-            : "unreviewed";
+            : "approved";
       set({
         projection: {
           ...projection,

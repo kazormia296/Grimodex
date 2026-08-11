@@ -230,6 +230,20 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
     auditProperty: "pathId",
   },
   {
+    pathId: "narrative_entity_resolve",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runEntityResolutionTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
+    pathId: "narrative_relation_synthesize",
+    sourceRef:
+      "src/application/narrative-extraction/aiTasks/runRelationSynthesisTask.ts",
+    dispatchCall: "sendChatMessageWithThinking",
+    auditProperty: "pathId",
+  },
+  {
     pathId: "narrative_structured_repair",
     sourceRef:
       "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
@@ -350,9 +364,9 @@ const AGENT_LOOP_TEST = "src/features/chat/agent/agentToolCall.live.test.ts";
 const SINGLE_SHOT_TEST = "src/features/ai-verification/singleShot.live.test.ts";
 const RELATION_EVAL_TEST =
   "src/features/codex/relationInjectionEval.live.test.ts";
+const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
 const CANDIDATE_JUDGMENT_TEST =
   "src/features/codex/candidateJudgment.live.test.ts";
-const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
 const BROWSER_BYOK_CONTRACT_TEST = "src/lib/browser-ai.test.ts";
 const BROWSER_BYOK_CONSENT_CONTRACT_TEST =
@@ -529,8 +543,7 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "contract",
     testRef: SINGLE_SHOT_AUDIT_TEST,
     testName: "AI audit path: chronicle_extract",
-    note:
-      "Run surface / 旧一括抽出 façade。Stage AI は narrative_observation_extract / narrative_event_synthesize / narrative_structured_repair。cutover まで compatibility callsite を残す。",
+    note: "Run surface / 旧一括抽出 façade。Stage AI は narrative_observation_extract / narrative_event_synthesize / narrative_structured_repair。cutover まで compatibility callsite を残す。",
   },
   {
     id: "narrative_observation_extract",
@@ -563,6 +576,38 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: SINGLE_SHOT_AUDIT_TEST,
     testName: "AI audit path: narrative_event_synthesize",
     note: "Cluster 単位の Event Hypothesis 合成。Observation ref と短い Evidence 表示のみ。",
+  },
+  {
+    id: "narrative_entity_resolve",
+    label: "Narrative Entity Resolution",
+    surface:
+      "narrative-extraction/aiTasks/runEntityResolutionTask.ts runEntityResolutionTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_entity_resolve",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_entity_resolve",
+    note: "Codex Entity Cluster の同定。不透明 Type／Entry Catalog Ref（T####／K####）と Source View Ref のみ渡し、実 DB Entry ID は送らない。",
+  },
+  {
+    id: "narrative_relation_synthesize",
+    label: "Narrative Relation Synthesis",
+    surface:
+      "narrative-extraction/aiTasks/runRelationSynthesisTask.ts runRelationSynthesisTask",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    auditOwner: "renderer-single-shot",
+    captureLevel: "full-observable",
+    auditTestRef: SINGLE_SHOT_AUDIT_TEST,
+    auditTestName: "AI audit path: narrative_relation_synthesize",
+    verifier: "contract",
+    testRef: SINGLE_SHOT_AUDIT_TEST,
+    testName: "AI audit path: narrative_relation_synthesize",
+    note: "Candidate Entity ペアの Relation Hypothesis 合成。Narrative Entity ID と Observation ref のみ。実 Codex Entry ID は送らない。",
   },
   {
     id: "narrative_structured_repair",

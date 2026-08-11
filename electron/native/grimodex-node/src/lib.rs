@@ -36,7 +36,7 @@ use grimodex_db::agent_writes;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
-use grimodex_db::chronicle::{self, SetParticipantsPayload};
+use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
 use grimodex_db::domain_writes::{
     self, CodexRenameUndoPayload, CreateScanStagingProjectPayload, ReplaceAuthorshipLanePayload,
     SetEntityTagsPayload, UndoTreePlanPayload,
@@ -1837,6 +1837,22 @@ impl Backend {
             let payload: SetParticipantsPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
                 Ok(serde_json::to_string(&chronicle::set_event_participants(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    /// Project Calendar create/update, single-row OCC (see `chronicle` module
+    /// docs). Returns the persisted row as JSON, or JSON `null` on conflict.
+    #[napi]
+    pub async fn project_calendar_upsert(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: UpsertProjectCalendarPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::upsert_project_calendar(
                     db, payload,
                 )?)?)
             })
@@ -4321,6 +4337,20 @@ impl Backend {
             "payload",
             payload,
             narrative_extraction::narrative_extraction_append_decision,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_revise_and_decide(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_revise_and_decide,
         )
         .await
     }

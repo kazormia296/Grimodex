@@ -448,6 +448,403 @@ fn merge_codex_authorship_spans(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CodexEntryCreateTxInput<'a> {
+    pub project_id: &'a str,
+    pub session_id: &'a str,
+    pub surface: Option<&'a str>,
+    pub entry_id: &'a str,
+    pub undo_id: &'a str,
+    pub event_uid: &'a str,
+    pub type_slug: &'a str,
+    pub name: &'a str,
+    pub summary: &'a str,
+    pub content: &'a str,
+    pub aliases: Option<&'a str>,
+    pub parent_id: Option<&'a str>,
+    pub source_chat_message_id: Option<&'a str>,
+    pub authorship_spans: &'a [AuthorshipSpanInput],
+    pub model: Option<&'a str>,
+    pub chat_message_id: Option<&'a str>,
+    pub trace_id: Option<&'a str>,
+    pub request_hash: Option<&'a str>,
+    pub now: &'a str,
+    pub timestamp: i64,
+    pub write_undo_journal: bool,
+    pub write_change_event: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodexEntryCreateTxResult {
+    pub entity_id: String,
+    pub version: i64,
+    pub change_event_uid: String,
+    pub undo_journal_id: String,
+    pub after_snapshot: Value,
+}
+
+/// Shared Codex entry create body that runs inside a caller-owned transaction.
+pub(crate) fn apply_codex_entry_create_in_tx(
+    conn: &rusqlite::Connection,
+    input: CodexEntryCreateTxInput<'_>,
+) -> anyhow::Result<CodexEntryCreateTxResult> {
+    conn.execute(
+        "INSERT INTO codex_entries
+         (id, project_id, type, name, aliases, summary, content, parent_id,
+          source_chat_message_id, version, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10)",
+        rusqlite::params![
+            input.entry_id,
+            input.project_id,
+            input.type_slug,
+            input.name,
+            input.aliases,
+            input.summary,
+            input.content,
+            input.parent_id,
+            input.source_chat_message_id,
+            input.now,
+        ],
+    )?;
+
+    merge_codex_authorship_spans(
+        conn,
+        input.entry_id,
+        CodexSpanMerge {
+            spans: input.authorship_spans,
+            lanes: None,
+            update_summary: true,
+            update_content: true,
+            model: input.model,
+            chat_msg_id: input
+                .chat_message_id
+                .or(input.source_chat_message_id),
+            trace_id: input.trace_id,
+        },
+    )?;
+
+    let after_snapshot = collect_codex_entry_snapshot(conn, input.entry_id)?;
+    let after_json = after_snapshot.to_string();
+
+    if input.write_undo_journal {
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: input.undo_id,
+                project_id: input.project_id,
+                surface: input.surface.unwrap_or("in-app-agent"),
+                entity_kind: "codex_entry",
+                entity_id: input.entry_id,
+                op_kind: "create",
+                before_json: None,
+                after_json: Some(&after_json),
+                base_version: 0,
+                result_version: 1,
+                change_event_uid: Some(input.event_uid),
+            },
+        )?;
+    }
+
+    if input.write_change_event {
+        let mut change_payload = json!({
+            "type": input.type_slug,
+            "name": input.name,
+            "parentId": input.parent_id,
+        });
+        if let Some(request_hash) = input.request_hash {
+            change_payload["requestHash"] = Value::String(request_hash.to_string());
+        }
+        append_change_events_in_tx(
+            conn,
+            input.project_id,
+            input.session_id,
+            &[AppendChangeEvent {
+                event_uid: input.event_uid.to_string(),
+                scene_id: None,
+                domain: "codex".to_string(),
+                op_type: "entry.create".to_string(),
+                entity_type: Some("codex_entry".to_string()),
+                entity_id: Some(input.entry_id.to_string()),
+                payload: change_payload.to_string(),
+                timestamp: input.timestamp,
+            }],
+        )?;
+    }
+
+    Ok(CodexEntryCreateTxResult {
+        entity_id: input.entry_id.to_string(),
+        version: 1,
+        change_event_uid: input.event_uid.to_string(),
+        undo_journal_id: input.undo_id.to_string(),
+        after_snapshot,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodexEntryPatchTxInput<'a> {
+    pub project_id: &'a str,
+    pub session_id: &'a str,
+    pub surface: Option<&'a str>,
+    pub entry_id: &'a str,
+    pub undo_id: &'a str,
+    pub event_uid: &'a str,
+    pub base_version: i64,
+    pub name: Option<&'a str>,
+    pub summary: Option<&'a str>,
+    /// When true, summary is applied only if the current summary is empty.
+    pub summary_fill_if_empty: bool,
+    pub content: Option<&'a str>,
+    pub aliases: Option<&'a str>,
+    pub authorship_spans: Option<&'a [AuthorshipSpanInput]>,
+    pub authorship_span_lanes: Option<&'a [Option<String>]>,
+    pub model: Option<&'a str>,
+    pub chat_message_id: Option<&'a str>,
+    pub trace_id: Option<&'a str>,
+    pub now: &'a str,
+    pub timestamp: i64,
+    pub write_undo_journal: bool,
+    pub write_change_event: bool,
+    /// When true, reject name/content patches (narrative v1 scope).
+    pub aliases_and_empty_summary_only: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodexEntryPatchTxResult {
+    pub entity_id: String,
+    pub version: i64,
+    pub change_event_uid: String,
+    pub undo_journal_id: String,
+    pub before_snapshot: Value,
+    pub after_snapshot: Value,
+}
+
+/// Shared Codex entry patch body (OCC on base_version) inside a caller-owned transaction.
+pub(crate) fn apply_codex_entry_patch_in_tx(
+    conn: &rusqlite::Connection,
+    input: CodexEntryPatchTxInput<'_>,
+) -> anyhow::Result<CodexEntryPatchTxResult> {
+    if input.aliases_and_empty_summary_only {
+        anyhow::ensure!(
+            input.name.is_none() && input.content.is_none(),
+            "NEX_CODEX_PATCH_SCOPE: narrative patch may only change aliases and empty summary"
+        );
+    }
+
+    let (db_version, before_base): (i64, String) = conn.query_row(
+        "SELECT version, json_object(
+            'id', id, 'projectId', project_id, 'type', type, 'name', name,
+            'summary', summary, 'content', content, 'aliases', aliases,
+            'parentId', parent_id, 'version', version
+         ) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![input.entry_id, input.project_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let before_json = grimodex_core::undo_journal::codex_update_before_snapshot(
+        conn,
+        input.entry_id,
+        &before_base,
+    )?;
+    let before_snapshot: Value = serde_json::from_str(&before_json)?;
+    if db_version != input.base_version {
+        anyhow::bail!(
+            "Codex entry '{}' version conflict: expected {} but database has {}",
+            input.entry_id,
+            input.base_version,
+            db_version
+        );
+    }
+
+    let current_summary: String = conn.query_row(
+        "SELECT summary FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![input.entry_id, input.project_id],
+        |row| row.get(0),
+    )?;
+
+    let effective_summary = match input.summary {
+        Some(value) if input.summary_fill_if_empty => {
+            if current_summary.trim().is_empty() {
+                Some(value)
+            } else {
+                None
+            }
+        }
+        other => other,
+    };
+
+    let mut sets = vec![
+        "updated_at = ?1".to_string(),
+        "version = version + 1".to_string(),
+    ];
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(input.now.to_string())];
+    let mut param_idx = 2;
+
+    if let Some(name) = input.name {
+        sets.push(format!("name = ?{param_idx}"));
+        params.push(Box::new(name.to_string()));
+        param_idx += 1;
+    }
+    if let Some(summary) = effective_summary {
+        sets.push(format!("summary = ?{param_idx}"));
+        params.push(Box::new(summary.to_string()));
+        param_idx += 1;
+    }
+    if let Some(content) = input.content {
+        sets.push(format!("content = ?{param_idx}"));
+        params.push(Box::new(content.to_string()));
+        param_idx += 1;
+    }
+    if let Some(aliases) = input.aliases {
+        sets.push(format!("aliases = ?{param_idx}"));
+        params.push(Box::new(aliases.to_string()));
+        param_idx += 1;
+    }
+
+    let sql = format!(
+        "UPDATE codex_entries SET {} WHERE id = ?{param_idx} AND project_id = ?{} AND version = ?{}",
+        sets.join(", "),
+        param_idx + 1,
+        param_idx + 2
+    );
+    params.push(Box::new(input.entry_id.to_string()));
+    params.push(Box::new(input.project_id.to_string()));
+    params.push(Box::new(input.base_version));
+
+    let updated = conn.execute(
+        &sql,
+        rusqlite::params_from_iter(params.iter().map(|p| p as &dyn rusqlite::types::ToSql)),
+    )?;
+    if updated == 0 {
+        anyhow::bail!(
+            "Codex entry '{}' version conflict or not found in project '{}'",
+            input.entry_id,
+            input.project_id
+        );
+    }
+
+    let result_version = input.base_version + 1;
+
+    if let Some(spans) = input.authorship_spans {
+        merge_codex_authorship_spans(
+            conn,
+            input.entry_id,
+            CodexSpanMerge {
+                spans,
+                lanes: input.authorship_span_lanes,
+                update_summary: effective_summary.is_some(),
+                update_content: input.content.is_some(),
+                model: input.model,
+                chat_msg_id: input.chat_message_id,
+                trace_id: input.trace_id,
+            },
+        )?;
+    }
+
+    let after_snapshot = collect_codex_entry_snapshot(conn, input.entry_id)?;
+    let after_json = after_snapshot.to_string();
+
+    if input.write_undo_journal {
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: input.undo_id,
+                project_id: input.project_id,
+                surface: input.surface.unwrap_or("in-app-agent"),
+                entity_kind: "codex_entry",
+                entity_id: input.entry_id,
+                op_kind: "update",
+                before_json: Some(&before_json),
+                after_json: Some(&after_json),
+                base_version: input.base_version,
+                result_version,
+                change_event_uid: Some(input.event_uid),
+            },
+        )?;
+    }
+
+    if input.write_change_event {
+        let fields: Vec<&str> = [
+            input.name.map(|_| "name"),
+            effective_summary.map(|_| "summary"),
+            input.content.map(|_| "content"),
+            input.aliases.map(|_| "aliases"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        append_change_events_in_tx(
+            conn,
+            input.project_id,
+            input.session_id,
+            &[AppendChangeEvent {
+                event_uid: input.event_uid.to_string(),
+                scene_id: None,
+                domain: "codex".to_string(),
+                op_type: "entry.update".to_string(),
+                entity_type: Some("codex_entry".to_string()),
+                entity_id: Some(input.entry_id.to_string()),
+                payload: json!({ "fields": fields }).to_string(),
+                timestamp: input.timestamp,
+            }],
+        )?;
+    }
+
+    Ok(CodexEntryPatchTxResult {
+        entity_id: input.entry_id.to_string(),
+        version: result_version,
+        change_event_uid: input.event_uid.to_string(),
+        undo_journal_id: input.undo_id.to_string(),
+        before_snapshot,
+        after_snapshot,
+    })
+}
+
+pub(crate) fn collect_codex_entry_snapshot(
+    conn: &rusqlite::Connection,
+    entry_id: &str,
+) -> anyhow::Result<Value> {
+    let after_base: String = conn.query_row(
+        "SELECT json_object(
+            'id', id, 'projectId', project_id, 'type', type, 'name', name,
+            'summary', summary, 'content', content, 'aliases', aliases,
+            'parentId', parent_id, 'version', version
+         ) FROM codex_entries WHERE id = ?1",
+        rusqlite::params![entry_id],
+        |row| row.get(0),
+    )?;
+    let after_json =
+        grimodex_core::undo_journal::codex_update_after_snapshot(conn, entry_id, &after_base)?;
+    serde_json::from_str(&after_json).map_err(Into::into)
+}
+
+pub(crate) fn delete_codex_entry_cascade(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+    expected_version: Option<i64>,
+) -> anyhow::Result<()> {
+    let deleted = match expected_version {
+        Some(version) => conn.execute(
+            "DELETE FROM codex_entries WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+            rusqlite::params![entry_id, project_id, version],
+        )?,
+        None => conn.execute(
+            "DELETE FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![entry_id, project_id],
+        )?,
+    };
+    if deleted == 0 {
+        if let Some(version) = expected_version {
+            anyhow::bail!(
+                "codex entry '{}' version {} conflict during journal restore",
+                entry_id,
+                version
+            );
+        }
+        anyhow::bail!("codex entry '{entry_id}' not found in project '{project_id}' during restore");
+    }
+    Ok(())
+}
+
 pub fn agent_codex_create_impl(
     db: &Database,
     payload: AgentCodexCreatePayload,
@@ -473,15 +870,6 @@ pub fn agent_codex_create_impl(
     let parent_id = payload.parent_id;
     let source_chat_message_id = payload.source_chat_message_id;
     let timestamp = chrono::Utc::now().timestamp_millis();
-
-    let mut change_payload = json!({
-        "type": payload.type_slug,
-        "name": payload.name,
-        "parentId": parent_id,
-    });
-    if request_id.is_some() {
-        change_payload["requestHash"] = Value::String(request_hash.clone());
-    }
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -510,95 +898,38 @@ pub fn agent_codex_create_impl(
                     return Ok(existing);
                 }
             }
-            conn.execute(
-                "INSERT INTO codex_entries
-                 (id, project_id, type, name, aliases, summary, content, parent_id,
-                  source_chat_message_id, version, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10)",
-                rusqlite::params![
-                    entry_id,
-                    payload.project_id,
-                    payload.type_slug,
-                    payload.name,
-                    aliases,
-                    summary,
-                    content,
-                    parent_id,
-                    source_chat_message_id,
-                    now,
-                ],
-            )?;
-
-            merge_codex_authorship_spans(
+            let created = apply_codex_entry_create_in_tx(
                 conn,
-                &entry_id,
-                CodexSpanMerge {
-                    spans: &payload.authorship_spans,
-                    lanes: None,
-                    update_summary: true,
-                    update_content: true,
-                    model: payload.model.as_deref(),
-                    chat_msg_id: payload
-                        .chat_message_id
-                        .as_deref()
-                        .or(source_chat_message_id.as_deref()),
-                    trace_id: payload.trace_id.as_deref(),
-                },
-            )?;
-
-            let after_base: String = conn.query_row(
-                "SELECT json_object(
-                    'id', id, 'projectId', project_id, 'type', type, 'name', name,
-                    'summary', summary, 'content', content, 'aliases', aliases,
-                    'parentId', parent_id, 'version', version
-                 ) FROM codex_entries WHERE id = ?1",
-                rusqlite::params![entry_id],
-                |row| row.get(0),
-            )?;
-            let after_snapshot = grimodex_core::undo_journal::codex_update_after_snapshot(
-                conn,
-                &entry_id,
-                &after_base,
-            )?;
-
-            insert_undo_journal_in_tx(
-                conn,
-                UndoJournalInsert {
-                    id: &undo_id,
+                CodexEntryCreateTxInput {
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
-                    entity_kind: "codex_entry",
-                    entity_id: &entry_id,
-                    op_kind: "create",
-                    before_json: None,
-                    after_json: Some(&after_snapshot),
-                    base_version: 0,
-                    result_version: 1,
-                    change_event_uid: Some(&event_uid),
+                    session_id: &payload.session_id,
+                    surface: Some("in-app-agent"),
+                    entry_id: &entry_id,
+                    undo_id: &undo_id,
+                    event_uid: &event_uid,
+                    type_slug: &payload.type_slug,
+                    name: &payload.name,
+                    summary: &summary,
+                    content: &content,
+                    aliases: aliases.as_deref(),
+                    parent_id: parent_id.as_deref(),
+                    source_chat_message_id: source_chat_message_id.as_deref(),
+                    authorship_spans: &payload.authorship_spans,
+                    model: payload.model.as_deref(),
+                    chat_message_id: payload.chat_message_id.as_deref(),
+                    trace_id: payload.trace_id.as_deref(),
+                    request_hash: request_id.as_ref().map(|_| request_hash.as_str()),
+                    now: &now,
+                    timestamp,
+                    write_undo_journal: true,
+                    write_change_event: true,
                 },
             )?;
-
-            append_change_events_in_tx(
-                conn,
-                &payload.project_id,
-                &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "codex".to_string(),
-                    op_type: "entry.create".to_string(),
-                    entity_type: Some("codex_entry".to_string()),
-                    entity_id: Some(entry_id.clone()),
-                    payload: change_payload.to_string(),
-                    timestamp,
-                }],
-            )?;
-
             Ok(AgentWriteResult {
-                entity_id: entry_id.clone(),
-                version: 1,
-                change_event_uid: event_uid,
-                undo_journal_id: undo_id,
+                entity_id: created.entity_id,
+                version: created.version,
+                change_event_uid: created.change_event_uid,
+                undo_journal_id: created.undo_journal_id,
             })
         })();
 
@@ -629,158 +960,38 @@ pub fn agent_codex_update_impl(
         conn.execute_batch("BEGIN IMMEDIATE")?;
 
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let (db_version, before_base): (i64, String) = conn.query_row(
-                "SELECT version, json_object(
-                    'id', id, 'projectId', project_id, 'type', type, 'name', name,
-                    'summary', summary, 'content', content, 'aliases', aliases,
-                    'parentId', parent_id, 'version', version
-                 ) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.entry_id, payload.project_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            let before_row = grimodex_core::undo_journal::codex_update_before_snapshot(
+            let patched = apply_codex_entry_patch_in_tx(
                 conn,
-                &payload.entry_id,
-                &before_base,
-            )?;
-            if db_version != payload.base_version {
-                anyhow::bail!(
-                    "Codex entry '{}' version conflict: expected {} but database has {}",
-                    payload.entry_id,
-                    payload.base_version,
-                    db_version
-                );
-            }
-            let base_version = payload.base_version;
-
-            let mut sets = vec!["updated_at = ?1".to_string(), "version = version + 1".to_string()];
-            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now.clone())];
-            let mut param_idx = 2;
-
-            if let Some(ref name) = payload.name {
-                sets.push(format!("name = ?{param_idx}"));
-                params.push(Box::new(name.clone()));
-                param_idx += 1;
-            }
-            if let Some(ref summary) = payload.summary {
-                sets.push(format!("summary = ?{param_idx}"));
-                params.push(Box::new(summary.clone()));
-                param_idx += 1;
-            }
-            if let Some(ref content) = payload.content {
-                sets.push(format!("content = ?{param_idx}"));
-                params.push(Box::new(content.clone()));
-                param_idx += 1;
-            }
-            if let Some(ref aliases) = payload.aliases {
-                sets.push(format!("aliases = ?{param_idx}"));
-                params.push(Box::new(aliases.clone()));
-                param_idx += 1;
-            }
-
-            let sql = format!(
-                "UPDATE codex_entries SET {} WHERE id = ?{param_idx} AND project_id = ?{} AND version = ?{}",
-                sets.join(", "),
-                param_idx + 1,
-                param_idx + 2
-            );
-            params.push(Box::new(payload.entry_id.clone()));
-            params.push(Box::new(payload.project_id.clone()));
-            params.push(Box::new(base_version));
-
-            let updated = conn.execute(
-                &sql,
-                rusqlite::params_from_iter(params.iter().map(|p| p as &dyn rusqlite::types::ToSql)),
-            )?;
-            if updated == 0 {
-                anyhow::bail!(
-                    "Codex entry '{}' version conflict or not found in project '{}'",
-                    payload.entry_id,
-                    payload.project_id
-                );
-            }
-
-            let result_version = base_version + 1;
-
-            if let Some(ref spans) = payload.authorship_spans {
-                merge_codex_authorship_spans(
-                    conn,
-                    &payload.entry_id,
-                    CodexSpanMerge {
-                        spans,
-                        lanes: payload.authorship_span_lanes.as_deref(),
-                        update_summary: payload.summary.is_some(),
-                        update_content: payload.content.is_some(),
-                        model: payload.model.as_deref(),
-                        chat_msg_id: payload.chat_message_id.as_deref(),
-                        trace_id: payload.trace_id.as_deref(),
-                    },
-                )?;
-            }
-
-            let after_base: String = conn.query_row(
-                "SELECT json_object(
-                    'id', id, 'projectId', project_id, 'type', type, 'name', name,
-                    'summary', summary, 'content', content, 'aliases', aliases,
-                    'parentId', parent_id, 'version', version
-                 ) FROM codex_entries WHERE id = ?1",
-                rusqlite::params![payload.entry_id],
-                |row| row.get(0),
-            )?;
-            let after_row = grimodex_core::undo_journal::codex_update_after_snapshot(
-                conn,
-                &payload.entry_id,
-                &after_base,
-            )?;
-
-            let fields: Vec<&str> = [
-                payload.name.as_ref().map(|_| "name"),
-                payload.summary.as_ref().map(|_| "summary"),
-                payload.content.as_ref().map(|_| "content"),
-                payload.aliases.as_ref().map(|_| "aliases"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-
-            insert_undo_journal_in_tx(
-                conn,
-                UndoJournalInsert {
-                    id: &undo_id,
+                CodexEntryPatchTxInput {
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
-                    entity_kind: "codex_entry",
-                    entity_id: &payload.entry_id,
-                    op_kind: "update",
-                    before_json: Some(&before_row),
-                    after_json: Some(&after_row),
-                    base_version,
-                    result_version,
-                    change_event_uid: Some(&event_uid),
+                    session_id: &payload.session_id,
+                    surface: Some("in-app-agent"),
+                    entry_id: &payload.entry_id,
+                    undo_id: &undo_id,
+                    event_uid: &event_uid,
+                    base_version: payload.base_version,
+                    name: payload.name.as_deref(),
+                    summary: payload.summary.as_deref(),
+                    summary_fill_if_empty: false,
+                    content: payload.content.as_deref(),
+                    aliases: payload.aliases.as_deref(),
+                    authorship_spans: payload.authorship_spans.as_deref(),
+                    authorship_span_lanes: payload.authorship_span_lanes.as_deref(),
+                    model: payload.model.as_deref(),
+                    chat_message_id: payload.chat_message_id.as_deref(),
+                    trace_id: payload.trace_id.as_deref(),
+                    now: &now,
+                    timestamp,
+                    write_undo_journal: true,
+                    write_change_event: true,
+                    aliases_and_empty_summary_only: false,
                 },
             )?;
-
-            append_change_events_in_tx(
-                conn,
-                &payload.project_id,
-                &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "codex".to_string(),
-                    op_type: "entry.update".to_string(),
-                    entity_type: Some("codex_entry".to_string()),
-                    entity_id: Some(payload.entry_id.clone()),
-                    payload: json!({ "fields": fields }).to_string(),
-                    timestamp,
-                }],
-            )?;
-
             Ok(AgentWriteResult {
-                entity_id: payload.entry_id.clone(),
-                version: result_version,
-                change_event_uid: event_uid,
-                undo_journal_id: undo_id,
+                entity_id: patched.entity_id,
+                version: patched.version,
+                change_event_uid: patched.change_event_uid,
+                undo_journal_id: patched.undo_journal_id,
             })
         })();
 
