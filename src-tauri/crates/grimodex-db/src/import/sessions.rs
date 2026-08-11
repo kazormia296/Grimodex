@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::Database;
+use crate::{require_generic_import_capture_allowed, Database};
 
 const STATE_CREATED: &str = "created";
 const STATE_SOURCE_SAVED: &str = "source-saved";
@@ -34,6 +34,7 @@ pub fn create_session(db: &Database, payload: ImportSessionCreatePayload) -> any
     let session_id = payload.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = now();
     db.with_conn(|conn| {
+        require_generic_import_capture_allowed(conn)?;
         conn.execute(
             "INSERT INTO import_sessions (
                 id, state, adapter_id, adapter_version, target_json,
@@ -79,6 +80,7 @@ pub fn list_sessions(db: &Database) -> anyhow::Result<Value> {
 pub fn cancel_session(db: &Database, session_id: String) -> anyhow::Result<Value> {
     let now = now();
     db.with_conn(|conn| {
+        require_generic_import_capture_allowed(conn)?;
         let changed = conn.execute(
             "UPDATE import_sessions
                 SET state = ?1, updated_at = ?2, version = version + 1
@@ -98,6 +100,7 @@ pub fn save_source_package(
     let package_id = payload.package_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = now();
     db.with_conn(|conn| {
+        require_generic_import_capture_allowed(conn)?;
         let state: Option<String> = conn
             .query_row(
                 "SELECT state FROM import_sessions WHERE id = ?1",

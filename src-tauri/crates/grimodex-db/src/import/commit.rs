@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::Database;
+use crate::{require_generic_import_apply_allowed, Database};
 
 const STATE_SOURCE_SAVED: &str = "source-saved";
 const STATE_COMMITTED: &str = "committed";
@@ -32,6 +32,7 @@ pub fn prepare_commit(
     payload: ImportPrepareCommitPayload,
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
+        require_generic_import_apply_allowed(conn)?;
         let target = validate_session_for_commit(
             conn,
             &payload.session_id,
@@ -51,6 +52,7 @@ pub fn apply_commit(db: &Database, payload: ImportApplyCommitPayload) -> anyhow:
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
+            require_generic_import_apply_allowed(conn)?;
             if let Some(existing) = load_commit_by_request(conn, &payload.request_id)? {
                 return replay_or_conflict(existing, &payload.plan_digest);
             }

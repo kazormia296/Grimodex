@@ -3,6 +3,10 @@ use grimodex_db::import::{
     ImportSessionCreatePayload, SaveImportSourcePackagePayload,
 };
 use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
+    SetNarrativeRuntimePolicyInput,
+};
 use rusqlite::OptionalExtension;
 use serde_json::json;
 
@@ -12,7 +16,23 @@ fn migrated_db() -> Database {
     db
 }
 
+fn enable_generic_import_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("load runtime policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".to_string(),
+            maintenance_enabled: false,
+            generic_import_enabled: true,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("enable generic import apply");
+}
+
 fn create_ready_session(db: &Database, session_id: &str, project_id: &str) {
+    enable_generic_import_apply(db);
     create_session(
         db,
         ImportSessionCreatePayload {
