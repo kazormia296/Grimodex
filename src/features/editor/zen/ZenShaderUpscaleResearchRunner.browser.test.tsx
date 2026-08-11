@@ -25,27 +25,31 @@ import {
   type ZenShaderResearchAbbaRun,
 } from "./zenShaderResearchAbba";
 import {
-  buildZenShaderUpscaleResearchMatrix,
+  buildZenShaderUpscaleResearchCandidates,
   buildZenShaderUpscaleResearchSchedule,
   resolveZenShaderUpscaleDimensions,
   ZEN_SHADER_UPSCALE_RESEARCH_SHADER_IDS,
   type ZenShaderUpscaleResearchCandidate,
+  type ZenShaderUpscaleResearchCandidateSet,
   type ZenShaderUpscaleResearchSequence,
   type ZenShaderUpscaleResearchVariant,
 } from "./zenShaderUpscaleResearch";
+import type { ZenGpuPassTimingSummary } from "./zenGpuTimerSampler";
 
 declare const __ZEN_SHADER_RESEARCH_SCENARIO__: {
   experiment: "pipeline" | "cadence" | "baselines" | "abba" | "upscale";
   shader: string;
   cycles: number;
   sequenceStart: "abba" | "baab";
+  upscaleCandidates: ZenShaderUpscaleResearchCandidateSet;
+  prewarmFrames: number;
   width: number;
   height: number;
   warmup: number;
   frames: number;
   frame: number;
   orderSeed: number;
-  timing: "both" | "pass-breakdown" | "frame";
+  timing: "pass-breakdown" | "frame";
   headed: boolean;
   dither: boolean;
   ditherStrength: number;
@@ -89,6 +93,7 @@ interface CapturedBlock {
   variant: ZenShaderUpscaleResearchVariant;
   frameGpuTimeMs: { p50: number; p95: number };
   cpuSubmitTimeMs: { p50: number; p95: number } | null;
+  gpuPassTimesMs: ZenGpuPassTimingSummary | null;
   drawCallsPerFrame: number;
 }
 
@@ -131,7 +136,7 @@ function benchmarkOptions(): ZenBlurResearchOptions {
     displayNoise: { ...DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS.displayNoise },
     rgba8Dither: { ...DEFAULT_ZEN_BLUR_RESEARCH_OPTIONS.rgba8Dither },
     gpuTiming: {
-      measurementMode: "frame",
+      measurementMode: scenario.timing,
       sampleIntervalDraws: 1,
       maxPendingSamples: MAX_MEASURED_FRAMES,
       maxRecordedSamples: Math.max(
@@ -339,8 +344,32 @@ async function captureBlock(
           p95: report.performanceStats.cpuSubmitSummary.p95,
         }
       : null,
+    gpuPassTimesMs:
+      scenario.timing === "pass-breakdown"
+        ? report.gpuBenchmark.summary.gpuPassTimesMs
+        : null,
     drawCallsPerFrame: report.performanceStats.drawCallCount / scenario.frames,
   } satisfies CapturedBlock;
+}
+
+async function prewarmCandidate(
+  mount: UpscaleResearchMount,
+  identity: ResourceIdentity,
+  label: string,
+) {
+  const frames = __ZEN_SHADER_RESEARCH_SCENARIO__.prewarmFrames;
+  if (frames === 0) return;
+  mount.resetPerformanceStats();
+  for (let sample = 0; sample < frames; sample += 1) {
+    await drawFixedFrame(
+      mount,
+      __ZEN_SHADER_RESEARCH_SCENARIO__.frame,
+      `${label} ${sample}`,
+    );
+  }
+  await drainGpuQueries(mount, label);
+  assertResourceIdentity(mount.getPerformanceStats(), identity, label);
+  mount.resetPerformanceStats();
 }
 
 function summarizeRuns(runs: readonly CapturedRun[]) {
@@ -413,6 +442,11 @@ async function captureCandidate(
       `${shader}/${candidate.id} initial candidate`,
     );
     const identity = resourceIdentity(initialReport);
+    await prewarmCandidate(
+      mount,
+      identity,
+      `${shader}/${candidate.id} continuous prewarm`,
+    );
     const runs: CapturedRun[] = [];
     for (const scheduled of buildZenShaderUpscaleResearchSchedule(
       scenario.cycles,
@@ -450,8 +484,22 @@ function assertScenario() {
   if (scenario.experiment !== "upscale") {
     throw new Error("Zen shader upscale runner requires experiment=upscale");
   }
-  if (scenario.timing !== "frame") {
-    throw new Error("Zen shader upscale runner requires frame timing");
+  if (scenario.timing !== "frame" && scenario.timing !== "pass-breakdown") {
+    throw new Error(
+      "Zen shader upscale runner requires frame or pass-breakdown timing",
+    );
+  }
+  if (
+    scenario.upscaleCandidates !== "matrix" &&
+    scenario.upscaleCandidates !== "linear-focused"
+  ) {
+    throw new Error("Zen shader upscale runner requires a candidate set");
+  }
+  if (
+    !Number.isSafeInteger(scenario.prewarmFrames) ||
+    scenario.prewarmFrames < 0
+  ) {
+    throw new Error("Zen shader upscale prewarm frames must be non-negative");
   }
   if (
     scenario.dither ||
@@ -487,7 +535,9 @@ describe("Zen shader spatial upscale research runner", () => {
             scenario.shader,
             scenario.orderSeed,
           );
-    const matrix = buildZenShaderUpscaleResearchMatrix();
+    const matrix = buildZenShaderUpscaleResearchCandidates(
+      scenario.upscaleCandidates,
+    );
     const firstSequence: ZenShaderUpscaleResearchSequence =
       scenario.sequenceStart === "abba" ? "ABBA" : "BAAB";
     const results = [];
@@ -534,11 +584,13 @@ describe("Zen shader spatial upscale research runner", () => {
         shader: scenario.shader,
         shaderOrder: shaderIds,
         matrix,
+        upscaleCandidates: scenario.upscaleCandidates,
         cycles: scenario.cycles,
         sequenceStart: scenario.sequenceStart,
         width: scenario.width,
         height: scenario.height,
         warmup: scenario.warmup,
+        prewarmFrames: scenario.prewarmFrames,
         frames: scenario.frames,
         frame: scenario.frame,
         orderSeed: scenario.orderSeed,

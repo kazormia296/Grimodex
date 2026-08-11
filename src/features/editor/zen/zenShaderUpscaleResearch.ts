@@ -6,6 +6,7 @@ export type ZenShaderResearchUpscaler =
 
 export type ZenShaderUpscaleResearchSequence = "ABBA" | "BAAB";
 export type ZenShaderUpscaleResearchVariant = "native" | "candidate";
+export type ZenShaderUpscaleResearchCandidateSet = "matrix" | "linear-focused";
 
 export interface ZenShaderUpscaleResearchCandidate {
   id: string;
@@ -57,6 +58,21 @@ export function buildZenShaderUpscaleResearchMatrix(): ZenShaderUpscaleResearchC
       sceneScale,
       upscaler,
     })),
+  );
+}
+
+export function buildZenShaderUpscaleResearchCandidates(
+  candidateSet: ZenShaderUpscaleResearchCandidateSet,
+): ZenShaderUpscaleResearchCandidate[] {
+  const matrix = buildZenShaderUpscaleResearchMatrix();
+  if (candidateSet === "matrix") return matrix;
+  if (candidateSet === "linear-focused") {
+    return matrix.filter(
+      ({ sceneScale, upscaler }) => sceneScale < 1 && upscaler === "linear",
+    );
+  }
+  throw new TypeError(
+    `Unknown Zen shader upscale candidate set: ${candidateSet}`,
   );
 }
 

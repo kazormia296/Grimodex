@@ -40,6 +40,7 @@ const VALID_CADENCE_MODES = new Set([
   "stopped-retained",
 ]);
 const VALID_SEQUENCE_STARTS = new Set(["abba", "baab"]);
+const VALID_UPSCALE_CANDIDATE_SETS = new Set(["matrix", "linear-focused"]);
 const EXPERIMENT_ONLY_OPTIONS = Object.freeze([
   "workload",
   "resolution",
@@ -47,13 +48,20 @@ const EXPERIMENT_ONLY_OPTIONS = Object.freeze([
   "duration-ms",
   "cycles",
   "sequence-start",
+  "upscale-candidates",
+  "prewarm-frames",
 ]);
 const ALLOWED_EXPERIMENT_OPTIONS = Object.freeze({
   pipeline: new Set(),
   cadence: new Set(["cadence", "duration-ms"]),
   baselines: new Set(["workload", "resolution"]),
   abba: new Set(["cycles", "sequence-start"]),
-  upscale: new Set(["cycles", "sequence-start"]),
+  upscale: new Set([
+    "cycles",
+    "sequence-start",
+    "upscale-candidates",
+    "prewarm-frames",
+  ]),
 });
 const DEFAULT_BASELINE_RESOLUTIONS = Object.freeze([
   Object.freeze({ width: 960, height: 540 }),
@@ -71,6 +79,8 @@ const DEFAULT_OPTIONS = Object.freeze({
   durationMs: 2_000,
   cycles: 6,
   sequenceStart: "abba",
+  upscaleCandidates: "matrix",
+  prewarmFrames: 0,
   dither: false,
   ditherStrength: 0.45,
   halftone: false,
@@ -272,6 +282,24 @@ export function parseZenShaderResearchArguments(argv) {
           requiredValue(argv, index, argument),
           "sequence-start",
           VALID_SEQUENCE_STARTS,
+        );
+        index += 1;
+        break;
+      case "--upscale-candidates":
+        explicit.add("upscale-candidates");
+        options.upscaleCandidates = enumValue(
+          requiredValue(argv, index, argument),
+          "upscale-candidates",
+          VALID_UPSCALE_CANDIDATE_SETS,
+        );
+        index += 1;
+        break;
+      case "--prewarm-frames":
+        explicit.add("prewarm-frames");
+        options.prewarmFrames = integerInRange(
+          requiredValue(argv, index, argument),
+          "prewarm-frames",
+          0,
         );
         index += 1;
         break;
@@ -500,10 +528,16 @@ export function parseZenShaderResearchArguments(argv) {
         "upscale research precompiles in-place and has no prime runs",
       );
     }
-    if (explicit.has("timing") && options.timing !== "frame") {
-      throw new Error("upscale research only supports frame timing");
+    if (
+      explicit.has("timing") &&
+      options.timing !== "frame" &&
+      options.timing !== "pass-breakdown"
+    ) {
+      throw new Error(
+        "upscale research supports frame or pass-breakdown timing",
+      );
     }
-    options.timing = "frame";
+    if (!explicit.has("timing")) options.timing = "frame";
     options.runs = options.cycles;
     options.primeRuns = 0;
     if (!explicit.has("shader")) options.shader = "representative";
@@ -537,6 +571,8 @@ export function buildZenShaderResearchInvocation(options, outputPath) {
         durationMs: options.durationMs,
         cycles: options.cycles,
         sequenceStart: options.sequenceStart,
+        upscaleCandidates: options.upscaleCandidates,
+        prewarmFrames: options.prewarmFrames,
         dither: options.dither,
         ditherStrength: options.ditherStrength,
         halftone: options.halftone,

@@ -35,6 +35,8 @@ interface ZenShaderResearchScenarioEnvironment {
   durationMs: number;
   cycles: number;
   sequenceStart: "abba" | "baab";
+  upscaleCandidates: "matrix" | "linear-focused";
+  prewarmFrames: number;
   dither: boolean;
   ditherStrength: number;
   halftone: boolean;
@@ -273,7 +275,11 @@ const cadenceDurationMs =
   scenario.durationMs * scenario.runs * shaderCount * cadenceModeCount;
 const abbaFrameCount =
   (scenario.warmup + scenario.frames) * scenario.cycles * 4 * shaderCount;
-const upscaleFrameCount = abbaFrameCount * 16;
+const upscaleCandidateCount =
+  scenario.upscaleCandidates === "linear-focused" ? 3 : 16;
+const upscaleFrameCount =
+  (abbaFrameCount + scenario.prewarmFrames * shaderCount) *
+  upscaleCandidateCount;
 const minimumFrameExperimentTimeout =
   scenario.experiment === "upscale" ? 180_000 : 120_000;
 const testTimeout =

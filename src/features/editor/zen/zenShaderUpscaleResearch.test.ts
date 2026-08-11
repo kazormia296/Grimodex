@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildZenShaderUpscaleResearchCandidates,
   buildZenShaderUpscaleResearchMatrix,
   buildZenShaderUpscaleResearchSchedule,
   resolveZenShaderUpscaleDimensions,
@@ -35,6 +36,17 @@ describe("Zen shader upscale research", () => {
       "easu-rcas",
     ]);
     expect(new Set(matrix.map(({ id }) => id)).size).toBe(matrix.length);
+  });
+
+  it("selects only the three reduced-resolution linear confirmation candidates", () => {
+    expect(buildZenShaderUpscaleResearchCandidates("linear-focused")).toEqual([
+      { id: "8333-linear", sceneScale: 5 / 6, upscaler: "linear" },
+      { id: "7500-linear", sceneScale: 3 / 4, upscaler: "linear" },
+      { id: "6667-linear", sceneScale: 2 / 3, upscaler: "linear" },
+    ]);
+    expect(buildZenShaderUpscaleResearchCandidates("matrix")).toEqual(
+      buildZenShaderUpscaleResearchMatrix(),
+    );
   });
 
   it("resolves exact Full HD research dimensions without exceeding the canvas", () => {
