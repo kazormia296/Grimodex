@@ -59,6 +59,7 @@ import {
   buildCodexStructureCatalogs,
   buildRelationCoMentionQuote,
   bulkApproveSafeCodexStructureProposals,
+  resetCodexStructureExtractionApiCachesForTests,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
 import {
@@ -900,6 +901,7 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
 describe("applyCodexStructureExtractionReview opaque refs", () => {
   beforeEach(() => {
     resetCodexStructureExtractionStoreForTests();
+    resetCodexStructureExtractionApiCachesForTests();
     prepareApplyMock.mockReset();
     prepareApplyMock.mockResolvedValue({
       prepared: {},
@@ -907,6 +909,136 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
       status: {},
       commitMap: { entityBindings: {} },
     });
+  });
+
+  function setSingleApprovedEntityProjection(
+    runId = "run-request-id",
+    proposalSetId = "ps-request-id",
+  ) {
+    const proposal = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-1",
+        canonicalName: "ライカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ライカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-retry" },
+    );
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId,
+      projectId: "p1",
+      workspacePath: "/w",
+      openRevision: 1,
+      proposalSetId,
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-retry",
+          revisionId: "rev-retry",
+          proposalKey: "ne-1",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ライカ",
+          proposal,
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "create-new",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact"],
+            hasExistingCandidates: false,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+          compiledOperation: {
+            kind: "codex.entry.create",
+            payload: {
+              entryId: "entry-retry",
+              typeSlug: "character",
+              name: "ライカ",
+              summary: null,
+              aliases: [],
+              parentId: null,
+              content: '{"type":"doc","content":[]}',
+              narrativeEntityId: "ne-1",
+            },
+          },
+        },
+      ],
+      relationProposals: [],
+      entityCount: 1,
+      relationCount: 0,
+      unresolvedCount: 0,
+      approvedCount: 1,
+      catalog: {
+        entities: [],
+        types: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+          },
+        ],
+      },
+    });
+  }
+
+  it("reuses the same requestId when retrying Apply after failure", async () => {
+    setSingleApprovedEntityProjection();
+    prepareApplyMock.mockRejectedValueOnce(new Error("IPC timeout"));
+
+    await expect(
+      applyCodexStructureExtractionReview({ projectId: "p1", entries: [] }),
+    ).rejects.toThrow("IPC timeout");
+
+    prepareApplyMock.mockResolvedValueOnce({
+      prepared: {},
+      applied: { created: [{ entityId: "e1" }] },
+      status: {},
+      commitMap: { entityBindings: {} },
+    });
+
+    await applyCodexStructureExtractionReview({ projectId: "p1", entries: [] });
+
+    const firstRequestId = prepareApplyMock.mock.calls[0]?.[0]?.requestId;
+    const secondRequestId = prepareApplyMock.mock.calls[1]?.[0]?.requestId;
+    expect(firstRequestId).toBeTruthy();
+    expect(secondRequestId).toBe(firstRequestId);
+  });
+
+  it("issues a new requestId after successful Apply clears the plan cache", async () => {
+    setSingleApprovedEntityProjection();
+    await applyCodexStructureExtractionReview({ projectId: "p1", entries: [] });
+
+    const firstRequestId = prepareApplyMock.mock.calls[0]?.[0]?.requestId;
+    expect(firstRequestId).toBeTruthy();
+
+    setSingleApprovedEntityProjection();
+    await applyCodexStructureExtractionReview({ projectId: "p1", entries: [] });
+
+    const secondRequestId = prepareApplyMock.mock.calls[1]?.[0]?.requestId;
+    expect(secondRequestId).toBeTruthy();
+    expect(secondRequestId).not.toBe(firstRequestId);
   });
 
   it("skips already-applied proposals and only commits pending approved rows", async () => {

@@ -886,8 +886,24 @@ function recountProjection(
 
 let lastRunId: string | null = null;
 
+/** Stable Apply requestIds keyed by run + proposal set + pending approved ops. */
+const applyRequestIdByPlanFingerprint = new Map<string, string>();
+
+function buildApplyPlanFingerprint(
+  runId: string,
+  proposalSetId: string,
+  operations: readonly { proposalId: string; revisionId: string }[],
+): string {
+  const sortedOps = [...operations]
+    .sort((a, b) => a.proposalId.localeCompare(b.proposalId))
+    .map((op) => `${op.proposalId}:${op.revisionId}`)
+    .join("|");
+  return `${runId}\0${proposalSetId}\0${sortedOps}`;
+}
+
 export function resetCodexStructureExtractionApiCachesForTests(): void {
   lastRunId = null;
+  applyRequestIdByPlanFingerprint.clear();
 }
 
 /**
@@ -2464,16 +2480,29 @@ export async function applyCodexStructureExtractionReview(
     throw new Error("Missing proposalSetId for codex commit");
   }
 
+  const planFingerprint = buildApplyPlanFingerprint(
+    active.runId,
+    active.proposalSetId,
+    operations,
+  );
+  let requestId = applyRequestIdByPlanFingerprint.get(planFingerprint);
+  if (!requestId) {
+    requestId = crypto.randomUUID();
+    applyRequestIdByPlanFingerprint.set(planFingerprint, requestId);
+  }
+
   await prepareAndApplyCodexCommit({
     projectId: input.projectId,
     runId: active.runId,
     proposalSetId: active.proposalSetId,
-    requestId: crypto.randomUUID(),
+    requestId,
     sessionId: crypto.randomUUID(),
     surface: "codex/CodexStructureExtractDialog",
     operations,
     existingBindings,
   });
+
+  applyRequestIdByPlanFingerprint.delete(planFingerprint);
 
   return operations.length;
 }
