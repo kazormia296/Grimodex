@@ -103,6 +103,67 @@ fn object_array<'a>(fields: &'a Map<String, Value>, key: &str) -> anyhow::Result
         .collect()
 }
 
+fn ensure_entry_in_project(
+    conn: &Connection,
+    entry_id: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let owned: i64 = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM codex_entries WHERE id = ?1 AND project_id = ?2
+         )",
+        params![entry_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        owned == 1,
+        "codex entry '{entry_id}' is not in project '{project_id}'"
+    );
+    Ok(())
+}
+
+fn ensure_definition_in_project(
+    conn: &Connection,
+    definition_id: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let owned: i64 = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM codex_detail_definitions
+             WHERE id = ?1 AND project_id = ?2
+         )",
+        params![definition_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        owned == 1,
+        "detail definition '{definition_id}' is not in project '{project_id}'"
+    );
+    Ok(())
+}
+
+fn ensure_phase_in_project(
+    conn: &Connection,
+    phase_id: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let owned: i64 = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+              FROM codex_entry_phases phase
+              JOIN codex_entries entry ON entry.id = phase.entry_id
+             WHERE phase.id = ?1 AND entry.project_id = ?2
+         )",
+        params![phase_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        owned == 1,
+        "phase '{phase_id}' is not in project '{project_id}'"
+    );
+    Ok(())
+}
+
 fn write_result(
     entity_id: String,
     version: i64,
@@ -177,6 +238,8 @@ fn relation_create(
     let from_id = required_string(&payload.fields, "fromCodexId")?;
     let to_id = required_string(&payload.fields, "toCodexId")?;
     anyhow::ensure!(from_id != to_id, "from and to must differ");
+    ensure_entry_in_project(conn, &from_id, &payload.project_id)?;
+    ensure_entry_in_project(conn, &to_id, &payload.project_id)?;
     let relation_type = optional_string(&payload.fields, "relationType")?
         .unwrap_or_else(|| "custom".to_string());
     let directionality = optional_string(&payload.fields, "directionality")?
@@ -252,6 +315,7 @@ fn phase_create(
 ) -> anyhow::Result<(String, i64)> {
     let phase_id = required_string(&payload.fields, "phaseId")?;
     let entry_id = required_string(&payload.fields, "entryId")?;
+    ensure_entry_in_project(conn, &entry_id, &payload.project_id)?;
     let label = optional_string(&payload.fields, "label")?.unwrap_or_default();
     let now = optional_string(&payload.fields, "createdAt")?
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
@@ -272,7 +336,7 @@ fn phase_create(
             now,
         ],
     )?;
-    replace_phase_overrides(conn, &phase_id, &payload.fields)?;
+    replace_phase_overrides(conn, &phase_id, &payload.project_id, &payload.fields)?;
     Ok((
         phase_id,
         optional_i64(&payload.fields, "version")?.unwrap_or(0),
@@ -282,6 +346,7 @@ fn phase_create(
 fn replace_phase_overrides(
     conn: &Connection,
     phase_id: &str,
+    project_id: &str,
     fields: &Map<String, Value>,
 ) -> anyhow::Result<()> {
     if !fields.contains_key("detailOverrides") {
@@ -293,6 +358,7 @@ fn replace_phase_overrides(
     )?;
     for item in object_array(fields, "detailOverrides")? {
         let definition_id = required_string(item, "definitionId")?;
+        ensure_definition_in_project(conn, &definition_id, project_id)?;
         conn.execute(
             "INSERT INTO codex_phase_detail_overrides (phase_id, definition_id, value)
              VALUES (?1, ?2, ?3)",
@@ -313,8 +379,11 @@ fn phase_patch(
         conn.query_row(
             "SELECT entry_id, label, anchor_node_id, summary_override, content_override,
                     context_mode_override, version
-             FROM codex_entry_phases WHERE id = ?1",
-            params![phase_id],
+             FROM codex_entry_phases phase
+             JOIN codex_entries entry ON entry.id = phase.entry_id
+              AND entry.project_id = ?2
+             WHERE phase.id = ?1",
+            params![phase_id, payload.project_id],
             |row| Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -355,7 +424,7 @@ fn phase_patch(
         ],
     )?;
     anyhow::ensure!(updated == 1, "phase version conflict");
-    replace_phase_overrides(conn, &phase_id, &payload.fields)?;
+    replace_phase_overrides(conn, &phase_id, &payload.project_id, &payload.fields)?;
     Ok((phase_id, next_version))
 }
 
@@ -365,15 +434,30 @@ fn phase_delete(
     _event_uid: &str,
 ) -> anyhow::Result<(String, i64)> {
     let phase_id = required_string(&payload.fields, "phaseId")?;
+    ensure_phase_in_project(conn, &phase_id, &payload.project_id)?;
     let expected = optional_i64(&payload.fields, "expectedVersion")?;
     let deleted = match expected {
         Some(version) => conn.execute(
-            "DELETE FROM codex_entry_phases WHERE id = ?1 AND version = ?2",
-            params![phase_id, version],
+            "DELETE FROM codex_entry_phases
+              WHERE id = ?1 AND version = ?2
+                AND EXISTS (
+                    SELECT 1
+                      FROM codex_entries entry
+                     WHERE entry.id = codex_entry_phases.entry_id
+                       AND entry.project_id = ?3
+                )",
+            params![phase_id, version, payload.project_id],
         )?,
         None => conn.execute(
-            "DELETE FROM codex_entry_phases WHERE id = ?1",
-            params![phase_id],
+            "DELETE FROM codex_entry_phases
+              WHERE id = ?1
+                AND EXISTS (
+                    SELECT 1
+                      FROM codex_entries entry
+                     WHERE entry.id = codex_entry_phases.entry_id
+                       AND entry.project_id = ?2
+                )",
+            params![phase_id, payload.project_id],
         )?,
     };
     anyhow::ensure!(deleted == 1, "phase '{phase_id}' version conflict or not found");
@@ -424,6 +508,7 @@ fn definition_update(
     _event_uid: &str,
 ) -> anyhow::Result<(String, i64)> {
     let definition_id = required_string(&payload.fields, "definitionId")?;
+    ensure_definition_in_project(conn, &definition_id, &payload.project_id)?;
     let base_version = required_i64(&payload.fields, "baseVersion")?;
     let mut assignments = Vec::new();
     let mut values = Vec::new();
@@ -460,9 +545,12 @@ fn definition_update(
     assignments.push("updated_at = ?".to_string());
     values.push(SqlValue::Text(chrono::Utc::now().to_rfc3339()));
     values.push(SqlValue::Text(definition_id.clone()));
+    values.push(SqlValue::Text(payload.project_id.clone()));
     values.push(SqlValue::Integer(base_version));
     let sql = format!(
-        "UPDATE codex_detail_definitions SET {} WHERE id = ? AND version = ?",
+        "UPDATE codex_detail_definitions
+            SET {}
+          WHERE id = ? AND project_id = ? AND version = ?",
         assignments.join(", ")
     );
     let updated = conn.execute(&sql, params_from_iter(values.iter()))?;
@@ -491,6 +579,8 @@ fn value_upsert(
 ) -> anyhow::Result<(String, i64)> {
     let entry_id = required_string(&payload.fields, "entryId")?;
     let definition_id = required_string(&payload.fields, "definitionId")?;
+    ensure_entry_in_project(conn, &entry_id, &payload.project_id)?;
+    ensure_definition_in_project(conn, &definition_id, &payload.project_id)?;
     let value = optional_string(&payload.fields, "value")?;
     let now = chrono::Utc::now().to_rfc3339();
     let existing: Option<(String, i64)> = conn
