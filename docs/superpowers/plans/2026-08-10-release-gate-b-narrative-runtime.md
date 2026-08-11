@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Runtime Authority は Native-owned `narrative_runtime_policy`（SCHEMA 4）。`app_settings` の `narrative.*` は移行後に削除し、Renderer generic SQL からは書換不能
+- Runtime Authority は Native-owned `narrative_runtime_policy`（SCHEMA 4）。旧 `app_settings` の `narrative.*` は権限として引き継がず削除し、Renderer generic SQL からは書換不能。table／row 欠損時も env hard disable を適用
 - AI policy の fail-open は維持し、Narrative だけ fail-closed
 - Undo は emergency disable 中も許可
 - 既存 domain の Drizzle cutover は #493〜#499 側。Gate B Foundation は registry に `enforcement` を持ち、cutover 済み table だけ CI 0 件を強制する

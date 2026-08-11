@@ -23,7 +23,8 @@ const ENV_DISABLE_MAINTENANCE: &str = "GRIMODEX_DISABLE_NARRATIVE_MAINTENANCE";
 const ENV_DISABLE_GENERIC_IMPORT: &str = "GRIMODEX_DISABLE_GENERIC_IMPORT";
 const ENV_DISABLE_BACKGROUND_AI: &str = "GRIMODEX_DISABLE_BACKGROUND_AI";
 
-/// Legacy app_settings keys migrated once into `narrative_runtime_policy`.
+/// Pre-Foundation shadow keys. Never promoted into Native authority — Schema 4
+/// always seeds Stage 1 defaults and deletes these rows if present.
 const LEGACY_SETTING_RUNTIME_MODE: &str = "narrative.runtimeMode";
 const LEGACY_SETTING_MAINTENANCE_ENABLED: &str = "narrative.maintenanceEnabled";
 const LEGACY_SETTING_GENERIC_IMPORT_ENABLED: &str = "narrative.genericImportEnabled";
@@ -197,11 +198,21 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
-fn parse_bool_fail_closed(raw: Option<&str>) -> bool {
-    matches!(
-        raw.map(str::trim),
-        Some("true") | Some("1") | Some("yes") | Some("on")
-    )
+/// Stage 1 defaults with current process env hard-disable flags applied.
+/// Used for every fail-closed branch (missing table／row／query／corrupt values).
+fn fail_closed_policy_with_env() -> NarrativeRuntimePolicy {
+    NarrativeRuntimePolicy {
+        hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
+        hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
+        hard_disable_generic_import: env_flag_enabled(ENV_DISABLE_GENERIC_IMPORT),
+        hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
+        ..NarrativeRuntimePolicy::default()
+    }
+}
+
+/// INTEGER flags must be exactly 0 or 1. Any other value fails closed to OFF.
+fn parse_sql_bool_flag(raw: i64) -> bool {
+    raw == 1
 }
 
 fn deny(code: &str, detail: &str) -> anyhow::Error {
@@ -220,19 +231,28 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
     .is_some_and(|exists| exists != 0)
 }
 
-fn read_legacy_app_setting(conn: &Connection, key: &str) -> Option<String> {
+fn delete_legacy_app_settings_shadow_keys(conn: &Connection) -> anyhow::Result<()> {
     if !table_exists(conn, "app_settings") {
-        return None;
+        return Ok(());
     }
-    conn.query_row(
-        "SELECT value FROM app_settings WHERE key = ?1",
-        [key],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
+    conn.execute(
+        "DELETE FROM app_settings
+          WHERE key IN (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            LEGACY_SETTING_RUNTIME_MODE,
+            LEGACY_SETTING_MAINTENANCE_ENABLED,
+            LEGACY_SETTING_GENERIC_IMPORT_ENABLED,
+            LEGACY_SETTING_BACKGROUND_AI_ENABLED,
+        ],
+    )?;
+    Ok(())
 }
 
 /// Ensure singleton row exists. Idempotent; safe during migrate and open.
+///
+/// Never promotes legacy `app_settings` values into Native authority — no public
+/// release treated those keys as authority, so Schema 4 always seeds Stage 1
+/// defaults (`review-only` / flags OFF) and deletes any shadow rows.
 pub fn ensure_narrative_runtime_policy_row(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS narrative_runtime_policy (
@@ -251,55 +271,23 @@ pub fn ensure_narrative_runtime_policy_row(conn: &Connection) -> anyhow::Result<
         [],
         |row| row.get(0),
     )?;
-    if exists != 0 {
-        return Ok(());
-    }
-
-    let mode = NarrativeRuntimeMode::parse_fail_closed(
-        &read_legacy_app_setting(conn, LEGACY_SETTING_RUNTIME_MODE).unwrap_or_default(),
-    );
-    let maintenance = parse_bool_fail_closed(
-        read_legacy_app_setting(conn, LEGACY_SETTING_MAINTENANCE_ENABLED).as_deref(),
-    );
-    let generic_import = parse_bool_fail_closed(
-        read_legacy_app_setting(conn, LEGACY_SETTING_GENERIC_IMPORT_ENABLED).as_deref(),
-    );
-    let background_ai = parse_bool_fail_closed(
-        read_legacy_app_setting(conn, LEGACY_SETTING_BACKGROUND_AI_ENABLED).as_deref(),
-    );
-
-    conn.execute(
-        "INSERT INTO narrative_runtime_policy (
-            singleton_id, runtime_mode, maintenance_enabled,
-            generic_import_enabled, background_ai_enabled, version
-         ) VALUES (1, ?1, ?2, ?3, ?4, 1)",
-        rusqlite::params![
-            mode.as_str(),
-            i64::from(maintenance),
-            i64::from(generic_import),
-            i64::from(background_ai),
-        ],
-    )?;
-
-    // Remove legacy keys so renderer cannot keep writing a shadow policy.
-    if table_exists(conn, "app_settings") {
+    if exists == 0 {
         conn.execute(
-            "DELETE FROM app_settings
-              WHERE key IN (?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                LEGACY_SETTING_RUNTIME_MODE,
-                LEGACY_SETTING_MAINTENANCE_ENABLED,
-                LEGACY_SETTING_GENERIC_IMPORT_ENABLED,
-                LEGACY_SETTING_BACKGROUND_AI_ENABLED,
-            ],
+            "INSERT INTO narrative_runtime_policy (
+                singleton_id, runtime_mode, maintenance_enabled,
+                generic_import_enabled, background_ai_enabled, version
+             ) VALUES (1, 'review-only', 0, 0, 0, 1)",
+            [],
         )?;
     }
+
+    delete_legacy_app_settings_shadow_keys(conn)?;
     Ok(())
 }
 
 fn load_stored_policy(conn: &Connection) -> NarrativeRuntimePolicy {
     if !table_exists(conn, "narrative_runtime_policy") {
-        return NarrativeRuntimePolicy::default();
+        return fail_closed_policy_with_env();
     }
     let loaded = conn.query_row(
         "SELECT runtime_mode, maintenance_enabled, generic_import_enabled,
@@ -321,9 +309,9 @@ fn load_stored_policy(conn: &Connection) -> NarrativeRuntimePolicy {
         Ok((mode, maintenance, generic_import, background_ai, version)) => {
             NarrativeRuntimePolicy {
                 runtime_mode: NarrativeRuntimeMode::parse_fail_closed(&mode),
-                maintenance_enabled: maintenance != 0,
-                generic_import_enabled: generic_import != 0,
-                background_ai_enabled: background_ai != 0,
+                maintenance_enabled: parse_sql_bool_flag(maintenance),
+                generic_import_enabled: parse_sql_bool_flag(generic_import),
+                background_ai_enabled: parse_sql_bool_flag(background_ai),
                 version,
                 hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
                 hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
@@ -331,13 +319,7 @@ fn load_stored_policy(conn: &Connection) -> NarrativeRuntimePolicy {
                 hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
             }
         }
-        Err(_) => NarrativeRuntimePolicy {
-            hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
-            hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
-            hard_disable_generic_import: env_flag_enabled(ENV_DISABLE_GENERIC_IMPORT),
-            hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
-            ..NarrativeRuntimePolicy::default()
-        },
+        Err(_) => fail_closed_policy_with_env(),
     }
 }
 
@@ -364,6 +346,12 @@ pub fn set_narrative_runtime_policy_in_tx(
     input: &SetNarrativeRuntimePolicyInput,
 ) -> anyhow::Result<NarrativeRuntimePolicy> {
     ensure_narrative_runtime_policy_row(conn)?;
+    if input.expected_version < 0 {
+        return Err(deny(
+            NARRATIVE_RUNTIME_POLICY_CONFLICT,
+            "expected_version must be a non-negative integer",
+        ));
+    }
     let mode = NarrativeRuntimeMode::parse_fail_closed(&input.runtime_mode);
     // Unknown modes collapse for reads, but typed setter must reject unknowns
     // so callers cannot accidentally persist garbage.
@@ -699,6 +687,133 @@ mod tests {
         unsafe {
             env::remove_var(ENV_DISABLE_ENGINE);
         }
+    }
+
+    #[test]
+    fn legacy_app_settings_are_never_promoted_into_native_policy() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM narrative_runtime_policy", [])?;
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![LEGACY_SETTING_RUNTIME_MODE, "automatic"],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![LEGACY_SETTING_MAINTENANCE_ENABLED, "true"],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![LEGACY_SETTING_GENERIC_IMPORT_ENABLED, "true"],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![LEGACY_SETTING_BACKGROUND_AI_ENABLED, "true"],
+            )?;
+            ensure_narrative_runtime_policy_row(conn)?;
+            Ok(())
+        })
+        .expect("seed legacy shadow settings");
+
+        let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
+        assert_eq!(policy.runtime_mode, NarrativeRuntimeMode::ReviewOnly);
+        assert!(!policy.maintenance_enabled);
+        assert!(!policy.generic_import_enabled);
+        assert!(!policy.background_ai_enabled);
+        assert!(!policy.domain_apply_allowed());
+
+        db.with_conn(|conn| {
+            let leftover: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM app_settings
+                  WHERE key IN (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    LEGACY_SETTING_RUNTIME_MODE,
+                    LEGACY_SETTING_MAINTENANCE_ENABLED,
+                    LEGACY_SETTING_GENERIC_IMPORT_ENABLED,
+                    LEGACY_SETTING_BACKGROUND_AI_ENABLED,
+                ],
+                |row| row.get(0),
+            )?;
+            assert_eq!(leftover, 0, "legacy shadow keys must be deleted");
+            Ok(())
+        })
+        .expect("legacy keys removed");
+    }
+
+    #[test]
+    fn missing_policy_table_still_honors_env_hard_disable() {
+        let _guard = env_lock().lock().expect("env lock");
+        let db = open_db();
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TABLE narrative_runtime_policy")?;
+            Ok(())
+        })
+        .expect("drop policy table");
+        unsafe {
+            env::set_var(ENV_DISABLE_ENGINE, "1");
+        }
+        let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
+        assert!(policy.hard_disable_engine);
+        assert_eq!(policy.effective_mode(), NarrativeRuntimeMode::Disabled);
+        assert!(!policy.extraction_allowed());
+        db.with_conn(|conn| {
+            let err = require_narrative_extraction_allowed(conn).expect_err("disabled");
+            assert!(err.to_string().contains(NARRATIVE_ENGINE_DISABLED));
+            Ok(())
+        })
+        .expect("conn");
+        unsafe {
+            env::remove_var(ENV_DISABLE_ENGINE);
+        }
+    }
+
+    #[test]
+    fn missing_singleton_row_still_honors_env_hard_disable() {
+        let _guard = env_lock().lock().expect("env lock");
+        let db = open_db();
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM narrative_runtime_policy", [])?;
+            Ok(())
+        })
+        .expect("delete singleton");
+        unsafe {
+            env::set_var(ENV_DISABLE_ENGINE, "1");
+        }
+        let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
+        assert!(policy.hard_disable_engine);
+        assert!(!policy.extraction_allowed());
+        unsafe {
+            env::remove_var(ENV_DISABLE_ENGINE);
+        }
+    }
+
+    #[test]
+    fn corrupt_sql_bool_flags_fail_closed_to_off() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "DROP TABLE narrative_runtime_policy;
+                 CREATE TABLE narrative_runtime_policy (
+                    singleton_id INTEGER PRIMARY KEY,
+                    runtime_mode TEXT NOT NULL,
+                    maintenance_enabled INTEGER NOT NULL,
+                    generic_import_enabled INTEGER NOT NULL,
+                    background_ai_enabled INTEGER NOT NULL,
+                    version INTEGER NOT NULL
+                 );
+                 INSERT INTO narrative_runtime_policy (
+                    singleton_id, runtime_mode, maintenance_enabled,
+                    generic_import_enabled, background_ai_enabled, version
+                 ) VALUES (1, 'manual-apply', 2, -1, 99, 1);",
+            )?;
+            Ok(())
+        })
+        .expect("seed corrupt flags");
+        let policy = load_narrative_runtime_policy_from_db(&db).expect("load");
+        assert_eq!(policy.runtime_mode, NarrativeRuntimeMode::ManualApply);
+        assert!(!policy.maintenance_enabled);
+        assert!(!policy.generic_import_enabled);
+        assert!(!policy.background_ai_enabled);
     }
 
     #[test]
