@@ -554,3 +554,168 @@ pub fn agent_codex_mutate_impl(
         other => anyhow::bail!("unsupported Codex mutation '{other}'"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn test_db() -> Database {
+        let db = Database::new(Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');
+                 INSERT INTO codex_types (id, project_id, slug, label)
+                   VALUES ('t1', 'p1', 'character', 'Character'),
+                          ('t2', 'p2', 'character', 'Character');
+                 INSERT INTO codex_entries (id, project_id, type, name)
+                   VALUES ('e1', 'p1', 'character', 'One'),
+                          ('e2', 'p2', 'character', 'Two');
+                 INSERT INTO codex_detail_definitions
+                   (id, project_id, type_slug, name)
+                   VALUES ('d1', 'p1', 'character', 'One detail'),
+                          ('d2', 'p2', 'character', 'Two detail');",
+            )?;
+            Ok(())
+        })
+        .expect("seed database");
+        db
+    }
+
+    fn mutation(
+        project_id: &str,
+        operation: &str,
+        fields: serde_json::Value,
+    ) -> AgentCodexMutationPayload {
+        AgentCodexMutationPayload {
+            operation: operation.to_string(),
+            project_id: project_id.to_string(),
+            session_id: "session".to_string(),
+            surface: Some("manual".to_string()),
+            fields: fields.as_object().expect("object fields").clone(),
+        }
+    }
+
+    #[test]
+    fn relation_create_rejects_cross_project_entries() {
+        let db = test_db();
+        let result = agent_codex_mutate_impl(
+            &db,
+            mutation(
+                "p1",
+                "relation.create",
+                json!({
+                    "relationId": "r1",
+                    "fromCodexId": "e1",
+                    "toCodexId": "e2",
+                    "label": "knows",
+                }),
+            ),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM codex_relations",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("count relations"),
+            0
+        );
+    }
+
+    #[test]
+    fn phase_create_rejects_cross_project_entry() {
+        let db = test_db();
+        let result = agent_codex_mutate_impl(
+            &db,
+            mutation(
+                "p1",
+                "phase.create",
+                json!({
+                    "phaseId": "phase-2",
+                    "entryId": "e2",
+                    "label": "foreign",
+                }),
+            ),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM codex_entry_phases",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("count phases"),
+            0
+        );
+    }
+
+    #[test]
+    fn detail_definition_update_rejects_cross_project_definition() {
+        let db = test_db();
+        let result = agent_codex_mutate_impl(
+            &db,
+            mutation(
+                "p1",
+                "detail.definition.update",
+                json!({
+                    "definitionId": "d2",
+                    "baseVersion": 0,
+                    "name": "tampered",
+                }),
+            ),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT name FROM codex_detail_definitions WHERE id = 'd2'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .expect("read definition"),
+            "Two detail"
+        );
+    }
+
+    #[test]
+    fn detail_value_upsert_rejects_cross_project_entry_and_definition() {
+        let db = test_db();
+        let result = agent_codex_mutate_impl(
+            &db,
+            mutation(
+                "p1",
+                "detail.value.upsert",
+                json!({
+                    "entryId": "e1",
+                    "definitionId": "d2",
+                    "value": "tampered",
+                }),
+            ),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM codex_detail_values",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("count values"),
+            0
+        );
+    }
+}
