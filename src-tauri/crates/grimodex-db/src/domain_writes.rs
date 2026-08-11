@@ -486,6 +486,10 @@ fn apply_codex_rename_updates_in_tx(
                     AND EXISTS (
                       SELECT 1 FROM codex_entries
                        WHERE id = ?2 AND project_id = ?4
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM codex_detail_definitions
+                       WHERE id = ?3 AND project_id = ?4
                     )",
                 params![
                     update.value,
@@ -568,6 +572,19 @@ pub fn apply_codex_rename(db: &Database, payload: CodexRenameApplyPayload) -> an
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Value> {
+            let entry_owned: i64 = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM codex_entries WHERE id = ?1 AND project_id = ?2
+                 )",
+                params![payload.entry_id, payload.project_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                entry_owned == 1,
+                "codex rename entry '{}' is not in project '{}'",
+                payload.entry_id,
+                payload.project_id
+            );
             apply_codex_rename_updates_in_tx(
                 conn,
                 &payload.project_id,
