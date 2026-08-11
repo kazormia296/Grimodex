@@ -34,6 +34,10 @@ import {
   ZEN_SHADER_RESEARCH_REFERENCE_UI_SURFACES,
   ZEN_SHADER_RESEARCH_UI_SURFACE_CAPACITY,
 } from "./zenShaderResearchCompositeFixture";
+import {
+  buildZenShaderResearchUpscaleFragment,
+  type ZenShaderResearchUpscaler,
+} from "./zenShaderUpscaleResearch";
 
 const RESEARCH_WEBGL_CONTEXT_ATTRIBUTES = {
   alpha: true,
@@ -58,6 +62,8 @@ export interface ZenShaderResearchSurfaceProps {
   height: number;
   pixelBudget?: number;
   sceneOperation?: ZenResearchSceneOperation;
+  sceneScale?: number;
+  upscaler?: ZenShaderResearchUpscaler;
   researchOptions: ZenBlurResearchOptions;
 }
 
@@ -80,6 +86,8 @@ export const ZenShaderResearchSurface = forwardRef<
     height,
     pixelBudget,
     sceneOperation,
+    sceneScale = 1,
+    upscaler = "linear",
     researchOptions,
   },
   forwardedRef,
@@ -150,8 +158,10 @@ export const ZenShaderResearchSurface = forwardRef<
         ? buildZenMultipassCompositeFragment(
             ZEN_SHADER_RESEARCH_UI_SURFACE_CAPACITY,
           )
-        : ZEN_SHADER_RESEARCH_COPY_COMPOSITE_FRAGMENT,
-    [pipeline],
+        : sceneScale < 1 || upscaler !== "linear"
+          ? buildZenShaderResearchUpscaleFragment(upscaler)
+          : ZEN_SHADER_RESEARCH_COPY_COMPOSITE_FRAGMENT,
+    [pipeline, sceneScale, upscaler],
   );
   const compositeUniforms = useMemo(
     () =>
@@ -181,6 +191,8 @@ export const ZenShaderResearchSurface = forwardRef<
       researchOptions={researchOptions}
       renderPipeline={renderPipeline}
       sceneOperation={sceneOperation}
+      sceneScale={sceneScale}
+      upscaler={upscaler}
       speed={0}
       style={{ position: "relative", width, height }}
       data-zen-glass-compositor={

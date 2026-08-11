@@ -13,9 +13,10 @@ const REPORT_ENDPOINT = "/__zen-shader-research-report";
 const MAX_REPORT_BYTES = 64 * 1024 * 1024;
 const PAPER_SHADER_COUNT = 29;
 const REPRESENTATIVE_SHADER_COUNT = 5;
+const UPSCALE_REPRESENTATIVE_SHADER_COUNT = 6;
 
 interface ZenShaderResearchScenarioEnvironment {
-  experiment: "pipeline" | "cadence" | "baselines" | "abba";
+  experiment: "pipeline" | "cadence" | "baselines" | "abba" | "upscale";
   shader: string;
   pipeline: "raw" | "scene" | "full";
   workload:
@@ -245,7 +246,9 @@ const shaderCount =
   scenario.shader === "all"
     ? PAPER_SHADER_COUNT
     : scenario.shader === "representative"
-      ? REPRESENTATIVE_SHADER_COUNT
+      ? scenario.experiment === "upscale"
+        ? UPSCALE_REPRESENTATIVE_SHADER_COUNT
+        : REPRESENTATIVE_SHADER_COUNT
       : 1;
 const timingModeCount = scenario.timing === "both" ? 2 : 1;
 const pipelineFrameCount =
@@ -270,16 +273,21 @@ const cadenceDurationMs =
   scenario.durationMs * scenario.runs * shaderCount * cadenceModeCount;
 const abbaFrameCount =
   (scenario.warmup + scenario.frames) * scenario.cycles * 4 * shaderCount;
+const upscaleFrameCount = abbaFrameCount * 16;
+const minimumFrameExperimentTimeout =
+  scenario.experiment === "upscale" ? 180_000 : 120_000;
 const testTimeout =
   scenario.experiment === "cadence"
     ? Math.max(120_000, cadenceDurationMs * 2 + 60_000)
     : Math.max(
-        120_000,
+        minimumFrameExperimentTimeout,
         (scenario.experiment === "baselines"
           ? baselineFrameCount
           : scenario.experiment === "abba"
             ? abbaFrameCount
-            : pipelineFrameCount) * 100,
+            : scenario.experiment === "upscale"
+              ? upscaleFrameCount
+              : pipelineFrameCount) * 100,
       );
 const runnerByExperiment = {
   pipeline: "src/features/editor/zen/ZenShaderResearchRunner.browser.test.tsx",
@@ -288,6 +296,8 @@ const runnerByExperiment = {
   baselines:
     "src/features/editor/zen/ZenShaderBaselineResearchRunner.browser.test.tsx",
   abba: "src/features/editor/zen/ZenShaderAbbaResearchRunner.browser.test.tsx",
+  upscale:
+    "src/features/editor/zen/ZenShaderUpscaleResearchRunner.browser.test.tsx",
 } as const;
 
 export default defineConfig({

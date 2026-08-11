@@ -220,5 +220,43 @@ requires the expected `raw=1 draw` and `full=2 draws` topology. Glass and
 Contrast Guard are fixed off so this experiment isolates only the intermediate
 RGBA8 Scene FBO plus pass-through Composite.
 
+### Spatial upscale matrix
+
+The upscale experiment is a research-only comparison. It does not change the
+product renderer or its defaults. Each candidate renders the expensive Paper
+Shader into a scaled RGBA8 Scene target and reconstructs it at the native canvas
+size:
+
+| Scene scale | Full HD Scene size |
+| ----------- | ------------------ |
+| `1`         | 1920×1080          |
+| `5/6`       | 1600×900           |
+| `3/4`       | 1440×810           |
+| `2/3`       | 1280×720           |
+
+Every scale is paired with hardware bilinear, 16-tap Catmull-Rom, an FSR 1 EASU
+GLSL ES port, and EASU followed by a separate presentation-resolution RCAS pass.
+EASU/RCAS retains AMD's MIT notice and reference URL in source and in the result
+artifact.
+
+For every shader and matrix cell, the runner allocates the candidate resources
+first and then alternates `native direct` and `candidate` blocks in ABBA/BAAB
+order without replacing the canvas, WebGL context, programs, or resident
+textures. Native is one draw, linear/Catmull-Rom/EASU candidates are two draws,
+and EASU+RCAS is three draws. The compact artifact records paired
+`candidate - native` p50/p95 GPU-frame deltas, confidence intervals, CPU submit
+percentiles, draw topology, resource identity, and resident texture bytes.
+
+```powershell
+pnpm research:zen-shader-upscale --output .artifacts/zen-shaders/upscale.json `
+  --shader representative --cycles 6 --frames 60
+```
+
+The upscale representative set is `liquid-metal`, `halftone-cmyk`,
+`halftone-dots`, `smoke-ring`, `gem-smoke`, and `color-panels`. Dither,
+Halftone, Glass, and Contrast Guard are fixed off in this first comparison so
+the result isolates Paper Shader resolution and spatial reconstruction. Moving
+pixel-grid effects after upscaling belongs to the later product-pipeline phase.
+
 The `.artifacts/` directory is ignored by Git. Attach the raw JSON artifacts to
 the research PR or benchmark record rather than committing them.

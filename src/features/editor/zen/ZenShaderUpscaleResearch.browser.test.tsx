@@ -20,7 +20,8 @@ function currentMount(ref: RefObject<PaperShaderElement | null>) {
   const mount = ref.current?.paperShaderMount as
     | UpscaleResearchMount
     | undefined;
-  if (!mount) throw new Error("Zen shader upscale research mount is unavailable");
+  if (!mount)
+    throw new Error("Zen shader upscale research mount is unavailable");
   return mount;
 }
 

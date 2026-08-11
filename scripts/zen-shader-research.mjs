@@ -18,7 +18,13 @@ const repositoryRoot = path.resolve(
 const VALID_PIPELINES = new Set(["raw", "scene", "full"]);
 const VALID_TOGGLES = new Set(["on", "off"]);
 const VALID_TIMING_MODES = new Set(["both", "pass-breakdown", "frame"]);
-const VALID_EXPERIMENTS = new Set(["pipeline", "cadence", "baselines", "abba"]);
+const VALID_EXPERIMENTS = new Set([
+  "pipeline",
+  "cadence",
+  "baselines",
+  "abba",
+  "upscale",
+]);
 const VALID_WORKLOADS = new Set([
   "all",
   "paper",
@@ -47,6 +53,7 @@ const ALLOWED_EXPERIMENT_OPTIONS = Object.freeze({
   cadence: new Set(["cadence", "duration-ms"]),
   baselines: new Set(["workload", "resolution"]),
   abba: new Set(["cycles", "sequence-start"]),
+  upscale: new Set(["cycles", "sequence-start"]),
 });
 const DEFAULT_BASELINE_RESOLUTIONS = Object.freeze([
   Object.freeze({ width: 960, height: 540 }),
@@ -458,6 +465,43 @@ export function parseZenShaderResearchArguments(argv) {
     }
     if (explicit.has("timing") && options.timing !== "frame") {
       throw new Error("ABBA research only supports frame timing");
+    }
+    options.timing = "frame";
+    options.runs = options.cycles;
+    options.primeRuns = 0;
+    if (!explicit.has("shader")) options.shader = "representative";
+  } else if (options.experiment === "upscale") {
+    if (options.cycles % 2 !== 0) {
+      throw new Error("upscale cycles must be an even integer");
+    }
+    if (explicit.has("pipeline")) {
+      throw new Error(
+        "upscale research fixes native/candidate pipelines automatically",
+      );
+    }
+    if (
+      options.dither ||
+      options.halftone ||
+      options.contrast ||
+      options.glass
+    ) {
+      throw new Error(
+        "upscale research isolates spatial reconstruction with effects off",
+      );
+    }
+    if (options.frames < 2 || options.frames > 64) {
+      throw new Error("upscale frames must be between 2 and 64 per block");
+    }
+    if (explicit.has("runs")) {
+      throw new Error("upscale research uses --cycles instead of --runs");
+    }
+    if (explicit.has("prime-runs") && options.primeRuns !== 0) {
+      throw new Error(
+        "upscale research precompiles in-place and has no prime runs",
+      );
+    }
+    if (explicit.has("timing") && options.timing !== "frame") {
+      throw new Error("upscale research only supports frame timing");
     }
     options.timing = "frame";
     options.runs = options.cycles;

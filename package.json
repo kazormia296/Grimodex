@@ -36,6 +36,7 @@
     "research:zen-shader-cadence": "node scripts/zen-shader-research.mjs --experiment cadence",
     "research:zen-shader-baselines": "node scripts/zen-shader-research.mjs --experiment baselines",
     "research:zen-shader-abba": "node scripts/zen-shader-research.mjs --experiment abba",
+    "research:zen-shader-upscale": "node scripts/zen-shader-research.mjs --experiment upscale",
     "perf:budget": "node scripts/check-performance-budgets.mjs",
     "validate:architecture": "node --test scripts/validate-architecture.test.mjs && node scripts/validate-architecture.mjs",
     "test:quality": "node --test scripts/quality/impact-map.test.mjs scripts/quality/eval-fixtures.test.mjs scripts/quality/quality-workflow.test.mjs scripts/quality/validate-narrative-writers.test.mjs",
