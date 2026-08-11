@@ -568,15 +568,15 @@ mod tests {
             conn.execute_batch(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');
                  INSERT INTO codex_types (id, project_id, slug, label)
-                   VALUES ('t1', 'p1', 'character', 'Character'),
-                          ('t2', 'p2', 'character', 'Character');
+                   VALUES ('t1', 'p1', 'person', 'Person'),
+                          ('t2', 'p2', 'person', 'Person');
                  INSERT INTO codex_entries (id, project_id, type, name)
-                   VALUES ('e1', 'p1', 'character', 'One'),
-                          ('e2', 'p2', 'character', 'Two');
+                   VALUES ('e1', 'p1', 'person', 'One'),
+                          ('e2', 'p2', 'person', 'Two');
                  INSERT INTO codex_detail_definitions
                    (id, project_id, type_slug, name)
-                   VALUES ('d1', 'p1', 'character', 'One detail'),
-                          ('d2', 'p2', 'character', 'Two detail');",
+                   VALUES ('d1', 'p1', 'person', 'One detail'),
+                          ('d2', 'p2', 'person', 'Two detail');",
             )?;
             Ok(())
         })
