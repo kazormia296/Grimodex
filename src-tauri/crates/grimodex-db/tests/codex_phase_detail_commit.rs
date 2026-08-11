@@ -36,7 +36,7 @@ fn seed_approved_proposals(
     db: &Database,
     run_id: &str,
     proposal_set_id: &str,
-    kinds: &[&str],
+    items: &[(&str, Value)],
 ) -> Vec<(String, String)> {
     narrative_extraction::narrative_extraction_create_run(
         db,
@@ -56,14 +56,14 @@ fn seed_approved_proposals(
     )
     .expect("create run");
 
-    let proposals: Vec<ProposalSeed> = kinds
+    let proposals: Vec<ProposalSeed> = items
         .iter()
         .enumerate()
-        .map(|(index, kind)| ProposalSeed {
+        .map(|(index, (kind, payload))| ProposalSeed {
             proposal_id: Some(format!("prop-{index}")),
             proposal_key: format!("key-{index}"),
-            kind: kind.to_string(),
-            payload_json: json!({ "index": index }),
+            kind: (*kind).to_string(),
+            payload_json: payload.clone(),
         })
         .collect();
 
@@ -128,8 +128,8 @@ fn build_apply(
         .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
             kind: kind.clone(),
             payload: payload.clone(),
-            proposal_id: Some(proposal_id.clone()),
-            revision_id: Some(revision_id.clone()),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
         })
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
@@ -164,9 +164,24 @@ fn entity_base_detail_and_phase_atomic_commit() {
         "run-pd-1",
         "set-pd-1",
         &[
-            "codex.entry.create",
-            "codex.detail.value.set",
-            "codex.phase.create",
+            ("codex.entry.create",             entry_create("entry-a", "Alice", "ent:alice")),
+            ("codex.detail.value.set",             json!({
+                "detailValueId": "dv-1",
+                "narrativeEntityId": "ent:alice",
+                "definitionId": "def-age",
+                "value": "17",
+                "occ": { "kind": "absent" }
+            })),
+            ("codex.phase.create",             json!({
+                "phaseId": "phase-1",
+                "narrativeEntityId": "ent:alice",
+                "anchorNodeId": null,
+                "label": "開幕",
+                "summaryOverride": "導入",
+                "detailOverrides": [
+                    { "definitionId": "def-age", "value": "18" }
+                ]
+            })),
         ],
     );
     let ops = vec![
@@ -174,13 +189,13 @@ fn entity_base_detail_and_phase_atomic_commit() {
             pairs[0].0.clone(),
             pairs[0].1.clone(),
             "codex.entry.create".to_string(),
-            entry_create("entry-a", "Alice", "ent:alice"),
+                        entry_create("entry-a", "Alice", "ent:alice"),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
             "codex.detail.value.set".to_string(),
-            json!({
+                        json!({
                 "detailValueId": "dv-1",
                 "narrativeEntityId": "ent:alice",
                 "definitionId": "def-age",
@@ -192,7 +207,7 @@ fn entity_base_detail_and_phase_atomic_commit() {
             pairs[2].0.clone(),
             pairs[2].1.clone(),
             "codex.phase.create".to_string(),
-            json!({
+                        json!({
                 "phaseId": "phase-1",
                 "narrativeEntityId": "ent:alice",
                 "anchorNodeId": null,
@@ -252,9 +267,22 @@ fn phase_failure_rolls_back_entry_and_detail() {
         "run-pd-2",
         "set-pd-2",
         &[
-            "codex.entry.create",
-            "codex.detail.value.set",
-            "codex.phase.create",
+            ("codex.entry.create",             entry_create("entry-b", "Bob", "ent:bob")),
+            ("codex.detail.value.set",             json!({
+                "detailValueId": "dv-2",
+                "narrativeEntityId": "ent:bob",
+                "definitionId": "def-age",
+                "value": "20",
+                "occ": { "kind": "absent" }
+            })),
+            ("codex.phase.create",             json!({
+                "phaseId": "phase-bad",
+                "narrativeEntityId": "ent:bob",
+                "label": "壊す",
+                "detailOverrides": [
+                    { "definitionId": "def-missing", "value": "x" }
+                ]
+            })),
         ],
     );
     let ops = vec![
@@ -262,13 +290,13 @@ fn phase_failure_rolls_back_entry_and_detail() {
             pairs[0].0.clone(),
             pairs[0].1.clone(),
             "codex.entry.create".to_string(),
-            entry_create("entry-b", "Bob", "ent:bob"),
+                        entry_create("entry-b", "Bob", "ent:bob"),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
             "codex.detail.value.set".to_string(),
-            json!({
+                        json!({
                 "detailValueId": "dv-2",
                 "narrativeEntityId": "ent:bob",
                 "definitionId": "def-age",
@@ -280,7 +308,7 @@ fn phase_failure_rolls_back_entry_and_detail() {
             pairs[2].0.clone(),
             pairs[2].1.clone(),
             "codex.phase.create".to_string(),
-            json!({
+                        json!({
                 "phaseId": "phase-bad",
                 "narrativeEntityId": "ent:bob",
                 "label": "壊す",
@@ -352,14 +380,30 @@ fn patch_and_create_phase_same_commit() {
         &db,
         "run-pd-3",
         "set-pd-3",
-        &["codex.phase.patch", "codex.phase.create"],
+        &[
+            ("codex.phase.patch",             json!({
+                "phaseId": "phase-existing",
+                "baseVersion": 2,
+                "label": "更新ラベル",
+                "summary": { "kind": "set", "value": "要約" },
+                "detailOverrides": [
+                    { "definitionId": "def-status", "value": "新値" }
+                ]
+            })),
+            ("codex.phase.create",             json!({
+                "phaseId": "phase-new",
+                "entryId": "entry-existing",
+                "label": "新規",
+                "detailOverrides": []
+            })),
+        ],
     );
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
             "codex.phase.patch".to_string(),
-            json!({
+                        json!({
                 "phaseId": "phase-existing",
                 "baseVersion": 2,
                 "label": "更新ラベル",
@@ -373,7 +417,7 @@ fn patch_and_create_phase_same_commit() {
             pairs[1].0.clone(),
             pairs[1].1.clone(),
             "codex.phase.create".to_string(),
-            json!({
+                        json!({
                 "phaseId": "phase-new",
                 "entryId": "entry-existing",
                 "label": "新規",
@@ -430,9 +474,20 @@ fn undo_restores_phase_detail_commit() {
         "run-pd-4",
         "set-pd-4",
         &[
-            "codex.entry.create",
-            "codex.detail.value.set",
-            "codex.phase.create",
+            ("codex.entry.create",             entry_create("entry-u", "UndoMe", "ent:undo")),
+            ("codex.detail.value.set",             json!({
+                "detailValueId": "dv-u",
+                "narrativeEntityId": "ent:undo",
+                "definitionId": "def-age",
+                "value": "1",
+                "occ": { "kind": "absent" }
+            })),
+            ("codex.phase.create",             json!({
+                "phaseId": "phase-u",
+                "narrativeEntityId": "ent:undo",
+                "label": "UndoPhase",
+                "detailOverrides": []
+            })),
         ],
     );
     let ops = vec![
@@ -440,13 +495,13 @@ fn undo_restores_phase_detail_commit() {
             pairs[0].0.clone(),
             pairs[0].1.clone(),
             "codex.entry.create".to_string(),
-            entry_create("entry-u", "UndoMe", "ent:undo"),
+                        entry_create("entry-u", "UndoMe", "ent:undo"),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
             "codex.detail.value.set".to_string(),
-            json!({
+                        json!({
                 "detailValueId": "dv-u",
                 "narrativeEntityId": "ent:undo",
                 "definitionId": "def-age",
@@ -458,7 +513,7 @@ fn undo_restores_phase_detail_commit() {
             pairs[2].0.clone(),
             pairs[2].1.clone(),
             "codex.phase.create".to_string(),
-            json!({
+                        json!({
                 "phaseId": "phase-u",
                 "narrativeEntityId": "ent:undo",
                 "label": "UndoPhase",
@@ -509,20 +564,28 @@ fn sticky_blocks_phase_undo() {
         &db,
         "run-pd-5",
         "set-pd-5",
-        &["codex.entry.create", "codex.phase.create"],
+        &[
+            ("codex.entry.create",             entry_create("entry-s", "Sticky", "ent:sticky")),
+            ("codex.phase.create",             json!({
+                "phaseId": "phase-s",
+                "narrativeEntityId": "ent:sticky",
+                "label": "StickyPhase",
+                "detailOverrides": []
+            })),
+        ],
     );
     let ops = vec![
         (
             pairs[0].0.clone(),
             pairs[0].1.clone(),
             "codex.entry.create".to_string(),
-            entry_create("entry-s", "Sticky", "ent:sticky"),
+                        entry_create("entry-s", "Sticky", "ent:sticky"),
         ),
         (
             pairs[1].0.clone(),
             pairs[1].1.clone(),
             "codex.phase.create".to_string(),
-            json!({
+                        json!({
                 "phaseId": "phase-s",
                 "narrativeEntityId": "ent:sticky",
                 "label": "StickyPhase",

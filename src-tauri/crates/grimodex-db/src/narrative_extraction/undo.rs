@@ -10,12 +10,15 @@ use super::codex_undo::{
     reapply_codex_entry_create_snapshot, reapply_codex_relation_snapshot, restore_codex_entry_patch,
     undo_created_codex_entry,
 };
+use super::detail_operations::collect_detail_value_snapshot;
+use super::phase_operations::collect_phase_snapshot;
 use super::phase_undo::{
     reapply_detail_value_create_snapshot, reapply_phase_create_snapshot,
     reapply_semantic_binding_create_snapshot, restore_detail_value_patch, restore_phase_patch,
     restore_semantic_binding_patch, undo_created_detail_value, undo_created_phase,
     undo_created_semantic_binding,
 };
+use super::semantic_bindings::collect_semantic_binding_snapshot;
 use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
 use super::models::UndoCommitPayload;
 use super::task_leases::with_immediate_transaction;
@@ -309,9 +312,16 @@ fn mutate_commit(
                                         updated == 1,
                                         "NEX_COMMIT_DETAIL_EDITED: detail value '{entity_id}' redo conflict"
                                     );
-                                    next
+                                    let live_snapshot =
+                                        collect_detail_value_snapshot(conn, entity_id)?;
+                                    (next, live_snapshot)
                                 } else {
-                                    reapply_detail_value_create_snapshot(conn, &snapshot, &now)?
+                                    let replay_version = reapply_detail_value_create_snapshot(
+                                        conn, &snapshot, &now,
+                                    )?;
+                                    let live_snapshot =
+                                        collect_detail_value_snapshot(conn, entity_id)?;
+                                    (replay_version, live_snapshot)
                                 }
                             }
                             "codex_phase" => {
@@ -389,9 +399,13 @@ fn mutate_commit(
                                             )?;
                                         }
                                     }
-                                    next
+                                    let live_snapshot = collect_phase_snapshot(conn, entity_id)?;
+                                    (next, live_snapshot)
                                 } else {
-                                    reapply_phase_create_snapshot(conn, &snapshot, &now)?
+                                    let replay_version =
+                                        reapply_phase_create_snapshot(conn, &snapshot, &now)?;
+                                    let live_snapshot = collect_phase_snapshot(conn, entity_id)?;
+                                    (replay_version, live_snapshot)
                                 }
                             }
                             "codex_semantic_binding" => {
@@ -464,14 +478,19 @@ fn mutate_commit(
                                         updated == 1,
                                         "NEX_COMMIT_BINDING_EDITED: binding '{entity_id}' redo conflict"
                                     );
-                                    next
+                                    let live_snapshot =
+                                        collect_semantic_binding_snapshot(conn, entity_id)?;
+                                    (next, live_snapshot)
                                 } else {
-                                    reapply_semantic_binding_create_snapshot(
+                                    let replay_version = reapply_semantic_binding_create_snapshot(
                                         conn,
                                         &payload.project_id,
                                         &snapshot,
                                         &now,
-                                    )?
+                                    )?;
+                                    let live_snapshot =
+                                        collect_semantic_binding_snapshot(conn, entity_id)?;
+                                    (replay_version, live_snapshot)
                                 }
                             }
                             other => anyhow::bail!("unsupported journal entity kind '{other}'"),
