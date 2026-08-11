@@ -37,7 +37,6 @@ use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent}
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
-use grimodex_db::codex_writes::AgentCodexMutationPayload;
 use grimodex_db::domain_writes::{
     self, CodexRenameApplyPayload, CodexRenameUndoPayload, CreateScanStagingProjectPayload,
     ReplaceAuthorshipLanePayload,
