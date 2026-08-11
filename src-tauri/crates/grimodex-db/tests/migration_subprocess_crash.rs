@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use grimodex_core::{PREVIOUS_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION};
+use grimodex_core::{LAST_PUBLIC_RELEASE_SCHEMA_VERSION, SCHEMA_VERSION};
 use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
 
 use release_schema_fixture::{
@@ -74,13 +74,13 @@ fn subprocess_crash_at_migration_stages_recovers_on_next_open() {
         let version_after_kill = live_user_version(&workspace);
         if stage.live_may_already_be_replaced {
             assert!(
-                version_after_kill == PREVIOUS_COMPATIBLE_SCHEMA_VERSION
+                version_after_kill == LAST_PUBLIC_RELEASE_SCHEMA_VERSION
                     || version_after_kill == SCHEMA_VERSION,
                 "live marker after {} crash should be old or replaced, got {version_after_kill}",
                 stage.label
             );
         } else {
-            assert_eq!(version_after_kill, PREVIOUS_COMPATIBLE_SCHEMA_VERSION);
+            assert_eq!(version_after_kill, LAST_PUBLIC_RELEASE_SCHEMA_VERSION);
         }
 
         let reopen = migration_supervisor::open_or_migrate_workspace_db(&workspace)
@@ -102,7 +102,7 @@ fn subprocess_crash_at_migration_stages_recovers_on_next_open() {
                 opened,
                 ..
             } => {
-                assert_eq!(from_schema, PREVIOUS_COMPATIBLE_SCHEMA_VERSION);
+                assert_eq!(from_schema, LAST_PUBLIC_RELEASE_SCHEMA_VERSION);
                 assert_eq!(to_schema, SCHEMA_VERSION);
                 drop(opened);
                 assert_release_fixture_rows(&db_path);

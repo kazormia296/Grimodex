@@ -1,14 +1,17 @@
 //! Gate A2 release-shaped migration fixtures.
 //!
-//! These tests use a previous-release marker on a populated database instead of
-//! an empty `user_version` fixture, so the shadow migration path must preserve
-//! the same user-facing rows a real workspace carries.
+//! These tests stamp the last *public* Release marker (v2.0.10 / Schema 2) on
+//! the published seed SQL — not the rolling PREVIOUS_COMPATIBLE_* bookkeeping
+//! constant — so the shadow migration path proves the real user upgrade route.
 
 #[path = "support/release_schema_fixture.rs"]
 mod release_schema_fixture;
 
-use grimodex_core::{PREVIOUS_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION};
+use std::fs;
+
+use grimodex_core::{LAST_PUBLIC_RELEASE_SCHEMA_VERSION, SCHEMA_VERSION};
 use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
+use serde_json::Value;
 
 use release_schema_fixture::{
     assert_previous_release_fixture_shape, assert_previous_release_snapshot_rows,
@@ -32,13 +35,37 @@ fn previous_release_shaped_database_migrates_and_preserves_rows() {
             opened,
             receipt_path,
         } => {
-            assert_eq!(from_schema, PREVIOUS_COMPATIBLE_SCHEMA_VERSION);
+            assert_eq!(from_schema, LAST_PUBLIC_RELEASE_SCHEMA_VERSION);
             assert_eq!(to_schema, SCHEMA_VERSION);
             assert!(receipt_path.exists(), "receipt should be written");
+            let receipt: Value = serde_json::from_str(
+                &fs::read_to_string(&receipt_path).expect("read migration receipt"),
+            )
+            .expect("parse migration receipt");
+            assert_eq!(
+                receipt["fromSchema"],
+                Value::from(LAST_PUBLIC_RELEASE_SCHEMA_VERSION)
+            );
+            assert_eq!(receipt["toSchema"], Value::from(SCHEMA_VERSION));
             drop(opened);
         }
         other => panic!("expected Migrated for previous-release fixture, got {other:?}"),
     }
+
+    let snapshot_path = latest_migration_snapshot(&workspace);
+    let manifest_path = snapshot_path.with_extension("json");
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(&manifest_path).expect("read migration snapshot manifest"),
+    )
+    .expect("parse migration snapshot manifest");
+    assert_eq!(
+        manifest["sourceSchemaVersion"],
+        Value::from(LAST_PUBLIC_RELEASE_SCHEMA_VERSION)
+    );
+    assert_eq!(
+        manifest["targetSchemaVersion"],
+        Value::from(SCHEMA_VERSION)
+    );
 
     assert_release_fixture_rows(&db_path);
 }

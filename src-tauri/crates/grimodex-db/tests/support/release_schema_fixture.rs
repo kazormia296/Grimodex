@@ -4,11 +4,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use grimodex_core::{
-    workspace_schema::has_current_schema_checkpoint_invariants, PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+    workspace_schema::has_current_schema_checkpoint_invariants, LAST_PUBLIC_RELEASE_SCHEMA_VERSION,
     SCHEMA_VERSION,
 };
 use rusqlite::{config::DbConfig, params, Connection, OptionalExtension};
 
+/// Physical DDL for the last public Release (v2.0.10 / Schema 2). SHA-matched
+/// to the tagged seed; do not stamp with rolling PREVIOUS_COMPATIBLE_*.
 const PREVIOUS_RELEASE_SCHEMA_SQL: &str = include_str!("../../../../../scripts/schema-seed-ja.sql");
 
 pub const PROJECT_ID: &str = "gate-a2-project";
@@ -35,8 +37,8 @@ pub fn seed_previous_release_workspace(workspace: &Path) -> PathBuf {
         create_previous_release_ai_audit_schema(&conn)
             .expect("create previous-release AI audit schema");
         seed_release_rows(&conn).expect("seed previous-release fixture rows");
-        conn.pragma_update(None, "user_version", PREVIOUS_COMPATIBLE_SCHEMA_VERSION)
-            .expect("stamp fixture marker as previous release");
+        conn.pragma_update(None, "user_version", LAST_PUBLIC_RELEASE_SCHEMA_VERSION)
+            .expect("stamp fixture marker as last public release");
         assert_previous_release_schema_on_connection(&conn);
     }
     grimodex_db::migration_supervisor::seal_sqlite_image(&db_path)
@@ -72,8 +74,8 @@ pub fn assert_previous_release_snapshot_rows(snapshot_path: &Path) {
     let conn = Connection::open(snapshot_path).expect("open migration snapshot");
     assert_eq!(
         user_version(&conn),
-        PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
-        "snapshot must preserve the source release marker"
+        LAST_PUBLIC_RELEASE_SCHEMA_VERSION,
+        "snapshot must preserve the last public release marker"
     );
     assert_previous_release_schema_on_connection(&conn);
     assert_release_rows_on_connection(&conn);
@@ -156,24 +158,38 @@ fn create_previous_release_ai_audit_schema(conn: &Connection) -> anyhow::Result<
 fn assert_previous_release_schema_on_connection(conn: &Connection) {
     assert_eq!(
         user_version(conn),
-        PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
-        "previous-release fixture should start at the previous marker"
+        LAST_PUBLIC_RELEASE_SCHEMA_VERSION,
+        "last public release fixture must use Schema {} (v2.0.10), not the rolling previous-compatible marker",
+        LAST_PUBLIC_RELEASE_SCHEMA_VERSION
     );
     assert!(
         !table_exists(conn, "editor_stickies"),
-        "previous-release physical schema must not already include editor_stickies"
+        "v2.0.10 physical schema must not already include editor_stickies"
+    );
+    assert!(
+        !table_exists(conn, "narrative_runtime_policy"),
+        "v2.0.10 physical schema must not already include narrative_runtime_policy"
     );
     assert!(
         !has_current_schema_checkpoint_invariants(conn)
             .expect("probe current schema checkpoint invariants"),
-        "previous-release physical schema must not already satisfy current invariants"
+        "last public release physical schema must not already satisfy current invariants"
     );
 }
 
 fn assert_current_release_schema_on_connection(conn: &Connection) {
+    assert_eq!(
+        user_version(conn),
+        SCHEMA_VERSION,
+        "migrated fixture must stamp the current schema marker"
+    );
     assert!(
         table_exists(conn, "editor_stickies"),
         "migrated fixture should include the v3 editor_stickies table"
+    );
+    assert!(
+        table_exists(conn, "narrative_runtime_policy"),
+        "migrated fixture should include the Schema 4 narrative_runtime_policy singleton"
     );
     assert!(
         has_current_schema_checkpoint_invariants(conn)
