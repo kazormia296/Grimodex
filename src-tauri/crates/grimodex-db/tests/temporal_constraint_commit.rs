@@ -1,6 +1,6 @@
 use grimodex_db::narrative_extraction::{
-    self, ApplyCommitPayload, CommitOperation, CreateRunPayload, SaveProposalSetPayload,
-    UndoCommitPayload,
+    self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
+    CreateRunPayload, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -41,11 +41,12 @@ fn seed_event(db: &Database, event_id: &str, title: &str) {
     .expect("insert event");
 }
 
-/// Runs / Proposal Sets are the atomic-commit provenance scope every
-/// narrative apply commit requires (see `codex_phase_detail_commit.rs`).
-/// Temporal operations exercised here carry no `proposalId`, so no
-/// proposals need to be seeded or approved.
-fn setup_run_and_proposal_set(db: &Database, run_id: &str, proposal_set_id: &str) {
+fn seed_approved_proposals(
+    db: &Database,
+    run_id: &str,
+    proposal_set_id: &str,
+    items: &[(&str, Value)],
+) -> Vec<(String, String)> {
     narrative_extraction::narrative_extraction_create_run(
         db,
         CreateRunPayload {
@@ -64,7 +65,18 @@ fn setup_run_and_proposal_set(db: &Database, run_id: &str, proposal_set_id: &str
     )
     .expect("create run");
 
-    narrative_extraction::narrative_extraction_save_proposal_set(
+    let proposals: Vec<ProposalSeed> = items
+        .iter()
+        .enumerate()
+        .map(|(index, (kind, payload))| ProposalSeed {
+            proposal_id: Some(format!("{run_id}-prop-{index}")),
+            proposal_key: format!("{run_id}-key-{index}"),
+            kind: (*kind).to_string(),
+            payload_json: payload.clone(),
+        })
+        .collect();
+
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
         db,
         SaveProposalSetPayload {
             run_id: run_id.to_string(),
@@ -72,31 +84,40 @@ fn setup_run_and_proposal_set(db: &Database, run_id: &str, proposal_set_id: &str
             proposal_set_id: Some(proposal_set_id.to_string()),
             set_kind: "temporal.extract.review@1".to_string(),
             summary_json: None,
-            proposals: vec![],
+            proposals,
         },
     )
     .expect("save proposal set");
-}
 
-fn op(kind: &str, payload: Value) -> CommitOperation {
-    CommitOperation {
-        kind: kind.to_string(),
-        payload,
-        proposal_id: None,
-        revision_id: None,
+    let mut pairs = Vec::new();
+    for proposal in saved["proposals"].as_array().expect("proposals") {
+        let proposal_id = proposal["proposalId"].as_str().unwrap().to_string();
+        let revision_id = proposal["revisionId"].as_str().unwrap().to_string();
+        narrative_extraction::narrative_extraction_append_decision(
+            db,
+            AppendDecisionPayload {
+                run_id: run_id.to_string(),
+                project_id: "project-1".to_string(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+                decision: "approved".to_string(),
+                decision_json: None,
+                created_by: Some("test".to_string()),
+            },
+        )
+        .expect("approve");
+        pairs.push((proposal_id, revision_id));
     }
+    pairs
 }
 
-fn node_ensure_op(node_id: &str, subject: Value) -> CommitOperation {
-    op(
-        "temporal.node.ensure",
-        json!({
-            "nodeId": node_id,
-            "timelineKind": "primary",
-            "subject": subject,
-            "shape": "point",
-        }),
-    )
+fn node_ensure_payload(node_id: &str, subject: Value) -> Value {
+    json!({
+        "nodeId": node_id,
+        "timelineKind": "primary",
+        "subject": subject,
+        "shape": "point",
+    })
 }
 
 fn build_apply(
@@ -104,8 +125,24 @@ fn build_apply(
     plan_digest: &str,
     proposal_set_id: &str,
     run_id: &str,
-    operations: Vec<CommitOperation>,
+    ops: Vec<(String, String, String, Value)>,
 ) -> ApplyCommitPayload {
+    let operations: Vec<CommitOperation> = ops
+        .iter()
+        .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
+            kind: kind.clone(),
+            payload: payload.clone(),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
+        })
+        .collect();
+    let applications: Vec<CommitApplicationRef> = ops
+        .iter()
+        .map(|(proposal_id, revision_id, _, _)| CommitApplicationRef {
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
+        })
+        .collect();
     ApplyCommitPayload {
         project_id: "project-1".to_string(),
         run_id: run_id.to_string(),
@@ -115,11 +152,29 @@ fn build_apply(
         session_id: "sess-temporal".to_string(),
         surface: Some("narrative-extraction".to_string()),
         operations,
-        applications: vec![],
+        applications,
         expected_tail_ordinal: None,
         entity_bindings: vec![],
         expected_calendar_version: None,
     }
+}
+
+fn zip_ops(
+    pairs: &[(String, String)],
+    items: &[(&str, Value)],
+) -> Vec<(String, String, String, Value)> {
+    pairs
+        .iter()
+        .zip(items.iter())
+        .map(|((proposal_id, revision_id), (kind, payload))| {
+            (
+                proposal_id.clone(),
+                revision_id.clone(),
+                (*kind).to_string(),
+                payload.clone(),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -127,18 +182,23 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
     let db = migrated_db();
     seed_scene(&db, "scene-1", "Scene One");
     seed_event(&db, "event-1", "Event One");
-    setup_run_and_proposal_set(&db, "run-1", "set-1");
 
-    let ops = vec![
-        node_ensure_op(
-            "tn:scene:scene-1",
-            json!({ "kind": "scene", "documentRef": "scene-1" }),
+    let items = [
+        (
+            "temporal.node.ensure",
+            node_ensure_payload(
+                "tn:scene:scene-1",
+                json!({ "kind": "scene", "documentRef": "scene-1" }),
+            ),
         ),
-        node_ensure_op(
-            "tn:event:event-1",
-            json!({ "kind": "event", "eventId": "event-1" }),
+        (
+            "temporal.node.ensure",
+            node_ensure_payload(
+                "tn:event:event-1",
+                json!({ "kind": "event", "eventId": "event-1" }),
+            ),
         ),
-        op(
+        (
             "temporal.constraint.create",
             json!({
                 "kind": "duration",
@@ -149,7 +209,7 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
                 "sourceIds": [],
             }),
         ),
-        op(
+        (
             "temporal.scene.metadata.patch",
             json!({
                 "sceneId": "scene-1",
@@ -163,7 +223,7 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
                 "precision": "exact",
             }),
         ),
-        op(
+        (
             "temporal.event.metadata.patch",
             json!({
                 "eventId": "event-1",
@@ -178,10 +238,17 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
             }),
         ),
     ];
+    let pairs = seed_approved_proposals(&db, "run-1", "set-1", &items);
 
     let applied = narrative_extraction::narrative_extraction_apply_commit(
         &db,
-        build_apply("req-atomic-1", "digest-atomic-1", "set-1", "run-1", ops),
+        build_apply(
+            "req-atomic-1",
+            "digest-atomic-1",
+            "set-1",
+            "run-1",
+            zip_ops(&pairs, &items),
+        ),
     )
     .expect("apply");
     assert_eq!(applied["status"], "applied");
@@ -226,18 +293,23 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
     let db = migrated_db();
     seed_scene(&db, "scene-2", "Scene Two");
     seed_event(&db, "event-2", "Event Two");
-    setup_run_and_proposal_set(&db, "run-2", "set-2");
 
-    let ops = vec![
-        node_ensure_op(
-            "tn:scene:scene-2",
-            json!({ "kind": "scene", "documentRef": "scene-2" }),
+    let items = [
+        (
+            "temporal.node.ensure",
+            node_ensure_payload(
+                "tn:scene:scene-2",
+                json!({ "kind": "scene", "documentRef": "scene-2" }),
+            ),
         ),
-        node_ensure_op(
-            "tn:event:event-2",
-            json!({ "kind": "event", "eventId": "event-2" }),
+        (
+            "temporal.node.ensure",
+            node_ensure_payload(
+                "tn:event:event-2",
+                json!({ "kind": "event", "eventId": "event-2" }),
+            ),
         ),
-        op(
+        (
             "temporal.constraint.create",
             json!({
                 "kind": "duration",
@@ -248,7 +320,7 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
                 "sourceIds": [],
             }),
         ),
-        op(
+        (
             "temporal.scene.metadata.patch",
             json!({
                 "sceneId": "scene-2",
@@ -262,7 +334,7 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
                 "precision": "exact",
             }),
         ),
-        op(
+        (
             "temporal.event.metadata.patch",
             json!({
                 "eventId": "event-2",
@@ -278,10 +350,17 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
             }),
         ),
     ];
+    let pairs = seed_approved_proposals(&db, "run-2", "set-2", &items);
 
     let err = narrative_extraction::narrative_extraction_apply_commit(
         &db,
-        build_apply("req-rollback-1", "digest-rollback-1", "set-2", "run-2", ops),
+        build_apply(
+            "req-rollback-1",
+            "digest-rollback-1",
+            "set-2",
+            "run-2",
+            zip_ops(&pairs, &items),
+        ),
     )
     .expect_err("should fail on the event OCC mismatch");
     assert!(err.to_string().contains("NEX_TEMPORAL_EVENT_VERSION_MISMATCH"));
@@ -318,14 +397,16 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
 fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
     let db = migrated_db();
     seed_scene(&db, "scene-3", "Scene Three");
-    setup_run_and_proposal_set(&db, "run-3", "set-3");
 
-    let first_ops = vec![
-        node_ensure_op(
-            "tn:scene:scene-3",
-            json!({ "kind": "scene", "documentRef": "scene-3" }),
+    let first_items = [
+        (
+            "temporal.node.ensure",
+            node_ensure_payload(
+                "tn:scene:scene-3",
+                json!({ "kind": "scene", "documentRef": "scene-3" }),
+            ),
         ),
-        op(
+        (
             "temporal.constraint.create",
             json!({
                 "kind": "duration",
@@ -337,26 +418,37 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
             }),
         ),
     ];
+    let first_pairs = seed_approved_proposals(&db, "run-3a", "set-3a", &first_items);
     narrative_extraction::narrative_extraction_apply_commit(
         &db,
-        build_apply("req-dup-1", "digest-dup-1", "set-3", "run-3", first_ops),
+        build_apply(
+            "req-dup-1",
+            "digest-dup-1",
+            "set-3a",
+            "run-3a",
+            zip_ops(&first_pairs, &first_items),
+        ),
     )
     .expect("first commit applies");
 
     // Same subject, different client-chosen nodeId: rejected as a semantic
     // duplicate rather than silently created a second time.
-    let duplicate_node_ops = vec![node_ensure_op(
-        "tn:scene:scene-3-again",
-        json!({ "kind": "scene", "documentRef": "scene-3" }),
+    let duplicate_node_items = [(
+        "temporal.node.ensure",
+        node_ensure_payload(
+            "tn:scene:scene-3-again",
+            json!({ "kind": "scene", "documentRef": "scene-3" }),
+        ),
     )];
+    let dup_node_pairs = seed_approved_proposals(&db, "run-3b", "set-3b", &duplicate_node_items);
     let node_err = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
             "req-dup-2",
             "digest-dup-2",
-            "set-3",
-            "run-3",
-            duplicate_node_ops,
+            "set-3b",
+            "run-3b",
+            zip_ops(&dup_node_pairs, &duplicate_node_items),
         ),
     )
     .expect_err("duplicate node subject must be rejected");
@@ -366,7 +458,7 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
 
     // Same constraint edge (same kind + nodeId): rejected as a semantic
     // duplicate.
-    let duplicate_constraint_ops = vec![op(
+    let duplicate_constraint_items = [(
         "temporal.constraint.create",
         json!({
             "kind": "duration",
@@ -377,14 +469,16 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
             "sourceIds": [],
         }),
     )];
+    let dup_constraint_pairs =
+        seed_approved_proposals(&db, "run-3c", "set-3c", &duplicate_constraint_items);
     let constraint_err = narrative_extraction::narrative_extraction_apply_commit(
         &db,
         build_apply(
             "req-dup-3",
             "digest-dup-3",
-            "set-3",
-            "run-3",
-            duplicate_constraint_ops,
+            "set-3c",
+            "run-3c",
+            zip_ops(&dup_constraint_pairs, &duplicate_constraint_items),
         ),
     )
     .expect_err("duplicate constraint edge must be rejected");
@@ -411,9 +505,8 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
 fn undo_restores_scene_chronicle_with_a_version_bump_not_a_rewind() {
     let db = migrated_db();
     seed_scene(&db, "scene-4", "Scene Four");
-    setup_run_and_proposal_set(&db, "run-4", "set-4");
 
-    let ops = vec![op(
+    let items = [(
         "temporal.scene.metadata.patch",
         json!({
             "sceneId": "scene-4",
@@ -427,9 +520,16 @@ fn undo_restores_scene_chronicle_with_a_version_bump_not_a_rewind() {
             "precision": "exact",
         }),
     )];
+    let pairs = seed_approved_proposals(&db, "run-4", "set-4", &items);
     let applied = narrative_extraction::narrative_extraction_apply_commit(
         &db,
-        build_apply("req-undo-1", "digest-undo-1", "set-4", "run-4", ops),
+        build_apply(
+            "req-undo-1",
+            "digest-undo-1",
+            "set-4",
+            "run-4",
+            zip_ops(&pairs, &items),
+        ),
     )
     .expect("apply");
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
@@ -481,9 +581,8 @@ fn undo_restores_scene_chronicle_with_a_version_bump_not_a_rewind() {
 fn human_edited_scene_after_commit_blocks_undo() {
     let db = migrated_db();
     seed_scene(&db, "scene-5", "Scene Five");
-    setup_run_and_proposal_set(&db, "run-5", "set-5");
 
-    let ops = vec![op(
+    let items = [(
         "temporal.scene.metadata.patch",
         json!({
             "sceneId": "scene-5",
@@ -497,9 +596,16 @@ fn human_edited_scene_after_commit_blocks_undo() {
             "precision": "exact",
         }),
     )];
+    let pairs = seed_approved_proposals(&db, "run-5", "set-5", &items);
     let applied = narrative_extraction::narrative_extraction_apply_commit(
         &db,
-        build_apply("req-block-1", "digest-block-1", "set-5", "run-5", ops),
+        build_apply(
+            "req-block-1",
+            "digest-block-1",
+            "set-5",
+            "run-5",
+            zip_ops(&pairs, &items),
+        ),
     )
     .expect("apply");
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
