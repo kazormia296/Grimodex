@@ -257,11 +257,14 @@ pub fn ensure_narrative_runtime_policy_row(conn: &Connection) -> anyhow::Result<
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS narrative_runtime_policy (
             singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-            runtime_mode TEXT NOT NULL
+            runtime_mode TEXT NOT NULL DEFAULT 'review-only'
               CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')),
-            maintenance_enabled INTEGER NOT NULL CHECK (maintenance_enabled IN (0, 1)),
-            generic_import_enabled INTEGER NOT NULL CHECK (generic_import_enabled IN (0, 1)),
-            background_ai_enabled INTEGER NOT NULL CHECK (background_ai_enabled IN (0, 1)),
+            maintenance_enabled INTEGER NOT NULL DEFAULT 0
+              CHECK (maintenance_enabled IN (0, 1)),
+            generic_import_enabled INTEGER NOT NULL DEFAULT 0
+              CHECK (generic_import_enabled IN (0, 1)),
+            background_ai_enabled INTEGER NOT NULL DEFAULT 0
+              CHECK (background_ai_enabled IN (0, 1)),
             version INTEGER NOT NULL DEFAULT 1
         );",
     )?;

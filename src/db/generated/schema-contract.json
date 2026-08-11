@@ -4822,28 +4822,28 @@
           "ordinal": 4,
           "declaredType": "INTEGER",
           "notNull": true,
-          "default": null,
+          "default": "0",
           "primaryKey": 0
         },
         "generic_import_enabled": {
           "ordinal": 3,
           "declaredType": "INTEGER",
           "notNull": true,
-          "default": null,
+          "default": "0",
           "primaryKey": 0
         },
         "maintenance_enabled": {
           "ordinal": 2,
           "declaredType": "INTEGER",
           "notNull": true,
-          "default": null,
+          "default": "0",
           "primaryKey": 0
         },
         "runtime_mode": {
           "ordinal": 1,
           "declaredType": "TEXT",
           "notNull": true,
-          "default": null,
+          "default": "'review-only'",
           "primaryKey": 0
         },
         "singleton_id": {
@@ -4863,7 +4863,7 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_runtime_policy ( singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1), runtime_mode TEXT NOT NULL CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')), maintenance_enabled INTEGER NOT NULL CHECK (maintenance_enabled IN (0, 1)), generic_import_enabled INTEGER NOT NULL CHECK (generic_import_enabled IN (0, 1)), background_ai_enabled INTEGER NOT NULL CHECK (background_ai_enabled IN (0, 1)), version INTEGER NOT NULL DEFAULT 1 )"
+      "createSql": "CREATE TABLE narrative_runtime_policy ( singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1), runtime_mode TEXT NOT NULL DEFAULT 'review-only' CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')), maintenance_enabled INTEGER NOT NULL DEFAULT 0 CHECK (maintenance_enabled IN (0, 1)), generic_import_enabled INTEGER NOT NULL DEFAULT 0 CHECK (generic_import_enabled IN (0, 1)), background_ai_enabled INTEGER NOT NULL DEFAULT 0 CHECK (background_ai_enabled IN (0, 1)), version INTEGER NOT NULL DEFAULT 1 )"
     },
     "plot_thread_branches": {
       "kind": "table",
