@@ -256,13 +256,15 @@ export async function upsertValue(
   entryId: string,
   definitionId: string,
   value: string | null,
-  opts?: { baseVersion?: number },
+  opts?: { baseVersion?: number; raw?: boolean },
 ): Promise<CodexDetailValue> {
   const definition = await getDefinition(definitionId);
   if (!definition) {
     throw new Error(`Detail definition '${definitionId}' not found`);
   }
-  const encoded = encodeStoredDetailValue(definition, value);
+  const encoded = opts?.raw
+    ? value
+    : encodeStoredDetailValue(definition, value);
   const existing = await db
     .select()
     .from(codexDetailValues)

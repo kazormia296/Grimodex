@@ -206,7 +206,7 @@ export async function seedCodexTypesFromProject(
     const newDefId = definitionIdMap.get(val.definitionId);
     if (!newEntryId || !newDefId) continue;
 
-    await upsertValue(newEntryId, newDefId, val.value);
+    await upsertValue(newEntryId, newDefId, val.value, { raw: true });
   }
 
   await copyEntryTags(copiedSourceEntryIds, entryIdMap, targetProjectId);

@@ -35,6 +35,10 @@ function affectsImeExport(data: Record<string, unknown>): boolean {
   return Object.keys(data).some((key) => IME_EXPORT_FIELDS.has(key));
 }
 
+function nativeNullable(value: string | null | undefined): string | undefined {
+  return value === null ? "" : value;
+}
+
 /**
  * impact-review: この Codex に紐づく伏線を「Codex 変更で再評価が必要」とマークする。
  * codexLinkDirtyAt を現在時刻にし、伏線パネルの stale 判定 (isSetupEvaluationStale) で
@@ -317,24 +321,38 @@ export async function updateCodexEntry(
         entryId: id,
         baseVersion,
         ...(data.type !== undefined ? { typeSlug: data.type } : {}),
-        ...(data.name !== undefined ? { name: data.name } : {}),
-        ...(data.summary !== undefined ? { summary: data.summary } : {}),
-        ...(data.content !== undefined ? { content: data.content } : {}),
-        ...(data.aliases !== undefined ? { aliases: data.aliases } : {}),
+        ...(data.name !== undefined ? { name: nativeNullable(data.name) } : {}),
+        ...(data.summary !== undefined
+          ? { summary: nativeNullable(data.summary) }
+          : {}),
+        ...(data.content !== undefined
+          ? { content: nativeNullable(data.content) }
+          : {}),
+        ...(data.aliases !== undefined
+          ? { aliases: nativeNullable(data.aliases) }
+          : {}),
         ...(data.excludedAliases !== undefined
-          ? { excludedAliases: data.excludedAliases }
+          ? { excludedAliases: nativeNullable(data.excludedAliases) }
           : {}),
-        ...(data.readings !== undefined ? { readings: data.readings } : {}),
-        ...(data.tagsCache !== undefined ? { tagsCache: data.tagsCache } : {}),
-        ...(data.parentId !== undefined ? { parentId: data.parentId } : {}),
+        ...(data.readings !== undefined
+          ? { readings: nativeNullable(data.readings) }
+          : {}),
+        ...(data.tagsCache !== undefined
+          ? { tagsCache: nativeNullable(data.tagsCache) }
+          : {}),
+        ...(data.parentId !== undefined
+          ? { parentId: nativeNullable(data.parentId) }
+          : {}),
         ...(data.contextMode !== undefined
-          ? { contextMode: data.contextMode }
+          ? { contextMode: nativeNullable(data.contextMode) }
           : {}),
-        ...(data.icon !== undefined ? { icon: data.icon } : {}),
+        ...(data.icon !== undefined ? { icon: nativeNullable(data.icon) } : {}),
         ...(data.childrenBudget !== undefined
-          ? { childrenBudget: data.childrenBudget }
+          ? { childrenBudget: nativeNullable(data.childrenBudget) }
           : {}),
-        ...(data.notes !== undefined ? { notes: data.notes } : {}),
+        ...(data.notes !== undefined
+          ? { notes: nativeNullable(data.notes) }
+          : {}),
         model: null,
         chatMessageId: null,
         traceId: null,
