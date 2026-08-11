@@ -1250,18 +1250,11 @@ class ZenMultipassRenderer {
     }
     for (const name of ["u_paperPixelRatio", "u_pixelRatio"]) {
       const pixelRatio = this.uniformLocation(this.sceneProgram.program, name);
-      if (pixelRatio !== null) gl.uniform1f(pixelRatio, this.renderScale);
-    }
-    const sceneToOutputScale = this.uniformLocation(
-      this.sceneProgram.program,
-      "u_zenSceneToOutputScale",
-    );
-    if (sceneToOutputScale !== null) {
-      gl.uniform2f(
-        sceneToOutputScale,
-        this.canvas.width / width,
-        this.canvas.height / height,
-      );
+      if (pixelRatio !== null) {
+        const sceneRenderScale =
+          this.cssWidth > 0 ? width / this.cssWidth : this.renderScale;
+        gl.uniform1f(pixelRatio, sceneRenderScale);
+      }
     }
     const time = this.uniformLocation(this.sceneProgram.program, "u_time");
     if (time !== null) gl.uniform1f(time, this.frame * 0.001);
@@ -1549,34 +1542,33 @@ class ZenMultipassRenderer {
     this.invalidateScene();
   };
 
-  setRenderPipeline = (renderPipeline: ZenShaderRenderPipeline) => {
-    if (renderPipeline === this.renderPipeline) return;
-    this.renderPipeline = renderPipeline;
-    if (
-      renderPipeline === "multipass" &&
-      this.canvas.width > 0 &&
-      this.canvas.height > 0 &&
-      !this.allocateSceneTarget(
-        Math.max(1, Math.round(this.canvas.width * this.sceneScale)),
-        Math.max(1, Math.round(this.canvas.height * this.sceneScale)),
-      )
-    ) {
-      this.fail(new Error("Unable to allocate Zen multipass scene target"));
-      return;
-    }
-    this.blurredTexture = this.sceneTarget.texture;
-    this.blurPlanKey = "";
-    this.invalidateScene();
-  };
-
-  setSceneScale = (sceneScale: number) => {
+  setRenderConfiguration = ({
+    renderPipeline,
+    sceneScale,
+  }: {
+    renderPipeline: ZenShaderRenderPipeline;
+    sceneScale: number;
+  }) => {
     if (!Number.isFinite(sceneScale) || sceneScale <= 0 || sceneScale > 1) {
       throw new TypeError("Zen multipass sceneScale must be in (0, 1]");
     }
-    if (sceneScale === this.sceneScale) return;
+    if (
+      renderPipeline === this.renderPipeline &&
+      sceneScale === this.sceneScale
+    ) {
+      return;
+    }
+    this.renderPipeline = renderPipeline;
     this.sceneScale = sceneScale;
     this.blurPlanKey = "";
-    this.resizeTargets();
+    try {
+      this.resizeTargets();
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    this.blurredTexture = this.sceneTarget.texture;
+    this.invalidateScene();
   };
 
   setSpeed = (speed: number) => {
@@ -1842,12 +1834,11 @@ export const ZenMultipassCanvas = forwardRef<
   ]);
 
   useLayoutEffect(() => {
-    rendererRef.current?.setRenderPipeline(renderPipeline);
-  }, [renderPipeline]);
-
-  useLayoutEffect(() => {
-    rendererRef.current?.setSceneScale(sceneScale);
-  }, [sceneScale]);
+    rendererRef.current?.setRenderConfiguration({
+      renderPipeline,
+      sceneScale,
+    });
+  }, [renderPipeline, sceneScale]);
 
   useLayoutEffect(() => {
     rendererRef.current?.setSceneUniforms(sceneUniforms, mipmaps);

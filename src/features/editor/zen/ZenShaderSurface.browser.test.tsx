@@ -190,6 +190,77 @@ describe("ZenShaderSurface multipass integration", () => {
     expect(canvas?.getContext("webgl2")).toBe(gl);
   });
 
+  it.each(["dither", "halftone"] as const)(
+    "keeps native pixels when Performance is selected with %s enabled",
+    async (effect) => {
+      const effectConfig =
+        effect === "dither"
+          ? {
+              dither: {
+                ...ZEN_SHADER_DEFAULTS.dither,
+                enabled: true,
+                strength: 1,
+              },
+            }
+          : {
+              halftone: {
+                ...ZEN_SHADER_DEFAULTS.halftone,
+                enabled: true,
+                strength: 1,
+              },
+            };
+      const nativeConfig = {
+        ...ZEN_SHADER_DEFAULTS,
+        ...effectConfig,
+        resolutionMode: "native" as const,
+        speed: 0,
+        glass: { ...ZEN_SHADER_DEFAULTS.glass, blur: 0 },
+      };
+      const view = render(
+        <div style={{ position: "relative", width: 240, height: 160 }}>
+          <ZenShaderSurface
+            config={nativeConfig}
+            playing={false}
+            webGlSupported
+            webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          />
+        </div>,
+      );
+
+      await waitFor(() =>
+        expect(productPerformanceStats(view.container)).toMatchObject({
+          drawCount: 1,
+          sceneScale: 1,
+          sceneTargetWidth: 240,
+          sceneTargetHeight: 160,
+        }),
+      );
+      const nativePixels = readFrame(view.container);
+      const initialDrawCount = drawCount(view.container);
+
+      view.rerender(
+        <div style={{ position: "relative", width: 240, height: 160 }}>
+          <ZenShaderSurface
+            config={{ ...nativeConfig, resolutionMode: "performance" }}
+            playing={false}
+            webGlSupported
+            webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          />
+        </div>,
+      );
+
+      await waitFor(() => {
+        expect(drawCount(view.container)).toBeGreaterThan(initialDrawCount);
+        expect(productPerformanceStats(view.container)).toMatchObject({
+          sceneScale: 1,
+          sceneTargetWidth: 240,
+          sceneTargetHeight: 160,
+        });
+      });
+      expect(readFrame(view.container)).toEqual(nativePixels);
+    },
+  );
+
   it("keeps a low-speed live shader visibly animated through final compositing", async () => {
     const onRendererStatusChange = vi.fn();
     const animatedConfig = {

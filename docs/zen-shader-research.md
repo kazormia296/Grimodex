@@ -270,10 +270,13 @@ the product renderer. The product exposes three Scene resolution modes:
 | `performance` | `2/3`       | The existing Composite samples a 66.7% Scene target        |
 
 The output canvas, Glass, UI masks, and Contrast Guard remain at native output
-resolution. Dither and Halftone coordinates are converted back to output-pixel
-space before evaluation. Scaled modes use the existing product Composite, so
-they do not add an upscale-only draw. Switching modes, resizing, or changing DPR
-reallocates only the Scene-sized targets and preserves the WebGL context.
+resolution. Dither and Halftone remain in the pre-blur Scene pass to preserve
+the established effect ordering. Enabling either effect therefore makes the
+effective Scene scale `1`, even when Balanced or Performance is selected, so
+the Bayer matrix and dot screen are evaluated once per output pixel. With both
+effects disabled, scaled modes use the existing product Composite and do not
+add an upscale-only draw. Switching modes, resizing, or changing DPR allocates
+only the final Scene-sized targets and preserves the WebGL context.
 
 The `.artifacts/` directory is ignored by Git. Attach the raw JSON artifacts to
 the research PR or benchmark record rather than committing them.

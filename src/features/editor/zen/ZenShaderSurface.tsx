@@ -14,7 +14,7 @@ import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
 import { hasZenGlassRegion } from "./zenGlassCompositor";
 import { ZenMultipassCanvas } from "./ZenMultipassCanvas";
 import { resolveZenShaderRenderPipeline } from "./zenShaderRenderPipeline";
-import { resolveZenShaderSceneScale } from "./zenShaderResolution";
+import { resolveZenShaderEffectiveSceneScale } from "./zenShaderResolution";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
@@ -121,7 +121,11 @@ export function ZenShaderSurface({
 
   const mountKey = `${config.shader}:${uiSurfaceCapacity}`;
   const renderPipeline = resolveZenShaderRenderPipeline(config);
-  const sceneScale = resolveZenShaderSceneScale(config.resolutionMode);
+  const sceneScale = resolveZenShaderEffectiveSceneScale({
+    mode: config.resolutionMode,
+    ditherEnabled: config.dither.enabled,
+    halftoneEnabled: config.halftone.enabled,
+  });
   const readinessKey = `${mountKey}:${renderPipeline}:${sceneScale}`;
   const definition = getPaperShaderDefinition(config.shader);
   const [readyMountKey, setReadyMountKey] = useState<string | null>(null);

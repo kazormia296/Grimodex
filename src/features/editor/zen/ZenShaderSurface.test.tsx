@@ -313,6 +313,30 @@ describe("ZenShaderSurface", () => {
     });
   });
 
+  it.each([
+    ["dither", { dither: { ...ZEN_SHADER_DEFAULTS.dither, enabled: true } }],
+    [
+      "halftone",
+      { halftone: { ...ZEN_SHADER_DEFAULTS.halftone, enabled: true } },
+    ],
+  ] as const)("keeps %s at native Scene resolution", (_effect, override) => {
+    const { container } = render(
+      <ZenShaderSurface
+        config={{
+          ...ZEN_SHADER_DEFAULTS,
+          resolutionMode: "performance",
+          ...override,
+        }}
+        playing={false}
+      />,
+    );
+
+    expect(shaderLifecycle.props.at(-1)?.sceneScale).toBe(1);
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-zen-shader-scene-scale", "1");
+  });
+
   it("does not pass research or timing options to the normal renderer", () => {
     render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
 

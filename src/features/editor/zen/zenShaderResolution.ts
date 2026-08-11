@@ -16,3 +16,19 @@ const ZEN_SHADER_SCENE_SCALES = {
 export function resolveZenShaderSceneScale(mode: ZenShaderResolutionMode) {
   return ZEN_SHADER_SCENE_SCALES[mode];
 }
+
+export function resolveZenShaderEffectiveSceneScale({
+  mode,
+  ditherEnabled,
+  halftoneEnabled,
+}: {
+  mode: ZenShaderResolutionMode;
+  ditherEnabled: boolean;
+  halftoneEnabled: boolean;
+}) {
+  // Dither and halftone are intentionally evaluated in the Scene pass before
+  // Glass blur. Preserve one effect evaluation per output pixel instead of
+  // linearly interpolating a lower-resolution Bayer matrix or dot screen.
+  if (ditherEnabled || halftoneEnabled) return 1;
+  return resolveZenShaderSceneScale(mode);
+}
