@@ -28,7 +28,9 @@ const DESCRIPTOR = {
 function isScanBundle(value: unknown): value is ScanBundleV1 {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  return record.schemaVersion === "grimodex-scan/1" && Array.isArray(record.sections);
+  return (
+    record.schemaVersion === "grimodex-scan/1" && Array.isArray(record.sections)
+  );
 }
 
 function isEditorSeed(value: unknown): value is EditorSeedV1 {
@@ -109,15 +111,25 @@ function buildDraftFromScanBundle(
   return draft;
 }
 
-function parseScanInput(input: ImportAdapterParseInput): ImportSourcePackageDraft | null {
+function parseScanInput(
+  input: ImportAdapterParseInput,
+): ImportSourcePackageDraft | null {
   if (input.kind === "editor-seed" && isEditorSeed(input.data)) {
-    return buildDraftFromScanBundle(input.data.bundle, input.label, "editor-seed");
+    return buildDraftFromScanBundle(
+      input.data.bundle,
+      input.label,
+      "editor-seed",
+    );
   }
   if (input.kind === "scan-bundle" && isScanBundle(input.data)) {
     return buildDraftFromScanBundle(input.data, input.label, "scan-bundle");
   }
   if (isEditorSeed(input.data)) {
-    return buildDraftFromScanBundle(input.data.bundle, input.label, "editor-seed");
+    return buildDraftFromScanBundle(
+      input.data.bundle,
+      input.label,
+      "editor-seed",
+    );
   }
   if (isScanBundle(input.data)) {
     return buildDraftFromScanBundle(input.data, input.label, "scan-bundle");

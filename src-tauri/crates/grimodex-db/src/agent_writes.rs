@@ -549,11 +549,42 @@ pub(crate) struct CodexEntryCreateTxResult {
     pub after_snapshot: Value,
 }
 
+fn normalize_codex_parent_id(parent_id: Option<&str>) -> Option<&str> {
+    parent_id.filter(|value| !value.is_empty())
+}
+
+fn validate_codex_parent_in_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+    parent_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(parent_id) = parent_id else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        parent_id != entry_id,
+        "codex entry '{entry_id}' cannot be its own parent"
+    );
+    let found: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![parent_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        found == 1,
+        "codex parent '{parent_id}' is not found in project '{project_id}'"
+    );
+    Ok(())
+}
+
 /// Shared Codex entry create body that runs inside a caller-owned transaction.
 pub(crate) fn apply_codex_entry_create_in_tx(
     conn: &rusqlite::Connection,
     input: CodexEntryCreateTxInput<'_>,
 ) -> anyhow::Result<CodexEntryCreateTxResult> {
+    let parent_id = normalize_codex_parent_id(input.parent_id);
+    validate_codex_parent_in_project(conn, input.project_id, input.entry_id, parent_id)?;
     conn.execute(
         "INSERT INTO codex_entries
          (id, project_id, type, name, aliases, excluded_aliases, readings,
@@ -571,7 +602,7 @@ pub(crate) fn apply_codex_entry_create_in_tx(
             input.tags_cache,
             input.summary,
             input.content,
-            input.parent_id,
+            parent_id,
             input.source_chat_message_id,
             input.now,
         ],
@@ -617,7 +648,7 @@ pub(crate) fn apply_codex_entry_create_in_tx(
         let mut change_payload = json!({
             "type": input.type_slug,
             "name": input.name,
-            "parentId": input.parent_id,
+            "parentId": parent_id,
         });
         if let Some(request_hash) = input.request_hash {
             change_payload["requestHash"] = Value::String(request_hash.to_string());
@@ -748,8 +779,14 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
             db_version
         );
     }
+    let current_parent_id = before_snapshot["parentId"].as_str();
+    let effective_parent_id = match normalize_nullable_sentinel(input.parent_id) {
+        Some(parent_id) => parent_id,
+        None => current_parent_id,
+    };
+    validate_codex_parent_in_project(conn, input.project_id, input.entry_id, effective_parent_id)?;
 
-    let current_summary: String = conn.query_row(
+    let current_summary: Option<String> = conn.query_row(
         "SELECT summary FROM codex_entries WHERE id = ?1 AND project_id = ?2",
         rusqlite::params![input.entry_id, input.project_id],
         |row| row.get(0),
@@ -757,7 +794,7 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
 
     let effective_summary = match input.summary {
         Some(value) if input.summary_fill_if_empty => {
-            if current_summary.trim().is_empty() {
+            if current_summary.as_deref().unwrap_or("").trim().is_empty() {
                 Some(value)
             } else {
                 None
@@ -5588,6 +5625,531 @@ mod tests {
             .to_string()
             .contains("AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT"));
         assert_eq!(table_count(&db, "codex_entries"), 0);
+    }
+
+    fn tracked_codex_create_payload(
+        project_id: &str,
+        entry_id: &str,
+        name: &str,
+        span_to: i64,
+    ) -> AgentCodexCreatePayload {
+        AgentCodexCreatePayload {
+            request_id: Some(format!("create:{entry_id}")),
+            entry_id: Some(entry_id.to_string()),
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            surface: None,
+            type_slug: "character".to_string(),
+            name: name.to_string(),
+            summary: Some(format!("{name} summary")),
+            content: Some(format!(r#"{{"name":"{name}"}}"#)),
+            aliases: Some(format!(r#"["{name}"]"#)),
+            excluded_aliases: Some(format!(r#"["not-{name}"]"#)),
+            readings: Some(format!(r#"["{name}-reading"]"#)),
+            tags_cache: Some(format!(r#"[{{"name":"{name}-tag"}}]"#)),
+            parent_id: None,
+            source_chat_message_id: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: vec![AuthorshipSpanInput {
+                from_pos: 0,
+                to_pos: span_to,
+                source: "ai".to_string(),
+                model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                chat_msg_id: None,
+                trace_id: None,
+            }],
+        }
+    }
+
+    fn tracked_codex_create(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        name: &str,
+        span_to: i64,
+    ) -> Value {
+        agent_codex_create_impl(
+            db,
+            tracked_codex_create_payload(project_id, entry_id, name, span_to),
+        )
+        .expect("tracked codex create")
+    }
+
+    fn tracked_codex_update_payload(
+        project_id: &str,
+        entry_id: &str,
+        base_version: i64,
+        name: &str,
+        span_to: i64,
+    ) -> AgentCodexUpdatePayload {
+        AgentCodexUpdatePayload {
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            surface: None,
+            entry_id: entry_id.to_string(),
+            base_version,
+            type_slug: Some("location".to_string()),
+            name: Some(name.to_string()),
+            summary: Some(format!("{name} summary")),
+            content: Some(format!(r#"{{"name":"{name}"}}"#)),
+            aliases: Some(format!(r#"["{name}"]"#)),
+            excluded_aliases: Some(format!(r#"["not-{name}"]"#)),
+            readings: Some(format!(r#"["{name}-reading"]"#)),
+            tags_cache: Some(format!(r#"[{{"name":"{name}-tag"}}]"#)),
+            parent_id: None,
+            context_mode: Some("always".to_string()),
+            icon: Some(format!("icon:{name}")),
+            children_budget: Some("generous".to_string()),
+            notes: Some(format!("notes:{name}")),
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: Some(vec![AuthorshipSpanInput {
+                from_pos: 1,
+                to_pos: span_to,
+                source: "human".to_string(),
+                model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                chat_msg_id: None,
+                trace_id: None,
+            }]),
+            authorship_span_lanes: None,
+        }
+    }
+
+    fn tracked_codex_update(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        base_version: i64,
+        name: &str,
+        span_to: i64,
+    ) -> Value {
+        agent_codex_update_impl(
+            db,
+            tracked_codex_update_payload(project_id, entry_id, base_version, name, span_to),
+        )
+        .expect("tracked codex update")
+    }
+
+    fn codex_root_and_spans(db: &Database, entry_id: &str) -> Value {
+        db.with_conn(|conn| collect_codex_entry_snapshot(conn, entry_id))
+            .expect("codex snapshot")
+    }
+
+    fn codex_journal_tokens(db: &Database, entry_id: &str) -> Vec<(String, i64, i64)> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT op_kind, base_version, result_version
+                   FROM undo_journal
+                  WHERE entity_kind = 'codex_entry' AND entity_id = ?1
+                  ORDER BY CASE op_kind
+                    WHEN 'create' THEN 0 WHEN 'update' THEN 1 ELSE 2 END",
+            )?;
+            let rows = statement.query_map(rusqlite::params![entry_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .expect("codex journal tokens")
+    }
+
+    #[test]
+    fn codex_update_replay_uses_fresh_versions_and_restores_exact_snapshot() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let entry_id = "codex-replay-update";
+        let created = tracked_codex_create(&db, &project_id, entry_id, "before", 6);
+        let before = codex_root_and_spans(&db, entry_id);
+        let updated = tracked_codex_update(&db, &project_id, entry_id, 1, "after", 12);
+        let after = codex_root_and_spans(&db, entry_id);
+        let update_journal = updated["undoJournalId"].as_str().expect("update journal");
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, update_journal, "undo"))
+            .expect("undo update");
+        let restored_before = codex_root_and_spans(&db, entry_id);
+        assert_eq!(restored_before["version"], 3);
+        let mut expected_before = before.clone();
+        expected_before["version"] = Value::from(3);
+        assert_eq!(restored_before, expected_before);
+        assert_eq!(
+            codex_journal_tokens(&db, entry_id),
+            vec![("create".to_string(), 0, 3), ("update".to_string(), 3, 2)]
+        );
+        let create_retry = agent_codex_create_impl(
+            &db,
+            tracked_codex_create_payload(&project_id, entry_id, "before", 6),
+        )
+        .expect("idempotent create retry after update undo");
+        assert_eq!(create_retry["entityId"], created["entityId"]);
+        assert_eq!(create_retry["undoJournalId"], created["undoJournalId"]);
+        assert_eq!(create_retry["changeEventUid"], created["changeEventUid"]);
+        assert_eq!(create_retry["version"], 3);
+
+        let stale = agent_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "stale-window".to_string(),
+                surface: None,
+                entry_id: entry_id.to_string(),
+                base_version: 1,
+                type_slug: None,
+                name: Some("stale".to_string()),
+                summary: None,
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+        )
+        .expect_err("pre-replay editor token must stay stale");
+        assert!(stale.to_string().contains("version conflict"));
+        assert_eq!(codex_root_and_spans(&db, entry_id), expected_before);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, update_journal, "redo"))
+            .expect("redo update");
+        let restored_after = codex_root_and_spans(&db, entry_id);
+        assert_eq!(restored_after["version"], 4);
+        let mut expected_after = after;
+        expected_after["version"] = Value::from(4);
+        assert_eq!(restored_after, expected_after);
+        assert_eq!(created["version"], 1);
+    }
+
+    #[test]
+    fn stacked_codex_create_update_delete_replay_keeps_monotonic_chain() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let entry_id = "codex-replay-stack";
+        let created = tracked_codex_create(&db, &project_id, entry_id, "before", 6);
+        let updated = tracked_codex_update(&db, &project_id, entry_id, 1, "after", 12);
+        let deleted = agent_codex_delete_impl(
+            &db,
+            AgentCodexDeletePayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                entry_id: entry_id.to_string(),
+                base_version: 2,
+            },
+        )
+        .expect("tracked codex delete");
+        let create_journal = created["undoJournalId"].as_str().expect("create journal");
+        let update_journal = updated["undoJournalId"].as_str().expect("update journal");
+        let delete_journal = deleted["undoJournalId"].as_str().expect("delete journal");
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, delete_journal, "undo"))
+            .expect("undo delete");
+        assert_eq!(codex_root_and_spans(&db, entry_id)["version"], 3);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, update_journal, "undo"))
+            .expect("undo update");
+        assert_eq!(codex_root_and_spans(&db, entry_id)["version"], 4);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, create_journal, "undo"))
+            .expect("undo create");
+        assert_eq!(table_count(&db, "codex_entries"), 0);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, create_journal, "redo"))
+            .expect("redo create");
+        assert_eq!(codex_root_and_spans(&db, entry_id)["version"], 5);
+        let create_retry = agent_codex_create_impl(
+            &db,
+            tracked_codex_create_payload(&project_id, entry_id, "before", 6),
+        )
+        .expect("idempotent create retry after create replay");
+        assert_eq!(create_retry["version"], 5);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, update_journal, "redo"))
+            .expect("redo update");
+        assert_eq!(codex_root_and_spans(&db, entry_id)["version"], 6);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, delete_journal, "redo"))
+            .expect("redo delete");
+        assert_eq!(table_count(&db, "codex_entries"), 0);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, delete_journal, "undo"))
+            .expect("second undo delete");
+        assert_eq!(codex_root_and_spans(&db, entry_id)["version"], 7);
+        assert_eq!(
+            codex_journal_tokens(&db, entry_id),
+            vec![
+                ("create".to_string(), 0, 5),
+                ("update".to_string(), 5, 7),
+                ("delete".to_string(), 7, 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_replay_rejects_cross_project_id_reuse_and_rolls_back_side_effects() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let entry_id = "codex-cross-project-replay";
+        tracked_codex_create(&db, &project_id, entry_id, "local", 5);
+        let deleted = agent_codex_delete_impl(
+            &db,
+            AgentCodexDeletePayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                entry_id: entry_id.to_string(),
+                base_version: 1,
+            },
+        )
+        .expect("delete local codex");
+        let journal_id = deleted["undoJournalId"].as_str().expect("delete journal");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries
+                 (id, project_id, type, name, summary, content, version)
+                 VALUES (?1, ?2, 'lore', 'foreign', '', '{}', 9)",
+                rusqlite::params![entry_id, foreign_project_id],
+            )?;
+            Ok(())
+        })
+        .expect("reuse id in foreign project");
+        let changes_before = table_count(&db, "change_events");
+        let tokens_before = codex_journal_tokens(&db, entry_id);
+
+        let error = agent_undo_journal_impl(&db, undo_payload(&project_id, journal_id, "undo"))
+            .expect_err("cross-project id reuse must fail");
+        assert!(error.to_string().contains("version conflict"), "{error:#}");
+        let foreign = codex_root_and_spans(&db, entry_id);
+        assert_eq!(foreign["projectId"], foreign_project_id);
+        assert_eq!(foreign["name"], "foreign");
+        assert_eq!(foreign["version"], 9);
+        assert_eq!(codex_journal_tokens(&db, entry_id), tokens_before);
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+    }
+
+    #[test]
+    fn versionless_legacy_codex_update_journal_replays_monotonically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let entry_id = "legacy-codex-journal";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries
+                 (id, project_id, type, name, summary, content, version)
+                 VALUES (?1, ?2, 'character', 'after', 'after summary', '{}', 2)",
+                rusqlite::params![entry_id, project_id],
+            )?;
+            let before = json!({
+                "id": entry_id,
+                "projectId": project_id,
+                "type": "character",
+                "name": "before",
+                "summary": "before summary",
+                "content": "{}",
+                "authorshipSpans": [],
+            });
+            let after = json!({
+                "id": entry_id,
+                "projectId": project_id,
+                "type": "character",
+                "name": "after",
+                "summary": "after summary",
+                "content": "{}",
+                "authorshipSpans": [],
+            });
+            conn.execute(
+                "INSERT INTO undo_journal
+                 (id, project_id, surface, entity_kind, entity_id, op_kind,
+                  before_json, after_json, base_version, result_version)
+                 VALUES ('legacy-codex-update', ?1, 'legacy', 'codex_entry', ?2,
+                         'update', ?3, ?4, 1, 2)",
+                rusqlite::params![project_id, entry_id, before.to_string(), after.to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("insert legacy journal");
+
+        agent_undo_journal_impl(
+            &db,
+            undo_payload(&project_id, "legacy-codex-update", "undo"),
+        )
+        .expect("undo legacy update");
+        let undone = codex_root_and_spans(&db, entry_id);
+        assert_eq!(undone["name"], "before");
+        assert_eq!(undone["version"], 3);
+
+        agent_undo_journal_impl(
+            &db,
+            undo_payload(&project_id, "legacy-codex-update", "redo"),
+        )
+        .expect("redo legacy update");
+        let redone = codex_root_and_spans(&db, entry_id);
+        assert_eq!(redone["name"], "after");
+        assert_eq!(redone["version"], 4);
+    }
+
+    #[test]
+    fn codex_create_parent_must_be_distinct_and_in_the_same_project() {
+        for (case, expected) in [
+            ("self", "cannot be its own parent"),
+            ("missing", "not found in project"),
+            ("foreign", "not found in project"),
+        ] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let foreign_project_id = insert_project(&db);
+            let foreign_parent = format!("foreign-parent:{case}");
+            tracked_codex_create(
+                &db,
+                &foreign_project_id,
+                &foreign_parent,
+                "foreign parent",
+                5,
+            );
+            let child_id = format!("child:{case}");
+            let parent_id = match case {
+                "self" => child_id.clone(),
+                "missing" => format!("missing-parent:{case}"),
+                "foreign" => foreign_parent,
+                _ => unreachable!(),
+            };
+            let mut payload = tracked_codex_create_payload(&project_id, &child_id, "child", 5);
+            payload.parent_id = Some(parent_id);
+            let entries_before = table_count(&db, "codex_entries");
+            let journals_before = table_count(&db, "undo_journal");
+            let changes_before = table_count(&db, "change_events");
+
+            let error = agent_codex_create_impl(&db, payload)
+                .expect_err("invalid codex parent must be rejected");
+            assert!(error.to_string().contains(expected), "{case}: {error:#}");
+            assert_eq!(table_count(&db, "codex_entries"), entries_before);
+            assert_eq!(table_count(&db, "undo_journal"), journals_before);
+            assert_eq!(table_count(&db, "change_events"), changes_before);
+        }
+
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "local-parent", "parent", 5);
+        let mut payload = tracked_codex_create_payload(&project_id, "local-child", "child", 5);
+        payload.parent_id = Some("local-parent".to_string());
+        agent_codex_create_impl(&db, payload).expect("same-project parent is valid");
+        assert_eq!(
+            codex_root_and_spans(&db, "local-child")["parentId"],
+            "local-parent"
+        );
+    }
+
+    #[test]
+    fn codex_update_effective_parent_must_be_distinct_and_in_the_same_project() {
+        for (case, expected) in [
+            ("self", "cannot be its own parent"),
+            ("missing", "not found in project"),
+            ("foreign", "not found in project"),
+        ] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let foreign_project_id = insert_project(&db);
+            let target_id = format!("target:{case}");
+            let foreign_parent = format!("foreign-parent:{case}");
+            tracked_codex_create(&db, &project_id, &target_id, "target", 5);
+            tracked_codex_create(
+                &db,
+                &foreign_project_id,
+                &foreign_parent,
+                "foreign parent",
+                5,
+            );
+            let parent_id = match case {
+                "self" => target_id.clone(),
+                "missing" => format!("missing-parent:{case}"),
+                "foreign" => foreign_parent,
+                _ => unreachable!(),
+            };
+            let mut payload =
+                tracked_codex_update_payload(&project_id, &target_id, 1, "changed", 9);
+            payload.parent_id = Some(parent_id);
+            let before = codex_root_and_spans(&db, &target_id);
+            let journals_before = table_count(&db, "undo_journal");
+            let changes_before = table_count(&db, "change_events");
+
+            let error = agent_codex_update_impl(&db, payload)
+                .expect_err("invalid effective codex parent must be rejected");
+            assert!(error.to_string().contains(expected), "{case}: {error:#}");
+            assert_eq!(codex_root_and_spans(&db, &target_id), before);
+            assert_eq!(table_count(&db, "undo_journal"), journals_before);
+            assert_eq!(table_count(&db, "change_events"), changes_before);
+        }
+
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "local-parent", "parent", 5);
+        tracked_codex_create(&db, &project_id, "local-target", "target", 5);
+        let mut payload =
+            tracked_codex_update_payload(&project_id, "local-target", 1, "changed", 9);
+        payload.parent_id = Some("local-parent".to_string());
+        let updated = agent_codex_update_impl(&db, payload).expect("same-project parent is valid");
+        assert_eq!(updated["version"], 2);
+        assert_eq!(
+            codex_root_and_spans(&db, "local-target")["parentId"],
+            "local-parent"
+        );
+    }
+
+    #[test]
+    fn codex_legacy_null_summary_survives_name_update_undo_and_redo() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let entry_id = "legacy-null-summary";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries
+                 (id, project_id, type, name, summary, content, version)
+                 VALUES (?1, ?2, 'character', 'before', NULL, '{}', 1)",
+                rusqlite::params![entry_id, project_id],
+            )?;
+            Ok(())
+        })
+        .expect("insert legacy NULL summary row");
+
+        let mut payload = tracked_codex_update_payload(&project_id, entry_id, 1, "after", 9);
+        payload.type_slug = None;
+        payload.summary = None;
+        payload.content = None;
+        payload.aliases = None;
+        payload.excluded_aliases = None;
+        payload.readings = None;
+        payload.tags_cache = None;
+        payload.context_mode = None;
+        payload.icon = None;
+        payload.children_budget = None;
+        payload.notes = None;
+        payload.authorship_spans = None;
+        let updated = agent_codex_update_impl(&db, payload).expect("name-only legacy update");
+        let journal_id = updated["undoJournalId"].as_str().expect("update journal");
+        let after = codex_root_and_spans(&db, entry_id);
+        assert_eq!(after["name"], "after");
+        assert!(after["summary"].is_null());
+        assert_eq!(after["version"], 2);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, journal_id, "undo"))
+            .expect("undo legacy NULL summary update");
+        let undone = codex_root_and_spans(&db, entry_id);
+        assert_eq!(undone["name"], "before");
+        assert!(undone["summary"].is_null());
+        assert_eq!(undone["version"], 3);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, journal_id, "redo"))
+            .expect("redo legacy NULL summary update");
+        let redone = codex_root_and_spans(&db, entry_id);
+        assert_eq!(redone["name"], "after");
+        assert!(redone["summary"].is_null());
+        assert_eq!(redone["version"], 4);
     }
 
     #[test]

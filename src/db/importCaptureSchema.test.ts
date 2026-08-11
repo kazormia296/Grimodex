@@ -19,13 +19,17 @@ describe("import capture persistence schema (SCHEMA 13)", () => {
   });
 
   it("models decoded resources and revisioned generic schemas", () => {
-    expect(getTableColumns(importDecodedResources).decoderVersion).toBeDefined();
+    expect(
+      getTableColumns(importDecodedResources).decoderVersion,
+    ).toBeDefined();
     expect(getTableColumns(genericExtractionSchemas).schemaJson).toBeDefined();
   });
 
   it("is present in schema-contract at version 13+", () => {
     expect(contractJson.schemaVersion).toBeGreaterThanOrEqual(13);
-    expect(contractJson.tables.import_captures.columns.budget_json).toBeDefined();
+    expect(
+      contractJson.tables.import_captures.columns.budget_json,
+    ).toBeDefined();
     expect(
       contractJson.tables.generic_extraction_schemas.columns.schema_json,
     ).toBeDefined();

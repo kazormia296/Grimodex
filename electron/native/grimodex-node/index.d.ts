@@ -129,6 +129,12 @@ export declare class Backend {
    */
   saveSceneBodyBundle(payload: any): Promise<string>
   /**
+   * CI-only deterministic runtime fixture writer. The per-launch owner
+   * token makes the command fail closed outside the performance harness;
+   * the shared DB layer validates and commits the typed graph in one tx.
+   */
+  runtimePerformanceSeed(ownerToken: string, payload: any): Promise<string>
+  /**
    * Compact the active workspace in place. Unlike raw renderer SQL, this
    * command accepts no destination path and cannot become `VACUUM INTO`.
    */

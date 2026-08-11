@@ -87,8 +87,9 @@ export function PhaseResolutionPreview({
       {applicable && (
         <p className="text-[10px] text-muted-foreground">
           適用 Phase:{" "}
-          {applicable.applicablePhases.map((phase) => phase.label).join(" → ") ||
-            "(なし)"}
+          {applicable.applicablePhases
+            .map((phase) => phase.label)
+            .join(" → ") || "(なし)"}
         </p>
       )}
     </section>

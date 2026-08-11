@@ -25,18 +25,18 @@ describe("captureBudget", () => {
 
   it("rejects oversized text files", () => {
     expect(
-      captureBudgetFileViolation(
-        { size: MAX_IMPORT_TEXT_BYTES + 1 },
-        "text",
-      ),
+      captureBudgetFileViolation({ size: MAX_IMPORT_TEXT_BYTES + 1 }, "text"),
     ).toBe("file-too-large");
   });
 
   it("rejects folders exceeding file count", () => {
-    const files = Array.from({ length: MAX_IMPORT_FOLDER_FILES + 1 }, (_, i) => ({
-      size: 1,
-      webkitRelativePath: `a/${i}.txt`,
-    }));
+    const files = Array.from(
+      { length: MAX_IMPORT_FOLDER_FILES + 1 },
+      (_, i) => ({
+        size: 1,
+        webkitRelativePath: `a/${i}.txt`,
+      }),
+    );
     expect(captureBudgetFolderViolation(files)).toBe("too-many-files");
   });
 

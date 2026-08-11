@@ -14,7 +14,10 @@ import {
   GENERIC_ADAPTER_ID,
   GENERIC_ADAPTER_VERSION,
 } from "./sourcePackageBuilder";
-import { singleSegmentPartition, validateBoundaries } from "./documentPartition";
+import {
+  singleSegmentPartition,
+  validateBoundaries,
+} from "./documentPartition";
 
 const DESCRIPTOR = {
   id: GENERIC_ADAPTER_ID,
@@ -40,7 +43,9 @@ export interface GenericImportParseData {
   readonly text?: string;
 }
 
-function isGenericImportParseData(value: unknown): value is GenericImportParseData {
+function isGenericImportParseData(
+  value: unknown,
+): value is GenericImportParseData {
   return !!value && typeof value === "object";
 }
 
@@ -53,14 +58,16 @@ function pickDecoder(relativePath: string, bytes: Uint8Array) {
     }
   }
   for (const descriptor of decoders) {
-    if (descriptor.magicPrefixes?.some((prefix) => {
-      const encoded = new TextEncoder().encode(prefix);
-      if (bytes.length < encoded.length) return false;
-      for (let index = 0; index < encoded.length; index += 1) {
-        if (bytes[index] !== encoded[index]) return false;
-      }
-      return true;
-    })) {
+    if (
+      descriptor.magicPrefixes?.some((prefix) => {
+        const encoded = new TextEncoder().encode(prefix);
+        if (bytes.length < encoded.length) return false;
+        for (let index = 0; index < encoded.length; index += 1) {
+          if (bytes[index] !== encoded[index]) return false;
+        }
+        return true;
+      })
+    ) {
       return getImportDecoder(descriptor.id, descriptor.version);
     }
   }
@@ -197,7 +204,11 @@ export const genericImportAdapter: ImportAdapter = {
     });
 
     const validationDiagnostics = validateImportSourcePackageDraft(draft);
-    const allDiagnostics = [...diagnostics, ...draft.diagnostics, ...validationDiagnostics];
+    const allDiagnostics = [
+      ...diagnostics,
+      ...draft.diagnostics,
+      ...validationDiagnostics,
+    ];
 
     return {
       ok: allDiagnostics.every((d) => d.severity !== "error"),

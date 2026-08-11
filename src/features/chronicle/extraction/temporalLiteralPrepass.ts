@@ -65,9 +65,7 @@ export function runTemporalLiteralPrepass(
     const monthNum = Number(match[1]);
     const day = Number(match[2]);
     const monthName = calendar?.months[monthNum - 1]?.name;
-    const monthRef = monthName
-      ? monthNameToRef(calendar, monthName)
-      : null;
+    const monthRef = monthName ? monthNameToRef(calendar, monthName) : null;
     const expression: AbsoluteTemporalLiteral = {
       kind: "absolute",
       calendarRef: calendar?.calendarRef ?? null,
@@ -97,16 +95,13 @@ export function runTemporalLiteralPrepass(
       direction,
       amount: {
         min: atLeast && direction === "before" ? amount : amount,
-        max: atLeast && direction === "before" ? Number.MAX_SAFE_INTEGER : amount,
+        max:
+          atLeast && direction === "before" ? Number.MAX_SAFE_INTEGER : amount,
         unit,
       },
       anchorSurface: null,
       qualifier: atLeast ? "at-least" : "exact",
     };
-    // Cap absurd max for tests / serialization
-    if (expression.amount && expression.amount.max > 1_000_000) {
-      expression.amount.max; // keep as large
-    }
     push(surface, match.index ?? 0, {
       ...expression,
       amount: expression.amount

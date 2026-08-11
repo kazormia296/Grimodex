@@ -1,4 +1,7 @@
-import type { GenericImportResourceRole, ImportResourceDisposition } from "./resourceRole";
+import type {
+  GenericImportResourceRole,
+  ImportResourceDisposition,
+} from "./resourceRole";
 import type { ResourceRoleResolution } from "./roleClassifier";
 
 export interface GenericAssemblyScenePlan {
@@ -48,7 +51,8 @@ export function buildOneFileOneScenePlan(input: {
         resolution.role === "chat-log"
       ) {
         const fileName =
-          resolution.relativePath.split(/[\\/]/u).pop() ?? resolution.resourceKey;
+          resolution.relativePath.split(/[\\/]/u).pop() ??
+          resolution.resourceKey;
         const title = fileName.replace(/\.[^.]+$/u, "") || fileName;
         scenes.push({
           sceneKey: `scene:${resolution.resourceKey}`,

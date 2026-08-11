@@ -287,7 +287,12 @@ describe("DetailsSection", () => {
       "人間",
     );
 
-    expect(mockUpsert).toHaveBeenCalledWith("entry-1", "def-2", "人間", undefined);
+    expect(mockUpsert).toHaveBeenCalledWith(
+      "entry-1",
+      "def-2",
+      "人間",
+      undefined,
+    );
   });
 
   it("renders 🤖 icon for fields with includeInContext=1", async () => {
@@ -392,7 +397,9 @@ describe("DetailsSection", () => {
         await screen.findByTestId("detail-field-override-add-def-1"),
       );
 
-      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間", { baseVersion: 1 });
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間", {
+        baseVersion: 1,
+      });
     });
 
     it("keeps the legacy Phase writer plain when the Base seed is PM JSON", async () => {
@@ -416,7 +423,9 @@ describe("DetailsSection", () => {
         await screen.findByTestId("detail-field-override-add-def-1"),
       );
 
-      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間", { baseVersion: 1 });
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間", {
+        baseVersion: 1,
+      });
     });
 
     it("shows an inherited Phase value and seeds a new override from it", async () => {
@@ -443,7 +452,12 @@ describe("DetailsSection", () => {
       ).not.toBeInTheDocument();
 
       await user.click(screen.getByTestId("detail-field-override-add-def-1"));
-      expect(mockUpsertOverride).toHaveBeenCalledWith("ph2", "def-1", "吸血鬼", { baseVersion: 3 });
+      expect(mockUpsertOverride).toHaveBeenCalledWith(
+        "ph2",
+        "def-1",
+        "吸血鬼",
+        { baseVersion: 3 },
+      );
     });
 
     it("edits an existing phase override instead of the base value", async () => {
@@ -467,7 +481,9 @@ describe("DetailsSection", () => {
       fireEvent.change(input, { target: { value: "真祖" } });
       fireEvent.blur(input);
 
-      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "真祖", { baseVersion: 1 });
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "真祖", {
+        baseVersion: 1,
+      });
       expect(mockUpsert).not.toHaveBeenCalled();
     });
 
@@ -485,7 +501,9 @@ describe("DetailsSection", () => {
         await screen.findByTestId("detail-field-override-remove-def-1"),
       );
 
-      expect(mockDeleteOverride).toHaveBeenCalledWith("ph1", "def-1", { baseVersion: 1 });
+      expect(mockDeleteOverride).toHaveBeenCalledWith("ph1", "def-1", {
+        baseVersion: 1,
+      });
     });
 
     it("renders a dropdown override with the field options", async () => {
@@ -508,7 +526,9 @@ describe("DetailsSection", () => {
 
       fireEvent.change(select, { target: { value: "敵" } });
 
-      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-2", "敵", { baseVersion: 1 });
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-2", "敵", {
+        baseVersion: 1,
+      });
     });
 
     it("offers no override controls without an active phase", async () => {
@@ -569,7 +589,12 @@ describe("DetailsSection", () => {
       expect(picker.getAttribute("data-tabs")).toBe("codex");
       await user.click(screen.getByTestId("mock-palette-pick-same"));
 
-      expect(mockUpsert).toHaveBeenCalledWith("entry-1", "def-ref", "ref-9", undefined);
+      expect(mockUpsert).toHaveBeenCalledWith(
+        "entry-1",
+        "def-ref",
+        "ref-9",
+        undefined,
+      );
       expect(
         screen.queryByTestId("mock-pin-entry-dialog"),
       ).not.toBeInTheDocument();
@@ -605,7 +630,9 @@ describe("DetailsSection", () => {
 
       await user.click(screen.getByTestId("detail-field-ref-clear-def-ref"));
 
-      expect(mockUpsert).toHaveBeenCalledWith("entry-1", "def-ref", "", { baseVersion: 1 });
+      expect(mockUpsert).toHaveBeenCalledWith("entry-1", "def-ref", "", {
+        baseVersion: 1,
+      });
       expect(screen.queryByText("ボブ")).not.toBeInTheDocument();
     });
   });

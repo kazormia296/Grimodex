@@ -3,7 +3,9 @@ import type { ImportTargetSpec } from "../core/importTargetSpec";
 interface Props {
   readonly targetKind: "new-project" | "existing-project";
   readonly title: string;
-  readonly onTargetKindChange: (kind: "new-project" | "existing-project") => void;
+  readonly onTargetKindChange: (
+    kind: "new-project" | "existing-project",
+  ) => void;
   readonly onTitleChange: (title: string) => void;
 }
 
@@ -14,7 +16,10 @@ export function ImportTargetStep({
   onTitleChange,
 }: Props) {
   return (
-    <section className="flex flex-col gap-3" data-testid="import-wizard-target-step">
+    <section
+      className="flex flex-col gap-3"
+      data-testid="import-wizard-target-step"
+    >
       <div className="flex gap-2">
         <button
           type="button"

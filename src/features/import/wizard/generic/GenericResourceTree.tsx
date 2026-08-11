@@ -20,7 +20,10 @@ export function GenericResourceTree({
       data-testid="generic-import-resource-tree"
     >
       <p className="text-sm text-muted-foreground">
-        {t("import.generic.resourceTreeHint", "取り込み対象ファイルと推定ロール（プレビュー）。")}
+        {t(
+          "import.generic.resourceTreeHint",
+          "取り込み対象ファイルと推定ロール（プレビュー）。",
+        )}
       </p>
       <ul className="flex flex-col gap-1 text-xs">
         {resources.map((resource) => (

@@ -8,7 +8,10 @@ export function ImportStructureMappingStep({ nodes }: Props) {
   const roots = nodes.filter((n) => n.parentKey === null);
 
   return (
-    <section className="flex flex-col gap-2" data-testid="import-wizard-structure-step">
+    <section
+      className="flex flex-col gap-2"
+      data-testid="import-wizard-structure-step"
+    >
       <p className="text-xs text-muted-foreground">
         構造マッピング（プレビュー）— {nodes.length} ノード
       </p>
@@ -40,7 +43,11 @@ function StructureChildren({
       {children.map((child) => (
         <li key={child.key}>
           {child.title} ({child.kind})
-          <StructureChildren nodes={nodes} parentKey={child.key} depth={depth + 1} />
+          <StructureChildren
+            nodes={nodes}
+            parentKey={child.key}
+            depth={depth + 1}
+          />
         </li>
       ))}
     </ul>

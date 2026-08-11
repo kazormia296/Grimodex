@@ -45,7 +45,10 @@ export function DetailMappingPicker({
         >
           <option value="">選択してください</option>
           {candidates.map((candidate) => (
-            <option key={candidate.definitionRef} value={candidate.definitionRef}>
+            <option
+              key={candidate.definitionRef}
+              value={candidate.definitionRef}
+            >
               {candidate.label}
             </option>
           ))}
@@ -64,9 +67,7 @@ export function DetailMappingPicker({
         type="button"
         className="self-start rounded px-2 py-1 text-[10px] text-primary hover:bg-primary/10 disabled:opacity-40"
         disabled={!selected}
-        onClick={() =>
-          onBind?.(selected, { rememberBinding: remember })
-        }
+        onClick={() => onBind?.(selected, { rememberBinding: remember })}
         data-testid="detail-mapping-apply"
       >
         割当を確定

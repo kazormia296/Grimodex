@@ -9,7 +9,10 @@ import {
   type CodexBaseDetailReviewProposal,
   type CodexPhaseReviewProposal,
 } from "../codexStructureExtractionStore";
-import { EntityStateTimeline, groupStatePhaseTimeline } from "./EntityStateTimeline";
+import {
+  EntityStateTimeline,
+  groupStatePhaseTimeline,
+} from "./EntityStateTimeline";
 import { PhaseProposalCard } from "./PhaseProposalCard";
 
 function phaseReview(): CodexPhaseReviewProposal {
@@ -111,7 +114,9 @@ describe("PhaseProposalCard", () => {
         onDecide={(status) => decisions.push(status)}
       />,
     );
-    expect(screen.getByTestId("phase-proposal-card-phase-1")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("phase-proposal-card-phase-1"),
+    ).toBeInTheDocument();
     expect(screen.getByText("負傷後")).toBeInTheDocument();
     expect(screen.getByText(/anchor S0001/)).toBeInTheDocument();
     expect(screen.getByText(/右腕負傷/)).toBeInTheDocument();
@@ -125,13 +130,12 @@ describe("EntityStateTimeline", () => {
   it("renders Base + Phase rows per entity", () => {
     const entities = groupStatePhaseTimeline([baseReview()], [phaseReview()]);
     render(
-      <EntityStateTimeline
-        entities={entities}
-        selectedProposalId="phase-1"
-      />,
+      <EntityStateTimeline entities={entities} selectedProposalId="phase-1" />,
     );
     expect(screen.getByTestId("entity-state-timeline")).toBeInTheDocument();
-    expect(screen.getByTestId("entity-state-timeline-ne-1")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("entity-state-timeline-ne-1"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("timeline-base-base-1")).toBeInTheDocument();
     expect(screen.getByTestId("timeline-phase-phase-1")).toBeInTheDocument();
     expect(screen.getByText(/Base/)).toBeInTheDocument();

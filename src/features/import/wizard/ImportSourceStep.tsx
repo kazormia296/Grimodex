@@ -15,9 +15,15 @@ export function ImportSourceStep({
   const { t } = useTranslation();
 
   return (
-    <section className="flex flex-col gap-3" data-testid="import-wizard-source-step">
+    <section
+      className="flex flex-col gap-3"
+      data-testid="import-wizard-source-step"
+    >
       <p className="text-sm text-muted-foreground">
-        {t("import.wizard.sourceHint", "インポート元の形式を選びます（プレビュー）。")}
+        {t(
+          "import.wizard.sourceHint",
+          "インポート元の形式を選びます（プレビュー）。",
+        )}
       </p>
       <div className="flex flex-wrap gap-2">
         {adapters.map((adapter) => (

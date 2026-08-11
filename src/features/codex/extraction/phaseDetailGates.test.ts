@@ -17,9 +17,7 @@ import {
   toPhaseDetailWrite,
 } from "./detailValueComposer";
 import { planPhaseAndDetailProposals } from "./phaseProposalPlanner";
-import {
-  createNewBindCodexPhaseProposal,
-} from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
+import { createNewBindCodexPhaseProposal } from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
 import { createSetCodexBaseDetailProposal } from "@/features/narrative-extraction/proposals/setCodexBaseDetailProposal";
 import type { DetailDefinitionCatalogRecord } from "@/features/codex/details/detailDefinitionCatalog";
 import type { DetailProjectionHypothesis } from "@/features/narrative-extraction/ir/inferences/detailProjection";
@@ -31,7 +29,10 @@ const ASSERTION: NarrativeAssertionContext = {
 
 let seq = 0;
 function obs(
-  partial: Omit<StateAssertionObservation, "kind" | "evidence" | "assertion"> & {
+  partial: Omit<
+    StateAssertionObservation,
+    "kind" | "evidence" | "assertion"
+  > & {
     kind?: "state-assertion";
   },
 ): StateAssertionObservation {
@@ -44,7 +45,11 @@ function obs(
   };
 }
 
-function resolveLocal(ref: { kind: string; localId?: string; surface?: string }) {
+function resolveLocal(ref: {
+  kind: string;
+  localId?: string;
+  surface?: string;
+}) {
   if (ref.kind === "local" && ref.localId) return ref.localId;
   return null;
 }
@@ -396,9 +401,9 @@ describe("§37 State Track / Phase Gate / Detail Binding", () => {
       createId: () => `p${++seq}`,
     });
     expect(partial.baseDetailProposals).toHaveLength(1);
-    expect(partial.baseDetailProposals[0].proposal.payload.temporalEligibility).toBe(
-      "timeless",
-    );
+    expect(
+      partial.baseDetailProposals[0].proposal.payload.temporalEligibility,
+    ).toBe("timeless");
   });
 
   it("dropdown compose accepts opaque option refs only", () => {
@@ -438,12 +443,12 @@ describe("§37 State Track / Phase Gate / Detail Binding", () => {
   it("keeps clear ≠ inherit ≠ set distinct", () => {
     expect(toPhaseDetailWrite("clear", null)).toEqual({ kind: "clear" });
     expect(toPhaseDetailWrite("inherit", null)).toEqual({ kind: "inherit" });
-    expect(
-      toPhaseDetailWrite("set", { kind: "text", text: "監察官" }),
-    ).toEqual({
-      kind: "set",
-      value: { kind: "text", text: "監察官" },
-    });
+    expect(toPhaseDetailWrite("set", { kind: "text", text: "監察官" })).toEqual(
+      {
+        kind: "set",
+        value: { kind: "text", text: "監察官" },
+      },
+    );
     // clear value under set becomes clear write, never inherit
     expect(toPhaseDetailWrite("set", { kind: "clear" })).toEqual({
       kind: "clear",
@@ -474,11 +479,9 @@ describe("§37 State Track / Phase Gate / Detail Binding", () => {
     expect(proposal.payload.summaryOverride).toEqual({ kind: "leave" });
     expect(proposal.payload).not.toHaveProperty("contentOverride");
     expect(proposal.payload).not.toHaveProperty("contextModeOverride");
-    expect(proposal.payload.detailOverrides.map((item) => item.write.kind)).toEqual([
-      "set",
-      "clear",
-      "inherit",
-    ]);
+    expect(
+      proposal.payload.detailOverrides.map((item) => item.write.kind),
+    ).toEqual(["set", "clear", "inherit"]);
   });
 
   it("rejects clear values for Base Detail set proposals", () => {

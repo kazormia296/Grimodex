@@ -26,6 +26,9 @@ export function isSourceRecordEvidenceAnchor(
 
 export function isCorpusEvidenceAnchor(
   anchor: NarrativeEvidenceAnchor,
-): anchor is { readonly kind: "corpus"; readonly anchor: ResolvedEvidenceAnchor } {
+): anchor is {
+  readonly kind: "corpus";
+  readonly anchor: ResolvedEvidenceAnchor;
+} {
   return anchor.kind === "corpus";
 }

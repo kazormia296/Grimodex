@@ -20,7 +20,9 @@ export interface SynthesizeStateTracksOptions {
    */
   readonly aiEnrich?: (
     tracks: readonly StateTrackHypothesis[],
-  ) => Promise<readonly StateTrackHypothesis[]> | readonly StateTrackHypothesis[];
+  ) =>
+    | Promise<readonly StateTrackHypothesis[]>
+    | readonly StateTrackHypothesis[];
 }
 
 /**

@@ -45,7 +45,9 @@ function buildEmptyDocDraft(
   const title = parsed.title?.trim() || input.label || "Imported";
   const plainText = parsed.text ?? "";
   const nodeKey = "root-scene";
-  const fingerprint = sha256Hex(JSON.stringify({ title, length: plainText.length }));
+  const fingerprint = sha256Hex(
+    JSON.stringify({ title, length: plainText.length }),
+  );
 
   const draft: ImportSourcePackageDraft = {
     schemaVersion: IMPORT_SOURCE_PACKAGE_SCHEMA_VERSION,

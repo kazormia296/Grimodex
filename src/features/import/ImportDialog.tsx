@@ -170,85 +170,85 @@ export function ImportDialogBody({
         />
       ) : (
         <>
-      <div
-        className="flex shrink-0 flex-wrap gap-1"
-        role="tablist"
-        aria-label={t("import.sourceLabel")}
-      >
-        {SOURCES.map((s) => (
-          <button
-            key={s}
-            type="button"
-            role="tab"
-            aria-selected={source === s}
-            data-testid={`import-source-${s}`}
-            onClick={() => handleSourceChange(s)}
-            disabled={interactionLocked}
-            className={`rounded px-2 py-1 text-xs ${
-              source === s
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted text-muted-foreground hover:bg-accent"
-            }`}
+          <div
+            className="flex shrink-0 flex-wrap gap-1"
+            role="tablist"
+            aria-label={t("import.sourceLabel")}
           >
-            {sourceLabel(s)}
-          </button>
-        ))}
-      </div>
+            {SOURCES.map((s) => (
+              <button
+                key={s}
+                type="button"
+                role="tab"
+                aria-selected={source === s}
+                data-testid={`import-source-${s}`}
+                onClick={() => handleSourceChange(s)}
+                disabled={interactionLocked}
+                className={`rounded px-2 py-1 text-xs ${
+                  source === s
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                {sourceLabel(s)}
+              </button>
+            ))}
+          </div>
 
-      {source !== "scan" && (
-        <ImportTargetPanel
-          importTarget={importTarget}
-          onImportTargetChange={setImportTarget}
-          disabled={interactionLocked}
-        />
-      )}
+          {source !== "scan" && (
+            <ImportTargetPanel
+              importTarget={importTarget}
+              onImportTargetChange={setImportTarget}
+              disabled={interactionLocked}
+            />
+          )}
 
-      <div
-        key={flowKey}
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
-      >
-        {source === "novelcrafter" && (
-          <NovelcrafterImportFlow
-            importTarget={importTarget}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "kakuyomu" && (
-          <KakuyomuImportFlow
-            importTarget={importTarget}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "markdown" && (
-          <MarkdownImportFlow
-            importTarget={importTarget}
-            markdownMode={markdownMode}
-            onMarkdownModeChange={setMarkdownMode}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "novel" && (
-          <NovelImportFlow
-            importTarget={importTarget}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "scan" && (
-          <ScanImportFlow
-            onClose={handleClose}
-            onComplete={handleImportComplete}
-            onBusyChange={handleBusyChange}
-          />
-        )}
-      </div>
+          <div
+            key={flowKey}
+            className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
+          >
+            {source === "novelcrafter" && (
+              <NovelcrafterImportFlow
+                importTarget={importTarget}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "kakuyomu" && (
+              <KakuyomuImportFlow
+                importTarget={importTarget}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "markdown" && (
+              <MarkdownImportFlow
+                importTarget={importTarget}
+                markdownMode={markdownMode}
+                onMarkdownModeChange={setMarkdownMode}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "novel" && (
+              <NovelImportFlow
+                importTarget={importTarget}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "scan" && (
+              <ScanImportFlow
+                onClose={handleClose}
+                onComplete={handleImportComplete}
+                onBusyChange={handleBusyChange}
+              />
+            )}
+          </div>
         </>
       )}
     </div>

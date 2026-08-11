@@ -64,7 +64,9 @@ describe("scanImportAdapter", () => {
     expect(result.draft?.nodes).toHaveLength(1);
     expect(result.draft?.documents).toHaveLength(1);
     expect(result.draft?.structure.codexEntries).toHaveLength(1);
-    expect(result.draft?.structure.codexEntries[0]?.origin).toBe("external-analysis");
+    expect(result.draft?.structure.codexEntries[0]?.origin).toBe(
+      "external-analysis",
+    );
     expect(result.draft?.identity.fingerprint).toBe("scan-fp-1");
   });
 

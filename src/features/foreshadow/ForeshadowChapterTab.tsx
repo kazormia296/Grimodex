@@ -75,10 +75,7 @@ export function ForeshadowChapterTab() {
           className="flex w-full items-center justify-center gap-1 rounded border border-dashed border-border px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Sparkles className="h-3 w-3" />
-          {t(
-            "foreshadow.reviewExtract.open",
-            "伏線候補レビュー（プレビュー）",
-          )}
+          {t("foreshadow.reviewExtract.open", "伏線候補レビュー（プレビュー）")}
         </button>
       </div>
 
@@ -202,10 +199,7 @@ export function ForeshadowChapterTab() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              {t(
-                "foreshadow.reviewExtract.title",
-                "伏線候補レビュー",
-              )}
+              {t("foreshadow.reviewExtract.title", "伏線候補レビュー")}
             </DialogTitle>
           </DialogHeader>
           <ForeshadowExtractionReview proposals={[]} />

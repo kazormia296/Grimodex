@@ -3071,6 +3071,771 @@ export async function createBrowserMock(
     return String(value);
   }
 
+  const BROWSER_CODEX_SUMMARY_LANE_MODEL = "__lane_summary__";
+  const BROWSER_CODEX_CONTENT_LANE_MODEL = "__lane_content__";
+
+  interface BrowserCodexAuthorshipSpanSnapshot {
+    fromPos: number;
+    toPos: number;
+    source: string;
+    model: string | null;
+    chatMsgId: string | null;
+    traceId: string | null;
+  }
+
+  interface BrowserCodexEntrySnapshot {
+    id: string;
+    projectId: string;
+    type: string;
+    name: string;
+    aliases: string | null;
+    excludedAliases: string | null;
+    readings: string | null;
+    tagsCache: string | null;
+    summary: string | null;
+    content: string;
+    parentId: string | null;
+    icon: string | null;
+    contextMode: string;
+    childrenBudget: string;
+    sourceChatMessageId: string | null;
+    notes: string | null;
+    createdAt: string;
+    version: number;
+    authorshipSpans: BrowserCodexAuthorshipSpanSnapshot[];
+  }
+
+  interface BrowserCodexWriteResult extends Record<string, unknown> {
+    entityId: string;
+    version: number;
+    changeEventUid: string;
+    undoJournalId: string;
+  }
+
+  const BROWSER_CODEX_CREATE_IDEMPOTENCY_DOMAIN = "agent_codex_create";
+  const BROWSER_CODEX_CREATE_IDEMPOTENCY_CONFLICT =
+    "AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT";
+
+  function browserCodexCreateConflict(detail: string): never {
+    throw new Error(`${BROWSER_CODEX_CREATE_IDEMPOTENCY_CONFLICT}: ${detail}`);
+  }
+
+  function normalizeBrowserCodexContentForIdempotency(raw: string): string {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      return raw;
+    }
+
+    const stripVolatileAuthorshipTimestamp = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(stripVolatileAuthorshipTimestamp);
+        return;
+      }
+      if (!isRecord(value)) return;
+      if (value.type === "authorship" && isRecord(value.attrs)) {
+        delete value.attrs.timestamp;
+      }
+      Object.values(value).forEach(stripVolatileAuthorshipTimestamp);
+    };
+    stripVolatileAuthorshipTimestamp(parsed);
+    return JSON.stringify(canonicalizeAiAuditJson(parsed));
+  }
+
+  function browserCodexCreateFingerprintPayload(
+    payload: Record<string, unknown>,
+    authorshipSpans: BrowserCodexAuthorshipSpanSnapshot[],
+  ): Record<string, unknown> {
+    const optionalString = (value: unknown): string | null =>
+      value == null ? null : String(value);
+    return {
+      requestId: null,
+      entryId: null,
+      projectId: String(payload.projectId),
+      sessionId: "",
+      surface: optionalString(payload.surface),
+      typeSlug: String(payload.typeSlug),
+      name: String(payload.name),
+      summary: payload.summary == null ? "" : String(payload.summary),
+      content: normalizeBrowserCodexContentForIdempotency(
+        payload.content == null ? "{}" : String(payload.content),
+      ),
+      aliases: optionalString(payload.aliases),
+      excludedAliases: optionalString(payload.excludedAliases),
+      readings: optionalString(payload.readings),
+      tagsCache: optionalString(payload.tagsCache),
+      parentId: optionalString(payload.parentId),
+      sourceChatMessageId: optionalString(payload.sourceChatMessageId),
+      model: optionalString(payload.model),
+      chatMessageId: optionalString(payload.chatMessageId),
+      traceId: optionalString(payload.traceId),
+      authorshipSpans,
+    };
+  }
+
+  function parseBrowserCodexCreateResult(
+    raw: SqlValue,
+  ): BrowserCodexWriteResult {
+    try {
+      if (typeof raw !== "string") {
+        browserCodexCreateConflict("original result is missing");
+      }
+      const result = JSON.parse(raw) as Partial<BrowserCodexWriteResult>;
+      if (
+        typeof result.entityId !== "string" ||
+        !Number.isSafeInteger(result.version) ||
+        typeof result.changeEventUid !== "string" ||
+        typeof result.undoJournalId !== "string"
+      ) {
+        browserCodexCreateConflict("original result is incomplete");
+      }
+      return result as BrowserCodexWriteResult;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith(BROWSER_CODEX_CREATE_IDEMPOTENCY_CONFLICT)
+      ) {
+        throw error;
+      }
+      return browserCodexCreateConflict("original result is invalid");
+    }
+  }
+
+  function browserCodexNullableString(value: SqlValue): string | null {
+    return value == null ? null : String(value);
+  }
+
+  function browserCodexOptionalPayloadString(
+    value: unknown,
+    label: string,
+  ): string | null {
+    if (value == null) return null;
+    if (typeof value !== "string") {
+      throw new Error(`${label} must be a string or null`);
+    }
+    return value;
+  }
+
+  function browserCodexRequiredPayloadString(
+    payload: Record<string, unknown>,
+    key: string,
+  ): string {
+    const value = payload[key];
+    if (typeof value !== "string") {
+      throw new Error(`${key} must be a string`);
+    }
+    return value;
+  }
+
+  function browserCodexRequiredNonEmptyPayloadString(
+    payload: Record<string, unknown>,
+    key: string,
+  ): string {
+    const value = payload[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`${key} is required`);
+    }
+    return value;
+  }
+
+  function browserCodexRequiredPayloadInteger(
+    payload: Record<string, unknown>,
+    key: string,
+  ): number {
+    const value = payload[key];
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+      throw new Error(`${key} must be an integer`);
+    }
+    return value;
+  }
+
+  function browserCodexOptionalPayloadNumber(
+    payload: Record<string, unknown>,
+    key: string,
+  ): number | null {
+    const value = payload[key];
+    if (value == null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error(`${key} must be a number or null`);
+    }
+    return value;
+  }
+
+  function browserCodexOptionalPayloadBoolInt(
+    payload: Record<string, unknown>,
+    key: string,
+  ): number | null {
+    const value = payload[key];
+    if (value == null) return null;
+    if (typeof value === "boolean") return value ? 1 : 0;
+    if (value === 0 || value === 1) return value;
+    throw new Error(`${key} must be a boolean or 0/1`);
+  }
+
+  function loadBrowserCodexAuthorshipSpans(
+    entryId: string,
+  ): BrowserCodexAuthorshipSpanSnapshot[] {
+    return queryAll(
+      `SELECT from_pos, to_pos, source, model, chat_msg_id, trace_id
+         FROM authorship_spans
+        WHERE codex_entry_id = ?
+        ORDER BY from_pos, to_pos, source, coalesce(model, ''),
+                 coalesce(chat_msg_id, ''), coalesce(trace_id, ''), id`,
+      [entryId],
+    ).map((row) => ({
+      fromPos: Number(row.from_pos),
+      toPos: Number(row.to_pos),
+      source: String(row.source),
+      model: browserCodexNullableString(row.model),
+      chatMsgId: browserCodexNullableString(row.chat_msg_id),
+      traceId: browserCodexNullableString(row.trace_id),
+    }));
+  }
+
+  function parseBrowserCodexAuthorshipSpans(
+    raw: unknown,
+    context: string,
+  ): BrowserCodexAuthorshipSpanSnapshot[] {
+    if (!Array.isArray(raw)) {
+      throw new Error(`${context} authorshipSpans must be an array`);
+    }
+    const forbiddenOwnerKeys = [
+      "id",
+      "projectId",
+      "nodeId",
+      "codexEntryId",
+      "codex_entry_id",
+      "snippetId",
+      "detailValueId",
+      "phaseId",
+      "stickyId",
+    ];
+    return raw.map((item, index) => {
+      if (!isRecord(item)) {
+        throw new Error(`${context} authorship span ${index} is invalid`);
+      }
+      if (forbiddenOwnerKeys.some((key) => Object.hasOwn(item, key))) {
+        throw new Error(
+          `${context} authorship span ${index} must not declare an owner`,
+        );
+      }
+      const fromPos = item.fromPos;
+      const toPos = item.toPos;
+      const source = item.source;
+      if (
+        !Number.isSafeInteger(fromPos) ||
+        !Number.isSafeInteger(toPos) ||
+        (source !== "human" && source !== "ai" && source !== "unknown")
+      ) {
+        throw new Error(`${context} authorship span ${index} is invalid`);
+      }
+      const optionalString = (key: string): string | null => {
+        const value = item[key];
+        if (value == null) return null;
+        if (typeof value !== "string") {
+          throw new Error(
+            `${context} authorship span ${index}.${key} must be a string or null`,
+          );
+        }
+        return value;
+      };
+      return {
+        fromPos: Number(fromPos),
+        toPos: Number(toPos),
+        source,
+        model: optionalString("model"),
+        chatMsgId: optionalString("chatMsgId"),
+        traceId: optionalString("traceId"),
+      };
+    });
+  }
+
+  function parseBrowserCodexAuthorshipSpanLanes(
+    raw: unknown,
+  ): Array<string | null> | null {
+    if (raw == null) return null;
+    if (!Array.isArray(raw)) {
+      throw new Error("authorshipSpanLanes must be an array or null");
+    }
+    return raw.map((lane, index) => {
+      if (lane == null) return null;
+      if (typeof lane !== "string") {
+        throw new Error(
+          `authorshipSpanLanes[${index}] must be a string or null`,
+        );
+      }
+      return lane;
+    });
+  }
+
+  function mergeBrowserCodexAuthorshipSpans(input: {
+    entryId: string;
+    spans: BrowserCodexAuthorshipSpanSnapshot[];
+    lanes: Array<string | null> | null;
+    updateSummary: boolean;
+    updateContent: boolean;
+    model: string | null;
+    chatMsgId: string | null;
+    traceId: string | null;
+    now: string;
+  }): void {
+    if (input.updateSummary && input.updateContent) {
+      db.run("DELETE FROM authorship_spans WHERE codex_entry_id = ?", [
+        input.entryId,
+      ]);
+    } else if (input.updateSummary) {
+      db.run(
+        "DELETE FROM authorship_spans WHERE codex_entry_id = ? AND model = ?",
+        [input.entryId, BROWSER_CODEX_SUMMARY_LANE_MODEL],
+      );
+    } else if (input.updateContent) {
+      db.run(
+        "DELETE FROM authorship_spans WHERE codex_entry_id = ? AND model = ?",
+        [input.entryId, BROWSER_CODEX_CONTENT_LANE_MODEL],
+      );
+    }
+    input.spans.forEach((span, index) => {
+      const lane = input.lanes?.[index] ?? null;
+      const model =
+        lane === "summary"
+          ? BROWSER_CODEX_SUMMARY_LANE_MODEL
+          : lane === "content"
+            ? BROWSER_CODEX_CONTENT_LANE_MODEL
+            : (span.model ?? input.model);
+      db.run(
+        `INSERT INTO authorship_spans
+          (id, codex_entry_id, from_pos, to_pos, source, model,
+           chat_msg_id, trace_id, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          crypto.randomUUID(),
+          input.entryId,
+          span.fromPos,
+          span.toPos,
+          span.source,
+          model,
+          span.chatMsgId ?? input.chatMsgId,
+          span.traceId ?? input.traceId,
+          input.now,
+        ],
+      );
+      if (db.getRowsModified() !== 1) {
+        throw new Error(
+          `authorship span ${index} for codex entry '${input.entryId}' was not persisted`,
+        );
+      }
+    });
+  }
+
+  function restoreBrowserCodexAuthorshipSpans(
+    entryId: string,
+    spans: BrowserCodexAuthorshipSpanSnapshot[],
+    now: string,
+  ): void {
+    db.run("DELETE FROM authorship_spans WHERE codex_entry_id = ?", [entryId]);
+    mergeBrowserCodexAuthorshipSpans({
+      entryId,
+      spans,
+      lanes: null,
+      updateSummary: false,
+      updateContent: false,
+      model: null,
+      chatMsgId: null,
+      traceId: null,
+      now,
+    });
+  }
+
+  function loadBrowserCodexEntrySnapshot(
+    entryId: string,
+    projectId: string,
+  ): BrowserCodexEntrySnapshot | null {
+    const row = queryOne(
+      `SELECT id, project_id, type, name, aliases, excluded_aliases, readings,
+              tags_cache, summary, content, parent_id, icon, context_mode,
+              children_budget, source_chat_message_id, notes, created_at, version
+         FROM codex_entries
+        WHERE id = ? AND project_id = ?`,
+      [entryId, projectId],
+    );
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      projectId: String(row.project_id),
+      type: String(row.type),
+      name: String(row.name),
+      aliases: browserCodexNullableString(row.aliases),
+      excludedAliases: browserCodexNullableString(row.excluded_aliases),
+      readings: browserCodexNullableString(row.readings),
+      tagsCache: browserCodexNullableString(row.tags_cache),
+      summary: browserCodexNullableString(row.summary),
+      content: String(row.content),
+      parentId: browserCodexNullableString(row.parent_id),
+      icon: browserCodexNullableString(row.icon),
+      contextMode: String(row.context_mode),
+      childrenBudget: String(row.children_budget),
+      sourceChatMessageId: browserCodexNullableString(
+        row.source_chat_message_id,
+      ),
+      notes: browserCodexNullableString(row.notes),
+      createdAt: String(row.created_at),
+      version: Number(row.version),
+      authorshipSpans: loadBrowserCodexAuthorshipSpans(entryId),
+    };
+  }
+
+  function parseBrowserCodexEntrySnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserCodexEntrySnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `codex undo journal '${journalId}' is missing a snapshot`,
+      );
+    }
+    const parsed = JSON.parse(raw) as Partial<BrowserCodexEntrySnapshot>;
+    if (
+      typeof parsed.id !== "string" ||
+      typeof parsed.projectId !== "string" ||
+      typeof parsed.type !== "string" ||
+      typeof parsed.name !== "string" ||
+      typeof parsed.content !== "string" ||
+      typeof parsed.contextMode !== "string" ||
+      typeof parsed.childrenBudget !== "string" ||
+      typeof parsed.createdAt !== "string" ||
+      !Number.isSafeInteger(parsed.version) ||
+      !Array.isArray(parsed.authorshipSpans)
+    ) {
+      throw new Error(
+        `codex undo journal '${journalId}' has an invalid snapshot`,
+      );
+    }
+    parsed.authorshipSpans = parseBrowserCodexAuthorshipSpans(
+      parsed.authorshipSpans,
+      `codex undo journal '${journalId}' snapshot`,
+    );
+    return parsed as BrowserCodexEntrySnapshot;
+  }
+
+  function assertBrowserCodexSnapshotIdentity(
+    snapshot: BrowserCodexEntrySnapshot,
+    projectId: string,
+    entryId: string,
+    journalId: string,
+  ): void {
+    if (snapshot.projectId !== projectId || snapshot.id !== entryId) {
+      throw new Error(`codex undo journal '${journalId}' identity mismatch`);
+    }
+  }
+
+  function assertBrowserCodexEntryReferences(
+    projectId: string,
+    entryId: string,
+    typeSlug: string,
+    parentId: string | null,
+  ): void {
+    if (
+      !queryOne(
+        "SELECT 1 AS owned FROM codex_types WHERE project_id = ? AND slug = ?",
+        [projectId, typeSlug],
+      )
+    ) {
+      throw new Error(
+        `codex type '${typeSlug}' is not in project '${projectId}'`,
+      );
+    }
+    if (parentId === null) return;
+    if (parentId === entryId) {
+      throw new Error(`codex entry '${entryId}' cannot be its own parent`);
+    }
+    if (
+      !queryOne(
+        "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+        [parentId, projectId],
+      )
+    ) {
+      throw new Error(
+        `codex parent '${parentId}' is not in project '${projectId}'`,
+      );
+    }
+  }
+
+  function insertBrowserCodexEntrySnapshot(
+    snapshot: BrowserCodexEntrySnapshot,
+    targetVersion: number,
+    now: string,
+  ): void {
+    assertBrowserCodexEntryReferences(
+      snapshot.projectId,
+      snapshot.id,
+      snapshot.type,
+      snapshot.parentId,
+    );
+    db.run(
+      `INSERT INTO codex_entries
+        (id, project_id, type, name, aliases, excluded_aliases, readings,
+         tags_cache, summary, content, parent_id, icon, context_mode,
+         children_budget, source_chat_message_id, notes, version,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        snapshot.id,
+        snapshot.projectId,
+        snapshot.type,
+        snapshot.name,
+        snapshot.aliases,
+        snapshot.excludedAliases,
+        snapshot.readings,
+        snapshot.tagsCache,
+        snapshot.summary,
+        snapshot.content,
+        snapshot.parentId,
+        snapshot.icon,
+        snapshot.contextMode,
+        snapshot.childrenBudget,
+        snapshot.sourceChatMessageId,
+        snapshot.notes,
+        targetVersion,
+        snapshot.createdAt,
+        now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`codex entry '${snapshot.id}' was not restored`);
+    }
+    restoreBrowserCodexAuthorshipSpans(
+      snapshot.id,
+      snapshot.authorshipSpans,
+      now,
+    );
+  }
+
+  function restoreBrowserCodexEntrySnapshot(
+    snapshot: BrowserCodexEntrySnapshot,
+    expectedVersion: number,
+    targetVersion: number,
+    now: string,
+  ): void {
+    assertBrowserCodexEntryReferences(
+      snapshot.projectId,
+      snapshot.id,
+      snapshot.type,
+      snapshot.parentId,
+    );
+    db.run(
+      `UPDATE codex_entries
+          SET type = ?, name = ?, aliases = ?, excluded_aliases = ?,
+              readings = ?, tags_cache = ?, summary = ?, content = ?,
+              parent_id = ?, icon = ?, context_mode = ?, children_budget = ?,
+              source_chat_message_id = ?, notes = ?, version = ?, updated_at = ?
+        WHERE id = ? AND project_id = ? AND version = ?`,
+      [
+        snapshot.type,
+        snapshot.name,
+        snapshot.aliases,
+        snapshot.excludedAliases,
+        snapshot.readings,
+        snapshot.tagsCache,
+        snapshot.summary,
+        snapshot.content,
+        snapshot.parentId,
+        snapshot.icon,
+        snapshot.contextMode,
+        snapshot.childrenBudget,
+        snapshot.sourceChatMessageId,
+        snapshot.notes,
+        targetVersion,
+        now,
+        snapshot.id,
+        snapshot.projectId,
+        expectedVersion,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `codex entry '${snapshot.id}' version conflict during undo replay`,
+      );
+    }
+    restoreBrowserCodexAuthorshipSpans(
+      snapshot.id,
+      snapshot.authorshipSpans,
+      now,
+    );
+  }
+
+  function rewriteBrowserCodexJournalStateToken(
+    projectId: string,
+    entryId: string,
+    previousVersion: number,
+    replayVersion: number,
+  ): void {
+    db.run(
+      `UPDATE undo_journal
+          SET base_version = CASE
+                WHEN base_version = ? THEN ? ELSE base_version END,
+              result_version = CASE
+                WHEN result_version = ? THEN ? ELSE result_version END
+        WHERE project_id = ? AND entity_kind = 'codex_entry' AND entity_id = ?
+          AND (base_version = ? OR result_version = ?)`,
+      [
+        previousVersion,
+        replayVersion,
+        previousVersion,
+        replayVersion,
+        projectId,
+        entryId,
+        previousVersion,
+        previousVersion,
+      ],
+    );
+    if (db.getRowsModified() === 0) {
+      throw new Error(
+        `codex undo journal chain for '${entryId}' lost state version ${previousVersion}`,
+      );
+    }
+  }
+
+  function insertBrowserCodexUndoJournal(input: {
+    id: string;
+    projectId: string;
+    surface: string;
+    entryId: string;
+    opKind: "create" | "update" | "delete";
+    before: BrowserCodexEntrySnapshot | null;
+    after: BrowserCodexEntrySnapshot | null;
+    baseVersion: number;
+    resultVersion: number;
+    changeEventUid: string;
+    now: string;
+  }): void {
+    db.run(
+      `INSERT INTO undo_journal
+        (id, project_id, surface, entity_kind, entity_id, op_kind,
+         before_json, after_json, base_version, result_version,
+         change_event_uid, created_at)
+       VALUES (?, ?, ?, 'codex_entry', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.projectId,
+        input.surface,
+        input.entryId,
+        input.opKind,
+        input.before === null ? null : JSON.stringify(input.before),
+        input.after === null ? null : JSON.stringify(input.after),
+        input.baseVersion,
+        input.resultVersion,
+        input.changeEventUid,
+        input.now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`codex undo journal '${input.id}' was not persisted`);
+    }
+  }
+
+  function loadBrowserCodexCreateReplayResult(input: {
+    requestId: string;
+    projectId: string;
+    requestHash: string;
+  }): BrowserCodexWriteResult | null {
+    const ledger = queryOne(
+      `SELECT project_id, payload_hash, tombstone_json
+         FROM idempotency_requests
+        WHERE domain = ? AND request_id = ?`,
+      [BROWSER_CODEX_CREATE_IDEMPOTENCY_DOMAIN, input.requestId],
+    );
+    if (!ledger) return null;
+    if (
+      String(ledger.project_id) !== input.projectId ||
+      String(ledger.payload_hash) !== input.requestHash
+    ) {
+      return browserCodexCreateConflict(
+        "request id reused with different payload or project",
+      );
+    }
+
+    const result = parseBrowserCodexCreateResult(ledger.tombstone_json);
+    if (result.undoJournalId !== input.requestId) {
+      return browserCodexCreateConflict("original result identity is invalid");
+    }
+    const journal = queryOne(
+      `SELECT journal.entity_id, journal.op_kind, journal.before_json,
+              journal.after_json, journal.base_version,
+              journal.result_version, journal.change_event_uid,
+              event.event_uid AS persisted_event_uid,
+              event.entity_type AS event_entity_type,
+              event.entity_id AS event_entity_id,
+              event.op_type AS event_op_type,
+              event.payload AS event_payload
+         FROM undo_journal journal
+         LEFT JOIN change_events event
+           ON event.project_id = journal.project_id
+          AND event.event_uid = journal.change_event_uid
+        WHERE journal.id = ? AND journal.project_id = ?
+          AND journal.entity_kind = 'codex_entry'`,
+      [result.undoJournalId, input.projectId],
+    );
+    if (
+      !journal ||
+      String(journal.entity_id) !== result.entityId ||
+      journal.op_kind !== "create" ||
+      journal.before_json !== null ||
+      Number(journal.base_version) !== 0 ||
+      !Number.isSafeInteger(Number(journal.result_version)) ||
+      journal.change_event_uid !== result.changeEventUid ||
+      journal.persisted_event_uid !== result.changeEventUid ||
+      journal.event_entity_type !== "codex_entry" ||
+      journal.event_entity_id !== result.entityId ||
+      journal.event_op_type !== "entry.create"
+    ) {
+      return browserCodexCreateConflict("original result is missing");
+    }
+
+    try {
+      const eventPayload = JSON.parse(String(journal.event_payload)) as unknown;
+      if (
+        !isRecord(eventPayload) ||
+        eventPayload.requestHash !== input.requestHash
+      ) {
+        return browserCodexCreateConflict(
+          "original change event does not match the request",
+        );
+      }
+      const after = parseBrowserCodexEntrySnapshot(
+        journal.after_json,
+        result.undoJournalId,
+      );
+      assertBrowserCodexSnapshotIdentity(
+        after,
+        input.projectId,
+        result.entityId,
+        result.undoJournalId,
+      );
+      if (after.version !== result.version) {
+        return browserCodexCreateConflict(
+          "original snapshot does not match the persisted result",
+        );
+      }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith(BROWSER_CODEX_CREATE_IDEMPOTENCY_CONFLICT)
+      ) {
+        throw error;
+      }
+      return browserCodexCreateConflict(
+        "committed post-state or change event is invalid",
+      );
+    }
+    return {
+      entityId: result.entityId,
+      version: Number(journal.result_version),
+      changeEventUid: result.changeEventUid,
+      undoJournalId: result.undoJournalId,
+    };
+  }
+
   interface BrowserPhaseDetailOverrideSnapshot {
     definitionId: string;
     value: string | null;
@@ -3457,6 +4222,7 @@ export async function createBrowserMock(
         throw new Error(`undo journal '${journalId}' not found`);
       }
       if (
+        journal.entity_kind !== "codex_entry" &&
         journal.entity_kind !== "codex_phase" &&
         journal.entity_kind !== "foreshadow" &&
         journal.entity_kind !== "event"
@@ -3465,6 +4231,7 @@ export async function createBrowserMock(
           `browser undo does not support entity kind '${String(journal.entity_kind)}'`,
         );
       }
+      const isCodexEntry = journal.entity_kind === "codex_entry";
       const isPhase = journal.entity_kind === "codex_phase";
       const isSceneEventBatch = journal.entity_kind === "event";
       const sceneEventSnapshot = isSceneEventBatch
@@ -3473,34 +4240,51 @@ export async function createBrowserMock(
             journalId,
           )
         : null;
-      const opType = isPhase
-        ? "phase.update"
-        : isSceneEventBatch
+      const opType = isCodexEntry
+        ? journal.op_kind === "create"
           ? direction === "undo"
-            ? "event.unstamp"
-            : "event.stamp"
-          : journal.op_kind === "create"
+            ? "entry.delete"
+            : "entry.create"
+          : journal.op_kind === "delete"
             ? direction === "undo"
-              ? "foreshadow.delete"
-              : "foreshadow.create"
-            : journal.op_kind === "delete"
+              ? "entry.create"
+              : "entry.delete"
+            : "entry.update"
+        : isPhase
+          ? "phase.update"
+          : isSceneEventBatch
+            ? direction === "undo"
+              ? "event.unstamp"
+              : "event.stamp"
+            : journal.op_kind === "create"
               ? direction === "undo"
-                ? "foreshadow.create"
-                : "foreshadow.delete"
-              : "foreshadow.update";
+                ? "foreshadow.delete"
+                : "foreshadow.create"
+              : journal.op_kind === "delete"
+                ? direction === "undo"
+                  ? "foreshadow.create"
+                  : "foreshadow.delete"
+                : "foreshadow.update";
       const eventUid = crypto.randomUUID();
       const timestamp = Date.now();
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
         projectId,
         sceneId: null,
-        domain: isPhase ? "codex" : isSceneEventBatch ? "event" : "foreshadow",
+        domain:
+          isCodexEntry || isPhase
+            ? "codex"
+            : isSceneEventBatch
+              ? "event"
+              : "foreshadow",
         opType,
-        entityType: isPhase
-          ? "phase"
-          : isSceneEventBatch
-            ? "event"
-            : "foreshadow",
+        entityType: isCodexEntry
+          ? "codex_entry"
+          : isPhase
+            ? "phase"
+            : isSceneEventBatch
+              ? "event"
+              : "foreshadow",
         entityId: String(journal.entity_id),
         payload: JSON.stringify({
           direction,
@@ -3546,7 +4330,128 @@ export async function createBrowserMock(
         if (!currentJournal) {
           throw new Error(`undo journal '${journalId}' disappeared`);
         }
-        if (currentJournal.entity_kind === "codex_phase") {
+        if (currentJournal.entity_kind === "codex_entry") {
+          const opKind = String(currentJournal.op_kind);
+          const entryId = String(currentJournal.entity_id);
+          if (opKind === "create") {
+            const snapshot = parseBrowserCodexEntrySnapshot(
+              currentJournal.after_json,
+              journalId,
+            );
+            assertBrowserCodexSnapshotIdentity(
+              snapshot,
+              projectId,
+              entryId,
+              journalId,
+            );
+            if (direction === "undo") {
+              const expectedVersion = Number(currentJournal.result_version);
+              db.run(
+                `DELETE FROM codex_entries
+                  WHERE id = ? AND project_id = ? AND version = ?`,
+                [entryId, projectId, expectedVersion],
+              );
+              if (db.getRowsModified() !== 1) {
+                throw new Error(
+                  `codex entry '${entryId}' version conflict during undo replay`,
+                );
+              }
+            } else {
+              const previousVersion = Number(currentJournal.result_version);
+              const replayVersion = previousVersion + 1;
+              if (!Number.isSafeInteger(replayVersion)) {
+                throw new Error("codex version overflow during redo create");
+              }
+              insertBrowserCodexEntrySnapshot(snapshot, replayVersion, now);
+              rewriteBrowserCodexJournalStateToken(
+                projectId,
+                entryId,
+                previousVersion,
+                replayVersion,
+              );
+            }
+          } else if (opKind === "update") {
+            const snapshot = parseBrowserCodexEntrySnapshot(
+              direction === "undo"
+                ? currentJournal.before_json
+                : currentJournal.after_json,
+              journalId,
+            );
+            assertBrowserCodexSnapshotIdentity(
+              snapshot,
+              projectId,
+              entryId,
+              journalId,
+            );
+            const expectedVersion = Number(
+              direction === "undo"
+                ? currentJournal.result_version
+                : currentJournal.base_version,
+            );
+            const previousTargetVersion = Number(
+              direction === "undo"
+                ? currentJournal.base_version
+                : currentJournal.result_version,
+            );
+            const replayVersion = expectedVersion + 1;
+            if (!Number.isSafeInteger(replayVersion)) {
+              throw new Error(`codex version overflow during ${direction}`);
+            }
+            restoreBrowserCodexEntrySnapshot(
+              snapshot,
+              expectedVersion,
+              replayVersion,
+              now,
+            );
+            rewriteBrowserCodexJournalStateToken(
+              projectId,
+              entryId,
+              previousTargetVersion,
+              replayVersion,
+            );
+          } else if (opKind === "delete") {
+            const snapshot = parseBrowserCodexEntrySnapshot(
+              currentJournal.before_json,
+              journalId,
+            );
+            assertBrowserCodexSnapshotIdentity(
+              snapshot,
+              projectId,
+              entryId,
+              journalId,
+            );
+            if (direction === "undo") {
+              const previousVersion = Number(currentJournal.base_version);
+              const replayVersion = previousVersion + 1;
+              if (!Number.isSafeInteger(replayVersion)) {
+                throw new Error("codex version overflow during undo delete");
+              }
+              insertBrowserCodexEntrySnapshot(snapshot, replayVersion, now);
+              rewriteBrowserCodexJournalStateToken(
+                projectId,
+                entryId,
+                previousVersion,
+                replayVersion,
+              );
+            } else {
+              const expectedVersion = Number(currentJournal.result_version);
+              db.run(
+                `DELETE FROM codex_entries
+                  WHERE id = ? AND project_id = ? AND version = ?`,
+                [entryId, projectId, expectedVersion],
+              );
+              if (db.getRowsModified() !== 1) {
+                throw new Error(
+                  `codex entry '${entryId}' version conflict during redo replay`,
+                );
+              }
+            }
+          } else {
+            throw new Error(
+              `codex undo journal '${journalId}' has unsupported op '${opKind}'`,
+            );
+          }
+        } else if (currentJournal.entity_kind === "codex_phase") {
           if (currentJournal.op_kind !== "update") {
             throw new Error(`phase undo journal '${journalId}' is invalid`);
           }
@@ -3768,44 +4673,241 @@ export async function createBrowserMock(
     });
   }
 
-  function handleAgentCodexCreate(args: Record<string, unknown>) {
+  async function handleAgentCodexCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const p = nativeCodexPayload(args);
-    const now = new Date().toISOString();
-    const entryId = String(p.entryId);
-    db.run(
-      `INSERT INTO codex_entries
-        (id, project_id, type, name, aliases, excluded_aliases, readings,
-         tags_cache, summary, content, parent_id, source_chat_message_id,
-         version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      [
-        entryId,
-        String(p.projectId),
-        String(p.typeSlug),
-        String(p.name),
-        nativeNullable(p.aliases) ?? null,
-        nativeNullable(p.excludedAliases) ?? null,
-        nativeNullable(p.readings) ?? null,
-        nativeNullable(p.tagsCache) ?? null,
-        nativeNullable(p.summary) ?? "",
-        nativeNullable(p.content) ?? "{}",
-        nativeNullable(p.parentId) ?? null,
-        nativeNullable(p.sourceChatMessageId) ?? null,
-        now,
-        now,
-      ],
+    const projectId = browserCodexRequiredPayloadString(p, "projectId");
+    const sessionId = browserCodexRequiredPayloadString(p, "sessionId");
+    const surface =
+      browserCodexOptionalPayloadString(p.surface, "surface") ?? "in-app-agent";
+    const suppliedEntryId = browserCodexOptionalPayloadString(
+      p.entryId,
+      "entryId",
     );
-    options.onDatabaseDirty?.();
-    return {
-      entityId: entryId,
-      version: 1,
-      changeEventUid: crypto.randomUUID(),
-      undoJournalId: crypto.randomUUID(),
-    };
+    const explicitRequestId = browserCodexOptionalPayloadString(
+      p.requestId,
+      "requestId",
+    );
+    const requestId = explicitRequestId ?? suppliedEntryId;
+    const entryId = suppliedEntryId ?? crypto.randomUUID();
+    const eventUid = crypto.randomUUID();
+    const undoJournalId = requestId ?? crypto.randomUUID();
+    const timestamp = Date.now();
+    const now = new Date(timestamp).toISOString();
+    const typeSlug = browserCodexRequiredPayloadString(p, "typeSlug");
+    const name = browserCodexRequiredPayloadString(p, "name");
+    const aliases = browserCodexOptionalPayloadString(p.aliases, "aliases");
+    const excludedAliases = browserCodexOptionalPayloadString(
+      p.excludedAliases,
+      "excludedAliases",
+    );
+    const readings = browserCodexOptionalPayloadString(p.readings, "readings");
+    const tagsCache = browserCodexOptionalPayloadString(
+      p.tagsCache,
+      "tagsCache",
+    );
+    const summary = browserCodexOptionalPayloadString(p.summary, "summary");
+    const content = browserCodexOptionalPayloadString(p.content, "content");
+    const rawParentId = browserCodexOptionalPayloadString(
+      p.parentId,
+      "parentId",
+    );
+    const parentId = rawParentId === "" ? null : rawParentId;
+    const sourceChatMessageId = browserCodexOptionalPayloadString(
+      p.sourceChatMessageId,
+      "sourceChatMessageId",
+    );
+    const authorshipSpans = parseBrowserCodexAuthorshipSpans(
+      p.authorshipSpans ?? [],
+      "agent codex create",
+    );
+    const authorshipModel = browserCodexOptionalPayloadString(p.model, "model");
+    const authorshipChatMsgId =
+      browserCodexOptionalPayloadString(p.chatMessageId, "chatMessageId") ??
+      browserCodexOptionalPayloadString(
+        p.sourceChatMessageId,
+        "sourceChatMessageId",
+      );
+    const authorshipTraceId = browserCodexOptionalPayloadString(
+      p.traceId,
+      "traceId",
+    );
+
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserPayloadFingerprint(
+        BROWSER_CODEX_CREATE_IDEMPOTENCY_DOMAIN,
+        browserCodexCreateFingerprintPayload(p, authorshipSpans),
+      );
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: "entry.create",
+        entityType: "codex_entry",
+        entityId: entryId,
+        payload: JSON.stringify({
+          type: typeSlug,
+          name,
+          parentId,
+          ...(requestId === null ? {} : { requestHash }),
+        }),
+        sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        if (requestId !== null) {
+          const replay = loadBrowserCodexCreateReplayResult({
+            requestId,
+            projectId,
+            requestHash,
+          });
+          if (replay) {
+            db.run("COMMIT");
+            return replay;
+          }
+          const orphanedJournal = queryOne(
+            "SELECT 1 AS found FROM undo_journal WHERE id = ?",
+            [requestId],
+          );
+          const occupiedEntry =
+            suppliedEntryId === null
+              ? null
+              : queryOne("SELECT 1 AS found FROM codex_entries WHERE id = ?", [
+                  suppliedEntryId,
+                ]);
+          if (orphanedJournal || occupiedEntry) {
+            browserCodexCreateConflict(
+              "original idempotency receipt is missing",
+            );
+          }
+        }
+        if (
+          !queryOne("SELECT 1 AS owned FROM projects WHERE id = ?", [projectId])
+        ) {
+          throw new Error(`project '${projectId}' not found`);
+        }
+        assertBrowserCodexEntryReferences(
+          projectId,
+          entryId,
+          typeSlug,
+          parentId,
+        );
+        db.run(
+          `INSERT INTO codex_entries
+            (id, project_id, type, name, aliases, excluded_aliases, readings,
+             tags_cache, summary, content, parent_id, source_chat_message_id,
+             version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          [
+            entryId,
+            projectId,
+            typeSlug,
+            name,
+            aliases,
+            excludedAliases,
+            readings,
+            tagsCache,
+            summary ?? "",
+            content ?? "{}",
+            parentId,
+            sourceChatMessageId,
+            now,
+            now,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`codex entry '${entryId}' was not created`);
+        }
+        mergeBrowserCodexAuthorshipSpans({
+          entryId,
+          spans: authorshipSpans,
+          lanes: null,
+          updateSummary: true,
+          updateContent: true,
+          model: authorshipModel,
+          chatMsgId: authorshipChatMsgId,
+          traceId: authorshipTraceId,
+          now,
+        });
+        const after = loadBrowserCodexEntrySnapshot(entryId, projectId);
+        if (!after || after.version !== 1) {
+          throw new Error(
+            `codex entry '${entryId}' could not be read after create`,
+          );
+        }
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        insertBrowserCodexUndoJournal({
+          id: undoJournalId,
+          projectId,
+          surface,
+          entryId,
+          opKind: "create",
+          before: null,
+          after,
+          baseVersion: 0,
+          resultVersion: after.version,
+          changeEventUid: eventUid,
+          now,
+        });
+        const result: BrowserCodexWriteResult = {
+          entityId: entryId,
+          version: after.version,
+          changeEventUid: eventUid,
+          undoJournalId,
+        };
+        if (requestId !== null) {
+          db.run(
+            `INSERT INTO idempotency_requests
+              (domain, request_id, project_id, payload_hash,
+               tombstone_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              BROWSER_CODEX_CREATE_IDEMPOTENCY_DOMAIN,
+              requestId,
+              projectId,
+              requestHash,
+              JSON.stringify(result),
+              now,
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              `codex create idempotency receipt '${requestId}' was not persisted`,
+            );
+          }
+        }
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return result;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original Codex create failure.
+        }
+        throw error;
+      }
+    });
   }
 
-  function handleAgentCodexUpdate(args: Record<string, unknown>) {
+  async function handleAgentCodexUpdate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const p = nativeCodexPayload(args);
+    const projectId = browserCodexRequiredPayloadString(p, "projectId");
+    const sessionId = browserCodexRequiredPayloadString(p, "sessionId");
+    const surface =
+      browserCodexOptionalPayloadString(p.surface, "surface") ?? "in-app-agent";
+    const entryId = browserCodexRequiredPayloadString(p, "entryId");
+    const baseVersion = browserCodexRequiredPayloadInteger(p, "baseVersion");
+    const eventUid = crypto.randomUUID();
+    const undoJournalId = crypto.randomUUID();
+    const timestamp = Date.now();
+    const now = new Date(timestamp).toISOString();
     const columns: Record<string, string> = {
       typeSlug: "type",
       name: "name",
@@ -3821,52 +4923,549 @@ export async function createBrowserMock(
       childrenBudget: "children_budget",
       notes: "notes",
     };
-    const sets: string[] = [];
-    const params: SqlValue[] = [];
-    for (const [key, column] of Object.entries(columns)) {
-      if (!(key in p)) continue;
-      sets.push(`${column} = ?`);
-      params.push(
-        column === "type" || column === "name"
-          ? String(p[key])
-          : (nativeNullable(p[key]) ?? null),
-      );
+    const changedFields = Object.keys(columns).filter((key) => p[key] != null);
+    for (const key of changedFields) {
+      browserCodexOptionalPayloadString(p[key], key);
     }
-    sets.push("version = version + 1", "updated_at = ?");
-    params.push(new Date().toISOString());
-    params.push(String(p.entryId), String(p.projectId), Number(p.baseVersion));
-    db.run(
-      `UPDATE codex_entries SET ${sets.join(", ")}
-        WHERE id = ? AND project_id = ? AND version = ?`,
-      params,
+    const nullableSentinelFields = new Set([
+      "excludedAliases",
+      "readings",
+      "tagsCache",
+      "parentId",
+      "icon",
+      "notes",
+    ]);
+    const authorshipSpans =
+      p.authorshipSpans == null
+        ? null
+        : parseBrowserCodexAuthorshipSpans(
+            p.authorshipSpans,
+            "agent codex update",
+          );
+    const authorshipSpanLanes = parseBrowserCodexAuthorshipSpanLanes(
+      p.authorshipSpanLanes,
     );
-    options.onDatabaseDirty?.();
-    return {
-      entityId: String(p.entryId),
-      version: Number(p.baseVersion) + 1,
-      changeEventUid: crypto.randomUUID(),
-      undoJournalId: crypto.randomUUID(),
-    };
+    const authorshipModel = browserCodexOptionalPayloadString(p.model, "model");
+    const authorshipChatMsgId = browserCodexOptionalPayloadString(
+      p.chatMessageId,
+      "chatMessageId",
+    );
+    const authorshipTraceId = browserCodexOptionalPayloadString(
+      p.traceId,
+      "traceId",
+    );
+
+    return withAppendLedgerLock(async () => {
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: "entry.update",
+        entityType: "codex_entry",
+        entityId: entryId,
+        payload: JSON.stringify({ fields: changedFields }),
+        sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const before = loadBrowserCodexEntrySnapshot(entryId, projectId);
+        if (!before) {
+          throw new Error(
+            `codex entry '${entryId}' is not in project '${projectId}'`,
+          );
+        }
+        if (before.version !== baseVersion) {
+          throw new Error(
+            `codex entry '${entryId}' version conflict: expected ${baseVersion} but database has ${before.version}`,
+          );
+        }
+        const nextType = changedFields.includes("typeSlug")
+          ? String(p.typeSlug)
+          : before.type;
+        const nextParent = changedFields.includes("parentId")
+          ? p.parentId === ""
+            ? null
+            : String(p.parentId)
+          : before.parentId;
+        assertBrowserCodexEntryReferences(
+          projectId,
+          entryId,
+          nextType,
+          nextParent,
+        );
+
+        const sets: string[] = [];
+        const params: SqlValue[] = [];
+        for (const [key, column] of Object.entries(columns)) {
+          if (!changedFields.includes(key)) continue;
+          sets.push(`${column} = ?`);
+          const value = String(p[key]);
+          params.push(
+            nullableSentinelFields.has(key) && value === "" ? null : value,
+          );
+        }
+        sets.push("version = version + 1", "updated_at = ?");
+        params.push(now, entryId, projectId, baseVersion);
+        db.run(
+          `UPDATE codex_entries SET ${sets.join(", ")}
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          params,
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`codex entry '${entryId}' version conflict`);
+        }
+        if (authorshipSpans !== null) {
+          mergeBrowserCodexAuthorshipSpans({
+            entryId,
+            spans: authorshipSpans,
+            lanes: authorshipSpanLanes,
+            updateSummary: changedFields.includes("summary"),
+            updateContent: changedFields.includes("content"),
+            model: authorshipModel,
+            chatMsgId: authorshipChatMsgId,
+            traceId: authorshipTraceId,
+            now,
+          });
+        }
+        const after = loadBrowserCodexEntrySnapshot(entryId, projectId);
+        if (!after || after.version !== baseVersion + 1) {
+          throw new Error(
+            `codex entry '${entryId}' version conflict after update`,
+          );
+        }
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        insertBrowserCodexUndoJournal({
+          id: undoJournalId,
+          projectId,
+          surface,
+          entryId,
+          opKind: "update",
+          before,
+          after,
+          baseVersion: before.version,
+          resultVersion: after.version,
+          changeEventUid: eventUid,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          entityId: entryId,
+          version: after.version,
+          changeEventUid: eventUid,
+          undoJournalId,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original Codex update failure.
+        }
+        throw error;
+      }
+    });
   }
 
-  function handleAgentCodexDelete(args: Record<string, unknown>) {
+  async function handleAgentCodexDelete(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const p = nativeCodexPayload(args);
-    db.run(
-      "DELETE FROM codex_entries WHERE id = ? AND project_id = ? AND version = ?",
-      [String(p.entryId), String(p.projectId), Number(p.baseVersion)],
+    const projectId = browserCodexRequiredPayloadString(p, "projectId");
+    const sessionId = browserCodexRequiredPayloadString(p, "sessionId");
+    const surface =
+      browserCodexOptionalPayloadString(p.surface, "surface") ?? "in-app-agent";
+    const entryId = browserCodexRequiredPayloadString(p, "entryId");
+    const baseVersion = browserCodexRequiredPayloadInteger(p, "baseVersion");
+    const eventUid = crypto.randomUUID();
+    const undoJournalId = crypto.randomUUID();
+    const timestamp = Date.now();
+    const now = new Date(timestamp).toISOString();
+
+    return withAppendLedgerLock(async () => {
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: "entry.delete",
+        entityType: "codex_entry",
+        entityId: entryId,
+        payload: JSON.stringify({}),
+        sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const before = loadBrowserCodexEntrySnapshot(entryId, projectId);
+        if (!before) {
+          throw new Error(
+            `codex entry '${entryId}' is not in project '${projectId}'`,
+          );
+        }
+        if (before.version !== baseVersion) {
+          throw new Error(
+            `codex entry '${entryId}' version conflict: expected ${baseVersion} but database has ${before.version}`,
+          );
+        }
+        db.run(
+          `DELETE FROM codex_entries
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          [entryId, projectId, baseVersion],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`codex entry '${entryId}' version conflict`);
+        }
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        insertBrowserCodexUndoJournal({
+          id: undoJournalId,
+          projectId,
+          surface,
+          entryId,
+          opKind: "delete",
+          before,
+          after: null,
+          baseVersion: before.version,
+          resultVersion: before.version,
+          changeEventUid: eventUid,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          entityId: entryId,
+          version: before.version,
+          changeEventUid: eventUid,
+          undoJournalId,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original Codex delete failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleBrowserCodexDetailMutation(
+    p: Record<string, unknown>,
+    operation: string,
+  ): Promise<Record<string, unknown>> {
+    const projectId = browserCodexRequiredNonEmptyPayloadString(p, "projectId");
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(p, "sessionId");
+    const surface =
+      browserCodexOptionalPayloadString(p.surface, "surface") ?? "manual";
+    const definitionId = browserCodexRequiredNonEmptyPayloadString(
+      p,
+      "definitionId",
     );
-    options.onDatabaseDirty?.();
-    return {
-      entityId: String(p.entryId),
-      version: Number(p.baseVersion),
-      changeEventUid: crypto.randomUUID(),
-      undoJournalId: crypto.randomUUID(),
-    };
+    const valueEntryId =
+      operation === "detail.value.upsert"
+        ? browserCodexRequiredNonEmptyPayloadString(p, "entryId")
+        : null;
+    const requestedValueId =
+      operation === "detail.value.upsert"
+        ? browserCodexOptionalPayloadString(p.valueId, "valueId")
+        : null;
+    const detailValue =
+      operation === "detail.value.upsert"
+        ? browserCodexOptionalPayloadString(p.value, "value")
+        : null;
+    const eventUid = crypto.randomUUID();
+    const timestamp = Date.now();
+    const now = new Date(timestamp).toISOString();
+
+    return withAppendLedgerLock(async () => {
+      let entityId: string;
+      let expectedValueExists = false;
+      if (operation === "detail.value.upsert") {
+        const existing = queryOne(
+          `SELECT value_row.id
+             FROM codex_detail_values value_row
+             JOIN codex_entries entry ON entry.id = value_row.entry_id
+             JOIN codex_detail_definitions definition
+               ON definition.id = value_row.definition_id
+            WHERE value_row.entry_id = ? AND value_row.definition_id = ?
+              AND entry.project_id = ? AND definition.project_id = ?`,
+          [valueEntryId, definitionId, projectId, projectId],
+        );
+        expectedValueExists = existing !== null;
+        entityId = existing
+          ? String(existing.id)
+          : (requestedValueId ?? crypto.randomUUID());
+      } else {
+        entityId = definitionId;
+      }
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: operation,
+        entityType: "detail",
+        entityId,
+        payload: JSON.stringify({ surface, operation }),
+        sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        let version: number;
+        if (operation === "detail.definition.create") {
+          const typeSlug = browserCodexRequiredNonEmptyPayloadString(
+            p,
+            "typeSlug",
+          );
+          const name = browserCodexRequiredNonEmptyPayloadString(p, "name");
+          const fieldType =
+            browserCodexOptionalPayloadString(p.fieldType, "fieldType") ??
+            "text";
+          const fieldConfig = browserCodexOptionalPayloadString(
+            p.fieldConfig,
+            "fieldConfig",
+          );
+          const sortOrder =
+            browserCodexOptionalPayloadNumber(p, "sortOrder") ?? 0;
+          const includeInContext =
+            browserCodexOptionalPayloadBoolInt(p, "includeInContext") ?? 0;
+          const rawSemanticBinding = p.semanticBinding;
+          if (
+            rawSemanticBinding !== undefined &&
+            !isRecord(rawSemanticBinding)
+          ) {
+            throw new Error("semanticBinding must be an object");
+          }
+          const semanticBinding = rawSemanticBinding as
+            | Record<string, unknown>
+            | undefined;
+          const requiredBindingString = (key: string): string => {
+            const value = semanticBinding?.[key];
+            if (typeof value !== "string" || value.trim().length === 0) {
+              throw new Error(`semanticBinding.${key} is required`);
+            }
+            return value;
+          };
+          let confirmed = 0;
+          if (semanticBinding?.confirmed !== undefined) {
+            if (typeof semanticBinding.confirmed === "boolean") {
+              confirmed = semanticBinding.confirmed ? 1 : 0;
+            } else if (
+              semanticBinding.confirmed === 0 ||
+              semanticBinding.confirmed === 1
+            ) {
+              confirmed = semanticBinding.confirmed;
+            } else {
+              throw new Error(
+                "semanticBinding.confirmed must be a boolean or 0/1",
+              );
+            }
+          }
+          db.run(
+            `INSERT INTO codex_detail_definitions
+              (id, project_id, type_slug, name, field_type, field_config,
+               sort_order, include_in_context, version, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+            [
+              entityId,
+              projectId,
+              typeSlug,
+              name,
+              fieldType,
+              fieldConfig,
+              sortOrder,
+              includeInContext,
+              now,
+              now,
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(`detail definition '${entityId}' was not created`);
+          }
+          if (semanticBinding) {
+            db.run(
+              `INSERT INTO codex_detail_semantic_bindings
+                (id, project_id, definition_id, facet_key, projection_kind,
+                 temporal_policy, source, confirmed, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+              [
+                requiredBindingString("id"),
+                projectId,
+                entityId,
+                requiredBindingString("facetKey"),
+                requiredBindingString("projectionKind"),
+                requiredBindingString("temporalPolicy"),
+                requiredBindingString("source"),
+                confirmed,
+                now,
+                now,
+              ],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error(
+                `detail semantic binding for '${entityId}' was not created`,
+              );
+            }
+          }
+          version = 0;
+        } else if (operation === "detail.definition.update") {
+          const assignments: string[] = [];
+          const values: SqlValue[] = [];
+          const definitionColumns: Record<string, string> = {
+            name: "name",
+            fieldType: "field_type",
+            fieldConfig: "field_config",
+            sortOrder: "sort_order",
+            includeInContext: "include_in_context",
+          };
+          for (const [key, column] of Object.entries(definitionColumns)) {
+            if (!(key in p)) continue;
+            assignments.push(`${column} = ?`);
+            if (key === "sortOrder") {
+              values.push(browserCodexOptionalPayloadNumber(p, key));
+            } else if (key === "includeInContext") {
+              values.push(browserCodexOptionalPayloadBoolInt(p, key) ?? 0);
+            } else {
+              values.push(browserCodexOptionalPayloadString(p[key], key));
+            }
+          }
+          if (assignments.length === 0) {
+            throw new Error("definition update has no fields");
+          }
+          const baseVersion = browserCodexRequiredPayloadInteger(
+            p,
+            "baseVersion",
+          );
+          version = baseVersion + 1;
+          assignments.push("version = ?", "updated_at = ?");
+          values.push(version, now, entityId, projectId, baseVersion);
+          db.run(
+            `UPDATE codex_detail_definitions
+                SET ${assignments.join(", ")}
+              WHERE id = ? AND project_id = ? AND version = ?`,
+            values,
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error("detail definition version conflict");
+          }
+        } else if (operation === "detail.definition.delete") {
+          db.run(
+            `DELETE FROM codex_detail_definitions
+              WHERE id = ? AND project_id = ?`,
+            [entityId, projectId],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(`detail definition '${entityId}' not found`);
+          }
+          version = 0;
+        } else if (operation === "detail.value.upsert") {
+          const entryId = valueEntryId as string;
+          if (
+            !queryOne(
+              "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+              [entryId, projectId],
+            )
+          ) {
+            throw new Error(
+              `codex entry '${entryId}' is not in project '${projectId}'`,
+            );
+          }
+          if (
+            !queryOne(
+              `SELECT 1 AS owned FROM codex_detail_definitions
+                WHERE id = ? AND project_id = ?`,
+              [definitionId, projectId],
+            )
+          ) {
+            throw new Error(
+              `detail definition '${definitionId}' is not in project '${projectId}'`,
+            );
+          }
+          const existing = queryOne(
+            `SELECT id, version FROM codex_detail_values
+              WHERE entry_id = ? AND definition_id = ?`,
+            [entryId, definitionId],
+          );
+          if ((existing !== null) !== expectedValueExists) {
+            throw new Error("detail value identity changed during mutation");
+          }
+          if (!existing) {
+            db.run(
+              `INSERT INTO codex_detail_values
+                (id, entry_id, definition_id, value, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 1, ?, ?)`,
+              [entityId, entryId, definitionId, detailValue, now, now],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error(`detail value '${entityId}' was not created`);
+            }
+            version = 1;
+          } else {
+            if (String(existing.id) !== entityId) {
+              throw new Error("detail value identity changed during mutation");
+            }
+            const baseVersion = browserCodexRequiredPayloadInteger(
+              p,
+              "baseVersion",
+            );
+            if (Number(existing.version) !== baseVersion) {
+              throw new Error("detail value version conflict");
+            }
+            version = baseVersion + 1;
+            db.run(
+              `UPDATE codex_detail_values
+                  SET value = ?, version = ?, updated_at = ?
+                WHERE id = ? AND entry_id = ? AND definition_id = ?
+                  AND version = ?`,
+              [
+                detailValue,
+                version,
+                now,
+                entityId,
+                entryId,
+                definitionId,
+                baseVersion,
+              ],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error("detail value version conflict");
+            }
+          }
+        } else {
+          throw new Error(`Unsupported Codex mutation: ${operation}`);
+        }
+
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return { entityId, version, changeEventUid: eventUid };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original Detail mutation failure.
+        }
+        throw error;
+      }
+    });
   }
 
   function handleAgentCodexMutate(args: Record<string, unknown>) {
     const p = nativeCodexPayload(args);
-    const operation = String(p.operation);
+    const operation = browserCodexRequiredPayloadString(p, "operation");
+    if (
+      operation === "detail.definition.create" ||
+      operation === "detail.definition.update" ||
+      operation === "detail.definition.delete" ||
+      operation === "detail.value.upsert"
+    ) {
+      return handleBrowserCodexDetailMutation(p, operation);
+    }
     const now = new Date().toISOString();
     if (operation === "relation.create") {
       db.run(
@@ -3971,148 +5570,6 @@ export async function createBrowserMock(
           ? [String(p.phaseId)]
           : [String(p.phaseId), Number(p.expectedVersion)],
       );
-    } else if (operation === "detail.definition.create") {
-      const rawSemanticBinding = p.semanticBinding;
-      if (rawSemanticBinding !== undefined && !isRecord(rawSemanticBinding)) {
-        throw new Error("semanticBinding must be an object");
-      }
-      const semanticBinding = rawSemanticBinding as
-        | Record<string, unknown>
-        | undefined;
-      const requiredBindingString = (key: string): string => {
-        const value = semanticBinding?.[key];
-        if (typeof value !== "string" || value.trim().length === 0) {
-          throw new Error(`semanticBinding.${key} is required`);
-        }
-        return value;
-      };
-      let confirmed = 0;
-      if (semanticBinding?.confirmed !== undefined) {
-        if (typeof semanticBinding.confirmed === "boolean") {
-          confirmed = semanticBinding.confirmed ? 1 : 0;
-        } else if (
-          semanticBinding.confirmed === 0 ||
-          semanticBinding.confirmed === 1
-        ) {
-          confirmed = semanticBinding.confirmed;
-        } else {
-          throw new Error("semanticBinding.confirmed must be a boolean or 0/1");
-        }
-      }
-      db.run("BEGIN IMMEDIATE");
-      try {
-        db.run(
-          `INSERT INTO codex_detail_definitions
-            (id, project_id, type_slug, name, field_type, field_config,
-             sort_order, include_in_context, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-          [
-            String(p.definitionId),
-            String(p.projectId),
-            String(p.typeSlug),
-            String(p.name),
-            String(p.fieldType ?? "text"),
-            nativeNullable(p.fieldConfig) ?? null,
-            Number(p.sortOrder ?? 0),
-            Number(p.includeInContext ?? 0),
-            now,
-            now,
-          ],
-        );
-        if (semanticBinding) {
-          db.run(
-            `INSERT INTO codex_detail_semantic_bindings
-              (id, project_id, definition_id, facet_key, projection_kind,
-               temporal_policy, source, confirmed, version, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-            [
-              requiredBindingString("id"),
-              String(p.projectId),
-              String(p.definitionId),
-              requiredBindingString("facetKey"),
-              requiredBindingString("projectionKind"),
-              requiredBindingString("temporalPolicy"),
-              requiredBindingString("source"),
-              confirmed,
-              now,
-              now,
-            ],
-          );
-        }
-        db.run("COMMIT");
-      } catch (error) {
-        try {
-          db.run("ROLLBACK");
-        } catch {
-          // Preserve the definition create failure.
-        }
-        throw error;
-      }
-    } else if (operation === "detail.definition.update") {
-      const assignments: string[] = [];
-      const values: SqlValue[] = [];
-      const definitionColumns: Record<string, string> = {
-        name: "name",
-        fieldType: "field_type",
-        fieldConfig: "field_config",
-        sortOrder: "sort_order",
-        includeInContext: "include_in_context",
-      };
-      for (const [key, column] of Object.entries(definitionColumns)) {
-        if (!(key in p)) continue;
-        assignments.push(`${column} = ?`);
-        values.push(
-          key === "sortOrder"
-            ? Number(p[key])
-            : key === "includeInContext"
-              ? Number(p[key])
-              : (nativeNullable(p[key]) ?? null),
-        );
-      }
-      assignments.push("version = version + 1", "updated_at = ?");
-      values.push(now, String(p.definitionId), Number(p.baseVersion));
-      db.run(
-        `UPDATE codex_detail_definitions SET ${assignments.join(", ")}
-          WHERE id = ? AND version = ?`,
-        values,
-      );
-    } else if (operation === "detail.definition.delete") {
-      db.run(
-        "DELETE FROM codex_detail_definitions WHERE id = ? AND project_id = ?",
-        [String(p.definitionId), String(p.projectId)],
-      );
-    } else if (operation === "detail.value.upsert") {
-      const existing = queryAll(
-        "SELECT id, version FROM codex_detail_values WHERE entry_id = ? AND definition_id = ?",
-        [String(p.entryId), String(p.definitionId)],
-      )[0];
-      if (!existing) {
-        db.run(
-          `INSERT INTO codex_detail_values
-            (id, entry_id, definition_id, value, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 1, ?, ?)`,
-          [
-            String(p.valueId ?? crypto.randomUUID()),
-            String(p.entryId),
-            String(p.definitionId),
-            nativeNullable(p.value) ?? null,
-            now,
-            now,
-          ],
-        );
-      } else {
-        db.run(
-          `UPDATE codex_detail_values SET value = ?, version = version + 1,
-             updated_at = ? WHERE entry_id = ? AND definition_id = ? AND version = ?`,
-          [
-            nativeNullable(p.value) ?? null,
-            now,
-            String(p.entryId),
-            String(p.definitionId),
-            Number(p.baseVersion),
-          ],
-        );
-      }
     } else {
       throw new Error(`Unsupported Codex mutation: ${operation}`);
     }

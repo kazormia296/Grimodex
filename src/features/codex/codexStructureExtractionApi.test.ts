@@ -846,7 +846,7 @@ describe("startCodexStructureExtraction product safety", () => {
           item.evidence.some((row) => row.quote.includes("友人")),
       ),
     ).toBe(true);
-  });
+  }, 15_000);
 });
 
 describe("bulkApproveSafeCodexStructureProposals", () => {

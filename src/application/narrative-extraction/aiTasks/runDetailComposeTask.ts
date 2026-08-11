@@ -108,7 +108,6 @@ export async function runDetailComposeTask(
     });
   } catch (error) {
     if (!(error instanceof DetailComposeError)) throw error;
-    deterministic = null;
   }
 
   if (blockIfPolicyOff("analysis")) return deterministic;

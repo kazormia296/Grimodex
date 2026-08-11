@@ -16,14 +16,23 @@ export function GenericImportSummary({ draft, assemblyPlan }: Props) {
       data-testid="generic-import-summary"
     >
       <p className="text-sm text-muted-foreground">
-        {t("import.generic.summaryHint", "Generic インポートの組み立て概要（プレビュー）。")}
+        {t(
+          "import.generic.summaryHint",
+          "Generic インポートの組み立て概要（プレビュー）。",
+        )}
       </p>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <dt className="text-muted-foreground">{t("import.scenes", "シーン")}</dt>
+        <dt className="text-muted-foreground">
+          {t("import.scenes", "シーン")}
+        </dt>
         <dd>{draft?.nodes.length ?? assemblyPlan?.scenes.length ?? 0}</dd>
-        <dt className="text-muted-foreground">{t("import.codexEntries", "Codexエントリ")}</dt>
+        <dt className="text-muted-foreground">
+          {t("import.codexEntries", "Codexエントリ")}
+        </dt>
         <dd>{draft?.structure.codexEntries.length ?? 0}</dd>
-        <dt className="text-muted-foreground">{t("import.snippets", "スニペット")}</dt>
+        <dt className="text-muted-foreground">
+          {t("import.snippets", "スニペット")}
+        </dt>
         <dd>{draft?.structure.snippets.length ?? 0}</dd>
         <dt className="text-muted-foreground">
           {t("import.generic.skipped", "スキップ")}

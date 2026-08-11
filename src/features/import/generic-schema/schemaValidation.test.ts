@@ -14,7 +14,12 @@ describe("schemaValidation", () => {
           label: "Character",
           fields: [
             { fieldId: "name", label: "Name", type: "string", required: true },
-            { fieldId: "role", label: "Role", type: "enum", enumValues: ["hero", "villain"] },
+            {
+              fieldId: "role",
+              label: "Role",
+              type: "enum",
+              enumValues: ["hero", "villain"],
+            },
           ],
         },
       ],
@@ -37,9 +42,9 @@ describe("schemaValidation", () => {
     } as unknown as GenericExtractionSchema;
     const result = validateGenericExtractionSchema(schema);
     expect(result.ok).toBe(false);
-    expect(result.diagnostics.some((d) => d.code === "schema-unknown-field-type")).toBe(
-      true,
-    );
+    expect(
+      result.diagnostics.some((d) => d.code === "schema-unknown-field-type"),
+    ).toBe(true);
   });
 
   it("rejects recursive nested records", () => {
@@ -58,9 +63,9 @@ describe("schemaValidation", () => {
     };
     const result = validateGenericExtractionSchema(schema);
     expect(result.ok).toBe(false);
-    expect(result.diagnostics.some((d) => d.code === "schema-recursive-record")).toBe(
-      true,
-    );
+    expect(
+      result.diagnostics.some((d) => d.code === "schema-recursive-record"),
+    ).toBe(true);
   });
 
   it("rejects schemas exceeding record limit", () => {
@@ -76,8 +81,8 @@ describe("schemaValidation", () => {
       records,
     });
     expect(result.ok).toBe(false);
-    expect(result.diagnostics.some((d) => d.code === "schema-too-many-records")).toBe(
-      true,
-    );
+    expect(
+      result.diagnostics.some((d) => d.code === "schema-too-many-records"),
+    ).toBe(true);
   });
 });

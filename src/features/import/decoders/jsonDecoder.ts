@@ -65,7 +65,12 @@ export const jsonDecoder: ImportDecoder = {
       structuredData = JSON.parse(text);
     } catch {
       diagnostics.push(
-        importDiagnostic("error", "json-parse-failed", "Invalid JSON", input.relativePath),
+        importDiagnostic(
+          "error",
+          "json-parse-failed",
+          "Invalid JSON",
+          input.relativePath,
+        ),
       );
       return {
         resourceKey: input.resourceKey,

@@ -49,12 +49,22 @@ export function validateImportSourceNodes(
   const diagnostics: ImportDiagnostic[] = [];
   for (const key of findDuplicateNodeKeys(nodes)) {
     diagnostics.push(
-      importDiagnostic("error", "duplicate-node-key", `Duplicate node key: ${key}`, key),
+      importDiagnostic(
+        "error",
+        "duplicate-node-key",
+        `Duplicate node key: ${key}`,
+        key,
+      ),
     );
   }
   for (const key of findNodeParentCycles(nodes)) {
     diagnostics.push(
-      importDiagnostic("error", "node-parent-cycle", `Node parent cycle detected: ${key}`, key),
+      importDiagnostic(
+        "error",
+        "node-parent-cycle",
+        `Node parent cycle detected: ${key}`,
+        key,
+      ),
     );
   }
   return diagnostics;

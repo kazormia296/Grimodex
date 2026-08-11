@@ -21,7 +21,10 @@ function detectDelimiter(relativePath: string, firstLine: string): string {
   return tabCount > commaCount ? "\t" : ",";
 }
 
-function parseDelimitedLine(line: string, delimiter: string): readonly string[] {
+function parseDelimitedLine(
+  line: string,
+  delimiter: string,
+): readonly string[] {
   const cells: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -50,7 +53,11 @@ function parseDelimitedLine(line: string, delimiter: string): readonly string[] 
 function parseDelimitedTable(
   input: ImportDecoderInput,
   text: string,
-): { headers: readonly string[]; rows: readonly (readonly string[])[]; blocks: ImportContentBlock[] } {
+): {
+  headers: readonly string[];
+  rows: readonly (readonly string[])[];
+  blocks: ImportContentBlock[];
+} {
   const lines = text.split(/\r?\n/u).filter((line) => line.trim().length > 0);
   if (lines.length === 0) {
     return { headers: [], rows: [], blocks: [] };
@@ -90,7 +97,12 @@ export const delimitedTextDecoder: ImportDecoder = {
     const diagnostics = [];
     if (headers.length === 0) {
       diagnostics.push(
-        importDiagnostic("warn", "empty-table", "No table headers found", input.relativePath),
+        importDiagnostic(
+          "warn",
+          "empty-table",
+          "No table headers found",
+          input.relativePath,
+        ),
       );
     }
     return {

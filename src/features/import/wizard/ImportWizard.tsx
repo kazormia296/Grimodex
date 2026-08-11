@@ -37,9 +37,9 @@ export function ImportWizard({ onClose }: Props) {
   const [diagnostics, setDiagnostics] = useState<readonly ImportDiagnostic[]>(
     [],
   );
-  const [targetKind, setTargetKind] = useState<"new-project" | "existing-project">(
-    "new-project",
-  );
+  const [targetKind, setTargetKind] = useState<
+    "new-project" | "existing-project"
+  >("new-project");
   const [title, setTitle] = useState("Imported");
   const [target, setTarget] = useState<ImportTargetSpec | null>(null);
 

@@ -1,4 +1,7 @@
-import type { ImportSession, ImportSessionId } from "@/features/import/core/importSession";
+import type {
+  ImportSession,
+  ImportSessionId,
+} from "@/features/import/core/importSession";
 import {
   createImportSession,
   withImportSessionState,
@@ -15,7 +18,9 @@ export function createSessionInMemory(): ImportSession {
   return session;
 }
 
-export function getImportSession(id: ImportSessionId): ImportSession | undefined {
+export function getImportSession(
+  id: ImportSessionId,
+): ImportSession | undefined {
   return sessions.get(id);
 }
 
@@ -34,7 +39,11 @@ export async function attachPackageToSession(
 
   const pkg = await sealImportSourcePackage(draft);
   const updated = withImportSessionState(
-    { ...existing, package: pkg, diagnostics: [...existing.diagnostics, ...pkg.diagnostics] },
+    {
+      ...existing,
+      package: pkg,
+      diagnostics: [...existing.diagnostics, ...pkg.diagnostics],
+    },
     "package-attached",
   );
   sessions.set(sessionId, updated);
@@ -49,7 +58,10 @@ export function attachTargetToSession(
   if (!existing) {
     throw new Error(`Import session not found: ${sessionId}`);
   }
-  const updated = withImportSessionState({ ...existing, target }, "target-selected");
+  const updated = withImportSessionState(
+    { ...existing, target },
+    "target-selected",
+  );
   sessions.set(sessionId, updated);
   return updated;
 }
@@ -58,8 +70,11 @@ export function attachTargetToSession(
 export async function persistImportSessionNative(
   session: ImportSession,
 ): Promise<void> {
-  const invoke = (globalThis as { grimodex?: { invoke?: (cmd: string, args: unknown) => Promise<unknown> } })
-    .grimodex?.invoke;
+  const invoke = (
+    globalThis as {
+      grimodex?: { invoke?: (cmd: string, args: unknown) => Promise<unknown> };
+    }
+  ).grimodex?.invoke;
   if (!invoke) return;
   try {
     await invoke("import_session_save", { session });

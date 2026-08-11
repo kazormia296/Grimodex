@@ -39,7 +39,9 @@ export interface ImportAdapterParseResult {
 
 export interface ImportAdapter {
   readonly descriptor: ImportAdapterDescriptor;
-  parse(input: ImportAdapterParseInput): ImportAdapterParseResult | Promise<ImportAdapterParseResult>;
+  parse(
+    input: ImportAdapterParseInput,
+  ): ImportAdapterParseResult | Promise<ImportAdapterParseResult>;
 }
 
 export function adapterKey(id: string, version: string): string {

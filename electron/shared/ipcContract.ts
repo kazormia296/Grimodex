@@ -446,6 +446,10 @@ export interface NapiBackendLike {
   ): Promise<string>;
   projectSnapshotApplyRestore?(payload: unknown): Promise<void>;
   saveSceneBodyBundle?(payload: unknown): Promise<string>;
+  runtimePerformanceSeed?(
+    ownerToken: string,
+    payload: unknown,
+  ): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
   validateWorkspacePath(path: string): boolean;
@@ -2095,6 +2099,34 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
       );
     }
   }
+  if (Object.hasOwn(payload, "changeEvent")) {
+    const event = requireRecord(payload, "changeEvent", command);
+    requireNonEmptyString(event, "eventUid", command);
+    requireNonEmptyString(event, "sessionId", command);
+    const timestamp = requireSafeInteger(event, "timestamp", command);
+    if (timestamp < 0) {
+      throw new Error(
+        `invalid args \`changeEvent.timestamp\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+    if (
+      !Object.hasOwn(payload, "baseVersion") ||
+      payload.bumpVersion !== true
+    ) {
+      throw new Error(
+        `invalid args \`changeEvent\` for command \`${command}\`: expected versioned OCC`,
+      );
+    }
+    const patch = requireRecord(payload, "patch", command);
+    if (
+      !Object.hasOwn(patch, "content") ||
+      Object.keys(patch).some((key) => key !== "content" && key !== "charCount")
+    ) {
+      throw new Error(
+        `invalid args \`changeEvent\` for command \`${command}\`: expected a content-only patch`,
+      );
+    }
+  }
   return payload;
 }
 
@@ -3170,6 +3202,60 @@ function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
     }
   });
   return payload;
+}
+
+function requireRuntimePerformanceSeedArgs(args: CommandArgs): {
+  ownerToken: string;
+  payload: CommandArgs;
+} {
+  const command = "runtime_performance_seed";
+  const ownerToken = requireNonEmptyString(args, "ownerToken", command);
+  if (ownerToken.length > 200) {
+    throw new Error(
+      `invalid args \`ownerToken\` for command \`${command}\`: input limit exceeded`,
+    );
+  }
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "fixtureId", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireRecord(payload, "mapBoard", command);
+  requireRecord(payload, "projectSetting", command);
+  const arrays = [
+    ["treeNodes", 10_500],
+    ["mapNodePositions", 2_200],
+    ["mapEdges", 2_200],
+    ["plotThreads", 200],
+    ["plotThreadSceneLinks", 6_000],
+    ["events", 5_500],
+    ["eventRelations", 1_100],
+    ["chatMessages", 5_500],
+  ] as const;
+  let totalRows = 2;
+  for (const [key, limit] of arrays) {
+    const rows = requireArray(payload, key, command);
+    if (rows.length > limit || (key === "treeNodes" && rows.length === 0)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: input limit exceeded`,
+      );
+    }
+    totalRows += rows.length;
+  }
+  const chatSession = requirePresent(payload, "chatSession", command);
+  if (
+    chatSession !== null &&
+    (typeof chatSession !== "object" || Array.isArray(chatSession))
+  ) {
+    throw new Error(
+      `invalid args \`chatSession\` for command \`${command}\`: expected an object or null`,
+    );
+  }
+  totalRows += Number(chatSession !== null);
+  if (totalRows > 25_000) {
+    throw new Error(
+      `invalid args \`payload\` for command \`${command}\`: total input limit exceeded`,
+    );
+  }
+  return { ownerToken, payload };
 }
 
 /** Event aggregate mutations must carry the renderer's loaded OCC token. */
@@ -4527,6 +4613,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           "saveSceneBodyBundle",
         )(requireSceneBodyBundlePayload(a)),
       ),
+  },
+  runtime_performance_seed: {
+    run: async (b, a) => {
+      const { ownerToken, payload } = requireRuntimePerformanceSeedArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.runtimePerformanceSeed,
+          "runtimePerformanceSeed",
+        )(ownerToken, payload),
+      );
+    },
   },
   vacuum_database: {
     run: async (b) => {

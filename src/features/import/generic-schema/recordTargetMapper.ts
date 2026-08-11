@@ -1,4 +1,7 @@
-import type { ImportCodexEntryRecord, ImportSnippetRecord } from "../core/importSourceRecord";
+import type {
+  ImportCodexEntryRecord,
+  ImportSnippetRecord,
+} from "../core/importSourceRecord";
 import type { GenericSchemaTargetMapping } from "./schemaTypes";
 
 export interface MappedTableRow {
@@ -30,7 +33,9 @@ export function mapTableRowsToTargets(input: {
     });
 
     const mapped: Record<string, string> = {};
-    for (const [fieldId, columnName] of Object.entries(input.mapping.fieldMappings)) {
+    for (const [fieldId, columnName] of Object.entries(
+      input.mapping.fieldMappings,
+    )) {
       mapped[fieldId] = sourceValues[columnName] ?? "";
     }
 

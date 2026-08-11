@@ -5,7 +5,10 @@ interface Props {
 
 export function ImportExtractionStep({ codexCount, snippetCount }: Props) {
   return (
-    <section className="flex flex-col gap-2" data-testid="import-wizard-extraction-step">
+    <section
+      className="flex flex-col gap-2"
+      data-testid="import-wizard-extraction-step"
+    >
       <p className="text-xs text-muted-foreground">
         ナラティブ抽出（プレビュー）— AI 解析は未接続です。
       </p>

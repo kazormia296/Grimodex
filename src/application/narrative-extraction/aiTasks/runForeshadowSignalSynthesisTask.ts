@@ -40,7 +40,9 @@ export interface ForeshadowSignalSynthesisAiResult {
 }
 
 function buildPrompt(input: RunForeshadowSignalSynthesisTaskInput): string {
-  const entities = input.candidateEntityRefs.map((ref) => `- ${ref}`).join("\n");
+  const entities = input.candidateEntityRefs
+    .map((ref) => `- ${ref}`)
+    .join("\n");
   return `あなたは小説の伏線 setup 信号抽出アシスタントです。1 か所の本文抜粋から
 setup 信号候補を JSON で返してください。候補にない Entity Ref は作らないでください。
 
@@ -75,7 +77,8 @@ function parseResult(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const row = parsed as Record<string, unknown>;
   if (row.clusterRef !== input.clusterRef) return null;
   if (row.documentRef !== input.documentRef) return null;
@@ -118,7 +121,9 @@ export async function runForeshadowSignalSynthesisTask(
   const projectId = requireAuditProjectId(
     input.projectId ?? useTreeStore.getState().projectId,
   );
-  const ov = resolveRoleSendOverride(NARRATIVE_FORESHADOW_SIGNAL_SYNTHESIZE_PATH);
+  const ov = resolveRoleSendOverride(
+    NARRATIVE_FORESHADOW_SIGNAL_SYNTHESIZE_PATH,
+  );
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: buildPrompt(input) }],
     {

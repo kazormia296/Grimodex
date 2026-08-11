@@ -729,7 +729,11 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         toast.error(i18next.t("phase.editConflict"));
       } else {
         toast.error(i18next.t("phase.updateFailed"));
-        debugLog.error("PhaseStore", "upsertDetailOverride", errorDetail(error));
+        debugLog.error(
+          "PhaseStore",
+          "upsertDetailOverride",
+          errorDetail(error),
+        );
       }
       return;
     }
@@ -925,7 +929,11 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         toast.error(i18next.t("phase.editConflict"));
       } else {
         toast.error(i18next.t("phase.updateFailed"));
-        debugLog.error("PhaseStore", "deleteDetailOverride", errorDetail(error));
+        debugLog.error(
+          "PhaseStore",
+          "deleteDetailOverride",
+          errorDetail(error),
+        );
       }
       return;
     }

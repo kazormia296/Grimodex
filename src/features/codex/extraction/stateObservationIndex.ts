@@ -20,7 +20,10 @@ export interface StateObservationIndexEntry {
 
 export interface StateObservationIndex {
   readonly entries: readonly StateObservationIndexEntry[];
-  readonly byEntityFacet: ReadonlyMap<string, readonly StateObservationIndexEntry[]>;
+  readonly byEntityFacet: ReadonlyMap<
+    string,
+    readonly StateObservationIndexEntry[]
+  >;
 }
 
 export interface BuildStateObservationIndexOptions {

@@ -75,7 +75,9 @@ export function synthesizePhaseBoundaries(
     const persistence = evaluatePhasePersistenceGate(candidate);
     const observationRefs = [
       ...new Set(
-        candidate.transitions.flatMap((transition) => transition.observationRefs),
+        candidate.transitions.flatMap(
+          (transition) => transition.observationRefs,
+        ),
       ),
     ];
     boundaries.push({
@@ -85,8 +87,7 @@ export function synthesizePhaseBoundaries(
         entityId: candidate.entityId,
         anchorDocumentRef: candidate.anchorDocumentRef,
         labelSuggestion:
-          options.labelForCandidate?.(candidate) ??
-          defaultLabel(candidate),
+          options.labelForCandidate?.(candidate) ?? defaultLabel(candidate),
         transitions: candidate.transitions.map((transition) => ({
           transitionId: transition.transitionId,
           durability: transition.payload.durability,

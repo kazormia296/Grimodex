@@ -2,10 +2,7 @@ import { getTableColumns, getTableName } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import contractJson from "./generated/schema-contract.json";
-import {
-  codexDetailDefinitions,
-  codexDetailValues,
-} from "./schema";
+import { codexDetailDefinitions, codexDetailValues } from "./schema";
 
 describe("detail OCC schema (v8)", () => {
   it("declares OCC columns on detail definitions and values", () => {
@@ -14,24 +11,12 @@ describe("detail OCC schema (v8)", () => {
     );
     expect(
       Object.values(getTableColumns(codexDetailDefinitions)).map((c) => c.name),
-    ).toEqual(
-      expect.arrayContaining([
-        "version",
-        "created_at",
-        "updated_at",
-      ]),
-    );
+    ).toEqual(expect.arrayContaining(["version", "created_at", "updated_at"]));
 
     expect(getTableName(codexDetailValues)).toBe("codex_detail_values");
     expect(
       Object.values(getTableColumns(codexDetailValues)).map((c) => c.name),
-    ).toEqual(
-      expect.arrayContaining([
-        "version",
-        "created_at",
-        "updated_at",
-      ]),
-    );
+    ).toEqual(expect.arrayContaining(["version", "created_at", "updated_at"]));
   });
 
   it("bumps generated schema contract to version 8 with OCC columns", () => {

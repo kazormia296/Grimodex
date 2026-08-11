@@ -9,11 +9,7 @@ export type StateCommitment =
   | "speculation"
   | "conflicted";
 
-export type StateSupport =
-  | "direct"
-  | "corroborated"
-  | "inferred"
-  | "weak";
+export type StateSupport = "direct" | "corroborated" | "inferred" | "weak";
 
 export type StateNarrativeFrame =
   | "primary"

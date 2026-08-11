@@ -79,6 +79,7 @@ use grimodex_db::recovery::{
     export_safe_mode_diagnostics, list_safe_mode_candidates, quarantine_live_database,
     restore_safe_mode_candidate, verify_safe_mode_candidate,
 };
+use grimodex_db::runtime_performance_seed::{self, RuntimePerformanceSeedPayload};
 use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
@@ -92,6 +93,24 @@ use grimodex_db::{with_db_state, AppError, BatchStatement, Database, QueryResult
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn};
+
+const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
+
+fn validate_runtime_performance_owner_token(owner_token: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        owner_token.len() <= 200,
+        "runtime performance fixture owner token is too long"
+    );
+    let expected = std::env::var(RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("runtime performance fixture seed is disabled"))?;
+    anyhow::ensure!(
+        !owner_token.is_empty() && owner_token == expected,
+        "runtime performance fixture owner token mismatch"
+    );
+    Ok(())
+}
 
 #[derive(Clone)]
 struct CorrelatedStreamEmitter {
@@ -2069,6 +2088,29 @@ impl Backend {
             let payload: SaveSceneBodyBundlePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
                 let result = scene_body::save_scene_body_bundle(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
+    /// CI-only deterministic runtime fixture writer. The per-launch owner
+    /// token makes the command fail closed outside the performance harness;
+    /// the shared DB layer validates and commits the typed graph in one tx.
+    #[napi]
+    pub async fn runtime_performance_seed(
+        &self,
+        owner_token: String,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            validate_runtime_performance_owner_token(&owner_token)?;
+            runtime_performance_seed::validate_runtime_performance_seed_wire_value(&payload)?;
+            let payload: RuntimePerformanceSeedPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result =
+                    runtime_performance_seed::seed_runtime_performance_fixture(db, payload)?;
                 Ok(serde_json::to_string(&result)?)
             })
         })

@@ -56,7 +56,7 @@ export function detectEncoding(bytes: Uint8Array): EncodingDetectionResult {
   }
 
   const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
-  let utf8Valid = false;
+  let utf8Valid: boolean;
   try {
     utf8Decoder.decode(bytes);
     utf8Valid = true;

@@ -35,7 +35,7 @@ import {
   RUNTIME_PERFORMANCE_STEADY_INPUT_TEXT,
   buildRuntimePerformanceFixtureForReview,
   buildRuntimeFixtureActualCardinalityQuery,
-  buildRuntimeFixtureStatements,
+  buildRuntimeFixtureSeedPayload,
   parseRuntimeFixtureActualCardinality,
 } from "./runtime-performance-fixture.mjs";
 import {
@@ -85,6 +85,16 @@ const RUNTIME_PERFORMANCE_FOREGROUND_SWITCHES = [
   "--disable-renderer-backgrounding",
   "--disable-backgrounding-occluded-windows",
 ];
+
+async function seedRuntimePerformanceFixture(page, profile) {
+  if (!runtimePerformanceOwnerToken) {
+    throw new Error("runtime performance seed owner token is unavailable");
+  }
+  return await invokeOk(page, "runtime_performance_seed", {
+    ownerToken: runtimePerformanceOwnerToken,
+    payload: buildRuntimeFixtureSeedPayload(profile),
+  });
+}
 const WORKSPACE_OPEN_START_MARK = "grimodex.workspaceOpen.start";
 const EDITOR_INPUT_READY_MARK = `grimodex.editorInputReady:${encodeURIComponent(
   PERF_SCENE_ID,
@@ -2204,9 +2214,7 @@ async function phaseSeed() {
     // cannot be satisfied by an empty editor shell. This fixture is separate
     // from the scene created in phase 2 and asserted after restart in phase 3.
     if (performanceOutputPath) {
-      await invokeOk(page, "db_execute_batch", {
-        statements: buildRuntimeFixtureStatements(RUNTIME_BENCHMARK_FIXTURE),
-      });
+      await seedRuntimePerformanceFixture(page, RUNTIME_BENCHMARK_FIXTURE);
       const actualCardinalityQuery = buildRuntimeFixtureActualCardinalityQuery(
         RUNTIME_BENCHMARK_FIXTURE,
       );

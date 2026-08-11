@@ -753,6 +753,14 @@ pub struct TreeNodeDeletePayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TreeNodePatchChangeEvent {
+    pub event_uid: String,
+    pub session_id: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TreeNodePatchPayload {
     pub project_id: String,
     pub node_id: String,
@@ -760,6 +768,7 @@ pub struct TreeNodePatchPayload {
     pub base_version: Option<i64>,
     pub bump_version: bool,
     pub updated_at: String,
+    pub change_event: Option<TreeNodePatchChangeEvent>,
 }
 
 const TREE_NODE_ROW_SELECT: &str = "
@@ -1023,6 +1032,26 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
             .all(|key| columns.iter().any(|(wire, _)| wire == key)),
         "tree node patch contains an unsupported field"
     );
+    if let Some(event) = payload.change_event.as_ref() {
+        require_non_empty(&event.event_uid, "changeEvent.eventUid")?;
+        require_non_empty(&event.session_id, "changeEvent.sessionId")?;
+        anyhow::ensure!(
+            event.timestamp >= 0,
+            "tree node changeEvent timestamp must be non-negative"
+        );
+        anyhow::ensure!(
+            payload.base_version.is_some() && payload.bump_version,
+            "tree node content event requires versioned OCC"
+        );
+        anyhow::ensure!(
+            payload.patch.contains_key("content")
+                && payload
+                    .patch
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "content" | "charCount")),
+            "tree node content event requires a content-only patch"
+        );
+    }
     assignments.push(format!("updated_at = ?{}", params.len() + 1));
     params.push(Value::String(payload.updated_at.clone()));
     if payload.bump_version {
@@ -1108,6 +1137,32 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
                 "TREE_NODE_VERSION_MISMATCH: node '{}' version conflict; expected base version {}",
                 payload.node_id,
                 base_version
+            );
+        }
+        if let Some(event) = payload.change_event.as_ref() {
+            anyhow::ensure!(
+                row.get("nodeType").and_then(Value::as_str) == Some("scene"),
+                "tree node content event target must be a scene"
+            );
+            let appended = crate::change_events::append_change_events_in_tx(
+                &tx,
+                &payload.project_id,
+                &event.session_id,
+                &[crate::change_events::AppendChangeEvent {
+                    event_uid: event.event_uid.clone(),
+                    scene_id: Some(payload.node_id.clone()),
+                    domain: "editor".to_string(),
+                    op_type: "scene.content_update".to_string(),
+                    entity_type: Some("tree_batch".to_string()),
+                    entity_id: Some(payload.node_id.clone()),
+                    payload: serde_json::json!({ "sceneId": payload.node_id }).to_string(),
+                    timestamp: event.timestamp,
+                }],
+            )?;
+            anyhow::ensure!(
+                appended.inserted_count == 1,
+                "tree node content event UID '{}' already exists",
+                event.event_uid
             );
         }
         tx.commit()?;
@@ -1504,6 +1559,7 @@ mod tests {
                 base_version: Some(0),
                 bump_version: true,
                 updated_at: "native-update".to_string(),
+                change_event: None,
             },
         )
         .expect("patch tree node");
@@ -1635,6 +1691,7 @@ mod tests {
                     base_version: Some(0),
                     bump_version: true,
                     updated_at: format!("rejected-{field}"),
+                    change_event: None,
                 },
             )
             .expect_err("cross-project relation must be rejected");
@@ -1701,6 +1758,7 @@ mod tests {
                     base_version: Some(0),
                     bump_version: true,
                     updated_at: format!("rejected-parent-{parent_id}"),
+                    change_event: None,
                 },
             )
             .expect_err("invalid structural parent must be rejected");
@@ -1727,6 +1785,7 @@ mod tests {
                 base_version: Some(0),
                 bump_version: true,
                 updated_at: "rejected-cycle".to_string(),
+                change_event: None,
             },
         )
         .expect_err("descendant parent must be rejected");
@@ -1767,6 +1826,7 @@ mod tests {
                 base_version: Some(0),
                 bump_version: true,
                 updated_at: "winner-update".to_string(),
+                change_event: None,
             },
         )
         .expect("write winning tree patch");
@@ -1785,6 +1845,7 @@ mod tests {
                 base_version: Some(0),
                 bump_version: true,
                 updated_at: "stale-update".to_string(),
+                change_event: None,
             },
         )
         .expect_err("one-generation-stale patch must conflict");
@@ -1804,5 +1865,94 @@ mod tests {
             Ok(())
         })
         .expect("verify stale patch did not mutate the tree node");
+    }
+
+    #[test]
+    fn native_tree_content_event_commits_with_canonical_chain_and_rolls_back_duplicate_uid() {
+        let db = fixture();
+        let patch = |content: &str, base_version: i64, event_uid: &str, timestamp: i64| {
+            tree_node_patch(
+                &db,
+                TreeNodePatchPayload {
+                    project_id: "p1".to_string(),
+                    node_id: "moved".to_string(),
+                    patch: serde_json::Map::from_iter([
+                        ("content".to_string(), serde_json::json!(content)),
+                        ("charCount".to_string(), serde_json::json!(content.len())),
+                    ]),
+                    base_version: Some(base_version),
+                    bump_version: true,
+                    updated_at: format!("event-{timestamp}"),
+                    change_event: Some(TreeNodePatchChangeEvent {
+                        event_uid: event_uid.to_string(),
+                        session_id: "external-product-journey".to_string(),
+                        timestamp,
+                    }),
+                },
+            )
+        };
+
+        patch("first", 0, "event-1", 10).expect("first atomic content event");
+        patch("second", 1, "event-2", 20).expect("second atomic content event");
+
+        db.with_conn(|conn| {
+            let rows = conn
+                .prepare(
+                    "SELECT event_uid, scene_id, domain, op_type, entity_type,
+                            entity_id, payload, session_id, sequence, prev_hash, hash
+                       FROM change_events WHERE project_id = 'p1' ORDER BY sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].0, "event-1");
+            assert_eq!(rows[0].1.as_deref(), Some("moved"));
+            assert_eq!(rows[0].2, "editor");
+            assert_eq!(rows[0].3, "scene.content_update");
+            assert_eq!(rows[0].4.as_deref(), Some("tree_batch"));
+            assert_eq!(rows[0].5.as_deref(), Some("moved"));
+            assert_eq!(rows[0].6, r#"{"sceneId":"moved"}"#);
+            assert_eq!(rows[0].7, "external-product-journey");
+            assert_eq!(rows[0].8, 1);
+            assert_eq!(rows[0].9, "0".repeat(64));
+            assert_eq!(rows[0].10.len(), 64);
+            assert_eq!(rows[1].8, 2);
+            assert_eq!(rows[1].9, rows[0].10);
+            assert_eq!(rows[1].10.len(), 64);
+            Ok(())
+        })
+        .expect("read canonical content event chain");
+
+        let error = patch("must-roll-back", 2, "event-2", 30)
+            .expect_err("duplicate event UID must roll back the content patch");
+        assert!(error.to_string().contains("already exists"));
+        db.with_conn(|conn| {
+            let (content, version, event_count): (String, i64, i64) = conn.query_row(
+                "SELECT content, version,
+                        (SELECT COUNT(*) FROM change_events WHERE project_id = 'p1')
+                   FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(content, "second");
+            assert_eq!(version, 2);
+            assert_eq!(event_count, 2);
+            Ok(())
+        })
+        .expect("verify duplicate UID rollback");
     }
 }

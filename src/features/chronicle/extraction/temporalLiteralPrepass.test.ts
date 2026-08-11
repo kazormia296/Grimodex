@@ -8,13 +8,17 @@ import {
 describe("runTemporalLiteralPrepass", () => {
   it("extracts absolute years", () => {
     const hits = runTemporalLiteralPrepass("共和国暦183年の冬");
-    expect(hits.some((h) => h.expression.kind === "absolute" && h.expression.year === 183)).toBe(
-      true,
-    );
+    expect(
+      hits.some(
+        (h) => h.expression.kind === "absolute" && h.expression.year === 183,
+      ),
+    ).toBe(true);
   });
 
   it("parses relative 三日後", () => {
-    const hits = runTemporalLiteralPrepass("王都が陥落した三日後、教会は砲撃された。");
+    const hits = runTemporalLiteralPrepass(
+      "王都が陥落した三日後、教会は砲撃された。",
+    );
     const rel = hits.find((h) => h.expression.kind === "relative");
     expect(rel?.expression).toMatchObject({
       kind: "relative",
@@ -79,7 +83,10 @@ describe("buildAttachmentCandidates", () => {
   });
 
   it("rejects unknown node refs from the model", () => {
-    const validated = validateAttachmentNodeRefs(["tn:a", "tn:evil"], new Set(["tn:a"]));
+    const validated = validateAttachmentNodeRefs(
+      ["tn:a", "tn:evil"],
+      new Set(["tn:a"]),
+    );
     expect(validated.ok).toBe(false);
   });
 });

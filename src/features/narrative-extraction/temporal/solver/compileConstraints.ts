@@ -85,9 +85,11 @@ function unitToMinutes(
   }
 }
 
-function expandIntervalRelation(
-  constraint: IntervalRelationConstraint,
-): Array<{ left: TemporalEndpointRef; right: TemporalEndpointRef; weight: number }> {
+function expandIntervalRelation(constraint: IntervalRelationConstraint): Array<{
+  left: TemporalEndpointRef;
+  right: TemporalEndpointRef;
+  weight: number;
+}> {
   const A = constraint.leftNodeId;
   const B = constraint.rightNodeId;
   const start = (nodeId: TemporalNodeId): TemporalEndpointRef => ({
@@ -168,13 +170,18 @@ function resolutionBounds(
   const endMin = dayToEpochMinute(
     resolved.endDay,
     resolved.endMinute ??
-      (resolved.granularity === "time" ? (resolved.startMinute ?? 0) : MINUTES_PER_DAY - 1),
+      (resolved.granularity === "time"
+        ? (resolved.startMinute ?? 0)
+        : MINUTES_PER_DAY - 1),
   );
   if (endpoint === "end") {
     if (resolved.precision === "exact" && resolved.granularity === "time") {
       return { earliest: endMin, latest: endMin };
     }
-    if (resolved.precision === "exact" && resolved.startDay === resolved.endDay) {
+    if (
+      resolved.precision === "exact" &&
+      resolved.startDay === resolved.endDay
+    ) {
       return {
         earliest: dayToEpochMinute(resolved.endDay, 0),
         latest: dayToEpochMinute(resolved.endDay, MINUTES_PER_DAY - 1),
@@ -277,10 +284,7 @@ export function compileConstraints(
           constraint.resolved,
           constraint.endpoint,
         );
-        const kind =
-          constraint.endpoint === "end"
-            ? "end"
-            : ("start" as const);
+        const kind = constraint.endpoint === "end" ? "end" : ("start" as const);
         absolutes.push({
           variableKey: variableKey(constraint.nodeId, kind),
           earliest: bounds.earliest,
@@ -444,7 +448,7 @@ function compileRelativeOffset(
         soft,
       },
       {
-        id: `diff:${constraint.id}:${seq++}`,
+        id: `diff:${constraint.id}:${seq}`,
         fromKey: endpointKey(constraint.left),
         toKey: endpointKey(constraint.right),
         weight: -min,

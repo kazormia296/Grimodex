@@ -195,9 +195,9 @@ describe("solveTemporalGraph", () => {
       graph([node("tn:a"), node("tn:b")], constraints),
     );
     expect(result.conflicts).toEqual([]);
-    expect(result.hardResolution.every((r) => r.resolution !== "contradictory")).toBe(
-      true,
-    );
+    expect(
+      result.hardResolution.every((r) => r.resolution !== "contradictory"),
+    ).toBe(true);
   });
 
   it("does not invent week length when weekday names are absent", () => {
@@ -282,26 +282,32 @@ describe("calendarConstraintPass", () => {
       null,
       new Map(),
     );
-    expect(result.diagnostics.some((d) => d.code === "calendar-arithmetic-invalid-target")).toBe(
-      true,
-    );
+    expect(
+      result.diagnostics.some(
+        (d) => d.code === "calendar-arithmetic-invalid-target",
+      ),
+    ).toBe(true);
   });
 });
 
 describe("resolveStoryRanks", () => {
   it("keeps incomparable nodes from inventing total order", () => {
-    const ranks = resolveStoryRanks(["tn:a", "tn:b", "tn:c"], [
-      { earlier: "tn:a", later: "tn:b" },
-      { earlier: "tn:a", later: "tn:c" },
-    ]);
+    const ranks = resolveStoryRanks(
+      ["tn:a", "tn:b", "tn:c"],
+      [
+        { earlier: "tn:a", later: "tn:b" },
+        { earlier: "tn:a", later: "tn:c" },
+      ],
+    );
     expect(ranks.compare("tn:b", "tn:c")).toEqual({ kind: "incomparable" });
     expect(ranks.compare("tn:a", "tn:b")).toEqual({ kind: "before" });
   });
 
   it("preserves same-time groups", () => {
-    const ranks = resolveStoryRanks(["tn:a", "tn:b"], [
-      { earlier: "tn:a", later: "tn:b", equal: true },
-    ]);
+    const ranks = resolveStoryRanks(
+      ["tn:a", "tn:b"],
+      [{ earlier: "tn:a", later: "tn:b", equal: true }],
+    );
     expect(ranks.compare("tn:a", "tn:b")).toEqual({ kind: "equal" });
     expect(ranks.equalTimeGroups.get("tn:a")).toBe(
       ranks.equalTimeGroups.get("tn:b"),

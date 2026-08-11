@@ -22,6 +22,7 @@ use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 
 type PayoffRootState = (Option<String>, Option<i64>, Option<i64>, i64);
+type PayoffUpdateState = (String, Option<String>, Option<i64>, Option<i64>, i64);
 
 pub(crate) fn setup_semantic_key(
     foreshadow_id: &str,
@@ -366,6 +367,26 @@ fn validate_payoff_anchor(
     }
 }
 
+fn validate_payoff_scene_ownership(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<()> {
+    let scene_project_id: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM tree_nodes
+              WHERE id = ?1 AND node_type = 'scene'",
+            params![scene_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    anyhow::ensure!(
+        scene_project_id.as_deref() == Some(project_id),
+        "foreshadow payoff scene must reference an existing same project scene"
+    );
+    Ok(())
+}
+
 fn in_placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
@@ -445,19 +466,7 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
                 payoff_to_pos,
             )?;
             if let Some(scene_id) = payoff_scene_id.as_deref() {
-                let scene = Database::execute_with_conn(
-                    conn,
-                    "SELECT project_id FROM tree_nodes WHERE id = ?",
-                    &[Value::String(scene_id.to_string())],
-                    "get",
-                )?;
-                if scene.first().and_then(|row| row.get("project_id")).and_then(Value::as_str)
-                    != Some(project_id.as_str())
-                {
-                    return Err(anyhow::anyhow!(
-                        "foreshadow payoff scene must belong to the same project"
-                    ));
-                }
+                validate_payoff_scene_ownership(conn, &project_id, scene_id)?;
             }
             Database::execute_with_conn(
                 conn,
@@ -587,10 +596,9 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
     if let Some(ref lb) = patch.load_bearing {
         validate_load_bearing(lb.as_deref())?;
     }
-    let payoff_scene_for_validation = patch
-        .payoff_scene_id
-        .as_ref()
-        .and_then(|scene_id| scene_id.clone());
+    let payoff_scene_patch = patch.payoff_scene_id.clone();
+    let payoff_from_patch = patch.payoff_from_pos;
+    let payoff_to_patch = patch.payoff_to_pos;
     let now = chrono::Utc::now().timestamp_millis();
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
@@ -670,35 +678,50 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
     db.with_conn(|conn| {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
-            if let Some(scene_id) = payoff_scene_for_validation.as_deref() {
-                let owner = Database::execute_with_conn(
-                    conn,
-                    "SELECT project_id FROM foreshadows WHERE id = ?",
-                    &[Value::String(id.clone())],
-                    "get",
-                )?;
-                if let Some(owner_project_id) = owner
-                    .first()
-                    .and_then(|row| row.get("project_id"))
-                    .and_then(Value::as_str)
-                {
-                    let payoff_scene = Database::execute_with_conn(
-                        conn,
-                        "SELECT project_id FROM tree_nodes WHERE id = ?",
-                        &[Value::String(scene_id.to_string())],
-                        "get",
-                    )?;
-                    if payoff_scene
-                        .first()
-                        .and_then(|row| row.get("project_id"))
-                        .and_then(Value::as_str)
-                        != Some(owner_project_id)
-                    {
-                        return Err(anyhow::anyhow!(
-                            "foreshadow payoff scene must belong to the same project"
-                        ));
-                    }
-                }
+            let current: Option<PayoffUpdateState> = conn
+                .query_row(
+                    "SELECT project_id, payoff_scene_id, payoff_from_pos,
+                            payoff_to_pos, version
+                       FROM foreshadows WHERE id = ?1",
+                    params![id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((
+                project_id,
+                current_scene_id,
+                current_from_pos,
+                current_to_pos,
+                current_version,
+            )) = current
+            else {
+                return Err(anyhow::anyhow!(
+                    "FORESHADOW_VERSION_MISMATCH: row missing or expected version {base_version} is stale"
+                ));
+            };
+            anyhow::ensure!(
+                current_version == base_version,
+                "FORESHADOW_VERSION_MISMATCH: expected version {base_version}, found {current_version}"
+            );
+
+            let effective_scene_id = payoff_scene_patch.clone().unwrap_or(current_scene_id);
+            let effective_from_pos = payoff_from_patch.unwrap_or(current_from_pos);
+            let effective_to_pos = payoff_to_patch.unwrap_or(current_to_pos);
+            validate_payoff_anchor(
+                effective_scene_id.as_deref(),
+                effective_from_pos,
+                effective_to_pos,
+            )?;
+            if let Some(scene_id) = effective_scene_id.as_deref() {
+                validate_payoff_scene_ownership(conn, &project_id, scene_id)?;
             }
             Database::execute_with_conn(conn, &sql, &params, "run")?;
             anyhow::ensure!(
@@ -2070,6 +2093,43 @@ mod tests {
         id
     }
 
+    fn insert_folder(db: &Database, project_id: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+             VALUES (?, ?, 'folder', 'Folder', 'a0')",
+            &[
+                Value::String(id.clone()),
+                Value::String(project_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("insert folder");
+        id
+    }
+
+    fn seed_payoff_anchor(
+        db: &Database,
+        foreshadow_id: &str,
+        scene_id: &str,
+        from_pos: i64,
+        to_pos: i64,
+    ) {
+        db.execute(
+            "UPDATE foreshadows
+                SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?
+              WHERE id = ?",
+            &[
+                Value::String(scene_id.to_string()),
+                Value::Number(from_pos.into()),
+                Value::Number(to_pos.into()),
+                Value::String(foreshadow_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("seed payoff anchor");
+    }
+
     fn insert_codex_entry(db: &Database, project_id: &str) -> String {
         let type_id = uuid::Uuid::new_v4().to_string();
         db.execute(
@@ -2865,6 +2925,53 @@ mod tests {
     }
 
     #[test]
+    fn create_rejects_same_project_folder_as_payoff_scene_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let folder_id = insert_folder(&db, &project_id);
+        let error = create(
+            &db,
+            ForeshadowCreatePayload {
+                id: Some("foreshadow-folder-payoff".to_string()),
+                request_id: Some("foreshadow-folder-payoff".to_string()),
+                project_id,
+                title: "Invalid folder payoff".to_string(),
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(folder_id),
+                payoff_from_pos: Some(1),
+                payoff_to_pos: Some(2),
+                payoff_confirmed: false,
+                abandoned: false,
+                secret: true,
+                load_bearing: None,
+                codex_link_dirty_at: None,
+            },
+        )
+        .expect_err("folder payoff must be rejected");
+        assert!(error.to_string().contains("same project scene"));
+
+        let rows = db
+            .execute(
+                "SELECT COUNT(*) AS count FROM foreshadows
+                  WHERE id = 'foreshadow-folder-payoff'",
+                &[],
+                "get",
+            )
+            .expect("count rejected foreshadow");
+        assert_eq!(rows[0]["count"], 0);
+        let ledger = db
+            .execute(
+                "SELECT COUNT(*) AS count FROM idempotency_requests
+                  WHERE request_id = 'foreshadow-folder-payoff'",
+                &[],
+                "get",
+            )
+            .expect("count rejected idempotency ledger");
+        assert_eq!(ledger[0]["count"], 0);
+    }
+
+    #[test]
     fn update_rejects_a_cross_project_payoff_scene() {
         let db = test_db();
         let project_id = insert_project(&db);
@@ -2895,6 +3002,240 @@ mod tests {
             )
             .expect("read foreshadow");
         assert_eq!(persisted[0]["payoff_scene_id"], Value::Null);
+    }
+
+    #[test]
+    fn update_rejects_clearing_payoff_scene_while_positions_remain_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let error = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: Some("must roll back".to_string()),
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(None),
+                payoff_from_pos: None,
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("scene clear with retained positions must reject");
+        assert!(error.to_string().contains("require a payoff scene"));
+
+        let rows = db
+            .execute(
+                "SELECT title, payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                   FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load unchanged foreshadow");
+        assert_eq!(rows[0]["title"], "Test");
+        assert_eq!(rows[0]["payoff_scene_id"], scene_id);
+        assert_eq!(rows[0]["payoff_from_pos"], 10);
+        assert_eq!(rows[0]["payoff_to_pos"], 20);
+        assert_eq!(rows[0]["version"], 0);
+    }
+
+    #[test]
+    fn update_rejects_partial_position_patches_against_effective_tuple() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let invalid_range = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: None,
+                payoff_from_pos: Some(Some(30)),
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("effective from > to must reject");
+        assert!(invalid_range.to_string().contains("0 <= from <= to"));
+
+        let half_null = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: None,
+                payoff_from_pos: Some(None),
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("one null position must reject");
+        assert!(half_null.to_string().contains("both be null"));
+
+        let rows = db
+            .execute(
+                "SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                   FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load unchanged foreshadow");
+        assert_eq!(rows[0]["payoff_scene_id"], scene_id);
+        assert_eq!(rows[0]["payoff_from_pos"], 10);
+        assert_eq!(rows[0]["payoff_to_pos"], 20);
+        assert_eq!(rows[0]["version"], 0);
+    }
+
+    #[test]
+    fn update_rejects_same_project_folder_as_payoff_scene_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        let folder_id = insert_folder(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let error = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: Some("must roll back".to_string()),
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(Some(folder_id)),
+                payoff_from_pos: None,
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("folder payoff must be rejected");
+        assert!(error.to_string().contains("same project scene"));
+
+        let rows = db
+            .execute(
+                "SELECT title, payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                   FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load unchanged foreshadow");
+        assert_eq!(rows[0]["title"], "Test");
+        assert_eq!(rows[0]["payoff_scene_id"], scene_id);
+        assert_eq!(rows[0]["payoff_from_pos"], 10);
+        assert_eq!(rows[0]["payoff_to_pos"], 20);
+        assert_eq!(rows[0]["version"], 0);
+    }
+
+    #[test]
+    fn update_accepts_a_valid_payoff_tuple_as_one_cas_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let old_scene_id = insert_scene(&db, &project_id);
+        let new_scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &old_scene_id, 10, 20);
+
+        let updated = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(Some(new_scene_id.clone())),
+                payoff_from_pos: Some(Some(30)),
+                payoff_to_pos: Some(Some(40)),
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect("valid tuple update");
+        assert_eq!(updated["payoff_scene_id"], new_scene_id);
+        assert_eq!(updated["payoff_from_pos"], 30);
+        assert_eq!(updated["payoff_to_pos"], 40);
+        assert_eq!(updated["version"], 1);
+
+        let stale = update(
+            &db,
+            foreshadow_id,
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(Some(old_scene_id)),
+                payoff_from_pos: Some(Some(1)),
+                payoff_to_pos: Some(Some(2)),
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("stale payoff tuple update must reject");
+        assert!(stale.to_string().contains("FORESHADOW_VERSION_MISMATCH"));
+    }
+
+    #[test]
+    fn update_accepts_explicitly_clearing_the_entire_payoff_tuple() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let updated = update(
+            &db,
+            foreshadow_id,
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(None),
+                payoff_from_pos: Some(None),
+                payoff_to_pos: Some(None),
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect("explicit all-null tuple clear");
+        assert_eq!(updated["payoff_scene_id"], Value::Null);
+        assert_eq!(updated["payoff_from_pos"], Value::Null);
+        assert_eq!(updated["payoff_to_pos"], Value::Null);
+        assert_eq!(updated["version"], 1);
     }
 
     #[test]

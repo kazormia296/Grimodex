@@ -117,7 +117,9 @@ export function compileCreateCodexPhaseOperation(
 ): CreateCodexPhaseOperationV1 {
   const binding = input.proposal.payload.binding;
   if (binding.kind !== "create-new") {
-    throw new Error("compileCreateCodexPhaseOperation requires create-new binding");
+    throw new Error(
+      "compileCreateCodexPhaseOperation requires create-new binding",
+    );
   }
   const narrativeEntityId = input.proposal.payload.narrativeEntityId;
   const entryId =
@@ -130,8 +132,7 @@ export function compileCreateCodexPhaseOperation(
     input.encodeWrite,
   );
   const anchorDocumentRef = binding.phase.anchorDocumentRef;
-  const anchorNodeId =
-    input.resolveAnchorNodeId?.(anchorDocumentRef) ?? null;
+  const anchorNodeId = input.resolveAnchorNodeId?.(anchorDocumentRef) ?? null;
 
   return {
     kind: "codex.phase.create",
@@ -155,7 +156,9 @@ export function compilePatchCodexPhaseOperation(
 ): PatchCodexPhaseOperationV1 {
   const binding = input.proposal.payload.binding;
   if (binding.kind !== "bind-existing") {
-    throw new Error("compilePatchCodexPhaseOperation requires bind-existing binding");
+    throw new Error(
+      "compilePatchCodexPhaseOperation requires bind-existing binding",
+    );
   }
   const summary = input.proposal.payload.summaryOverride;
   const detailOverrides = applyDetailWrites(

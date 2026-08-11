@@ -45,7 +45,10 @@ export function buildStnGraph(
   );
   for (let i = 0; i < n; i++) dist[i]![i] = 0;
   for (const edge of edges) {
-    dist[edge.from]![edge.to] = Math.min(dist[edge.from]![edge.to]!, edge.weight);
+    dist[edge.from]![edge.to] = Math.min(
+      dist[edge.from]![edge.to]!,
+      edge.weight,
+    );
   }
 
   const next: (number | null)[][] = Array.from({ length: n }, () =>

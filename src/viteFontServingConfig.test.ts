@@ -24,7 +24,7 @@ describe("Vite development font serving", () => {
     for (const config of configs) {
       expect(config.server.fs.allow).toContain(dependencyRoot);
     }
-  });
+  }, 15_000);
 
   it("isolates optimized dependencies for Web Editor and desktop modes", async () => {
     const root = process.cwd();

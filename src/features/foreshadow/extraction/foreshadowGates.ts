@@ -73,7 +73,9 @@ export function isMaterialSetupSignal(input: {
   if (input.materiality === "major" || input.materiality === "moderate") {
     return true;
   }
-  return input.signalKind === "causal-seed" || input.signalKind === "object-plant";
+  return (
+    input.signalKind === "causal-seed" || input.signalKind === "object-plant"
+  );
 }
 
 /** Payoff signal must not be admitted on background callback alone. */

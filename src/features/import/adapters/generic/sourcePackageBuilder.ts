@@ -17,7 +17,10 @@ export interface BuildSourcePackageInput {
   readonly createdAt?: string;
 }
 
-function blocksPlainText(resource: DecodedImportResource, blockIds: readonly string[]): string {
+function blocksPlainText(
+  resource: DecodedImportResource,
+  blockIds: readonly string[],
+): string {
   const idSet = new Set(blockIds);
   return resource.blocks
     .filter((block) => idSet.size === 0 || idSet.has(block.blockId))
@@ -29,13 +32,21 @@ function buildStructureRecords(
   resources: readonly DecodedImportResource[],
   plan: GenericImportAssemblyPlan,
 ): ImportSourcePackageDraft["structure"] {
-  const byKey = new Map(resources.map((resource) => [resource.resourceKey, resource]));
-  const codexEntries: ImportSourcePackageDraft["structure"]["codexEntries"][number][] = [];
-  const snippets: ImportSourcePackageDraft["structure"]["snippets"][number][] = [];
+  const byKey = new Map(
+    resources.map((resource) => [resource.resourceKey, resource]),
+  );
+  const codexEntries: ImportSourcePackageDraft["structure"]["codexEntries"][number][] =
+    [];
+  const snippets: ImportSourcePackageDraft["structure"]["snippets"][number][] =
+    [];
 
   for (const record of plan.structureRecords) {
     const resource = byKey.get(record.resourceKey);
-    if (!resource?.structuredData || typeof resource.structuredData !== "object") continue;
+    if (
+      !resource?.structuredData ||
+      typeof resource.structuredData !== "object"
+    )
+      continue;
     const data = resource.structuredData as {
       headers?: string[];
       rows?: string[][];
@@ -48,8 +59,12 @@ function buildStructureRecords(
       record.role === "world-reference" ||
       record.role === "glossary"
     ) {
-      const nameIndex = headers.findIndex((h) => h.toLocaleLowerCase("en-US") === "name");
-      const typeIndex = headers.findIndex((h) => h.toLocaleLowerCase("en-US") === "type");
+      const nameIndex = headers.findIndex(
+        (h) => h.toLocaleLowerCase("en-US") === "name",
+      );
+      const typeIndex = headers.findIndex(
+        (h) => h.toLocaleLowerCase("en-US") === "type",
+      );
       rows.forEach((row, index) => {
         codexEntries.push({
           id: `codex:${record.resourceKey}:${index}`,
@@ -64,14 +79,19 @@ function buildStructureRecords(
     }
 
     if (record.role === "snippet-library") {
-      const titleIndex = headers.findIndex((h) => h.toLocaleLowerCase("en-US") === "title");
-      const contentIndex = headers.findIndex((h) => h.toLocaleLowerCase("en-US") === "content");
+      const titleIndex = headers.findIndex(
+        (h) => h.toLocaleLowerCase("en-US") === "title",
+      );
+      const contentIndex = headers.findIndex(
+        (h) => h.toLocaleLowerCase("en-US") === "content",
+      );
       rows.forEach((row, index) => {
         snippets.push({
           id: `snippet:${record.resourceKey}:${index}`,
           kind: "snippet",
           origin: "source-native",
-          title: row[titleIndex >= 0 ? titleIndex : 0] ?? `Snippet ${index + 1}`,
+          title:
+            row[titleIndex >= 0 ? titleIndex : 0] ?? `Snippet ${index + 1}`,
           content: row[contentIndex >= 0 ? contentIndex : 1] ?? "",
           sourceKey: record.resourceKey,
         });
@@ -95,9 +115,7 @@ export function buildImportSourcePackageFromGeneric(
 
   input.assemblyPlan.scenes.forEach((scene, orderIndex) => {
     const resource = byKey.get(scene.resourceKey);
-    const plainText = resource
-      ? blocksPlainText(resource, scene.blockIds)
-      : "";
+    const plainText = resource ? blocksPlainText(resource, scene.blockIds) : "";
     nodes.push({
       key: scene.sceneKey,
       parentKey: null,
@@ -118,11 +136,15 @@ export function buildImportSourcePackageFromGeneric(
   const fingerprintPayload = {
     label: input.label,
     scenes: input.assemblyPlan.scenes.map((scene) => scene.resourceKey),
-    structure: input.assemblyPlan.structureRecords.map((record) => record.resourceKey),
+    structure: input.assemblyPlan.structureRecords.map(
+      (record) => record.resourceKey,
+    ),
   };
   const fingerprint = sha256Hex(JSON.stringify(fingerprintPayload));
 
-  const diagnostics = input.decodedResources.flatMap((resource) => resource.diagnostics);
+  const diagnostics = input.decodedResources.flatMap(
+    (resource) => resource.diagnostics,
+  );
 
   return {
     schemaVersion: IMPORT_SOURCE_PACKAGE_SCHEMA_VERSION,
@@ -144,7 +166,10 @@ export function buildImportSourcePackageFromGeneric(
     },
     nodes,
     documents,
-    structure: buildStructureRecords(input.decodedResources, input.assemblyPlan),
+    structure: buildStructureRecords(
+      input.decodedResources,
+      input.assemblyPlan,
+    ),
     diagnostics,
     createdAt: now,
   };

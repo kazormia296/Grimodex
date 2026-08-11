@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -9,11 +10,13 @@ import {
   RUNTIME_PERFORMANCE_FIXTURE,
   RUNTIME_PERFORMANCE_INPUT_TEXT,
   RUNTIME_PERFORMANCE_REVIEW_MATRIX,
+  RUNTIME_PERFORMANCE_SEED_LIMITS,
   buildRuntimeEditorDocument,
   buildRuntimeEditorDocumentAfterInput,
   buildRuntimePerformanceFixtureProfile,
   buildRuntimePerformanceFixtureForReview,
   buildRuntimeFixtureActualCardinalityQuery,
+  buildRuntimeFixtureSeedPayload,
   buildRuntimeFixtureStatements,
   buildRuntimeReviewFixture,
   buildRuntimeReviewFixturePlans,
@@ -590,6 +593,17 @@ test("materialized relation fixtures reference entities in the same profile", ()
     timeline.links.every((link) => link.note === null),
     true,
   );
+  const timelineSemanticKeys = new Set(
+    timeline.links.map(
+      (link) => `${link.threadId}|${link.nodeId}|${link.phaseType}`,
+    ),
+  );
+  assert.equal(timeline.links.length, 5_000);
+  assert.equal(
+    timelineSemanticKeys.size,
+    timeline.links.length,
+    "the formal review helper must not collapse marker-link semantic keys",
+  );
 
   const map = buildRuntimeReviewFixture("map-2k");
   const mapNodeIds = new Set(map.nodes.map((node) => node.id));
@@ -756,6 +770,116 @@ test("runtime fixture preserves project-scale surface cardinality", () => {
   );
 });
 
+test("runtime fixture builds one typed, side-effect-free Native seed payload", () => {
+  const payload = buildRuntimeFixtureSeedPayload();
+
+  assert.equal(payload.fixtureId, RUNTIME_PERFORMANCE_FIXTURE.id);
+  assert.equal(payload.projectId, "default-project");
+  assert.equal(payload.treeNodes.length, 502);
+  assert.equal(payload.plotThreads.length, 100);
+  assert.equal(payload.plotThreadSceneLinks.length, 5_000);
+  assert.equal(payload.events.length, 1_000);
+  assert.equal(payload.eventRelations.length, 999);
+  assert.equal(payload.mapNodePositions.length, 500);
+  assert.equal(payload.mapEdges.length, 500);
+
+  const primary = payload.treeNodes.find(
+    (node) => node.id === RUNTIME_PERFORMANCE_FIXTURE.sceneId,
+  );
+  assert.equal(primary.nodeType, "scene");
+  assert.equal(primary.content, buildRuntimeEditorDocument());
+  assert.equal(primary.charCount, RUNTIME_PERFORMANCE_FIXTURE.seededTextChars);
+  assert.equal(primary.chronicleStartTime, 0);
+  assert.equal(primary.chronicleStartGranularity, "day");
+  assert.equal(payload.events[0].endGranularity, "day");
+  assert.equal(payload.events[1].endGranularity, "day");
+});
+
+test("every formal review fixture fits the identical IPC and Rust seed limits", async () => {
+  const payloads = new Map();
+  for (const plan of buildRuntimeReviewFixturePlans()) {
+    const payload = buildRuntimeFixtureSeedPayload(
+      buildRuntimePerformanceFixtureForReview(plan.id),
+    );
+    payloads.set(plan.id, payload);
+    for (const key of [
+      "treeNodes",
+      "mapNodePositions",
+      "mapEdges",
+      "plotThreads",
+      "plotThreadSceneLinks",
+      "events",
+      "eventRelations",
+      "chatMessages",
+    ]) {
+      assert.ok(
+        payload[key].length <= RUNTIME_PERFORMANCE_SEED_LIMITS[key],
+        `${plan.id}.${key} exceeds the trusted seed contract`,
+      );
+    }
+  }
+
+  const treeGrid10k = payloads.get("tree-grid-10k");
+  assert.equal(treeGrid10k.treeNodes.length, 10_000);
+  assert.equal(
+    RUNTIME_PERFORMANCE_SEED_LIMITS.treeNodes - treeGrid10k.treeNodes.length,
+    500,
+  );
+  const timeline = payloads.get(
+    "timeline-1k-scenes-100-threads-5k-markers-links",
+  );
+  const timelineSemanticKeys = new Set(
+    timeline.plotThreadSceneLinks.map(
+      (link) => `${link.threadId}|${link.nodeId}|${link.phaseType}`,
+    ),
+  );
+  assert.equal(timeline.plotThreadSceneLinks.length, 5_000);
+  assert.equal(timelineSemanticKeys.size, 5_000);
+
+  const [ipcSource, rustSource] = await Promise.all([
+    readFile(path.join(repoRoot, "electron/shared/ipcContract.ts"), "utf8"),
+    readFile(
+      path.join(
+        repoRoot,
+        "src-tauri/crates/grimodex-db/src/runtime_performance_seed.rs",
+      ),
+      "utf8",
+    ),
+  ]);
+  const ipcLimit = (key) => {
+    const match = new RegExp(`\\["${key}", ([\\d_]+)\\]`).exec(ipcSource);
+    assert.ok(match, `missing IPC seed limit for ${key}`);
+    return Number(match[1].replaceAll("_", ""));
+  };
+  const rustLimit = (name) => {
+    const match = new RegExp(`const ${name}: usize = ([\\d_]+);`).exec(
+      rustSource,
+    );
+    assert.ok(match, `missing Rust seed limit ${name}`);
+    return Number(match[1].replaceAll("_", ""));
+  };
+  for (const key of [
+    "treeNodes",
+    "mapNodePositions",
+    "mapEdges",
+    "plotThreads",
+    "plotThreadSceneLinks",
+    "events",
+    "eventRelations",
+    "chatMessages",
+  ]) {
+    assert.equal(ipcLimit(key), RUNTIME_PERFORMANCE_SEED_LIMITS[key]);
+  }
+  assert.equal(ipcLimit("treeNodes"), rustLimit("MAX_TREE_NODES"));
+  assert.equal(ipcLimit("mapNodePositions"), rustLimit("MAX_MAP_ROWS"));
+  assert.equal(ipcLimit("mapEdges"), rustLimit("MAX_MAP_ROWS"));
+  assert.equal(ipcLimit("plotThreads"), rustLimit("MAX_PLOT_THREADS"));
+  assert.equal(ipcLimit("plotThreadSceneLinks"), rustLimit("MAX_PLOT_LINKS"));
+  assert.equal(ipcLimit("events"), rustLimit("MAX_EVENTS"));
+  assert.equal(ipcLimit("eventRelations"), rustLimit("MAX_EVENT_RELATIONS"));
+  assert.equal(ipcLimit("chatMessages"), rustLimit("MAX_CHAT_MESSAGES"));
+});
+
 test("Chronicle review fixtures cover the causal-edge path across the full range", () => {
   const fixture = buildRuntimeReviewFixture("chronicle-5k");
 
@@ -783,10 +907,12 @@ test("smoke measures the seeded long scene before running the independent persis
   const sampleLoop = source.indexOf(
     "for (const [index, scene] of PERF_AUTOSAVE_SAMPLE_SCENES.entries())",
   );
-  const seedBatch = source.indexOf('await invokeOk(page, "db_execute_batch"');
+  const typedSeed = source.indexOf(
+    'await invokeOk(page, "runtime_performance_seed"',
+  );
   const actualCardinalityQuery = source.indexOf(
     "buildRuntimeFixtureActualCardinalityQuery(",
-    seedBatch,
+    typedSeed,
   );
   const actualCardinalityInvoke = source.indexOf(
     '"db_execute"',
@@ -839,8 +965,12 @@ test("smoke measures the seeded long scene before running the independent persis
   assert.ok(foregroundSwitches >= 0);
   assert.ok(foregroundSwitches < electronEntry);
   assert.ok(linuxDisplaySwitch < electronEntry);
-  assert.ok(seedBatch >= 0);
-  assert.ok(seedBatch < actualCardinalityQuery);
+  assert.ok(typedSeed >= 0);
+  assert.ok(typedSeed < actualCardinalityQuery);
+  assert.doesNotMatch(
+    source,
+    /for \(const (?:write|payload) of plan\.(?:treeNodeWrites|plotThreadCreates|plotThreadLinkCreates|eventCreates|eventRelationAdds)\)/,
+  );
   assert.ok(actualCardinalityQuery < actualCardinalityInvoke);
   assert.ok(actualCardinalityInvoke < actualCardinalityAssignment);
   assert.ok(actualCardinalityAssignment < sampleLoop);

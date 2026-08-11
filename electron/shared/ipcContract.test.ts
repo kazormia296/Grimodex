@@ -90,6 +90,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"placedBeatPreview":null,"unplacedBeatPreview":null,"contentVersion":2,"contentUpdatedAt":"2026-07-28T00:00:00.000Z","dbTransactionCount":1,"foreshadowRows":[]}',
       ),
     ) as never,
+    runtimePerformanceSeed: record(
+      "runtimePerformanceSeed",
+      Promise.resolve(
+        '{"fixtureId":"runtime-fixture","insertedRowCount":3,"dbTransactionCount":1,"historySideEffectCount":0}',
+      ),
+    ) as never,
     vacuumDatabase: record(
       "vacuumDatabase",
       Promise.resolve(undefined),
@@ -2350,6 +2356,87 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toEqual([]);
   });
 
+  it("runtime_performance_seed: owner tokenとtyped graphを1回のnative呼び出しへ写像する", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      fixtureId: "runtime-fixture",
+      projectId: "default-project",
+      treeNodes: [{}],
+      mapBoard: { id: "board" },
+      projectSetting: { key: "editor.tabState", value: "{}" },
+      mapNodePositions: [],
+      mapEdges: [],
+      plotThreads: [],
+      plotThreadSceneLinks: [],
+      events: [],
+      eventRelations: [],
+      chatSession: null,
+      chatMessages: [],
+    };
+    const env = await dispatchInvoke(
+      "runtime_performance_seed",
+      { ownerToken: "owner-token", payload },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      {
+        method: "runtimePerformanceSeed",
+        args: ["owner-token", payload],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        fixtureId: "runtime-fixture",
+        insertedRowCount: 3,
+        dbTransactionCount: 1,
+        historySideEffectCount: 0,
+      },
+    });
+  });
+
+  it("runtime_performance_seed: token欠落とraw statement shapeをnative前に拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    for (const args of [
+      { ownerToken: "", payload: {} },
+      { ownerToken: "x".repeat(201), payload: {} },
+      {
+        ownerToken: "owner-token",
+        payload: {
+          fixtureId: "runtime-fixture",
+          projectId: "default-project",
+          statements: [{ sql: "INSERT INTO tree_nodes ..." }],
+        },
+      },
+      {
+        ownerToken: "owner-token",
+        payload: {
+          fixtureId: "runtime-fixture",
+          projectId: "default-project",
+          treeNodes: [{}],
+          mapBoard: {},
+          projectSetting: {},
+          mapNodePositions: [],
+          mapEdges: [],
+          plotThreads: [],
+          plotThreadSceneLinks: Array.from({ length: 6_001 }, () => ({})),
+          events: [],
+          eventRelations: [],
+          chatSession: null,
+          chatMessages: [],
+        },
+      },
+    ]) {
+      const env = await dispatchInvoke("runtime_performance_seed", args, {
+        backend,
+        shell: noShell,
+      });
+      expect(env.ok).toBe(false);
+    }
+    expect(calls).toEqual([]);
+  });
+
   it("vacuum_database: renderer 引数を native へ渡さず null を返す", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -2841,6 +2928,51 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: true,
       value: { insertedCount: 1, tailSequence: 2, tailHash: "h" },
     });
+  });
+
+  it("tree_node_patch: optional content eventを同じtyped payloadへ保持する", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      projectId: "p1",
+      nodeId: "scene-1",
+      patch: { content: '{"type":"doc"}', charCount: 4 },
+      baseVersion: 3,
+      bumpVersion: true,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      changeEvent: {
+        eventUid: "external-event-1",
+        sessionId: "external-product-journey",
+        timestamp: 1_786_492_800_000,
+      },
+    };
+    const env = await dispatchInvoke(
+      "tree_node_patch",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toContainEqual({ method: "treeNodePatch", args: [payload] });
+    expect(env).toEqual({
+      ok: true,
+      value: { id: "node-1", projectId: "p1", version: 1 },
+    });
+
+    for (const invalidPayload of [
+      { ...payload, baseVersion: undefined },
+      { ...payload, bumpVersion: false },
+      { ...payload, patch: { title: "not content" } },
+      {
+        ...payload,
+        changeEvent: { ...payload.changeEvent, timestamp: -1 },
+      },
+    ]) {
+      const rejected = await dispatchInvoke(
+        "tree_node_patch",
+        { payload: invalidPayload },
+        { backend, shell: noShell },
+      );
+      expect(rejected.ok).toBe(false);
+    }
   });
 
   it("AI audit commands: workspace identityと型検証済みイベントをnativeへ写像する", async () => {
@@ -3535,6 +3667,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "restore_backup",
       "restore_recovery_candidate",
       "revalidate_license",
+      "runtime_performance_seed",
       "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",

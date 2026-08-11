@@ -31,13 +31,20 @@ export interface ParsedNovelcrafterLike {
   readonly snippets?: ParseResult["snippets"];
 }
 
-function isParsedNovelcrafterLike(value: unknown): value is ParsedNovelcrafterLike {
+function isParsedNovelcrafterLike(
+  value: unknown,
+): value is ParsedNovelcrafterLike {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
-  return typeof record.projectTitle === "string" && Array.isArray(record.chapters);
+  return (
+    typeof record.projectTitle === "string" && Array.isArray(record.chapters)
+  );
 }
 
-function buildDraftFromParsed(parsed: ParsedNovelcrafterLike, label: string): ImportSourcePackageDraft {
+function buildDraftFromParsed(
+  parsed: ParsedNovelcrafterLike,
+  label: string,
+): ImportSourcePackageDraft {
   const now = new Date().toISOString();
   const importedNodes = chaptersToImportedNodes([...parsed.chapters]);
   const fingerprint = sha256Hex(

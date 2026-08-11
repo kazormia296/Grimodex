@@ -294,6 +294,15 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /workspace B received workspace A pending editor text/);
   assert.match(source, /clean-external-write-reloaded/);
   assert.match(source, /dirty-external-write-conflict/);
+  assert.match(source, /"tree_node_patch"/);
+  assert.match(source, /baseVersion/);
+  assert.match(source, /changeEvent:\s*\{/);
+  assert.match(source, /eventUid/);
+  assert.match(source, /sessionId:\s*"external-product-journey"/);
+  assert.doesNotMatch(source, /UPDATE tree_nodes SET content/);
+  assert.doesNotMatch(source, /INSERT INTO change_events/);
+  assert.doesNotMatch(source, /`prev-\$\{eventUid\}`/);
+  assert.doesNotMatch(source, /`hash-\$\{eventUid\}`/);
   assert.match(source, /undoHistoryInvalidated/);
   assert.match(source, /external-edit-reload/);
   assert.match(source, /chat-late-chunk-isolated/);

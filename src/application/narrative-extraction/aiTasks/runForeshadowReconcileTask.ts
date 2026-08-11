@@ -66,7 +66,8 @@ function parseResult(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const row = parsed as Record<string, unknown>;
   if (row.scopeRef !== input.scopeRef) return null;
   const known = new Set(
@@ -118,7 +119,9 @@ export async function runForeshadowReconcileTask(
   const projectId = requireAuditProjectId(
     input.projectId ?? useTreeStore.getState().projectId,
   );
-  const ov = resolveRoleSendOverride(NARRATIVE_FORESHADOW_GLOBAL_RECONCILE_PATH);
+  const ov = resolveRoleSendOverride(
+    NARRATIVE_FORESHADOW_GLOBAL_RECONCILE_PATH,
+  );
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: buildPrompt(input) }],
     {

@@ -91,9 +91,7 @@ export function planPhaseAndDetailProposals(
       input.detailProjections,
     );
     const match = matchExistingPhase(boundary, input.existingPhases);
-    const deps = input.entityBindingProposalIds?.get(
-      boundary.payload.entityId,
-    );
+    const deps = input.entityBindingProposalIds?.get(boundary.payload.entityId);
     const dependencies = deps
       ? [{ kind: "requires-resolution" as const, proposalId: deps }]
       : [];
@@ -177,7 +175,10 @@ export function planPhaseAndDetailProposals(
     if (!isSetWrite(projection.payload.write)) continue;
 
     const eligibility = projection.payload.scope.temporalEligibility;
-    if (eligibility === "corpus-initial" && input.extractionScope === "partial") {
+    if (
+      eligibility === "corpus-initial" &&
+      input.extractionScope === "partial"
+    ) {
       // Partial scope → timeless only for base
       continue;
     }
@@ -186,10 +187,7 @@ export function planPhaseAndDetailProposals(
     }
     // When partial, only timeless reaches here due to filter above;
     // when full-corpus, both timeless and corpus-initial are allowed.
-    if (
-      input.extractionScope === "partial" &&
-      eligibility !== "timeless"
-    ) {
+    if (input.extractionScope === "partial" && eligibility !== "timeless") {
       continue;
     }
 
@@ -203,7 +201,11 @@ export function planPhaseAndDetailProposals(
       dependencyProposalIds: input.entityBindingProposalIds
         ? [
             ...(input.entityBindingProposalIds.has(projection.payload.entityId)
-              ? [input.entityBindingProposalIds.get(projection.payload.entityId)!]
+              ? [
+                  input.entityBindingProposalIds.get(
+                    projection.payload.entityId,
+                  )!,
+                ]
               : []),
           ]
         : [],

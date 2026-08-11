@@ -539,7 +539,7 @@ fn definition_create(
             required_string(&payload.fields, "name")?,
             optional_string(&payload.fields, "fieldType")?.unwrap_or_else(|| "text".to_string()),
             optional_string(&payload.fields, "fieldConfig")?,
-            optional_f64(&payload.fields, "sortOrder")?,
+            optional_f64(&payload.fields, "sortOrder")?.unwrap_or(0.0),
             optional_bool_int(&payload.fields, "includeInContext")?.unwrap_or(0),
             now,
         ],
@@ -947,7 +947,6 @@ mod tests {
                     "definitionId": "d-semantic",
                     "typeSlug": "person",
                     "name": "Role",
-                    "sortOrder": 0,
                     "includeInContext": 1,
                     "semanticBinding": {
                         "id": "binding-semantic",
@@ -961,6 +960,18 @@ mod tests {
             ),
         )
         .expect("create definition and semantic binding");
+
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT sort_order FROM codex_detail_definitions WHERE id = 'd-semantic'",
+                    [],
+                    |row| row.get::<_, f64>(0),
+                )?)
+            })
+            .expect("read default definition sort order"),
+            0.0
+        );
 
         let binding = db
             .with_conn(|conn| {

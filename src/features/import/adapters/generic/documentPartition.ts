@@ -81,6 +81,8 @@ export function singleSegmentPartition(
   return {
     resourceKey,
     relativePath,
-    segments: [{ segmentId: `${resourceKey}:whole`, title, blockIds: [...blockIds] }],
+    segments: [
+      { segmentId: `${resourceKey}:whole`, title, blockIds: [...blockIds] },
+    ],
   };
 }
