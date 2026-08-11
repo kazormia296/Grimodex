@@ -96,7 +96,9 @@ function contextForOwned(
 ): CanonicalRange[] {
   const left = clampRange(owned.start - radius, owned.start, textLength);
   const right = clampRange(owned.end, owned.end + radius, textLength);
-  return [left, right].filter((range): range is CanonicalRange => range !== null);
+  return [left, right].filter(
+    (range): range is CanonicalRange => range !== null,
+  );
 }
 
 function isUtf16Boundary(text: string, offset: number): boolean {
@@ -193,10 +195,20 @@ function splitOwnedRanges(
     );
     const sentenceCut =
       blockCut ??
-      pickCut(sentenceCutPoints(text, cursor, length), cursor, length, maxOwned);
+      pickCut(
+        sentenceCutPoints(text, cursor, length),
+        cursor,
+        length,
+        maxOwned,
+      );
     const graphemeCut =
       sentenceCut ??
-      pickCut(graphemeCutPoints(text, cursor, length), cursor, length, maxOwned);
+      pickCut(
+        graphemeCutPoints(text, cursor, length),
+        cursor,
+        length,
+        maxOwned,
+      );
     let cut =
       graphemeCut ??
       snapToUtf16Boundary(text, Math.min(cursor + maxOwned, length));

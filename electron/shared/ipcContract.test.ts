@@ -450,6 +450,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionGetRun",
       Promise.resolve('{"run":{"runId":"r1"},"tasks":[],"taskCounts":{}}'),
     ) as never,
+    narrativeExtractionListResumableRuns: record(
+      "narrativeExtractionListResumableRuns",
+      Promise.resolve(
+        '[{"runId":"r1","projectId":"p1","surfacePathId":"chronicle.extract","status":"completed","snapshotDigest":null,"createdAt":"2026-01-01T00:00:00.000Z","startedAt":null,"completedAt":null}]',
+      ),
+    ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
       Promise.resolve('{"runId":"r1","status":"cancelled"}'),
@@ -486,6 +492,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionAppendDecision",
       Promise.resolve(
         '{"decisionId":"d1","proposalId":"p1","revisionId":"rv1","decision":"approved","status":"approved"}',
+      ),
+    ) as never,
+    narrativeExtractionReviseAndDecide: record(
+      "narrativeExtractionReviseAndDecide",
+      Promise.resolve(
+        '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"decisionId":"d1","decision":"approved","status":"approved"}',
       ),
     ) as never,
     narrativeExtractionPrepareCommit: record(
@@ -2997,8 +3009,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_get_commit_status",
       "narrative_extraction_get_run",
       "narrative_extraction_get_run_review_bundle",
+      "narrative_extraction_list_resumable_runs",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",
+      "narrative_extraction_revise_and_decide",
       "narrative_extraction_save_proposal_set",
       "narrative_extraction_undo_commit",
       "open_workspace",
@@ -3014,6 +3028,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_move_marker_bundle",
       "plot_thread_restore_snapshot",
       "plot_thread_update",
+      "project_calendar_upsert",
       "project_snapshot_apply_restore",
       "project_snapshot_create",
       "project_snapshot_restore_context",

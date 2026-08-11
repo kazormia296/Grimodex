@@ -8,6 +8,7 @@ const claimMock = vi.hoisted(() => vi.fn());
 const finishMock = vi.hoisted(() => vi.fn());
 const failMock = vi.hoisted(() => vi.fn());
 const createRunMock = vi.hoisted(() => vi.fn());
+const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./nativeApi", () => ({
@@ -15,6 +16,7 @@ vi.mock("./nativeApi", () => ({
   narrativeExtractionFinishTask: finishMock,
   narrativeExtractionFailTask: failMock,
   narrativeExtractionCreateRun: createRunMock,
+  narrativeExtractionCancelRun: cancelRunMock,
   narrativeExtractionSaveProposalSet: saveProposalSetMock,
 }));
 
@@ -24,6 +26,7 @@ vi.mock("./runRepository", async () => {
   return {
     ...actual,
     createRun: createRunMock,
+    cancelRun: cancelRunMock,
   };
 });
 
@@ -74,6 +77,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       status: "running",
       taskIds: [],
     }));
+    cancelRunMock.mockResolvedValue({ runId: "run-1", status: "cancelled" });
     claimMock.mockImplementation(async (payload: { taskKinds?: string[] }) => {
       taskSeq += 1;
       const taskKind = payload.taskKinds?.[0] ?? "unknown";
@@ -295,9 +299,10 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           synthesizeObservationIds.push(
             observations.map((observation) => observation.localId),
           );
+          const nextId = createId ?? (() => "hypothesis-test-id");
           return [
             {
-              hypothesisId: createId(),
+              hypothesisId: nextId(),
               clusterRef,
               observationRefs: observations.map(
                 (observation) => observation.localId,

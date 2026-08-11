@@ -84,8 +84,7 @@ export function CodexExtractionEvidencePane({
           </p>
           {(payload.aliases?.length ?? 0) > 0 && (
             <p className="text-xs text-muted-foreground">
-              Alias:{" "}
-              {payload.aliases!.map((alias) => alias.surface).join("、")}
+              Alias: {payload.aliases!.map((alias) => alias.surface).join("、")}
             </p>
           )}
           {proposal.blockedReason && (

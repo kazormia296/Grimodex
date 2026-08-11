@@ -11,6 +11,7 @@ export interface CodexRelationProposalCardProps {
 }
 
 function statusGlyph(proposal: CodexRelationReviewProposal): string {
+  if (proposal.applicability === "already-satisfied") return "✓";
   if (proposal.applicability === "blocked") return "⊘";
   if (proposal.status === "approved") return "☑";
   if (proposal.status === "rejected") return "☒";
@@ -29,6 +30,8 @@ export function CodexRelationProposalCard({
   onDecide,
 }: CodexRelationProposalCardProps) {
   const blocked = proposal.applicability === "blocked";
+  const alreadySatisfied = proposal.applicability === "already-satisfied";
+  const applied = Boolean(proposal.application);
   const relation = proposal.proposal.payload.relation;
 
   return (
@@ -38,6 +41,7 @@ export function CodexRelationProposalCard({
       }`}
       data-testid={`codex-relation-proposal-card-${proposal.proposalId}`}
       data-selected={selected ? "true" : "false"}
+      data-applicability={proposal.applicability}
     >
       <button
         type="button"
@@ -55,15 +59,23 @@ export function CodexRelationProposalCard({
             {proposal.subjectLabel} · {relation.forwardLabel} ·{" "}
             {proposal.objectLabel} · {relation.directionality}
           </span>
-          {blocked && (
+          {(blocked || alreadySatisfied) && (
             <span className="block text-[10px] text-amber-700 dark:text-amber-400">
-              {proposal.blockedReason ?? "両端 Binding 未解決"}
+              {proposal.blockedReason ??
+                (alreadySatisfied
+                  ? "既に同じ関係が登録されています（適用不要）"
+                  : "両端 Binding 未解決")}
+            </span>
+          )}
+          {applied && (
+            <span className="block text-[10px] text-muted-foreground">
+              適用済み（編集不可）
             </span>
           )}
         </span>
       </button>
 
-      {!blocked && (
+      {!blocked && !alreadySatisfied && !applied && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"

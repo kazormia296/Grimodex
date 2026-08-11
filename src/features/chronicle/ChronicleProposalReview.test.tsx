@@ -1,5 +1,11 @@
 // @vitest-environment happy-dom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
 import {
@@ -12,16 +18,18 @@ import {
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 
 const decideMock = vi.hoisted(() => vi.fn());
+const decideDuplicateMock = vi.hoisted(() => vi.fn());
 const reviseMock = vi.hoisted(() => vi.fn());
 const bulkMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./chronicleExtractionApi", async () => {
-  const actual = await vi.importActual<typeof import("./chronicleExtractionApi")>(
-    "./chronicleExtractionApi",
-  );
+  const actual = await vi.importActual<
+    typeof import("./chronicleExtractionApi")
+  >("./chronicleExtractionApi");
   return {
     ...actual,
     decideChronicleProposal: decideMock,
+    decideChronicleProbableDuplicate: decideDuplicateMock,
     reviseChronicleProposal: reviseMock,
     bulkApproveSafeChronicleProposals: bulkMock,
   };
@@ -149,6 +157,22 @@ describe("ChronicleProposalReview", () => {
           .updateProposalStatus(args.proposalId, args.status as never);
       },
     );
+    decideDuplicateMock.mockImplementation(
+      async (args: { proposalId: string; choice: string }) => {
+        const status =
+          args.choice === "hold"
+            ? "held"
+            : args.choice === "skip-as-same"
+              ? "rejected"
+              : "approved";
+        useChronicleExtractionStore
+          .getState()
+          .updateProposalStatus(args.proposalId, status as never);
+        useChronicleExtractionStore
+          .getState()
+          .setProbableDuplicateChoice(args.proposalId, args.choice as never);
+      },
+    );
     reviseMock.mockImplementation(
       async (args: {
         proposalId: string;
@@ -257,6 +281,9 @@ describe("ChronicleProposalReview", () => {
       ]),
     );
     render(<ChronicleProposalReview />);
+    expect(
+      screen.queryByRole("button", { name: "承認" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "同じものとしてスキップ" }),
     );
@@ -269,9 +296,62 @@ describe("ChronicleProposalReview", () => {
     expect(
       useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
     ).toBe("rejected");
-    expect(decideMock).toHaveBeenCalledWith({
+    expect(decideDuplicateMock).toHaveBeenCalledWith({
       proposalId: "proposal-1",
-      status: "rejected",
+      choice: "skip-as-same",
+    });
+  });
+
+  it("create-as-new immediately marks approved so import is enabled", async () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          match: {
+            status: "probable-duplicate",
+            candidates: ["教会砲撃"],
+            reasons: ["title"],
+          },
+          safety: buildProposalSafetyFlags({
+            match: {
+              status: "probable-duplicate",
+              candidates: ["教会砲撃"],
+              reasons: ["title"],
+            },
+            actuality: "actual",
+            evidenceMethods: ["exact"],
+          }),
+        }),
+      ]),
+    );
+    // Exercise the real decideChronicleProbableDuplicate → store mapping.
+    decideDuplicateMock.mockImplementation(
+      async (args: { proposalId: string; choice: string }) => {
+        const actual = await vi.importActual<
+          typeof import("./chronicleExtractionApi")
+        >("./chronicleExtractionApi");
+        // Bypass Native decide by stubbing decideChronicleProposal path via store mirror.
+        const status =
+          args.choice === "hold"
+            ? ("held" as const)
+            : args.choice === "skip-as-same"
+              ? ("rejected" as const)
+              : ("approved" as const);
+        useChronicleExtractionStore
+          .getState()
+          .updateProposalStatus(args.proposalId, status);
+        useChronicleExtractionStore
+          .getState()
+          .setProbableDuplicateChoice(args.proposalId, args.choice as never);
+        return actual;
+      },
+    );
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByRole("button", { name: "別Eventとして作成" }));
+    await waitFor(() => {
+      const row =
+        useChronicleExtractionStore.getState().projection?.proposals[0];
+      expect(row?.probableDuplicateChoice).toBe("create-as-new");
+      expect(row?.status).toBe("approved");
     });
   });
 

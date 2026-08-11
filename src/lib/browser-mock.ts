@@ -3098,6 +3098,154 @@ export async function createBrowserMock(
     return nextVersion;
   }
 
+  function selectProjectCalendarRow(
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const row = queryOne(
+      `SELECT project_id, days_per_year, season_boundaries, start_year, months,
+              weekday_names, weekday_start_index, leap_rule, age_reckoning,
+              eras, reform, timezone, lunar_tz_minutes, version, created_at,
+              updated_at
+         FROM project_calendar WHERE project_id = ?`,
+      [projectId],
+    );
+    if (!row) return null;
+    return {
+      projectId: String(row.project_id),
+      daysPerYear: Number(row.days_per_year),
+      seasonBoundaries: String(row.season_boundaries),
+      startYear: Number(row.start_year),
+      months: String(row.months),
+      weekdayNames: String(row.weekday_names),
+      weekdayStartIndex: Number(row.weekday_start_index),
+      leapRule: String(row.leap_rule),
+      ageReckoning: String(row.age_reckoning),
+      eras: String(row.eras),
+      reform: String(row.reform),
+      timezone: String(row.timezone),
+      lunarTzMinutes: Number(row.lunar_tz_minutes),
+      version: Number(row.version),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  /**
+   * Project Calendar create/update (single-row OCC, mirrors
+   * `grimodex_db::chronicle::upsert_project_calendar`). `baseVersion === null`
+   * means create (conflict if a row exists); `baseVersion` set means update
+   * (conflict if the row is missing or its version has moved on). Returns
+   * `null` for every conflict so callers map it to the same typed error the
+   * native backend produces.
+   */
+  function handleProjectCalendarUpsert(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    const payload = args.payload as Record<string, unknown>;
+    const projectId = String(payload.projectId);
+    const baseVersion =
+      payload.baseVersion === null || payload.baseVersion === undefined
+        ? null
+        : Number(payload.baseVersion);
+    const existing = queryOne(
+      "SELECT version FROM project_calendar WHERE project_id = ?",
+      [projectId],
+    );
+    const existingVersion = existing ? Number(existing.version) : null;
+
+    if (baseVersion === null && existingVersion !== null) return null;
+    if (baseVersion !== null && existingVersion === null) return null;
+    if (
+      baseVersion !== null &&
+      existingVersion !== null &&
+      baseVersion !== existingVersion
+    ) {
+      return null;
+    }
+
+    const updatedAt = String(payload.updatedAt);
+    const daysPerYear = Number(payload.daysPerYear);
+    const seasonBoundaries = String(payload.seasonBoundaries);
+    const startYear = Number(payload.startYear);
+    const months = String(payload.months);
+    const weekdayNames = String(payload.weekdayNames);
+    const weekdayStartIndex = Number(payload.weekdayStartIndex);
+    const leapRule = String(payload.leapRule);
+    const ageReckoning = String(payload.ageReckoning);
+    const eras = String(payload.eras);
+    const reform = String(payload.reform);
+    const timezone = String(payload.timezone);
+    const lunarTzMinutes = Number(payload.lunarTzMinutes);
+
+    if (baseVersion === null) {
+      handleDbExecuteBatch({
+        statements: [
+          {
+            sql: `INSERT INTO project_calendar (
+                    project_id, days_per_year, season_boundaries, start_year,
+                    months, weekday_names, weekday_start_index, leap_rule,
+                    age_reckoning, eras, reform, timezone, lunar_tz_minutes,
+                    version, created_at, updated_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+            params: [
+              projectId,
+              daysPerYear,
+              seasonBoundaries,
+              startYear,
+              months,
+              weekdayNames,
+              weekdayStartIndex,
+              leapRule,
+              ageReckoning,
+              eras,
+              reform,
+              timezone,
+              lunarTzMinutes,
+              updatedAt,
+              updatedAt,
+            ],
+            method: "run",
+          },
+        ],
+      });
+    } else {
+      handleDbExecuteBatch({
+        statements: [
+          {
+            sql: `UPDATE project_calendar SET
+                    days_per_year = ?, season_boundaries = ?, start_year = ?,
+                    months = ?, weekday_names = ?, weekday_start_index = ?,
+                    leap_rule = ?, age_reckoning = ?, eras = ?, reform = ?,
+                    timezone = ?, lunar_tz_minutes = ?, version = ?,
+                    updated_at = ?
+                  WHERE project_id = ? AND version = ?`,
+            params: [
+              daysPerYear,
+              seasonBoundaries,
+              startYear,
+              months,
+              weekdayNames,
+              weekdayStartIndex,
+              leapRule,
+              ageReckoning,
+              eras,
+              reform,
+              timezone,
+              lunarTzMinutes,
+              baseVersion + 1,
+              updatedAt,
+              projectId,
+              baseVersion,
+            ],
+            method: "run",
+          },
+        ],
+      });
+    }
+
+    return selectProjectCalendarRow(projectId);
+  }
+
   function handleFtsSearch(
     args: Record<string, unknown>,
   ): Array<Record<string, unknown>> {
@@ -7456,6 +7604,8 @@ export async function createBrowserMock(
         return handleEventGetVersion(args) as T;
       case "event_set_participants":
         return handleEventSetParticipants(args) as T;
+      case "project_calendar_upsert":
+        return handleProjectCalendarUpsert(args) as T;
       case "authorship_replace_lane":
         handleAuthorshipReplaceLane(args);
         return undefined as T;

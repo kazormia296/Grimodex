@@ -1,7 +1,4 @@
-import type {
-  EntityReference,
-  ObservationBase,
-} from "./entityIdentity";
+import type { EntityReference, ObservationBase } from "./entityIdentity";
 
 export type EntityRelationFamily =
   | "identity"

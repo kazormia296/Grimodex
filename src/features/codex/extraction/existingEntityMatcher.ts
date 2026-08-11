@@ -142,7 +142,9 @@ export function matchExistingEntity(
   catalog: readonly ExistingEntityCatalogRecord[],
 ): CodexEntityExistingResolution {
   const explicit = [
-    ...new Set((input.explicitIdentityRefs ?? []).filter((ref) => ref.length > 0)),
+    ...new Set(
+      (input.explicitIdentityRefs ?? []).filter((ref) => ref.length > 0),
+    ),
   ];
   if (explicit.length === 1) {
     const hit = catalog.find((entry) => entry.ref === explicit[0]);
@@ -170,7 +172,10 @@ export function matchExistingEntity(
 
   const exactNameHits = new Map<KnowledgeEntityRef, EntityBindingCandidate>();
   const exactAliasHits = new Map<KnowledgeEntityRef, EntityBindingCandidate>();
-  const reviewCandidates = new Map<KnowledgeEntityRef, EntityBindingCandidate>();
+  const reviewCandidates = new Map<
+    KnowledgeEntityRef,
+    EntityBindingCandidate
+  >();
 
   for (const surface of input.surfaces) {
     const surfaceKey = candidateKey(surface);
@@ -235,7 +240,9 @@ export function matchExistingEntity(
   if (exactAliasHits.size > 1) {
     return {
       status: "ambiguous",
-      candidates: [...exactAliasHits.values()].sort((a, b) => b.score - a.score),
+      candidates: [...exactAliasHits.values()].sort(
+        (a, b) => b.score - a.score,
+      ),
     };
   }
 

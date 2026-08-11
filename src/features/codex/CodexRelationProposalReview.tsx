@@ -4,6 +4,10 @@ import { CodexRelationEditor } from "./CodexRelationEditor";
 import { CodexRelationProposalCard } from "./CodexRelationProposalCard";
 import { decideCodexStructureProposal } from "./codexStructureExtractionApi";
 import {
+  reviseCodexStructureRelation,
+  swapCodexStructureRelationEndpoints,
+} from "./codexStructureExtractionApi";
+import {
   useCodexStructureExtractionStore,
   type CodexRelationReviewProposal,
   type CodexReviewEvidenceQuote,
@@ -34,9 +38,6 @@ export function CodexRelationProposalReview({
   );
   const selectRelationProposal = useCodexStructureExtractionStore(
     (s) => s.selectRelationProposal,
-  );
-  const reviseRelationFields = useCodexStructureExtractionStore(
-    (s) => s.reviseRelationFields,
   );
 
   const proposals = proposalsProp ?? storeProjection?.relationProposals ?? [];
@@ -112,14 +113,41 @@ export function CodexRelationProposalReview({
           </p>
         ) : (
           <>
-            {boundToStore && (
-              <CodexRelationEditor
-                proposal={selected}
-                onChange={(patch) =>
-                  reviseRelationFields(selected.proposalId, patch)
-                }
-              />
+            {boundToStore &&
+              !selected.application &&
+              selected.applicability !== "already-satisfied" && (
+                <CodexRelationEditor
+                  proposal={selected}
+                  onChange={(patch) =>
+                    void reviseCodexStructureRelation({
+                      proposalId: selected.proposalId,
+                      patch,
+                    })
+                  }
+                  onSwapEndpoints={() =>
+                    void swapCodexStructureRelationEndpoints({
+                      proposalId: selected.proposalId,
+                    })
+                  }
+                />
+              )}
+            {selected.application && (
+              <p
+                className="text-[10px] text-muted-foreground"
+                data-testid="codex-relation-applied-readonly"
+              >
+                適用済みのため編集できません
+              </p>
             )}
+            {!selected.application &&
+              selected.applicability === "already-satisfied" && (
+                <p
+                  className="text-[10px] text-muted-foreground"
+                  data-testid="codex-relation-already-satisfied-readonly"
+                >
+                  既存Relationと一致するため編集できません
+                </p>
+              )}
             <CodexExtractionEvidencePane
               proposal={{
                 evidence: selected.evidence,

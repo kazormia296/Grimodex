@@ -222,7 +222,10 @@ export function clusterEntityMentions(
       .sort();
 
     // Skip empty / identity-only orphans.
-    if (mentionObservationIds.length === 0 && deterministicSeedIds.length === 0) {
+    if (
+      mentionObservationIds.length === 0 &&
+      deterministicSeedIds.length === 0
+    ) {
       continue;
     }
 
@@ -238,14 +241,13 @@ export function clusterEntityMentions(
 
     let candidateExistingRefs: KnowledgeEntityRef[] = [];
     if (input.existingCatalog && surfaces.length > 0) {
-      const match = matchExistingEntity(
-        { surfaces },
-        input.existingCatalog,
-      );
+      const match = matchExistingEntity({ surfaces }, input.existingCatalog);
       if (match.status === "resolved") {
         candidateExistingRefs = [match.ref];
       } else if (match.status === "ambiguous") {
-        candidateExistingRefs = match.candidates.map((candidate) => candidate.ref);
+        candidateExistingRefs = match.candidates.map(
+          (candidate) => candidate.ref,
+        );
       }
     }
 

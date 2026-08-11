@@ -3742,6 +3742,27 @@ impl Database {
         }
 
         conn.pragma_update(None, "foreign_keys", false)?;
+        // Ensure v7 columns exist before rebuild so SELECT can always project them
+        // whether the legacy table already had SCHEMA 7 columns or not.
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "directionality",
+            "TEXT NOT NULL DEFAULT 'directed'",
+        )?;
+        Self::add_column_if_missing(conn, "codex_relations", "inverse_label", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "version",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
         conn.execute_batch(
             "BEGIN;
             CREATE TABLE codex_relations_new (
@@ -3751,6 +3772,11 @@ impl Database {
                 to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 relation_type       TEXT NOT NULL DEFAULT 'custom',
                 label               TEXT,
+                directionality      TEXT NOT NULL DEFAULT 'directed'
+                    CHECK (directionality IN ('directed', 'symmetric')),
+                inverse_label       TEXT,
+                semantic_key        TEXT NOT NULL DEFAULT '',
+                version             INTEGER NOT NULL DEFAULT 1,
                 depth_hint          INTEGER,
                 source_map_edge_id  TEXT,
                 created_at          TEXT NOT NULL,
@@ -3758,8 +3784,10 @@ impl Database {
             );
             INSERT INTO codex_relations_new
                 (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                 directionality, inverse_label, semantic_key, version,
                  depth_hint, source_map_edge_id, created_at, updated_at)
             SELECT id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                   directionality, inverse_label, semantic_key, version,
                    depth_hint, source_map_edge_id, created_at, updated_at
             FROM codex_relations;
             DROP TABLE codex_relations;
@@ -3770,6 +3798,8 @@ impl Database {
                 ON codex_relations(from_codex_id);
             CREATE INDEX IF NOT EXISTS idx_codex_relations_to
                 ON codex_relations(to_codex_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
+                ON codex_relations(semantic_key);
             COMMIT;",
         )?;
         conn.pragma_update(None, "foreign_keys", true)?;

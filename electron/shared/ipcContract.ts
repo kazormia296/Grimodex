@@ -372,6 +372,7 @@ export interface NapiBackendLike {
   lintTermDictionaryDelete?(projectId: string, id: string): Promise<void>;
   eventGetVersion?(projectId: string, eventId: string): Promise<string>;
   eventSetParticipants?(payload: unknown): Promise<string>;
+  projectCalendarUpsert?(payload: unknown): Promise<string>;
   authorshipReplaceLane?(payload: unknown): Promise<void>;
   entityTagsSet?(payload: unknown): Promise<void>;
   codexRenameUndo?(payload: unknown): Promise<void>;
@@ -664,6 +665,7 @@ export interface NapiBackendLike {
   agentEventRelationRemove(payload: unknown): Promise<string>;
   narrativeExtractionCreateRun(payload: unknown): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
+  narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
   narrativeExtractionCancelRun(payload: unknown): Promise<string>;
   narrativeExtractionClaimTask(payload: unknown): Promise<string>;
   narrativeExtractionFinishTask(payload: unknown): Promise<string>;
@@ -672,6 +674,7 @@ export interface NapiBackendLike {
   narrativeExtractionGetRunReviewBundle(payload: unknown): Promise<string>;
   narrativeExtractionAppendRevision(payload: unknown): Promise<string>;
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
+  narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
   narrativeExtractionPrepareCommit(payload: unknown): Promise<string>;
   narrativeExtractionApplyCommit(payload: unknown): Promise<string>;
   narrativeExtractionGetCommitStatus(payload: unknown): Promise<string>;
@@ -1518,6 +1521,46 @@ function requireEventSetParticipantsPayload(args: CommandArgs): CommandArgs {
       );
     }
   });
+  return payload;
+}
+
+function requireProjectCalendarUpsertPayload(args: CommandArgs): CommandArgs {
+  const command = "project_calendar_upsert";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  for (const key of [
+    "seasonBoundaries",
+    "months",
+    "weekdayNames",
+    "leapRule",
+    "ageReckoning",
+    "eras",
+    "reform",
+    "timezone",
+  ] as const) {
+    requireString(payload, key, command);
+  }
+  for (const key of [
+    "daysPerYear",
+    "startYear",
+    "weekdayStartIndex",
+    "lunarTzMinutes",
+  ] as const) {
+    requireSafeInteger(payload, key, command);
+  }
+  if (payload.baseVersion !== undefined && payload.baseVersion !== null) {
+    const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer when present`,
+      );
+    }
+  } else if (payload.baseVersion === undefined) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: missing required key baseVersion`,
+    );
+  }
   return payload;
 }
 
@@ -3791,6 +3834,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireEventSetParticipantsPayload(a)),
       ),
   },
+  project_calendar_upsert: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectCalendarUpsert,
+          "projectCalendarUpsert",
+        )(requireProjectCalendarUpsertPayload(a)),
+      ),
+  },
   authorship_replace_lane: {
     run: async (b, a) => {
       await requireNapiMethod(
@@ -4992,6 +5045,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  narrative_extraction_list_resumable_runs: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionListResumableRuns(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_list_resumable_runs",
+          ),
+        ),
+      ),
+  },
   narrative_extraction_cancel_run: {
     run: async (b, a) =>
       parseWire(
@@ -5028,7 +5093,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.narrativeExtractionSaveProposalSet(
-          requirePresent(a, "payload", "narrative_extraction_save_proposal_set"),
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_save_proposal_set",
+          ),
         ),
       ),
   },
@@ -5060,6 +5129,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  narrative_extraction_revise_and_decide: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionReviseAndDecide(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_revise_and_decide",
+          ),
+        ),
+      ),
+  },
   narrative_extraction_prepare_commit: {
     run: async (b, a) =>
       parseWire(
@@ -5080,7 +5161,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.narrativeExtractionGetCommitStatus(
-          requirePresent(a, "payload", "narrative_extraction_get_commit_status"),
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_get_commit_status",
+          ),
         ),
       ),
   },

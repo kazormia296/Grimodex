@@ -23,7 +23,7 @@ use super::models::{
     ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
     GetCommitStatusPayload, PrepareCommitPayload,
 };
-use super::repository::ensure_run_project;
+use super::repository::{ensure_proposal_not_applied, ensure_run_project};
 use super::task_leases::with_immediate_transaction;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::Database;
@@ -344,40 +344,6 @@ pub fn narrative_extraction_apply_commit(
                         now,
                     ],
                 )?;
-            }
-
-            if payload.applications.is_empty() {
-                for (index, op) in payload.operations.iter().enumerate() {
-                    if let (Some(proposal_id), Some(revision_id)) =
-                        (op.proposal_id.as_ref(), op.revision_id.as_ref())
-                    {
-                        let entity_id = created[index]
-                            .get("entityId")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("created[{index}] missing entityId")
-                            })?;
-                        let entity_kind = created[index]
-                            .get("entityKind")
-                            .and_then(Value::as_str)
-                            .unwrap_or("event");
-                        conn.execute(
-                            "INSERT INTO narrative_proposal_applications
-                                (id, commit_id, proposal_id, revision_id,
-                                 applied_entity_kind, applied_entity_id, created_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                            params![
-                                Uuid::new_v4().to_string(),
-                                commit_id,
-                                proposal_id,
-                                revision_id,
-                                entity_kind,
-                                entity_id,
-                                now,
-                            ],
-                        )?;
-                    }
-                }
             }
 
             let after_json = json!({
@@ -703,54 +669,50 @@ fn validate_commit_plan(
             other => anyhow::bail!("unsupported commit operation kind: {other}"),
         }
 
-        if let Some(proposal_id) = op.proposal_id.as_deref() {
+        if !op.proposal_id.is_empty() {
             ensure_proposal_approved_and_bound(
                 conn,
                 ctx.proposal_set_id,
-                proposal_id,
-                op.revision_id.as_deref(),
+                &op.proposal_id,
+                Some(op.revision_id.as_str()),
                 &op.kind,
                 &op.payload,
             )?;
-            ensure_proposal_not_applied(conn, proposal_id)?;
+            ensure_proposal_not_applied(conn, &op.proposal_id)?;
         }
     }
 
-    if !ctx.applications.is_empty() {
+    anyhow::ensure!(
+        ctx.applications.len() == ctx.operations.len(),
+        "NEX_COMMIT_APPLICATIONS_MISMATCH: applications length {} != operations length {}",
+        ctx.applications.len(),
+        ctx.operations.len()
+    );
+    for (index, (operation, application)) in
+        ctx.operations.iter().zip(ctx.applications.iter()).enumerate()
+    {
         anyhow::ensure!(
-            ctx.applications.len() == ctx.operations.len(),
-            "NEX_COMMIT_APPLICATIONS_MISMATCH: applications length {} != operations length {}",
-            ctx.applications.len(),
-            ctx.operations.len()
+            !operation.proposal_id.is_empty(),
+            "NEX_COMMIT_APPLICATIONS_MISMATCH: operation[{index}] missing proposalId"
         );
-        for (index, (operation, application)) in
-            ctx.operations.iter().zip(ctx.applications.iter()).enumerate()
-        {
-            let op_proposal = operation.proposal_id.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_COMMIT_APPLICATIONS_MISMATCH: operation[{index}] missing proposalId"
-                )
-            })?;
-            let op_revision = operation.revision_id.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_COMMIT_APPLICATIONS_MISMATCH: operation[{index}] missing revisionId"
-                )
-            })?;
-            anyhow::ensure!(
-                op_proposal == application.proposal_id.as_str()
-                    && op_revision == application.revision_id.as_str(),
-                "NEX_COMMIT_APPLICATIONS_MISMATCH: index {index} proposal/revision diverge"
-            );
-            ensure_proposal_approved_and_bound(
-                conn,
-                ctx.proposal_set_id,
-                &application.proposal_id,
-                Some(&application.revision_id),
-                &operation.kind,
-                &operation.payload,
-            )?;
-            ensure_proposal_not_applied(conn, &application.proposal_id)?;
-        }
+        anyhow::ensure!(
+            !operation.revision_id.is_empty(),
+            "NEX_COMMIT_APPLICATIONS_MISMATCH: operation[{index}] missing revisionId"
+        );
+        anyhow::ensure!(
+            operation.proposal_id == application.proposal_id
+                && operation.revision_id == application.revision_id,
+            "NEX_COMMIT_APPLICATIONS_MISMATCH: index {index} proposal/revision diverge"
+        );
+        ensure_proposal_approved_and_bound(
+            conn,
+            ctx.proposal_set_id,
+            &application.proposal_id,
+            Some(application.revision_id.as_str()),
+            &operation.kind,
+            &operation.payload,
+        )?;
+        ensure_proposal_not_applied(conn, &application.proposal_id)?;
     }
 
     Ok(())
@@ -803,7 +765,8 @@ fn ensure_proposal_approved_and_bound(
         |row| row.get(0),
     )?;
     let revision_payload: Value = serde_json::from_str(&revision_payload_raw)?;
-    let revision_digest = digest_plan(&revision_payload);
+    let comparable = revision_payload_for_commit_compare(&revision_payload, operation_kind)?;
+    let revision_digest = digest_plan(comparable);
     let operation_digest = digest_plan(operation_payload);
     anyhow::ensure!(
         revision_digest == operation_digest,
@@ -812,17 +775,51 @@ fn ensure_proposal_approved_and_bound(
     Ok(())
 }
 
-fn ensure_proposal_not_applied(conn: &Connection, proposal_id: &str) -> anyhow::Result<()> {
-    let applied: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM narrative_proposal_applications WHERE proposal_id = ?1",
-        params![proposal_id],
-        |row| row.get(0),
-    )?;
+/// Codex review revisions store an envelope:
+/// `{ version: 1, reviewPayload, compiledOperation: { kind, payload } | null }`.
+/// Commit validation must compare `compiledOperation.payload` (when present) to
+/// the Domain Operation wire payload. Legacy revisions store the Domain Op
+/// payload directly.
+fn revision_payload_for_commit_compare<'a>(
+    revision_payload: &'a Value,
+    operation_kind: &str,
+) -> anyhow::Result<&'a Value> {
+    let Some(obj) = revision_payload.as_object() else {
+        return Ok(revision_payload);
+    };
+    let is_envelope = obj.get("version").and_then(Value::as_u64) == Some(1)
+        && obj.contains_key("reviewPayload");
+    if !is_envelope {
+        return Ok(revision_payload);
+    }
+
+    let compiled = obj.get("compiledOperation").ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope missing compiledOperation"
+        )
+    })?;
+    if compiled.is_null() {
+        anyhow::bail!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope has null compiledOperation"
+        );
+    }
+    let compiled_kind = compiled
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.kind missing"
+            )
+        })?;
     anyhow::ensure!(
-        applied == 0,
-        "NEX_PROPOSAL_ALREADY_APPLIED: proposal '{proposal_id}'"
+        compiled_kind == operation_kind,
+        "NEX_PROPOSAL_KIND_MISMATCH: compiledOperation.kind '{compiled_kind}' != operation '{operation_kind}'"
     );
-    Ok(())
+    compiled.get("payload").ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.payload missing"
+        )
+    })
 }
 
 fn proposal_kind_allows_operation(proposal_kind: &str, operation_kind: &str) -> bool {

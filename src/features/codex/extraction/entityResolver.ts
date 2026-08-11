@@ -1,6 +1,4 @@
-import type {
-  CoarseEntityClass,
-} from "@/features/narrative-extraction/ir/observations/entityIdentity";
+import type { CoarseEntityClass } from "@/features/narrative-extraction/ir/observations/entityIdentity";
 import type {
   CodexEntityExistingResolution,
   CodexEntityTypeResolution,

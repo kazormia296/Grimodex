@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -22,10 +22,12 @@ import { useCodexStructureExtractionStore } from "./codexStructureExtractionStor
 import {
   applyCodexStructureExtractionReview,
   buildCodexStructureCatalogs,
-  getCodexStructureReview,
+  restoreCodexStructureExtractionReview,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
 import { useCodexStore } from "./codexStore";
+import { listCodexRelations } from "./codexRelationApi";
+import { buildExistingRelationCatalog } from "./extraction/existingRelationMatcher";
 
 /**
  * Folder-scoped Codex Structure Extraction dialog
@@ -48,6 +50,9 @@ export function CodexStructureExtractDialog({
   const clearIfScopeMismatch = useCodexStructureExtractionStore(
     (s) => s.clearIfScopeMismatch,
   );
+  const setProjection = useCodexStructureExtractionStore(
+    (s) => s.setProjection,
+  );
   const entries = useCodexStore((s) => s.entries);
 
   const folders = useMemo(
@@ -60,20 +65,62 @@ export function CodexStructureExtractDialog({
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reviewTab, setReviewTab] = useState<"entity" | "relation">("entity");
+  const generationRef = useRef(0);
 
   useEffect(() => {
     if (!open) return;
     if (initialFolderId) setFolderId(initialFolderId);
     const workspace = useWorkspaceStore.getState();
     const projectId = getCurrentProjectId();
-    if (projectId && workspace.activeWorkspacePath) {
-      clearIfScopeMismatch({
-        projectId,
-        workspacePath: workspace.activeWorkspacePath,
-        openRevision: workspace.workspaceOpenRevision,
-      });
+    if (!projectId || !workspace.activeWorkspacePath) return;
+    const scope = {
+      projectId,
+      workspacePath: workspace.activeWorkspacePath,
+      openRevision: workspace.workspaceOpenRevision,
+      folderId: (initialFolderId ?? folderId) || undefined,
+    };
+    clearIfScopeMismatch(scope);
+    const current = useCodexStructureExtractionStore.getState().projection;
+    const matched =
+      current &&
+      current.projectId === scope.projectId &&
+      current.workspacePath === scope.workspacePath &&
+      current.openRevision === scope.openRevision &&
+      (scope.folderId ? current.folderId === scope.folderId : true);
+    if (matched) {
+      if (current.folderId) setFolderId(current.folderId);
+      return;
     }
-  }, [open, initialFolderId, clearIfScopeMismatch]);
+    if (!scope.folderId) return;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    void restoreCodexStructureExtractionReview({
+      projectId: scope.projectId,
+      workspacePath: scope.workspacePath,
+      openRevision: scope.openRevision,
+      folderId: scope.folderId,
+    })
+      .then((restored) => {
+        if (!restored) return;
+        if (generationRef.current !== generation) return;
+        const workspaceNow = useWorkspaceStore.getState();
+        if (
+          workspaceNow.activeWorkspacePath !== scope.workspacePath ||
+          workspaceNow.workspaceOpenRevision !== scope.openRevision
+        ) {
+          return;
+        }
+        if (restored.folderId && restored.folderId !== scope.folderId) return;
+        setProjection(restored);
+        if (restored.folderId) setFolderId(restored.folderId);
+        setReviewTab("entity");
+      })
+      .catch(() => {
+        // Soft-fail: empty review until the user runs analyze.
+      });
+    // folderId intentionally omitted: open/initialFolder drive restore; user folder changes bump generation separately
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- folder changes are handled by the select onChange
+  }, [open, initialFolderId, clearIfScopeMismatch, setProjection]);
 
   const approvedCount = projection?.approvedCount ?? 0;
 
@@ -93,8 +140,11 @@ export function CodexStructureExtractDialog({
       return;
     }
 
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
     setAnalyzing(true);
     setError(null);
+    clearProjection();
     try {
       const authority = captureMutationAuthority(
         projectId,
@@ -109,7 +159,20 @@ export function CodexStructureExtractDialog({
           version: entry.version,
         })),
       });
-      await startCodexStructureExtraction({
+      const existingRelations = buildExistingRelationCatalog(
+        (await listCodexRelations(projectId)).map((row) => ({
+          id: row.id,
+          fromCodexId: row.fromCodexId,
+          toCodexId: row.toCodexId,
+          relationType: row.relationType,
+          directionality:
+            row.directionality === "symmetric" ? "symmetric" : "directed",
+          label: row.label,
+          inverseLabel: row.inverseLabel,
+          semanticKey: row.semanticKey,
+        })),
+      );
+      const next = await startCodexStructureExtraction({
         projectId,
         folderId,
         sceneIds: sceneNodes.map((scene) => scene.id),
@@ -119,13 +182,19 @@ export function CodexStructureExtractDialog({
         useAi: false,
         existingEntries: catalogs.existingCatalog,
         typeCatalog: catalogs.typeCatalog,
+        existingRelations,
       });
-      getCodexStructureReview();
+      if (generationRef.current !== generation) return;
+      setProjection(next);
       setReviewTab("entity");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (generationRef.current === generation) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setAnalyzing(false);
+      if (generationRef.current === generation) {
+        setAnalyzing(false);
+      }
     }
   };
 
@@ -145,6 +214,7 @@ export function CodexStructureExtractDialog({
         })),
       });
       toast.success(`Codex 構造を ${applied} 件取り込みました`);
+      generationRef.current += 1;
       clearProjection();
       onOpenChange(false);
     } catch (err) {
@@ -156,7 +226,9 @@ export function CodexStructureExtractDialog({
 
   const handleClose = (next: boolean) => {
     if (!next) {
-      clearProjection();
+      // Invalidate in-flight restore/analyze publishes; keep warm projection
+      // for the same folder/workspace until Apply or folder change.
+      generationRef.current += 1;
     }
     onOpenChange(next);
   };
@@ -177,7 +249,11 @@ export function CodexStructureExtractDialog({
             <select
               className="rounded border border-input bg-background px-2 py-1.5 text-sm"
               value={folderId}
-              onChange={(event) => setFolderId(event.target.value)}
+              onChange={(event) => {
+                generationRef.current += 1;
+                setFolderId(event.target.value);
+                clearProjection();
+              }}
               data-testid="codex-structure-folder-select"
             >
               <option value="">選択してください</option>
@@ -235,9 +311,9 @@ export function CodexStructureExtractDialog({
                 </button>
               </div>
               {reviewTab === "entity" ? (
-                <CodexEntityProposalReview boundToStore />
+                <CodexEntityProposalReview />
               ) : (
-                <CodexRelationProposalReview boundToStore />
+                <CodexRelationProposalReview />
               )}
             </>
           )}
@@ -246,39 +322,34 @@ export function CodexStructureExtractDialog({
         <DialogFooter className="gap-2 sm:gap-2">
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+            className="rounded border border-input px-3 py-1.5 text-sm"
             onClick={() => handleClose(false)}
+            disabled={analyzing || applying}
           >
             閉じる
           </button>
-          {projection && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 px-3 py-1.5 text-sm text-primary hover:bg-primary/10 disabled:opacity-40"
-              disabled={analyzing || applying || approvedCount === 0}
-              onClick={() => void handleApply()}
-              data-testid="codex-structure-apply"
-            >
-              {applying ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-              ) : null}
-              承認済みを取り込む
-              {approvedCount > 0 ? ` (${approvedCount})` : ""}
-            </button>
-          )}
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
-            disabled={analyzing || applying || !folderId}
+            className="inline-flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
             onClick={() => void handleAnalyze()}
+            disabled={!folderId || analyzing || applying}
             data-testid="codex-structure-analyze"
           >
             {analyzing ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
-              <Sparkles className="h-3.5 w-3.5" aria-hidden />
+              <Sparkles className="h-3.5 w-3.5" />
             )}
-            解析する
+            解析
+          </button>
+          <button
+            type="button"
+            className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            onClick={() => void handleApply()}
+            disabled={approvedCount === 0 || analyzing || applying}
+            data-testid="codex-structure-apply"
+          >
+            {applying ? "適用中…" : `適用 (${approvedCount})`}
           </button>
         </DialogFooter>
       </DialogContent>

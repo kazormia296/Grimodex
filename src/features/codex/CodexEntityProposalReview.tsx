@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { CodexExtractionEvidencePane } from "./CodexExtractionEvidencePane";
 import { CodexEntityProposalCard } from "./CodexEntityProposalCard";
 import { CodexEntityResolutionPicker } from "./CodexEntityResolutionPicker";
 import {
   catalogEntityDisplayName,
+  bulkApproveSafeCodexStructureProposals,
   decideCodexStructureProposal,
   reviseCodexStructureProposal,
+  resolveCodexStructureBinding,
 } from "./codexStructureExtractionApi";
 import {
   isSafeForCodexEntityBulkApprove,
@@ -40,16 +43,6 @@ export function CodexEntityProposalReview({
   const selectProposal = useCodexStructureExtractionStore(
     (s) => s.selectProposal,
   );
-  const resolveBinding = useCodexStructureExtractionStore(
-    (s) => s.resolveBinding,
-  );
-  const reviseProposalFields = useCodexStructureExtractionStore(
-    (s) => s.reviseProposalFields,
-  );
-  const bulkApproveSafe = useCodexStructureExtractionStore(
-    (s) => s.bulkApproveSafe,
-  );
-
   const proposals = proposalsProp ?? storeProjection?.proposals ?? [];
   const selectedProposalId =
     selectedProp !== undefined
@@ -68,6 +61,7 @@ export function CodexEntityProposalReview({
 
   const [draftName, setDraftName] = useState<string | null>(null);
   const [draftSummary, setDraftSummary] = useState<string | null>(null);
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   const nameValue =
     draftName ??
@@ -102,8 +96,9 @@ export function CodexEntityProposalReview({
       isSafeForCodexEntityBulkApprove(proposal.safety),
   ).length;
 
+  const applied = Boolean(selected?.application);
   const unresolvedBinding =
-    selected?.proposal.payload.binding.kind === "unresolved"
+    !applied && selected?.proposal.payload.binding.kind === "unresolved"
       ? selected.proposal.payload.binding
       : null;
 
@@ -132,8 +127,28 @@ export function CodexEntityProposalReview({
             <button
               type="button"
               className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={safeCount === 0}
-              onClick={() => bulkApproveSafe()}
+              disabled={safeCount === 0 || bulkApproving}
+              onClick={() => {
+                setBulkApproving(true);
+                void bulkApproveSafeCodexStructureProposals()
+                  .then((result) => {
+                    if (result.failed.length > 0) {
+                      toast.error(
+                        `${result.failed.length}件の提案を承認できませんでした`,
+                      );
+                    }
+                  })
+                  .catch((error) => {
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "まとめて承認に失敗しました",
+                    );
+                  })
+                  .finally(() => {
+                    setBulkApproving(false);
+                  });
+              }}
               data-testid="codex-bulk-approve-safe"
             >
               安全な提案をまとめて承認
@@ -174,22 +189,33 @@ export function CodexEntityProposalReview({
           </p>
         ) : (
           <>
+            {applied && (
+              <p
+                className="text-[10px] text-muted-foreground"
+                data-testid="codex-entity-applied-readonly"
+              >
+                適用済みのため編集できません
+              </p>
+            )}
             <label className="flex flex-col gap-1 text-xs">
               <span className="text-muted-foreground">Canonical Name</span>
               <input
-                className="rounded border border-input bg-background px-2 py-1 text-sm"
+                className="rounded border border-input bg-background px-2 py-1 text-sm disabled:opacity-60"
                 value={nameValue}
+                disabled={applied}
                 onChange={(event) => setDraftName(event.target.value)}
                 onBlur={() => {
-                  if (!boundToStore || draftName === null) return;
+                  if (!boundToStore || applied || draftName === null) return;
                   void reviseCodexStructureProposal({
                     proposalId: selected.proposalId,
                     patch: { canonicalName: draftName },
                   })
-                    .catch(() => {
-                      reviseProposalFields(selected.proposalId, {
-                        canonicalName: draftName,
-                      });
+                    .catch((error) => {
+                      toast.error(
+                        error instanceof Error
+                          ? error.message
+                          : "Entity 名の保存に失敗しました",
+                      );
                     })
                     .finally(() => setDraftName(null));
                 }}
@@ -199,19 +225,22 @@ export function CodexEntityProposalReview({
             <label className="flex flex-col gap-1 text-xs">
               <span className="text-muted-foreground">Summary</span>
               <textarea
-                className="min-h-[64px] rounded border border-input bg-background px-2 py-1 text-sm"
+                className="min-h-[64px] rounded border border-input bg-background px-2 py-1 text-sm disabled:opacity-60"
                 value={summaryValue}
+                disabled={applied}
                 onChange={(event) => setDraftSummary(event.target.value)}
                 onBlur={() => {
-                  if (!boundToStore || draftSummary === null) return;
+                  if (!boundToStore || applied || draftSummary === null) return;
                   void reviseCodexStructureProposal({
                     proposalId: selected.proposalId,
                     patch: { summary: draftSummary },
                   })
-                    .catch(() => {
-                      reviseProposalFields(selected.proposalId, {
-                        summary: draftSummary,
-                      });
+                    .catch((error) => {
+                      toast.error(
+                        error instanceof Error
+                          ? error.message
+                          : "Summary の保存に失敗しました",
+                      );
                     })
                     .finally(() => setDraftSummary(null));
                 }}
@@ -219,7 +248,8 @@ export function CodexEntityProposalReview({
               />
             </label>
 
-            {selected.proposal.payload.typeResolution.status !== "resolved" &&
+            {!applied &&
+              selected.proposal.payload.typeResolution.status !== "resolved" &&
               boundToStore &&
               storeProjection?.catalog?.types &&
               storeProjection.catalog.types.length > 0 && (
@@ -234,8 +264,12 @@ export function CodexEntityProposalReview({
                       void reviseCodexStructureProposal({
                         proposalId: selected.proposalId,
                         patch: { typeRef },
-                      }).catch(() => {
-                        reviseProposalFields(selected.proposalId, { typeRef });
+                      }).catch((error) => {
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Type の保存に失敗しました",
+                        );
                       });
                     }}
                     data-testid="codex-entity-type-select"
@@ -256,12 +290,27 @@ export function CodexEntityProposalReview({
                 candidates={unresolvedBinding.candidates}
                 candidateLabels={candidateLabels}
                 onCreateNew={() =>
-                  resolveBinding(selected.proposalId, { kind: "create-new" })
+                  void resolveCodexStructureBinding({
+                    proposalId: selected.proposalId,
+                    resolution: { kind: "create-new" },
+                  }).catch((error) => {
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "Binding 解決に失敗しました",
+                    );
+                  })
                 }
                 onUseExisting={(entityRef) =>
-                  resolveBinding(selected.proposalId, {
-                    kind: "bind-existing",
-                    entityRef,
+                  void resolveCodexStructureBinding({
+                    proposalId: selected.proposalId,
+                    resolution: { kind: "bind-existing", entityRef },
+                  }).catch((error) => {
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "Binding 解決に失敗しました",
+                    );
                   })
                 }
               />

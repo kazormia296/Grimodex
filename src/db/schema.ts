@@ -2269,16 +2269,19 @@ export const narrativeProposalApplications = sqliteTable(
   },
 );
 
-export const narrativeCommitJournals = sqliteTable("narrative_commit_journals", {
-  id: text("id").primaryKey(),
-  commitId: text("commit_id").notNull(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  beforeJson: text("before_json"),
-  afterJson: text("after_json"),
-  createdAt: text("created_at").notNull(),
-});
+export const narrativeCommitJournals = sqliteTable(
+  "narrative_commit_journals",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+    createdAt: text("created_at").notNull(),
+  },
+);
 
 // Trash bin: holds deleted text fragments (Phase 1) and structure items (Phase 4-5).
 // payload / preview_meta は素の TEXT で JSON.stringify を保持（aiReasoning と同流儀）。

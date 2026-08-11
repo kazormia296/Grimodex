@@ -258,7 +258,7 @@ describe("chronicleExtractionStore", () => {
     ).toBe("create-as-new");
     expect(
       useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
-    ).toBe("unreviewed");
+    ).toBe("approved");
     store.setProbableDuplicateChoice("proposal-1", "hold");
     expect(
       useChronicleExtractionStore.getState().projection?.proposals[0]?.status,

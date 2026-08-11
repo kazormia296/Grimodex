@@ -162,6 +162,14 @@ export interface ReviewBundleLatestDecision {
   readonly createdBy: string;
 }
 
+export interface ReviewBundleProposalApplication {
+  readonly commitId: string;
+  readonly revisionId: string;
+  readonly appliedEntityKind: string;
+  readonly appliedEntityId: string;
+  readonly createdAt: string;
+}
+
 export interface ReviewBundleProposal {
   readonly proposalId: string;
   readonly proposalSetId: string;
@@ -173,6 +181,8 @@ export interface ReviewBundleProposal {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly latestDecision: ReviewBundleLatestDecision | null;
+  /** Present when Native already applied this proposal (partial Apply / cold-start). */
+  readonly application?: ReviewBundleProposalApplication | null;
 }
 
 export interface GetRunReviewBundleResult {
@@ -218,6 +228,27 @@ export interface AppendDecisionResult {
   readonly status: NarrativeProposalStatus;
 }
 
+export interface ReviseAndDecidePayload {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly proposalId: string;
+  readonly payloadJson: Readonly<Record<string, unknown>>;
+  /** Must match Native `current_revision_id` (OCC). */
+  readonly expectedCurrentRevisionId: string;
+  readonly decision: NarrativeProposalDecision;
+  readonly decisionJson?: Readonly<Record<string, unknown>>;
+  readonly createdBy?: string;
+}
+
+export interface ReviseAndDecideResult {
+  readonly proposalId: string;
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+  readonly decisionId: string;
+  readonly decision: NarrativeProposalDecision;
+  readonly status: NarrativeProposalStatus;
+}
+
 export interface CommitApplicationRef {
   readonly proposalId: string;
   readonly revisionId: string;
@@ -226,8 +257,8 @@ export interface CommitApplicationRef {
 export interface CommitOperation {
   readonly kind: string;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly proposalId?: string;
-  readonly revisionId?: string;
+  readonly proposalId: string;
+  readonly revisionId: string;
 }
 
 export interface EntityBindingSeed {
@@ -245,7 +276,7 @@ export interface PrepareCommitPayload {
   readonly sessionId: string;
   readonly surface?: string;
   readonly operations: readonly CommitOperation[];
-  readonly applications?: readonly CommitApplicationRef[];
+  readonly applications: readonly CommitApplicationRef[];
   readonly expectedTailOrdinal?: string | null;
   readonly entityBindings?: readonly EntityBindingSeed[];
 }
@@ -334,7 +365,9 @@ export interface ResumableRunSummary {
 export async function narrativeExtractionCreateRun(
   payload: CreateRunPayload,
 ): Promise<CreateRunResult> {
-  return invoke<CreateRunResult>("narrative_extraction_create_run", { payload });
+  return invoke<CreateRunResult>("narrative_extraction_create_run", {
+    payload,
+  });
 }
 
 export async function narrativeExtractionGetRun(
@@ -374,7 +407,9 @@ export async function narrativeExtractionFinishTask(
 export async function narrativeExtractionFailTask(
   payload: FailTaskPayload,
 ): Promise<FinishTaskResult> {
-  return invoke<FinishTaskResult>("narrative_extraction_fail_task", { payload });
+  return invoke<FinishTaskResult>("narrative_extraction_fail_task", {
+    payload,
+  });
 }
 
 export async function narrativeExtractionSaveProposalSet(
@@ -398,17 +433,24 @@ export async function narrativeExtractionGetRunReviewBundle(
 export async function narrativeExtractionAppendRevision(
   payload: AppendRevisionPayload,
 ): Promise<AppendRevisionResult> {
-  return invoke<AppendRevisionResult>(
-    "narrative_extraction_append_revision",
-    { payload },
-  );
+  return invoke<AppendRevisionResult>("narrative_extraction_append_revision", {
+    payload,
+  });
 }
 
 export async function narrativeExtractionAppendDecision(
   payload: AppendDecisionPayload,
 ): Promise<AppendDecisionResult> {
-  return invoke<AppendDecisionResult>(
-    "narrative_extraction_append_decision",
+  return invoke<AppendDecisionResult>("narrative_extraction_append_decision", {
+    payload,
+  });
+}
+
+export async function narrativeExtractionReviseAndDecide(
+  payload: ReviseAndDecidePayload,
+): Promise<ReviseAndDecideResult> {
+  return invoke<ReviseAndDecideResult>(
+    "narrative_extraction_revise_and_decide",
     { payload },
   );
 }

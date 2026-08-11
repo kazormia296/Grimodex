@@ -61,4 +61,25 @@ describe("codex extraction compiler", () => {
     expect(op.payload.semanticKey).toContain("project-1");
     expect(op.payload.semanticKey?.startsWith("s\t")).toBe(true);
   });
+
+  it("allows idempotent re-register of the same binding", () => {
+    let map = emptyCommitMap();
+    map = registerExistingBinding(map, "ent:a", "codex-a");
+    map = registerExistingBinding(map, "ent:a", "codex-a");
+    map = registerCreatedBinding(map, "ent:b", "codex-b");
+    map = registerCreatedBinding(map, "ent:b", "codex-b");
+    expect(map.entityBindings["ent:a"]?.codexEntryId).toBe("codex-a");
+    expect(map.entityBindings["ent:b"]?.codexEntryId).toBe("codex-b");
+  });
+
+  it("throws NEX_COMMIT_MAP_CONFLICT when rebound to a different entry", () => {
+    let map = emptyCommitMap();
+    map = registerExistingBinding(map, "ent:a", "codex-a");
+    expect(() => registerExistingBinding(map, "ent:a", "codex-other")).toThrow(
+      /NEX_COMMIT_MAP_CONFLICT/,
+    );
+    expect(() => registerCreatedBinding(map, "ent:a", "codex-created")).toThrow(
+      /NEX_COMMIT_MAP_CONFLICT/,
+    );
+  });
 });

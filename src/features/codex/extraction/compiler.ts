@@ -195,11 +195,25 @@ export function compilePatchCodexEntryOperation(
   };
 }
 
+function assertBindingCompatible(
+  commitMap: CommitMap,
+  narrativeEntityId: NarrativeEntityId,
+  codexEntryId: string,
+): void {
+  const existing = commitMap.entityBindings[narrativeEntityId];
+  if (existing && existing.codexEntryId !== codexEntryId) {
+    throw new Error(
+      `NEX_COMMIT_MAP_CONFLICT: narrative entity '${narrativeEntityId}' already bound to '${existing.codexEntryId}', cannot rebind to '${codexEntryId}'`,
+    );
+  }
+}
+
 export function registerExistingBinding(
   commitMap: CommitMap,
   narrativeEntityId: NarrativeEntityId,
   codexEntryId: string,
 ): CommitMap {
+  assertBindingCompatible(commitMap, narrativeEntityId, codexEntryId);
   return {
     entityBindings: {
       ...commitMap.entityBindings,
@@ -217,6 +231,7 @@ export function registerCreatedBinding(
   narrativeEntityId: NarrativeEntityId,
   codexEntryId: string,
 ): CommitMap {
+  assertBindingCompatible(commitMap, narrativeEntityId, codexEntryId);
   return {
     entityBindings: {
       ...commitMap.entityBindings,

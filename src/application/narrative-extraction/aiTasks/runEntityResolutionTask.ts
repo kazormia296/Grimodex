@@ -22,7 +22,8 @@ import {
 } from "@/features/codex/extraction/existingEntityMatcher";
 import { runStructuredRepairTask } from "./runStructuredRepairTask";
 
-export const NARRATIVE_ENTITY_RESOLVE_PATH = "narrative_entity_resolve" as const;
+export const NARRATIVE_ENTITY_RESOLVE_PATH =
+  "narrative_entity_resolve" as const;
 
 export interface EntityResolutionSourceView {
   readonly sourceRef: string;
@@ -133,13 +134,13 @@ function parseEntityResolutionAiResult(
     return null;
   }
   const record = parsed as Record<string, unknown>;
-  if (
-    typeof record.clusterId === "string" &&
-    record.clusterId !== clusterId
-  ) {
+  if (typeof record.clusterId === "string" && record.clusterId !== clusterId) {
     return null;
   }
-  if (typeof record.canonicalName !== "string" || record.canonicalName.trim().length === 0) {
+  if (
+    typeof record.canonicalName !== "string" ||
+    record.canonicalName.trim().length === 0
+  ) {
     return null;
   }
   const coarseClass = COARSE_CLASSES.includes(

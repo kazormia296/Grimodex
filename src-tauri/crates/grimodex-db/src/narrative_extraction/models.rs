@@ -153,6 +153,22 @@ pub struct AppendDecisionPayload {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReviseAndDecidePayload {
+    pub run_id: String,
+    pub project_id: String,
+    pub proposal_id: String,
+    pub payload_json: Value,
+    /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
+    pub expected_current_revision_id: String,
+    pub decision: String,
+    #[serde(default)]
+    pub decision_json: Option<Value>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EntityBindingSeed {
     pub narrative_entity_id: String,
     pub codex_entry_id: String,
@@ -176,7 +192,8 @@ pub struct PrepareCommitPayload {
     #[serde(default)]
     pub surface: Option<String>,
     pub operations: Vec<CommitOperation>,
-    #[serde(default)]
+    /// Required 1:1 with `operations` — Native is mutation authority and must
+    /// not accept proposal-free apply payloads.
     pub applications: Vec<CommitApplicationRef>,
     /// Compiler-observed tail ordinal (`null` when the project had no events).
     #[serde(default)]
@@ -198,7 +215,6 @@ pub struct ApplyCommitPayload {
     #[serde(default)]
     pub surface: Option<String>,
     pub operations: Vec<CommitOperation>,
-    #[serde(default)]
     pub applications: Vec<CommitApplicationRef>,
     #[serde(default)]
     pub expected_tail_ordinal: Option<String>,
@@ -211,10 +227,18 @@ pub struct ApplyCommitPayload {
 pub struct CommitOperation {
     pub kind: String,
     pub payload: Value,
+    pub proposal_id: String,
+    pub revision_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListResumableRunsPayload {
+    pub project_id: String,
     #[serde(default)]
-    pub proposal_id: Option<String>,
+    pub surface_path_id: Option<String>,
     #[serde(default)]
-    pub revision_id: Option<String>,
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -19,10 +19,9 @@ function entry(
 
 describe("matchExistingEntity", () => {
   it("resolves a unique exact name match", () => {
-    const result = matchExistingEntity(
-      { surfaces: ["ライカ"] },
-      [entry({ ref: "K0001", name: "ライカ" })],
-    );
+    const result = matchExistingEntity({ surfaces: ["ライカ"] }, [
+      entry({ ref: "K0001", name: "ライカ" }),
+    ]);
     expect(result).toEqual({
       status: "resolved",
       ref: "K0001",
@@ -31,13 +30,10 @@ describe("matchExistingEntity", () => {
   });
 
   it("marks multiple same-name entries as ambiguous", () => {
-    const result = matchExistingEntity(
-      { surfaces: ["ライカ"] },
-      [
-        entry({ ref: "K0001", name: "ライカ" }),
-        entry({ ref: "K0002", name: "ライカ" }),
-      ],
-    );
+    const result = matchExistingEntity({ surfaces: ["ライカ"] }, [
+      entry({ ref: "K0001", name: "ライカ" }),
+      entry({ ref: "K0002", name: "ライカ" }),
+    ]);
     expect(result.status).toBe("ambiguous");
     if (result.status !== "ambiguous") return;
     expect(result.candidates.map((c) => c.ref).sort()).toEqual([
@@ -47,10 +43,9 @@ describe("matchExistingEntity", () => {
   });
 
   it("resolves a unique exact alias match", () => {
-    const result = matchExistingEntity(
-      { surfaces: ["灰"] },
-      [entry({ ref: "K0001", name: "ライカ", aliases: ["灰"] })],
-    );
+    const result = matchExistingEntity({ surfaces: ["灰"] }, [
+      entry({ ref: "K0001", name: "ライカ", aliases: ["灰"] }),
+    ]);
     expect(result).toEqual({
       status: "resolved",
       ref: "K0001",
@@ -59,10 +54,9 @@ describe("matchExistingEntity", () => {
   });
 
   it("never auto-binds on honorific-strip alone", () => {
-    const result = matchExistingEntity(
-      { surfaces: ["ライカさん"] },
-      [entry({ ref: "K0001", name: "ライカ" })],
-    );
+    const result = matchExistingEntity({ surfaces: ["ライカさん"] }, [
+      entry({ ref: "K0001", name: "ライカ" }),
+    ]);
     expect(result.status).toBe("ambiguous");
     if (result.status !== "ambiguous") return;
     expect(result.candidates[0]?.methods).toContain("honorific-strip");
@@ -70,10 +64,9 @@ describe("matchExistingEntity", () => {
   });
 
   it("never auto-binds on prefix alone", () => {
-    const result = matchExistingEntity(
-      { surfaces: ["ライカ"] },
-      [entry({ ref: "K0001", name: "ライカ隊長" })],
-    );
+    const result = matchExistingEntity({ surfaces: ["ライカ"] }, [
+      entry({ ref: "K0001", name: "ライカ隊長" }),
+    ]);
     expect(result.status).toBe("ambiguous");
     if (result.status !== "ambiguous") return;
     expect(result.candidates[0]?.methods).toContain("prefix");
@@ -81,10 +74,9 @@ describe("matchExistingEntity", () => {
 
   it("returns none when nothing matches", () => {
     expect(
-      matchExistingEntity(
-        { surfaces: ["マルフーシャ"] },
-        [entry({ ref: "K0001", name: "ライカ" })],
-      ),
+      matchExistingEntity({ surfaces: ["マルフーシャ"] }, [
+        entry({ ref: "K0001", name: "ライカ" }),
+      ]),
     ).toEqual({ status: "none" });
   });
 

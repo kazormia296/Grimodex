@@ -2,12 +2,14 @@ import type {
   AppendDecisionPayload,
   AppendRevisionPayload,
   ProposalSeed,
+  ReviseAndDecidePayload,
   SaveProposalSetPayload,
   SaveProposalSetResult,
 } from "./nativeApi";
 import {
   narrativeExtractionAppendDecision,
   narrativeExtractionAppendRevision,
+  narrativeExtractionReviseAndDecide,
   narrativeExtractionSaveProposalSet,
 } from "./nativeApi";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
@@ -60,4 +62,14 @@ export async function appendDecision(
   payload: AppendDecisionPayload,
 ): Promise<Awaited<ReturnType<typeof narrativeExtractionAppendDecision>>> {
   return narrativeExtractionAppendDecision(payload);
+}
+
+/**
+ * Atomic revision + decision in ONE Native transaction so an approve can never
+ * persist a fresh revision without its decision (or vice versa).
+ */
+export async function reviseAndDecide(
+  payload: ReviseAndDecidePayload,
+): Promise<Awaited<ReturnType<typeof narrativeExtractionReviseAndDecide>>> {
+  return narrativeExtractionReviseAndDecide(payload);
 }

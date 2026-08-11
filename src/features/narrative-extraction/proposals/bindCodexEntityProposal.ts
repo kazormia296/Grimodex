@@ -90,8 +90,12 @@ export interface BindCodexEntityProposalOptions {
   readonly createId?: () => string;
 }
 
-function resolveId(options: BindCodexEntityProposalOptions | undefined): string {
-  return options?.proposalId ?? (options?.createId ?? (() => crypto.randomUUID()))();
+function resolveId(
+  options: BindCodexEntityProposalOptions | undefined,
+): string {
+  return (
+    options?.proposalId ?? (options?.createId ?? (() => crypto.randomUUID()))()
+  );
 }
 
 /** Build a create-new binding proposal (new Codex Entry). */

@@ -59,10 +59,7 @@ export function evaluateRelationDomainGate(
   ) {
     return { kind: "report-only", reason: "non-primary-frame" };
   }
-  if (
-    epistemic.support !== "direct" &&
-    epistemic.support !== "corroborated"
-  ) {
+  if (epistemic.support !== "direct" && epistemic.support !== "corroborated") {
     return { kind: "report-only", reason: "weak-support" };
   }
   if (payload.validity !== "timeless" && payload.validity !== "current") {
@@ -177,9 +174,7 @@ export function normalizeRelationSynthesis(
       asString(row.forwardLabelSuggestion)?.trim() ?? "";
     const inverseRaw = row.inverseLabelSuggestion;
     const inverseLabelSuggestion =
-      inverseRaw === null
-        ? null
-        : (asString(inverseRaw)?.trim() ?? null);
+      inverseRaw === null ? null : (asString(inverseRaw)?.trim() ?? null);
     const polarity = asString(row.polarity);
     const commitment = asString(row.commitment);
     const support = asString(row.support);

@@ -58,10 +58,22 @@ function canonicalize(value: unknown): unknown {
 export async function computePlanDigest(
   operations: readonly CommitOperation[],
   expectedTailOrdinal: string | null | undefined,
+  entityBindings?:
+    | readonly {
+        narrativeEntityId: string;
+        codexEntryId: string;
+        source?: string;
+      }[]
+    | null,
 ): Promise<string> {
+  const bindings = [...(entityBindings ?? [])].sort((left, right) =>
+    left.narrativeEntityId.localeCompare(right.narrativeEntityId),
+  );
   const plan = canonicalize({
     expectedTailOrdinal: expectedTailOrdinal ?? null,
     operations,
+    // Omit empty bindings so digests stay compatible with pre-binding Chronicle plans.
+    ...(bindings.length > 0 ? { entityBindings: bindings } : {}),
   });
   return sha256Hex(JSON.stringify(plan));
 }

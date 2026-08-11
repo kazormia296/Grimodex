@@ -24,4 +24,5 @@ export interface CreateChronicleEventProposalPayloadV1 {
   };
 }
 
-export const CHRONICLE_EVENT_PROPOSAL_KIND = "chronicle.create-event@1" as const;
+export const CHRONICLE_EVENT_PROPOSAL_KIND =
+  "chronicle.create-event@1" as const;

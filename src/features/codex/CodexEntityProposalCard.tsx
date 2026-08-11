@@ -36,8 +36,10 @@ export function CodexEntityProposalCard({
   onDecide,
 }: CodexEntityProposalCardProps) {
   const blocked = proposal.applicability === "blocked";
+  const applied = Boolean(proposal.application);
   const safeHint =
     !blocked &&
+    !applied &&
     proposal.status === "unreviewed" &&
     isSafeForCodexEntityBulkApprove(proposal.safety);
 
@@ -69,6 +71,11 @@ export function CodexEntityProposalCard({
               {proposal.blockedReason ?? "要解決"}
             </span>
           )}
+          {applied && (
+            <span className="block text-[10px] text-muted-foreground">
+              適用済み（編集不可）
+            </span>
+          )}
           {safeHint && (
             <span className="block text-[10px] text-emerald-700 dark:text-emerald-400">
               安全一括承認の対象
@@ -77,7 +84,7 @@ export function CodexEntityProposalCard({
         </span>
       </button>
 
-      {!blocked && (
+      {!blocked && !applied && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"

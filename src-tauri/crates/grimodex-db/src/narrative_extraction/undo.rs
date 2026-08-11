@@ -81,6 +81,46 @@ fn mutate_commit(
                         undo_one_entity(conn, &payload.project_id, entity, &now)?;
                     }
 
+                    // Refresh journal after_json so the next Redo→Undo cycle has
+                    // correct OCC expectations (symmetric with redo's update_journal_after).
+                    // Surviving entities (patches) get post-undo live versions; deleted
+                    // creates keep their recreate snapshot for redo.
+                    let mut after_entities = Vec::new();
+                    for entity in &entities {
+                        let mut row = entity.clone();
+                        let kind = entity_kind(entity)?;
+                        let id = entity_id(entity)?;
+                        let op_kind = entity
+                            .get("opKind")
+                            .and_then(Value::as_str)
+                            .unwrap_or("create");
+                        if kind == "codex_entry" && op_kind == "patch" {
+                            let live = collect_codex_entry_snapshot(conn, id)?;
+                            let live_version = live
+                                .get("version")
+                                .and_then(Value::as_i64)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "codex entry snapshot missing version after undo"
+                                    )
+                                })?;
+                            if let Some(obj) = row.as_object_mut() {
+                                obj.insert("version".to_string(), Value::from(live_version));
+                                // Keep `snapshot` as the post-apply (redo) target.
+                                // Refresh beforeSnapshot to the restored live state so a
+                                // subsequent redo preflight compares against current OCC.
+                                obj.insert("beforeSnapshot".to_string(), live);
+                            }
+                        }
+                        after_entities.push(row);
+                    }
+                    update_journal_after(
+                        conn,
+                        &commit.commit_id,
+                        &after_entities,
+                        &entity_bindings,
+                    )?;
+
                     let change_uid = Uuid::new_v4().to_string();
                     append_change_events_in_tx(
                         conn,
