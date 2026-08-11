@@ -7,17 +7,17 @@
       "maxLines": 2772,
       "maxRuntimeImports": 37
     },
-    "src/features/chat/contextBuilder.ts": {
-      "maxLines": 2395
-    },
     "src/features/chat/chatApi.ts": {
       "maxLines": 1419
     },
-    "src/features/project/projectStore.ts": {
-      "maxLines": 940
+    "src/features/chat/contextBuilder.ts": {
+      "maxLines": 2395
     },
     "src/features/concurrency/externalWriteFeed.ts": {
-      "maxLines": 696
+      "maxLines": 674
+    },
+    "src/features/project/projectStore.ts": {
+      "maxLines": 940
     },
     "src/features/workspace/store.ts": {
       "maxLines": 532

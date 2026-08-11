@@ -374,7 +374,6 @@ pub fn has_v6_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     }))
 }
 
-
 /// SCHEMA 7 checkpoint: Narrative Extraction persistence on top of every v6
 /// invariant.
 pub fn has_v7_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
@@ -396,9 +395,7 @@ pub fn has_v8_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     }
     let columns = table_columns(conn, "codex_relations")?;
     let has_directionality = columns.iter().any(|column| {
-        column.name == "directionality"
-            && column.declared_type == "TEXT"
-            && column.not_null
+        column.name == "directionality" && column.declared_type == "TEXT" && column.not_null
     });
     let has_inverse_label = columns.iter().any(|column| column.name == "inverse_label");
     let has_semantic_key = columns.iter().any(|column| {
@@ -426,13 +423,11 @@ pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     }
     let definitions = table_columns(conn, "codex_detail_definitions")?;
     let values = table_columns(conn, "codex_detail_values")?;
-    Ok(
-        has_occ_integer_column(&definitions, "version")
-            && has_timestamp_text_column(&definitions, "updated_at")
-            && has_occ_integer_column(&values, "version")
-            && has_timestamp_text_column(&values, "created_at")
-            && has_timestamp_text_column(&values, "updated_at"),
-    )
+    Ok(has_occ_integer_column(&definitions, "version")
+        && has_timestamp_text_column(&definitions, "updated_at")
+        && has_occ_integer_column(&values, "version")
+        && has_timestamp_text_column(&values, "created_at")
+        && has_timestamp_text_column(&values, "updated_at"))
 }
 
 /// SCHEMA 10 checkpoint: Temporal Constraint Graph persistence tables on top
@@ -453,17 +448,15 @@ pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     let nodes = table_columns(conn, "narrative_temporal_nodes")?;
     let constraints = table_columns(conn, "narrative_temporal_constraints")?;
     let projections = table_columns(conn, "narrative_temporal_projections")?;
-    Ok(
-        has_occ_integer_column(&nodes, "version")
-            && has_timestamp_text_column(&nodes, "created_at")
-            && has_timestamp_text_column(&nodes, "updated_at")
-            && has_occ_integer_column(&constraints, "version")
-            && has_timestamp_text_column(&constraints, "created_at")
-            && has_timestamp_text_column(&constraints, "updated_at")
-            && has_occ_integer_column(&projections, "version")
-            && has_timestamp_text_column(&projections, "created_at")
-            && has_timestamp_text_column(&projections, "updated_at"),
-    )
+    Ok(has_occ_integer_column(&nodes, "version")
+        && has_timestamp_text_column(&nodes, "created_at")
+        && has_timestamp_text_column(&nodes, "updated_at")
+        && has_occ_integer_column(&constraints, "version")
+        && has_timestamp_text_column(&constraints, "created_at")
+        && has_timestamp_text_column(&constraints, "updated_at")
+        && has_occ_integer_column(&projections, "version")
+        && has_timestamp_text_column(&projections, "created_at")
+        && has_timestamp_text_column(&projections, "updated_at"))
 }
 
 /// SCHEMA 11 checkpoint: Plot Thread OCC on top of every v10 invariant.
@@ -474,13 +467,11 @@ pub fn has_v11_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
     let threads = table_columns(conn, "plot_threads")?;
     let links = table_columns(conn, "plot_thread_scene_links")?;
     let branches = table_columns(conn, "plot_thread_branches")?;
-    Ok(
-        has_occ_integer_column(&threads, "version")
-            && has_occ_integer_column(&links, "version")
-            && has_text_column(&links, "semantic_key")
-            && has_occ_integer_column(&branches, "version")
-            && has_text_column(&branches, "semantic_key"),
-    )
+    Ok(has_occ_integer_column(&threads, "version")
+        && has_occ_integer_column(&links, "version")
+        && has_text_column(&links, "semantic_key")
+        && has_occ_integer_column(&branches, "version")
+        && has_text_column(&branches, "semantic_key"))
 }
 
 /// SCHEMA 12 checkpoint: Foreshadow Setup/Payoff aggregate tables with root OCC
@@ -511,41 +502,39 @@ pub fn has_v12_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
             .any(|column| column.name == name && column.declared_type == declared_type)
     };
 
-    Ok(
-        has_occ_integer_column(&foreshadows, "version")
-            && has_column(&foreshadows, "mechanism", "TEXT")
-            && has_text_column(&setups, "role")
-            && has_text_column(&setups, "semantic_key")
-            && [
-                "id",
-                "foreshadow_id",
-                "scene_id",
-                "from_pos",
-                "to_pos",
-                "role",
-                "confirmed",
-                "is_primary",
-                "attribution",
-                "ai_rationale",
-                "is_orphan",
-                "evidence_anchor_id",
-                "semantic_key",
-                "created_at",
-                "updated_at",
-            ]
-            .iter()
-            .all(|name| payoffs.iter().any(|column| column.name == *name))
-            && [
-                "foreshadow_id",
-                "setup_id",
-                "payoff_id",
-                "bridge_kind",
-                "explanation",
-                "created_at",
-            ]
-            .iter()
-            .all(|name| links.iter().any(|column| column.name == *name)),
-    )
+    Ok(has_occ_integer_column(&foreshadows, "version")
+        && has_column(&foreshadows, "mechanism", "TEXT")
+        && has_text_column(&setups, "role")
+        && has_text_column(&setups, "semantic_key")
+        && [
+            "id",
+            "foreshadow_id",
+            "scene_id",
+            "from_pos",
+            "to_pos",
+            "role",
+            "confirmed",
+            "is_primary",
+            "attribution",
+            "ai_rationale",
+            "is_orphan",
+            "evidence_anchor_id",
+            "semantic_key",
+            "created_at",
+            "updated_at",
+        ]
+        .iter()
+        .all(|name| payoffs.iter().any(|column| column.name == *name))
+        && [
+            "foreshadow_id",
+            "setup_id",
+            "payoff_id",
+            "bridge_kind",
+            "explanation",
+            "created_at",
+        ]
+        .iter()
+        .all(|name| links.iter().any(|column| column.name == *name)))
 }
 
 /// SCHEMA 13 checkpoint: Import Session persistence on top of every v12
@@ -573,16 +562,28 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 15 seals Prepared Commit columns on
-/// `narrative_apply_commits` on top of every v14 invariant.
+/// [`SCHEMA_VERSION`]. Version 16 adds per-incarnation identity to
+/// `scene_events` on top of every v15 invariant.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(
-        SCHEMA_VERSION == 15
-            && has_v3_physical_invariants(conn)?
-            && has_v13_checkpoint_invariants(conn)?
-            && table_exists(conn, "import_captures")?
-            && has_v15_prepared_commit_columns(conn)?,
-    )
+    Ok(SCHEMA_VERSION == 16
+        && has_v3_physical_invariants(conn)?
+        && has_v13_checkpoint_invariants(conn)?
+        && table_exists(conn, "import_captures")?
+        && has_v15_prepared_commit_columns(conn)?
+        && has_v16_scene_event_incarnation_column(conn)?)
+}
+
+fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "scene_events")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "scene_events")?;
+    Ok(columns.iter().any(|column| {
+        column.name == "incarnation_token"
+            && column.declared_type == "TEXT"
+            && column.not_null
+            && column.default.as_deref() == Some("''")
+    }))
 }
 
 fn has_v15_prepared_commit_columns(conn: &Connection) -> anyhow::Result<bool> {
@@ -609,8 +610,6 @@ fn has_v15_prepared_commit_columns(conn: &Connection) -> anyhow::Result<bool> {
         && has_text(&revision_cols, "plan_fragment_digest"))
 }
 
-
-
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
     columns.iter().any(|column| {
         column.name == name
@@ -621,17 +620,15 @@ fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
 }
 
 fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
-    columns.iter().any(|column| {
-        column.name == name
-            && column.declared_type == "TEXT"
-            && column.not_null
-    })
+    columns
+        .iter()
+        .any(|column| column.name == name && column.declared_type == "TEXT" && column.not_null)
 }
 
 fn has_text_column(columns: &[ColumnShape], name: &str) -> bool {
-    columns.iter().any(|column| {
-        column.name == name && column.declared_type == "TEXT" && column.not_null
-    })
+    columns
+        .iter()
+        .any(|column| column.name == name && column.declared_type == "TEXT" && column.not_null)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {

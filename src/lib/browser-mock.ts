@@ -95,6 +95,7 @@ type BrowserPlotThreadSnapshot = {
   sortOrder: string;
   startNodeId: string | null;
   endNodeId: string | null;
+  version: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -106,6 +107,8 @@ type BrowserPlotLinkSnapshot = {
   phaseType: string;
   note: string | null;
   sortOrder: string | null;
+  semanticKey: string | null;
+  version: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -117,6 +120,8 @@ type BrowserPlotBranchSnapshot = {
   toThreadId: string;
   atNodeId: string;
   kind: string;
+  semanticKey: string | null;
+  version: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -633,8 +638,8 @@ function seedBrowserTutorialProject(
       db.run(
         `INSERT INTO foreshadow_setups
           (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
-           attribution, is_orphan, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+           attribution, is_orphan, semantic_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
         [
           entityId(setup.id),
           entityId(setup.foreshadow_id),
@@ -644,6 +649,7 @@ function seedBrowserTutorialProject(
           setup.kind,
           setup.strength ?? null,
           setup.attribution,
+          `${entityId(setup.foreshadow_id)}|${entityId(setup.scene_id)}|${setup.from_pos}|${setup.to_pos}`,
           nowMs,
           nowMs,
         ],
@@ -1668,6 +1674,312 @@ function migrateBrowserAiAuditLedger(db: Database): boolean {
   return true;
 }
 
+const BROWSER_DOMAIN_MIGRATION_TABLES = [
+  "scene_events",
+  "plot_threads",
+  "plot_thread_scene_links",
+  "plot_thread_branches",
+  "foreshadows",
+  "foreshadow_setups",
+  "foreshadow_codex_links",
+  "foreshadow_payoffs",
+  "foreshadow_setup_payoff_links",
+] as const;
+
+const BROWSER_DOMAIN_MIGRATION_COLUMNS = [
+  ["scene_events", "incarnation_token", "TEXT NOT NULL DEFAULT ''"],
+  ["plot_threads", "version", "INTEGER NOT NULL DEFAULT 0"],
+  ["plot_thread_scene_links", "version", "INTEGER NOT NULL DEFAULT 0"],
+  ["plot_thread_scene_links", "semantic_key", "TEXT NOT NULL DEFAULT ''"],
+  ["plot_thread_branches", "version", "INTEGER NOT NULL DEFAULT 0"],
+  ["plot_thread_branches", "semantic_key", "TEXT NOT NULL DEFAULT ''"],
+  ["foreshadows", "version", "INTEGER NOT NULL DEFAULT 0"],
+  ["foreshadows", "mechanism", "TEXT"],
+  ["foreshadow_setups", "role", "TEXT NOT NULL DEFAULT 'unspecified'"],
+  ["foreshadow_setups", "evidence_anchor_id", "TEXT"],
+  ["foreshadow_setups", "semantic_key", "TEXT NOT NULL DEFAULT ''"],
+] as const;
+
+const BROWSER_DOMAIN_MIGRATION_INDEXES = [
+  [
+    "plot_thread_scene_links",
+    "idx_plot_thread_links_semantic_key",
+    false,
+    ["semantic_key"],
+  ],
+  [
+    "plot_thread_scene_links",
+    "uq_plot_thread_links_semantic_key",
+    true,
+    ["semantic_key"],
+  ],
+  [
+    "plot_thread_branches",
+    "idx_plot_thread_branches_semantic_key",
+    false,
+    ["semantic_key"],
+  ],
+  [
+    "plot_thread_branches",
+    "uq_plot_thread_branches_semantic_key",
+    true,
+    ["semantic_key"],
+  ],
+  ["foreshadow_setups", "idx_fs_setup_semantic_key", false, ["semantic_key"]],
+  ["foreshadow_setups", "uq_fs_setup_semantic_key", true, ["semantic_key"]],
+  ["foreshadow_payoffs", "idx_fs_payoff_fid", false, ["foreshadow_id"]],
+  ["foreshadow_payoffs", "idx_fs_payoff_scene", false, ["scene_id"]],
+  ["foreshadow_payoffs", "idx_fs_payoff_semantic_key", false, ["semantic_key"]],
+  ["foreshadow_payoffs", "uq_fs_payoff_semantic_key", true, ["semantic_key"]],
+  [
+    "foreshadow_setup_payoff_links",
+    "idx_fs_payoff_link_setup",
+    false,
+    ["setup_id"],
+  ],
+  [
+    "foreshadow_setup_payoff_links",
+    "idx_fs_payoff_link_payoff",
+    false,
+    ["payoff_id"],
+  ],
+] as const;
+
+function browserSchemaObjectExists(
+  db: Database,
+  type: "table" | "index",
+  name: string,
+): boolean {
+  const statement = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ? LIMIT 1",
+  );
+  try {
+    statement.bind([type, name]);
+    return statement.step();
+  } finally {
+    statement.free();
+  }
+}
+
+function browserQueryHasRows(db: Database, sql: string): boolean {
+  return (db.exec(sql)[0]?.values.length ?? 0) > 0;
+}
+
+function migrateBrowserDomainSchema(db: Database): boolean {
+  const missingTables = BROWSER_DOMAIN_MIGRATION_TABLES.filter(
+    (table) => !browserSchemaObjectExists(db, "table", table),
+  );
+  const missingColumns = BROWSER_DOMAIN_MIGRATION_COLUMNS.filter(
+    ([table, column]) =>
+      !missingTables.includes(table) &&
+      !browserTableColumns(db, table).includes(column),
+  );
+  const missingIndexes = BROWSER_DOMAIN_MIGRATION_INDEXES.filter(
+    ([table, name, unique, columns]) => {
+      if (!browserSchemaObjectExists(db, "index", name)) return true;
+      if (!browserIndexMatches(db, table, name, unique, columns)) {
+        throw new Error(
+          `Unsupported prerelease browser domain index '${name}'; export with the originating build before upgrading`,
+        );
+      }
+      return false;
+    },
+  );
+  const schemaNeedsMigration =
+    missingTables.length > 0 ||
+    missingColumns.length > 0 ||
+    missingIndexes.length > 0;
+  const contentNeedsMigration =
+    schemaNeedsMigration ||
+    browserQueryHasRows(
+      db,
+      `SELECT 1 FROM plot_thread_scene_links
+        WHERE semantic_key IS NULL OR semantic_key = '' LIMIT 1`,
+    ) ||
+    browserQueryHasRows(
+      db,
+      `SELECT 1 FROM plot_thread_branches
+        WHERE semantic_key IS NULL OR semantic_key = '' LIMIT 1`,
+    ) ||
+    browserQueryHasRows(
+      db,
+      `SELECT 1 FROM foreshadow_setups
+        WHERE role IS NULL OR role = '' OR semantic_key IS NULL
+           OR semantic_key = '' LIMIT 1`,
+    ) ||
+    browserQueryHasRows(
+      db,
+      `SELECT 1 FROM foreshadow_payoffs
+        WHERE semantic_key IS NULL OR semantic_key = '' LIMIT 1`,
+    ) ||
+    browserQueryHasRows(
+      db,
+      `SELECT 1 FROM foreshadows root
+        WHERE payoff_scene_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM foreshadow_payoffs payoff
+             WHERE payoff.foreshadow_id = root.id
+               AND (
+                 payoff.is_primary = 1
+                 OR (
+                   payoff.scene_id = root.payoff_scene_id
+                   AND payoff.from_pos IS root.payoff_from_pos
+                   AND payoff.to_pos IS root.payoff_to_pos
+                 )
+               )
+          )
+        LIMIT 1`,
+    );
+  if (!contentNeedsMigration) return false;
+
+  db.run("BEGIN IMMEDIATE");
+  try {
+    for (const table of missingTables) {
+      db.run(buildBrowserTableDdl(BROWSER_SCHEMA_CONTRACT, table));
+    }
+    for (const [
+      table,
+      column,
+      declaration,
+    ] of BROWSER_DOMAIN_MIGRATION_COLUMNS) {
+      if (!browserTableColumns(db, table).includes(column)) {
+        db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
+      }
+    }
+    // Mirror native schema 11 and 12 ordering exactly: natural-key backfill,
+    // stable legacy duplicate suffixes, then unique indexes.
+    db.run(`
+      UPDATE plot_thread_scene_links
+         SET semantic_key = thread_id || '|' || node_id || '|' || phase_type
+       WHERE semantic_key = '' OR semantic_key IS NULL;
+      UPDATE plot_thread_scene_links
+         SET semantic_key = semantic_key || '#dup:' || id
+       WHERE id IN (
+         SELECT id FROM plot_thread_scene_links a
+          WHERE EXISTS (
+            SELECT 1 FROM plot_thread_scene_links b
+             WHERE b.semantic_key = a.semantic_key AND b.rowid < a.rowid
+          )
+       );
+      UPDATE plot_thread_branches
+         SET semantic_key = from_thread_id || '|' || to_thread_id || '|' || at_node_id || '|' || kind
+       WHERE semantic_key = '' OR semantic_key IS NULL;
+      UPDATE plot_thread_branches
+         SET semantic_key = semantic_key || '#dup:' || id
+       WHERE id IN (
+         SELECT id FROM plot_thread_branches a
+          WHERE EXISTS (
+            SELECT 1 FROM plot_thread_branches b
+             WHERE b.semantic_key = a.semantic_key AND b.rowid < a.rowid
+          )
+       );
+      UPDATE foreshadow_setups
+         SET role = 'unspecified'
+       WHERE role IS NULL OR role = '';
+      UPDATE foreshadow_setups
+         SET semantic_key = foreshadow_id || '|' || scene_id || '|' || from_pos || '|' || to_pos
+       WHERE semantic_key IS NULL OR semantic_key = '';
+      UPDATE foreshadow_setups
+         SET semantic_key = semantic_key || '#dup:' || id
+       WHERE id IN (
+         SELECT id FROM foreshadow_setups a
+          WHERE EXISTS (
+            SELECT 1 FROM foreshadow_setups b
+             WHERE b.semantic_key = a.semantic_key AND b.rowid < a.rowid
+          )
+       );
+      INSERT INTO foreshadow_payoffs (
+        id, foreshadow_id, scene_id, from_pos, to_pos, role, confirmed,
+        is_primary, attribution, ai_rationale, is_orphan, evidence_anchor_id,
+        semantic_key, created_at, updated_at
+      )
+      SELECT
+        'legacy-payoff:' || id, id, payoff_scene_id, payoff_from_pos,
+        payoff_to_pos, 'unspecified', payoff_confirmed, 1, 'human', NULL, 0,
+        NULL,
+        id || '|' || payoff_scene_id || '|' || COALESCE(payoff_from_pos, '') || '|' || COALESCE(payoff_to_pos, ''),
+        created_at, updated_at
+        FROM foreshadows root
+       WHERE payoff_scene_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM foreshadow_payoffs payoff
+            WHERE payoff.foreshadow_id = root.id
+              AND (
+                payoff.is_primary = 1
+                OR (
+                  payoff.scene_id = root.payoff_scene_id
+                  AND payoff.from_pos IS root.payoff_from_pos
+                  AND payoff.to_pos IS root.payoff_to_pos
+                )
+              )
+         );
+      UPDATE foreshadow_payoffs
+         SET semantic_key = foreshadow_id || '|' || scene_id || '|' || COALESCE(from_pos, '') || '|' || COALESCE(to_pos, '')
+       WHERE semantic_key IS NULL OR semantic_key = '';
+      UPDATE foreshadow_payoffs
+         SET semantic_key = semantic_key || '#dup:' || id
+       WHERE id IN (
+         SELECT id FROM foreshadow_payoffs a
+          WHERE EXISTS (
+            SELECT 1 FROM foreshadow_payoffs b
+             WHERE b.semantic_key = a.semantic_key AND b.rowid < a.rowid
+          )
+       );
+      CREATE INDEX IF NOT EXISTS idx_plot_thread_links_semantic_key
+        ON plot_thread_scene_links(semantic_key);
+      CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_semantic_key
+        ON plot_thread_branches(semantic_key);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_thread_links_semantic_key
+        ON plot_thread_scene_links(semantic_key);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_thread_branches_semantic_key
+        ON plot_thread_branches(semantic_key);
+      CREATE INDEX IF NOT EXISTS idx_fs_setup_semantic_key
+        ON foreshadow_setups(semantic_key);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_fs_setup_semantic_key
+        ON foreshadow_setups(semantic_key);
+      CREATE INDEX IF NOT EXISTS idx_fs_payoff_fid
+        ON foreshadow_payoffs(foreshadow_id);
+      CREATE INDEX IF NOT EXISTS idx_fs_payoff_scene
+        ON foreshadow_payoffs(scene_id);
+      CREATE INDEX IF NOT EXISTS idx_fs_payoff_semantic_key
+        ON foreshadow_payoffs(semantic_key);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_fs_payoff_semantic_key
+        ON foreshadow_payoffs(semantic_key);
+      CREATE INDEX IF NOT EXISTS idx_fs_payoff_link_setup
+        ON foreshadow_setup_payoff_links(setup_id);
+      CREATE INDEX IF NOT EXISTS idx_fs_payoff_link_payoff
+        ON foreshadow_setup_payoff_links(payoff_id);
+    `);
+    db.run("COMMIT");
+  } catch (error) {
+    try {
+      db.run("ROLLBACK");
+    } catch {
+      // Preserve the domain migration failure.
+    }
+    throw error;
+  }
+
+  for (const [table, column] of BROWSER_DOMAIN_MIGRATION_COLUMNS) {
+    if (!browserTableColumns(db, table).includes(column)) {
+      throw new Error(
+        `browser domain schema migration did not add ${table}.${column}`,
+      );
+    }
+  }
+  for (const [
+    table,
+    name,
+    unique,
+    columns,
+  ] of BROWSER_DOMAIN_MIGRATION_INDEXES) {
+    if (!browserIndexMatches(db, table, name, unique, columns)) {
+      throw new Error(`browser domain schema migration did not create ${name}`);
+    }
+  }
+  return true;
+}
+
 async function browserPayloadFingerprint(
   domain: string,
   payload: Record<string, unknown>,
@@ -1764,6 +2076,9 @@ export async function createBrowserMock(
     options.onDatabaseDirty?.();
   }
   if (migrateBrowserAiAuditLedger(db)) {
+    options.onDatabaseDirty?.();
+  }
+  if (migrateBrowserDomainSchema(db)) {
     options.onDatabaseDirty?.();
   }
   db.run(`CREATE TEMP TABLE grimodex_connection_meta (
@@ -2756,6 +3071,703 @@ export async function createBrowserMock(
     return String(value);
   }
 
+  interface BrowserPhaseDetailOverrideSnapshot {
+    definitionId: string;
+    value: string | null;
+  }
+
+  interface BrowserPhaseAggregateSnapshot {
+    id: string;
+    entryId: string;
+    anchorNodeId: string | null;
+    label: string;
+    summaryOverride: string | null;
+    contentOverride: string | null;
+    contextModeOverride: string | null;
+    version: number;
+    detailOverrides: BrowserPhaseDetailOverrideSnapshot[];
+  }
+
+  function loadBrowserPhaseAggregateSnapshot(
+    phaseId: string,
+    projectId: string,
+  ): BrowserPhaseAggregateSnapshot | null {
+    const phase = queryOne(
+      `SELECT phase.id, phase.entry_id, phase.anchor_node_id, phase.label,
+              phase.summary_override, phase.content_override,
+              phase.context_mode_override, phase.version
+         FROM codex_entry_phases phase
+         JOIN codex_entries entry ON entry.id = phase.entry_id
+        WHERE phase.id = ? AND entry.project_id = ?`,
+      [phaseId, projectId],
+    );
+    if (!phase) return null;
+    const detailOverrides = queryAll(
+      `SELECT definition_id, value
+         FROM codex_phase_detail_overrides
+        WHERE phase_id = ?
+        ORDER BY definition_id`,
+      [phaseId],
+    ).map((row) => ({
+      definitionId: String(row.definition_id),
+      value: row.value == null ? null : String(row.value),
+    }));
+    return {
+      id: String(phase.id),
+      entryId: String(phase.entry_id),
+      anchorNodeId:
+        phase.anchor_node_id == null ? null : String(phase.anchor_node_id),
+      label: String(phase.label),
+      summaryOverride:
+        phase.summary_override == null ? null : String(phase.summary_override),
+      contentOverride:
+        phase.content_override == null ? null : String(phase.content_override),
+      contextModeOverride:
+        phase.context_mode_override == null
+          ? null
+          : String(phase.context_mode_override),
+      version: Number(phase.version),
+      detailOverrides,
+    };
+  }
+
+  function replaceBrowserPhaseOverrides(
+    phaseId: string,
+    projectId: string,
+    rawOverrides: unknown,
+  ): void {
+    if (!Array.isArray(rawOverrides)) {
+      throw new Error("phase detailOverrides must be an array");
+    }
+    db.run("DELETE FROM codex_phase_detail_overrides WHERE phase_id = ?", [
+      phaseId,
+    ]);
+    for (const rawOverride of rawOverrides) {
+      if (
+        rawOverride === null ||
+        typeof rawOverride !== "object" ||
+        Array.isArray(rawOverride)
+      ) {
+        throw new Error("phase detail override must be an object");
+      }
+      const override = rawOverride as Record<string, unknown>;
+      const definitionId = String(override.definitionId ?? "");
+      const definition = queryOne(
+        `SELECT 1 AS owned
+           FROM codex_detail_definitions
+          WHERE id = ? AND project_id = ?`,
+        [definitionId, projectId],
+      );
+      if (!definition) {
+        throw new Error(
+          `phase detail definition '${definitionId}' is not in project '${projectId}'`,
+        );
+      }
+      db.run(
+        `INSERT INTO codex_phase_detail_overrides
+          (phase_id, definition_id, value) VALUES (?, ?, ?)`,
+        [phaseId, definitionId, nativeNullable(override.value) ?? null],
+      );
+    }
+  }
+
+  async function handleBrowserPhasePatch(
+    p: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const phaseId = String(p.phaseId);
+    const projectId = String(p.projectId);
+    const sessionId = String(p.sessionId);
+    const surface = String(p.surface ?? "manual");
+    const baseVersion = Number(p.baseVersion);
+    const eventUid = crypto.randomUUID();
+    const undoJournalId = crypto.randomUUID();
+    const timestamp = Date.now();
+    const now = new Date(timestamp).toISOString();
+
+    return withAppendLedgerLock(async () => {
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: "phase.update",
+        entityType: "phase",
+        entityId: phaseId,
+        payload: JSON.stringify({ surface, operation: "phase.update" }),
+        sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const before = loadBrowserPhaseAggregateSnapshot(phaseId, projectId);
+        if (!before) {
+          throw new Error(
+            `phase '${phaseId}' is not in project '${projectId}'`,
+          );
+        }
+        if (before.version !== baseVersion) {
+          throw new Error("phase version conflict");
+        }
+        if (Object.hasOwn(p, "anchorNodeId") && p.anchorNodeId != null) {
+          if (typeof p.anchorNodeId !== "string") {
+            throw new Error("phase anchorNodeId must be a string or null");
+          }
+          if (
+            !queryOne(
+              `SELECT 1 AS owned FROM tree_nodes
+                WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+              [p.anchorNodeId, projectId],
+            )
+          ) {
+            throw new Error(
+              `phase anchor '${p.anchorNodeId}' is not a scene in project '${projectId}'`,
+            );
+          }
+        }
+
+        const values: SqlValue[] = [];
+        const sets: string[] = [];
+        const phaseColumns: Record<string, string> = {
+          label: "label",
+          anchorNodeId: "anchor_node_id",
+          summaryOverride: "summary_override",
+          contentOverride: "content_override",
+          contextModeOverride: "context_mode_override",
+        };
+        for (const [key, column] of Object.entries(phaseColumns)) {
+          if (!(key in p)) continue;
+          sets.push(`${column} = ?`);
+          values.push(
+            key === "label"
+              ? String(p[key] ?? "")
+              : (nativeNullable(p[key]) ?? null),
+          );
+        }
+        sets.push("version = version + 1", "updated_at = ?");
+        values.push(now, phaseId, baseVersion, projectId);
+        db.run(
+          `UPDATE codex_entry_phases
+              SET ${sets.join(", ")}
+            WHERE id = ? AND version = ?
+              AND EXISTS (
+                SELECT 1
+                  FROM codex_entries entry
+                 WHERE entry.id = codex_entry_phases.entry_id
+                   AND entry.project_id = ?
+              )`,
+          values,
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error("phase version conflict");
+        }
+
+        if (Object.hasOwn(p, "detailOverrides")) {
+          replaceBrowserPhaseOverrides(phaseId, projectId, p.detailOverrides);
+        }
+
+        const after = loadBrowserPhaseAggregateSnapshot(phaseId, projectId);
+        if (!after || after.version !== baseVersion + 1) {
+          throw new Error("phase version conflict");
+        }
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, ?, 'codex_phase', ?, 'update', ?, ?, ?, ?, ?, ?)`,
+          [
+            undoJournalId,
+            projectId,
+            surface,
+            phaseId,
+            JSON.stringify(before),
+            JSON.stringify(after),
+            before.version,
+            after.version,
+            eventUid,
+            now,
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          entityId: phaseId,
+          version: after.version,
+          changeEventUid: eventUid,
+          undoJournalId,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original phase mutation failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  function parseBrowserPhaseAggregateSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserPhaseAggregateSnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `phase undo journal '${journalId}' is missing a snapshot`,
+      );
+    }
+    const parsed = JSON.parse(raw) as Partial<BrowserPhaseAggregateSnapshot>;
+    if (
+      typeof parsed.id !== "string" ||
+      typeof parsed.entryId !== "string" ||
+      typeof parsed.label !== "string" ||
+      typeof parsed.version !== "number" ||
+      !Array.isArray(parsed.detailOverrides)
+    ) {
+      throw new Error(
+        `phase undo journal '${journalId}' has an invalid snapshot`,
+      );
+    }
+    return parsed as BrowserPhaseAggregateSnapshot;
+  }
+
+  function restoreBrowserPhaseAggregateSnapshot(
+    projectId: string,
+    snapshot: BrowserPhaseAggregateSnapshot,
+    expectedVersion: number,
+    targetVersion: number,
+    now: string,
+  ): void {
+    if (
+      snapshot.anchorNodeId !== null &&
+      !queryOne(
+        `SELECT 1 AS owned FROM tree_nodes
+          WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+        [snapshot.anchorNodeId, projectId],
+      )
+    ) {
+      throw new Error(
+        `phase anchor '${snapshot.anchorNodeId}' is not a scene in project '${projectId}'`,
+      );
+    }
+    db.run(
+      `UPDATE codex_entry_phases
+          SET label = ?, anchor_node_id = ?, summary_override = ?,
+              content_override = ?, context_mode_override = ?,
+              version = ?, updated_at = ?
+        WHERE id = ? AND entry_id = ? AND version = ?
+          AND EXISTS (
+            SELECT 1
+              FROM codex_entries entry
+             WHERE entry.id = codex_entry_phases.entry_id
+               AND entry.project_id = ?
+          )`,
+      [
+        snapshot.label,
+        snapshot.anchorNodeId,
+        snapshot.summaryOverride,
+        snapshot.contentOverride,
+        snapshot.contextModeOverride,
+        targetVersion,
+        now,
+        snapshot.id,
+        snapshot.entryId,
+        expectedVersion,
+        projectId,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `phase '${snapshot.id}' version conflict during undo replay`,
+      );
+    }
+    replaceBrowserPhaseOverrides(
+      snapshot.id,
+      projectId,
+      snapshot.detailOverrides,
+    );
+    const restored = loadBrowserPhaseAggregateSnapshot(snapshot.id, projectId);
+    if (!restored || restored.version !== targetVersion) {
+      throw new Error(
+        `phase '${snapshot.id}' could not be read after undo replay`,
+      );
+    }
+  }
+
+  function rewriteBrowserPhaseJournalStateToken(
+    projectId: string,
+    phaseId: string,
+    previousVersion: number,
+    replayVersion: number,
+  ): void {
+    db.run(
+      `UPDATE undo_journal
+          SET base_version = CASE
+                WHEN base_version = ? THEN ? ELSE base_version END,
+              result_version = CASE
+                WHEN result_version = ? THEN ? ELSE result_version END
+        WHERE project_id = ? AND entity_kind = 'codex_phase' AND entity_id = ?
+          AND (base_version = ? OR result_version = ?)`,
+      [
+        previousVersion,
+        replayVersion,
+        previousVersion,
+        replayVersion,
+        projectId,
+        phaseId,
+        previousVersion,
+        previousVersion,
+      ],
+    );
+    if (db.getRowsModified() === 0) {
+      throw new Error(
+        `phase undo journal chain for '${phaseId}' lost state version ${previousVersion}`,
+      );
+    }
+  }
+
+  async function handleBrowserApplyUndoJournal(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const p = (args.payload ?? {}) as Record<string, unknown>;
+    const requestId = String(p.requestId);
+    const projectId = String(p.projectId);
+    const sessionId = String(p.sessionId);
+    const journalId = String(p.journalId);
+    const direction = String(p.direction);
+    if (direction !== "undo" && direction !== "redo") {
+      throw new Error(`invalid undo direction: ${direction}`);
+    }
+
+    return withAppendLedgerLock(async () => {
+      const payloadHash = await browserPayloadFingerprint(
+        "agent_apply_undo_journal",
+        { projectId, journalId, direction },
+      );
+      const journal = queryOne(
+        `SELECT id, entity_kind, entity_id, op_kind, before_json, after_json,
+                base_version, result_version
+           FROM undo_journal
+          WHERE id = ? AND project_id = ?`,
+        [journalId, projectId],
+      );
+      if (!journal) {
+        throw new Error(`undo journal '${journalId}' not found`);
+      }
+      if (
+        journal.entity_kind !== "codex_phase" &&
+        journal.entity_kind !== "foreshadow" &&
+        journal.entity_kind !== "event"
+      ) {
+        throw new Error(
+          `browser undo does not support entity kind '${String(journal.entity_kind)}'`,
+        );
+      }
+      const isPhase = journal.entity_kind === "codex_phase";
+      const isSceneEventBatch = journal.entity_kind === "event";
+      const sceneEventSnapshot = isSceneEventBatch
+        ? parseBrowserSceneEventLinkBatchSnapshot(
+            direction === "undo" ? journal.before_json : journal.after_json,
+            journalId,
+          )
+        : null;
+      const opType = isPhase
+        ? "phase.update"
+        : isSceneEventBatch
+          ? direction === "undo"
+            ? "event.unstamp"
+            : "event.stamp"
+          : journal.op_kind === "create"
+            ? direction === "undo"
+              ? "foreshadow.delete"
+              : "foreshadow.create"
+            : journal.op_kind === "delete"
+              ? direction === "undo"
+                ? "foreshadow.create"
+                : "foreshadow.delete"
+              : "foreshadow.update";
+      const eventUid = crypto.randomUUID();
+      const timestamp = Date.now();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: isPhase ? "codex" : isSceneEventBatch ? "event" : "foreshadow",
+        opType,
+        entityType: isPhase
+          ? "phase"
+          : isSceneEventBatch
+            ? "event"
+            : "foreshadow",
+        entityId: String(journal.entity_id),
+        payload: JSON.stringify({
+          direction,
+          opKind: String(journal.op_kind),
+          journalId,
+          ...(sceneEventSnapshot
+            ? {
+                eventId: sceneEventSnapshot.eventId,
+                sceneIds: sceneEventSnapshot.sceneIds,
+              }
+            : {}),
+        }),
+        sessionId,
+        timestamp,
+      });
+      const now = new Date(timestamp).toISOString();
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const existing = queryOne(
+          `SELECT payload_hash
+             FROM idempotency_requests
+            WHERE domain = 'agent_apply_undo_journal' AND request_id = ?`,
+          [requestId],
+        );
+        if (existing) {
+          if (String(existing.payload_hash) !== payloadHash) {
+            throw new Error(
+              "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT: request id reused with different payload",
+            );
+          }
+          db.run("COMMIT");
+          return { ok: true };
+        }
+
+        const currentJournal = queryOne(
+          `SELECT entity_kind, entity_id, op_kind, before_json, after_json,
+                  base_version, result_version
+             FROM undo_journal
+            WHERE id = ? AND project_id = ?`,
+          [journalId, projectId],
+        );
+        if (!currentJournal) {
+          throw new Error(`undo journal '${journalId}' disappeared`);
+        }
+        if (currentJournal.entity_kind === "codex_phase") {
+          if (currentJournal.op_kind !== "update") {
+            throw new Error(`phase undo journal '${journalId}' is invalid`);
+          }
+          const snapshot = parseBrowserPhaseAggregateSnapshot(
+            direction === "undo"
+              ? currentJournal.before_json
+              : currentJournal.after_json,
+            journalId,
+          );
+          const expectedVersion = Number(
+            direction === "undo"
+              ? currentJournal.result_version
+              : currentJournal.base_version,
+          );
+          const priorTargetVersion = Number(
+            direction === "undo"
+              ? currentJournal.base_version
+              : currentJournal.result_version,
+          );
+          const targetVersion = expectedVersion + 1;
+          if (!Number.isSafeInteger(targetVersion)) {
+            throw new Error(`phase version overflow during ${direction}`);
+          }
+          restoreBrowserPhaseAggregateSnapshot(
+            projectId,
+            snapshot,
+            expectedVersion,
+            targetVersion,
+            now,
+          );
+          rewriteBrowserPhaseJournalStateToken(
+            projectId,
+            String(currentJournal.entity_id),
+            priorTargetVersion,
+            targetVersion,
+          );
+        } else if (currentJournal.entity_kind === "foreshadow") {
+          const opKind = String(currentJournal.op_kind);
+          const foreshadowId = String(currentJournal.entity_id);
+          if (opKind === "create") {
+            if (direction === "undo") {
+              const expectedVersion = Number(currentJournal.result_version);
+              const aggregate = loadBrowserForeshadowAggregateSnapshot(
+                foreshadowId,
+                projectId,
+              );
+              if (
+                !aggregate ||
+                aggregate.version !== expectedVersion ||
+                aggregate.setups.length > 0 ||
+                aggregate.payoffs.length > 0 ||
+                aggregate.supportEdges.length > 0 ||
+                aggregate.codexEntryIds.length > 0
+              ) {
+                throw new Error(
+                  `foreshadow '${foreshadowId}' aggregate changed before undo replay`,
+                );
+              }
+              db.run(
+                `DELETE FROM foreshadows
+                  WHERE id = ? AND project_id = ? AND version = ?`,
+                [foreshadowId, projectId, expectedVersion],
+              );
+              if (db.getRowsModified() !== 1) {
+                throw new Error(
+                  `foreshadow '${foreshadowId}' changed before undo replay`,
+                );
+              }
+            } else {
+              const snapshot = parseBrowserForeshadowSnapshot(
+                currentJournal.after_json,
+                journalId,
+              );
+              if (snapshot.projectId !== projectId) {
+                throw new Error(
+                  `foreshadow undo journal '${journalId}' project mismatch`,
+                );
+              }
+              const expectedVersion = Number(currentJournal.result_version);
+              const replayVersion = expectedVersion + 1;
+              if (!Number.isSafeInteger(replayVersion)) {
+                throw new Error("foreshadow version overflow during redo");
+              }
+              insertBrowserForeshadowSnapshot(
+                snapshot,
+                replayVersion,
+                timestamp,
+              );
+              rewriteBrowserForeshadowJournalStateToken(
+                projectId,
+                foreshadowId,
+                expectedVersion,
+                replayVersion,
+              );
+            }
+          } else if (opKind === "update") {
+            const snapshot = parseBrowserForeshadowSnapshot(
+              direction === "undo"
+                ? currentJournal.before_json
+                : currentJournal.after_json,
+              journalId,
+            );
+            if (snapshot.projectId !== projectId) {
+              throw new Error(
+                `foreshadow undo journal '${journalId}' project mismatch`,
+              );
+            }
+            const expectedVersion = Number(
+              direction === "undo"
+                ? currentJournal.result_version
+                : currentJournal.base_version,
+            );
+            const previousTargetVersion = Number(
+              direction === "undo"
+                ? currentJournal.base_version
+                : currentJournal.result_version,
+            );
+            const replayVersion = expectedVersion + 1;
+            if (!Number.isSafeInteger(replayVersion)) {
+              throw new Error(
+                `foreshadow version overflow during ${direction}`,
+              );
+            }
+            restoreBrowserForeshadowSnapshot(
+              snapshot,
+              expectedVersion,
+              replayVersion,
+              timestamp,
+            );
+            rewriteBrowserForeshadowJournalStateToken(
+              projectId,
+              foreshadowId,
+              previousTargetVersion,
+              replayVersion,
+            );
+          } else if (opKind === "delete") {
+            const snapshot = parseBrowserForeshadowAggregateSnapshot(
+              currentJournal.before_json,
+              journalId,
+            );
+            if (snapshot.projectId !== projectId) {
+              throw new Error(
+                `foreshadow undo journal '${journalId}' project mismatch`,
+              );
+            }
+            if (direction === "undo") {
+              const previousVersion = Number(currentJournal.base_version);
+              const replayVersion = previousVersion + 1;
+              if (!Number.isSafeInteger(replayVersion)) {
+                throw new Error(
+                  "foreshadow version overflow during undo delete",
+                );
+              }
+              insertBrowserForeshadowAggregateSnapshot(
+                snapshot,
+                replayVersion,
+                timestamp,
+              );
+              rewriteBrowserForeshadowJournalStateToken(
+                projectId,
+                foreshadowId,
+                previousVersion,
+                replayVersion,
+              );
+            } else {
+              const expectedVersion = Number(currentJournal.result_version);
+              deleteBrowserForeshadowAggregateAtVersion(
+                snapshot,
+                expectedVersion,
+              );
+            }
+          } else {
+            throw new Error(
+              `foreshadow undo journal '${journalId}' has unsupported op '${opKind}'`,
+            );
+          }
+        } else if (currentJournal.entity_kind === "event") {
+          if (currentJournal.op_kind !== "update") {
+            throw new Error(
+              `scene event batch journal '${journalId}' is invalid`,
+            );
+          }
+          replayBrowserSceneEventLinkBatchSnapshot(
+            projectId,
+            journalId,
+            direction,
+            currentJournal.before_json,
+            currentJournal.after_json,
+          );
+        } else {
+          throw new Error(
+            `browser undo does not support entity kind '${String(currentJournal.entity_kind)}'`,
+          );
+        }
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        db.run(
+          `INSERT INTO idempotency_requests
+            (domain, request_id, project_id, payload_hash, tombstone_json, created_at)
+           VALUES ('agent_apply_undo_journal', ?, ?, ?, ?, ?)`,
+          [
+            requestId,
+            projectId,
+            payloadHash,
+            JSON.stringify({ id: journalId }),
+            now,
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return { ok: true };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original undo replay failure.
+        }
+        throw error;
+      }
+    });
+  }
+
   function handleAgentCodexCreate(args: Record<string, unknown>) {
     const p = nativeCodexPayload(args);
     const now = new Date().toISOString();
@@ -2885,69 +3897,71 @@ export async function createBrowserMock(
         String(p.projectId),
       ]);
     } else if (operation === "phase.create") {
-      db.run(
-        `INSERT INTO codex_entry_phases
-          (id, entry_id, anchor_node_id, label, summary_override,
-           content_override, context_mode_override, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          String(p.phaseId),
-          String(p.entryId),
-          nativeNullable(p.anchorNodeId) ?? null,
-          String(p.label ?? ""),
-          nativeNullable(p.summaryOverride) ?? null,
-          nativeNullable(p.contentOverride) ?? null,
-          nativeNullable(p.contextModeOverride) ?? null,
-          Number(p.version ?? 0),
-          String(p.createdAt ?? now),
-          now,
-        ],
-      );
+      const projectId = String(p.projectId);
+      const entryId = String(p.entryId);
+      if (p.anchorNodeId != null && typeof p.anchorNodeId !== "string") {
+        throw new Error("phase anchorNodeId must be a string or null");
+      }
+      const anchorNodeId = nativeNullable(p.anchorNodeId) ?? null;
+      db.run("BEGIN IMMEDIATE");
+      try {
+        if (
+          !queryOne(
+            "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+            [entryId, projectId],
+          )
+        ) {
+          throw new Error(
+            `phase entry '${entryId}' is not in project '${projectId}'`,
+          );
+        }
+        if (
+          anchorNodeId !== null &&
+          !queryOne(
+            `SELECT 1 AS owned FROM tree_nodes
+              WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+            [anchorNodeId, projectId],
+          )
+        ) {
+          throw new Error(
+            `phase anchor '${anchorNodeId}' is not a scene in project '${projectId}'`,
+          );
+        }
+        db.run(
+          `INSERT INTO codex_entry_phases
+            (id, entry_id, anchor_node_id, label, summary_override,
+             content_override, context_mode_override, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            String(p.phaseId),
+            entryId,
+            anchorNodeId,
+            String(p.label ?? ""),
+            nativeNullable(p.summaryOverride) ?? null,
+            nativeNullable(p.contentOverride) ?? null,
+            nativeNullable(p.contextModeOverride) ?? null,
+            Number(p.version ?? 0),
+            String(p.createdAt ?? now),
+            now,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`phase '${String(p.phaseId)}' was not created`);
+        }
+        db.run("COMMIT");
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the phase create failure.
+        }
+        throw error;
+      }
     } else if (
       operation === "phase.update" ||
       operation === "phase.aggregate"
     ) {
-      const values: SqlValue[] = [];
-      const sets: string[] = [];
-      const phaseColumns: Record<string, string> = {
-        label: "label",
-        anchorNodeId: "anchor_node_id",
-        summaryOverride: "summary_override",
-        contentOverride: "content_override",
-        contextModeOverride: "context_mode_override",
-      };
-      for (const [key, column] of Object.entries(phaseColumns)) {
-        if (!(key in p)) continue;
-        sets.push(`${column} = ?`);
-        values.push(
-          key === "label" ? String(p[key]) : (nativeNullable(p[key]) ?? null),
-        );
-      }
-      sets.push("version = version + 1", "updated_at = ?");
-      values.push(now, String(p.phaseId), Number(p.baseVersion));
-      db.run(
-        `UPDATE codex_entry_phases SET ${sets.join(", ")}
-          WHERE id = ? AND version = ?`,
-        values,
-      );
-      if ("detailOverrides" in p) {
-        db.run("DELETE FROM codex_phase_detail_overrides WHERE phase_id = ?", [
-          String(p.phaseId),
-        ]);
-        for (const override of (p.detailOverrides as Array<
-          Record<string, unknown>
-        >) ?? []) {
-          db.run(
-            `INSERT INTO codex_phase_detail_overrides
-              (phase_id, definition_id, value) VALUES (?, ?, ?)`,
-            [
-              String(p.phaseId),
-              String(override.definitionId),
-              nativeNullable(override.value) ?? null,
-            ],
-          );
-        }
-      }
+      return handleBrowserPhasePatch(p);
     } else if (operation === "phase.delete") {
       db.run(
         p.expectedVersion == null
@@ -2958,24 +3972,82 @@ export async function createBrowserMock(
           : [String(p.phaseId), Number(p.expectedVersion)],
       );
     } else if (operation === "detail.definition.create") {
-      db.run(
-        `INSERT INTO codex_detail_definitions
-          (id, project_id, type_slug, name, field_type, field_config,
-           sort_order, include_in_context, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-        [
-          String(p.definitionId),
-          String(p.projectId),
-          String(p.typeSlug),
-          String(p.name),
-          String(p.fieldType ?? "text"),
-          nativeNullable(p.fieldConfig) ?? null,
-          Number(p.sortOrder ?? 0),
-          Number(p.includeInContext ?? 0),
-          now,
-          now,
-        ],
-      );
+      const rawSemanticBinding = p.semanticBinding;
+      if (rawSemanticBinding !== undefined && !isRecord(rawSemanticBinding)) {
+        throw new Error("semanticBinding must be an object");
+      }
+      const semanticBinding = rawSemanticBinding as
+        | Record<string, unknown>
+        | undefined;
+      const requiredBindingString = (key: string): string => {
+        const value = semanticBinding?.[key];
+        if (typeof value !== "string" || value.trim().length === 0) {
+          throw new Error(`semanticBinding.${key} is required`);
+        }
+        return value;
+      };
+      let confirmed = 0;
+      if (semanticBinding?.confirmed !== undefined) {
+        if (typeof semanticBinding.confirmed === "boolean") {
+          confirmed = semanticBinding.confirmed ? 1 : 0;
+        } else if (
+          semanticBinding.confirmed === 0 ||
+          semanticBinding.confirmed === 1
+        ) {
+          confirmed = semanticBinding.confirmed;
+        } else {
+          throw new Error("semanticBinding.confirmed must be a boolean or 0/1");
+        }
+      }
+      db.run("BEGIN IMMEDIATE");
+      try {
+        db.run(
+          `INSERT INTO codex_detail_definitions
+            (id, project_id, type_slug, name, field_type, field_config,
+             sort_order, include_in_context, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+          [
+            String(p.definitionId),
+            String(p.projectId),
+            String(p.typeSlug),
+            String(p.name),
+            String(p.fieldType ?? "text"),
+            nativeNullable(p.fieldConfig) ?? null,
+            Number(p.sortOrder ?? 0),
+            Number(p.includeInContext ?? 0),
+            now,
+            now,
+          ],
+        );
+        if (semanticBinding) {
+          db.run(
+            `INSERT INTO codex_detail_semantic_bindings
+              (id, project_id, definition_id, facet_key, projection_kind,
+               temporal_policy, source, confirmed, version, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+            [
+              requiredBindingString("id"),
+              String(p.projectId),
+              String(p.definitionId),
+              requiredBindingString("facetKey"),
+              requiredBindingString("projectionKind"),
+              requiredBindingString("temporalPolicy"),
+              requiredBindingString("source"),
+              confirmed,
+              now,
+              now,
+            ],
+          );
+        }
+        db.run("COMMIT");
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the definition create failure.
+        }
+        throw error;
+      }
     } else if (operation === "detail.definition.update") {
       const assignments: string[] = [];
       const values: SqlValue[] = [];
@@ -5543,24 +6615,27 @@ export async function createBrowserMock(
           [threadId],
         );
         const node = queryOne(
-          "SELECT project_id FROM tree_nodes WHERE id = ?",
+          "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
           [nodeId],
         );
         if (
           !currentThread ||
           !node ||
-          currentThread.project_id !== node.project_id
+          currentThread.project_id !== node.project_id ||
+          node.node_type !== "scene"
         ) {
           throw new Error(
             "plot thread link must reference a thread and scene in the same project",
           );
         }
         try {
+          const semanticKey = `${threadId}|${nodeId}|${phaseType}`;
           db.run(
             `INSERT INTO plot_thread_scene_links
-               (id, thread_id, node_id, phase_type, note, sort_order)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [id, threadId, nodeId, phaseType, note, sortOrder],
+               (id, thread_id, node_id, phase_type, note, sort_order,
+                semantic_key, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+            [id, threadId, nodeId, phaseType, note, sortOrder, semanticKey],
           );
         } catch (error) {
           const existing = loadEntity();
@@ -5643,24 +6718,35 @@ export async function createBrowserMock(
           [toThreadId],
         );
         const node = queryOne(
-          "SELECT project_id FROM tree_nodes WHERE id = ?",
+          "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
           [atNodeId],
         );
         if (
           from?.project_id !== projectId ||
           to?.project_id !== projectId ||
-          node?.project_id !== projectId
+          node?.project_id !== projectId ||
+          node?.node_type !== "scene"
         ) {
           throw new Error(
             "plot thread branch must reference a project, threads, and scene in the same project",
           );
         }
         try {
+          const semanticKey = `${fromThreadId}|${toThreadId}|${atNodeId}|${kind}`;
           db.run(
             `INSERT INTO plot_thread_branches
-               (id, project_id, from_thread_id, to_thread_id, at_node_id, kind)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [id, projectId, fromThreadId, toThreadId, atNodeId, kind],
+               (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
+                semantic_key, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+            [
+              id,
+              projectId,
+              fromThreadId,
+              toThreadId,
+              atNodeId,
+              kind,
+              semanticKey,
+            ],
           );
         } catch (error) {
           const existing = loadEntity();
@@ -5689,6 +6775,349 @@ export async function createBrowserMock(
         return created;
       },
     });
+  }
+
+  function browserPatchRecord(
+    command: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const patch = args.patch;
+    if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+      throw new Error(`${command}: patch must be an object`);
+    }
+    return patch as Record<string, unknown>;
+  }
+
+  function requiredBrowserBaseVersion(
+    command: string,
+    payload: Record<string, unknown>,
+  ): number {
+    const value = payload.baseVersion;
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value < 0
+    ) {
+      throw new Error(`${command}: baseVersion must be a non-negative integer`);
+    }
+    return value;
+  }
+
+  function handlePlotThreadUpdate(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    const command = "plot_thread_update";
+    const id = requiredBrowserString(command, args, "id");
+    const patch = browserPatchRecord(command, args);
+    const baseVersion = requiredBrowserBaseVersion(command, patch);
+    const current = queryOne("SELECT * FROM plot_threads WHERE id = ?", [id]);
+    if (!current) throw new Error(`plot thread not found: ${id}`);
+    if (Number(current.version) !== baseVersion) {
+      throw new Error(`plot thread '${id}' version conflict during update`);
+    }
+    const assignments: string[] = [];
+    const params: SqlValue[] = [];
+    for (const [key, column] of [
+      ["name", "name"],
+      ["color", "color"],
+      ["description", "description"],
+      ["sortOrder", "sort_order"],
+    ] as const) {
+      if (!Object.hasOwn(patch, key)) continue;
+      assignments.push(`${column} = ?`);
+      params.push((patch[key] ?? null) as SqlValue);
+    }
+    if (assignments.length === 0) return current;
+    assignments.push("version = version + 1", "updated_at = ?");
+    params.push(new Date().toISOString(), id, baseVersion);
+    db.run(
+      `UPDATE plot_threads SET ${assignments.join(", ")}
+        WHERE id = ? AND version = ?`,
+      params,
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`plot thread '${id}' version conflict during update`);
+    }
+    const updated = queryOne("SELECT * FROM plot_threads WHERE id = ?", [id]);
+    if (!updated) throw new Error(`plot thread not found: ${id}`);
+    options.onDatabaseDirty?.();
+    return updated;
+  }
+
+  function handlePlotThreadDelete(args: Record<string, unknown>): void {
+    const command = "plot_thread_delete";
+    const id = requiredBrowserString(command, args, "id");
+    const baseVersion = requiredBrowserBaseVersion(command, args);
+    db.run("DELETE FROM plot_threads WHERE id = ? AND version = ?", [
+      id,
+      baseVersion,
+    ]);
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`PLOT_THREAD_VERSION_MISMATCH: expected ${baseVersion}`);
+    }
+    options.onDatabaseDirty?.();
+  }
+
+  function browserPlotSemanticKeyForUpdate(
+    currentSemanticKey: SqlValue,
+    nextNaturalKey: string,
+  ): string {
+    if (typeof currentSemanticKey !== "string") return nextNaturalKey;
+    const duplicateMarker = currentSemanticKey.indexOf("#dup:");
+    const currentNaturalKey =
+      duplicateMarker === -1
+        ? currentSemanticKey
+        : currentSemanticKey.slice(0, duplicateMarker);
+    return currentNaturalKey === nextNaturalKey
+      ? currentSemanticKey
+      : nextNaturalKey;
+  }
+
+  function handlePlotThreadLinkUpdate(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    const command = "plot_thread_link_update";
+    const id = requiredBrowserString(command, args, "id");
+    const patch = browserPatchRecord(command, args);
+    const baseVersion = requiredBrowserBaseVersion(command, patch);
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const current = queryOne(
+        "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+        [id],
+      );
+      if (!current) {
+        throw new Error(`plot thread link not found: ${id}`);
+      }
+      if (Number(current.version) !== baseVersion) {
+        throw new Error(
+          `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}, found ${String(current.version)}`,
+        );
+      }
+      const owner = queryOne(
+        "SELECT project_id FROM plot_threads WHERE id = ?",
+        [current.thread_id as SqlValue],
+      );
+      if (!owner) {
+        throw new Error(`plot thread link '${id}' has no owning thread`);
+      }
+      const ownerProjectId = String(owner.project_id);
+      const threadId = Object.hasOwn(patch, "threadId")
+        ? requiredBrowserString(command, patch, "threadId")
+        : String(current.thread_id);
+      const nodeId = Object.hasOwn(patch, "nodeId")
+        ? requiredBrowserString(command, patch, "nodeId")
+        : String(current.node_id);
+      const phaseType = Object.hasOwn(patch, "phaseType")
+        ? requiredBrowserString(command, patch, "phaseType")
+        : String(current.phase_type);
+      if (
+        !["introduce", "develop", "turn", "climax", "resolve"].includes(
+          phaseType,
+        )
+      ) {
+        throw new Error(`invalid phase_type: ${phaseType}`);
+      }
+      const thread = queryOne(
+        "SELECT project_id FROM plot_threads WHERE id = ?",
+        [threadId],
+      );
+      const node = queryOne(
+        "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+        [nodeId],
+      );
+      if (
+        !thread ||
+        !node ||
+        thread.project_id !== ownerProjectId ||
+        node.project_id !== ownerProjectId ||
+        node.node_type !== "scene"
+      ) {
+        throw new Error(
+          "plot thread link move must stay within its owning project",
+        );
+      }
+      const assignments: string[] = [];
+      const params: SqlValue[] = [];
+      for (const [key, column] of [
+        ["threadId", "thread_id"],
+        ["nodeId", "node_id"],
+        ["phaseType", "phase_type"],
+        ["note", "note"],
+        ["sortOrder", "sort_order"],
+      ] as const) {
+        if (!Object.hasOwn(patch, key)) continue;
+        assignments.push(`${column} = ?`);
+        params.push((patch[key] ?? null) as SqlValue);
+      }
+      if (assignments.length === 0) {
+        db.run("COMMIT");
+        return current;
+      }
+      assignments.push(
+        "semantic_key = ?",
+        "version = version + 1",
+        "updated_at = ?",
+      );
+      const naturalSemanticKey = `${threadId}|${nodeId}|${phaseType}`;
+      params.push(
+        browserPlotSemanticKeyForUpdate(
+          current.semantic_key,
+          naturalSemanticKey,
+        ),
+        new Date().toISOString(),
+        id,
+        baseVersion,
+      );
+      db.run(
+        `UPDATE plot_thread_scene_links SET ${assignments.join(", ")}
+          WHERE id = ? AND version = ?`,
+        params,
+      );
+      if (db.getRowsModified() !== 1) {
+        throw new Error(
+          `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}`,
+        );
+      }
+      const updated = queryOne(
+        "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+        [id],
+      );
+      if (!updated) throw new Error(`plot thread link not found: ${id}`);
+      db.run("COMMIT");
+      options.onDatabaseDirty?.();
+      return updated;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the link update failure.
+      }
+      throw error;
+    }
+  }
+
+  function handlePlotThreadLinkDelete(args: Record<string, unknown>): void {
+    const command = "plot_thread_link_delete";
+    const id = requiredBrowserString(command, args, "id");
+    const baseVersion = requiredBrowserBaseVersion(command, args);
+    db.run("DELETE FROM plot_thread_scene_links WHERE id = ? AND version = ?", [
+      id,
+      baseVersion,
+    ]);
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}`,
+      );
+    }
+    options.onDatabaseDirty?.();
+  }
+
+  function handlePlotThreadBranchUpdate(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const command = "plot_thread_branch_update";
+    const id = requiredBrowserString(command, args, "id");
+    const patch = browserPatchRecord(command, args);
+    const baseVersion = requiredBrowserBaseVersion(command, patch);
+    const current = queryOne(
+      "SELECT * FROM plot_thread_branches WHERE id = ?",
+      [id],
+    );
+    if (!current) throw new Error(`plot thread branch not found: ${id}`);
+    const currentVersion = Number(current.version ?? 0);
+    if (currentVersion !== baseVersion) {
+      throw new Error(
+        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${baseVersion}, found ${currentVersion}`,
+      );
+    }
+    const projectId = String(current.project_id);
+    const fromThreadId = Object.hasOwn(patch, "fromThreadId")
+      ? requiredBrowserString(command, patch, "fromThreadId")
+      : String(current.from_thread_id);
+    const toThreadId = Object.hasOwn(patch, "toThreadId")
+      ? requiredBrowserString(command, patch, "toThreadId")
+      : String(current.to_thread_id);
+    const atNodeId = Object.hasOwn(patch, "atNodeId")
+      ? requiredBrowserString(command, patch, "atNodeId")
+      : String(current.at_node_id);
+    if (fromThreadId === toThreadId) {
+      throw new Error(
+        "plot thread branch cannot reference the same thread twice",
+      );
+    }
+    if (
+      !Object.hasOwn(patch, "fromThreadId") &&
+      !Object.hasOwn(patch, "toThreadId") &&
+      !Object.hasOwn(patch, "atNodeId")
+    ) {
+      return current;
+    }
+    requireBrowserProjectMember(
+      "plot_threads",
+      fromThreadId,
+      projectId,
+      "plot thread branch source must stay in its project",
+    );
+    requireBrowserProjectMember(
+      "plot_threads",
+      toThreadId,
+      projectId,
+      "plot thread branch target must stay in its project",
+    );
+    requireBrowserPlotScene(
+      atNodeId,
+      projectId,
+      "plot thread branch must reference a scene in its project",
+    );
+    const naturalSemanticKey = `${fromThreadId}|${toThreadId}|${atNodeId}|${String(current.kind)}`;
+    db.run(
+      `UPDATE plot_thread_branches
+          SET from_thread_id = ?, to_thread_id = ?, at_node_id = ?,
+              semantic_key = ?, version = ?, updated_at = ?
+        WHERE id = ? AND version = ?`,
+      [
+        fromThreadId,
+        toThreadId,
+        atNodeId,
+        browserPlotSemanticKeyForUpdate(
+          current.semantic_key,
+          naturalSemanticKey,
+        ),
+        currentVersion + 1,
+        new Date().toISOString(),
+        id,
+        currentVersion,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${currentVersion}`,
+      );
+    }
+    const updated = queryOne(
+      "SELECT * FROM plot_thread_branches WHERE id = ?",
+      [id],
+    );
+    if (!updated) throw new Error(`plot thread branch not found: ${id}`);
+    options.onDatabaseDirty?.();
+    return updated;
+  }
+
+  function handlePlotThreadBranchDelete(args: Record<string, unknown>): void {
+    const command = "plot_thread_branch_delete";
+    const id = requiredBrowserString(command, args, "id");
+    const baseVersion = requiredBrowserBaseVersion(command, args);
+    db.run("DELETE FROM plot_thread_branches WHERE id = ? AND version = ?", [
+      id,
+      baseVersion,
+    ]);
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${baseVersion}`,
+      );
+    }
+    options.onDatabaseDirty?.();
   }
 
   function browserSnapshotRecord(
@@ -5730,9 +7159,81 @@ export async function createBrowserMock(
       sortOrder: requiredBrowserString(command, raw, "sortOrder"),
       startNodeId: nullableBrowserString(command, raw, "startNodeId"),
       endNodeId: nullableBrowserString(command, raw, "endNodeId"),
+      version: browserPlotSnapshotVersion(command, raw, "version"),
       createdAt: requiredBrowserString(command, raw, "createdAt"),
       updatedAt: requiredBrowserString(command, raw, "updatedAt"),
     };
+  }
+
+  function browserPlotSnapshotVersion(
+    command: string,
+    raw: Record<string, unknown>,
+    key: string,
+  ): number {
+    const value = raw[key];
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value < 0
+    ) {
+      throw new Error(`${command}: ${key} must be a non-negative integer`);
+    }
+    return value;
+  }
+
+  function nextBrowserPlotSnapshotVersion(
+    command: string,
+    label: string,
+    version: number,
+  ): number {
+    if (version === Number.MAX_SAFE_INTEGER) {
+      throw new Error(`${command}: ${label} version overflow`);
+    }
+    return version + 1;
+  }
+
+  function browserPlotLinkNaturalKey(row: {
+    threadId: string;
+    nodeId: string;
+    phaseType: string;
+  }): string {
+    return `${row.threadId}|${row.nodeId}|${row.phaseType}`;
+  }
+
+  function browserPlotBranchNaturalKey(row: {
+    fromThreadId: string;
+    toThreadId: string;
+    atNodeId: string;
+    kind: string;
+  }): string {
+    return `${row.fromThreadId}|${row.toThreadId}|${row.atNodeId}|${row.kind}`;
+  }
+
+  function browserPlotEffectiveSemanticKey(
+    explicit: string | null,
+    natural: string,
+  ): string {
+    return explicit && explicit.length > 0 ? explicit : natural;
+  }
+
+  function validateBrowserPlotSnapshotSemanticKey(
+    command: string,
+    label: string,
+    explicit: string | null,
+    natural: string,
+  ): void {
+    if (explicit === null || explicit.length === 0) return;
+    const suffix = explicit.startsWith(natural)
+      ? explicit.slice(natural.length)
+      : "";
+    if (
+      explicit !== natural &&
+      !(suffix.startsWith("#dup:") && suffix.length > 5)
+    ) {
+      throw new Error(
+        `${command}: ${label} semanticKey does not match topology`,
+      );
+    }
   }
 
   function parseBrowserLinkSnapshot(
@@ -5746,6 +7247,8 @@ export async function createBrowserMock(
       phaseType: requiredBrowserString(command, raw, "phaseType"),
       note: nullableBrowserString(command, raw, "note"),
       sortOrder: nullableBrowserString(command, raw, "sortOrder"),
+      semanticKey: nullableBrowserString(command, raw, "semanticKey"),
+      version: browserPlotSnapshotVersion(command, raw, "version"),
       createdAt: requiredBrowserString(command, raw, "createdAt"),
       updatedAt: requiredBrowserString(command, raw, "updatedAt"),
     };
@@ -5762,6 +7265,8 @@ export async function createBrowserMock(
       toThreadId: requiredBrowserString(command, raw, "toThreadId"),
       atNodeId: requiredBrowserString(command, raw, "atNodeId"),
       kind: requiredBrowserString(command, raw, "kind"),
+      semanticKey: nullableBrowserString(command, raw, "semanticKey"),
+      version: browserPlotSnapshotVersion(command, raw, "version"),
       createdAt: requiredBrowserString(command, raw, "createdAt"),
       updatedAt: requiredBrowserString(command, raw, "updatedAt"),
     };
@@ -5780,6 +7285,7 @@ export async function createBrowserMock(
       sort_order: expected.sortOrder,
       start_node_id: expected.startNodeId,
       end_node_id: expected.endNodeId,
+      version: expected.version,
       created_at: expected.createdAt,
       updated_at: expected.updatedAt,
     });
@@ -5796,6 +7302,11 @@ export async function createBrowserMock(
       phase_type: expected.phaseType,
       note: expected.note,
       sort_order: expected.sortOrder,
+      semantic_key: browserPlotEffectiveSemanticKey(
+        expected.semanticKey,
+        browserPlotLinkNaturalKey(expected),
+      ),
+      version: expected.version,
       created_at: expected.createdAt,
       updated_at: expected.updatedAt,
     });
@@ -5812,6 +7323,11 @@ export async function createBrowserMock(
       to_thread_id: expected.toThreadId,
       at_node_id: expected.atNodeId,
       kind: expected.kind,
+      semantic_key: browserPlotEffectiveSemanticKey(
+        expected.semanticKey,
+        browserPlotBranchNaturalKey(expected),
+      ),
+      version: expected.version,
       created_at: expected.createdAt,
       updated_at: expected.updatedAt,
     });
@@ -5829,6 +7345,20 @@ export async function createBrowserMock(
     }
   }
 
+  function requireBrowserPlotScene(
+    id: string,
+    projectId: string,
+    message: string,
+  ): void {
+    const row = queryOne(
+      "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+      [id],
+    );
+    if (row?.project_id !== projectId || row.node_type !== "scene") {
+      throw new Error(message);
+    }
+  }
+
   async function handlePlotThreadMoveMarkerBundle(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -5836,15 +7366,33 @@ export async function createBrowserMock(
     const payload = browserCommandPayload(command, args);
     const requestId = requiredBrowserString(command, payload, "requestId");
     const projectId = requiredBrowserString(command, payload, "projectId");
-    const markerBefore = parseBrowserLinkSnapshot(
+    const parsedMarkerBefore = parseBrowserLinkSnapshot(
       command,
       browserSnapshotRecord(command, payload.markerBefore, "markerBefore"),
     );
-    const markerAfter = parseBrowserLinkSnapshot(
+    const parsedMarkerAfter = parseBrowserLinkSnapshot(
       command,
       browserSnapshotRecord(command, payload.markerAfter, "markerAfter"),
     );
-    const branchTransitions = browserSnapshotArray(
+    const markerBefore = {
+      ...parsedMarkerBefore,
+      semanticKey: browserPlotEffectiveSemanticKey(
+        parsedMarkerBefore.semanticKey,
+        browserPlotLinkNaturalKey(parsedMarkerBefore),
+      ),
+    };
+    if (markerBefore.version === Number.MAX_SAFE_INTEGER) {
+      throw new Error("plot marker version overflow");
+    }
+    const markerAfter = {
+      ...parsedMarkerAfter,
+      semanticKey: browserPlotEffectiveSemanticKey(
+        parsedMarkerAfter.semanticKey,
+        browserPlotLinkNaturalKey(parsedMarkerAfter),
+      ),
+      version: markerBefore.version + 1,
+    };
+    const parsedBranchTransitions = browserSnapshotArray(
       command,
       payload,
       "branchTransitions",
@@ -5865,6 +7413,32 @@ export async function createBrowserMock(
       };
       return { before: parseBranch("before"), after: parseBranch("after") };
     });
+    const branchTransitions = parsedBranchTransitions.map((transition) => {
+      const before = transition.before
+        ? {
+            ...transition.before,
+            semanticKey: browserPlotEffectiveSemanticKey(
+              transition.before.semanticKey,
+              browserPlotBranchNaturalKey(transition.before),
+            ),
+          }
+        : null;
+      if (before?.version === Number.MAX_SAFE_INTEGER) {
+        throw new Error("plot branch version overflow");
+      }
+      const after = transition.after
+        ? {
+            ...transition.after,
+            semanticKey: browserPlotEffectiveSemanticKey(
+              transition.after.semanticKey,
+              browserPlotBranchNaturalKey(transition.after),
+            ),
+            version:
+              before === null ? transition.after.version : before.version + 1,
+          }
+        : null;
+      return { before, after };
+    });
 
     if (
       !["introduce", "develop", "turn", "climax", "resolve"].includes(
@@ -5879,6 +7453,18 @@ export async function createBrowserMock(
     if (markerBefore.id !== markerAfter.id) {
       throw new Error("plot marker move marker identity cannot change");
     }
+    validateBrowserPlotSnapshotSemanticKey(
+      command,
+      "markerBefore",
+      markerBefore.semanticKey,
+      browserPlotLinkNaturalKey(markerBefore),
+    );
+    validateBrowserPlotSnapshotSemanticKey(
+      command,
+      "markerAfter",
+      markerAfter.semanticKey,
+      browserPlotLinkNaturalKey(markerAfter),
+    );
     if (
       markerBefore.phaseType !== markerAfter.phaseType ||
       markerBefore.note !== markerAfter.note ||
@@ -5899,6 +7485,12 @@ export async function createBrowserMock(
       }
       for (const branch of [transition.before, transition.after]) {
         if (!branch) continue;
+        validateBrowserPlotSnapshotSemanticKey(
+          command,
+          "branch transition",
+          branch.semanticKey,
+          browserPlotBranchNaturalKey(branch),
+        );
         if (branch.projectId !== projectId) {
           throw new Error(
             "plot marker move branch must belong to the bundle project",
@@ -5912,6 +7504,24 @@ export async function createBrowserMock(
         if (!["branch", "merge"].includes(branch.kind)) {
           throw new Error(`invalid plot branch kind: ${branch.kind}`);
         }
+      }
+      if (
+        transition.before !== null &&
+        (transition.before.toThreadId !== markerBefore.threadId ||
+          transition.before.atNodeId !== markerBefore.nodeId)
+      ) {
+        throw new Error(
+          "plot marker move branch before snapshot must belong to the old marker anchor",
+        );
+      }
+      if (
+        transition.after !== null &&
+        (transition.after.toThreadId !== markerAfter.threadId ||
+          transition.after.atNodeId !== markerAfter.nodeId)
+      ) {
+        throw new Error(
+          "plot marker move branch after snapshot must belong to the new marker anchor",
+        );
       }
       if (
         transition.before !== null &&
@@ -6002,11 +7612,10 @@ export async function createBrowserMock(
             projectId,
             "plot marker move thread must belong to the bundle project",
           );
-          requireBrowserProjectMember(
-            "tree_nodes",
+          requireBrowserPlotScene(
             marker.nodeId,
             projectId,
-            "plot marker move scene must belong to the bundle project",
+            "plot marker move must reference a scene in the bundle project",
           );
         }
         for (const transition of branchTransitions) {
@@ -6024,11 +7633,10 @@ export async function createBrowserMock(
               projectId,
               "plot marker move branch target thread must belong to the bundle project",
             );
-            requireBrowserProjectMember(
-              "tree_nodes",
+            requireBrowserPlotScene(
               branch.atNodeId,
               projectId,
-              "plot marker move branch scene must belong to the bundle project",
+              "plot marker move branch must reference a scene in the bundle project",
             );
           }
         }
@@ -6046,6 +7654,40 @@ export async function createBrowserMock(
           throw new Error(
             "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker changed since snapshot",
           );
+        }
+        if (
+          markerBefore.threadId !== markerAfter.threadId ||
+          markerBefore.nodeId !== markerAfter.nodeId
+        ) {
+          const otherAnchorCount = Number(
+            queryOne(
+              `SELECT COUNT(*) AS count FROM plot_thread_scene_links
+                WHERE id <> ? AND thread_id = ? AND node_id = ?`,
+              [markerBefore.id, markerBefore.threadId, markerBefore.nodeId],
+            )?.count ?? 0,
+          );
+          const currentDependencyIds =
+            otherAnchorCount > 0
+              ? []
+              : queryAll(
+                  `SELECT id FROM plot_thread_branches
+                    WHERE to_thread_id = ? AND at_node_id = ?
+                    ORDER BY id`,
+                  [markerBefore.threadId, markerBefore.nodeId],
+                ).map((row) => String(row.id));
+          const snapshotDependencyIds = branchTransitions
+            .flatMap((transition) =>
+              transition.before === null ? [] : [transition.before.id],
+            )
+            .sort();
+          if (
+            currentDependencyIds.join("\u0000") !==
+            snapshotDependencyIds.join("\u0000")
+          ) {
+            throw new Error(
+              "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker branch dependencies changed since snapshot",
+            );
+          }
         }
         for (const transition of branchTransitions) {
           if (transition.before !== null) {
@@ -6080,27 +7722,36 @@ export async function createBrowserMock(
         db.run(
           `UPDATE plot_thread_scene_links
               SET thread_id = ?, node_id = ?, phase_type = ?, note = ?,
-                  sort_order = ?, created_at = ?, updated_at = ?
-            WHERE id = ?`,
+                  sort_order = ?, semantic_key = ?, version = ?,
+                  created_at = ?, updated_at = ?
+            WHERE id = ? AND version = ?`,
           [
             markerAfter.threadId,
             markerAfter.nodeId,
             markerAfter.phaseType,
             markerAfter.note,
             markerAfter.sortOrder,
+            markerAfter.semanticKey,
+            markerAfter.version,
             markerAfter.createdAt,
             markerAfter.updatedAt,
             markerAfter.id,
+            markerBefore.version,
           ],
         );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker version changed",
+          );
+        }
         for (const transition of branchTransitions) {
           if (transition.before === null && transition.after !== null) {
             const branch = transition.after;
             db.run(
               `INSERT INTO plot_thread_branches
                  (id, project_id, from_thread_id, to_thread_id, at_node_id,
-                  kind, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  kind, semantic_key, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 branch.id,
                 branch.projectId,
@@ -6108,6 +7759,8 @@ export async function createBrowserMock(
                 branch.toThreadId,
                 branch.atNodeId,
                 branch.kind,
+                branch.semanticKey,
+                branch.version,
                 branch.createdAt,
                 branch.updatedAt,
               ],
@@ -6117,23 +7770,38 @@ export async function createBrowserMock(
             db.run(
               `UPDATE plot_thread_branches
                   SET project_id = ?, from_thread_id = ?, to_thread_id = ?,
-                      at_node_id = ?, kind = ?, created_at = ?, updated_at = ?
-                WHERE id = ?`,
+                      at_node_id = ?, kind = ?, semantic_key = ?, version = ?,
+                      created_at = ?, updated_at = ?
+                WHERE id = ? AND version = ?`,
               [
                 branch.projectId,
                 branch.fromThreadId,
                 branch.toThreadId,
                 branch.atNodeId,
                 branch.kind,
+                branch.semanticKey,
+                branch.version,
                 branch.createdAt,
                 branch.updatedAt,
                 branch.id,
+                transition.before.version,
               ],
             );
+            if (db.getRowsModified() !== 1) {
+              throw new Error(
+                "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch version changed",
+              );
+            }
           } else if (transition.before !== null && transition.after === null) {
-            db.run("DELETE FROM plot_thread_branches WHERE id = ?", [
-              transition.before.id,
-            ]);
+            db.run(
+              "DELETE FROM plot_thread_branches WHERE id = ? AND version = ?",
+              [transition.before.id, transition.before.version],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error(
+                "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch version changed",
+              );
+            }
           }
         }
 
@@ -6170,34 +7838,86 @@ export async function createBrowserMock(
     const requestId = requiredBrowserString(command, payload, "requestId");
     const projectId = requiredBrowserString(command, payload, "projectId");
     const rawThread = payload.thread;
-    const thread =
+    const sourceThread =
       rawThread === null || rawThread === undefined
         ? null
         : parseBrowserThreadSnapshot(
             command,
             browserSnapshotRecord(command, rawThread, "thread"),
           );
-    const links = browserSnapshotArray(command, payload, "links").map((row) =>
-      parseBrowserLinkSnapshot(command, row),
+    const sourceLinks = browserSnapshotArray(command, payload, "links").map(
+      (row) => parseBrowserLinkSnapshot(command, row),
     );
-    const branches = browserSnapshotArray(command, payload, "branches").map(
-      (row) => parseBrowserBranchSnapshot(command, row),
-    );
-    if (thread === null && links.length === 0 && branches.length === 0) {
+    const sourceBranches = browserSnapshotArray(
+      command,
+      payload,
+      "branches",
+    ).map((row) => parseBrowserBranchSnapshot(command, row));
+    if (
+      sourceThread === null &&
+      sourceLinks.length === 0 &&
+      sourceBranches.length === 0
+    ) {
       throw new Error(
         "plot_thread_restore_snapshot: snapshot must contain at least one row",
       );
     }
-    if (new Set(links.map((row) => row.id)).size !== links.length) {
+    if (new Set(sourceLinks.map((row) => row.id)).size !== sourceLinks.length) {
       throw new Error(
         "plot_thread_restore_snapshot: snapshot contains duplicate link ids",
       );
     }
-    if (new Set(branches.map((row) => row.id)).size !== branches.length) {
+    if (
+      new Set(sourceBranches.map((row) => row.id)).size !==
+      sourceBranches.length
+    ) {
       throw new Error(
         "plot_thread_restore_snapshot: snapshot contains duplicate branch ids",
       );
     }
+    for (const link of sourceLinks) {
+      validateBrowserPlotSnapshotSemanticKey(
+        command,
+        "link",
+        link.semanticKey,
+        browserPlotLinkNaturalKey(link),
+      );
+    }
+    for (const branch of sourceBranches) {
+      validateBrowserPlotSnapshotSemanticKey(
+        command,
+        "branch",
+        branch.semanticKey,
+        browserPlotBranchNaturalKey(branch),
+      );
+    }
+    const thread =
+      sourceThread === null
+        ? null
+        : {
+            ...sourceThread,
+            version: nextBrowserPlotSnapshotVersion(
+              command,
+              "thread",
+              sourceThread.version,
+            ),
+          };
+    const links = sourceLinks.map((link) => ({
+      ...link,
+      version: nextBrowserPlotSnapshotVersion(
+        command,
+        `link '${link.id}'`,
+        link.version,
+      ),
+    }));
+    const branches = sourceBranches.map((branch) => ({
+      ...branch,
+      version: nextBrowserPlotSnapshotVersion(
+        command,
+        `branch '${branch.id}'`,
+        branch.version,
+      ),
+    }));
     const response = () => ({
       id: requestId,
       thread,
@@ -6233,7 +7953,12 @@ export async function createBrowserMock(
       requestId,
       entityId: requestId,
       projectId,
-      fingerprintPayload: { projectId, thread, links, branches },
+      fingerprintPayload: {
+        projectId,
+        thread: sourceThread,
+        links: sourceLinks,
+        branches: sourceBranches,
+      },
       conflictMarker: "PLOT_THREAD_RESTORE_IDEMPOTENCY_CONFLICT",
       loadEntity,
       createEntity: () => {
@@ -6248,11 +7973,10 @@ export async function createBrowserMock(
           }
           for (const nodeId of [thread.startNodeId, thread.endNodeId]) {
             if (nodeId !== null) {
-              requireBrowserProjectMember(
-                "tree_nodes",
+              requireBrowserPlotScene(
                 nodeId,
                 projectId,
-                "plot restore thread boundary scene must belong to the snapshot project",
+                "plot restore thread boundary must reference a scene in the snapshot project",
               );
             }
           }
@@ -6269,8 +7993,8 @@ export async function createBrowserMock(
             db.run(
               `INSERT INTO plot_threads
                  (id, project_id, name, color, description, sort_order,
-                  start_node_id, end_node_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  start_node_id, end_node_id, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 thread.id,
                 thread.projectId,
@@ -6280,6 +8004,7 @@ export async function createBrowserMock(
                 thread.sortOrder,
                 thread.startNodeId,
                 thread.endNodeId,
+                thread.version,
                 thread.createdAt,
                 thread.updatedAt,
               ],
@@ -6300,11 +8025,10 @@ export async function createBrowserMock(
             projectId,
             "plot restore link thread must belong to the snapshot project",
           );
-          requireBrowserProjectMember(
-            "tree_nodes",
+          requireBrowserPlotScene(
             link.nodeId,
             projectId,
-            "plot restore link scene must belong to the snapshot project",
+            "plot restore link must reference a scene in the snapshot project",
           );
           const existing = queryOne(
             "SELECT * FROM plot_thread_scene_links WHERE id = ?",
@@ -6320,8 +8044,8 @@ export async function createBrowserMock(
             db.run(
               `INSERT INTO plot_thread_scene_links
                  (id, thread_id, node_id, phase_type, note, sort_order,
-                  created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  semantic_key, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 link.id,
                 link.threadId,
@@ -6329,6 +8053,11 @@ export async function createBrowserMock(
                 link.phaseType,
                 link.note,
                 link.sortOrder,
+                browserPlotEffectiveSemanticKey(
+                  link.semanticKey,
+                  browserPlotLinkNaturalKey(link),
+                ),
+                link.version,
                 link.createdAt,
                 link.updatedAt,
               ],
@@ -6361,11 +8090,10 @@ export async function createBrowserMock(
             projectId,
             "plot restore branch target thread must belong to the snapshot project",
           );
-          requireBrowserProjectMember(
-            "tree_nodes",
+          requireBrowserPlotScene(
             branch.atNodeId,
             projectId,
-            "plot restore branch scene must belong to the snapshot project",
+            "plot restore branch must reference a scene in the snapshot project",
           );
           const existing = queryOne(
             "SELECT * FROM plot_thread_branches WHERE id = ?",
@@ -6381,8 +8109,8 @@ export async function createBrowserMock(
             db.run(
               `INSERT INTO plot_thread_branches
                  (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
-                  created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  semantic_key, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 branch.id,
                 branch.projectId,
@@ -6390,6 +8118,11 @@ export async function createBrowserMock(
                 branch.toThreadId,
                 branch.atNodeId,
                 branch.kind,
+                browserPlotEffectiveSemanticKey(
+                  branch.semanticKey,
+                  browserPlotBranchNaturalKey(branch),
+                ),
+                branch.version,
                 branch.createdAt,
                 branch.updatedAt,
               ],
@@ -6408,17 +8141,83 @@ export async function createBrowserMock(
     const payload = browserCommandPayload(command, args);
     const requestId = requiredBrowserString(command, payload, "requestId");
     const projectId = requiredBrowserString(command, payload, "projectId");
-    const link = parseBrowserLinkSnapshot(
-      command,
-      browserSnapshotRecord(command, payload.link, "link"),
+    const rawThread = payload.thread;
+    const rawLink = payload.link;
+    const thread =
+      rawThread === null || rawThread === undefined
+        ? null
+        : parseBrowserThreadSnapshot(
+            command,
+            browserSnapshotRecord(command, rawThread, "thread"),
+          );
+    const link =
+      rawLink === null || rawLink === undefined
+        ? null
+        : parseBrowserLinkSnapshot(
+            command,
+            browserSnapshotRecord(command, rawLink, "link"),
+          );
+    if ((thread === null) === (link === null)) {
+      throw new Error(
+        `${command}: exactly one of thread and link must be provided`,
+      );
+    }
+    if (!Array.isArray(payload.branches)) {
+      throw new Error(`${command}: branches must be an array`);
+    }
+    const links = browserSnapshotArray(command, payload, "links").map((row) =>
+      parseBrowserLinkSnapshot(command, row),
     );
     const branches = browserSnapshotArray(command, payload, "branches").map(
       (row) => parseBrowserBranchSnapshot(command, row),
     );
+    if (thread === null && links.length > 0) {
+      throw new Error(`${command}: marker snapshot must not contain links`);
+    }
+    if (new Set(links.map((row) => row.id)).size !== links.length) {
+      throw new Error(`${command}: links contains duplicate ids`);
+    }
     if (new Set(branches.map((branch) => branch.id)).size !== branches.length) {
       throw new Error(`${command}: branches contains duplicate ids`);
     }
+    for (const childLink of link === null ? links : [link]) {
+      validateBrowserPlotSnapshotSemanticKey(
+        command,
+        "link",
+        childLink.semanticKey,
+        browserPlotLinkNaturalKey(childLink),
+      );
+    }
+    for (const branch of branches) {
+      validateBrowserPlotSnapshotSemanticKey(
+        command,
+        "branch",
+        branch.semanticKey,
+        browserPlotBranchNaturalKey(branch),
+      );
+    }
     const loadEntity = (): Record<string, SqlValue> | null => {
+      if (thread !== null) {
+        if (queryOne("SELECT id FROM plot_threads WHERE id = ?", [thread.id])) {
+          return null;
+        }
+        if (
+          links.some((childLink) =>
+            queryOne("SELECT id FROM plot_thread_scene_links WHERE id = ?", [
+              childLink.id,
+            ]),
+          ) ||
+          branches.some((branch) =>
+            queryOne("SELECT id FROM plot_thread_branches WHERE id = ?", [
+              branch.id,
+            ]),
+          )
+        ) {
+          return null;
+        }
+        return { id: requestId, deleted: 1 };
+      }
+      if (link === null) return null;
       if (
         queryOne("SELECT id FROM plot_thread_scene_links WHERE id = ?", [
           link.id,
@@ -6443,12 +8242,164 @@ export async function createBrowserMock(
       requestId,
       entityId: requestId,
       projectId,
-      fingerprintPayload: { projectId, link, branches },
+      fingerprintPayload: { projectId, thread, link, links, branches },
       conflictMarker: "PLOT_THREAD_DELETE_IDEMPOTENCY_CONFLICT",
       loadEntity,
       createEntity: () => {
         if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
           throw new Error("plot snapshot project does not exist");
+        }
+        if (thread !== null) {
+          if (thread.projectId !== projectId) {
+            throw new Error(
+              "plot delete snapshot thread must belong to the snapshot project",
+            );
+          }
+          for (const nodeId of [thread.startNodeId, thread.endNodeId]) {
+            if (nodeId !== null) {
+              requireBrowserPlotScene(
+                nodeId,
+                projectId,
+                "plot delete snapshot thread boundary must reference a scene in the snapshot project",
+              );
+            }
+          }
+          const currentThread = queryOne(
+            "SELECT * FROM plot_threads WHERE id = ?",
+            [thread.id],
+          );
+          if (!currentThread) {
+            throw new Error("plot delete snapshot thread does not exist");
+          }
+          if (!browserThreadSnapshotMatches(currentThread, thread)) {
+            throw new Error(
+              "PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread changed since snapshot",
+            );
+          }
+
+          const currentLinks = queryAll(
+            `SELECT * FROM plot_thread_scene_links
+              WHERE thread_id = ? ORDER BY id`,
+            [thread.id],
+          );
+          const currentLinkIds = currentLinks.map((row) => String(row.id));
+          const snapshotLinkIds = links.map((row) => row.id).sort();
+          if (
+            currentLinkIds.join("\u0000") !== snapshotLinkIds.join("\u0000")
+          ) {
+            throw new Error(
+              "PLOT_THREAD_DELETE_PRECONDITION_FAILED: owned links changed since snapshot",
+            );
+          }
+          const currentLinksById = new Map(
+            currentLinks.map((row) => [String(row.id), row] as const),
+          );
+          for (const childLink of links) {
+            if (
+              !["introduce", "develop", "turn", "climax", "resolve"].includes(
+                childLink.phaseType,
+              )
+            ) {
+              throw new Error(`invalid phase_type: ${childLink.phaseType}`);
+            }
+            if (childLink.threadId !== thread.id) {
+              throw new Error(
+                "plot delete snapshot owned link must belong to the deleted thread",
+              );
+            }
+            requireBrowserPlotScene(
+              childLink.nodeId,
+              projectId,
+              "plot delete snapshot owned link must reference a scene in the snapshot project",
+            );
+            const currentChildLink = currentLinksById.get(childLink.id);
+            if (
+              !currentChildLink ||
+              !browserLinkSnapshotMatches(currentChildLink, childLink)
+            ) {
+              throw new Error(
+                "PLOT_THREAD_DELETE_PRECONDITION_FAILED: owned link changed since snapshot",
+              );
+            }
+          }
+
+          const currentBranches = queryAll(
+            `SELECT * FROM plot_thread_branches
+              WHERE from_thread_id = ? OR to_thread_id = ?
+              ORDER BY id`,
+            [thread.id, thread.id],
+          );
+          const currentBranchIds = currentBranches.map((row) => String(row.id));
+          const snapshotBranchIds = branches.map((row) => row.id).sort();
+          if (
+            currentBranchIds.join("\u0000") !== snapshotBranchIds.join("\u0000")
+          ) {
+            throw new Error(
+              "PLOT_THREAD_DELETE_PRECONDITION_FAILED: related branches changed since snapshot",
+            );
+          }
+          const currentBranchesById = new Map(
+            currentBranches.map((row) => [String(row.id), row] as const),
+          );
+          for (const branch of branches) {
+            if (!["branch", "merge"].includes(branch.kind)) {
+              throw new Error(`invalid plot branch kind: ${branch.kind}`);
+            }
+            if (
+              branch.projectId !== projectId ||
+              (branch.fromThreadId !== thread.id &&
+                branch.toThreadId !== thread.id)
+            ) {
+              throw new Error(
+                "plot delete snapshot related branch must belong to the deleted thread and project",
+              );
+            }
+            if (branch.fromThreadId === branch.toThreadId) {
+              throw new Error(
+                "plot thread branch cannot reference the same thread twice",
+              );
+            }
+            requireBrowserProjectMember(
+              "plot_threads",
+              branch.fromThreadId,
+              projectId,
+              "plot delete snapshot branch source thread must belong to the snapshot project",
+            );
+            requireBrowserProjectMember(
+              "plot_threads",
+              branch.toThreadId,
+              projectId,
+              "plot delete snapshot branch target thread must belong to the snapshot project",
+            );
+            requireBrowserPlotScene(
+              branch.atNodeId,
+              projectId,
+              "plot delete snapshot branch must reference a scene in the snapshot project",
+            );
+            const currentBranch = currentBranchesById.get(branch.id);
+            if (
+              !currentBranch ||
+              !browserBranchSnapshotMatches(currentBranch, branch)
+            ) {
+              throw new Error(
+                "PLOT_THREAD_DELETE_PRECONDITION_FAILED: related branch changed since snapshot",
+              );
+            }
+          }
+
+          db.run("DELETE FROM plot_threads WHERE id = ? AND version = ?", [
+            thread.id,
+            thread.version,
+          ]);
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              "PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread version changed",
+            );
+          }
+          return { id: requestId, deleted: 1 };
+        }
+        if (link === null) {
+          throw new Error("plot delete snapshot is missing its target");
         }
         const currentLink = queryOne(
           "SELECT * FROM plot_thread_scene_links WHERE id = ?",
@@ -6475,11 +8426,10 @@ export async function createBrowserMock(
           projectId,
           "plot delete snapshot link thread must belong to the snapshot project",
         );
-        requireBrowserProjectMember(
-          "tree_nodes",
+        requireBrowserPlotScene(
           link.nodeId,
           projectId,
-          "plot delete snapshot link scene must belong to the snapshot project",
+          "plot delete snapshot link must reference a scene in the snapshot project",
         );
         const otherLinks = Number(
           queryOne(
@@ -6543,11 +8493,10 @@ export async function createBrowserMock(
             projectId,
             "plot delete snapshot branch target thread must belong to the snapshot project",
           );
-          requireBrowserProjectMember(
-            "tree_nodes",
+          requireBrowserPlotScene(
             branch.atNodeId,
             projectId,
-            "plot delete snapshot branch scene must belong to the snapshot project",
+            "plot delete snapshot branch must reference a scene in the snapshot project",
           );
           const currentBranch = queryOne(
             "SELECT * FROM plot_thread_branches WHERE id = ?",
@@ -6561,9 +8510,25 @@ export async function createBrowserMock(
               "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot",
             );
           }
-          db.run("DELETE FROM plot_thread_branches WHERE id = ?", [branch.id]);
+          db.run(
+            "DELETE FROM plot_thread_branches WHERE id = ? AND version = ?",
+            [branch.id, branch.version],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch version changed",
+            );
+          }
         }
-        db.run("DELETE FROM plot_thread_scene_links WHERE id = ?", [link.id]);
+        db.run(
+          "DELETE FROM plot_thread_scene_links WHERE id = ? AND version = ?",
+          [link.id, link.version],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link version changed",
+          );
+        }
         return { id: requestId, deleted: 1 };
       },
     });
@@ -6736,6 +8701,2574 @@ export async function createBrowserMock(
     });
   }
 
+  function requireBrowserForeshadowStrength(
+    command: string,
+    value: unknown,
+  ): string | null {
+    if (value === null || value === undefined) return null;
+    if (
+      typeof value !== "string" ||
+      !["subtle", "moderate", "overt"].includes(value)
+    ) {
+      throw new Error(`${command}: invalid setup strength`);
+    }
+    return value;
+  }
+
+  function browserForeshadowSetupSemanticKey(
+    setupId: string,
+    foreshadowId: string,
+    sceneId: string,
+    fromPos: number,
+    toPos: number,
+    existingSemanticKey?: SqlValue,
+  ): string {
+    const base = `${foreshadowId}|${sceneId}|${fromPos}|${toPos}`;
+    const duplicateSuffix = `#dup:${setupId}`;
+    return typeof existingSemanticKey === "string" &&
+      existingSemanticKey.endsWith(duplicateSuffix)
+      ? `${base}${duplicateSuffix}`
+      : base;
+  }
+
+  function handleForeshadowUpdate(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    const command = "foreshadow_update";
+    const id = requiredBrowserString(command, args, "id");
+    const patch = browserPatchRecord(command, args);
+    if (
+      typeof patch.baseVersion !== "number" ||
+      !Number.isSafeInteger(patch.baseVersion) ||
+      patch.baseVersion < 0
+    ) {
+      throw new Error(`${command}: baseVersion must be a non-negative integer`);
+    }
+    for (const key of ["payoffConfirmed", "abandoned", "secret"] as const) {
+      if (Object.hasOwn(patch, key) && typeof patch[key] !== "boolean") {
+        throw new Error(`${command}: ${key} must be a boolean`);
+      }
+    }
+    for (const key of [
+      "title",
+      "intent",
+      "notes",
+      "payoffSceneId",
+      "loadBearing",
+    ] as const) {
+      if (
+        Object.hasOwn(patch, key) &&
+        patch[key] !== null &&
+        typeof patch[key] !== "string"
+      ) {
+        throw new Error(`${command}: ${key} must be a string or null`);
+      }
+    }
+    for (const key of ["payoffFromPos", "payoffToPos"] as const) {
+      if (
+        Object.hasOwn(patch, key) &&
+        patch[key] !== null &&
+        (typeof patch[key] !== "number" || !Number.isSafeInteger(patch[key]))
+      ) {
+        throw new Error(`${command}: ${key} must be an integer or null`);
+      }
+    }
+    const current = queryOne("SELECT * FROM foreshadows WHERE id = ?", [id]);
+    if (!current) {
+      throw new Error("FORESHADOW_VERSION_MISMATCH: row missing");
+    }
+    const currentVersion = Number(current.version ?? 0);
+    const baseVersion = patch.baseVersion;
+    if (baseVersion !== currentVersion) {
+      throw new Error(
+        `foreshadow version conflict: expected ${baseVersion}, found ${currentVersion}`,
+      );
+    }
+    if (
+      Object.hasOwn(patch, "loadBearing") &&
+      patch.loadBearing !== null &&
+      !["critical", "supporting", "optional"].includes(
+        String(patch.loadBearing),
+      )
+    ) {
+      throw new Error(
+        `invalid load_bearing value: ${String(patch.loadBearing)}`,
+      );
+    }
+    const projectId = String(current.project_id);
+    const payoffSceneId = Object.hasOwn(patch, "payoffSceneId")
+      ? patch.payoffSceneId == null
+        ? null
+        : String(patch.payoffSceneId)
+      : current.payoff_scene_id == null
+        ? null
+        : String(current.payoff_scene_id);
+    const payoffFromPos = Object.hasOwn(patch, "payoffFromPos")
+      ? patch.payoffFromPos == null
+        ? null
+        : Number(patch.payoffFromPos)
+      : current.payoff_from_pos == null
+        ? null
+        : Number(current.payoff_from_pos);
+    const payoffToPos = Object.hasOwn(patch, "payoffToPos")
+      ? patch.payoffToPos == null
+        ? null
+        : Number(patch.payoffToPos)
+      : current.payoff_to_pos == null
+        ? null
+        : Number(current.payoff_to_pos);
+    if (payoffSceneId !== null) {
+      const scene = queryOne("SELECT project_id FROM tree_nodes WHERE id = ?", [
+        payoffSceneId,
+      ]);
+      if (scene?.project_id !== projectId) {
+        throw new Error(
+          "foreshadow payoff scene must belong to the same project",
+        );
+      }
+    }
+    if (
+      payoffSceneId === null
+        ? payoffFromPos !== null || payoffToPos !== null
+        : !(
+            (payoffFromPos === null && payoffToPos === null) ||
+            (payoffFromPos !== null &&
+              payoffToPos !== null &&
+              Number.isSafeInteger(payoffFromPos) &&
+              Number.isSafeInteger(payoffToPos) &&
+              0 <= payoffFromPos &&
+              payoffFromPos <= payoffToPos)
+          )
+    ) {
+      throw new Error("foreshadow payoff anchor is invalid");
+    }
+
+    const assignments: string[] = [];
+    const params: SqlValue[] = [];
+    for (const [key, column] of [
+      ["title", "title"],
+      ["intent", "intent"],
+      ["notes", "notes"],
+      ["payoffSceneId", "payoff_scene_id"],
+      ["payoffFromPos", "payoff_from_pos"],
+      ["payoffToPos", "payoff_to_pos"],
+      ["payoffConfirmed", "payoff_confirmed"],
+      ["abandoned", "abandoned"],
+      ["secret", "secret"],
+      ["loadBearing", "load_bearing"],
+    ] as const) {
+      if (!Object.hasOwn(patch, key)) continue;
+      assignments.push(`${column} = ?`);
+      const value = patch[key];
+      params.push(
+        typeof value === "boolean"
+          ? value
+            ? 1
+            : 0
+          : ((value ?? null) as SqlValue),
+      );
+    }
+    if (assignments.length === 0) return current;
+    assignments.push("version = version + 1", "updated_at = ?");
+    params.push(Date.now(), id, currentVersion);
+    db.run(
+      `UPDATE foreshadows SET ${assignments.join(", ")}
+        WHERE id = ? AND version = ?`,
+      params,
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `foreshadow version conflict: expected ${currentVersion}`,
+      );
+    }
+    const updated = queryOne("SELECT * FROM foreshadows WHERE id = ?", [id]);
+    if (!updated) throw new Error(`foreshadow not found: ${id}`);
+    options.onDatabaseDirty?.();
+    return updated;
+  }
+
+  async function handleForeshadowDelete(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "foreshadow_delete";
+    const id = requiredBrowserString(command, args, "id");
+    const projectId = requiredBrowserString(command, args, "projectId");
+    const sessionId = requiredBrowserString(command, args, "sessionId");
+    const baseVersion = requiredBrowserBaseVersion(command, args);
+    return withAppendLedgerLock(async () => {
+      const captured = loadBrowserForeshadowAggregateSnapshot(id, projectId);
+      if (!captured) {
+        throw new Error("FORESHADOW_VERSION_MISMATCH: row missing");
+      }
+      if (captured.version !== baseVersion) {
+        throw new Error(
+          `FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}, found ${captured.version}`,
+        );
+      }
+      const eventUid = crypto.randomUUID();
+      const undoJournalId = crypto.randomUUID();
+      const timestamp = Date.now();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "foreshadow",
+        opType: "foreshadow.delete",
+        entityType: "foreshadow",
+        entityId: id,
+        payload: JSON.stringify({ baseVersion }),
+        sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const current = loadBrowserForeshadowAggregateSnapshot(id, projectId);
+        if (!current || current.version !== baseVersion) {
+          throw new Error(
+            `FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}`,
+          );
+        }
+        ensureBrowserForeshadowAggregateValid(current, projectId, id);
+        db.run(
+          "DELETE FROM foreshadows WHERE id = ? AND project_id = ? AND version = ?",
+          [id, projectId, baseVersion],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}`,
+          );
+        }
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, 'manual', 'foreshadow', ?, 'delete', ?, NULL, ?, ?, ?, ?)`,
+          [
+            undoJournalId,
+            projectId,
+            id,
+            JSON.stringify(current),
+            current.version,
+            current.version,
+            eventUid,
+            new Date(timestamp).toISOString(),
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          entityId: id,
+          projectId,
+          version: current.version,
+          changeEventUid: eventUid,
+          undoJournalId,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original delete conflict/failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  function handleForeshadowGetSetup(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    const command = "foreshadow_get_setup";
+    const setupId = requiredBrowserString(command, args, "setupId");
+    return queryOne("SELECT * FROM foreshadow_setups WHERE id = ?", [setupId]);
+  }
+
+  function finishBrowserForeshadowChildWrite(
+    foreshadowId: string,
+    changed: boolean,
+    baseVersion: number,
+    now: number,
+  ): Record<string, SqlValue> | null {
+    const current = queryOne("SELECT * FROM foreshadows WHERE id = ?", [
+      foreshadowId,
+    ]);
+    if (!current) return null;
+    if (changed) {
+      const currentVersion = Number(current.version ?? 0);
+      if (currentVersion !== baseVersion) {
+        throw new Error(
+          `FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}, found ${currentVersion}`,
+        );
+      }
+      db.run(
+        `UPDATE foreshadows
+            SET version = version + 1, updated_at = ?
+          WHERE id = ? AND version = ?`,
+        [now, foreshadowId, baseVersion],
+      );
+      if (db.getRowsModified() !== 1) {
+        throw new Error(`FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}`);
+      }
+    }
+    return queryOne("SELECT * FROM foreshadows WHERE id = ?", [foreshadowId]);
+  }
+
+  function runBrowserForeshadowChildWrite<T>(
+    operation: () => { value: T; changed: boolean },
+  ): T {
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const { value, changed } = operation();
+      db.run("COMMIT");
+      if (changed) options.onDatabaseDirty?.();
+      return value;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the original child-write conflict/failure.
+      }
+      throw error;
+    }
+  }
+
+  function handleForeshadowUpdateSetup(
+    args: Record<string, unknown>,
+  ): Record<string, SqlValue> | null {
+    const command = "foreshadow_update_setup";
+    const id = requiredBrowserString(command, args, "id");
+    const patch = browserPatchRecord(command, args);
+    const baseVersion = requiredBrowserBaseVersion(command, patch);
+    const assignments: string[] = [];
+    const params: SqlValue[] = [];
+    const valuesByColumn = new Map<string, SqlValue>();
+    for (const [key, column] of [
+      ["strength", "strength"],
+      ["aiStrength", "ai_strength"],
+      ["aiReasoning", "ai_reasoning"],
+      ["isOrphan", "is_orphan"],
+      ["lastEvaluatedAt", "last_evaluated_at"],
+    ] as const) {
+      if (!Object.hasOwn(patch, key)) continue;
+      if (key === "strength" || key === "aiStrength") {
+        requireBrowserForeshadowStrength(command, patch[key]);
+      }
+      assignments.push(`${column} = ?`);
+      const value = patch[key];
+      params.push(
+        typeof value === "boolean"
+          ? value
+            ? 1
+            : 0
+          : ((value ?? null) as SqlValue),
+      );
+      valuesByColumn.set(column, params.at(-1) ?? null);
+    }
+    return runBrowserForeshadowChildWrite(() => {
+      const current = queryOne("SELECT * FROM foreshadow_setups WHERE id = ?", [
+        id,
+      ]);
+      if (!current) return { value: null, changed: false };
+      const changed = [...valuesByColumn].some(
+        ([column, value]) => current[column] !== value,
+      );
+      const now = Date.now();
+      if (changed && assignments.length > 0) {
+        assignments.push("updated_at = ?");
+        params.push(now, id);
+        db.run(
+          `UPDATE foreshadow_setups SET ${assignments.join(", ")} WHERE id = ?`,
+          params,
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`foreshadow setup '${id}' vanished during update`);
+        }
+      }
+      const row = finishBrowserForeshadowChildWrite(
+        String(current.foreshadow_id),
+        changed,
+        baseVersion,
+        now,
+      );
+      return { value: row, changed };
+    });
+  }
+
+  function handleForeshadowSetupCreateAi(
+    args: Record<string, unknown>,
+  ): Record<string, SqlValue> | null {
+    const command = "foreshadow_setup_create_ai";
+    const id = requiredBrowserString(command, args, "id");
+    const foreshadowId = requiredBrowserString(command, args, "foreshadowId");
+    const baseVersion = requiredBrowserBaseVersion(command, args);
+    const sceneId = requiredBrowserString(command, args, "sceneId");
+    const fromPos = Number(args.fromPos);
+    const toPos = Number(args.toPos);
+    if (
+      !Number.isSafeInteger(fromPos) ||
+      !Number.isSafeInteger(toPos) ||
+      fromPos < 0 ||
+      fromPos > toPos
+    ) {
+      throw new Error(`${command}: invalid setup range`);
+    }
+    const owner = queryOne("SELECT project_id FROM foreshadows WHERE id = ?", [
+      foreshadowId,
+    ]);
+    const scene = queryOne(
+      "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+      [sceneId],
+    );
+    if (
+      !owner ||
+      !scene ||
+      scene.node_type !== "scene" ||
+      owner.project_id !== scene.project_id
+    ) {
+      throw new Error("foreshadow setup must stay within one project");
+    }
+    const existing = queryOne(
+      `SELECT foreshadow_id, scene_id, semantic_key, from_pos, to_pos, is_orphan
+         FROM foreshadow_setups WHERE id = ?`,
+      [id],
+    );
+    if (
+      existing &&
+      (String(existing.foreshadow_id) !== foreshadowId ||
+        String(existing.scene_id) !== sceneId)
+    ) {
+      throw new Error(
+        `foreshadow setup '${id}' owner or scene conflicts with the existing row`,
+      );
+    }
+    const strength = requireBrowserForeshadowStrength(command, args.strength);
+    const aiStrength = requireBrowserForeshadowStrength(
+      command,
+      args.aiStrength,
+    );
+    const now = Date.now();
+    const semanticKey = browserForeshadowSetupSemanticKey(
+      id,
+      foreshadowId,
+      sceneId,
+      fromPos,
+      toPos,
+      existing?.semantic_key,
+    );
+    const changed =
+      !existing ||
+      Number(existing.from_pos) !== fromPos ||
+      Number(existing.to_pos) !== toPos ||
+      String(existing.semantic_key) !== semanticKey ||
+      Number(existing.is_orphan) !== 0;
+    return runBrowserForeshadowChildWrite(() => {
+      if (changed) {
+        db.run(
+          `INSERT INTO foreshadow_setups
+        (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
+         ai_strength, attribution, ai_rationale, ai_reasoning,
+         last_evaluated_at, is_orphan, semantic_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         from_pos = excluded.from_pos,
+         to_pos = excluded.to_pos,
+         semantic_key = excluded.semantic_key,
+         is_orphan = 0,
+         updated_at = excluded.updated_at`,
+          [
+            id,
+            foreshadowId,
+            sceneId,
+            fromPos,
+            toPos,
+            String(args.kind ?? "designated_existing"),
+            strength,
+            aiStrength,
+            String(args.attribution ?? "human"),
+            args.aiRationale == null ? null : String(args.aiRationale),
+            args.aiReasoning == null ? null : String(args.aiReasoning),
+            args.lastEvaluatedAt == null ? null : Number(args.lastEvaluatedAt),
+            semanticKey,
+            now,
+            now,
+          ],
+        );
+      }
+      const row = finishBrowserForeshadowChildWrite(
+        foreshadowId,
+        changed,
+        baseVersion,
+        now,
+      );
+      return { value: row, changed };
+    });
+  }
+
+  function handleForeshadowLinkCodex(
+    args: Record<string, unknown>,
+    linked: boolean,
+  ): Record<string, SqlValue> | null {
+    const command = linked
+      ? "foreshadow_link_codex"
+      : "foreshadow_unlink_codex";
+    const foreshadowId = requiredBrowserString(command, args, "foreshadowId");
+    const codexId = requiredBrowserString(command, args, "codexId");
+    const baseVersion = requiredBrowserBaseVersion(command, args);
+    if (linked) {
+      const foreshadow = queryOne(
+        "SELECT project_id FROM foreshadows WHERE id = ?",
+        [foreshadowId],
+      );
+      const codex = queryOne(
+        "SELECT project_id FROM codex_entries WHERE id = ?",
+        [codexId],
+      );
+      if (!foreshadow || !codex || foreshadow.project_id !== codex.project_id) {
+        throw new Error("foreshadow Codex link must stay within one project");
+      }
+    }
+    return runBrowserForeshadowChildWrite(() => {
+      if (linked) {
+        db.run(
+          `INSERT OR IGNORE INTO foreshadow_codex_links
+            (foreshadow_id, codex_entry_id) VALUES (?, ?)`,
+          [foreshadowId, codexId],
+        );
+      } else {
+        db.run(
+          `DELETE FROM foreshadow_codex_links
+            WHERE foreshadow_id = ? AND codex_entry_id = ?`,
+          [foreshadowId, codexId],
+        );
+      }
+      const changed = db.getRowsModified() === 1;
+      const row = finishBrowserForeshadowChildWrite(
+        foreshadowId,
+        changed,
+        baseVersion,
+        Date.now(),
+      );
+      return { value: row, changed };
+    });
+  }
+
+  function handleForeshadowMarkLinkedCodexDirty(
+    args: Record<string, unknown>,
+  ): Record<string, SqlValue>[] {
+    const command = "foreshadow_mark_linked_codex_dirty";
+    const projectId = requiredBrowserString(command, args, "projectId");
+    const codexEntryId = requiredBrowserString(command, args, "codexEntryId");
+    const now = Date.now();
+    db.run("BEGIN IMMEDIATE");
+    try {
+      db.run(
+        `UPDATE foreshadows
+          SET codex_link_dirty_at = ?, updated_at = ?, version = version + 1
+        WHERE project_id = ?
+          AND id IN (
+            SELECT foreshadow_id FROM foreshadow_codex_links
+             WHERE codex_entry_id = ?
+          )`,
+        [now, now, projectId, codexEntryId],
+      );
+      const mutated = db.getRowsModified() > 0;
+      const rows = queryAll(
+        `SELECT foreshadow.*
+           FROM foreshadows foreshadow
+           JOIN foreshadow_codex_links link
+             ON link.foreshadow_id = foreshadow.id
+          WHERE foreshadow.project_id = ? AND link.codex_entry_id = ?
+          ORDER BY foreshadow.id`,
+        [projectId, codexEntryId],
+      );
+      db.run("COMMIT");
+      if (mutated) options.onDatabaseDirty?.();
+      return rows;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the dirty-mark failure.
+      }
+      throw error;
+    }
+  }
+
+  function handleForeshadowSetSetupStrength(
+    args: Record<string, unknown>,
+  ): Record<string, SqlValue> | null {
+    const command = "foreshadow_set_setup_strength";
+    const setupId = requiredBrowserString(command, args, "setupId");
+    const strength = requireBrowserForeshadowStrength(command, args.strength);
+    const baseVersion = requiredBrowserBaseVersion(command, args);
+    return runBrowserForeshadowChildWrite(() => {
+      const current = queryOne("SELECT * FROM foreshadow_setups WHERE id = ?", [
+        setupId,
+      ]);
+      if (!current) return { value: null, changed: false };
+      const changed = current.strength !== strength;
+      const now = Date.now();
+      if (changed) {
+        db.run(
+          "UPDATE foreshadow_setups SET strength = ?, updated_at = ? WHERE id = ?",
+          [strength, now, setupId],
+        );
+      }
+      const row = finishBrowserForeshadowChildWrite(
+        String(current.foreshadow_id),
+        changed,
+        baseVersion,
+        now,
+      );
+      return { value: row, changed };
+    });
+  }
+
+  function handleForeshadowResolveOrphan(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const command = "foreshadow_resolve_orphan";
+    const payload = browserCommandPayload(command, args);
+    const setupId = requiredBrowserString(command, payload, "setupId");
+    const action = requiredBrowserString(command, payload, "action");
+    const baseVersion = requiredBrowserBaseVersion(command, payload);
+    if (action === "delete") {
+      return runBrowserForeshadowChildWrite(() => {
+        const current = queryOne(
+          "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?",
+          [setupId],
+        );
+        if (!current) {
+          return {
+            value: { setupId: null, foreshadow: null },
+            changed: false,
+          };
+        }
+        db.run("DELETE FROM foreshadow_setups WHERE id = ?", [setupId]);
+        const changed = db.getRowsModified() === 1;
+        const foreshadow = finishBrowserForeshadowChildWrite(
+          String(current.foreshadow_id),
+          changed,
+          baseVersion,
+          Date.now(),
+        );
+        return {
+          value: { setupId: null, foreshadow },
+          changed,
+        };
+      });
+    }
+    if (action !== "reanchor" && action !== "reinsert") {
+      return { setupId: null, foreshadow: null };
+    }
+    const sceneId = requiredBrowserString(command, payload, "sceneId");
+    const fromPos = Number(payload.fromPos);
+    const toPos = Number(payload.toPos);
+    if (
+      !Number.isSafeInteger(fromPos) ||
+      !Number.isSafeInteger(toPos) ||
+      fromPos < 0 ||
+      fromPos > toPos
+    ) {
+      throw new Error(`${command}: invalid anchor range`);
+    }
+    if (action === "reinsert") {
+      const newId = crypto.randomUUID();
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const current = queryOne(
+          `SELECT setup.*, foreshadow.project_id
+             FROM foreshadow_setups setup
+             JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
+            WHERE setup.id = ?`,
+          [setupId],
+        );
+        if (!current) {
+          db.run("COMMIT");
+          return { setupId: null, foreshadow: null };
+        }
+        const scene = queryOne(
+          "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+          [sceneId],
+        );
+        if (
+          scene?.node_type !== "scene" ||
+          scene.project_id !== current.project_id
+        ) {
+          throw new Error(
+            "foreshadow orphan anchor must stay within one project",
+          );
+        }
+        const now = Date.now();
+        const semanticKey = browserForeshadowSetupSemanticKey(
+          newId,
+          String(current.foreshadow_id),
+          sceneId,
+          fromPos,
+          toPos,
+        );
+        db.run("DELETE FROM foreshadow_setups WHERE id = ?", [setupId]);
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `foreshadow setup '${setupId}' vanished during reinsert`,
+          );
+        }
+        db.run(
+          `INSERT INTO foreshadow_setups
+            (id, foreshadow_id, scene_id, from_pos, to_pos, kind, role,
+             strength, ai_strength, ai_reasoning, attribution, ai_rationale,
+             last_evaluated_at, is_orphan, evidence_anchor_id, semantic_key,
+             created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'inserted_new', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+          [
+            newId,
+            current.foreshadow_id,
+            sceneId,
+            fromPos,
+            toPos,
+            current.role,
+            current.strength,
+            current.ai_strength,
+            current.ai_reasoning,
+            current.attribution,
+            current.ai_rationale,
+            current.last_evaluated_at,
+            current.evidence_anchor_id,
+            semanticKey,
+            now,
+            now,
+          ],
+        );
+        const foreshadow = finishBrowserForeshadowChildWrite(
+          String(current.foreshadow_id),
+          true,
+          baseVersion,
+          now,
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return { setupId: newId, foreshadow };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original orphan reinsert failure.
+        }
+        throw error;
+      }
+    }
+
+    return runBrowserForeshadowChildWrite(() => {
+      const current = queryOne(
+        `SELECT setup.*, foreshadow.project_id
+           FROM foreshadow_setups setup
+           JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
+          WHERE setup.id = ?`,
+        [setupId],
+      );
+      if (!current) {
+        return {
+          value: { setupId: null, foreshadow: null },
+          changed: false,
+        };
+      }
+      const scene = queryOne(
+        "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+        [sceneId],
+      );
+      if (
+        scene?.node_type !== "scene" ||
+        scene.project_id !== current.project_id
+      ) {
+        throw new Error(
+          "foreshadow orphan anchor must stay within one project",
+        );
+      }
+      const now = Date.now();
+      const semanticKey = browserForeshadowSetupSemanticKey(
+        setupId,
+        String(current.foreshadow_id),
+        sceneId,
+        fromPos,
+        toPos,
+        current.semantic_key,
+      );
+      const changed =
+        String(current.scene_id) !== sceneId ||
+        Number(current.from_pos) !== fromPos ||
+        Number(current.to_pos) !== toPos ||
+        String(current.semantic_key) !== semanticKey ||
+        Number(current.is_orphan) !== 0;
+      if (changed) {
+        db.run(
+          `UPDATE foreshadow_setups
+              SET scene_id = ?, from_pos = ?, to_pos = ?, semantic_key = ?,
+                  is_orphan = 0, updated_at = ?
+            WHERE id = ?`,
+          [sceneId, fromPos, toPos, semanticKey, now, setupId],
+        );
+      }
+      const foreshadow = finishBrowserForeshadowChildWrite(
+        String(current.foreshadow_id),
+        changed,
+        baseVersion,
+        now,
+      );
+      return {
+        value: { setupId: null, foreshadow },
+        changed,
+      };
+    });
+  }
+
+  function handleForeshadowSaveAnchorsForScene(
+    args: Record<string, unknown>,
+  ): Record<string, SqlValue>[] {
+    const command = "foreshadow_save_anchors_for_scene";
+    const sceneId = requiredBrowserString(command, args, "sceneId");
+    const setups = args.setups;
+    const payoffs = args.payoffs;
+    const rawBaseVersions = browserSnapshotRecord(
+      command,
+      args.baseVersions,
+      "baseVersions",
+    );
+    const baseVersions = new Map<string, number>();
+    for (const [foreshadowId, rawVersion] of Object.entries(rawBaseVersions)) {
+      if (
+        typeof rawVersion !== "number" ||
+        !Number.isSafeInteger(rawVersion) ||
+        rawVersion < 0
+      ) {
+        throw new Error(
+          `${command}: invalid baseVersion for '${foreshadowId}'`,
+        );
+      }
+      baseVersions.set(foreshadowId, rawVersion);
+    }
+    const docContentSize = Number(args.docContentSize);
+    if (!Array.isArray(setups) || !Array.isArray(payoffs)) {
+      throw new Error(`${command}: setups and payoffs must be arrays`);
+    }
+    if (!Number.isSafeInteger(docContentSize) || docContentSize < 0) {
+      throw new Error(
+        `${command}: docContentSize must be a non-negative integer`,
+      );
+    }
+    const scene = queryOne(
+      "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+      [sceneId],
+    );
+    if (!scene || scene.node_type !== "scene")
+      throw new Error(`foreshadow anchor scene '${sceneId}' not found`);
+    const projectId = String(scene.project_id);
+    const parsedSetups = setups.map((raw, index) => {
+      const setup = browserSnapshotRecord(command, raw, `setups[${index}]`);
+      const id = requiredBrowserString(command, setup, "id");
+      const foreshadowId = requiredBrowserString(
+        command,
+        setup,
+        "foreshadowId",
+      );
+      const baseVersion = setup.baseVersion;
+      const anchorSceneId = requiredBrowserString(command, setup, "sceneId");
+      const fromPos = Number(setup.fromPos);
+      const toPos = Number(setup.toPos);
+      if (
+        anchorSceneId !== sceneId ||
+        typeof baseVersion !== "number" ||
+        !Number.isSafeInteger(baseVersion) ||
+        baseVersion < 0 ||
+        baseVersions.get(foreshadowId) !== baseVersion ||
+        !Number.isSafeInteger(fromPos) ||
+        !Number.isSafeInteger(toPos) ||
+        fromPos < 0 ||
+        fromPos > toPos ||
+        toPos > docContentSize
+      ) {
+        throw new Error(`${command}: setups[${index}] has an invalid anchor`);
+      }
+      const owner = queryOne(
+        "SELECT project_id FROM foreshadows WHERE id = ?",
+        [foreshadowId],
+      );
+      if (owner?.project_id !== projectId) {
+        throw new Error(
+          `${command}: setup foreshadow is outside the scene project`,
+        );
+      }
+      return { id, foreshadowId, baseVersion, fromPos, toPos };
+    });
+    const payoffIds = new Set<string>();
+    const parsedPayoffs = payoffs.map((raw, index) => {
+      const payoff = browserSnapshotRecord(command, raw, `payoffs[${index}]`);
+      const foreshadowId = requiredBrowserString(
+        command,
+        payoff,
+        "foreshadowId",
+      );
+      const anchorSceneId = requiredBrowserString(command, payoff, "sceneId");
+      const baseVersion = payoff.baseVersion;
+      const fromPos = Number(payoff.fromPos);
+      const toPos = Number(payoff.toPos);
+      if (
+        anchorSceneId !== sceneId ||
+        typeof baseVersion !== "number" ||
+        !Number.isSafeInteger(baseVersion) ||
+        baseVersion < 0 ||
+        baseVersions.get(foreshadowId) !== baseVersion ||
+        !Number.isSafeInteger(fromPos) ||
+        !Number.isSafeInteger(toPos) ||
+        fromPos < 0 ||
+        fromPos > toPos ||
+        toPos > docContentSize
+      ) {
+        throw new Error(`${command}: payoffs[${index}] has an invalid anchor`);
+      }
+      if (payoffIds.has(foreshadowId)) {
+        throw new Error(
+          `${command}: duplicate payoff foreshadow '${foreshadowId}'`,
+        );
+      }
+      payoffIds.add(foreshadowId);
+      const owner = queryOne(
+        "SELECT project_id FROM foreshadows WHERE id = ?",
+        [foreshadowId],
+      );
+      if (owner?.project_id !== projectId) {
+        throw new Error(
+          `${command}: payoff foreshadow is outside the scene project`,
+        );
+      }
+      return { foreshadowId, baseVersion, fromPos, toPos };
+    });
+
+    const now = Date.now();
+    const touchedRoots = new Set<string>();
+    const changedRoots = new Set<string>();
+    const authoritative: Record<string, SqlValue>[] = [];
+    db.run("BEGIN IMMEDIATE");
+    try {
+      for (const setup of parsedSetups) {
+        const existing = queryOne(
+          `SELECT setup.foreshadow_id, setup.scene_id, setup.semantic_key,
+                  setup.from_pos, setup.to_pos, setup.is_orphan,
+                  stored_scene.project_id AS scene_project_id,
+                  stored_scene.node_type AS scene_node_type
+             FROM foreshadow_setups setup
+             JOIN tree_nodes stored_scene ON stored_scene.id = setup.scene_id
+            WHERE setup.id = ?`,
+          [setup.id],
+        );
+        if (existing && String(existing.foreshadow_id) !== setup.foreshadowId) {
+          throw new Error(
+            `${command}: setup '${setup.id}' belongs to a different foreshadow`,
+          );
+        }
+        if (
+          existing &&
+          (existing.scene_project_id !== projectId ||
+            existing.scene_node_type !== "scene")
+        ) {
+          throw new Error(
+            `${command}: setup '${setup.id}' scene is outside the target project`,
+          );
+        }
+        const semanticKey = browserForeshadowSetupSemanticKey(
+          setup.id,
+          setup.foreshadowId,
+          sceneId,
+          setup.fromPos,
+          setup.toPos,
+          existing?.semantic_key,
+        );
+        const changed =
+          !existing ||
+          String(existing.scene_id) !== sceneId ||
+          Number(existing.from_pos) !== setup.fromPos ||
+          Number(existing.to_pos) !== setup.toPos ||
+          String(existing.semantic_key) !== semanticKey ||
+          Number(existing.is_orphan) !== 0;
+        if (changed) {
+          db.run(
+            `INSERT INTO foreshadow_setups
+            (id, foreshadow_id, scene_id, from_pos, to_pos, kind,
+             attribution, is_orphan, semantic_key, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'designated_existing', 'human', 0, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             scene_id = excluded.scene_id,
+             from_pos = excluded.from_pos,
+             to_pos = excluded.to_pos,
+             semantic_key = excluded.semantic_key,
+             is_orphan = 0,
+             updated_at = excluded.updated_at`,
+            [
+              setup.id,
+              setup.foreshadowId,
+              sceneId,
+              setup.fromPos,
+              setup.toPos,
+              semanticKey,
+              now,
+              now,
+            ],
+          );
+          changedRoots.add(setup.foreshadowId);
+        }
+        touchedRoots.add(setup.foreshadowId);
+      }
+      for (const payoff of parsedPayoffs) {
+        const current = queryOne(
+          "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
+          [payoff.foreshadowId, projectId],
+        );
+        if (!current) {
+          throw new Error(`${command}: payoff foreshadow vanished`);
+        }
+        const unchanged =
+          current.payoff_scene_id === sceneId &&
+          current.payoff_from_pos !== null &&
+          current.payoff_to_pos !== null &&
+          Number(current.payoff_from_pos) === payoff.fromPos &&
+          Number(current.payoff_to_pos) === payoff.toPos;
+        if (!unchanged) {
+          const currentVersion = Number(current.version ?? 0);
+          if (currentVersion !== payoff.baseVersion) {
+            throw new Error(
+              `FORESHADOW_VERSION_MISMATCH: payoff '${payoff.foreshadowId}' expected ${payoff.baseVersion}, found ${currentVersion}`,
+            );
+          }
+          db.run(
+            `UPDATE foreshadows
+              SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?,
+                  updated_at = updated_at
+             WHERE id = ? AND project_id = ? AND version = ?`,
+            [
+              sceneId,
+              payoff.fromPos,
+              payoff.toPos,
+              payoff.foreshadowId,
+              projectId,
+              payoff.baseVersion,
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              `FORESHADOW_VERSION_MISMATCH: payoff '${payoff.foreshadowId}' expected ${payoff.baseVersion}`,
+            );
+          }
+          changedRoots.add(payoff.foreshadowId);
+        }
+        touchedRoots.add(payoff.foreshadowId);
+      }
+      const validSetupIds = new Set(parsedSetups.map((setup) => setup.id));
+      if (parsedSetups.length > 0 || docContentSize <= 2) {
+        const sceneSetups = queryAll(
+          `SELECT id, foreshadow_id, is_orphan
+             FROM foreshadow_setups WHERE scene_id = ?`,
+          [sceneId],
+        );
+        for (const setup of sceneSetups) {
+          const setupId = String(setup.id);
+          if (!validSetupIds.has(setupId) && Number(setup.is_orphan) !== 1) {
+            const foreshadowId = String(setup.foreshadow_id);
+            if (!baseVersions.has(foreshadowId)) {
+              throw new Error(
+                `FORESHADOW_VERSION_MISMATCH: scene snapshot has no baseVersion for '${foreshadowId}'`,
+              );
+            }
+            db.run(
+              `UPDATE foreshadow_setups
+                  SET is_orphan = 1, updated_at = ?
+                WHERE id = ? AND is_orphan IS NOT 1`,
+              [now, setupId],
+            );
+            if (db.getRowsModified() === 1) {
+              changedRoots.add(foreshadowId);
+              touchedRoots.add(foreshadowId);
+            }
+          }
+        }
+      }
+      for (const foreshadowId of [...touchedRoots].sort()) {
+        const baseVersion = baseVersions.get(foreshadowId);
+        if (baseVersion === undefined) {
+          throw new Error(
+            `FORESHADOW_VERSION_MISMATCH: scene snapshot has no baseVersion for '${foreshadowId}'`,
+          );
+        }
+        const row = finishBrowserForeshadowChildWrite(
+          foreshadowId,
+          changedRoots.has(foreshadowId),
+          baseVersion,
+          now,
+        );
+        if (!row) {
+          throw new Error(`${command}: foreshadow '${foreshadowId}' vanished`);
+        }
+        authoritative.push(row);
+      }
+      const mutated = changedRoots.size > 0;
+      db.run("COMMIT");
+      if (mutated) options.onDatabaseDirty?.();
+      return authoritative;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the original anchor persistence failure.
+      }
+      throw error;
+    }
+  }
+
+  interface BrowserForeshadowSnapshot {
+    id: string;
+    projectId: string;
+    title: string;
+    intent: string | null;
+    notes: string | null;
+    payoffSceneId: string | null;
+    payoffFromPos: number | null;
+    payoffToPos: number | null;
+    payoffConfirmed: number;
+    abandoned: number;
+    secret: number;
+    loadBearing: string | null;
+    mechanism: string | null;
+    version: number;
+    codexLinkDirtyAt: number | null;
+    createdAt: number;
+    updatedAt: number;
+  }
+
+  function browserForeshadowSnapshot(
+    row: Record<string, SqlValue>,
+  ): BrowserForeshadowSnapshot {
+    return {
+      id: String(row.id),
+      projectId: String(row.project_id),
+      title: String(row.title),
+      intent: row.intent == null ? null : String(row.intent),
+      notes: row.notes == null ? null : String(row.notes),
+      payoffSceneId:
+        row.payoff_scene_id == null ? null : String(row.payoff_scene_id),
+      payoffFromPos:
+        row.payoff_from_pos == null ? null : Number(row.payoff_from_pos),
+      payoffToPos: row.payoff_to_pos == null ? null : Number(row.payoff_to_pos),
+      payoffConfirmed: Number(row.payoff_confirmed ?? 0),
+      abandoned: Number(row.abandoned ?? 0),
+      secret: Number(row.secret ?? 0),
+      loadBearing: row.load_bearing == null ? null : String(row.load_bearing),
+      mechanism: row.mechanism == null ? null : String(row.mechanism),
+      version: Number(row.version ?? 0),
+      codexLinkDirtyAt:
+        row.codex_link_dirty_at == null
+          ? null
+          : Number(row.codex_link_dirty_at),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  function loadBrowserForeshadowSnapshot(
+    foreshadowId: string,
+    projectId: string,
+  ): BrowserForeshadowSnapshot | null {
+    const row = queryOne(
+      "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
+      [foreshadowId, projectId],
+    );
+    return row ? browserForeshadowSnapshot(row) : null;
+  }
+
+  type BrowserForeshadowChildSnapshot = Record<string, string | number | null>;
+
+  type BrowserForeshadowAggregateSnapshot = Omit<
+    BrowserForeshadowSnapshot,
+    "createdAt" | "updatedAt"
+  > & {
+    setups: BrowserForeshadowChildSnapshot[];
+    payoffs: BrowserForeshadowChildSnapshot[];
+    supportEdges: BrowserForeshadowChildSnapshot[];
+    codexEntryIds: string[];
+  };
+
+  function loadBrowserForeshadowAggregateSnapshot(
+    foreshadowId: string,
+    projectId: string,
+  ): BrowserForeshadowAggregateSnapshot | null {
+    const root = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
+    if (!root) return null;
+    const {
+      createdAt: _createdAt,
+      updatedAt: _updatedAt,
+      ...domainRoot
+    } = root;
+    const setups = queryAll(
+      `SELECT * FROM foreshadow_setups
+        WHERE foreshadow_id = ? ORDER BY id`,
+      [foreshadowId],
+    ).map((row) => ({
+      id: String(row.id),
+      foreshadowId: String(row.foreshadow_id),
+      sceneId: String(row.scene_id),
+      fromPos: Number(row.from_pos),
+      toPos: Number(row.to_pos),
+      kind: String(row.kind),
+      role: String(row.role),
+      strength: row.strength == null ? null : String(row.strength),
+      aiStrength: row.ai_strength == null ? null : String(row.ai_strength),
+      aiReasoning: row.ai_reasoning == null ? null : String(row.ai_reasoning),
+      attribution: String(row.attribution),
+      aiRationale: row.ai_rationale == null ? null : String(row.ai_rationale),
+      lastEvaluatedAt:
+        row.last_evaluated_at == null ? null : Number(row.last_evaluated_at),
+      isOrphan: Number(row.is_orphan),
+      evidenceAnchorId:
+        row.evidence_anchor_id == null ? null : String(row.evidence_anchor_id),
+      semanticKey: String(row.semantic_key),
+    }));
+    const payoffs = queryAll(
+      `SELECT * FROM foreshadow_payoffs
+        WHERE foreshadow_id = ? ORDER BY id`,
+      [foreshadowId],
+    ).map((row) => ({
+      id: String(row.id),
+      foreshadowId: String(row.foreshadow_id),
+      sceneId: String(row.scene_id),
+      fromPos: row.from_pos == null ? null : Number(row.from_pos),
+      toPos: row.to_pos == null ? null : Number(row.to_pos),
+      role: String(row.role),
+      confirmed: Number(row.confirmed),
+      isPrimary: Number(row.is_primary),
+      attribution: String(row.attribution),
+      aiRationale: row.ai_rationale == null ? null : String(row.ai_rationale),
+      isOrphan: Number(row.is_orphan),
+      evidenceAnchorId:
+        row.evidence_anchor_id == null ? null : String(row.evidence_anchor_id),
+      semanticKey: String(row.semantic_key),
+    }));
+    const supportEdges = queryAll(
+      `SELECT * FROM foreshadow_setup_payoff_links
+        WHERE foreshadow_id = ? ORDER BY setup_id, payoff_id`,
+      [foreshadowId],
+    ).map((row) => ({
+      foreshadowId: String(row.foreshadow_id),
+      setupId: String(row.setup_id),
+      payoffId: String(row.payoff_id),
+      bridgeKind: String(row.bridge_kind),
+      explanation: row.explanation == null ? null : String(row.explanation),
+    }));
+    const codexEntryIds = queryAll(
+      `SELECT codex_entry_id FROM foreshadow_codex_links
+        WHERE foreshadow_id = ? ORDER BY codex_entry_id`,
+      [foreshadowId],
+    ).map((row) => String(row.codex_entry_id));
+    return {
+      ...domainRoot,
+      setups,
+      payoffs,
+      supportEdges,
+      codexEntryIds,
+    };
+  }
+
+  function ensureBrowserForeshadowAggregateValid(
+    snapshot: BrowserForeshadowAggregateSnapshot,
+    projectId: string,
+    foreshadowId: string,
+  ): void {
+    if (snapshot.id !== foreshadowId || snapshot.projectId !== projectId) {
+      throw new Error("foreshadow aggregate snapshot ownership mismatch");
+    }
+    const setupIds = new Set(snapshot.setups.map((row) => String(row.id)));
+    const payoffIds = new Set(snapshot.payoffs.map((row) => String(row.id)));
+    if (
+      setupIds.size !== snapshot.setups.length ||
+      payoffIds.size !== snapshot.payoffs.length
+    ) {
+      throw new Error("foreshadow aggregate snapshot has duplicate children");
+    }
+    const sceneIds = [
+      snapshot.payoffSceneId,
+      ...snapshot.setups.map((row) => String(row.sceneId)),
+      ...snapshot.payoffs.map((row) => String(row.sceneId)),
+    ].filter((id): id is string => typeof id === "string");
+    for (const sceneId of new Set(sceneIds)) {
+      const scene = queryOne(
+        "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+        [sceneId],
+      );
+      if (scene?.project_id !== projectId || scene.node_type !== "scene") {
+        throw new Error(
+          `foreshadow replay scene '${sceneId}' is outside project '${projectId}'`,
+        );
+      }
+    }
+    for (const row of snapshot.setups) {
+      if (row.foreshadowId !== foreshadowId) {
+        throw new Error("foreshadow setup is outside its aggregate");
+      }
+    }
+    for (const row of snapshot.payoffs) {
+      if (row.foreshadowId !== foreshadowId) {
+        throw new Error("foreshadow payoff is outside its aggregate");
+      }
+    }
+    const edgeKeys = new Set<string>();
+    for (const edge of snapshot.supportEdges) {
+      const key = `${String(edge.setupId)}\0${String(edge.payoffId)}`;
+      if (
+        edge.foreshadowId !== foreshadowId ||
+        !setupIds.has(String(edge.setupId)) ||
+        !payoffIds.has(String(edge.payoffId)) ||
+        edgeKeys.has(key)
+      ) {
+        throw new Error("foreshadow support edge is outside its aggregate");
+      }
+      edgeKeys.add(key);
+    }
+    for (const codexEntryId of snapshot.codexEntryIds) {
+      const codex = queryOne(
+        "SELECT project_id FROM codex_entries WHERE id = ?",
+        [codexEntryId],
+      );
+      if (codex?.project_id !== projectId) {
+        throw new Error(
+          `foreshadow replay Codex entry '${codexEntryId}' is outside project '${projectId}'`,
+        );
+      }
+    }
+    const crossEdges = queryOne(
+      `SELECT COUNT(*) AS count
+         FROM foreshadow_setup_payoff_links edge
+         JOIN foreshadow_setups setup ON setup.id = edge.setup_id
+         JOIN foreshadow_payoffs payoff ON payoff.id = edge.payoff_id
+        WHERE (setup.foreshadow_id = ? OR payoff.foreshadow_id = ?)
+          AND edge.foreshadow_id <> ?`,
+      [foreshadowId, foreshadowId, foreshadowId],
+    );
+    if (Number(crossEdges?.count ?? 0) !== 0) {
+      throw new Error(
+        `foreshadow '${foreshadowId}' has a cross-aggregate support edge`,
+      );
+    }
+  }
+
+  function parseBrowserForeshadowAggregateSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserForeshadowAggregateSnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `foreshadow undo journal '${journalId}' is missing a snapshot`,
+      );
+    }
+    const parsed = JSON.parse(
+      raw,
+    ) as Partial<BrowserForeshadowAggregateSnapshot>;
+    if (
+      typeof parsed.id !== "string" ||
+      typeof parsed.projectId !== "string" ||
+      typeof parsed.title !== "string" ||
+      typeof parsed.version !== "number" ||
+      !Array.isArray(parsed.setups) ||
+      !Array.isArray(parsed.payoffs) ||
+      !Array.isArray(parsed.supportEdges) ||
+      !Array.isArray(parsed.codexEntryIds)
+    ) {
+      throw new Error(
+        `foreshadow undo journal '${journalId}' has an invalid aggregate snapshot`,
+      );
+    }
+    return parsed as BrowserForeshadowAggregateSnapshot;
+  }
+
+  function insertBrowserForeshadowAggregateSnapshot(
+    snapshot: BrowserForeshadowAggregateSnapshot,
+    replayVersion: number,
+    timestamp: number,
+  ): void {
+    ensureBrowserForeshadowAggregateValid(
+      snapshot,
+      snapshot.projectId,
+      snapshot.id,
+    );
+    insertBrowserForeshadowSnapshot(
+      { ...snapshot, createdAt: timestamp, updatedAt: timestamp },
+      replayVersion,
+      timestamp,
+    );
+    for (const row of snapshot.setups) {
+      db.run(
+        `INSERT INTO foreshadow_setups
+          (id, foreshadow_id, scene_id, from_pos, to_pos, kind, role,
+           strength, ai_strength, ai_reasoning, attribution, ai_rationale,
+           last_evaluated_at, is_orphan, evidence_anchor_id, semantic_key,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          row.id,
+          row.foreshadowId,
+          row.sceneId,
+          row.fromPos,
+          row.toPos,
+          row.kind,
+          row.role,
+          row.strength,
+          row.aiStrength,
+          row.aiReasoning,
+          row.attribution,
+          row.aiRationale,
+          row.lastEvaluatedAt,
+          row.isOrphan,
+          row.evidenceAnchorId,
+          row.semanticKey,
+          timestamp,
+          timestamp,
+        ],
+      );
+    }
+    for (const row of snapshot.payoffs) {
+      db.run(
+        `INSERT INTO foreshadow_payoffs
+          (id, foreshadow_id, scene_id, from_pos, to_pos, role, confirmed,
+           is_primary, attribution, ai_rationale, is_orphan,
+           evidence_anchor_id, semantic_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          row.id,
+          row.foreshadowId,
+          row.sceneId,
+          row.fromPos,
+          row.toPos,
+          row.role,
+          row.confirmed,
+          row.isPrimary,
+          row.attribution,
+          row.aiRationale,
+          row.isOrphan,
+          row.evidenceAnchorId,
+          row.semanticKey,
+          timestamp,
+          timestamp,
+        ],
+      );
+    }
+    for (const row of snapshot.supportEdges) {
+      db.run(
+        `INSERT INTO foreshadow_setup_payoff_links
+          (foreshadow_id, setup_id, payoff_id, bridge_kind, explanation, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          row.foreshadowId,
+          row.setupId,
+          row.payoffId,
+          row.bridgeKind,
+          row.explanation,
+          timestamp,
+        ],
+      );
+    }
+    for (const codexEntryId of snapshot.codexEntryIds) {
+      db.run(
+        `INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id)
+         VALUES (?, ?)`,
+        [snapshot.id, codexEntryId],
+      );
+    }
+  }
+
+  function deleteBrowserForeshadowAggregateAtVersion(
+    snapshot: BrowserForeshadowAggregateSnapshot,
+    expectedVersion: number,
+  ): void {
+    ensureBrowserForeshadowAggregateValid(
+      snapshot,
+      snapshot.projectId,
+      snapshot.id,
+    );
+    const live = loadBrowserForeshadowAggregateSnapshot(
+      snapshot.id,
+      snapshot.projectId,
+    );
+    const expected = { ...snapshot, version: expectedVersion };
+    if (!live || JSON.stringify(live) !== JSON.stringify(expected)) {
+      throw new Error(
+        `foreshadow '${snapshot.id}' aggregate changed before delete redo`,
+      );
+    }
+    db.run(
+      `DELETE FROM foreshadows
+        WHERE id = ? AND project_id = ? AND version = ?`,
+      [snapshot.id, snapshot.projectId, expectedVersion],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`foreshadow '${snapshot.id}' changed before delete redo`);
+    }
+  }
+
+  function insertBrowserForeshadowSnapshot(
+    snapshot: BrowserForeshadowSnapshot,
+    replayVersion = snapshot.version,
+    replayUpdatedAt = snapshot.updatedAt,
+  ): void {
+    db.run(
+      `INSERT INTO foreshadows
+        (id, project_id, title, intent, notes, payoff_scene_id,
+         payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, secret,
+         load_bearing, mechanism, version, codex_link_dirty_at,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        snapshot.id,
+        snapshot.projectId,
+        snapshot.title,
+        snapshot.intent,
+        snapshot.notes,
+        snapshot.payoffSceneId,
+        snapshot.payoffFromPos,
+        snapshot.payoffToPos,
+        snapshot.payoffConfirmed,
+        snapshot.abandoned,
+        snapshot.secret,
+        snapshot.loadBearing,
+        snapshot.mechanism,
+        replayVersion,
+        snapshot.codexLinkDirtyAt,
+        snapshot.createdAt,
+        replayUpdatedAt,
+      ],
+    );
+  }
+
+  function restoreBrowserForeshadowSnapshot(
+    snapshot: BrowserForeshadowSnapshot,
+    expectedVersion: number,
+    targetVersion: number,
+    replayUpdatedAt: number,
+  ): void {
+    db.run(
+      `UPDATE foreshadows
+          SET title = ?, intent = ?, notes = ?, payoff_scene_id = ?,
+              payoff_from_pos = ?, payoff_to_pos = ?, payoff_confirmed = ?,
+              abandoned = ?, secret = ?, load_bearing = ?, mechanism = ?,
+              version = ?, codex_link_dirty_at = ?, created_at = ?, updated_at = ?
+        WHERE id = ? AND project_id = ? AND version = ?`,
+      [
+        snapshot.title,
+        snapshot.intent,
+        snapshot.notes,
+        snapshot.payoffSceneId,
+        snapshot.payoffFromPos,
+        snapshot.payoffToPos,
+        snapshot.payoffConfirmed,
+        snapshot.abandoned,
+        snapshot.secret,
+        snapshot.loadBearing,
+        snapshot.mechanism,
+        targetVersion,
+        snapshot.codexLinkDirtyAt,
+        snapshot.createdAt,
+        replayUpdatedAt,
+        snapshot.id,
+        snapshot.projectId,
+        expectedVersion,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`foreshadow '${snapshot.id}' changed before undo replay`);
+    }
+  }
+
+  function rewriteBrowserForeshadowJournalStateToken(
+    projectId: string,
+    foreshadowId: string,
+    previousVersion: number,
+    replayVersion: number,
+  ): void {
+    db.run(
+      `UPDATE undo_journal
+          SET base_version = CASE
+                WHEN base_version = ? THEN ? ELSE base_version END,
+              result_version = CASE
+                WHEN result_version = ? THEN ? ELSE result_version END
+        WHERE project_id = ? AND entity_kind = 'foreshadow' AND entity_id = ?
+          AND (base_version = ? OR result_version = ?)`,
+      [
+        previousVersion,
+        replayVersion,
+        previousVersion,
+        replayVersion,
+        projectId,
+        foreshadowId,
+        previousVersion,
+        previousVersion,
+      ],
+    );
+    if (db.getRowsModified() === 0) {
+      throw new Error(
+        `foreshadow undo journal chain for '${foreshadowId}' lost state version ${previousVersion}`,
+      );
+    }
+  }
+
+  function parseBrowserForeshadowSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserForeshadowSnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `foreshadow undo journal '${journalId}' is missing a snapshot`,
+      );
+    }
+    const parsed = JSON.parse(raw) as Partial<BrowserForeshadowSnapshot>;
+    if (
+      typeof parsed.id !== "string" ||
+      typeof parsed.projectId !== "string" ||
+      typeof parsed.title !== "string" ||
+      typeof parsed.version !== "number" ||
+      typeof parsed.updatedAt !== "number"
+    ) {
+      throw new Error(
+        `foreshadow undo journal '${journalId}' has an invalid snapshot`,
+      );
+    }
+    return parsed as BrowserForeshadowSnapshot;
+  }
+
+  async function handleAgentForeshadowCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "agent_foreshadow_create";
+    const p = browserCommandPayload(command, args);
+    const projectId = requiredBrowserString(command, p, "projectId");
+    const sessionId = requiredBrowserString(command, p, "sessionId");
+    const foreshadowId = requiredBrowserString(command, p, "foreshadowId");
+    const title = requiredBrowserString(command, p, "title");
+    const requestId = optionalBrowserString(command, p, "requestId");
+    const intent = nullableBrowserString(command, p, "intent");
+    const notes = nullableBrowserString(command, p, "notes");
+    const loadBearing = nullableBrowserString(command, p, "loadBearing");
+    if (
+      loadBearing !== null &&
+      !["critical", "supporting", "optional"].includes(loadBearing)
+    ) {
+      throw new Error(`invalid load_bearing value: ${loadBearing}`);
+    }
+    const secret = browserBoolean(command, p, "secret", true);
+    const fingerprintPayload = {
+      projectId,
+      foreshadowId,
+      title,
+      intent,
+      notes,
+      loadBearing,
+      secret,
+    };
+
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserPayloadFingerprint(
+        command,
+        fingerprintPayload,
+      );
+      if (requestId !== null) {
+        const ledger = queryOne(
+          `SELECT payload_hash, tombstone_json
+             FROM idempotency_requests
+            WHERE domain = ? AND request_id = ?`,
+          [command, requestId],
+        );
+        if (ledger) {
+          if (String(ledger.payload_hash) !== requestHash) {
+            throw new Error(
+              "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: request id reused with different payload",
+            );
+          }
+          const journal = queryOne(
+            `SELECT id, result_version, change_event_uid
+               FROM undo_journal
+              WHERE id = ? AND project_id = ? AND entity_kind = 'foreshadow'
+                AND entity_id = ? AND op_kind = 'create'`,
+            [requestId, projectId, foreshadowId],
+          );
+          if (!journal) {
+            throw new Error(
+              "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: original state is missing",
+            );
+          }
+          return {
+            entityId: foreshadowId,
+            version: Number(journal.result_version),
+            changeEventUid: String(journal.change_event_uid),
+            undoJournalId: String(journal.id),
+          };
+        }
+      }
+
+      const timestamp = Date.now();
+      const eventUid = crypto.randomUUID();
+      const undoJournalId = requestId ?? crypto.randomUUID();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "foreshadow",
+        opType: "foreshadow.create",
+        entityType: "foreshadow",
+        entityId: foreshadowId,
+        payload: JSON.stringify({ title, loadBearing, secret, requestHash }),
+        sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
+          throw new Error(`project '${projectId}' not found`);
+        }
+        db.run(
+          `INSERT INTO foreshadows
+            (id, project_id, title, intent, notes, payoff_scene_id,
+             payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned,
+             secret, load_bearing, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, 0, 0, ?, ?, 0, ?, ?)`,
+          [
+            foreshadowId,
+            projectId,
+            title,
+            intent,
+            notes,
+            secret ? 1 : 0,
+            loadBearing,
+            timestamp,
+            timestamp,
+          ],
+        );
+        const after = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
+        if (!after) throw new Error("foreshadow row missing after insert");
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, 'in-app-agent', 'foreshadow', ?, 'create',
+                   NULL, ?, 0, ?, ?, ?)`,
+          [
+            undoJournalId,
+            projectId,
+            foreshadowId,
+            JSON.stringify(after),
+            after.version,
+            eventUid,
+            new Date(timestamp).toISOString(),
+          ],
+        );
+        if (requestId !== null) {
+          db.run(
+            `INSERT INTO idempotency_requests
+              (domain, request_id, project_id, payload_hash, tombstone_json)
+             VALUES (?, ?, ?, ?, ?)`,
+            [
+              command,
+              requestId,
+              projectId,
+              requestHash,
+              JSON.stringify({ id: foreshadowId }),
+            ],
+          );
+        }
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          entityId: foreshadowId,
+          version: after.version,
+          changeEventUid: eventUid,
+          undoJournalId,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the tracked create failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleAgentForeshadowUpdate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "agent_foreshadow_update";
+    const p = browserCommandPayload(command, args);
+    const projectId = requiredBrowserString(command, p, "projectId");
+    const sessionId = requiredBrowserString(command, p, "sessionId");
+    const foreshadowId = requiredBrowserString(command, p, "foreshadowId");
+    const requestedBaseVersion = p.baseVersion;
+    if (
+      typeof requestedBaseVersion !== "number" ||
+      !Number.isSafeInteger(requestedBaseVersion) ||
+      requestedBaseVersion < 0
+    ) {
+      throw new Error(
+        "agent foreshadow baseVersion must be a non-negative integer",
+      );
+    }
+    for (const field of ["title", "intent", "notes", "loadBearing"] as const) {
+      if (
+        p[field] !== null &&
+        p[field] !== undefined &&
+        typeof p[field] !== "string"
+      ) {
+        throw new Error(`${command}: ${field} must be a string or null`);
+      }
+    }
+    for (const field of ["payoffConfirmed", "abandoned", "secret"] as const) {
+      if (
+        p[field] !== null &&
+        p[field] !== undefined &&
+        typeof p[field] !== "boolean"
+      ) {
+        throw new Error(`${command}: ${field} must be a boolean or null`);
+      }
+    }
+    const fields = [
+      "title",
+      "intent",
+      "notes",
+      "loadBearing",
+      "payoffConfirmed",
+      "abandoned",
+      "secret",
+    ].filter((field) => p[field] !== null && p[field] !== undefined);
+    if (fields.length === 0) throw new Error("no fields provided to update");
+    if (
+      p.loadBearing != null &&
+      !["critical", "supporting", "optional"].includes(String(p.loadBearing))
+    ) {
+      throw new Error(`invalid load_bearing value: ${String(p.loadBearing)}`);
+    }
+
+    return withAppendLedgerLock(async () => {
+      const captured = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
+      if (!captured) {
+        throw new Error(`Foreshadow ${foreshadowId} not found after reload`);
+      }
+      if (captured.version !== requestedBaseVersion) {
+        throw new Error(
+          `foreshadow version conflict: expected ${requestedBaseVersion}, found ${captured.version}`,
+        );
+      }
+      const timestamp = Math.max(Date.now(), captured.updatedAt + 1);
+      const eventUid = crypto.randomUUID();
+      const undoJournalId = crypto.randomUUID();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "foreshadow",
+        opType: "foreshadow.update",
+        entityType: "foreshadow",
+        entityId: foreshadowId,
+        payload: JSON.stringify({ fields }),
+        sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const before = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
+        if (
+          !before ||
+          before.version !== captured.version ||
+          before.updatedAt !== captured.updatedAt
+        ) {
+          throw new Error(
+            "foreshadow changed during tracked update preparation",
+          );
+        }
+        const assignments: string[] = [];
+        const params: SqlValue[] = [];
+        const columns: Record<string, string> = {
+          title: "title",
+          intent: "intent",
+          notes: "notes",
+          loadBearing: "load_bearing",
+          payoffConfirmed: "payoff_confirmed",
+          abandoned: "abandoned",
+          secret: "secret",
+        };
+        for (const field of fields) {
+          assignments.push(`${columns[field]} = ?`);
+          const value = p[field];
+          params.push(
+            typeof value === "boolean" ? (value ? 1 : 0) : String(value),
+          );
+        }
+        assignments.push("version = version + 1", "updated_at = ?");
+        params.push(timestamp, foreshadowId, projectId, before.version);
+        db.run(
+          `UPDATE foreshadows SET ${assignments.join(", ")}
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          params,
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error("foreshadow changed during tracked update");
+        }
+        const after = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
+        if (
+          !after ||
+          after.updatedAt !== timestamp ||
+          after.version !== before.version + 1
+        ) {
+          throw new Error("foreshadow row missing after tracked update");
+        }
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, 'in-app-agent', 'foreshadow', ?, 'update',
+                   ?, ?, ?, ?, ?, ?)`,
+          [
+            undoJournalId,
+            projectId,
+            foreshadowId,
+            JSON.stringify(before),
+            JSON.stringify(after),
+            before.version,
+            after.version,
+            eventUid,
+            new Date(timestamp).toISOString(),
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          entityId: foreshadowId,
+          version: after.version,
+          changeEventUid: eventUid,
+          undoJournalId,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the tracked update failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  interface BrowserSceneEventLinkState {
+    sceneId: string;
+    linked: boolean;
+    incarnationToken: string | null;
+  }
+
+  const MAX_BROWSER_SCENE_EVENT_LINK_BATCH_SIZE = 10_000;
+  const BROWSER_SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND =
+    "sceneEventLinkBatch" as const;
+
+  interface BrowserSceneEventLinkBatchSnapshot {
+    snapshotKind: typeof BROWSER_SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND;
+    eventId: string;
+    sceneIds: string[];
+    linked: boolean;
+    incarnationTokens?: Record<string, string>;
+  }
+
+  interface BrowserSceneEventLinkBatchState {
+    eventId: string;
+    sceneLinks: BrowserSceneEventLinkState[];
+  }
+
+  function collectBrowserSceneEventLinkBatchState(
+    eventId: string,
+    sceneIds: readonly string[],
+  ): BrowserSceneEventLinkBatchState {
+    return {
+      eventId,
+      sceneLinks: sceneIds.map((sceneId) => {
+        const row = queryOne(
+          `SELECT incarnation_token FROM scene_events
+            WHERE scene_id = ? AND event_id = ?`,
+          [sceneId, eventId],
+        );
+        return {
+          sceneId,
+          linked: Boolean(row),
+          incarnationToken: row ? String(row.incarnation_token) : null,
+        };
+      }),
+    };
+  }
+
+  function browserSceneEventLinkBatchSnapshot(
+    eventId: string,
+    sceneIds: readonly string[],
+    linked: boolean,
+    incarnationTokens?: Readonly<Record<string, string>>,
+  ): BrowserSceneEventLinkBatchSnapshot {
+    const snapshot: BrowserSceneEventLinkBatchSnapshot = {
+      snapshotKind: BROWSER_SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND,
+      eventId,
+      sceneIds: [...sceneIds],
+      linked,
+    };
+    if (linked && sceneIds.length > 0) {
+      snapshot.incarnationTokens = Object.fromEntries(
+        sceneIds.map((sceneId) => [
+          sceneId,
+          incarnationTokens?.[sceneId] ?? "",
+        ]),
+      );
+    }
+    return snapshot;
+  }
+
+  function parseBrowserSceneEventLinkBatchSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserSceneEventLinkBatchSnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `scene event batch journal '${journalId}' is missing a snapshot`,
+      );
+    }
+    const parsed = JSON.parse(
+      raw,
+    ) as Partial<BrowserSceneEventLinkBatchSnapshot>;
+    if (
+      parsed.snapshotKind !== BROWSER_SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND ||
+      typeof parsed.eventId !== "string" ||
+      !Array.isArray(parsed.sceneIds) ||
+      typeof parsed.linked !== "boolean"
+    ) {
+      throw new Error(
+        `scene event batch journal '${journalId}' has an invalid snapshot`,
+      );
+    }
+    const sceneIds = parsed.sceneIds.map((rawSceneId) => {
+      if (typeof rawSceneId !== "string") {
+        throw new Error(
+          `scene event batch journal '${journalId}' has a non-string scene id`,
+        );
+      }
+      return rawSceneId;
+    });
+    if (new Set(sceneIds).size !== sceneIds.length) {
+      throw new Error(
+        `scene event batch journal '${journalId}' has duplicate scene ids`,
+      );
+    }
+    sceneIds.sort();
+    let incarnationTokens: Record<string, string> | undefined;
+    if (parsed.linked) {
+      if (parsed.incarnationTokens === undefined) {
+        incarnationTokens = Object.fromEntries(
+          sceneIds.map((sceneId) => [sceneId, ""]),
+        );
+      } else {
+        if (
+          parsed.incarnationTokens === null ||
+          typeof parsed.incarnationTokens !== "object" ||
+          Array.isArray(parsed.incarnationTokens) ||
+          Object.keys(parsed.incarnationTokens).length !== sceneIds.length
+        ) {
+          throw new Error(
+            `scene event batch journal '${journalId}' has invalid incarnation tokens`,
+          );
+        }
+        incarnationTokens = Object.fromEntries(
+          sceneIds.map((sceneId) => {
+            const token = parsed.incarnationTokens?.[sceneId];
+            if (typeof token !== "string") {
+              throw new Error(
+                `scene event batch journal '${journalId}' is missing an incarnation token`,
+              );
+            }
+            return [sceneId, token];
+          }),
+        );
+      }
+    } else if (
+      parsed.incarnationTokens !== undefined &&
+      (parsed.incarnationTokens === null ||
+        typeof parsed.incarnationTokens !== "object" ||
+        Array.isArray(parsed.incarnationTokens) ||
+        Object.keys(parsed.incarnationTokens).length > 0)
+    ) {
+      throw new Error(
+        `scene event batch journal '${journalId}' has tokens for an unlinked snapshot`,
+      );
+    }
+    return {
+      snapshotKind: BROWSER_SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND,
+      eventId: parsed.eventId,
+      sceneIds,
+      linked: parsed.linked,
+      ...(incarnationTokens ? { incarnationTokens } : {}),
+    };
+  }
+
+  function validateBrowserSceneEventLinkBatchScope(
+    projectId: string,
+    snapshot: BrowserSceneEventLinkBatchSnapshot,
+  ): void {
+    const event = queryOne(
+      "SELECT 1 AS owned FROM events WHERE id = ? AND project_id = ?",
+      [snapshot.eventId, projectId],
+    );
+    if (!event) {
+      throw new Error(
+        `event '${snapshot.eventId}' not found in project '${projectId}' during scene-link replay`,
+      );
+    }
+    for (const sceneId of snapshot.sceneIds) {
+      const scene = queryOne(
+        `SELECT 1 AS owned FROM tree_nodes
+          WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+        [sceneId, projectId],
+      );
+      if (!scene) {
+        throw new Error(
+          `scene '${sceneId}' not found in project '${projectId}'`,
+        );
+      }
+    }
+  }
+
+  function validateBrowserSceneEventLinkBatchSource(
+    snapshot: BrowserSceneEventLinkBatchSnapshot,
+  ): void {
+    const current = collectBrowserSceneEventLinkBatchState(
+      snapshot.eventId,
+      snapshot.sceneIds,
+    );
+    for (const link of current.sceneLinks) {
+      const valid = snapshot.linked
+        ? link.linked &&
+          link.incarnationToken === snapshot.incarnationTokens?.[link.sceneId]
+        : !link.linked;
+      if (!valid) {
+        throw new Error(
+          `scene-event association '${link.sceneId}' incarnation conflict during journal replay`,
+        );
+      }
+    }
+  }
+
+  function rewriteBrowserSceneEventSnapshotIncarnation(
+    raw: SqlValue,
+    eventId: string,
+    sceneId: string,
+    previousToken: string,
+    replayToken: string,
+  ): string | null {
+    if (typeof raw !== "string") return null;
+    const parsed = JSON.parse(
+      raw,
+    ) as Partial<BrowserSceneEventLinkBatchSnapshot>;
+    if (
+      parsed.snapshotKind !== BROWSER_SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND ||
+      parsed.eventId !== eventId ||
+      parsed.linked !== true ||
+      !Array.isArray(parsed.sceneIds) ||
+      !parsed.sceneIds.includes(sceneId) ||
+      parsed.incarnationTokens?.[sceneId] !== previousToken
+    ) {
+      return null;
+    }
+    parsed.incarnationTokens = {
+      ...parsed.incarnationTokens,
+      [sceneId]: replayToken,
+    };
+    return JSON.stringify(parsed);
+  }
+
+  function rewriteBrowserSceneEventJournalIncarnationChain(
+    projectId: string,
+    eventId: string,
+    excludedJournalId: string,
+    sceneId: string,
+    previousToken: string,
+    replayToken: string,
+  ): void {
+    if (previousToken === "") return;
+    const journals = queryAll(
+      `SELECT id, before_json, after_json FROM undo_journal
+        WHERE project_id = ? AND entity_kind = 'event' AND entity_id = ?
+          AND op_kind = 'update' AND id <> ?`,
+      [projectId, eventId, excludedJournalId],
+    );
+    for (const journal of journals) {
+      const before = rewriteBrowserSceneEventSnapshotIncarnation(
+        journal.before_json,
+        eventId,
+        sceneId,
+        previousToken,
+        replayToken,
+      );
+      const after = rewriteBrowserSceneEventSnapshotIncarnation(
+        journal.after_json,
+        eventId,
+        sceneId,
+        previousToken,
+        replayToken,
+      );
+      if (before !== null || after !== null) {
+        db.run(
+          `UPDATE undo_journal SET before_json = ?, after_json = ?
+            WHERE id = ? AND project_id = ?`,
+          [
+            before ?? journal.before_json,
+            after ?? journal.after_json,
+            journal.id,
+            projectId,
+          ],
+        );
+      }
+    }
+  }
+
+  function replayBrowserSceneEventLinkBatchSnapshot(
+    projectId: string,
+    journalId: string,
+    direction: "undo" | "redo",
+    beforeRaw: SqlValue,
+    afterRaw: SqlValue,
+  ): void {
+    const source = parseBrowserSceneEventLinkBatchSnapshot(
+      direction === "undo" ? afterRaw : beforeRaw,
+      journalId,
+    );
+    const target = parseBrowserSceneEventLinkBatchSnapshot(
+      direction === "undo" ? beforeRaw : afterRaw,
+      journalId,
+    );
+    if (
+      source.eventId !== target.eventId ||
+      JSON.stringify(source.sceneIds) !== JSON.stringify(target.sceneIds)
+    ) {
+      throw new Error(
+        `scene event batch journal '${journalId}' has mismatched association identity`,
+      );
+    }
+    if (
+      source.linked === target.linked &&
+      source.linked &&
+      JSON.stringify(source.incarnationTokens) !==
+        JSON.stringify(target.incarnationTokens)
+    ) {
+      throw new Error(
+        `scene event batch journal '${journalId}' has mismatched no-op incarnations`,
+      );
+    }
+    validateBrowserSceneEventLinkBatchScope(projectId, source);
+    validateBrowserSceneEventLinkBatchSource(source);
+
+    if (source.linked && !target.linked) {
+      for (const sceneId of source.sceneIds) {
+        db.run(
+          `DELETE FROM scene_events
+            WHERE scene_id = ? AND event_id = ? AND incarnation_token = ?`,
+          [sceneId, source.eventId, source.incarnationTokens?.[sceneId] ?? ""],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `scene-event association '${sceneId}' incarnation conflict during journal replay`,
+          );
+        }
+      }
+    } else if (!source.linked && target.linked) {
+      const freshTokens: Record<string, string> = {};
+      for (const sceneId of target.sceneIds) {
+        const token = crypto.randomUUID();
+        db.run(
+          `INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+           VALUES (?, ?, ?)`,
+          [sceneId, target.eventId, token],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `scene-event association '${sceneId}' changed before insertion`,
+          );
+        }
+        freshTokens[sceneId] = token;
+      }
+      const updatedTarget: BrowserSceneEventLinkBatchSnapshot = {
+        ...target,
+        ...(target.sceneIds.length > 0
+          ? { incarnationTokens: freshTokens }
+          : {}),
+      };
+      db.run(
+        `UPDATE undo_journal SET ${
+          direction === "undo" ? "before_json" : "after_json"
+        } = ? WHERE id = ? AND project_id = ?`,
+        [JSON.stringify(updatedTarget), journalId, projectId],
+      );
+      if (db.getRowsModified() !== 1) {
+        throw new Error(
+          `scene event batch journal '${journalId}' disappeared during replay`,
+        );
+      }
+      for (const sceneId of target.sceneIds) {
+        rewriteBrowserSceneEventJournalIncarnationChain(
+          projectId,
+          target.eventId,
+          journalId,
+          sceneId,
+          target.incarnationTokens?.[sceneId] ?? "",
+          freshTokens[sceneId],
+        );
+      }
+    }
+  }
+
+  async function handleAgentSceneEventLinkBatch(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "agent_scene_event_link_batch";
+    const p = browserCommandPayload(command, args);
+    const requestId = requiredBrowserString(command, p, "requestId");
+    const projectId = requiredBrowserString(command, p, "projectId");
+    const sessionId = requiredBrowserString(command, p, "sessionId");
+    const eventId = requiredBrowserString(command, p, "eventId");
+    if (!Array.isArray(p.sceneIds) || p.sceneIds.length === 0) {
+      throw new Error(
+        "agent scene event link batch sceneIds must not be empty",
+      );
+    }
+    if (p.sceneIds.length > MAX_BROWSER_SCENE_EVENT_LINK_BATCH_SIZE) {
+      throw new Error(
+        `agent scene event link batch sceneIds must contain at most ${MAX_BROWSER_SCENE_EVENT_LINK_BATCH_SIZE} ids`,
+      );
+    }
+    p.sceneIds.forEach((sceneId, index) => {
+      if (typeof sceneId !== "string" || sceneId.length === 0) {
+        throw new Error(
+          `agent scene event link batch sceneIds[${index}] must be a non-empty string`,
+        );
+      }
+    });
+    const sceneIds = [...new Set(p.sceneIds as string[])].sort();
+    if (sceneIds.length > MAX_BROWSER_SCENE_EVENT_LINK_BATCH_SIZE) {
+      throw new Error(
+        `agent scene event link batch deduped sceneIds must contain at most ${MAX_BROWSER_SCENE_EVENT_LINK_BATCH_SIZE} ids`,
+      );
+    }
+    const surface = String(p.surface ?? "in-app-agent");
+
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserPayloadFingerprint(command, {
+        projectId,
+        eventId,
+        sceneIds,
+      });
+      const replayLedger = queryOne(
+        `SELECT payload_hash FROM idempotency_requests
+          WHERE domain = ? AND request_id = ?`,
+        [command, requestId],
+      );
+      if (replayLedger) {
+        if (String(replayLedger.payload_hash) !== requestHash) {
+          throw new Error(
+            "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT: request id reused with different payload",
+          );
+        }
+        const journal = queryOne(
+          `SELECT result_version, change_event_uid, after_json
+             FROM undo_journal
+            WHERE id = ? AND project_id = ? AND entity_kind = 'event'
+              AND entity_id = ? AND op_kind = 'update'`,
+          [requestId, projectId, eventId],
+        );
+        if (!journal) {
+          throw new Error(
+            "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT: original receipt is missing",
+          );
+        }
+        const current = collectBrowserSceneEventLinkBatchState(
+          eventId,
+          sceneIds,
+        );
+        const originalAfter = parseBrowserSceneEventLinkBatchSnapshot(
+          journal.after_json,
+          requestId,
+        );
+        const currentBySceneId = new Map(
+          current.sceneLinks.map((link) => [link.sceneId, link]),
+        );
+        const ownedDeltaMatches = originalAfter.sceneIds.every((sceneId) => {
+          const link = currentBySceneId.get(sceneId);
+          return (
+            link?.linked === true &&
+            link.incarnationToken === originalAfter.incarnationTokens?.[sceneId]
+          );
+        });
+        if (
+          current.sceneLinks.some((link) => !link.linked) ||
+          !ownedDeltaMatches
+        ) {
+          throw new Error(
+            "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT: association state changed after original request",
+          );
+        }
+        return {
+          entityId: eventId,
+          version: Number(journal.result_version),
+          changeEventUid: String(journal.change_event_uid),
+          undoJournalId: requestId,
+        };
+      }
+
+      const capturedRequestedState = collectBrowserSceneEventLinkBatchState(
+        eventId,
+        sceneIds,
+      );
+      const addedSceneIds = capturedRequestedState.sceneLinks
+        .filter((link) => !link.linked)
+        .map((link) => link.sceneId);
+      const eventUid = crypto.randomUUID();
+      const timestamp = Date.now();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "event",
+        opType: "event.stamp",
+        entityType: "event",
+        entityId: eventId,
+        payload: JSON.stringify({
+          eventId,
+          sceneIds: addedSceneIds,
+          requestHash,
+        }),
+        sessionId,
+        timestamp,
+      });
+      const now = new Date(timestamp).toISOString();
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const event = queryOne(
+          "SELECT version FROM events WHERE id = ? AND project_id = ?",
+          [eventId, projectId],
+        );
+        if (!event) {
+          throw new Error(
+            `event '${eventId}' not found in project '${projectId}'`,
+          );
+        }
+        const eventVersion = Number(event.version);
+        for (const sceneId of sceneIds) {
+          if (
+            !queryOne(
+              `SELECT 1 AS owned FROM tree_nodes
+                WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+              [sceneId, projectId],
+            )
+          ) {
+            throw new Error(
+              `scene '${sceneId}' not found in project '${projectId}'`,
+            );
+          }
+        }
+        const currentRequestedState = collectBrowserSceneEventLinkBatchState(
+          eventId,
+          sceneIds,
+        );
+        if (
+          JSON.stringify(currentRequestedState) !==
+          JSON.stringify(capturedRequestedState)
+        ) {
+          throw new Error(
+            "AGENT_SCENE_EVENT_LINK_BATCH_STATE_DRIFT: association state changed while preparing the request",
+          );
+        }
+        const before = browserSceneEventLinkBatchSnapshot(
+          eventId,
+          addedSceneIds,
+          false,
+        );
+        const addedIncarnations: Record<string, string> = {};
+        for (const sceneId of addedSceneIds) {
+          const incarnationToken = crypto.randomUUID();
+          db.run(
+            `INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+             VALUES (?, ?, ?)`,
+            [sceneId, eventId, incarnationToken],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              `scene-event association '${sceneId}' changed before insertion`,
+            );
+          }
+          addedIncarnations[sceneId] = incarnationToken;
+        }
+        const after = browserSceneEventLinkBatchSnapshot(
+          eventId,
+          addedSceneIds,
+          true,
+          addedIncarnations,
+        );
+        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, ?, 'event', ?, 'update', ?, ?, ?, ?, ?, ?)`,
+          [
+            requestId,
+            projectId,
+            surface,
+            eventId,
+            JSON.stringify(before),
+            JSON.stringify(after),
+            eventVersion,
+            eventVersion,
+            eventUid,
+            now,
+          ],
+        );
+        db.run(
+          `INSERT INTO idempotency_requests
+            (domain, request_id, project_id, payload_hash, tombstone_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            command,
+            requestId,
+            projectId,
+            requestHash,
+            JSON.stringify({ id: eventId }),
+            now,
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          entityId: eventId,
+          version: eventVersion,
+          changeEventUid: eventUid,
+          undoJournalId: requestId,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original batch-link failure.
+        }
+        throw error;
+      }
+    });
+  }
+
   function readTimelapseTail(projectId: string): {
     sequence: number;
     hash: string;
@@ -6751,6 +11284,96 @@ export async function createBrowserMock(
       sequence: Number(row.sequence),
       hash: String(row.hash),
     };
+  }
+
+  interface PreparedBrowserTrackedChangeEvent {
+    eventUid: string;
+    projectId: string;
+    sceneId: string | null;
+    domain: string;
+    opType: string;
+    entityType: string | null;
+    entityId: string | null;
+    payload: string;
+    sessionId: string;
+    sequence: number;
+    timestamp: number;
+    prevHash: string;
+    hash: string;
+    capturedTail: { sequence: number; hash: string };
+  }
+
+  async function prepareBrowserTrackedChangeEvent(input: {
+    eventUid: string;
+    projectId: string;
+    sceneId: string | null;
+    domain: string;
+    opType: string;
+    entityType: string | null;
+    entityId: string | null;
+    payload: string;
+    sessionId: string;
+    timestamp: number;
+  }): Promise<PreparedBrowserTrackedChangeEvent> {
+    const capturedTail = readTimelapseTail(input.projectId);
+    const sequence = capturedTail.sequence + 1;
+    const hash = bytesToHex(
+      await computeEventHash({
+        projectId: input.projectId,
+        sceneId: input.sceneId,
+        domain: input.domain,
+        opType: input.opType,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        payload: input.payload,
+        sessionId: input.sessionId,
+        sequence,
+        timestamp: input.timestamp,
+        prevHash: hexToBytes(capturedTail.hash),
+      }),
+    );
+    return {
+      ...input,
+      sequence,
+      prevHash: capturedTail.hash,
+      hash,
+      capturedTail,
+    };
+  }
+
+  function insertPreparedBrowserTrackedChangeEvent(
+    prepared: PreparedBrowserTrackedChangeEvent,
+  ): void {
+    const currentTail = readTimelapseTail(prepared.projectId);
+    if (
+      currentTail.sequence !== prepared.capturedTail.sequence ||
+      currentTail.hash !== prepared.capturedTail.hash
+    ) {
+      throw new Error(
+        "TIMELAPSE_TAIL_DRIFT: change-event tail changed during hash preparation",
+      );
+    }
+    db.run(
+      `INSERT INTO change_events
+        (event_uid, project_id, scene_id, domain, op_type, entity_type,
+         entity_id, payload, session_id, sequence, timestamp, prev_hash, hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        prepared.eventUid,
+        prepared.projectId,
+        prepared.sceneId,
+        prepared.domain,
+        prepared.opType,
+        prepared.entityType,
+        prepared.entityId,
+        prepared.payload,
+        prepared.sessionId,
+        prepared.sequence,
+        prepared.timestamp,
+        prepared.prevHash,
+        prepared.hash,
+      ],
+    );
   }
 
   function eventUidExists(projectId: string, eventUid: string): boolean {
@@ -7901,6 +12524,31 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "project_delete": {
+        const command = "project_delete";
+        const payload = browserCommandPayload(command, args);
+        const projectId = requiredBrowserString(command, payload, "projectId");
+        db.run("BEGIN IMMEDIATE");
+        try {
+          db.run("DELETE FROM lint_term_dictionary WHERE project_id = ?", [
+            projectId,
+          ]);
+          db.run("DELETE FROM projects WHERE id = ?", [projectId]);
+          if (db.getRowsModified() !== 1) {
+            throw new Error(`project '${projectId}' not found`);
+          }
+          db.run("COMMIT");
+          options.onDatabaseDirty?.();
+        } catch (error) {
+          try {
+            db.run("ROLLBACK");
+          } catch {
+            // Preserve the original project deletion failure.
+          }
+          throw error;
+        }
+        return undefined as T;
+      }
       case "agent_codex_create":
         return handleAgentCodexCreate(args) as T;
       case "agent_codex_update":
@@ -7909,6 +12557,14 @@ export async function createBrowserMock(
         return handleAgentCodexDelete(args) as T;
       case "agent_codex_mutate":
         return handleAgentCodexMutate(args) as T;
+      case "agent_foreshadow_create":
+        return (await handleAgentForeshadowCreate(args)) as T;
+      case "agent_foreshadow_update":
+        return (await handleAgentForeshadowUpdate(args)) as T;
+      case "agent_scene_event_link_batch":
+        return (await handleAgentSceneEventLinkBatch(args)) as T;
+      case "agent_apply_undo_journal":
+        return handleBrowserApplyUndoJournal(args) as T;
       case "editor_sticky_list":
         return listBrowserEditorStickies(args) as T;
       case "editor_sticky_create":
@@ -7977,46 +12633,116 @@ export async function createBrowserMock(
         handleTreePlanUndo(args);
         return undefined as T;
       case "tree_node_create": {
-        const payload = args.payload as Record<string, unknown>;
+        const command = "tree_node_create";
+        const payload = browserCommandPayload(command, args);
         const now = new Date().toISOString();
-        db.run(
-          `INSERT INTO tree_nodes
-            (id, project_id, parent_id, node_type, title, synopsis, status,
-             source_uri, source_mtime, content, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            payload.id as string,
-            payload.projectId as string,
-            (payload.parentId as string | null | undefined) ?? null,
-            payload.nodeType as string,
-            payload.title as string,
-            (payload.synopsis as string | null | undefined) ?? null,
-            (payload.status as string | null | undefined) ?? null,
-            (payload.sourceUri as string | null | undefined) ?? null,
-            (payload.sourceMtime as string | null | undefined) ?? null,
-            (payload.content as string | null | undefined) ?? "{}",
-            now,
-            now,
-          ],
+        const id = requiredBrowserString(command, payload, "id");
+        const projectId = requiredBrowserString(command, payload, "projectId");
+        const nodeType = requiredBrowserString(command, payload, "nodeType");
+        const title = requiredBrowserString(command, payload, "title");
+        const sortOrder = requiredBrowserString(command, payload, "sortOrder");
+        if (!["folder", "scene", "note"].includes(nodeType)) {
+          throw new Error(`${command}: invalid nodeType '${nodeType}'`);
+        }
+        const parentId = nullableBrowserString(command, payload, "parentId");
+        const synopsis = nullableBrowserString(command, payload, "synopsis");
+        const status = nullableBrowserString(command, payload, "status");
+        const sourceUri = nullableBrowserString(command, payload, "sourceUri");
+        const sourceMtime = nullableBrowserString(
+          command,
+          payload,
+          "sourceMtime",
         );
-        options.onDatabaseDirty?.();
-        return browserTreeNodeRow(
-          payload.id as string,
-          payload.projectId as string,
-        ) as T;
+        const content = nullableBrowserString(command, payload, "content");
+        db.run("BEGIN IMMEDIATE");
+        try {
+          if (
+            parentId !== null &&
+            !queryOne(
+              `SELECT 1 AS owned FROM tree_nodes
+                WHERE id = ? AND project_id = ? AND node_type = 'folder'`,
+              [parentId, projectId],
+            )
+          ) {
+            throw new Error(
+              `tree node parent '${parentId}' is not a folder in project '${projectId}'`,
+            );
+          }
+          db.run(
+            `INSERT INTO tree_nodes
+              (id, project_id, parent_id, node_type, title, sort_order, synopsis,
+               status, source_uri, source_mtime, content, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              projectId,
+              parentId,
+              nodeType,
+              title,
+              sortOrder,
+              synopsis,
+              status,
+              sourceUri,
+              sourceMtime,
+              content ?? "{}",
+              now,
+              now,
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(`tree node '${id}' was not created`);
+          }
+          const row = browserTreeNodeRow(id, projectId);
+          if (!row) throw new Error("tree node not found after create");
+          db.run("COMMIT");
+          options.onDatabaseDirty?.();
+          return row as T;
+        } catch (error) {
+          try {
+            db.run("ROLLBACK");
+          } catch {
+            // Preserve the tree create failure.
+          }
+          throw error;
+        }
       }
       case "tree_node_delete": {
-        const payload = args.payload as Record<string, unknown>;
+        const command = "tree_node_delete";
+        const payload = browserCommandPayload(command, args);
         db.run("DELETE FROM tree_nodes WHERE id = ? AND project_id = ?", [
-          payload.nodeId as string,
-          payload.projectId as string,
+          requiredBrowserString(command, payload, "nodeId"),
+          requiredBrowserString(command, payload, "projectId"),
         ]);
-        options.onDatabaseDirty?.();
+        if (db.getRowsModified() > 0) options.onDatabaseDirty?.();
         return undefined as T;
       }
       case "tree_node_patch": {
-        const payload = args.payload as Record<string, unknown>;
-        const patch = (payload.patch ?? {}) as Record<string, unknown>;
+        const command = "tree_node_patch";
+        const payload = browserCommandPayload(command, args);
+        const projectId = requiredBrowserString(command, payload, "projectId");
+        const nodeId = requiredBrowserString(command, payload, "nodeId");
+        const updatedAt = requiredBrowserString(command, payload, "updatedAt");
+        if (typeof payload.bumpVersion !== "boolean") {
+          throw new Error(`${command}: bumpVersion must be a boolean`);
+        }
+        if (
+          Object.hasOwn(payload, "baseVersion") &&
+          (typeof payload.baseVersion !== "number" ||
+            !Number.isSafeInteger(payload.baseVersion) ||
+            payload.baseVersion < 0)
+        ) {
+          throw new Error(
+            `${command}: baseVersion must be a non-negative integer`,
+          );
+        }
+        if (
+          payload.patch === null ||
+          typeof payload.patch !== "object" ||
+          Array.isArray(payload.patch)
+        ) {
+          throw new Error(`${command}: patch must be an object`);
+        }
+        const patch = payload.patch as Record<string, unknown>;
         const columnMap: Record<string, string> = {
           parentId: "parent_id",
           title: "title",
@@ -8047,40 +12773,137 @@ export async function createBrowserMock(
           aliases: "aliases",
           excludedAliases: "excluded_aliases",
         };
-        const assignments: string[] = [];
-        const params: SqlValue[] = [];
-        for (const [key, value] of Object.entries(patch)) {
-          const column = columnMap[key];
-          if (!column)
-            throw new Error(`unsupported tree node patch field: ${key}`);
-          assignments.push(`${column} = ?`);
-          params.push((value ?? null) as SqlValue);
+        db.run("BEGIN IMMEDIATE");
+        try {
+          const parentId = Object.hasOwn(patch, "parentId")
+            ? nullableBrowserString(command, patch, "parentId")
+            : null;
+          if (parentId !== null && parentId === nodeId) {
+            throw new Error("tree node cannot be its own parent");
+          }
+          if (
+            Object.hasOwn(patch, "parentId") &&
+            parentId !== null &&
+            !queryOne(
+              `SELECT 1 AS owned FROM tree_nodes
+                WHERE id = ? AND project_id = ? AND node_type = 'folder'`,
+              [parentId, projectId],
+            )
+          ) {
+            throw new Error(
+              `tree node parent '${parentId}' is not a folder in project '${projectId}'`,
+            );
+          }
+          if (
+            Object.hasOwn(patch, "parentId") &&
+            parentId !== null &&
+            queryOne(
+              `WITH RECURSIVE ancestors(id, parent_id) AS (
+                 SELECT id, parent_id FROM tree_nodes
+                  WHERE id = ? AND project_id = ?
+                 UNION
+                 SELECT parent.id, parent.parent_id
+                   FROM tree_nodes parent
+                   JOIN ancestors child ON parent.id = child.parent_id
+                  WHERE parent.project_id = ?
+               )
+               SELECT 1 AS cycle FROM ancestors WHERE id = ? LIMIT 1`,
+              [parentId, projectId, projectId, nodeId],
+            )
+          ) {
+            throw new Error("tree node parent would create a descendant cycle");
+          }
+          for (const [patchKey, label] of [
+            ["povCharacterId", "POV character"],
+            ["locationId", "location"],
+          ] as const) {
+            if (!Object.hasOwn(patch, patchKey) || patch[patchKey] == null) {
+              continue;
+            }
+            const codexId = patch[patchKey];
+            if (
+              typeof codexId !== "string" ||
+              !queryOne(
+                "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+                [codexId, projectId],
+              )
+            ) {
+              throw new Error(
+                `tree node ${label} '${String(codexId)}' is not in project '${projectId}'`,
+              );
+            }
+          }
+          const assignments: string[] = [];
+          const params: SqlValue[] = [];
+          const integerFields = new Set([
+            "chronicleStartTime",
+            "chronicleStartMinute",
+            "chronicleEndTime",
+            "chronicleEndMinute",
+            "charCount",
+          ]);
+          for (const [key, value] of Object.entries(patch)) {
+            const column = columnMap[key];
+            if (!column)
+              throw new Error(`unsupported tree node patch field: ${key}`);
+            if (
+              integerFields.has(key) &&
+              value !== null &&
+              (typeof value !== "number" || !Number.isSafeInteger(value))
+            ) {
+              throw new Error(`${command}: ${key} must be an integer or null`);
+            }
+            if (
+              !integerFields.has(key) &&
+              value !== null &&
+              typeof value !== "string"
+            ) {
+              throw new Error(`${command}: ${key} must be a string or null`);
+            }
+            assignments.push(`${column} = ?`);
+            params.push((value ?? null) as SqlValue);
+          }
+          assignments.push("updated_at = ?");
+          params.push(updatedAt);
+          if (payload.bumpVersion) assignments.push("version = version + 1");
+          params.push(nodeId, projectId);
+          let sql = `UPDATE tree_nodes SET ${assignments.join(", ")}
+            WHERE id = ? AND project_id = ?`;
+          if (Object.hasOwn(payload, "baseVersion")) {
+            sql += " AND version = ?";
+            params.push(payload.baseVersion as number);
+          }
+          db.run(sql, params);
+          if (db.getRowsModified() !== 1) {
+            if (Object.hasOwn(payload, "baseVersion")) {
+              throw new Error(
+                `TREE_NODE_VERSION_MISMATCH: node '${nodeId}' version conflict; expected base version ${String(payload.baseVersion)}`,
+              );
+            }
+            throw new Error(
+              `tree node '${nodeId}' not found in project '${projectId}'`,
+            );
+          }
+          const row = browserTreeNodeRow(nodeId, projectId);
+          if (!row) throw new Error("tree node not found");
+          if (
+            Object.hasOwn(payload, "baseVersion") &&
+            row.version !==
+              (payload.baseVersion as number) + (payload.bumpVersion ? 1 : 0)
+          ) {
+            throw new Error("TREE_NODE_VERSION_MISMATCH");
+          }
+          db.run("COMMIT");
+          options.onDatabaseDirty?.();
+          return row as T;
+        } catch (error) {
+          try {
+            db.run("ROLLBACK");
+          } catch {
+            // Preserve the tree patch failure.
+          }
+          throw error;
         }
-        assignments.push("updated_at = ?");
-        params.push(new Date().toISOString());
-        if (payload.bumpVersion) assignments.push("version = version + 1");
-        params.push(payload.nodeId as string, payload.projectId as string);
-        let sql = `UPDATE tree_nodes SET ${assignments.join(", ")}
-          WHERE id = ? AND project_id = ?`;
-        if (typeof payload.baseVersion === "number") {
-          sql += " AND version = ?";
-          params.push(payload.baseVersion as number);
-        }
-        db.run(sql, params);
-        options.onDatabaseDirty?.();
-        const row = browserTreeNodeRow(
-          payload.nodeId as string,
-          payload.projectId as string,
-        );
-        if (!row) throw new Error("tree node not found");
-        if (
-          typeof payload.baseVersion === "number" &&
-          row.version !==
-            (payload.baseVersion as number) + (payload.bumpVersion ? 1 : 0)
-        ) {
-          throw new Error("TREE_NODE_VERSION_MISMATCH");
-        }
-        return row as T;
       }
       case "temporal_scene_patch": {
         const payload = args.payload as Record<string, unknown>;
@@ -8135,10 +12958,25 @@ export async function createBrowserMock(
         return undefined as T;
       case "plot_thread_create":
         return (await handlePlotThreadCreate(args)) as T;
+      case "plot_thread_update":
+        return handlePlotThreadUpdate(args) as T;
+      case "plot_thread_delete":
+        handlePlotThreadDelete(args);
+        return undefined as T;
       case "plot_thread_link_create":
         return (await handlePlotThreadLinkCreate(args)) as T;
+      case "plot_thread_link_update":
+        return handlePlotThreadLinkUpdate(args) as T;
+      case "plot_thread_link_delete":
+        handlePlotThreadLinkDelete(args);
+        return undefined as T;
       case "plot_thread_branch_create":
         return (await handlePlotThreadBranchCreate(args)) as T;
+      case "plot_thread_branch_update":
+        return handlePlotThreadBranchUpdate(args) as T;
+      case "plot_thread_branch_delete":
+        handlePlotThreadBranchDelete(args);
+        return undefined as T;
       case "plot_thread_move_marker_bundle":
         return (await handlePlotThreadMoveMarkerBundle(args)) as T;
       case "plot_thread_restore_snapshot":
@@ -8147,6 +12985,28 @@ export async function createBrowserMock(
         return (await handlePlotThreadDeleteSnapshot(args)) as T;
       case "foreshadow_create":
         return (await handleForeshadowCreate(args)) as T;
+      case "foreshadow_update":
+        return handleForeshadowUpdate(args) as T;
+      case "foreshadow_delete":
+        return (await handleForeshadowDelete(args)) as T;
+      case "foreshadow_get_setup":
+        return handleForeshadowGetSetup(args) as T;
+      case "foreshadow_update_setup":
+        return handleForeshadowUpdateSetup(args) as T;
+      case "foreshadow_setup_create_ai":
+        return handleForeshadowSetupCreateAi(args) as T;
+      case "foreshadow_resolve_orphan":
+        return handleForeshadowResolveOrphan(args) as T;
+      case "foreshadow_link_codex":
+        return handleForeshadowLinkCodex(args, true) as T;
+      case "foreshadow_unlink_codex":
+        return handleForeshadowLinkCodex(args, false) as T;
+      case "foreshadow_mark_linked_codex_dirty":
+        return handleForeshadowMarkLinkedCodexDirty(args) as T;
+      case "foreshadow_set_setup_strength":
+        return handleForeshadowSetSetupStrength(args) as T;
+      case "foreshadow_save_anchors_for_scene":
+        return handleForeshadowSaveAnchorsForScene(args) as T;
       case "vacuum_database":
         db.run("VACUUM");
         options.onDatabaseDirty?.();
@@ -8790,10 +13650,11 @@ async function seedScreenshotWorkspace(
       ('shot-event-awakening', 'codex-akahimo', 'source')`,
   );
   db.run(
-    `INSERT OR IGNORE INTO scene_events (scene_id, event_id)
+    `INSERT OR IGNORE INTO scene_events (scene_id, event_id, incarnation_token)
      VALUES
-      ('scene-1', 'shot-event-return'),
-      ('scene-2', 'shot-event-awakening')`,
+      ('scene-1', 'shot-event-return', ?),
+      ('scene-2', 'shot-event-awakening', ?)`,
+    [crypto.randomUUID(), crypto.randomUUID()],
   );
   db.run(
     `INSERT OR IGNORE INTO event_relations
@@ -8931,27 +13792,29 @@ async function seedScreenshotWorkspace(
     `INSERT OR IGNORE INTO foreshadow_setups
       (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
        ai_strength, ai_reasoning, attribution, ai_rationale,
-       last_evaluated_at, is_orphan, created_at, updated_at)
+       last_evaluated_at, is_orphan, semantic_key, created_at, updated_at)
      VALUES
       ('setup-akahimo-warmth', 'fs-akahimo-warmth', 'scene-1', ?, ?,
        'designated_existing', 'moderate', 'moderate',
        ?, 'human',
-       NULL, ?, 0, ?, ?),
+       NULL, ?, 0, ?, ?, ?),
       ('setup-haisha-lock', 'fs-haisha-visitor', 'scene-1', ?, ?,
        'designated_existing', 'subtle', 'subtle',
        ?, 'human',
-       NULL, ?, 0, ?, ?)`,
+       NULL, ?, 0, ?, ?, ?)`,
     [
       c.foreshadows.setupWarmth.fromPos,
       c.foreshadows.setupWarmth.toPos,
       c.foreshadows.setupWarmth.aiReasoning,
       Date.now(),
+      `fs-akahimo-warmth|scene-1|${c.foreshadows.setupWarmth.fromPos}|${c.foreshadows.setupWarmth.toPos}`,
       Date.now(),
       Date.now(),
       c.foreshadows.setupLock.fromPos,
       c.foreshadows.setupLock.toPos,
       c.foreshadows.setupLock.aiReasoning,
       Date.now(),
+      `fs-haisha-visitor|scene-1|${c.foreshadows.setupLock.fromPos}|${c.foreshadows.setupLock.toPos}`,
       Date.now(),
       Date.now(),
     ],

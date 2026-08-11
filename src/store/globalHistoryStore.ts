@@ -194,6 +194,7 @@ interface HistoryState {
   clear: () => void;
   /** Drop history entries targeting an entity after external mutation. */
   invalidateForEntity: (kind: HistoryKind, entityId: string) => void;
+  invalidateKind: (kind: HistoryKind) => void;
   /**
    * Run `fn` collecting every `push` it triggers into ONE composite history
    * entry labelled by `meta`. Undo replays the collected undos in reverse
@@ -421,6 +422,23 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
         ) === true;
       const past = state.past.filter((c) => !matches(c));
       const future = state.future.filter((c) => !matches(c));
+      return {
+        past,
+        future,
+        canUndo: past.length > 0,
+        canRedo: future.length > 0,
+      };
+    });
+  },
+
+  invalidateKind(kind) {
+    set((state) => {
+      const matches = (command: HistoryCommand) =>
+        command.kind === kind ||
+        command.affectedEntities?.some((affected) => affected.kind === kind) ===
+          true;
+      const past = state.past.filter((command) => !matches(command));
+      const future = state.future.filter((command) => !matches(command));
       return {
         past,
         future,

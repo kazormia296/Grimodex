@@ -242,6 +242,68 @@ describe("buildCompositeTimelapsePlan", () => {
     expect(plan.eventCount).toBe(1);
   });
 
+  it.each([
+    ["forward", "event.stamp", undefined],
+    ["undo", "event.unstamp", "undo"],
+    ["redo", "event.stamp", "redo"],
+  ] as const)(
+    "scene mode attributes a batch %s event to every payload scene",
+    async (_phase, opType, direction) => {
+      load.mockResolvedValue([
+        ev({
+          sequence: 1,
+          domain: "event",
+          opType,
+          sceneId: null,
+          entityType: "event",
+          entityId: "event-1",
+          payload: JSON.stringify({
+            eventId: "event-1",
+            sceneIds: ["sceneA", "sceneB"],
+            direction,
+          }),
+        }),
+      ]);
+
+      const plan = await buildCompositeTimelapsePlan({
+        projectId: "p",
+        sceneId: "sceneB",
+        fps: 4,
+        targetDurationSec: 1,
+      });
+      expect(plan.events).toHaveLength(1);
+      expect(plan.events[0].opType).toBe(opType);
+
+      await expect(
+        buildCompositeTimelapsePlan({
+          projectId: "p",
+          sceneId: "unrelated-scene",
+        }),
+      ).rejects.toThrow(/no change events/);
+    },
+  );
+
+  it.each(["null", "[]"])(
+    "scene mode ignores non-object batch payload %s without throwing",
+    async (payload) => {
+      load.mockResolvedValue([
+        ev({
+          sequence: 1,
+          domain: "event",
+          opType: "event.stamp",
+          sceneId: null,
+          entityType: "event",
+          entityId: "event-1",
+          payload,
+        }),
+      ]);
+
+      await expect(
+        buildCompositeTimelapsePlan({ projectId: "p", sceneId: "sceneB" }),
+      ).rejects.toThrow(/no change events/);
+    },
+  );
+
   it("suppresses codex entry.update when doc.step was in an earlier frame", async () => {
     load.mockResolvedValue([
       ev({

@@ -7,10 +7,13 @@ use uuid::Uuid;
 
 use super::codex_undo::{
     delete_codex_relation_checked, ensure_patch_pre_redo_matches_before,
-    reapply_codex_entry_create_snapshot, reapply_codex_relation_snapshot, restore_codex_entry_patch,
-    undo_created_codex_entry,
+    reapply_codex_entry_create_snapshot, reapply_codex_relation_snapshot,
+    restore_codex_entry_patch, undo_created_codex_entry,
 };
+use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
 use super::detail_operations::collect_detail_value_snapshot;
+use super::foreshadow_operations::collect_aggregate_snapshot;
+use super::models::UndoCommitPayload;
 use super::phase_operations::collect_phase_snapshot;
 use super::phase_undo::{
     reapply_detail_value_create_snapshot, reapply_phase_create_snapshot,
@@ -18,21 +21,19 @@ use super::phase_undo::{
     restore_semantic_binding_patch, undo_created_detail_value, undo_created_phase,
     undo_created_semantic_binding,
 };
-use super::semantic_bindings::collect_semantic_binding_snapshot;
 use super::plot_thread_undo::{
     reapply_plot_branch_create_snapshot, reapply_plot_marker_create_snapshot,
     reapply_plot_thread_create_snapshot, restore_plot_thread_patch, undo_created_plot_branch,
     undo_created_plot_marker, undo_created_plot_thread,
 };
+use super::semantic_bindings::collect_semantic_binding_snapshot;
+use super::task_leases::with_immediate_transaction;
 use super::temporal_undo::{
     reapply_constraint_create_snapshot, reapply_node_ensure_snapshot,
-    reapply_projection_create_snapshot, restore_event_chronicle_patch,
-    restore_projection_patch, restore_scene_chronicle_patch, restore_scene_story_order_patch,
-    undo_created_constraint, undo_created_node, undo_created_projection,
+    reapply_projection_create_snapshot, restore_event_chronicle_patch, restore_projection_patch,
+    restore_scene_chronicle_patch, restore_scene_story_order_patch, undo_created_constraint,
+    undo_created_node, undo_created_projection,
 };
-use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
-use super::models::UndoCommitPayload;
-use super::task_leases::with_immediate_transaction;
 use crate::agent_writes::{
     apply_event_snapshot, collect_codex_entry_snapshot, collect_event_snapshot,
     delete_event_cascade,
@@ -136,6 +137,23 @@ fn mutate_commit(
                                 // Keep `snapshot` as the post-apply (redo) target.
                                 // Refresh beforeSnapshot to the restored live state so a
                                 // subsequent redo preflight compares against current OCC.
+                                obj.insert("beforeSnapshot".to_string(), live);
+                            }
+                        } else if kind == "foreshadow" && op_kind == "patch" {
+                            let live =
+                                collect_aggregate_snapshot(conn, &payload.project_id, id)?;
+                            let live_version = live
+                                .get("version")
+                                .and_then(Value::as_i64)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "foreshadow aggregate snapshot missing version after undo"
+                                    )
+                                })?;
+                            if let Some(obj) = row.as_object_mut() {
+                                obj.insert("version".to_string(), Value::from(live_version));
+                                // Keep `snapshot` as the post-apply target. The live
+                                // aggregate is the OCC baseline for the next redo.
                                 obj.insert("beforeSnapshot".to_string(), live);
                             }
                         }
@@ -675,6 +693,45 @@ fn mutate_commit(
                                     reapply_plot_branch_create_snapshot(conn, &snapshot, &now)?;
                                 (replay_version, snapshot.clone())
                             }
+                            "foreshadow" => {
+                                let op_kind = entity
+                                    .get("opKind")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("create");
+                                let previous_version = entity
+                                    .get("version")
+                                    .and_then(Value::as_i64)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "journal foreshadow missing replay version"
+                                        )
+                                    })?;
+                                let replay_version = if op_kind == "patch" {
+                                    super::foreshadow_undo::restore_patch(
+                                        conn,
+                                        &payload.project_id,
+                                        entity_id,
+                                        &snapshot,
+                                        previous_version,
+                                        &now,
+                                    )?
+                                } else {
+                                    super::foreshadow_undo::reapply_created_snapshot(
+                                        conn,
+                                        &payload.project_id,
+                                        entity_id,
+                                        &snapshot,
+                                        previous_version,
+                                        &now,
+                                    )?
+                                };
+                                let live_snapshot = collect_aggregate_snapshot(
+                                    conn,
+                                    &payload.project_id,
+                                    entity_id,
+                                )?;
+                                (replay_version, live_snapshot)
+                            }
                             other => anyhow::bail!("unsupported journal entity kind '{other}'"),
                         };
 
@@ -740,7 +797,9 @@ fn preflight_undo_entity(
             let current = collect_event_snapshot(conn, entity_id)?;
             if normalize_snapshot_for_compare(&current) != normalize_snapshot_for_compare(&expected)
             {
-                anyhow::bail!("NEX_COMMIT_EVENT_EDITED: event '{entity_id}' was modified after commit");
+                anyhow::bail!(
+                    "NEX_COMMIT_EVENT_EDITED: event '{entity_id}' was modified after commit"
+                );
             }
         }
         "codex_entry" => {
@@ -783,7 +842,8 @@ fn preflight_undo_entity(
                 .get("snapshot")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
-            let current = super::codex_operations::collect_codex_relation_snapshot(conn, entity_id)?;
+            let current =
+                super::codex_operations::collect_codex_relation_snapshot(conn, entity_id)?;
             if current.get("version") != expected.get("version")
                 || current.get("semanticKey") != expected.get("semanticKey")
             {
@@ -793,10 +853,7 @@ fn preflight_undo_entity(
             }
         }
         "codex_detail_value" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(1);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(1);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM codex_detail_values WHERE id = ?1",
                 params![entity_id],
@@ -809,10 +866,7 @@ fn preflight_undo_entity(
             }
         }
         "codex_phase" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM codex_entry_phases WHERE id = ?1",
                 params![entity_id],
@@ -833,10 +887,7 @@ fn preflight_undo_entity(
             }
         }
         "codex_semantic_binding" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM codex_detail_semantic_bindings WHERE id = ?1",
                 params![entity_id],
@@ -857,10 +908,7 @@ fn preflight_undo_entity(
                 // Node pre-existed before this commit; nothing to preflight.
                 return Ok(());
             }
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM narrative_temporal_nodes WHERE id = ?1",
                 params![entity_id],
@@ -873,10 +921,7 @@ fn preflight_undo_entity(
             }
         }
         "temporal_constraint" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM narrative_temporal_constraints WHERE id = ?1",
                 params![entity_id],
@@ -889,10 +934,7 @@ fn preflight_undo_entity(
             }
         }
         "temporal_scene_chronicle" | "temporal_scene_story_order" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM tree_nodes WHERE id = ?1",
                 params![entity_id],
@@ -905,10 +947,7 @@ fn preflight_undo_entity(
             }
         }
         "temporal_event_chronicle" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM events WHERE id = ?1",
                 params![entity_id],
@@ -921,10 +960,7 @@ fn preflight_undo_entity(
             }
         }
         "temporal_projection" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM narrative_temporal_projections WHERE id = ?1",
                 params![entity_id],
@@ -937,10 +973,7 @@ fn preflight_undo_entity(
             }
         }
         "plot_thread" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let live_version: i64 = conn.query_row(
                 "SELECT version FROM plot_threads WHERE id = ?1 AND project_id = ?2",
                 params![entity_id, project_id],
@@ -974,7 +1007,10 @@ fn preflight_undo_entity(
             let current =
                 super::plot_thread_operations::collect_plot_marker_snapshot(conn, entity_id)?;
             if current.get("version") != expected.get("version")
-                || current.get("semanticKey").and_then(Value::as_str).unwrap_or("")
+                || current
+                    .get("semanticKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
                     != expected_semantic_key
             {
                 anyhow::bail!(
@@ -995,7 +1031,10 @@ fn preflight_undo_entity(
             let current =
                 super::plot_thread_operations::collect_plot_branch_snapshot(conn, entity_id)?;
             if current.get("version") != expected.get("version")
-                || current.get("semanticKey").and_then(Value::as_str).unwrap_or("")
+                || current
+                    .get("semanticKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
                     != expected_semantic_key
             {
                 anyhow::bail!(
@@ -1004,8 +1043,20 @@ fn preflight_undo_entity(
             }
         }
         "foreshadow" => {
-            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
-            super::foreshadow_undo::ensure_unchanged(conn, project_id, entity_id, expected_version)?;
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| anyhow::anyhow!("journal foreshadow missing version"))?;
+            let expected = entity
+                .get("snapshot")
+                .ok_or_else(|| anyhow::anyhow!("journal foreshadow missing snapshot"))?;
+            super::foreshadow_undo::ensure_matches_snapshot(
+                conn,
+                project_id,
+                entity_id,
+                expected,
+                expected_version,
+            )?;
         }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),
     }
@@ -1066,6 +1117,35 @@ fn preflight_redo_entity(
                 exists == 0,
                 "NEX_COMMIT_RELATION_EDITED: relation '{entity_id}' still exists before redo"
             );
+        }
+        "foreshadow" => {
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            if op_kind == "patch" {
+                let expected_version = entity
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| anyhow::anyhow!("journal foreshadow missing version"))?;
+                let before = entity.get("beforeSnapshot").ok_or_else(|| {
+                    anyhow::anyhow!("foreshadow patch journal missing beforeSnapshot")
+                })?;
+                super::foreshadow_undo::ensure_matches_snapshot(
+                    conn,
+                    project_id,
+                    entity_id,
+                    before,
+                    expected_version,
+                )?;
+            } else {
+                let snapshot = entity
+                    .get("snapshot")
+                    .ok_or_else(|| anyhow::anyhow!("journal foreshadow missing snapshot"))?;
+                super::foreshadow_undo::ensure_absent_for_redo(
+                    conn, project_id, entity_id, snapshot,
+                )?;
+            }
         }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),
     }
@@ -1132,26 +1212,14 @@ fn undo_one_entity(
                 .and_then(Value::as_str)
                 .unwrap_or("create");
             if op_kind == "patch" {
-                let before = entity
-                    .get("beforeSnapshot")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("detail patch journal missing beforeSnapshot"))?;
-                let expected_after_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(1);
-                restore_detail_value_patch(
-                    conn,
-                    entity_id,
-                    &before,
-                    expected_after_version,
-                    now,
-                )?;
+                let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                    anyhow::anyhow!("detail patch journal missing beforeSnapshot")
+                })?;
+                let expected_after_version =
+                    entity.get("version").and_then(Value::as_i64).unwrap_or(1);
+                restore_detail_value_patch(conn, entity_id, &before, expected_after_version, now)?;
             } else {
-                let expected_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(1);
+                let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(1);
                 undo_created_detail_value(conn, entity_id, expected_version)?;
             }
         }
@@ -1165,22 +1233,11 @@ fn undo_one_entity(
                     .get("beforeSnapshot")
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("phase patch journal missing beforeSnapshot"))?;
-                let expected_after_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
-                restore_phase_patch(
-                    conn,
-                    entity_id,
-                    &before,
-                    expected_after_version,
-                    now,
-                )?;
+                let expected_after_version =
+                    entity.get("version").and_then(Value::as_i64).unwrap_or(0);
+                restore_phase_patch(conn, entity_id, &before, expected_after_version, now)?;
             } else {
-                let expected_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
                 undo_created_phase(conn, entity_id, expected_version)?;
             }
         }
@@ -1190,16 +1247,11 @@ fn undo_one_entity(
                 .and_then(Value::as_str)
                 .unwrap_or("create");
             if op_kind == "patch" {
-                let before = entity
-                    .get("beforeSnapshot")
-                    .cloned()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("binding patch journal missing beforeSnapshot")
-                    })?;
-                let expected_after_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                    anyhow::anyhow!("binding patch journal missing beforeSnapshot")
+                })?;
+                let expected_after_version =
+                    entity.get("version").and_then(Value::as_i64).unwrap_or(0);
                 restore_semantic_binding_patch(
                     conn,
                     entity_id,
@@ -1208,10 +1260,7 @@ fn undo_one_entity(
                     now,
                 )?;
             } else {
-                let expected_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
                 undo_created_semantic_binding(conn, entity_id, expected_version)?;
             }
         }
@@ -1221,51 +1270,33 @@ fn undo_one_entity(
                 .and_then(Value::as_str)
                 .unwrap_or("create");
             if op_kind != "ensure-existing" {
-                let expected_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
                 undo_created_node(conn, entity_id, expected_version)?;
             }
         }
         "temporal_constraint" => {
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             undo_created_constraint(conn, entity_id, expected_version)?;
         }
         "temporal_scene_chronicle" => {
-            let before = entity
-                .get("beforeSnapshot")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("scene chronicle patch journal missing beforeSnapshot"))?;
-            let expected_after_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                anyhow::anyhow!("scene chronicle patch journal missing beforeSnapshot")
+            })?;
+            let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             restore_scene_chronicle_patch(conn, entity_id, &before, expected_after_version, now)?;
         }
         "temporal_event_chronicle" => {
-            let before = entity
-                .get("beforeSnapshot")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("event chronicle patch journal missing beforeSnapshot"))?;
-            let expected_after_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                anyhow::anyhow!("event chronicle patch journal missing beforeSnapshot")
+            })?;
+            let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             restore_event_chronicle_patch(conn, entity_id, &before, expected_after_version, now)?;
         }
         "temporal_scene_story_order" => {
-            let before = entity
-                .get("beforeSnapshot")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("scene story-order patch journal missing beforeSnapshot"))?;
-            let expected_after_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                anyhow::anyhow!("scene story-order patch journal missing beforeSnapshot")
+            })?;
+            let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             restore_scene_story_order_patch(conn, entity_id, &before, expected_after_version, now)?;
         }
         "temporal_projection" => {
@@ -1274,20 +1305,14 @@ fn undo_one_entity(
                 .and_then(Value::as_str)
                 .unwrap_or("create");
             if op_kind == "patch" {
-                let before = entity
-                    .get("beforeSnapshot")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("projection patch journal missing beforeSnapshot"))?;
-                let expected_after_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                    anyhow::anyhow!("projection patch journal missing beforeSnapshot")
+                })?;
+                let expected_after_version =
+                    entity.get("version").and_then(Value::as_i64).unwrap_or(0);
                 restore_projection_patch(conn, entity_id, &before, expected_after_version, now)?;
             } else {
-                let expected_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
                 undo_created_projection(conn, entity_id, expected_version)?;
             }
         }
@@ -1297,28 +1322,14 @@ fn undo_one_entity(
                 .and_then(Value::as_str)
                 .unwrap_or("create");
             if op_kind == "patch" {
-                let before = entity
-                    .get("beforeSnapshot")
-                    .cloned()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("plot thread patch journal missing beforeSnapshot")
-                    })?;
-                let expected_after_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
-                restore_plot_thread_patch(
-                    conn,
-                    entity_id,
-                    &before,
-                    expected_after_version,
-                    now,
-                )?;
+                let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                    anyhow::anyhow!("plot thread patch journal missing beforeSnapshot")
+                })?;
+                let expected_after_version =
+                    entity.get("version").and_then(Value::as_i64).unwrap_or(0);
+                restore_plot_thread_patch(conn, entity_id, &before, expected_after_version, now)?;
             } else {
-                let expected_version = entity
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
                 undo_created_plot_thread(conn, entity_id, expected_version)?;
             }
         }
@@ -1327,10 +1338,7 @@ fn undo_one_entity(
                 .get("snapshot")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let semantic_key = snapshot
                 .get("semanticKey")
                 .and_then(Value::as_str)
@@ -1342,10 +1350,7 @@ fn undo_one_entity(
                 .get("snapshot")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("journal entity missing snapshot"))?;
-            let expected_version = entity
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
             let semantic_key = snapshot
                 .get("semanticKey")
                 .and_then(Value::as_str)
@@ -1353,13 +1358,33 @@ fn undo_one_entity(
             undo_created_plot_branch(conn, entity_id, expected_version, semantic_key)?;
         }
         "foreshadow" => {
-            let op_kind = entity.get("opKind").and_then(Value::as_str).unwrap_or("create");
-            let expected_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
+            let op_kind = entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create");
+            let expected_version = entity
+                .get("version")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| anyhow::anyhow!("journal foreshadow missing version"))?;
             if op_kind == "patch" {
-                let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| anyhow::anyhow!("foreshadow patch journal missing beforeSnapshot"))?;
-                super::foreshadow_undo::restore_patch(conn, entity_id, &before, expected_version, now)?;
+                let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
+                    anyhow::anyhow!("foreshadow patch journal missing beforeSnapshot")
+                })?;
+                super::foreshadow_undo::restore_patch(
+                    conn,
+                    project_id,
+                    entity_id,
+                    &before,
+                    expected_version,
+                    now,
+                )?;
             } else {
-                super::foreshadow_undo::undo_created(conn, project_id, entity_id, expected_version)?;
+                super::foreshadow_undo::undo_created(
+                    conn,
+                    project_id,
+                    entity_id,
+                    expected_version,
+                )?;
             }
         }
         other => anyhow::bail!("unsupported journal entity kind '{other}'"),
@@ -1410,10 +1435,7 @@ fn update_journal_after(
     Ok(())
 }
 
-fn load_journal_after(
-    conn: &rusqlite::Connection,
-    commit_id: &str,
-) -> anyhow::Result<Value> {
+fn load_journal_after(conn: &rusqlite::Connection, commit_id: &str) -> anyhow::Result<Value> {
     let raw: String = conn.query_row(
         "SELECT after_json FROM narrative_commit_journals
           WHERE commit_id = ?1
@@ -1469,9 +1491,18 @@ fn update_receipt_status(
         json!({})
     };
     if let Some(obj) = receipt.as_object_mut() {
-        obj.insert("commitId".to_string(), Value::String(commit.commit_id.clone()));
-        obj.insert("requestId".to_string(), Value::String(commit.request_id.clone()));
-        obj.insert("planDigest".to_string(), Value::String(commit.plan_digest.clone()));
+        obj.insert(
+            "commitId".to_string(),
+            Value::String(commit.commit_id.clone()),
+        );
+        obj.insert(
+            "requestId".to_string(),
+            Value::String(commit.request_id.clone()),
+        );
+        obj.insert(
+            "planDigest".to_string(),
+            Value::String(commit.plan_digest.clone()),
+        );
         obj.insert("status".to_string(), Value::String(status.to_string()));
         if let Some(uid) = change_event_uid {
             obj.insert("changeEventUid".to_string(), Value::String(uid.to_string()));

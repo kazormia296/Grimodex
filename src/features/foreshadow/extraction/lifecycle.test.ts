@@ -20,6 +20,7 @@ function makeRow(overrides: Partial<ForeshadowRow> = {}): ForeshadowRow {
     abandoned: false,
     secret: false,
     loadBearing: null,
+    version: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -59,9 +60,9 @@ describe("foreshadow lifecycle", () => {
       lifecycle,
     });
     expect(quality.qualityIssue).toBe("too-subtle");
-    expect(
-      deriveLabelFromLifecycle(lifecycle, quality, "critical"),
-    ).toBe("critical_weak");
+    expect(deriveLabelFromLifecycle(lifecycle, quality, "critical")).toBe(
+      "critical_weak",
+    );
   });
 
   it("maps optional weak to seeded without quality issue", () => {
@@ -76,9 +77,9 @@ describe("foreshadow lifecycle", () => {
       lifecycle,
     });
     expect(quality.qualityIssue).toBe("none");
-    expect(
-      deriveLabelFromLifecycle(lifecycle, quality, "optional"),
-    ).toBe("seeded");
+    expect(deriveLabelFromLifecycle(lifecycle, quality, "optional")).toBe(
+      "seeded",
+    );
   });
 
   it("aligns deriveLabelFromLifecycle with legacy deriveLabel for paid", () => {

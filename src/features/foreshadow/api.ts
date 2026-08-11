@@ -6,7 +6,10 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { invoke } from "@/lib/tauri";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
+import {
+  getRecorderSessionId,
+  recordChangeEvent,
+} from "@/features/timelapse/recorder";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -37,13 +40,15 @@ import type {
 } from "./types";
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
+import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { instantEpochMilliseconds } from "@/lib/time";
 import {
-  attachCreateResultMetadata,
   getCreateResultMetadata,
   isCreateResultEntityPresent,
 } from "@/lib/createResultMetadata";
+
+export { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 
 /** Max chars of a scene-prefix excerpt used when `foreshadows.notes` is empty. */
 const SETUP_EXCERPT_FALLBACK_MAX_CHARS = 200;
@@ -84,45 +89,6 @@ function toBool(value: unknown): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value === 1;
   return false;
-}
-
-function normalizeForeshadowRow(raw: unknown): ForeshadowRow {
-  const row = (raw ?? {}) as Record<string, unknown>;
-  return attachCreateResultMetadata(
-    {
-      id: String(row.id ?? ""),
-      projectId: String(row.projectId ?? row.project_id ?? ""),
-      title: String(row.title ?? ""),
-      intent: (row.intent as string | null | undefined) ?? null,
-      notes: (row.notes as string | null | undefined) ?? null,
-      payoffSceneId:
-        (row.payoffSceneId as string | null | undefined) ??
-        (row.payoff_scene_id as string | null | undefined) ??
-        null,
-      payoffFromPos:
-        (row.payoffFromPos as number | null | undefined) ??
-        (row.payoff_from_pos as number | null | undefined) ??
-        null,
-      payoffToPos:
-        (row.payoffToPos as number | null | undefined) ??
-        (row.payoff_to_pos as number | null | undefined) ??
-        null,
-      payoffConfirmed: toBool(row.payoffConfirmed ?? row.payoff_confirmed),
-      abandoned: toBool(row.abandoned),
-      secret: toBool(row.secret ?? false),
-      loadBearing:
-        ((row.loadBearing ?? row.load_bearing) as
-          | ForeshadowLoadBearing
-          | null
-          | undefined) ?? null,
-      codexLinkDirtyAt: toNullableDate(
-        row.codexLinkDirtyAt ?? row.codex_link_dirty_at,
-      ),
-      createdAt: toDate(row.createdAt ?? row.created_at),
-      updatedAt: toDate(row.updatedAt ?? row.updated_at),
-    },
-    raw,
-  );
 }
 
 function normalizeSetupRow(raw: unknown): ForeshadowSetupRow {
@@ -367,6 +333,7 @@ function buildOpenForeshadowsForContext(
     title: string;
     intent: string | null;
     loadBearing: ForeshadowLoadBearing | null;
+    version: number;
     payoffConfirmed: boolean;
     abandoned: boolean;
     updatedAt: unknown;
@@ -390,6 +357,7 @@ function buildOpenForeshadowsForContext(
         abandoned: r.abandoned,
         secret: false,
         loadBearing: r.loadBearing,
+        version: r.version,
         codexLinkDirtyAt: null,
         createdAt: new Date(),
         updatedAt: new Date(
@@ -428,6 +396,7 @@ function buildOpenForeshadowsForContext(
       title: r.title,
       intent: r.intent,
       loadBearing: r.loadBearing,
+      version: r.version,
       setupCount: countMap.get(r.id) ?? 0,
       derivedLabel: labelById.get(r.id),
       _updatedMs: toMs(r.updatedAt),
@@ -609,6 +578,7 @@ export interface OpenForeshadowForContext {
   title: string;
   intent: string | null;
   loadBearing: ForeshadowLoadBearing | null;
+  version: number;
   setupCount: number;
   /** Derived lifecycle label from setup count + strength evaluation. */
   derivedLabel?: DerivedLabel;
@@ -631,6 +601,7 @@ export async function listOpenForeshadowsForContext(
       title: foreshadows.title,
       intent: foreshadows.intent,
       loadBearing: foreshadows.loadBearing,
+      version: foreshadows.version,
       payoffConfirmed: foreshadows.payoffConfirmed,
       abandoned: foreshadows.abandoned,
       updatedAt: foreshadows.updatedAt,
@@ -648,6 +619,7 @@ export async function listOpenForeshadowsForContext(
     title: string;
     intent: string | null;
     loadBearing: ForeshadowLoadBearing | null;
+    version: number;
     payoffConfirmed: boolean;
     abandoned: boolean;
     updatedAt: unknown;
@@ -940,7 +912,8 @@ export async function updateForeshadow(
       | "payoffToPos"
     >
   >,
-): Promise<void> {
+  baseVersion: number,
+): Promise<ForeshadowRow> {
   const tauriPatch: Record<string, unknown> = {};
   if (patch.title !== undefined) tauriPatch.title = patch.title;
   if (patch.intent !== undefined) tauriPatch.intent = patch.intent;
@@ -960,50 +933,78 @@ export async function updateForeshadow(
   if (patch.secret !== undefined) tauriPatch.secret = patch.secret;
   if (patch.loadBearing !== undefined)
     tauriPatch.loadBearing = patch.loadBearing;
+  tauriPatch.baseVersion = baseVersion;
 
-  await invoke("foreshadow_update", {
-    id,
-    patch: tauriPatch,
-  });
+  const updated = normalizeForeshadowRow(
+    await invoke("foreshadow_update", {
+      id,
+      patch: tauriPatch,
+    }),
+  );
   recordForeshadow("update", id, {
     foreshadowId: id,
     fields: Object.keys(patch),
   });
+  return updated;
 }
 
-export async function deleteForeshadow(id: string): Promise<void> {
-  recordForeshadow("delete", id, { foreshadowId: id });
-  await invoke("foreshadow_delete", { id });
+export interface ForeshadowDeleteReceipt {
+  entityId: string;
+  projectId: string;
+  version: number;
+  changeEventUid: string;
+  undoJournalId: string;
+}
+
+export async function deleteForeshadow(
+  id: string,
+  baseVersion: number,
+  projectId: string,
+): Promise<ForeshadowDeleteReceipt> {
+  const receipt = await invoke<ForeshadowDeleteReceipt>("foreshadow_delete", {
+    id,
+    projectId,
+    baseVersion,
+    sessionId: getRecorderSessionId(),
+  });
+  return receipt;
 }
 
 // ── ForeshadowSetup CRUD ──────────────────────────────────────────
 
 export async function createForeshadowSetup(
   data: Omit<NewForeshadowSetup, "createdAt" | "updatedAt">,
-): Promise<ForeshadowSetupRow> {
-  await invoke("foreshadow_setup_create_ai", {
-    id: data.id,
-    foreshadowId: data.foreshadowId,
-    sceneId: data.sceneId,
-    fromPos: data.fromPos,
-    toPos: data.toPos,
-    kind: data.kind ?? "designated_existing",
-    strength: data.strength ?? null,
-    aiStrength: data.aiStrength ?? null,
-    attribution: data.attribution ?? "human",
-    aiRationale: data.aiRationale ?? null,
-    aiReasoning: data.aiReasoning ?? null,
-    lastEvaluatedAt: data.lastEvaluatedAt
-      ? data.lastEvaluatedAt.getTime()
-      : null,
-  });
+  baseVersion: number,
+): Promise<{ setup: ForeshadowSetupRow; foreshadow: ForeshadowRow }> {
+  const foreshadow = normalizeForeshadowRow(
+    await invoke("foreshadow_setup_create_ai", {
+      id: data.id,
+      foreshadowId: data.foreshadowId,
+      baseVersion,
+      sceneId: data.sceneId,
+      fromPos: data.fromPos,
+      toPos: data.toPos,
+      kind: data.kind ?? "designated_existing",
+      strength: data.strength ?? null,
+      aiStrength: data.aiStrength ?? null,
+      attribution: data.attribution ?? "human",
+      aiRationale: data.aiRationale ?? null,
+      aiReasoning: data.aiReasoning ?? null,
+      lastEvaluatedAt: data.lastEvaluatedAt
+        ? data.lastEvaluatedAt.getTime()
+        : null,
+    }),
+  );
   const now = new Date();
   return {
-    ...data,
-    createdAt: now,
-    updatedAt: now,
-    sceneUpdatedAt: undefined,
-  } as ForeshadowSetupRow;
+    setup: {
+      ...data,
+      createdAt: now,
+      updatedAt: now,
+      sceneUpdatedAt: undefined,
+    } as ForeshadowSetupRow,
+    foreshadow,
+  };
 }
 
 export async function listSetups(
@@ -1039,8 +1040,9 @@ export async function updateSetup(
       "strength" | "aiStrength" | "aiReasoning" | "isOrphan" | "lastEvaluatedAt"
     >
   >,
-): Promise<void> {
-  const tauriPatch: Record<string, unknown> = {};
+  baseVersion: number,
+): Promise<ForeshadowRow> {
+  const tauriPatch: Record<string, unknown> = { baseVersion };
   if (patch.strength !== undefined) tauriPatch.strength = patch.strength;
   if (patch.aiStrength !== undefined) tauriPatch.aiStrength = patch.aiStrength;
   if (patch.aiReasoning !== undefined) {
@@ -1052,43 +1054,69 @@ export async function updateSetup(
       ? patch.lastEvaluatedAt.getTime()
       : null;
   }
-  await invoke("foreshadow_update_setup", { id, patch: tauriPatch });
+  return normalizeForeshadowRow(
+    await invoke("foreshadow_update_setup", { id, patch: tauriPatch }),
+  );
 }
 
-export async function deleteSetup(id: string): Promise<void> {
-  await invoke("foreshadow_resolve_orphan", {
-    payload: { setupId: id, action: "delete" },
-  });
+interface OrphanResolveReceipt {
+  setupId: string | null;
+  foreshadow: unknown | null;
+}
+
+export async function deleteSetup(
+  id: string,
+  baseVersion: number,
+): Promise<ForeshadowRow | null> {
+  const receipt = await invoke<OrphanResolveReceipt>(
+    "foreshadow_resolve_orphan",
+    {
+      payload: { setupId: id, action: "delete", baseVersion },
+    },
+  );
+  return receipt.foreshadow ? normalizeForeshadowRow(receipt.foreshadow) : null;
 }
 
 export async function reanchorOrphanSetup(
   setupId: string,
   anchor: { sceneId: string; fromPos: number; toPos: number },
-): Promise<void> {
-  await invoke("foreshadow_resolve_orphan", {
-    payload: {
-      setupId,
-      action: "reanchor",
-      sceneId: anchor.sceneId,
-      fromPos: anchor.fromPos,
-      toPos: anchor.toPos,
+  baseVersion: number,
+): Promise<ForeshadowRow | null> {
+  const receipt = await invoke<OrphanResolveReceipt>(
+    "foreshadow_resolve_orphan",
+    {
+      payload: {
+        setupId,
+        action: "reanchor",
+        baseVersion,
+        sceneId: anchor.sceneId,
+        fromPos: anchor.fromPos,
+        toPos: anchor.toPos,
+      },
     },
-  });
+  );
+  return receipt.foreshadow ? normalizeForeshadowRow(receipt.foreshadow) : null;
 }
 
 export async function reinsertOrphanSetup(
   setupId: string,
   anchor: { sceneId: string; fromPos: number; toPos: number },
-): Promise<ForeshadowSetupRow> {
-  const newId = await invoke<string | null>("foreshadow_resolve_orphan", {
-    payload: {
-      setupId,
-      action: "reinsert",
-      sceneId: anchor.sceneId,
-      fromPos: anchor.fromPos,
-      toPos: anchor.toPos,
+  baseVersion: number,
+): Promise<{ setup: ForeshadowSetupRow; foreshadow: ForeshadowRow }> {
+  const receipt = await invoke<OrphanResolveReceipt>(
+    "foreshadow_resolve_orphan",
+    {
+      payload: {
+        setupId,
+        action: "reinsert",
+        baseVersion,
+        sceneId: anchor.sceneId,
+        fromPos: anchor.fromPos,
+        toPos: anchor.toPos,
+      },
     },
-  });
+  );
+  const newId = receipt.setupId;
   if (!newId) {
     throw new Error(`reinserted setup not found for: ${setupId}`);
   }
@@ -1098,7 +1126,13 @@ export async function reinsertOrphanSetup(
   if (!created) {
     throw new Error(`reinserted setup row missing: ${newId}`);
   }
-  return normalizeSetupRow(created);
+  if (!receipt.foreshadow) {
+    throw new Error(`reinserted foreshadow row missing: ${setupId}`);
+  }
+  return {
+    setup: normalizeSetupRow(created),
+    foreshadow: normalizeForeshadowRow(receipt.foreshadow),
+  };
 }
 
 // ── Codex link CRUD ───────────────────────────────────────────────
@@ -1106,21 +1140,29 @@ export async function reinsertOrphanSetup(
 export async function addCodexLink(
   foreshadowId: string,
   codexEntryId: string,
-): Promise<void> {
-  await invoke("foreshadow_link_codex", {
-    foreshadowId,
-    codexId: codexEntryId,
-  });
+  baseVersion: number,
+): Promise<ForeshadowRow> {
+  return normalizeForeshadowRow(
+    await invoke("foreshadow_link_codex", {
+      foreshadowId,
+      codexId: codexEntryId,
+      baseVersion,
+    }),
+  );
 }
 
 export async function removeCodexLink(
   foreshadowId: string,
   codexEntryId: string,
-): Promise<void> {
-  await invoke("foreshadow_unlink_codex", {
-    foreshadowId,
-    codexId: codexEntryId,
-  });
+  baseVersion: number,
+): Promise<ForeshadowRow> {
+  return normalizeForeshadowRow(
+    await invoke("foreshadow_unlink_codex", {
+      foreshadowId,
+      codexId: codexEntryId,
+      baseVersion,
+    }),
+  );
 }
 
 type LinkedCodexEntry = Pick<CodexEntry, "id" | "name">;
@@ -1152,8 +1194,15 @@ export async function listCodexEntriesByForeshadow(
 export async function setSetupStrength(
   setupId: string,
   strength: ForeshadowStrength | null,
-): Promise<void> {
-  await invoke("foreshadow_set_setup_strength", { setupId, strength });
+  baseVersion: number,
+): Promise<ForeshadowRow> {
+  return normalizeForeshadowRow(
+    await invoke("foreshadow_set_setup_strength", {
+      setupId,
+      strength,
+      baseVersion,
+    }),
+  );
 }
 
 /** Codex エントリに紐付いた伏線を、派生ラベル付きで返す。 */

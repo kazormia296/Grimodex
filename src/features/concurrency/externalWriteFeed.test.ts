@@ -332,11 +332,35 @@ describe("externalWriteFeed fan-out", () => {
   });
 
   it("reloads plot threads on plot domain events", async () => {
+    useGlobalHistoryStore.getState().push({
+      kind: "plot",
+      label: "stale plot edit",
+      entityId: "plot-1",
+      undo: async () => {},
+      redo: async () => {},
+    });
+    useGlobalHistoryStore.getState().push({
+      kind: "codex",
+      label: "unrelated codex edit",
+      entityId: "codex-1",
+      undo: async () => {},
+      redo: async () => {},
+    });
     await processExternalEventsForTest(
-      [ev({ domain: "plot", opType: "plot.update" })],
+      [
+        ev({
+          domain: "plot",
+          entityType: "plot_thread",
+          entityId: "plot-1",
+          opType: "plot.update",
+        }),
+      ],
       "p1",
     );
     expect(h.loadPlot).toHaveBeenCalledWith("p1");
+    expect(
+      useGlobalHistoryStore.getState().past.map((command) => command.kind),
+    ).toEqual(["codex"]);
   });
 
   it("reloads labels on labels domain events", async () => {
@@ -676,6 +700,54 @@ describe("externalWriteFeed fan-out", () => {
     ).toEqual(["other-scene"]);
     expect(useExternalWriteStore.getState().conflicts).toHaveLength(0);
   });
+
+  it.each([
+    ["forward", "event.stamp", undefined],
+    ["undo", "event.unstamp", "undo"],
+    ["redo", "event.stamp", "redo"],
+  ] as const)(
+    "invalidates every scene history for a batch %s change",
+    async (_phase, opType, direction) => {
+      for (const entityId of [
+        "batch-event",
+        "batch-scene-a",
+        "batch-scene-b",
+        "other-scene",
+      ]) {
+        useGlobalHistoryStore.getState().push({
+          kind: entityId === "batch-event" ? "chronicle" : "scenes",
+          label: entityId,
+          entityId,
+          undo: async () => {},
+          redo: async () => {},
+        });
+      }
+
+      await processExternalEventsForTest(
+        [
+          ev({
+            domain: "event",
+            sceneId: null,
+            entityType: "event",
+            entityId: "batch-event",
+            opType,
+            payload: JSON.stringify({
+              eventId: "batch-event",
+              sceneIds: ["batch-scene-a", "batch-scene-b"],
+              direction,
+            }),
+          }),
+        ],
+        "p1",
+      );
+
+      expect(
+        useGlobalHistoryStore
+          .getState()
+          .past.map((command) => command.entityId),
+      ).toEqual(["other-scene"]);
+    },
+  );
 
   it("degrades safely when external relation payload JSON is malformed", async () => {
     for (const entityId of ["cause-event", "effect-event"]) {

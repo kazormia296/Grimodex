@@ -23,7 +23,6 @@ export type {
 export {
   assertDeclarativeReconcilerResult,
   buildProposalDraftEnvelope,
-  defaultSemanticAssessmentForFreshness,
   isAllowedPropagationSignal,
   isCompensatingChangeKind,
   isEvidenceFreshness,

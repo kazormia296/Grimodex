@@ -303,7 +303,6 @@ pub fn list_resumable_runs(
 pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &run_id, &project_id)?;
             let updated = conn.execute(
                 "UPDATE narrative_extraction_runs
@@ -363,7 +362,6 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             verify_task_lease(conn, &payload.task_id, &payload.run_id, &payload.lease_owner)?;
 
@@ -422,7 +420,6 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             verify_task_lease(conn, &payload.task_id, &payload.run_id, &payload.lease_owner)?;
 

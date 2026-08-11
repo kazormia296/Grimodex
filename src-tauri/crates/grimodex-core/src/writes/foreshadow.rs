@@ -7,13 +7,10 @@
 //! - **No authorship_spans**: `authorship_spans` only has codex_entry_id /
 //!   snippet_id FKs; foreshadow rows are metadata, not prose. Snapshots carry
 //!   the plain row fields only.
-//! - **Versionless optimistic guard**: `foreshadows` has no `version` column
-//!   and its many writers (in-app panel, save_anchors, MCP) all bump
-//!   `updated_at` (millis). The undo journal therefore stores the *before*
-//!   `updated_at` in `base_version` and the *after* `updated_at` in
-//!   `result_version`, and revert/apply guard on `updated_at` equality the
-//!   same way codex guards on `version`. Two writes inside one millisecond
-//!   are indistinguishable — acceptable for low-frequency metadata edits.
+//! - **Root OCC**: v12 foreshadows carry an integer `version`. Every successful
+//!   root mutation advances it and tracked writes persist the actual before /
+//!   after versions in the journal and receipt. Undo / redo keeps that token
+//!   monotonic instead of restoring a historical version.
 
 use anyhow::Context;
 
@@ -79,6 +76,8 @@ fn foreshadow_snapshot(
             'payoffFromPos', payoff_from_pos, 'payoffToPos', payoff_to_pos,
             'payoffConfirmed', payoff_confirmed, 'abandoned', abandoned,
             'secret', secret, 'loadBearing', load_bearing,
+            'mechanism', mechanism, 'version', version,
+            'codexLinkDirtyAt', codex_link_dirty_at,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM foreshadows WHERE id = ?1 AND project_id = ?2",
         params![foreshadow_id, project_id],
@@ -264,6 +263,10 @@ pub fn tracked_foreshadow_create(
 
         let after_snapshot = foreshadow_snapshot(conn, input.project_id, input.foreshadow_id)?
             .ok_or_else(|| anyhow::anyhow!("foreshadow row missing right after insert"))?;
+        let after: serde_json::Value = serde_json::from_str(&after_snapshot)?;
+        let result_version = after["version"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("foreshadow snapshot missing version after insert"))?;
 
         insert_undo_journal_in_tx(
             conn,
@@ -277,7 +280,7 @@ pub fn tracked_foreshadow_create(
                 before_json: None,
                 after_json: Some(&after_snapshot),
                 base_version: 0,
-                result_version: now,
+                result_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -300,7 +303,7 @@ pub fn tracked_foreshadow_create(
 
         Ok(WriteResult {
             entity_id: input.foreshadow_id.to_string(),
-            version: now,
+            version: result_version,
             change_event_uid: event_uid,
             undo_journal_id: undo_id,
         })
@@ -322,9 +325,31 @@ pub fn tracked_foreshadow_create(
 /// Returns `Ok(None)` when the foreshadow does not exist **in this project**
 /// (cross-project ids are indistinguishable from missing — XPROJ defense).
 /// Nothing is written in that case.
-pub fn tracked_foreshadow_update(
+#[cfg(test)]
+fn tracked_foreshadow_update(
     conn: &Connection,
     input: TrackedForeshadowUpdateInput<'_>,
+) -> anyhow::Result<Option<WriteResult>> {
+    tracked_foreshadow_update_impl(conn, input, None)
+}
+
+/// External callers must supply the Foreshadow aggregate version they observed.
+pub fn tracked_foreshadow_update_at_version(
+    conn: &Connection,
+    input: TrackedForeshadowUpdateInput<'_>,
+    base_version: i64,
+) -> anyhow::Result<Option<WriteResult>> {
+    anyhow::ensure!(
+        base_version >= 0,
+        "foreshadow baseVersion must be non-negative"
+    );
+    tracked_foreshadow_update_impl(conn, input, Some(base_version))
+}
+
+fn tracked_foreshadow_update_impl(
+    conn: &Connection,
+    input: TrackedForeshadowUpdateInput<'_>,
+    caller_base_version: Option<i64>,
 ) -> anyhow::Result<Option<WriteResult>> {
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
@@ -341,7 +366,18 @@ pub fn tracked_foreshadow_update(
             return Ok(None);
         };
         let before: serde_json::Value = serde_json::from_str(&before_snapshot)?;
-        let base_updated_at = before["updatedAt"].as_i64().unwrap_or(0);
+        let base_version = before["version"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("foreshadow snapshot missing version before update"))?;
+        if let Some(caller_base_version) = caller_base_version {
+            anyhow::ensure!(
+                caller_base_version == base_version,
+                "FORESHADOW_VERSION_MISMATCH: expected version {caller_base_version}, found {base_version}"
+            );
+        }
+        let expected_result_version = base_version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("foreshadow version overflow during tracked update"))?;
 
         let p = &input.patch;
         let mut fields: Vec<&str> = Vec::new();
@@ -385,19 +421,33 @@ pub fn tracked_foreshadow_update(
         }
         anyhow::ensure!(!sets.is_empty(), "empty patch (tool layer must guard)");
 
+        sets.push("version = ?");
+        vals.push(V::Integer(expected_result_version));
         sets.push("updated_at = ?");
         vals.push(V::Integer(now));
         vals.push(V::Text(input.foreshadow_id.to_string()));
         vals.push(V::Text(input.project_id.to_string()));
+        vals.push(V::Integer(base_version));
         let sql = format!(
-            "UPDATE foreshadows SET {} WHERE id = ? AND project_id = ?",
+            "UPDATE foreshadows SET {} WHERE id = ? AND project_id = ? AND version = ?",
             sets.join(", ")
         );
         let affected = conn.execute(&sql, rusqlite::params_from_iter(vals.iter()))?;
-        anyhow::ensure!(affected == 1, "foreshadow row vanished mid-transaction");
+        anyhow::ensure!(
+            affected == 1,
+            "foreshadow version conflict during tracked update"
+        );
 
         let after_snapshot = foreshadow_snapshot(conn, input.project_id, input.foreshadow_id)?
             .ok_or_else(|| anyhow::anyhow!("foreshadow row missing right after update"))?;
+        let after: serde_json::Value = serde_json::from_str(&after_snapshot)?;
+        let result_version = after["version"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("foreshadow snapshot missing version after update"))?;
+        anyhow::ensure!(
+            result_version == expected_result_version,
+            "foreshadow version did not advance exactly once"
+        );
 
         insert_undo_journal_in_tx(
             conn,
@@ -410,8 +460,8 @@ pub fn tracked_foreshadow_update(
                 op_kind: "update",
                 before_json: Some(&before_snapshot),
                 after_json: Some(&after_snapshot),
-                base_version: base_updated_at,
-                result_version: now,
+                base_version,
+                result_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -434,7 +484,7 @@ pub fn tracked_foreshadow_update(
 
         Ok(Some(WriteResult {
             entity_id: input.foreshadow_id.to_string(),
-            version: now,
+            version: result_version,
             change_event_uid: event_uid,
             undo_journal_id: undo_id,
         }))
@@ -477,6 +527,9 @@ mod tests {
                 abandoned INTEGER NOT NULL DEFAULT 0,
                 secret INTEGER NOT NULL DEFAULT 1,
                 load_bearing TEXT,
+                mechanism TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                codex_link_dirty_at INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
              );
@@ -541,8 +594,7 @@ mod tests {
         }
     }
 
-    /// Insert a raw row with a fixed past updated_at so base_version
-    /// assertions are deterministic.
+    /// Insert a raw v12 row with a fixed past updated_at and version zero.
     fn seed_raw_row(conn: &Connection, id: &str, project_id: &str, title: &str, millis: i64) {
         conn.execute(
             "INSERT INTO foreshadows
@@ -567,6 +619,15 @@ mod tests {
         .unwrap()
     }
 
+    fn row_version(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT version FROM foreshadows WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
     // ---------------- create ----------------
 
     #[test]
@@ -574,6 +635,7 @@ mod tests {
         let conn = setup_conn();
         let res = tracked_foreshadow_create(&conn, create_input("f1", "Planted clue")).unwrap();
         assert_eq!(res.entity_id, "f1");
+        assert_eq!(res.version, 0);
 
         // Entity row with the exact raw-writer column behavior.
         let (title, intent, secret, payoff_confirmed, lb): (String, String, i64, i64, String) =
@@ -623,8 +685,8 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["title"], "Planted clue");
 
-        // Undo journal: create op, before=None, after snapshot with full row,
-        // result_version = row updated_at (versionless guard contract).
+        // Undo journal: create op, before=None, after snapshot with the full
+        // v12 root state, and actual root version tokens.
         let (entity_kind, op_kind, surface, before, after, base_v, result_v): (
             String,
             String,
@@ -659,8 +721,11 @@ mod tests {
         let after: serde_json::Value = serde_json::from_str(&after.unwrap()).unwrap();
         assert_eq!(after["title"], "Planted clue");
         assert_eq!(after["secret"], 0);
+        assert_eq!(after["version"], 0);
+        assert!(after.get("mechanism").is_some());
+        assert!(after.get("codexLinkDirtyAt").is_some());
         assert_eq!(base_v, 0);
-        assert_eq!(result_v, row_updated_at(&conn, "f1"));
+        assert_eq!(result_v, 0);
         assert!(!res.undo_journal_id.is_empty());
         assert!(!res.change_event_uid.is_empty());
     }
@@ -708,6 +773,7 @@ mod tests {
         .unwrap()
         .expect("row exists in p1");
         assert_eq!(res.entity_id, "f1");
+        assert_eq!(res.version, 1);
 
         let (title, intent, secret, lb): (String, String, i64, String) = conn
             .query_row(
@@ -720,6 +786,7 @@ mod tests {
         assert_eq!(intent, "orig intent", "untouched field must survive");
         assert_eq!(secret, 1, "untouched field must survive");
         assert_eq!(lb, "supporting");
+        assert_eq!(row_version(&conn, "f1"), 1);
 
         // Change event payload lists the patched fields.
         let payload: String = conn
@@ -740,7 +807,7 @@ mod tests {
         assert!(fields.contains(&"loadBearing"), "fields: {fields:?}");
         assert!(!fields.contains(&"secret"), "fields: {fields:?}");
 
-        // Journal: before/after snapshots + updated_at-based versions.
+        // Journal: before/after snapshots + actual root versions.
         let (op_kind, before, after, base_v, result_v): (
             String,
             Option<String>,
@@ -760,8 +827,10 @@ mod tests {
         let after: serde_json::Value = serde_json::from_str(&after.unwrap()).unwrap();
         assert_eq!(before["title"], "Original");
         assert_eq!(after["title"], "Renamed");
-        assert_eq!(base_v, 1000, "base_version = before updated_at");
-        assert_eq!(result_v, row_updated_at(&conn, "f1"));
+        assert_eq!(before["version"], 0);
+        assert_eq!(after["version"], 1);
+        assert_eq!(base_v, 0);
+        assert_eq!(result_v, 1);
     }
 
     #[test]
@@ -817,37 +886,73 @@ mod tests {
         assert_eq!(count(&conn, "change_events"), 0);
     }
 
+    #[test]
+    fn empty_update_rolls_back_without_advancing_version() {
+        let conn = setup_conn();
+        seed_raw_row(&conn, "f1", "p1", "Original", 1000);
+
+        let result = tracked_foreshadow_update(
+            &conn,
+            TrackedForeshadowUpdateInput {
+                project_id: "p1",
+                session_id: "sess",
+                surface: "test",
+                foreshadow_id: "f1",
+                patch: ForeshadowPatch::default(),
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(row_version(&conn, "f1"), 0);
+        assert_eq!(count(&conn, "undo_journal"), 0);
+        assert_eq!(count(&conn, "change_events"), 0);
+    }
+
     // ---------------- undo / redo ----------------
 
     #[test]
     fn undo_redo_roundtrip_for_create() {
         let conn = setup_conn();
         let res = tracked_foreshadow_create(&conn, create_input("f1", "Plant")).unwrap();
+        assert_eq!(row_version(&conn, "f1"), 0);
 
         revert_undo_journal_in_tx(&conn, "p1", &res.undo_journal_id).unwrap();
         assert_eq!(count(&conn, "foreshadows"), 0, "undo create = delete");
 
         apply_undo_journal_in_tx(&conn, "p1", &res.undo_journal_id).unwrap();
-        let (title, secret, lb): (String, i64, String) = conn
+        let (title, secret, lb, version): (String, i64, String, i64) = conn
             .query_row(
-                "SELECT title, secret, load_bearing FROM foreshadows WHERE id = 'f1'",
+                "SELECT title, secret, load_bearing, version FROM foreshadows WHERE id = 'f1'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert_eq!(title, "Plant");
         assert_eq!(secret, 0);
         assert_eq!(lb, "critical");
+        assert_eq!(version, 1, "redo create must allocate a fresh version");
+
+        let journal_result: i64 = conn
+            .query_row(
+                "SELECT result_version FROM undo_journal WHERE id = ?1",
+                params![res.undo_journal_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(journal_result, 1);
+        revert_undo_journal_in_tx(&conn, "p1", &res.undo_journal_id).unwrap();
+        assert_eq!(count(&conn, "foreshadows"), 0);
     }
 
     #[test]
     fn undo_create_conflicts_when_row_modified_after() {
         let conn = setup_conn();
         let res = tracked_foreshadow_create(&conn, create_input("f1", "Plant")).unwrap();
-        // External edit after the tracked write (updated_at moves on) — undo
-        // must refuse to delete instead of silently destroying the edit.
+        // External root edit advances version; undo must refuse to delete
+        // instead of silently destroying the edit.
         conn.execute(
-            "UPDATE foreshadows SET title = 'edited later', updated_at = updated_at + 5000
+            "UPDATE foreshadows
+             SET title = 'edited later', version = version + 1, updated_at = updated_at + 5000
              WHERE id = 'f1'",
             [],
         )
@@ -877,6 +982,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        assert_eq!(row_version(&conn, "f1"), 1);
 
         revert_undo_journal_in_tx(&conn, "p1", &res.undo_journal_id).unwrap();
         let (title, abandoned): (String, i64) = conn
@@ -888,11 +994,14 @@ mod tests {
             .unwrap();
         assert_eq!(title, "Original");
         assert_eq!(abandoned, 0);
-        assert_eq!(
-            row_updated_at(&conn, "f1"),
-            1000,
-            "undo restores the before updated_at so redo's guard lines up"
-        );
+        assert_eq!(row_version(&conn, "f1"), 2);
+        let stale_changed = conn
+            .execute(
+                "UPDATE foreshadows SET title = 'stale' WHERE id = 'f1' AND version = 1",
+                [],
+            )
+            .unwrap();
+        assert_eq!(stale_changed, 0, "pre-undo editor token must stay stale");
 
         apply_undo_journal_in_tx(&conn, "p1", &res.undo_journal_id).unwrap();
         let (title, abandoned): (String, i64) = conn
@@ -904,6 +1013,16 @@ mod tests {
             .unwrap();
         assert_eq!(title, "Renamed");
         assert_eq!(abandoned, 1);
+        assert_eq!(row_version(&conn, "f1"), 3);
+
+        let (base_version, result_version): (i64, i64) = conn
+            .query_row(
+                "SELECT base_version, result_version FROM undo_journal WHERE id = ?1",
+                params![res.undo_journal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((base_version, result_version), (2, 3));
     }
 
     #[test]
@@ -926,7 +1045,8 @@ mod tests {
         .unwrap()
         .unwrap();
         conn.execute(
-            "UPDATE foreshadows SET title = 'edited later', updated_at = updated_at + 5000
+            "UPDATE foreshadows
+             SET title = 'edited later', version = version + 1, updated_at = updated_at + 5000
              WHERE id = 'f1'",
             [],
         )
@@ -940,5 +1060,213 @@ mod tests {
             .unwrap(),
             "edited later"
         );
+    }
+
+    #[test]
+    fn stacked_update_undo_redo_keeps_versions_monotonic_and_chain_connected() {
+        let conn = setup_conn();
+        seed_raw_row(&conn, "f1", "p1", "Original", 1000);
+        let first = tracked_foreshadow_update(
+            &conn,
+            TrackedForeshadowUpdateInput {
+                project_id: "p1",
+                session_id: "sess",
+                surface: "test",
+                foreshadow_id: "f1",
+                patch: ForeshadowPatch {
+                    title: Some("First"),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let second = tracked_foreshadow_update(
+            &conn,
+            TrackedForeshadowUpdateInput {
+                project_id: "p1",
+                session_id: "sess",
+                surface: "test",
+                foreshadow_id: "f1",
+                patch: ForeshadowPatch {
+                    title: Some("Second"),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(row_version(&conn, "f1"), 2);
+
+        revert_undo_journal_in_tx(&conn, "p1", &second.undo_journal_id).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT title FROM foreshadows WHERE id = 'f1'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "First"
+        );
+        assert_eq!(row_version(&conn, "f1"), 3);
+
+        revert_undo_journal_in_tx(&conn, "p1", &first.undo_journal_id).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT title FROM foreshadows WHERE id = 'f1'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "Original"
+        );
+        assert_eq!(row_version(&conn, "f1"), 4);
+
+        apply_undo_journal_in_tx(&conn, "p1", &first.undo_journal_id).unwrap();
+        assert_eq!(row_version(&conn, "f1"), 5);
+        apply_undo_journal_in_tx(&conn, "p1", &second.undo_journal_id).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT title FROM foreshadows WHERE id = 'f1'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "Second"
+        );
+        assert_eq!(row_version(&conn, "f1"), 6);
+
+        let first_tokens: (i64, i64) = conn
+            .query_row(
+                "SELECT base_version, result_version FROM undo_journal WHERE id = ?1",
+                params![first.undo_journal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let second_tokens: (i64, i64) = conn
+            .query_row(
+                "SELECT base_version, result_version FROM undo_journal WHERE id = ?1",
+                params![second.undo_journal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(first_tokens, (4, 5));
+        assert_eq!(second_tokens, (5, 6));
+    }
+
+    #[test]
+    fn versioned_replay_restores_mechanism_and_codex_dirty_exactly() {
+        let conn = setup_conn();
+        seed_raw_row(&conn, "f1", "p1", "Before", 1000);
+        conn.execute(
+            "UPDATE foreshadows
+             SET mechanism = 'misdirection', codex_link_dirty_at = 11,
+                 title = 'After', version = 1, updated_at = 2000
+             WHERE id = 'f1'",
+            [],
+        )
+        .unwrap();
+        let before = serde_json::json!({
+            "id": "f1", "projectId": "p1", "title": "Before",
+            "intent": "orig intent", "notes": null,
+            "payoffSceneId": null, "payoffFromPos": null, "payoffToPos": null,
+            "payoffConfirmed": 0, "abandoned": 0, "secret": 1,
+            "loadBearing": null, "mechanism": "setup-payoff", "version": 0,
+            "codexLinkDirtyAt": 7, "createdAt": 1000, "updatedAt": 1000
+        })
+        .to_string();
+        let after = serde_json::json!({
+            "id": "f1", "projectId": "p1", "title": "After",
+            "intent": "orig intent", "notes": null,
+            "payoffSceneId": null, "payoffFromPos": null, "payoffToPos": null,
+            "payoffConfirmed": 0, "abandoned": 0, "secret": 1,
+            "loadBearing": null, "mechanism": "misdirection", "version": 1,
+            "codexLinkDirtyAt": 11, "createdAt": 1000, "updatedAt": 2000
+        })
+        .to_string();
+        insert_undo_journal_in_tx(
+            &conn,
+            UndoJournalInsert {
+                id: "full-root-journal",
+                project_id: "p1",
+                surface: "test",
+                entity_kind: "foreshadow",
+                entity_id: "f1",
+                op_kind: "update",
+                before_json: Some(&before),
+                after_json: Some(&after),
+                base_version: 0,
+                result_version: 1,
+                change_event_uid: None,
+            },
+        )
+        .unwrap();
+
+        revert_undo_journal_in_tx(&conn, "p1", "full-root-journal").unwrap();
+        let undone: (String, String, i64, i64) = conn
+            .query_row(
+                "SELECT title, mechanism, codex_link_dirty_at, version
+                 FROM foreshadows WHERE id = 'f1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(undone, ("Before".into(), "setup-payoff".into(), 7, 2));
+
+        apply_undo_journal_in_tx(&conn, "p1", "full-root-journal").unwrap();
+        let redone: (String, String, i64, i64) = conn
+            .query_row(
+                "SELECT title, mechanism, codex_link_dirty_at, version
+                 FROM foreshadows WHERE id = 'f1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(redone, ("After".into(), "misdirection".into(), 11, 3));
+    }
+
+    #[test]
+    fn pre_v12_journal_replays_with_legacy_updated_at_guard() {
+        let conn = setup_conn();
+        seed_raw_row(&conn, "f1", "p1", "Before", 1000);
+        conn.execute(
+            "UPDATE foreshadows SET title = 'After', updated_at = 2000 WHERE id = 'f1'",
+            [],
+        )
+        .unwrap();
+        let before = serde_json::json!({
+            "id": "f1", "projectId": "p1", "title": "Before",
+            "intent": "orig intent", "notes": null,
+            "payoffSceneId": null, "payoffFromPos": null, "payoffToPos": null,
+            "payoffConfirmed": 0, "abandoned": 0, "secret": 1,
+            "loadBearing": null, "createdAt": 1000, "updatedAt": 1000
+        })
+        .to_string();
+        let after = serde_json::json!({
+            "id": "f1", "projectId": "p1", "title": "After",
+            "intent": "orig intent", "notes": null,
+            "payoffSceneId": null, "payoffFromPos": null, "payoffToPos": null,
+            "payoffConfirmed": 0, "abandoned": 0, "secret": 1,
+            "loadBearing": null, "createdAt": 1000, "updatedAt": 2000
+        })
+        .to_string();
+        insert_undo_journal_in_tx(
+            &conn,
+            UndoJournalInsert {
+                id: "legacy-journal",
+                project_id: "p1",
+                surface: "test",
+                entity_kind: "foreshadow",
+                entity_id: "f1",
+                op_kind: "update",
+                before_json: Some(&before),
+                after_json: Some(&after),
+                base_version: 1000,
+                result_version: 2000,
+                change_event_uid: None,
+            },
+        )
+        .unwrap();
+
+        revert_undo_journal_in_tx(&conn, "p1", "legacy-journal").unwrap();
+        assert_eq!(row_updated_at(&conn, "f1"), 1000);
+        assert_eq!(row_version(&conn, "f1"), 0);
+        apply_undo_journal_in_tx(&conn, "p1", "legacy-journal").unwrap();
+        assert_eq!(row_updated_at(&conn, "f1"), 2000);
+        assert_eq!(row_version(&conn, "f1"), 0);
     }
 }

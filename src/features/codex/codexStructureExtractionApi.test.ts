@@ -42,9 +42,19 @@ vi.mock(
     };
   },
 );
-vi.mock("@/application/narrative-extraction/codexCommitCoordinator", () => ({
-  prepareAndApplyCodexCommit: prepareApplyMock,
-}));
+vi.mock(
+  "@/application/narrative-extraction/codexCommitCoordinator",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/application/narrative-extraction/codexCommitCoordinator")
+      >();
+    return {
+      ...actual,
+      prepareAndApplyCodexCommit: prepareApplyMock,
+    };
+  },
+);
 vi.mock("@/application/narrative-extraction/projectSnapshotAdapter", () => ({
   buildProjectNarrativeSnapshot: buildSnapshotMock,
 }));
@@ -63,6 +73,8 @@ import {
   CODEX_RELATION_CREATE_PROPOSAL_KIND,
   createCodexRelationProposalFromHypothesis,
 } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import { CODEX_BASE_DETAIL_SET_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/setCodexBaseDetailProposal";
+import { CODEX_PHASE_BIND_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
 import { buildCodexReviewRevisionEnvelope } from "./extraction/reviewRevisionEnvelope";
 import { buildCodexRelationSemanticKey } from "./extraction/relationVocabulary";
 import {
@@ -312,6 +324,24 @@ describe("startCodexStructureExtraction product safety", () => {
           expectedVersion: 1,
         },
       ],
+      phaseSeeds: [
+        {
+          entityId: "ne-1",
+          anchorDocumentRef: "S000001",
+          labelSuggestion: "旅立ち",
+          quote: "ライカは旅立った",
+        },
+      ],
+      baseDetailSeeds: [
+        {
+          entityId: "ne-1",
+          facetKey: "role.current",
+          definitionRef: "D0001",
+          value: { kind: "text", text: "旅人" },
+          temporalEligibility: "timeless",
+          quote: "ライカは旅人だ",
+        },
+      ],
       heuristicSeeds: [
         {
           surface: "ライカ",
@@ -333,6 +363,30 @@ describe("startCodexStructureExtraction product safety", () => {
     expect(projection.runId).toBe("native-run-1");
     expect(projection.proposalSetId).toBe("native-ps-1");
     expect(projection.proposals[0]?.revisionId).toBe("native-rev-1");
+    expect(projection.baseDetailProposals[0]?.revisionId).toBe("native-rev-2");
+    expect(projection.phaseProposals[0]?.revisionId).toBe("native-rev-3");
+    const savedPayload = saveProposalSetMock.mock.calls[0]?.[0] as {
+      proposals: readonly { kind: string }[];
+    };
+    expect(savedPayload.proposals.map((proposal) => proposal.kind)).toEqual([
+      CODEX_ENTITY_BIND_PROPOSAL_KIND,
+      CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+      CODEX_PHASE_BIND_PROPOSAL_KIND,
+    ]);
+    const finishPayload = finishTaskMock.mock.calls[0]?.[0] as {
+      artifacts: readonly {
+        payloadJson?: {
+          baseDetailProposals?: readonly unknown[];
+          phaseProposals?: readonly unknown[];
+        };
+      }[];
+    };
+    expect(
+      finishPayload.artifacts[0]?.payloadJson?.baseDetailProposals,
+    ).toHaveLength(1);
+    expect(
+      finishPayload.artifacts[0]?.payloadJson?.phaseProposals,
+    ).toHaveLength(1);
     expect(projection.catalog?.types[0]?.slug).toBe("character");
   });
 
@@ -875,6 +929,8 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
       },
       proposals: [safeProposal],
       relationProposals: [],
+      baseDetailProposals: [],
+      phaseProposals: [],
       catalog: {
         entities: [],
         types: [
@@ -888,6 +944,8 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
       },
       entityCount: 1,
       relationCount: 0,
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 1,
       approvedCount: 0,
     });
@@ -982,8 +1040,12 @@ describe("reviseCodexStructureProposal concurrency", () => {
         },
       ],
       relationProposals: [],
+      baseDetailProposals: [],
+      phaseProposals: [],
       entityCount: 1,
       relationCount: 0,
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 0,
       approvedCount: 0,
       catalog: { entities: [], types: [] },
@@ -1387,6 +1449,10 @@ describe("already-satisfied Relation auto-decision queue", () => {
       ],
       entityCount: 2,
       relationCount: 1,
+      baseDetailProposals: [],
+      phaseProposals: [],
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 1,
       approvedCount: 1,
       catalog: {
@@ -1631,13 +1697,13 @@ describe("already-satisfied Relation auto-decision queue", () => {
                 coarseClass: "person",
                 typeResolution: { status: "resolved", typeRef: "T0001" },
                 binding: {
-          kind: "bind-existing",
-          entityRef: "K0001",
-          enrichment: {
-            aliasesToAdd: [],
-            summary: { kind: "leave" },
-          },
-        },
+                  kind: "bind-existing",
+                  entityRef: "K0001",
+                  enrichment: {
+                    aliasesToAdd: [],
+                    summary: { kind: "leave" },
+                  },
+                },
               },
               { proposalId: "ent-1" },
             ).payload,
@@ -1662,13 +1728,13 @@ describe("already-satisfied Relation auto-decision queue", () => {
                 coarseClass: "person",
                 typeResolution: { status: "resolved", typeRef: "T0001" },
                 binding: {
-          kind: "bind-existing",
-          entityRef: "K0002",
-          enrichment: {
-            aliasesToAdd: [],
-            summary: { kind: "leave" },
-          },
-        },
+                  kind: "bind-existing",
+                  entityRef: "K0002",
+                  enrichment: {
+                    aliasesToAdd: [],
+                    summary: { kind: "leave" },
+                  },
+                },
               },
               { proposalId: "ent-2" },
             ).payload,
@@ -1830,8 +1896,12 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
         },
       ],
       relationProposals: [],
+      baseDetailProposals: [],
+      phaseProposals: [],
       entityCount: 1,
       relationCount: 0,
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 0,
       approvedCount: 1,
       catalog: {
@@ -2015,8 +2085,12 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
         },
       ],
       relationProposals: [],
+      baseDetailProposals: [],
+      phaseProposals: [],
       entityCount: 2,
       relationCount: 0,
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 0,
       approvedCount: 1,
       catalog: {
@@ -2216,6 +2290,10 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
       ],
       entityCount: 2,
       relationCount: 1,
+      baseDetailProposals: [],
+      phaseProposals: [],
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 0,
       approvedCount: 2,
       catalog: {
@@ -2312,8 +2390,12 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
         },
       ],
       relationProposals: [],
+      baseDetailProposals: [],
+      phaseProposals: [],
       entityCount: 1,
       relationCount: 0,
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 0,
       approvedCount: 1,
       catalog: {

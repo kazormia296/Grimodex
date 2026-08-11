@@ -21,7 +21,7 @@ const {
   const editorRef = { current: mockEditor as typeof mockEditor | null };
 
   return {
-    mockUpdateForeshadow: vi.fn().mockResolvedValue(undefined),
+    mockUpdateForeshadow: vi.fn(),
     mockListForeshadowsWithLabels: vi.fn().mockResolvedValue({
       items: [],
       sceneInfoBySceneId: {},
@@ -84,18 +84,44 @@ vi.mock("drizzle-orm", () => ({
 
 import { useForeshadowStore } from "./foreshadowStore";
 
+function makeForeshadowRow(version = 0) {
+  return {
+    id: "f-1",
+    projectId: "p-1",
+    title: "old title",
+    intent: null,
+    notes: null,
+    payoffSceneId: "scene-1",
+    payoffFromPos: 1,
+    payoffToPos: 3,
+    payoffConfirmed: false,
+    abandoned: false,
+    secret: false,
+    loadBearing: null,
+    version,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+  };
+}
+
 describe("ForeshadowStore.update", () => {
   beforeEach(() => {
     mockUpdateForeshadow.mockClear();
     mockListForeshadowsWithLabels.mockClear();
     mockUnsetPayoffMarks.mockClear();
     mockSaveSceneContent.mockClear();
+    mockUpdateForeshadow.mockResolvedValue(makeForeshadowRow(1));
     editorRef.current = {
       state: { tr: {}, doc: { type: "doc" } },
       view: { dispatch: vi.fn() },
       getJSON: vi.fn().mockReturnValue({ type: "doc", content: [] }),
     };
-    useForeshadowStore.setState({ items: [], setupsByForeshadowId: {} });
+    useForeshadowStore.setState({
+      items: [
+        { ...makeForeshadowRow(), label: "seeded", setupCount: 0 } as const,
+      ],
+      setupsByForeshadowId: {},
+    });
   });
 
   it("updateForeshadow を呼び、load（listForeshadowsWithLabels）を実行する", async () => {
@@ -103,9 +129,11 @@ describe("ForeshadowStore.update", () => {
       .getState()
       .update("f-1", { title: "新タイトル" }, "p-1");
 
-    expect(mockUpdateForeshadow).toHaveBeenCalledWith("f-1", {
-      title: "新タイトル",
-    });
+    expect(mockUpdateForeshadow).toHaveBeenCalledWith(
+      "f-1",
+      { title: "新タイトル" },
+      0,
+    );
     expect(mockListForeshadowsWithLabels).toHaveBeenCalledWith("p-1");
     expect(mockUnsetPayoffMarks).not.toHaveBeenCalled();
   });

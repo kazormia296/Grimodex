@@ -79,6 +79,7 @@ pub struct CreateForeshadowParams {
 #[derive(Debug, Serialize)]
 struct CreateForeshadowResult {
     id: String,
+    version: i64,
     secret: bool,
     message: String,
 }
@@ -126,7 +127,7 @@ pub async fn create_foreshadow(
     // change_event(domain 'foreshadow'), closing the last untracked AI write.
     let id = uuid::Uuid::new_v4().to_string();
     let conn = server.conn.lock().map_err(internal_err)?;
-    grimodex_core::writes::foreshadow::tracked_foreshadow_create(
+    let write = grimodex_core::writes::foreshadow::tracked_foreshadow_create(
         &conn,
         grimodex_core::writes::foreshadow::TrackedForeshadowCreateInput {
             project_id: &server.project_id(),
@@ -146,6 +147,7 @@ pub async fn create_foreshadow(
 
     let result = CreateForeshadowResult {
         id: id.clone(),
+        version: write.version,
         secret,
         message: format!("Foreshadow '{title}' created with id {id}"),
     };
@@ -159,6 +161,8 @@ pub async fn create_foreshadow(
 pub struct UpdateForeshadowParams {
     /// ID of the foreshadow to update (required).
     pub id: String,
+    /// Version returned by create/list/detail/the previous update.
+    pub base_version: i64,
     /// New title (optional).
     pub title: Option<String>,
     /// New intent (optional).
@@ -178,6 +182,7 @@ pub struct UpdateForeshadowParams {
 #[derive(Debug, Serialize)]
 struct UpdateForeshadowResult {
     id: String,
+    version: i64,
     updated: bool,
     message: String,
 }
@@ -204,6 +209,12 @@ pub async fn update_foreshadow(
     let id = params.id.trim();
     if id.is_empty() {
         return Err(ErrorData::invalid_params("id must not be empty", None));
+    }
+    if params.base_version < 0 {
+        return Err(ErrorData::invalid_params(
+            "base_version must be non-negative",
+            None,
+        ));
     }
     if params.title.is_none()
         && params.intent.is_none()
@@ -241,7 +252,7 @@ pub async fn update_foreshadow(
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
     let conn = server.conn.lock().map_err(internal_err)?;
-    let result = grimodex_core::writes::foreshadow::tracked_foreshadow_update(
+    let result = grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version(
         &conn,
         grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
             project_id: &server.project_id(),
@@ -258,18 +269,16 @@ pub async fn update_foreshadow(
                 secret: params.secret,
             },
         },
+        params.base_version,
     )
     .map_err(internal_err)?;
 
-    if result.is_none() {
-        return Err(ErrorData::invalid_params(
-            "Foreshadow not found in this project",
-            None,
-        ));
-    }
+    let write = result
+        .ok_or_else(|| ErrorData::invalid_params("Foreshadow not found in this project", None))?;
 
     let result = UpdateForeshadowResult {
         id: id.to_string(),
+        version: write.version,
         updated: true,
         message: format!("Foreshadow {id} updated"),
     };
@@ -376,6 +385,7 @@ mod tests {
             &server,
             UpdateForeshadowParams {
                 id: "f1".to_string(),
+                base_version: 0,
                 title: Some("Renamed".to_string()),
                 intent: None,
                 notes: None,
@@ -402,12 +412,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_foreshadow_tool_rejects_stale_base_without_mutation() {
+        let server = make_writable_server();
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO foreshadows
+                 (id, project_id, title, secret, created_at, updated_at)
+                 VALUES ('f-stale', 'p1', 'Original', 1, 1000, 1000)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let params = |title: &str| UpdateForeshadowParams {
+            id: "f-stale".to_string(),
+            base_version: 0,
+            title: Some(title.to_string()),
+            intent: None,
+            notes: None,
+            load_bearing: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            secret: None,
+        };
+        update_foreshadow(&server, params("Fresh"))
+            .await
+            .expect("first writer succeeds");
+        let stale = update_foreshadow(&server, params("Stale")).await;
+        assert!(stale.is_err(), "stale writer must be rejected");
+
+        let conn = server.conn.lock().unwrap();
+        let (title, version): (String, i64) = conn
+            .query_row(
+                "SELECT title, version FROM foreshadows WHERE id = 'f-stale'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "Fresh");
+        assert_eq!(version, 1);
+        let change_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))
+            .unwrap();
+        let journal_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(change_count, 1);
+        assert_eq!(journal_count, 1);
+    }
+
+    #[tokio::test]
     async fn update_foreshadow_tool_unknown_id_writes_nothing() {
         let server = make_writable_server();
         let res = update_foreshadow(
             &server,
             UpdateForeshadowParams {
                 id: "ghost".to_string(),
+                base_version: 0,
                 title: Some("X".to_string()),
                 intent: None,
                 notes: None,

@@ -20,12 +20,14 @@ export interface SceneAuthorshipSpanInput {
 export interface SceneForeshadowSetupInput {
   id: string;
   foreshadowId: string;
+  baseVersion: number;
   fromPos: number;
   toPos: number;
 }
 
 export interface SceneForeshadowPayoffInput {
   foreshadowId: string;
+  baseVersion: number;
   fromPos: number;
   toPos: number;
 }
@@ -52,6 +54,7 @@ export interface SceneBodyDerivedSnapshot {
   authorshipSpans: SceneAuthorshipSpanInput[];
   foreshadowSetups: SceneForeshadowSetupInput[];
   foreshadowPayoffs: SceneForeshadowPayoffInput[];
+  foreshadowBaseVersions: Record<string, number>;
   annotationAnchors: SceneAnnotationAnchorInput[];
   beatMentions: SceneBeatMentionInput[];
   beatPovOverrides: string[];
@@ -128,6 +131,7 @@ export function deriveSceneBodySnapshot(
   const authorshipSpans: SceneAuthorshipSpanInput[] = [];
   const foreshadowSetups: SceneForeshadowSetupInput[] = [];
   const foreshadowPayoffs: SceneForeshadowPayoffInput[] = [];
+  const foreshadowBaseVersions: Record<string, number> = {};
   const annotationById = new Map<
     string,
     { rangeStart: number; rangeEnd: number; texts: string[] }
@@ -197,7 +201,24 @@ export function deriveSceneBodySnapshot(
       const id = nullableString(setup.attrs.setupId);
       const foreshadowId = nullableString(setup.attrs.foreshadowId);
       if (id && foreshadowId) {
-        foreshadowSetups.push({ id, foreshadowId, fromPos: pos, toPos });
+        const baseVersion = setup.attrs.baseVersion;
+        if (
+          typeof baseVersion !== "number" ||
+          !Number.isSafeInteger(baseVersion) ||
+          baseVersion < 0
+        ) {
+          throw new Error(
+            `Foreshadow setup '${foreshadowId}' has no valid baseVersion; reload the scene before saving`,
+          );
+        }
+        foreshadowBaseVersions[foreshadowId] = baseVersion;
+        foreshadowSetups.push({
+          id,
+          foreshadowId,
+          baseVersion,
+          fromPos: pos,
+          toPos,
+        });
       }
     }
 
@@ -207,7 +228,32 @@ export function deriveSceneBodySnapshot(
     if (payoff) {
       const foreshadowId = nullableString(payoff.attrs.foreshadowId);
       if (foreshadowId) {
-        foreshadowPayoffs.push({ foreshadowId, fromPos: pos, toPos });
+        const baseVersion = payoff.attrs.baseVersion;
+        if (
+          typeof baseVersion !== "number" ||
+          !Number.isSafeInteger(baseVersion) ||
+          baseVersion < 0
+        ) {
+          throw new Error(
+            `Foreshadow payoff '${foreshadowId}' has no valid baseVersion; reload the scene before saving`,
+          );
+        }
+        const previous = foreshadowPayoffs.at(-1);
+        foreshadowBaseVersions[foreshadowId] = baseVersion;
+        if (
+          previous?.foreshadowId === foreshadowId &&
+          previous.baseVersion === baseVersion &&
+          previous.toPos === pos
+        ) {
+          previous.toPos = toPos;
+        } else {
+          foreshadowPayoffs.push({
+            foreshadowId,
+            baseVersion,
+            fromPos: pos,
+            toPos,
+          });
+        }
       }
     }
 
@@ -247,6 +293,7 @@ export function deriveSceneBodySnapshot(
     authorshipSpans,
     foreshadowSetups,
     foreshadowPayoffs,
+    foreshadowBaseVersions,
     annotationAnchors: Array.from(
       annotationById,
       ([id, { rangeStart, rangeEnd, texts }]) => ({

@@ -32,6 +32,8 @@ export interface AgentForeshadowCreateInput {
 
 export interface AgentForeshadowUpdateInput {
   foreshadowId: string;
+  /** Version returned by the read that informed this update. */
+  baseVersion: number;
   title?: string;
   intent?: string;
   notes?: string;
@@ -131,6 +133,9 @@ export async function agentUpdateForeshadow(
     throw new Error("knowledgeWrite policy is off");
   }
   assertLoadBearing(input.loadBearing);
+  if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 0) {
+    throw new Error("baseVersion must be a non-negative integer");
+  }
   const hasPatch =
     input.title !== undefined ||
     input.intent !== undefined ||
@@ -149,6 +154,7 @@ export async function agentUpdateForeshadow(
       projectId,
       sessionId: getRecorderSessionId(),
       foreshadowId: input.foreshadowId,
+      baseVersion: input.baseVersion,
       title: input.title ?? null,
       intent: input.intent ?? null,
       notes: input.notes ?? null,

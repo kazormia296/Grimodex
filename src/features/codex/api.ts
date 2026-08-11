@@ -15,6 +15,8 @@ import {
 } from "@/lib/chatNavigationGuard";
 import { notifyCodexAnchorDeletedIfRegistered } from "@/application/codex/codexAnchorLifecycle";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { normalizeForeshadowRow } from "@/features/foreshadow/normalizeForeshadowRow";
+import { publishAuthoritativeForeshadowRows } from "@/features/foreshadow/authoritativeRows";
 
 export {
   listCodexMatchTargets,
@@ -48,10 +50,11 @@ async function markLinkedForeshadowsDirty(
   projectId: string,
   entryId: string,
 ): Promise<void> {
-  await invoke("foreshadow_mark_linked_codex_dirty", {
+  const rows = await invoke<unknown[]>("foreshadow_mark_linked_codex_dirty", {
     projectId,
     codexEntryId: entryId,
   });
+  publishAuthoritativeForeshadowRows(rows.map(normalizeForeshadowRow));
 }
 
 export type CodexEntry = typeof codexEntries.$inferSelect;

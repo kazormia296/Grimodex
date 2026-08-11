@@ -42,8 +42,9 @@ pub(crate) fn plot_thread_update(
 pub(crate) fn plot_thread_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
+    base_version: i64,
 ) -> Result<(), AppError> {
-    with_db(&ws_state, |db| plot_threads::delete(db, id))
+    with_db(&ws_state, |db| plot_threads::delete(db, id, base_version))
 }
 
 #[tauri::command(async)]
@@ -77,8 +78,11 @@ pub(crate) fn plot_thread_link_update(
 pub(crate) fn plot_thread_link_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
+    base_version: i64,
 ) -> Result<(), AppError> {
-    with_db(&ws_state, |db| plot_threads::link_delete(db, id))
+    with_db(&ws_state, |db| {
+        plot_threads::link_delete(db, id, base_version)
+    })
 }
 
 #[tauri::command(async)]
@@ -115,7 +119,7 @@ pub(crate) fn plot_thread_branch_update(
 pub(crate) fn plot_thread_branch_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
-    base_version: Option<i64>,
+    base_version: i64,
 ) -> Result<(), AppError> {
     with_db(&ws_state, |db| plot_threads::branch_delete(db, id, base_version))
 }

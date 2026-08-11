@@ -36,7 +36,7 @@ const h = vi.hoisted(() => ({
     contentUpdatedAt: "2026-07-13T00:00:01.000Z",
   })),
   saveAuthorshipSpans: vi.fn(async () => {}),
-  saveForeshadowAnchors: vi.fn(async () => {}),
+  saveForeshadowAnchors: vi.fn(async () => []),
   saveAnnotationAnchors: vi.fn(async () => {}),
   extractBeatMentions: vi.fn<(doc: ProseMirrorNode) => BeatMention[]>(() => []),
   upsertSceneBeatMentions: vi.fn<
@@ -67,6 +67,7 @@ const h = vi.hoisted(() => ({
     authorshipSpans: [],
     foreshadowSetups: [],
     foreshadowPayoffs: [],
+    foreshadowBaseVersions: {},
     annotationAnchors: [],
     beatMentions: [],
     beatPovOverrides: [],
@@ -78,6 +79,7 @@ const h = vi.hoisted(() => ({
     contentVersion: 2,
     contentUpdatedAt: "2026-07-28T00:00:00.000Z",
     dbTransactionCount: 1,
+    foreshadowRows: [],
   })),
   bumpMatrixDataVersion: vi.fn(),
   recordCounter: vi.fn(),
@@ -131,6 +133,7 @@ vi.mock("@/features/attribution/api", () => ({
   saveAuthorshipSpans: h.saveAuthorshipSpans,
 }));
 vi.mock("@/features/foreshadow/saveAnchors", () => ({
+  getSceneForeshadowBaseVersions: vi.fn(() => ({})),
   saveForeshadowAnchors: h.saveForeshadowAnchors,
 }));
 vi.mock("@/features/post-effect/syncAnnotations", () => ({
@@ -273,6 +276,7 @@ describe("persistSceneBody — DB-native scene", () => {
       authorshipSpans: [],
       foreshadowSetups: [],
       foreshadowPayoffs: [],
+      foreshadowBaseVersions: {},
       annotationAnchors: [],
       beatMentions: [],
       beatPovOverrides: [],
@@ -294,6 +298,7 @@ describe("persistSceneBody — DB-native scene", () => {
       contentJson: JSON.stringify(DOC_JSON),
       contentVersion: 2,
       contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+      foreshadowRows: [],
     });
   });
 

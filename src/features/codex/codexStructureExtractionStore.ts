@@ -201,6 +201,7 @@ export interface CodexBaseDetailReviewProposal {
   readonly existingValue: ProjectedDetailValue | null;
   readonly unbound?: boolean;
   readonly blockedReason?: string;
+  readonly application?: CodexReviewProposalApplication | null;
 }
 
 export interface CodexPhaseReviewProposal {
@@ -222,6 +223,7 @@ export interface CodexPhaseReviewProposal {
   }[];
   readonly blockedReason?: string;
   readonly boundaryId?: string;
+  readonly application?: CodexReviewProposalApplication | null;
 }
 
 export interface CodexStructureExtractionReviewProjection {
@@ -541,11 +543,15 @@ function recount(
       ).length +
       baseDetailProposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length +
       phaseProposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length,
   };
 }
@@ -1054,7 +1060,12 @@ export const useCodexStructureExtractionStore =
       const current = projection.baseDetailProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.applicability === "blocked") return;
+      if (
+        !current ||
+        current.application ||
+        current.applicability === "blocked"
+      )
+        return;
       if (
         status === "approved" &&
         (current.unbound ||
@@ -1088,7 +1099,12 @@ export const useCodexStructureExtractionStore =
       const current = projection.phaseProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.applicability === "blocked") return;
+      if (
+        !current ||
+        current.application ||
+        current.applicability === "blocked"
+      )
+        return;
       if (
         status === "approved" &&
         current.proposal.payload.binding.kind === "unresolved"
@@ -1120,7 +1136,7 @@ export const useCodexStructureExtractionStore =
       const current = projection.baseDetailProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current) return;
+      if (!current || current.application) return;
       const nextProposal: SetCodexBaseDetailProposal = {
         ...current.proposal,
         payload: {
@@ -1167,7 +1183,7 @@ export const useCodexStructureExtractionStore =
       const current = projection.baseDetailProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current) return;
+      if (!current || current.application) return;
       void options?.rememberBinding;
       const nextProposal: SetCodexBaseDetailProposal = {
         ...current.proposal,
@@ -1221,7 +1237,11 @@ export const useCodexStructureExtractionStore =
       const current = projection.phaseProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.proposal.payload.binding.kind !== "unresolved") {
+      if (
+        !current ||
+        current.application ||
+        current.proposal.payload.binding.kind !== "unresolved"
+      ) {
         return;
       }
       const payload = current.proposal.payload;
@@ -1376,6 +1396,7 @@ export const useCodexStructureExtractionStore =
           if (
             proposal.applicability !== "applicable" ||
             proposal.status !== "unreviewed" ||
+            proposal.application ||
             !isSafeForCodexBaseDetailBulkApprove(proposal.safety)
           ) {
             return proposal;
@@ -1388,6 +1409,7 @@ export const useCodexStructureExtractionStore =
         if (
           proposal.applicability !== "applicable" ||
           proposal.status !== "unreviewed" ||
+          proposal.application ||
           !isSafeForCodexPhaseBulkApprove(proposal.safety)
         ) {
           return proposal;

@@ -435,6 +435,7 @@ export interface NapiBackendLike {
   codexRenameUndo?(payload: unknown): Promise<void>;
   codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
+  projectDelete?(payload: unknown): Promise<void>;
   treePlanUndo?(payload: unknown): Promise<void>;
   mapWriteBundle?(payload: unknown): Promise<void>;
   projectSnapshotCreate?(payload: unknown): Promise<void>;
@@ -668,21 +669,26 @@ export interface NapiBackendLike {
   ): Promise<string>;
   plotThreadCreate(payload: unknown): Promise<string>;
   plotThreadUpdate(id: string, patch: unknown): Promise<string>;
-  plotThreadDelete(id: string): Promise<void>;
+  plotThreadDelete(id: string, baseVersion: number): Promise<void>;
   plotThreadList(projectId: string): Promise<string>;
   plotThreadLinkCreate(payload: unknown): Promise<string>;
   plotThreadBranchCreate?(payload: unknown): Promise<string>;
   plotThreadBranchUpdate?(id: string, patch: unknown): Promise<string>;
-  plotThreadBranchDelete?(id: string, baseVersion?: number): Promise<void>;
+  plotThreadBranchDelete?(id: string, baseVersion: number): Promise<void>;
   plotThreadMoveMarkerBundle?(payload: unknown): Promise<string>;
   plotThreadRestoreSnapshot?(payload: unknown): Promise<string>;
   plotThreadDeleteSnapshot?(payload: unknown): Promise<string>;
   plotThreadLinkUpdate(id: string, patch: unknown): Promise<string>;
-  plotThreadLinkDelete(id: string): Promise<void>;
+  plotThreadLinkDelete(id: string, baseVersion: number): Promise<void>;
   plotThreadListLinks(projectId: string): Promise<string>;
   foreshadowCreate(payload: unknown): Promise<string>;
   foreshadowUpdate(id: string, patch: unknown): Promise<string>;
-  foreshadowDelete(id: string): Promise<void>;
+  foreshadowDelete(
+    id: string,
+    projectId: string,
+    baseVersion: number,
+    sessionId: string,
+  ): Promise<string>;
   foreshadowListWithLabels(projectId: string): Promise<string>;
   foreshadowListOpenForContext(projectId: string): Promise<string>;
   foreshadowGetSceneInfo(sceneId: string): Promise<string>;
@@ -690,29 +696,39 @@ export interface NapiBackendLike {
   foreshadowListByCodexEntry(codexEntryId: string): Promise<string>;
   foreshadowGetChapterStats(chapterId: string): Promise<string>;
   foreshadowGetSetup(setupId: string): Promise<string>;
-  foreshadowUpdateSetup(id: string, patch: unknown): Promise<void>;
+  foreshadowUpdateSetup(id: string, patch: unknown): Promise<string>;
   foreshadowGet(id: string): Promise<string>;
-  foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>;
-  foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>;
+  foreshadowLinkCodex(
+    foreshadowId: string,
+    codexId: string,
+    baseVersion: number,
+  ): Promise<string>;
+  foreshadowUnlinkCodex(
+    foreshadowId: string,
+    codexId: string,
+    baseVersion: number,
+  ): Promise<string>;
   foreshadowMarkLinkedCodexDirty?(
     projectId: string,
     codexEntryId: string,
-  ): Promise<void>;
+  ): Promise<string>;
   foreshadowListLinkedCodex(foreshadowId: string): Promise<string>;
   foreshadowSetSetupStrength(
     setupId: string,
-    strength?: string | null,
-  ): Promise<void>;
-  foreshadowSetupCreateAi(input: unknown): Promise<void>;
+    strength: string | null | undefined,
+    baseVersion: number,
+  ): Promise<string>;
+  foreshadowSetupCreateAi(input: unknown): Promise<string>;
   foreshadowResolveOrphan(payload: unknown): Promise<string>;
   foreshadowSaveAnchorsForScene(
     sceneId: string,
     setups: unknown,
     payoffs: unknown,
+    baseVersions: unknown,
     docContentSize: number,
-  ): Promise<void>;
+  ): Promise<string>;
   foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
-  // agent_writes 19 コマンド（すべて単一 payload → tracked write result）
+  // agent_writes 20 コマンド（すべて単一 payload → tracked write result）
   agentCodexCreate(payload: unknown): Promise<string>;
   agentCodexUpdate(payload: unknown): Promise<string>;
   agentCodexDelete(payload: unknown): Promise<string>;
@@ -731,6 +747,7 @@ export interface NapiBackendLike {
   agentChronicleBulkMutate?(payload: unknown): Promise<string>;
   agentEventSetParticipants(payload: unknown): Promise<string>;
   agentSceneEventLink(payload: unknown): Promise<string>;
+  agentSceneEventLinkBatch?(payload: unknown): Promise<string>;
   agentSceneEventUnlink(payload: unknown): Promise<string>;
   agentEventRelationAdd(payload: unknown): Promise<string>;
   agentEventRelationRemove(payload: unknown): Promise<string>;
@@ -1049,6 +1066,111 @@ function requirePlotThreadBranchCreatePayload(args: CommandArgs): CommandArgs {
     );
   }
   return payload;
+}
+
+function requirePlotVersionedPatch(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const patch = requireRecord(args, "patch", command);
+  const baseVersion = requireSafeInteger(patch, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  return patch;
+}
+
+function requirePlotBaseVersion(args: CommandArgs, command: string): number {
+  const baseVersion = requireSafeInteger(args, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  return baseVersion;
+}
+
+function requireForeshadowVersionedPatch(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const patch = requireRecord(args, "patch", command);
+  const baseVersion = requireSafeInteger(patch, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  return patch;
+}
+
+function requireForeshadowBaseVersion(
+  args: CommandArgs,
+  command: string,
+): number {
+  const baseVersion = requireSafeInteger(args, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  return baseVersion;
+}
+
+function requireAgentForeshadowUpdatePayload(args: CommandArgs): CommandArgs {
+  const command = "agent_foreshadow_update";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "sessionId", command);
+  requireNonEmptyString(payload, "foreshadowId", command);
+  requireForeshadowBaseVersion(payload, command);
+  return payload;
+}
+
+function requireForeshadowAnchorPayloads(
+  args: CommandArgs,
+  command: string,
+): { setups: unknown[]; payoffs: unknown[]; baseVersions: CommandArgs } {
+  const setups = requireArray(args, "setups", command);
+  const payoffs = requireArray(args, "payoffs", command);
+  const baseVersions = requireRecord(args, "baseVersions", command);
+  for (const [foreshadowId, value] of Object.entries(baseVersions)) {
+    if (
+      foreshadowId.length === 0 ||
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value < 0
+    ) {
+      throw new Error(
+        `invalid args \`baseVersions.${foreshadowId}\` for command \`${command}\``,
+      );
+    }
+  }
+  setups.forEach((item, index) => {
+    const prefix = `setups[${index}]`;
+    const setup = requireSceneBundleRecord(item, prefix, command);
+    requireNonEmptyString(setup, "foreshadowId", command);
+    const baseVersion = requireSafeInteger(setup, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`${prefix}.baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+  });
+  payoffs.forEach((item, index) => {
+    const prefix = `payoffs[${index}]`;
+    const payoff = requireSceneBundleRecord(item, prefix, command);
+    requireNonEmptyString(payoff, "foreshadowId", command);
+    const baseVersion = requireSafeInteger(payoff, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`${prefix}.baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+  });
+  return { setups, payoffs, baseVersions };
 }
 
 function requireNonEmptyString(
@@ -1889,6 +2011,13 @@ function requireScanStagingProjectCreatePayload(
   return payload;
 }
 
+function requireProjectDeletePayload(args: CommandArgs): CommandArgs {
+  const command = "project_delete";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
 function requireTreePlanUndoPayload(args: CommandArgs): CommandArgs {
   const command = "tree_plan_undo";
   const payload = requireRecord(args, "payload", command);
@@ -2311,6 +2440,19 @@ function requirePlotSnapshotRecord(
   return value as CommandArgs;
 }
 
+function requirePlotSnapshotVersion(
+  row: CommandArgs,
+  key: string,
+  command: string,
+): void {
+  const version = requireSafeInteger(row, "version", command);
+  if (version < 0) {
+    throw new Error(
+      `invalid args \`${key}.version\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+}
+
 function validateOptionalPlotSnapshotId(
   row: CommandArgs,
   key: string,
@@ -2341,6 +2483,7 @@ function requirePlotThreadRestoreSnapshotPayload(
   const threadValue = payload.thread;
   if (threadValue !== null) {
     const thread = requirePlotSnapshotRecord(threadValue, "thread", command);
+    requirePlotSnapshotVersion(thread, "thread", command);
     for (const key of [
       "id",
       "projectId",
@@ -2364,6 +2507,7 @@ function requirePlotThreadRestoreSnapshotPayload(
 
   const links = requireArray(payload, "links", command).map((value, index) => {
     const link = requirePlotSnapshotRecord(value, `links[${index}]`, command);
+    requirePlotSnapshotVersion(link, `links[${index}]`, command);
     for (const key of [
       "id",
       "threadId",
@@ -2394,6 +2538,7 @@ function requirePlotThreadRestoreSnapshotPayload(
         `branches[${index}]`,
         command,
       );
+      requirePlotSnapshotVersion(branch, `branches[${index}]`, command);
       for (const key of [
         "id",
         "projectId",
@@ -2449,26 +2594,73 @@ function requirePlotThreadDeleteSnapshotPayload(
   const payload = requireRecord(args, "payload", command);
   requireNonEmptyString(payload, "requestId", command);
   const projectId = requireNonEmptyString(payload, "projectId", command);
-  const link = requirePlotSnapshotRecord(payload.link, "link", command);
-  for (const key of [
-    "id",
-    "threadId",
-    "nodeId",
-    "phaseType",
-    "createdAt",
-    "updatedAt",
-  ] as const) {
-    requireNonEmptyString(link, key, command);
-  }
-  nullableString(link, "note", command);
-  nullableString(link, "sortOrder", command);
-  if (
-    !["introduce", "develop", "turn", "climax", "resolve"].includes(
-      String(link.phaseType),
-    )
-  ) {
+  const hasThread = payload.thread !== undefined && payload.thread !== null;
+  const hasLink = payload.link !== undefined && payload.link !== null;
+  if (hasThread === hasLink) {
     throw new Error(
-      `invalid args \`phaseType\` for command \`${command}\`: invalid plot phase`,
+      `invalid args for command \`${command}\`: expected exactly one of thread or link`,
+    );
+  }
+
+  if (hasThread) {
+    const thread = requirePlotSnapshotRecord(payload.thread, "thread", command);
+    requirePlotSnapshotVersion(thread, "thread", command);
+    for (const key of [
+      "id",
+      "projectId",
+      "name",
+      "sortOrder",
+      "createdAt",
+      "updatedAt",
+    ] as const) {
+      requireNonEmptyString(thread, key, command);
+    }
+    nullableString(thread, "color", command);
+    nullableString(thread, "description", command);
+    validateOptionalPlotSnapshotId(thread, "startNodeId", command);
+    validateOptionalPlotSnapshotId(thread, "endNodeId", command);
+    if (thread.projectId !== projectId) {
+      throw new Error(
+        `invalid args \`thread.projectId\` for command \`${command}\`: expected snapshot projectId`,
+      );
+    }
+  }
+
+  const validateLink = (value: unknown, key: string): CommandArgs => {
+    const link = requirePlotSnapshotRecord(value, key, command);
+    requirePlotSnapshotVersion(link, key, command);
+    for (const field of [
+      "id",
+      "threadId",
+      "nodeId",
+      "phaseType",
+      "createdAt",
+      "updatedAt",
+    ] as const) {
+      requireNonEmptyString(link, field, command);
+    }
+    nullableString(link, "note", command);
+    nullableString(link, "sortOrder", command);
+    if (
+      !["introduce", "develop", "turn", "climax", "resolve"].includes(
+        String(link.phaseType),
+      )
+    ) {
+      throw new Error(
+        `invalid args \`phaseType\` for command \`${command}\`: invalid plot phase`,
+      );
+    }
+    return link;
+  };
+  if (hasLink) validateLink(payload.link, "link");
+  const links = Object.hasOwn(payload, "links")
+    ? requireArray(payload, "links", command).map((value, index) =>
+        validateLink(value, `links[${index}]`),
+      )
+    : [];
+  if (hasLink && links.length > 0) {
+    throw new Error(
+      `invalid args \`links\` for command \`${command}\`: marker snapshot cannot contain aggregate links`,
     );
   }
   const branches = requireArray(payload, "branches", command).map(
@@ -2478,6 +2670,7 @@ function requirePlotThreadDeleteSnapshotPayload(
         `branches[${index}]`,
         command,
       );
+      requirePlotSnapshotVersion(branch, `branches[${index}]`, command);
       for (const key of [
         "id",
         "projectId",
@@ -2513,6 +2706,11 @@ function requirePlotThreadDeleteSnapshotPayload(
       `invalid args \`branches\` for command \`${command}\`: duplicate ids`,
     );
   }
+  if (new Set(links.map((link) => link.id)).size !== links.length) {
+    throw new Error(
+      `invalid args \`links\` for command \`${command}\`: duplicate ids`,
+    );
+  }
   return payload;
 }
 
@@ -2522,6 +2720,7 @@ function requirePlotMoveLinkSnapshot(
   command: string,
 ): CommandArgs {
   const link = requirePlotSnapshotRecord(value, key, command);
+  requirePlotSnapshotVersion(link, key, command);
   for (const field of [
     "id",
     "threadId",
@@ -2553,6 +2752,7 @@ function requirePlotMoveBranchSnapshot(
   projectId: string,
 ): CommandArgs {
   const branch = requirePlotSnapshotRecord(value, key, command);
+  requirePlotSnapshotVersion(branch, key, command);
   for (const field of [
     "id",
     "projectId",
@@ -2899,17 +3099,48 @@ function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
       requireNullableSceneBundleString(span, key, command);
     }
   });
+  const foreshadowBaseVersions = requireRecord(
+    payload,
+    "foreshadowBaseVersions",
+    command,
+  );
+  for (const [foreshadowId, version] of Object.entries(
+    foreshadowBaseVersions,
+  )) {
+    if (
+      foreshadowId.length === 0 ||
+      typeof version !== "number" ||
+      !Number.isSafeInteger(version) ||
+      version < 0
+    ) {
+      throw new Error(
+        `invalid args \`foreshadowBaseVersions.${foreshadowId}\` for command \`${command}\``,
+      );
+    }
+  }
   requireArray(payload, "foreshadowSetups", command).forEach((item, index) => {
     const prefix = `foreshadowSetups[${index}]`;
     const setup = requireSceneBundleRecord(item, prefix, command);
     requireString(setup, "id", command);
     requireString(setup, "foreshadowId", command);
+    const baseVersion = requireSafeInteger(setup, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`${prefix}.baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
     requireSceneBundleRange(setup, prefix, "fromPos", "toPos", command);
   });
   requireArray(payload, "foreshadowPayoffs", command).forEach((item, index) => {
     const prefix = `foreshadowPayoffs[${index}]`;
     const payoff = requireSceneBundleRecord(item, prefix, command);
     requireString(payoff, "foreshadowId", command);
+    const baseVersion = requireSafeInteger(payoff, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`${prefix}.baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
     requireSceneBundleRange(payoff, prefix, "fromPos", "toPos", command);
   });
   requireArray(payload, "annotationAnchors", command).forEach((item, index) => {
@@ -2953,6 +3184,37 @@ function requireEventMutationPayload(
       `invalid args \`baseVersion\` for command \`${cmd}\`: expected a non-negative safe integer`,
     );
   }
+  return payload;
+}
+
+const MAX_SCENE_EVENT_LINK_BATCH_SIZE = 10_000;
+
+function requireSceneEventLinkBatchPayload(args: CommandArgs): CommandArgs {
+  const command = "agent_scene_event_link_batch";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "sessionId", command);
+  requireNonEmptyString(payload, "eventId", command);
+  if (Object.hasOwn(payload, "surface")) {
+    requireNonEmptyString(payload, "surface", command);
+  }
+  const sceneIds = requireArray(payload, "sceneIds", command);
+  if (
+    sceneIds.length === 0 ||
+    sceneIds.length > MAX_SCENE_EVENT_LINK_BATCH_SIZE
+  ) {
+    throw new Error(
+      `invalid args \`sceneIds\` for command \`${command}\`: expected 1-${MAX_SCENE_EVENT_LINK_BATCH_SIZE} scene ids`,
+    );
+  }
+  sceneIds.forEach((sceneId, index) => {
+    if (typeof sceneId !== "string" || sceneId.length === 0) {
+      throw new Error(
+        `invalid args \`sceneIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
   return payload;
 }
 
@@ -4140,6 +4402,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  project_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.projectDelete,
+        "projectDelete",
+      )(requireProjectDeletePayload(a));
+      return null;
+    },
+  },
   tree_plan_undo: {
     run: async (b, a) => {
       await requireNapiMethod(
@@ -4956,14 +5228,17 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.plotThreadUpdate(
           requireString(a, "id", "plot_thread_update"),
-          requirePresent(a, "patch", "plot_thread_update"),
+          requirePlotVersionedPatch(a, "plot_thread_update"),
         ),
       ),
   },
   plot_thread_delete: {
     // unit 返りコマンドは null を resolve（ワイヤ同形）
     run: async (b, a) => {
-      await b.plotThreadDelete(requireString(a, "id", "plot_thread_delete"));
+      await b.plotThreadDelete(
+        requireString(a, "id", "plot_thread_delete"),
+        requirePlotBaseVersion(a, "plot_thread_delete"),
+      );
       return null;
     },
   },
@@ -4994,28 +5269,30 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   plot_thread_branch_update: {
-    run: async (b, a) =>
-      parseWire(
+    run: async (b, a) => {
+      const id = requireString(a, "id", "plot_thread_branch_update");
+      const patch = requirePlotVersionedPatch(a, "plot_thread_branch_update");
+      return parseWire(
         await requireNapiMethod(
           b,
           b.plotThreadBranchUpdate,
           "plotThreadBranchUpdate",
-        )(
-          requireString(a, "id", "plot_thread_branch_update"),
-          requirePresent(a, "patch", "plot_thread_branch_update"),
-        ),
-      ),
+        )(id, patch),
+      );
+    },
   },
   plot_thread_branch_delete: {
     run: async (b, a) => {
+      const id = requireString(a, "id", "plot_thread_branch_delete");
+      const baseVersion = requirePlotBaseVersion(
+        a,
+        "plot_thread_branch_delete",
+      );
       await requireNapiMethod(
         b,
         b.plotThreadBranchDelete,
         "plotThreadBranchDelete",
-      )(
-        requireString(a, "id", "plot_thread_branch_delete"),
-        optionalNumber(a, "baseVersion", "plot_thread_branch_delete"),
-      );
+      )(id, baseVersion);
       return null;
     },
   },
@@ -5054,7 +5331,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.plotThreadLinkUpdate(
           requireString(a, "id", "plot_thread_link_update"),
-          requirePresent(a, "patch", "plot_thread_link_update"),
+          requirePlotVersionedPatch(a, "plot_thread_link_update"),
         ),
       ),
   },
@@ -5062,6 +5339,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) => {
       await b.plotThreadLinkDelete(
         requireString(a, "id", "plot_thread_link_delete"),
+        requirePlotBaseVersion(a, "plot_thread_link_delete"),
       );
       return null;
     },
@@ -5092,15 +5370,20 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.foreshadowUpdate(
           requireString(a, "id", "foreshadow_update"),
-          requirePresent(a, "patch", "foreshadow_update"),
+          requireForeshadowVersionedPatch(a, "foreshadow_update"),
         ),
       ),
   },
   foreshadow_delete: {
-    run: async (b, a) => {
-      await b.foreshadowDelete(requireString(a, "id", "foreshadow_delete"));
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowDelete(
+          requireString(a, "id", "foreshadow_delete"),
+          requireString(a, "projectId", "foreshadow_delete"),
+          requireForeshadowBaseVersion(a, "foreshadow_delete"),
+          requireString(a, "sessionId", "foreshadow_delete"),
+        ),
+      ),
   },
   foreshadow_list_with_labels: {
     run: async (b, a) =>
@@ -5160,13 +5443,13 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   foreshadow_update_setup: {
-    run: async (b, a) => {
-      await b.foreshadowUpdateSetup(
-        requireString(a, "id", "foreshadow_update_setup"),
-        requirePresent(a, "patch", "foreshadow_update_setup"),
-      );
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowUpdateSetup(
+          requireString(a, "id", "foreshadow_update_setup"),
+          requireForeshadowVersionedPatch(a, "foreshadow_update_setup"),
+        ),
+      ),
   },
   foreshadow_get: {
     run: async (b, a) =>
@@ -5175,35 +5458,41 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   foreshadow_link_codex: {
-    run: async (b, a) => {
-      await b.foreshadowLinkCodex(
-        requireString(a, "foreshadowId", "foreshadow_link_codex"),
-        requireString(a, "codexId", "foreshadow_link_codex"),
-      );
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowLinkCodex(
+          requireString(a, "foreshadowId", "foreshadow_link_codex"),
+          requireString(a, "codexId", "foreshadow_link_codex"),
+          requireForeshadowBaseVersion(a, "foreshadow_link_codex"),
+        ),
+      ),
   },
   foreshadow_unlink_codex: {
-    run: async (b, a) => {
-      await b.foreshadowUnlinkCodex(
-        requireString(a, "foreshadowId", "foreshadow_unlink_codex"),
-        requireString(a, "codexId", "foreshadow_unlink_codex"),
-      );
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowUnlinkCodex(
+          requireString(a, "foreshadowId", "foreshadow_unlink_codex"),
+          requireString(a, "codexId", "foreshadow_unlink_codex"),
+          requireForeshadowBaseVersion(a, "foreshadow_unlink_codex"),
+        ),
+      ),
   },
   foreshadow_mark_linked_codex_dirty: {
-    run: async (b, a) => {
-      await requireNapiMethod(
-        b,
-        b.foreshadowMarkLinkedCodexDirty,
-        "foreshadowMarkLinkedCodexDirty",
-      )(
-        requireString(a, "projectId", "foreshadow_mark_linked_codex_dirty"),
-        requireString(a, "codexEntryId", "foreshadow_mark_linked_codex_dirty"),
-      );
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.foreshadowMarkLinkedCodexDirty,
+          "foreshadowMarkLinkedCodexDirty",
+        )(
+          requireString(a, "projectId", "foreshadow_mark_linked_codex_dirty"),
+          requireString(
+            a,
+            "codexEntryId",
+            "foreshadow_mark_linked_codex_dirty",
+          ),
+        ),
+      ),
   },
   foreshadow_list_linked_codex: {
     run: async (b, a) =>
@@ -5217,39 +5506,50 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     // strength は Option<String>: 文字列以外（null / 省略）は None（列クリア）。
     run: async (b, a) => {
       const strength = typeof a.strength === "string" ? a.strength : undefined;
-      await b.foreshadowSetSetupStrength(
-        requireString(a, "setupId", "foreshadow_set_setup_strength"),
-        strength,
+      return parseWire(
+        await b.foreshadowSetSetupStrength(
+          requireString(a, "setupId", "foreshadow_set_setup_strength"),
+          strength,
+          requireForeshadowBaseVersion(a, "foreshadow_set_setup_strength"),
+        ),
       );
-      return null;
     },
   },
   foreshadow_setup_create_ai: {
     // FE は 12 個の flat な camelCase キーを送る（payload ラップ無し）。args
     // オブジェクトをそのまま渡し、napi 側 from_wire が SetupCreateAiInput に落とす。
     run: async (b, a) => {
-      await b.foreshadowSetupCreateAi(a);
-      return null;
+      requireForeshadowBaseVersion(a, "foreshadow_setup_create_ai");
+      return parseWire(await b.foreshadowSetupCreateAi(a));
     },
   },
   foreshadow_resolve_orphan: {
     // Option<String> — reinsert 時のみ new_id、その他 null（parseWire で復元）。
-    run: async (b, a) =>
-      parseWire(
-        await b.foreshadowResolveOrphan(
-          requirePresent(a, "payload", "foreshadow_resolve_orphan"),
-        ),
-      ),
+    run: async (b, a) => {
+      const payload = requireRecord(a, "payload", "foreshadow_resolve_orphan");
+      requireForeshadowBaseVersion(payload, "foreshadow_resolve_orphan");
+      return parseWire(await b.foreshadowResolveOrphan(payload));
+    },
   },
   foreshadow_save_anchors_for_scene: {
     run: async (b, a) => {
-      await b.foreshadowSaveAnchorsForScene(
-        requireString(a, "sceneId", "foreshadow_save_anchors_for_scene"),
-        requirePresent(a, "setups", "foreshadow_save_anchors_for_scene"),
-        requirePresent(a, "payoffs", "foreshadow_save_anchors_for_scene"),
-        requireNumber(a, "docContentSize", "foreshadow_save_anchors_for_scene"),
+      const { setups, payoffs, baseVersions } = requireForeshadowAnchorPayloads(
+        a,
+        "foreshadow_save_anchors_for_scene",
       );
-      return null;
+      return parseWire(
+        await b.foreshadowSaveAnchorsForScene(
+          requireString(a, "sceneId", "foreshadow_save_anchors_for_scene"),
+          setups,
+          payoffs,
+          baseVersions,
+          requireNumber(
+            a,
+            "docContentSize",
+            "foreshadow_save_anchors_for_scene",
+          ),
+        ),
+      );
     },
   },
   foreshadow_load_anchors_for_scene: {
@@ -5351,9 +5651,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   agent_foreshadow_update: {
     run: async (b, a) =>
       parseWire(
-        await b.agentForeshadowUpdate(
-          requirePresent(a, "payload", "agent_foreshadow_update"),
-        ),
+        await b.agentForeshadowUpdate(requireAgentForeshadowUpdatePayload(a)),
       ),
   },
   agent_event_create: {
@@ -5404,6 +5702,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.agentSceneEventLink(
           requirePresent(a, "payload", "agent_scene_event_link"),
         ),
+      ),
+  },
+  agent_scene_event_link_batch: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.agentSceneEventLinkBatch,
+          "agentSceneEventLinkBatch",
+        )(requireSceneEventLinkBatchPayload(a)),
       ),
   },
   agent_scene_event_unlink: {

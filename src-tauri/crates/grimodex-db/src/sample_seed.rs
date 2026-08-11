@@ -354,8 +354,8 @@ fn insert_seed_rows(
         conn.execute(
             "INSERT INTO foreshadow_setups
                 (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
-                 attribution, is_orphan, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
+                 attribution, is_orphan, semantic_key, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?10)",
             rusqlite::params![
                 setup.id,
                 setup.foreshadow_id,
@@ -365,6 +365,10 @@ fn insert_seed_rows(
                 setup.kind,
                 setup.strength,
                 setup.attribution,
+                format!(
+                    "{}|{}|{}|{}",
+                    setup.foreshadow_id, setup.scene_id, setup.from_pos, setup.to_pos
+                ),
                 now_ms,
             ],
         )?;

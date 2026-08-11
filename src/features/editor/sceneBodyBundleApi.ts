@@ -1,5 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import type { SceneBodyDerivedSnapshot } from "./sceneBodySnapshot";
+import { normalizeForeshadowRow } from "@/features/foreshadow/normalizeForeshadowRow";
+import type { ForeshadowRow } from "@/features/foreshadow/types";
 
 export interface SaveSceneBodyBundlePayload extends SceneBodyDerivedSnapshot {
   sceneId: string;
@@ -16,13 +18,22 @@ export interface SaveSceneBodyBundleResult {
   unplacedBeatPreview: string | null;
   contentVersion: number;
   contentUpdatedAt: string;
+  foreshadowRows: ForeshadowRow[];
   dbTransactionCount: number;
 }
 
 export async function saveSceneBodyBundle(
   payload: SaveSceneBodyBundlePayload,
 ): Promise<SaveSceneBodyBundleResult> {
-  return invoke<SaveSceneBodyBundleResult>("save_scene_body_bundle", {
+  const result = await invoke<
+    Omit<SaveSceneBodyBundleResult, "foreshadowRows"> & {
+      foreshadowRows: unknown[];
+    }
+  >("save_scene_body_bundle", {
     payload,
   });
+  return {
+    ...result,
+    foreshadowRows: result.foreshadowRows.map(normalizeForeshadowRow),
+  };
 }

@@ -2245,6 +2245,28 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     });
   });
 
+  it("leaves dependent branches anchored when another marker shares the origin", () => {
+    seedBranch();
+    usePlotThreadStore.setState({
+      links: [lk("lB", "B", "s1"), lk("lB2", "B", "s1")],
+    });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+
+    const marker = getByTestId("plot-marker-lB");
+    fireEvent.mouseDown(marker, { clientX: 150, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
+
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: { nodeId: "s2" },
+    });
+  });
+
   it("別スレッドへドロップ → エッジの構造側を付け替え（新規作らない）", () => {
     seedBranch();
     const moveMarkerBundle = vi.fn(async () => {});

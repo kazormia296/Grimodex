@@ -1,7 +1,10 @@
 //! Release Gate B Foundation — Narrative runtime authority integration.
 
 use grimodex_db::import::{apply_commit, CreateCaptureInput, ImportApplyCommitPayload};
-use grimodex_db::narrative_extraction::{self, CreateRunPayload};
+use grimodex_db::narrative_extraction::{
+    self, ClaimTaskPayload, CreateRunPayload, CreateTaskSeed, FailTaskPayload, FinishTaskPayload,
+    RunRefPayload,
+};
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, require_manual_apply_authority_in_tx,
     require_narrative_apply_allowed, require_narrative_extraction_allowed,
@@ -10,6 +13,117 @@ use grimodex_db::{
     NARRATIVE_ENGINE_DISABLED, NARRATIVE_GENERIC_IMPORT_DISABLED, NARRATIVE_REVIEW_ONLY,
 };
 use serde_json::json;
+
+fn runtime_db() -> Database {
+    let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed project");
+    db
+}
+
+fn create_run_with_task(db: &Database, run_id: &str, task_id: &str) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.into()),
+            project_id: "project-1".into(),
+            surface_path_id: "chronicle.extract".into(),
+            scope_json: json!({}),
+            spec_json: json!({}),
+            spec_digest: format!("digest-{run_id}"),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.into()),
+                task_kind: "extract_window".into(),
+                input_json: Some(json!({})),
+                priority: None,
+            }],
+        },
+    )
+    .expect("create run");
+}
+
+fn claim_task(db: &Database, run_id: &str, lease_owner: &str) -> String {
+    let claimed = narrative_extraction::narrative_extraction_claim_task(
+        db,
+        ClaimTaskPayload {
+            run_id: run_id.into(),
+            project_id: "project-1".into(),
+            lease_owner: lease_owner.into(),
+            lease_duration_secs: Some(300),
+            task_kinds: None,
+        },
+    )
+    .expect("claim task");
+    assert_eq!(claimed["claimed"], true);
+    claimed["task"]["attemptId"]
+        .as_str()
+        .expect("attempt id")
+        .to_string()
+}
+
+fn disable_runtime(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("load policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "disabled".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("disable runtime");
+}
+
+fn assert_task_terminal_and_lease_released(db: &Database, task_id: &str, status: &str) {
+    let state = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, lease_owner, lease_expires_at, heartbeat_at
+                   FROM narrative_extraction_tasks
+                  WHERE id = ?1",
+                [task_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )?)
+        })
+        .expect("load task state");
+    assert_eq!(state.0, status);
+    assert_eq!(state.1, None, "lease owner must be released");
+    assert_eq!(state.2, None, "lease expiry must be released");
+    assert_eq!(state.3, None, "heartbeat must be released");
+}
+
+fn assert_run_status(db: &Database, run_id: &str, status: &str) {
+    let actual = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                [run_id],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .expect("load run status");
+    assert_eq!(actual, status);
+}
 
 #[test]
 fn workspace_defaults_block_apply_and_allow_undo() {
@@ -67,6 +181,79 @@ fn create_run_is_denied_when_runtime_is_disabled() {
 }
 
 #[test]
+fn disabled_runtime_still_allows_in_flight_work_to_terminalize_and_release_leases() {
+    let db = runtime_db();
+    create_run_with_task(&db, "run-finish", "task-finish");
+    create_run_with_task(&db, "run-fail", "task-fail");
+    create_run_with_task(&db, "run-cancel", "task-cancel");
+    create_run_with_task(&db, "run-claim-blocked", "task-claim-blocked");
+
+    let finish_attempt = claim_task(&db, "run-finish", "worker-finish");
+    let fail_attempt = claim_task(&db, "run-fail", "worker-fail");
+    let _cancel_attempt = claim_task(&db, "run-cancel", "worker-cancel");
+
+    disable_runtime(&db);
+
+    let claim_error = narrative_extraction::narrative_extraction_claim_task(
+        &db,
+        ClaimTaskPayload {
+            run_id: "run-claim-blocked".into(),
+            project_id: "project-1".into(),
+            lease_owner: "worker-blocked".into(),
+            lease_duration_secs: Some(300),
+            task_kinds: None,
+        },
+    )
+    .expect_err("disabled runtime must reject new claims");
+    assert!(claim_error.to_string().contains(NARRATIVE_ENGINE_DISABLED));
+
+    narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: "run-finish".into(),
+            project_id: "project-1".into(),
+            task_id: "task-finish".into(),
+            attempt_id: finish_attempt,
+            lease_owner: "worker-finish".into(),
+            output_json: Some(json!({ "ok": true })),
+            artifacts: vec![],
+        },
+    )
+    .expect("finish in-flight task after disable");
+
+    narrative_extraction::narrative_extraction_fail_task(
+        &db,
+        FailTaskPayload {
+            run_id: "run-fail".into(),
+            project_id: "project-1".into(),
+            task_id: "task-fail".into(),
+            attempt_id: fail_attempt,
+            lease_owner: "worker-fail".into(),
+            error_message: "worker stopped after policy change".into(),
+            output_json: None,
+            requeue: Some(false),
+        },
+    )
+    .expect("fail in-flight task after disable");
+
+    narrative_extraction::narrative_extraction_cancel_run(
+        &db,
+        RunRefPayload {
+            run_id: "run-cancel".into(),
+            project_id: "project-1".into(),
+        },
+    )
+    .expect("cancel in-flight run after disable");
+
+    assert_task_terminal_and_lease_released(&db, "task-finish", "completed");
+    assert_run_status(&db, "run-finish", "completed");
+    assert_task_terminal_and_lease_released(&db, "task-fail", "failed");
+    assert_run_status(&db, "run-fail", "failed");
+    assert_task_terminal_and_lease_released(&db, "task-cancel", "cancelled");
+    assert_run_status(&db, "run-cancel", "cancelled");
+}
+
+#[test]
 fn import_capture_is_denied_when_generic_import_is_disabled() {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open");
     db.migrate().expect("migrate");
@@ -81,7 +268,9 @@ fn import_capture_is_denied_when_generic_import_is_disabled() {
         },
     )
     .expect_err("capture must be denied");
-    assert!(error.to_string().contains(NARRATIVE_GENERIC_IMPORT_DISABLED));
+    assert!(error
+        .to_string()
+        .contains(NARRATIVE_GENERIC_IMPORT_DISABLED));
 }
 
 #[test]

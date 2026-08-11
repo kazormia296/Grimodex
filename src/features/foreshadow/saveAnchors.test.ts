@@ -8,7 +8,7 @@ import { ForeshadowPayoffMark } from "./marks/ForeshadowPayoffMark";
 // vi.mock() is hoisted — use vi.hoisted() so the refs are available in the factory
 const { mockFrom, mockInvoke } = vi.hoisted(() => ({
   mockFrom: vi.fn(),
-  mockInvoke: vi.fn().mockResolvedValue(undefined),
+  mockInvoke: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/db/client", () => ({
@@ -67,7 +67,11 @@ describe("extractSetupAnchors", () => {
         tr.addMark(
           from,
           to,
-          setupMarkType.create({ setupId: "s-001", foreshadowId: "f-001" }),
+          setupMarkType.create({
+            setupId: "s-001",
+            foreshadowId: "f-001",
+            baseVersion: 7,
+          }),
         );
         return true;
       })
@@ -77,6 +81,7 @@ describe("extractSetupAnchors", () => {
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("s-001");
     expect(result[0].foreshadowId).toBe("f-001");
+    expect(result[0].baseVersion).toBe(7);
     expect(result[0].sceneId).toBe("scene-1");
     expect(result[0].fromPos).toBeGreaterThanOrEqual(1);
     expect(result[0].toPos).toBeGreaterThan(result[0].fromPos);
@@ -93,12 +98,20 @@ describe("extractSetupAnchors", () => {
         tr.addMark(
           1,
           5,
-          setupMarkType.create({ setupId: "s-A", foreshadowId: "f-1" }),
+          setupMarkType.create({
+            setupId: "s-A",
+            foreshadowId: "f-1",
+            baseVersion: 2,
+          }),
         );
         tr.addMark(
           9,
           14,
-          setupMarkType.create({ setupId: "s-B", foreshadowId: "f-2" }),
+          setupMarkType.create({
+            setupId: "s-B",
+            foreshadowId: "f-2",
+            baseVersion: 5,
+          }),
         );
         return true;
       })
@@ -137,7 +150,10 @@ describe("extractPayoffAnchors", () => {
         tr.addMark(
           from,
           to,
-          payoffMarkType.create({ foreshadowId: "f-payoff" }),
+          payoffMarkType.create({
+            foreshadowId: "f-payoff",
+            baseVersion: 11,
+          }),
         );
         return true;
       })
@@ -146,6 +162,7 @@ describe("extractPayoffAnchors", () => {
     const result = extractPayoffAnchors("scene-1", editor.state.doc);
     expect(result).toHaveLength(1);
     expect(result[0].foreshadowId).toBe("f-payoff");
+    expect(result[0].baseVersion).toBe(11);
     expect(result[0].sceneId).toBe("scene-1");
     expect(result[0].fromPos).toBeGreaterThanOrEqual(1);
     expect(result[0].toPos).toBeGreaterThan(result[0].fromPos);
@@ -158,7 +175,7 @@ describe("extractPayoffAnchors", () => {
 describe("saveForeshadowAnchors FK sweep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockInvoke.mockResolvedValue(undefined);
+    mockInvoke.mockResolvedValue([]);
   });
 
   function addSetupMark(
@@ -167,13 +184,18 @@ describe("saveForeshadowAnchors FK sweep", () => {
     to: number,
     setupId: string,
     foreshadowId: string,
+    baseVersion = 0,
   ) {
     editor
       .chain()
       .focus()
       .command(({ tr }) => {
         const markType = editor.schema.marks["foreshadowSetup"];
-        tr.addMark(from, to, markType.create({ setupId, foreshadowId }));
+        tr.addMark(
+          from,
+          to,
+          markType.create({ setupId, foreshadowId, baseVersion }),
+        );
         return true;
       })
       .run();
@@ -191,8 +213,10 @@ describe("saveForeshadowAnchors FK sweep", () => {
     expect(mockInvoke).toHaveBeenCalledOnce();
     const payload = mockInvoke.mock.calls[0][1] as {
       setups: Array<{ id: string }>;
+      baseVersions: Record<string, number>;
     };
     expect(payload.setups.some((s) => s.id === "s-1")).toBe(true);
+    expect(payload.baseVersions).toEqual({ "f-valid": 0 });
     editor.destroy();
   });
 
@@ -250,9 +274,11 @@ describe("saveForeshadowAnchors FK sweep", () => {
     const payload = mockInvoke.mock.calls[0][1] as {
       setups: unknown[];
       payoffs: unknown[];
+      baseVersions: Record<string, number>;
     };
     expect(payload.setups).toEqual([]);
     expect(payload.payoffs).toEqual([]);
+    expect(payload.baseVersions).toEqual({});
     editor.destroy();
   });
 

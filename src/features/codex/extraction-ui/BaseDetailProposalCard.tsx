@@ -39,9 +39,12 @@ export function BaseDetailProposalCard({
   onSelect,
   onDecide,
 }: BaseDetailProposalCardProps) {
-  const blocked = proposal.applicability === "blocked" || Boolean(proposal.unbound);
+  const blocked =
+    proposal.applicability === "blocked" || Boolean(proposal.unbound);
+  const applied = Boolean(proposal.application);
   const safeHint =
     !blocked &&
+    !applied &&
     proposal.status === "unreviewed" &&
     isSafeForCodexBaseDetailBulkApprove(proposal.safety);
   const next = formatProjectedDetailValue(proposal.proposal.payload.value);
@@ -88,7 +91,7 @@ export function BaseDetailProposalCard({
         </span>
       </button>
 
-      {!blocked && (
+      {!blocked && !applied && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"

@@ -27,6 +27,11 @@ import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
 import { getExternalWriteProjectors } from "@/application/externalWrites/externalWriteProjectors";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
+import {
+  parseChangePayload,
+  payloadString,
+  payloadStringArray,
+} from "./changeEventPayload";
 
 const POLL_MS = 750;
 
@@ -186,38 +191,6 @@ function invalidateHistoryForEntity(
   history.invalidateForEntity(kind, entityId);
 }
 
-function parseChangePayload(payload: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(payload);
-    return parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function payloadString(
-  payload: Record<string, unknown> | null,
-  key: string,
-): string | null {
-  const value = payload?.[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function payloadStringArray(
-  payload: Record<string, unknown> | null,
-  key: string,
-): string[] {
-  const value = payload?.[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter(
-    (item): item is string => typeof item === "string" && item.length > 0,
-  );
-}
-
 type ChronicleBulkEventKind =
   | "eventDelete"
   | "eventClearDate"
@@ -360,9 +333,14 @@ function invalidateEventMetadataHistory(event: ChangeEventRow): void {
   if (event.opType === "event.stamp" || event.opType === "event.unstamp") {
     const payload = parseChangePayload(event.payload);
     const eventId = event.entityId ?? payloadString(payload, "eventId");
-    const sceneId = event.sceneId ?? payloadString(payload, "sceneId");
+    const sceneIds = new Set([
+      event.sceneId ?? payloadString(payload, "sceneId"),
+      ...payloadStringArray(payload, "sceneIds"),
+    ]);
     invalidateHistoryForEntity("event", eventId);
-    invalidateHistoryForEntity("tree_batch", sceneId);
+    for (const sceneId of sceneIds) {
+      invalidateHistoryForEntity("tree_batch", sceneId);
+    }
   }
 }
 
@@ -451,6 +429,7 @@ async function fanOut(
   }
   if (domains.has("plot")) {
     if (!isAuthoritative()) return;
+    useGlobalHistoryStore.getState().invalidateKind("plot");
     await projectors.reloadPlotThreads(projectId);
     if (!isAuthoritative()) return;
   }
@@ -509,7 +488,6 @@ async function fanOut(
     }
   }
 
-  // Non-editor entity events may still target codex/snippet tabs open in editor.
   for (const ev of events) {
     if (!isAuthoritative()) return;
     const chronicleBulk = bulkTargets.get(ev);

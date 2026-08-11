@@ -286,6 +286,18 @@ fn scene_event_request_hash(
     )
 }
 
+fn scene_event_link_batch_request_hash(
+    payload: &AgentSceneEventLinkBatchPayload,
+) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.request_id.clear();
+    normalized.session_id.clear();
+    normalized.surface = None;
+    normalized.scene_ids.sort();
+    normalized.scene_ids.dedup();
+    idempotency_hash("agent_scene_event_link_batch", &normalized)
+}
+
 fn event_relation_request_hash(
     payload: &AgentEventRelationPayload,
     add: bool,
@@ -574,9 +586,7 @@ pub(crate) fn apply_codex_entry_create_in_tx(
             update_summary: true,
             update_content: true,
             model: input.model,
-            chat_msg_id: input
-                .chat_message_id
-                .or(input.source_chat_message_id),
+            chat_msg_id: input.chat_message_id.or(input.source_chat_message_id),
             trace_id: input.trace_id,
         },
     )?;
@@ -983,7 +993,9 @@ pub(crate) fn delete_codex_entry_cascade(
                 version
             );
         }
-        anyhow::bail!("codex entry '{entry_id}' not found in project '{project_id}' during restore");
+        anyhow::bail!(
+            "codex entry '{entry_id}' not found in project '{project_id}' during restore"
+        );
     }
     Ok(())
 }
@@ -1934,6 +1946,15 @@ fn undo_journal_change_event(
             let snap: Value = serde_json::from_str(raw)?;
             if snap.get("participants").is_some() && snap.get("eventData").is_none() {
                 "event.participants".to_string()
+            } else if is_scene_event_link_batch_snapshot(&snap) {
+                let linked = snap["linked"]
+                    .as_bool()
+                    .ok_or_else(|| anyhow::anyhow!("scene link batch snapshot missing linked"))?;
+                if linked {
+                    "event.stamp".to_string()
+                } else {
+                    "event.unstamp".to_string()
+                }
             } else if snap.get("sceneId").is_some() {
                 if snap["linked"].as_bool().unwrap_or(false) {
                     "event.stamp".to_string()
@@ -2014,6 +2035,11 @@ fn enrich_event_replay_change_payload(
     if let Some(id) = snap["sceneId"].as_str() {
         object.insert("sceneId".to_string(), Value::from(id));
     }
+    if is_scene_event_link_batch_snapshot(&snap) {
+        if let Some(scene_ids) = snap["sceneIds"].as_array() {
+            object.insert("sceneIds".to_string(), Value::Array(scene_ids.clone()));
+        }
+    }
     if let Some(id) = snap["causeEventId"].as_str() {
         object.insert("causeEventId".to_string(), Value::from(id));
     }
@@ -2025,6 +2051,48 @@ fn enrich_event_replay_change_payload(
         if !related.is_empty() {
             object.insert("relatedEventIds".to_string(), json!(related));
         }
+    }
+    Ok(())
+}
+
+fn replay_foreshadow_delete_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+) -> anyhow::Result<()> {
+    let raw = row
+        .before_json
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("foreshadow delete journal is missing before_json"))?;
+    let snapshot: Value = serde_json::from_str(raw)?;
+    match direction {
+        "undo" => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let replay_version = crate::narrative_extraction::reapply_created_snapshot(
+                conn,
+                project_id,
+                &row.entity_id,
+                &snapshot,
+                row.base_version,
+                &now,
+            )?;
+            grimodex_core::undo_journal::advance_foreshadow_journal_state_token(
+                conn,
+                project_id,
+                &row.entity_id,
+                row.base_version,
+                replay_version,
+            )?;
+        }
+        "redo" => crate::narrative_extraction::delete_snapshot_at_version(
+            conn,
+            project_id,
+            &row.entity_id,
+            &snapshot,
+            row.result_version,
+        )?,
+        other => anyhow::bail!("invalid undo direction: {other}"),
     }
     Ok(())
 }
@@ -2076,7 +2144,14 @@ pub fn agent_undo_journal_impl(
             // participants + sceneLinks + relations) that the single-table
             // grimodex-core restorers don't understand, so they're handled by
             // the local event restorers; everything else delegates to core.
-            if row.entity_kind == "event" {
+            if row.entity_kind == "foreshadow" && row.op_kind == "delete" {
+                replay_foreshadow_delete_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &row,
+                    &payload.direction,
+                )?;
+            } else if row.entity_kind == "event" {
                 match payload.direction.as_str() {
                     "undo" => revert_event_undo_in_tx(conn, &payload.project_id, &row)?,
                     "redo" => apply_event_redo_in_tx(conn, &payload.project_id, &row)?,
@@ -2187,6 +2262,7 @@ pub struct AgentForeshadowUpdatePayload {
     project_id: String,
     session_id: String,
     foreshadow_id: String,
+    base_version: i64,
     title: Option<String>,
     intent: Option<String>,
     notes: Option<String>,
@@ -2241,7 +2317,7 @@ pub fn agent_foreshadow_update_impl(
     payload: AgentForeshadowUpdatePayload,
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
-        grimodex_core::writes::foreshadow::tracked_foreshadow_update(
+        grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version(
             conn,
             grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
                 project_id: &payload.project_id,
@@ -2258,6 +2334,7 @@ pub fn agent_foreshadow_update_impl(
                     secret: payload.secret,
                 },
             },
+            payload.base_version,
         )?
         .ok_or_else(|| anyhow::anyhow!("foreshadow not found in project"))
         .and_then(agent_write_result_json)
@@ -2388,6 +2465,18 @@ pub struct AgentSceneEventPayload {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentSceneEventLinkBatchPayload {
+    request_id: String,
+    project_id: String,
+    session_id: String,
+    #[serde(default)]
+    surface: Option<String>,
+    event_id: String,
+    scene_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentEventRelationPayload {
     #[serde(default)]
     request_id: Option<String>,
@@ -2505,6 +2594,73 @@ fn collect_participants_json(conn: &rusqlite::Connection, event_id: &str) -> any
     }))
 }
 
+const SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND: &str = "sceneEventLinkBatch";
+
+type SceneEventIncarnations = std::collections::BTreeMap<String, String>;
+
+fn collect_event_scene_links(
+    conn: &rusqlite::Connection,
+    event_id: &str,
+) -> anyhow::Result<SceneEventIncarnations> {
+    let mut statement = conn.prepare(
+        "SELECT scene_id, incarnation_token
+           FROM scene_events WHERE event_id = ?1 ORDER BY scene_id",
+    )?;
+    let scene_links = statement
+        .query_map(rusqlite::params![event_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(scene_links)
+}
+
+fn scene_event_link_batch_snapshot(
+    event_id: &str,
+    scene_ids: &[String],
+    linked: bool,
+    incarnation_tokens: Option<&SceneEventIncarnations>,
+) -> Value {
+    let mut snapshot = json!({
+        "snapshotKind": SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND,
+        "eventId": event_id,
+        "sceneIds": scene_ids,
+        "linked": linked,
+    });
+    if linked && !scene_ids.is_empty() {
+        let tokens = scene_ids
+            .iter()
+            .filter_map(|scene_id| {
+                incarnation_tokens
+                    .and_then(|tokens| tokens.get(scene_id))
+                    .map(|token| (scene_id.clone(), Value::from(token.clone())))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        snapshot["incarnationTokens"] = Value::Object(tokens);
+    }
+    snapshot
+}
+
+fn scene_event_link_snapshot(
+    scene_id: &str,
+    event_id: &str,
+    linked: bool,
+    incarnation_token: Option<&str>,
+) -> Value {
+    let mut snapshot = json!({
+        "sceneId": scene_id,
+        "eventId": event_id,
+        "linked": linked,
+    });
+    if linked {
+        snapshot["incarnationToken"] = Value::from(incarnation_token.unwrap_or_default());
+    }
+    snapshot
+}
+
+fn is_scene_event_link_batch_snapshot(snap: &Value) -> bool {
+    snap["snapshotKind"].as_str() == Some(SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND)
+}
+
 // ---------------------------------------------------------------------------
 // Chronicle undo/redo restorers. The forward writers store either a composite
 // snapshot (`{eventData, participants, sceneLinks, relations}` for
@@ -2542,24 +2698,66 @@ fn batch_insert_event_participants(
     Ok(())
 }
 
-/// Bulk-insert scene links for one event (chunked multi-row `INSERT OR IGNORE`).
+/// Bulk-insert fresh scene-link incarnations for one event. Every successful
+/// physical insertion receives a UUID distinct from any prior incarnation.
 fn batch_insert_scene_events(
     conn: &rusqlite::Connection,
     event_id: &str,
     scene_ids: &[&str],
-) -> anyhow::Result<()> {
-    for chunk in scene_ids.chunks(INSERT_CHUNK_ROWS) {
-        let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
+) -> anyhow::Result<SceneEventIncarnations> {
+    let incarnations = scene_ids
+        .iter()
+        .map(|scene_id| ((*scene_id).to_string(), uuid::Uuid::new_v4().to_string()))
+        .collect::<SceneEventIncarnations>();
+    let rows = incarnations.iter().collect::<Vec<_>>();
+    let mut inserted = 0usize;
+    for chunk in rows.chunks(INSERT_CHUNK_ROWS) {
+        let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(", ");
         let sql = format!(
-            "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES {placeholders}"
+            "INSERT OR IGNORE INTO scene_events
+             (scene_id, event_id, incarnation_token) VALUES {placeholders}"
         );
-        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 2);
-        for scene_id in chunk {
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 3);
+        for (scene_id, token) in chunk {
             params.push(scene_id);
             params.push(&event_id);
+            params.push(token);
         }
-        conn.execute(&sql, params.as_slice())?;
+        inserted += conn.execute(&sql, params.as_slice())?;
     }
+    anyhow::ensure!(
+        inserted == incarnations.len(),
+        "scene-event association changed before insertion"
+    );
+    Ok(incarnations)
+}
+
+/// CAS-delete only the exact scene-link incarnations owned by one journal.
+fn batch_delete_scene_event_incarnations(
+    conn: &rusqlite::Connection,
+    event_id: &str,
+    incarnations: &SceneEventIncarnations,
+) -> anyhow::Result<()> {
+    let rows = incarnations.iter().collect::<Vec<_>>();
+    let mut deleted = 0usize;
+    for chunk in rows.chunks(INSERT_CHUNK_ROWS) {
+        let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
+        let sql = format!(
+            "DELETE FROM scene_events
+             WHERE event_id = ? AND (scene_id, incarnation_token) IN ({placeholders})"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 2 + 1);
+        params.push(&event_id);
+        for (scene_id, token) in chunk {
+            params.push(scene_id);
+            params.push(token);
+        }
+        deleted += conn.execute(&sql, params.as_slice())?;
+    }
+    anyhow::ensure!(
+        deleted == incarnations.len(),
+        "scene-event association incarnation conflict during journal replay"
+    );
     Ok(())
 }
 
@@ -2781,23 +2979,406 @@ fn restore_event_participants_snapshot(
     Ok(())
 }
 
-fn restore_event_scene_snapshot(conn: &rusqlite::Connection, snap: &Value) -> anyhow::Result<()> {
-    let scene_id = snap["sceneId"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("scene snapshot missing sceneId"))?;
-    let event_id = snap["eventId"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("scene snapshot missing eventId"))?;
-    if snap["linked"].as_bool().unwrap_or(false) {
-        conn.execute(
-            "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
-            rusqlite::params![scene_id, event_id],
-        )?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneEventSnapshotShape {
+    Single,
+    Batch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SceneEventAssociationSnapshot {
+    shape: SceneEventSnapshotShape,
+    event_id: String,
+    scene_ids: Vec<String>,
+    linked: bool,
+    incarnations: SceneEventIncarnations,
+}
+
+fn parse_scene_event_association_snapshot(
+    snap: &Value,
+) -> anyhow::Result<SceneEventAssociationSnapshot> {
+    let (shape, event_id, mut scene_ids) = if is_scene_event_link_batch_snapshot(snap) {
+        let event_id = snap["eventId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("scene link batch snapshot missing eventId"))?;
+        let raw_scene_ids = snap["sceneIds"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("scene link batch snapshot missing sceneIds"))?;
+        let scene_ids = raw_scene_ids
+            .iter()
+            .map(|raw| {
+                raw.as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("scene link batch snapshot contains an invalid scene id")
+                    })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        (SceneEventSnapshotShape::Batch, event_id, scene_ids)
     } else {
-        conn.execute(
-            "DELETE FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
-            rusqlite::params![scene_id, event_id],
+        let event_id = snap["eventId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("scene snapshot missing eventId"))?;
+        let scene_id = snap["sceneId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("scene snapshot missing sceneId"))?;
+        (
+            SceneEventSnapshotShape::Single,
+            event_id,
+            vec![scene_id.to_string()],
+        )
+    };
+    anyhow::ensure!(!event_id.is_empty(), "scene snapshot has an empty eventId");
+    let unique = scene_ids.iter().collect::<std::collections::BTreeSet<_>>();
+    anyhow::ensure!(
+        unique.len() == scene_ids.len(),
+        "scene snapshot contains duplicate scene ids"
+    );
+    scene_ids.sort();
+    let linked = snap["linked"]
+        .as_bool()
+        .ok_or_else(|| anyhow::anyhow!("scene snapshot missing linked"))?;
+    let mut incarnations = SceneEventIncarnations::new();
+    if linked {
+        match shape {
+            SceneEventSnapshotShape::Single => {
+                let token = snap
+                    .get("incarnationToken")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                incarnations.insert(scene_ids[0].clone(), token.to_string());
+            }
+            SceneEventSnapshotShape::Batch => {
+                if let Some(raw_tokens) = snap.get("incarnationTokens") {
+                    let tokens = raw_tokens.as_object().ok_or_else(|| {
+                        anyhow::anyhow!("scene link batch incarnationTokens must be an object")
+                    })?;
+                    anyhow::ensure!(
+                        tokens.len() == scene_ids.len(),
+                        "scene link batch incarnationTokens do not match sceneIds"
+                    );
+                    for scene_id in &scene_ids {
+                        let token =
+                            tokens
+                                .get(scene_id)
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "scene link batch snapshot is missing an incarnation token"
+                                    )
+                                })?;
+                        incarnations.insert(scene_id.clone(), token.to_string());
+                    }
+                } else {
+                    incarnations.extend(
+                        scene_ids
+                            .iter()
+                            .map(|scene_id| (scene_id.clone(), String::new())),
+                    );
+                }
+            }
+        }
+    } else {
+        anyhow::ensure!(
+            snap.get("incarnationToken").is_none()
+                && snap
+                    .get("incarnationTokens")
+                    .and_then(Value::as_object)
+                    .is_none_or(serde_json::Map::is_empty),
+            "unlinked scene snapshot must not carry incarnation tokens"
+        );
+    }
+    Ok(SceneEventAssociationSnapshot {
+        shape,
+        event_id: event_id.to_string(),
+        scene_ids,
+        linked,
+        incarnations,
+    })
+}
+
+fn ensure_scene_event_association_scope(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    snapshot: &SceneEventAssociationSnapshot,
+) -> anyhow::Result<()> {
+    let event_owned: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![snapshot.event_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        event_owned == 1,
+        "event '{}' not found in project '{}' during scene-link replay",
+        snapshot.event_id,
+        project_id
+    );
+    for scene_id in &snapshot.scene_ids {
+        let scene_owned: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM tree_nodes
+             WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            rusqlite::params![scene_id, project_id],
+            |row| row.get(0),
         )?;
+        anyhow::ensure!(
+            scene_owned == 1,
+            "scene '{}' not found in project '{}' during scene-link replay",
+            scene_id,
+            project_id
+        );
+    }
+    Ok(())
+}
+
+fn validate_scene_event_association_source(
+    conn: &rusqlite::Connection,
+    source: &SceneEventAssociationSnapshot,
+) -> anyhow::Result<()> {
+    let current = collect_event_scene_links(conn, &source.event_id)?;
+    for scene_id in &source.scene_ids {
+        let actual = current.get(scene_id);
+        let valid = if source.linked {
+            actual == source.incarnations.get(scene_id)
+        } else {
+            actual.is_none()
+        };
+        anyhow::ensure!(
+            valid,
+            "scene-event association '{}' incarnation conflict during journal replay",
+            scene_id
+        );
+    }
+    Ok(())
+}
+
+fn set_scene_event_snapshot_incarnations(
+    snap: &mut Value,
+    parsed: &SceneEventAssociationSnapshot,
+    incarnations: &SceneEventIncarnations,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        parsed.linked,
+        "cannot attach tokens to an unlinked snapshot"
+    );
+    match parsed.shape {
+        SceneEventSnapshotShape::Single => {
+            let token = incarnations
+                .get(&parsed.scene_ids[0])
+                .ok_or_else(|| anyhow::anyhow!("fresh scene-link token is missing"))?;
+            snap["incarnationToken"] = Value::from(token.clone());
+        }
+        SceneEventSnapshotShape::Batch => {
+            let tokens = parsed
+                .scene_ids
+                .iter()
+                .map(|scene_id| {
+                    incarnations
+                        .get(scene_id)
+                        .cloned()
+                        .map(|token| (scene_id.clone(), Value::from(token)))
+                        .ok_or_else(|| anyhow::anyhow!("fresh scene-link token is missing"))
+                })
+                .collect::<anyhow::Result<serde_json::Map<_, _>>>()?;
+            snap["incarnationTokens"] = Value::Object(tokens);
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_scene_event_snapshot_incarnation(
+    raw: &str,
+    event_id: &str,
+    scene_id: &str,
+    previous_token: &str,
+    replay_token: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut snap: Value = serde_json::from_str(raw)?;
+    if snap["eventId"].as_str() != Some(event_id) || snap["linked"].as_bool() != Some(true) {
+        return Ok(None);
+    }
+    let changed = if is_scene_event_link_batch_snapshot(&snap) {
+        let includes_scene = snap["sceneIds"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(scene_id)));
+        if !includes_scene {
+            false
+        } else if snap["incarnationTokens"][scene_id].as_str() == Some(previous_token) {
+            snap["incarnationTokens"][scene_id] = Value::from(replay_token);
+            true
+        } else {
+            false
+        }
+    } else if snap["sceneId"].as_str() == Some(scene_id)
+        && snap["incarnationToken"].as_str() == Some(previous_token)
+    {
+        snap["incarnationToken"] = Value::from(replay_token);
+        true
+    } else {
+        false
+    };
+    Ok(changed.then(|| snap.to_string()))
+}
+
+fn rewrite_scene_event_journal_incarnation_chain(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+    excluded_journal_id: &str,
+    scene_id: &str,
+    previous_token: &str,
+    replay_token: &str,
+) -> anyhow::Result<()> {
+    if previous_token.is_empty() {
+        return Ok(());
+    }
+    let rows = {
+        let mut statement = conn.prepare(
+            "SELECT id, before_json, after_json FROM undo_journal
+              WHERE project_id = ?1 AND entity_kind = 'event'
+                AND entity_id = ?2 AND op_kind = 'update' AND id <> ?3",
+        )?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![project_id, event_id, excluded_journal_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for (journal_id, before_json, after_json) in rows {
+        let rewritten_before = before_json
+            .as_deref()
+            .map(|raw| {
+                rewrite_scene_event_snapshot_incarnation(
+                    raw,
+                    event_id,
+                    scene_id,
+                    previous_token,
+                    replay_token,
+                )
+            })
+            .transpose()?
+            .flatten();
+        let rewritten_after = after_json
+            .as_deref()
+            .map(|raw| {
+                rewrite_scene_event_snapshot_incarnation(
+                    raw,
+                    event_id,
+                    scene_id,
+                    previous_token,
+                    replay_token,
+                )
+            })
+            .transpose()?
+            .flatten();
+        if rewritten_before.is_some() || rewritten_after.is_some() {
+            conn.execute(
+                "UPDATE undo_journal
+                    SET before_json = COALESCE(?1, before_json),
+                        after_json = COALESCE(?2, after_json)
+                  WHERE id = ?3 AND project_id = ?4",
+                rusqlite::params![rewritten_before, rewritten_after, journal_id, project_id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn replay_event_scene_association_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+) -> anyhow::Result<()> {
+    let (source_raw, target_raw, target_column) = match direction {
+        "undo" => (
+            row.after_json.as_deref(),
+            row.before_json.as_deref(),
+            "before_json",
+        ),
+        "redo" => (
+            row.before_json.as_deref(),
+            row.after_json.as_deref(),
+            "after_json",
+        ),
+        other => anyhow::bail!("invalid event replay direction: {other}"),
+    };
+    let source_raw = source_raw
+        .ok_or_else(|| anyhow::anyhow!("scene-event journal is missing its source snapshot"))?;
+    let target_raw = target_raw
+        .ok_or_else(|| anyhow::anyhow!("scene-event journal is missing its target snapshot"))?;
+    let source_value: Value = serde_json::from_str(source_raw)?;
+    let mut target_value: Value = serde_json::from_str(target_raw)?;
+    let source = parse_scene_event_association_snapshot(&source_value)?;
+    let target = parse_scene_event_association_snapshot(&target_value)?;
+    anyhow::ensure!(
+        source.shape == target.shape
+            && source.event_id == target.event_id
+            && source.scene_ids == target.scene_ids
+            && source.event_id == row.entity_id,
+        "scene-event journal snapshots have mismatched association identity"
+    );
+    if source.linked == target.linked {
+        anyhow::ensure!(
+            !source.linked || source.incarnations == target.incarnations,
+            "scene-event no-op journal has mismatched incarnation tokens"
+        );
+    }
+    ensure_scene_event_association_scope(conn, project_id, &source)?;
+    validate_scene_event_association_source(conn, &source)?;
+
+    if source.linked && !target.linked {
+        batch_delete_scene_event_incarnations(conn, &source.event_id, &source.incarnations)?;
+    } else if !source.linked && target.linked {
+        let scene_ids = target
+            .scene_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let fresh = batch_insert_scene_events(conn, &target.event_id, &scene_ids)?;
+        set_scene_event_snapshot_incarnations(&mut target_value, &target, &fresh)?;
+        let updated = match target_column {
+            "before_json" => conn.execute(
+                "UPDATE undo_journal SET before_json = ?1 WHERE id = ?2 AND project_id = ?3",
+                rusqlite::params![target_value.to_string(), row.id, project_id],
+            )?,
+            "after_json" => conn.execute(
+                "UPDATE undo_journal SET after_json = ?1 WHERE id = ?2 AND project_id = ?3",
+                rusqlite::params![target_value.to_string(), row.id, project_id],
+            )?,
+            _ => unreachable!(),
+        };
+        anyhow::ensure!(
+            updated == 1,
+            "scene-event journal disappeared during replay"
+        );
+        for scene_id in &target.scene_ids {
+            let previous = target
+                .incarnations
+                .get(scene_id)
+                .ok_or_else(|| anyhow::anyhow!("target incarnation token is missing"))?;
+            let replay = fresh
+                .get(scene_id)
+                .ok_or_else(|| anyhow::anyhow!("fresh incarnation token is missing"))?;
+            rewrite_scene_event_journal_incarnation_chain(
+                conn,
+                project_id,
+                &target.event_id,
+                &row.id,
+                scene_id,
+                previous,
+                replay,
+            )?;
+        }
     }
     Ok(())
 }
@@ -2975,8 +3556,6 @@ fn restore_event_update_snapshot(
         apply_event_snapshot(conn, project_id, snap, Some(target_version), false)
     } else if snap.get("causeEventId").is_some() {
         restore_event_relation_snapshot(conn, project_id, snap)
-    } else if snap.get("sceneId").is_some() {
-        restore_event_scene_snapshot(conn, snap)
     } else if snap.get("participants").is_some() {
         let event_id = snap["eventId"]
             .as_str()
@@ -2999,6 +3578,11 @@ fn replay_event_update_snapshot(
     snap: &Value,
     direction: &str,
 ) -> anyhow::Result<()> {
+    if is_scene_event_link_batch_snapshot(snap)
+        || (snap.get("sceneId").is_some() && snap.get("eventId").is_some())
+    {
+        return replay_event_scene_association_snapshot(conn, project_id, row, direction);
+    }
     if !event_update_snapshot_uses_occ(snap) {
         return restore_event_update_snapshot(
             conn,
@@ -3478,15 +4062,15 @@ pub fn agent_event_create_impl(
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     let title = payload.title.clone().unwrap_or_default();
-    let ordinal = payload
-        .ordinal
-        .clone()
-        .unwrap_or_else(|| "a0".to_string());
+    let ordinal = payload.ordinal.clone().unwrap_or_else(|| "a0".to_string());
     let precision = payload
         .precision
         .clone()
         .unwrap_or_else(|| "exact".to_string());
-    let kind = payload.kind.clone().unwrap_or_else(|| "generic".to_string());
+    let kind = payload
+        .kind
+        .clone()
+        .unwrap_or_else(|| "generic".to_string());
     let start_granularity = resolve_chronicle_granularity(
         payload.start_granularity.as_deref(),
         "none",
@@ -3505,10 +4089,7 @@ pub fn agent_event_create_impl(
     let scene_ids = payload.scene_ids.clone().unwrap_or_default();
     let secret = payload.secret.unwrap_or(false);
     // 空文字の reveal は NULL（自動導出/恒久秘匿）に正規化。
-    let reveal_scene_id = payload
-        .reveal_scene_id
-        .clone()
-        .filter(|s| !s.is_empty());
+    let reveal_scene_id = payload.reveal_scene_id.clone().filter(|s| !s.is_empty());
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -4257,19 +4838,39 @@ pub fn agent_scene_event_mutate_impl(
                     )
                 })?;
 
-            let existed: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
-                rusqlite::params![payload.scene_id, payload.event_id],
-                |r| r.get(0),
-            )?;
-            let before = json!({
-                "sceneId": payload.scene_id,
-                "eventId": payload.event_id,
-                "linked": existed > 0,
-            })
+            let existing_token = conn
+                .query_row(
+                    "SELECT incarnation_token FROM scene_events
+                     WHERE scene_id = ?1 AND event_id = ?2",
+                    rusqlite::params![payload.scene_id, payload.event_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let before = scene_event_link_snapshot(
+                &payload.scene_id,
+                &payload.event_id,
+                existing_token.is_some(),
+                existing_token.as_deref(),
+            )
             .to_string();
             if let Some(existing) = existing_request {
-                if (existed > 0) == link {
+                let after_raw: String = conn.query_row(
+                    "SELECT after_json FROM undo_journal WHERE id = ?1",
+                    rusqlite::params![undo_id],
+                    |row| row.get(0),
+                )?;
+                let after_value: Value = serde_json::from_str(&after_raw)?;
+                let original_after = parse_scene_event_association_snapshot(&after_value)?;
+                let state_matches = original_after.event_id == payload.event_id
+                    && original_after.scene_ids == vec![payload.scene_id.clone()]
+                    && original_after.linked == link
+                    && if link {
+                        existing_token.as_ref()
+                            == original_after.incarnations.get(&payload.scene_id)
+                    } else {
+                        existing_token.is_none()
+                    };
+                if state_matches {
                     return Ok(existing);
                 }
                 anyhow::bail!(
@@ -4277,23 +4878,40 @@ pub fn agent_scene_event_mutate_impl(
                 );
             }
 
-            if link {
-                conn.execute(
-                    "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
-                    rusqlite::params![payload.scene_id, payload.event_id],
-                )?;
+            let after_token = if link {
+                if let Some(token) = existing_token.as_ref() {
+                    Some(token.clone())
+                } else {
+                    let token = uuid::Uuid::new_v4().to_string();
+                    let inserted = conn.execute(
+                        "INSERT INTO scene_events
+                         (scene_id, event_id, incarnation_token) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![payload.scene_id, payload.event_id, token],
+                    )?;
+                    anyhow::ensure!(inserted == 1, "scene-event association was not inserted");
+                    Some(token)
+                }
             } else {
-                conn.execute(
-                    "DELETE FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
-                    rusqlite::params![payload.scene_id, payload.event_id],
-                )?;
-            }
+                if let Some(token) = existing_token.as_ref() {
+                    let deleted = conn.execute(
+                        "DELETE FROM scene_events
+                         WHERE scene_id = ?1 AND event_id = ?2 AND incarnation_token = ?3",
+                        rusqlite::params![payload.scene_id, payload.event_id, token],
+                    )?;
+                    anyhow::ensure!(
+                        deleted == 1,
+                        "scene-event association incarnation changed before unlink"
+                    );
+                }
+                None
+            };
 
-            let after = json!({
-                "sceneId": payload.scene_id,
-                "eventId": payload.event_id,
-                "linked": link,
-            })
+            let after = scene_event_link_snapshot(
+                &payload.scene_id,
+                &payload.event_id,
+                link,
+                after_token.as_deref(),
+            )
             .to_string();
 
             let op_type = if link { "event.stamp" } else { "event.unstamp" };
@@ -4352,6 +4970,188 @@ pub fn agent_scene_event_mutate_impl(
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
                 Err(e)
+            }
+        }
+    })
+}
+
+pub fn agent_scene_event_link_batch_impl(
+    db: &Database,
+    mut payload: AgentSceneEventLinkBatchPayload,
+) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.request_id, "requestId"),
+        (&payload.project_id, "projectId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.event_id, "eventId"),
+    ] {
+        if value.is_empty() {
+            anyhow::bail!("agent scene event link batch {field} must not be empty");
+        }
+    }
+    if payload.scene_ids.is_empty() {
+        anyhow::bail!("agent scene event link batch sceneIds must not be empty");
+    }
+    if payload.scene_ids.len() > 10_000 {
+        anyhow::bail!("agent scene event link batch sceneIds must contain at most 10000 ids");
+    }
+    payload.scene_ids.sort();
+    payload.scene_ids.dedup();
+    if payload.scene_ids.iter().any(String::is_empty) {
+        anyhow::bail!("agent scene event link batch sceneIds must not contain empty ids");
+    }
+
+    let request_hash = scene_event_link_batch_request_hash(&payload)?;
+    let undo_id = payload.request_id.clone();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let existing_request = existing_request_result(
+                conn,
+                &payload.request_id,
+                &request_hash,
+                "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT",
+            )?;
+
+            let event_version: i64 = conn
+                .query_row(
+                    "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![payload.event_id, payload.project_id],
+                    |row| row.get(0),
+                )
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "event '{}' not found in project '{}'",
+                        payload.event_id,
+                        payload.project_id
+                    )
+                })?;
+
+            for scene_id in &payload.scene_ids {
+                let scene_owned: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM tree_nodes
+                     WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+                    rusqlite::params![scene_id, payload.project_id],
+                    |row| row.get(0),
+                )?;
+                if scene_owned == 0 {
+                    anyhow::bail!(
+                        "scene '{}' not found in project '{}'",
+                        scene_id,
+                        payload.project_id
+                    );
+                }
+            }
+
+            let current_links = collect_event_scene_links(conn, &payload.event_id)?;
+            if let Some(existing) = existing_request {
+                let requested_links_present = payload
+                    .scene_ids
+                    .iter()
+                    .all(|scene_id| current_links.contains_key(scene_id));
+                let after_raw: String = conn.query_row(
+                    "SELECT after_json FROM undo_journal WHERE id = ?1",
+                    rusqlite::params![payload.request_id],
+                    |row| row.get(0),
+                )?;
+                let after_value: Value = serde_json::from_str(&after_raw)?;
+                let original_after = parse_scene_event_association_snapshot(&after_value)?;
+                let owned_delta_matches = original_after.event_id == payload.event_id
+                    && original_after.linked
+                    && original_after.scene_ids.iter().all(|scene_id| {
+                        current_links.get(scene_id) == original_after.incarnations.get(scene_id)
+                    });
+                if requested_links_present && owned_delta_matches {
+                    return Ok(existing);
+                }
+                anyhow::bail!(
+                    "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT: association state changed after original request"
+                );
+            }
+
+            let added_scene_ids: Vec<String> = payload
+                .scene_ids
+                .iter()
+                .filter(|scene_id| !current_links.contains_key(*scene_id))
+                .cloned()
+                .collect();
+            let scene_id_refs: Vec<&str> =
+                added_scene_ids.iter().map(String::as_str).collect();
+            let added_incarnations =
+                batch_insert_scene_events(conn, &payload.event_id, &scene_id_refs)?;
+            let before_snapshot = scene_event_link_batch_snapshot(
+                &payload.event_id,
+                &added_scene_ids,
+                false,
+                None,
+            );
+            let after_snapshot = scene_event_link_batch_snapshot(
+                &payload.event_id,
+                &added_scene_ids,
+                true,
+                Some(&added_incarnations),
+            );
+            let before = before_snapshot.to_string();
+            let after = after_snapshot.to_string();
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
+                    entity_kind: "event",
+                    entity_id: &payload.event_id,
+                    op_kind: "update",
+                    before_json: Some(&before),
+                    after_json: Some(&after),
+                    base_version: event_version,
+                    result_version: event_version,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: None,
+                    domain: "event".to_string(),
+                    op_type: "event.stamp".to_string(),
+                    entity_type: Some("event".to_string()),
+                    entity_id: Some(payload.event_id.clone()),
+                    payload: json!({
+                        "eventId": payload.event_id,
+                        "sceneIds": added_scene_ids,
+                        "requestHash": request_hash,
+                    })
+                    .to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.event_id.clone(),
+                version: event_version,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                grimodex_core::commit_or_rollback(conn)?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
             }
         }
     })
@@ -5086,12 +5886,13 @@ mod tests {
         let project_id = insert_project(&db);
         let foreshadow_id = insert_foreshadow_row(&db, &project_id);
 
-        agent_foreshadow_update_impl(
+        let result = agent_foreshadow_update_impl(
             &db,
             AgentForeshadowUpdatePayload {
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
                 foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
                 title: None,
                 intent: None,
                 notes: None,
@@ -5102,17 +5903,55 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(result["version"], 1);
+        let journal_id = result["undoJournalId"]
+            .as_str()
+            .expect("undo journal id")
+            .to_string();
 
         db.with_conn(|conn| {
-            let payoff: i64 = conn.query_row(
-                "SELECT payoff_confirmed FROM foreshadows WHERE id = ?1",
+            let (payoff, version): (i64, i64) = conn.query_row(
+                "SELECT payoff_confirmed, version FROM foreshadows WHERE id = ?1",
                 rusqlite::params![foreshadow_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
             assert_eq!(payoff, 1);
+            assert_eq!(version, 1);
+            let (base_version, result_version): (i64, i64) = conn.query_row(
+                "SELECT base_version, result_version FROM undo_journal",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!((base_version, result_version), (0, 1));
             let op_type: String =
                 conn.query_row("SELECT op_type FROM change_events", [], |r| r.get(0))?;
             assert_eq!(op_type, "foreshadow.update");
+            Ok(())
+        })
+        .unwrap();
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo foreshadow update");
+        db.with_conn(|conn| {
+            let (payoff, version): (i64, i64) = conn.query_row(
+                "SELECT payoff_confirmed, version FROM foreshadows WHERE id = ?1",
+                rusqlite::params![foreshadow_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!((payoff, version), (0, 2));
+            Ok(())
+        })
+        .unwrap();
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("redo foreshadow update");
+        db.with_conn(|conn| {
+            let (payoff, version): (i64, i64) = conn.query_row(
+                "SELECT payoff_confirmed, version FROM foreshadows WHERE id = ?1",
+                rusqlite::params![foreshadow_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!((payoff, version), (1, 3));
             Ok(())
         })
         .unwrap();
@@ -5129,6 +5968,7 @@ mod tests {
                 project_id,
                 session_id: "sess".to_string(),
                 foreshadow_id: "ghost".to_string(),
+                base_version: 0,
                 title: Some("x".to_string()),
                 intent: None,
                 notes: None,
@@ -5217,6 +6057,22 @@ mod tests {
             surface: None,
             scene_id: scene_id.to_string(),
             event_id: event_id.to_string(),
+        }
+    }
+
+    fn batch_scene_payload(
+        request_id: &str,
+        project_id: &str,
+        event_id: &str,
+        scene_ids: Vec<String>,
+    ) -> AgentSceneEventLinkBatchPayload {
+        AgentSceneEventLinkBatchPayload {
+            request_id: request_id.to_string(),
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            surface: None,
+            event_id: event_id.to_string(),
+            scene_ids,
         }
     }
 
@@ -5428,6 +6284,409 @@ mod tests {
             .contains("AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT"));
     }
 
+    #[test]
+    fn scene_event_link_batch_is_idempotent_and_canonicalizes_scene_ids() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_a = insert_scene(&db, &project_id);
+        let scene_b = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "Batch", vec![], vec![]);
+        let event_version_before = event_version(&db, &event_id);
+        let journals_before = table_count(&db, "undo_journal");
+        let changes_before = table_count(&db, "change_events");
+
+        let empty_error = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload("scene-link-batch-empty", &project_id, &event_id, Vec::new()),
+        )
+        .expect_err("empty sceneIds must be rejected");
+        assert!(empty_error
+            .to_string()
+            .contains("sceneIds must not be empty"));
+        assert_eq!(table_count(&db, "undo_journal"), journals_before);
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+
+        let oversized_error = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload(
+                "scene-link-batch-oversized",
+                &project_id,
+                &event_id,
+                vec![scene_a.clone(); 10_001],
+            ),
+        )
+        .expect_err("oversized sceneIds must be rejected before deduplication");
+        assert!(oversized_error.to_string().contains("at most 10000"));
+        assert_eq!(table_count(&db, "undo_journal"), journals_before);
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+
+        let request_id = "scene-link-batch-idempotent";
+        let first = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload(
+                request_id,
+                &project_id,
+                &event_id,
+                vec![scene_b.clone(), scene_a.clone(), scene_a.clone()],
+            ),
+        )
+        .expect("first batch link");
+        let mut retry_payload = batch_scene_payload(
+            request_id,
+            &project_id,
+            &event_id,
+            vec![scene_a.clone(), scene_b.clone()],
+        );
+        retry_payload.session_id = "sess-after-restart".to_string();
+        retry_payload.surface = Some("manual".to_string());
+        let retry = agent_scene_event_link_batch_impl(&db, retry_payload).expect("batch retry");
+        assert_eq!(retry, first);
+        assert_eq!(first["version"], event_version_before);
+        assert_eq!(event_version(&db, &event_id), event_version_before);
+        assert_eq!(table_count(&db, "undo_journal"), journals_before + 1);
+        assert_eq!(table_count(&db, "change_events"), changes_before + 1);
+
+        let mut expected_scene_ids = vec![scene_a.clone(), scene_b.clone()];
+        expected_scene_ids.sort();
+        assert_eq!(scene_link_ids(&db, &event_id), expected_scene_ids);
+        db.with_conn(|conn| {
+            let event_uid = first["changeEventUid"].as_str().expect("changeEventUid");
+            let (scene_id, domain, op_type, raw_payload): (Option<String>, String, String, String) =
+                conn.query_row(
+                    "SELECT scene_id, domain, op_type, payload
+                 FROM change_events WHERE event_uid = ?1",
+                    rusqlite::params![event_uid],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+            assert_eq!(scene_id, None);
+            assert_eq!(domain, "event");
+            assert_eq!(op_type, "event.stamp");
+            let change_payload: Value = serde_json::from_str(&raw_payload)?;
+            assert_eq!(change_payload["sceneIds"], json!(expected_scene_ids));
+            assert!(change_payload["requestHash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64));
+            Ok(())
+        })
+        .expect("inspect batch change event");
+
+        let conflict = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload(request_id, &project_id, &event_id, vec![scene_a.clone()]),
+        )
+        .expect_err("requestId reuse with a different batch must conflict");
+        assert!(conflict
+            .to_string()
+            .contains("AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT"));
+        assert_eq!(scene_link_ids(&db, &event_id), expected_scene_ids);
+        assert_eq!(table_count(&db, "undo_journal"), journals_before + 1);
+        assert_eq!(table_count(&db, "change_events"), changes_before + 1);
+    }
+
+    #[test]
+    fn scene_event_link_batch_undo_redo_replays_only_the_added_delta() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_existing = insert_scene(&db, &project_id);
+        let scene_new = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "Mixed", vec![], vec![]);
+        db.execute(
+            "INSERT INTO scene_events (scene_id, event_id) VALUES (?, ?)",
+            &[
+                Value::String(scene_existing.clone()),
+                Value::String(event_id.clone()),
+            ],
+            "run",
+        )
+        .expect("seed existing scene link");
+        let event_version_before = event_version(&db, &event_id);
+        let journals_before = table_count(&db, "undo_journal");
+        let changes_before = table_count(&db, "change_events");
+
+        let result = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload(
+                "scene-link-batch-mixed",
+                &project_id,
+                &event_id,
+                vec![scene_new.clone(), scene_existing.clone(), scene_new.clone()],
+            ),
+        )
+        .expect("link mixed batch");
+        let journal_id = result["undoJournalId"]
+            .as_str()
+            .expect("undoJournalId")
+            .to_string();
+        assert_eq!(journal_id, "scene-link-batch-mixed");
+        assert_eq!(table_count(&db, "undo_journal"), journals_before + 1);
+        assert_eq!(table_count(&db, "change_events"), changes_before + 1);
+        assert_eq!(event_version(&db, &event_id), event_version_before);
+        assert!(scene_link_has(&db, &event_id, &scene_existing));
+        assert!(scene_link_has(&db, &event_id, &scene_new));
+        let forward_change = latest_change_payload(&db, "event.stamp");
+        assert_eq!(forward_change["sceneIds"], json!([scene_new.clone()]));
+
+        db.with_conn(|conn| {
+            let (before_json, after_json, base_version, result_version): (
+                String,
+                String,
+                i64,
+                i64,
+            ) = conn.query_row(
+                "SELECT before_json, after_json, base_version, result_version
+                 FROM undo_journal WHERE id = ?1",
+                rusqlite::params![journal_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            let before: Value = serde_json::from_str(&before_json)?;
+            let after: Value = serde_json::from_str(&after_json)?;
+            assert_eq!(before["snapshotKind"], SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND);
+            assert_eq!(before["eventId"], event_id);
+            assert_eq!(before["sceneIds"], json!([scene_new.clone()]));
+            assert_eq!(before["linked"], false);
+            assert_eq!(after["snapshotKind"], SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND);
+            assert_eq!(after["eventId"], event_id);
+            assert_eq!(after["sceneIds"], json!([scene_new.clone()]));
+            assert_eq!(after["linked"], true);
+            assert!(after["incarnationTokens"][scene_new.as_str()]
+                .as_str()
+                .is_some_and(|token| !token.is_empty()));
+            assert_eq!(base_version, event_version_before);
+            assert_eq!(result_version, event_version_before);
+            Ok(())
+        })
+        .expect("inspect batch delta journal snapshots");
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo batch scene links");
+        assert!(scene_link_has(&db, &event_id, &scene_existing));
+        assert!(!scene_link_has(&db, &event_id, &scene_new));
+        assert_eq!(event_version(&db, &event_id), event_version_before);
+        let undo_change = latest_change_payload(&db, "event.unstamp");
+        assert_eq!(undo_change["direction"], "undo");
+        assert_eq!(undo_change["sceneIds"], json!([scene_new.clone()]));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("redo batch scene links");
+        assert!(scene_link_has(&db, &event_id, &scene_existing));
+        assert!(scene_link_has(&db, &event_id, &scene_new));
+        assert_eq!(event_version(&db, &event_id), event_version_before);
+        assert_eq!(table_count(&db, "undo_journal"), journals_before + 1);
+        let redo_change = latest_change_payload(&db, "event.stamp");
+        assert_eq!(redo_change["direction"], "redo");
+        assert_eq!(redo_change["sceneIds"], json!([scene_new]));
+    }
+
+    #[test]
+    fn scene_event_link_batch_undo_redo_preserves_interleaved_link_changes() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_existing = insert_scene(&db, &project_id);
+        let scene_batch = insert_scene(&db, &project_id);
+        let scene_later = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "Interleaved", vec![], vec![]);
+        db.execute(
+            "INSERT INTO scene_events (scene_id, event_id) VALUES (?, ?)",
+            &[
+                Value::String(scene_existing.clone()),
+                Value::String(event_id.clone()),
+            ],
+            "run",
+        )
+        .expect("seed existing scene link");
+
+        let result = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload(
+                "scene-link-batch-interleaved",
+                &project_id,
+                &event_id,
+                vec![scene_existing.clone(), scene_batch.clone()],
+            ),
+        )
+        .expect("link batch delta");
+        let journal_id = result["undoJournalId"]
+            .as_str()
+            .expect("undoJournalId")
+            .to_string();
+
+        db.execute(
+            "DELETE FROM scene_events WHERE scene_id = ? AND event_id = ?",
+            &[
+                Value::String(scene_existing.clone()),
+                Value::String(event_id.clone()),
+            ],
+            "run",
+        )
+        .expect("interleave unrelated unlink");
+        db.execute(
+            "INSERT INTO scene_events (scene_id, event_id) VALUES (?, ?)",
+            &[
+                Value::String(scene_later.clone()),
+                Value::String(event_id.clone()),
+            ],
+            "run",
+        )
+        .expect("interleave unrelated link");
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo batch delta");
+        assert!(!scene_link_has(&db, &event_id, &scene_existing));
+        assert!(!scene_link_has(&db, &event_id, &scene_batch));
+        assert!(scene_link_has(&db, &event_id, &scene_later));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("redo batch delta");
+        assert!(!scene_link_has(&db, &event_id, &scene_existing));
+        assert!(scene_link_has(&db, &event_id, &scene_batch));
+        assert!(scene_link_has(&db, &event_id, &scene_later));
+    }
+
+    #[test]
+    fn scene_event_link_batch_stale_undo_rejects_aba_without_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_batch = insert_scene(&db, &project_id);
+        let scene_unrelated = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "ABA", vec![], vec![]);
+
+        let batch = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload(
+                "scene-link-batch-aba",
+                &project_id,
+                &event_id,
+                vec![scene_batch.clone()],
+            ),
+        )
+        .expect("link batch association");
+        let batch_journal = batch["undoJournalId"]
+            .as_str()
+            .expect("undoJournalId")
+            .to_string();
+        let first_token =
+            scene_link_token(&db, &event_id, &scene_batch).expect("batch link incarnation token");
+        assert!(!first_token.is_empty());
+
+        agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_batch, &event_id),
+            false,
+        )
+        .expect("interleaved unlink");
+        agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_batch, &event_id),
+            true,
+        )
+        .expect("interleaved relink");
+        agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_unrelated, &event_id),
+            true,
+        )
+        .expect("unrelated interleaved link");
+
+        let replacement_token =
+            scene_link_token(&db, &event_id, &scene_batch).expect("replacement incarnation token");
+        assert!(!replacement_token.is_empty());
+        assert_ne!(replacement_token, first_token);
+        let unrelated_token = scene_link_token(&db, &event_id, &scene_unrelated)
+            .expect("unrelated incarnation token");
+        let journals_before = table_count(&db, "undo_journal");
+        let changes_before = table_count(&db, "change_events");
+
+        let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &batch_journal, "undo"))
+            .expect_err("stale batch undo must reject an ABA relink");
+        assert!(error.to_string().contains("incarnation"));
+        assert_eq!(
+            scene_link_token(&db, &event_id, &scene_batch),
+            Some(replacement_token)
+        );
+        assert_eq!(
+            scene_link_token(&db, &event_id, &scene_unrelated),
+            Some(unrelated_token)
+        );
+        assert_eq!(table_count(&db, "undo_journal"), journals_before);
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+    }
+
+    #[test]
+    fn scene_event_link_batch_rolls_back_all_chunks_on_insert_failure() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "Atomic", vec![], vec![]);
+        let scene_ids: Vec<String> = (0..=INSERT_CHUNK_ROWS)
+            .map(|index| format!("atomic-scene-{index:03}"))
+            .collect();
+        db.with_conn(|conn| {
+            for scene_id in &scene_ids {
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                     (id, project_id, node_type, title, content, sort_order)
+                     VALUES (?1, ?2, 'scene', ?1, '{}', 'a0')",
+                    rusqlite::params![scene_id, project_id],
+                )?;
+            }
+            conn.execute_batch(
+                "CREATE TRIGGER fail_last_batch_scene_link
+                 BEFORE INSERT ON scene_events
+                 WHEN NEW.scene_id = 'atomic-scene-100'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced batch scene link failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("seed atomic batch scenes and failure trigger");
+        let event_version_before = event_version(&db, &event_id);
+        let journals_before = table_count(&db, "undo_journal");
+        let changes_before = table_count(&db, "change_events");
+
+        let error = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload("scene-link-batch-atomic", &project_id, &event_id, scene_ids),
+        )
+        .expect_err("second insert chunk must fail");
+        assert!(error
+            .to_string()
+            .contains("forced batch scene link failure"));
+        assert_eq!(scene_link_count(&db, &event_id), 0);
+        assert_eq!(event_version(&db, &event_id), event_version_before);
+        assert_eq!(table_count(&db, "undo_journal"), journals_before);
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+    }
+
+    #[test]
+    fn scene_event_link_batch_rejects_cross_project_scene_before_writing() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let local_scene = insert_scene(&db, &project_id);
+        let foreign_scene = insert_scene(&db, &foreign_project_id);
+        let (event_id, _) = create_event(&db, &project_id, "Scoped", vec![], vec![]);
+        let event_version_before = event_version(&db, &event_id);
+        let journals_before = table_count(&db, "undo_journal");
+        let changes_before = table_count(&db, "change_events");
+
+        let error = agent_scene_event_link_batch_impl(
+            &db,
+            batch_scene_payload(
+                "scene-link-batch-cross-project",
+                &project_id,
+                &event_id,
+                vec![local_scene.clone(), foreign_scene.clone()],
+            ),
+        )
+        .expect_err("cross-project scene must reject the whole batch");
+        assert!(error.to_string().contains(&foreign_scene));
+        assert!(!scene_link_has(&db, &event_id, &local_scene));
+        assert!(!scene_link_has(&db, &event_id, &foreign_scene));
+        assert_eq!(event_version(&db, &event_id), event_version_before);
+        assert_eq!(table_count(&db, "undo_journal"), journals_before);
+        assert_eq!(table_count(&db, "change_events"), changes_before);
+    }
+
     fn legacy_event_snapshot(db: &Database, event_id: &str) -> Value {
         db.with_conn(|conn| {
             let mut snapshot = collect_event_snapshot(conn, event_id)?;
@@ -5480,6 +6739,62 @@ mod tests {
         })
         .expect("insert legacy journal");
         journal_id
+    }
+
+    #[test]
+    fn legacy_scene_event_journal_only_matches_the_empty_migration_incarnation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let legacy_scene = insert_scene(&db, &project_id);
+        let modern_scene = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "legacy links", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+                rusqlite::params![legacy_scene, event_id],
+            )?;
+            conn.execute(
+                "INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+                 VALUES (?1, ?2, 'modern-incarnation')",
+                rusqlite::params![modern_scene, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed migrated and modern associations");
+
+        let unlinked =
+            |scene_id: &str| json!({ "sceneId": scene_id, "eventId": event_id, "linked": false });
+        let legacy_linked =
+            |scene_id: &str| json!({ "sceneId": scene_id, "eventId": event_id, "linked": true });
+        let legacy_journal = insert_legacy_event_journal(
+            &db,
+            &project_id,
+            &event_id,
+            "update",
+            Some(&unlinked(&legacy_scene)),
+            Some(&legacy_linked(&legacy_scene)),
+        );
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &legacy_journal, "undo"))
+            .expect("tokenless journal may consume the migrated empty incarnation");
+        assert!(!scene_link_has(&db, &event_id, &legacy_scene));
+
+        let stale_journal = insert_legacy_event_journal(
+            &db,
+            &project_id,
+            &event_id,
+            "update",
+            Some(&unlinked(&modern_scene)),
+            Some(&legacy_linked(&modern_scene)),
+        );
+        let changes_before = table_count(&db, "change_events");
+        let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &stale_journal, "undo"))
+            .expect_err("tokenless journal must not consume a modern incarnation");
+        assert!(error.to_string().contains("incarnation"));
+        assert_eq!(
+            scene_link_token(&db, &event_id, &modern_scene),
+            Some("modern-incarnation".to_string())
+        );
+        assert_eq!(table_count(&db, "change_events"), changes_before);
     }
 
     fn journal_surface(db: &Database, journal_id: &str) -> String {
@@ -5575,6 +6890,41 @@ mod tests {
             event_id,
             None,
         )
+    }
+
+    fn scene_link_has(db: &Database, event_id: &str, scene_id: &str) -> bool {
+        scalar_count(
+            db,
+            "SELECT COUNT(*) FROM scene_events WHERE event_id = ?1 AND scene_id = ?2",
+            event_id,
+            Some(scene_id),
+        ) > 0
+    }
+
+    fn scene_link_ids(db: &Database, event_id: &str) -> Vec<String> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT scene_id FROM scene_events WHERE event_id = ?1 ORDER BY scene_id",
+            )?;
+            let rows =
+                statement.query_map(rusqlite::params![event_id], |row| row.get::<_, String>(0))?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .expect("scene_link_ids")
+    }
+
+    fn scene_link_token(db: &Database, event_id: &str, scene_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT incarnation_token FROM scene_events
+                     WHERE event_id = ?1 AND scene_id = ?2",
+                    rusqlite::params![event_id, scene_id],
+                    |row| row.get(0),
+                )
+                .optional()?)
+        })
+        .expect("scene_link_token")
     }
 
     fn relation_count(db: &Database, cause: &str, effect: &str) -> i64 {
@@ -7395,6 +8745,55 @@ mod tests {
             0,
             "redo unlink removes again"
         );
+    }
+
+    #[test]
+    fn scene_event_stacked_link_unlink_replay_rewrites_incarnation_chain() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "stacked", vec![], vec![]);
+
+        let link = agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_id, &event_id),
+            true,
+        )
+        .expect("link");
+        let link_journal = link["undoJournalId"]
+            .as_str()
+            .expect("link journal")
+            .to_string();
+        let first_token = scene_link_token(&db, &event_id, &scene_id).expect("first token");
+
+        let unlink = agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_id, &event_id),
+            false,
+        )
+        .expect("unlink");
+        let unlink_journal = unlink["undoJournalId"]
+            .as_str()
+            .expect("unlink journal")
+            .to_string();
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &unlink_journal, "undo"))
+            .expect("undo unlink with a fresh incarnation");
+        let second_token = scene_link_token(&db, &event_id, &scene_id).expect("second token");
+        assert_ne!(second_token, first_token);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &link_journal, "undo"))
+            .expect("older link journal follows the rewritten incarnation chain");
+        assert!(!scene_link_has(&db, &event_id, &scene_id));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &link_journal, "redo"))
+            .expect("redo link with another fresh incarnation");
+        let third_token = scene_link_token(&db, &event_id, &scene_id).expect("third token");
+        assert_ne!(third_token, second_token);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &unlink_journal, "redo"))
+            .expect("newer unlink journal follows the rewritten incarnation chain");
+        assert!(!scene_link_has(&db, &event_id, &scene_id));
     }
 
     #[test]

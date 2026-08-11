@@ -125,13 +125,6 @@ export function staleProjectionRefs(
     .map((p) => p.projectionRef);
 }
 
-export function defaultSemanticAssessmentForFreshness(
-  freshness: EvidenceFreshness,
-): SemanticAssessment {
-  if (freshness === "fresh") return "unchanged";
-  return "revision";
-}
-
 export function isCompensatingChangeKind(
   changeKind: ProposalChangeKind,
 ): boolean {

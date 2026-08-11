@@ -33,8 +33,17 @@ import {
   CODEX_RELATION_CREATE_PROPOSAL_KIND,
   type CreateCodexRelationProposal,
 } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import {
+  CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+  createSetCodexBaseDetailProposal,
+} from "@/features/narrative-extraction/proposals/setCodexBaseDetailProposal";
+import {
+  CODEX_PHASE_BIND_PROPOSAL_KIND,
+  createNewBindCodexPhaseProposal,
+} from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
 import { buildCodexReviewRevisionEnvelope } from "./extraction/reviewRevisionEnvelope";
 import {
+  applyCodexStructureExtractionReview,
   CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
   CODEX_STRUCTURE_PROPOSAL_SET_KIND,
   CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
@@ -285,6 +294,261 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     expect(restored.relationProposals[0]?.proposal.dependencies).toEqual([
       { kind: "requires-resolution", proposalId: "prop-entity-cold" },
     ]);
+    expect(restored.baseDetailProposals).toEqual([]);
+    expect(restored.phaseProposals).toEqual([]);
+    expect(restored.baseDetailCount).toBe(0);
+    expect(restored.phaseCount).toBe(0);
+  });
+
+  it("restores Phase/Base Detail metadata with Native status, revision, and payload authority", async () => {
+    const baseProposal = createSetCodexBaseDetailProposal({
+      narrativeEntityId: "ne-state",
+      definitionRef: "D0001",
+      facetKey: "role.current",
+      value: { kind: "text", text: "artifact-stale" },
+      temporalEligibility: "timeless",
+      createId: () => "prop-base-cold",
+    });
+    expect(baseProposal).not.toBeNull();
+    const phaseProposal = createNewBindCodexPhaseProposal(
+      {
+        narrativeEntityId: "ne-state",
+        anchorDocumentRef: "S000001",
+        labelSuggestion: "artifact-stale-phase",
+        binding: {
+          kind: "create-new",
+          phase: {
+            label: "Artifact phase",
+            anchorDocumentRef: "S000001",
+          },
+        },
+        detailOverrides: [],
+      },
+      { proposalId: "prop-phase-cold", logicalRef: "phase:cold" },
+    );
+    const baseMetadata = {
+      proposalId: "prop-base-cold",
+      revisionId: "artifact-base-rev",
+      proposalKey: "base-proj-1",
+      status: "unreviewed" as const,
+      applicability: "applicable" as const,
+      displayTitle: "State · role.current",
+      proposal: baseProposal!,
+      evidence: [
+        {
+          anchorId: "base-anchor",
+          quote: "base evidence",
+          documentRef: "B000001",
+          method: "exact" as const,
+        },
+      ],
+      safety: {
+        timeless: true,
+        emptyExisting: true,
+        lossless: true,
+        bound: true,
+        notClear: true,
+        notSummarized: true,
+      },
+      entityLabel: "State",
+      facetKey: "role.current",
+      existingValue: null,
+    };
+    const phaseMetadata = {
+      proposalId: "prop-phase-cold",
+      revisionId: "artifact-phase-rev",
+      proposalKey: "boundary-1",
+      status: "unreviewed" as const,
+      applicability: "applicable" as const,
+      displayTitle: "Artifact phase",
+      proposal: phaseProposal,
+      evidence: [
+        {
+          anchorId: "phase-anchor",
+          quote: "phase evidence",
+          documentRef: "S000001",
+          method: "exact" as const,
+        },
+      ],
+      safety: {
+        noSummaryOverride: true,
+        noConflict: true,
+        bound: true,
+        notClear: true,
+        notSummarized: true,
+        notExistingPhaseAppend: true,
+      },
+      entityLabel: "State",
+      persistence: {
+        kind: "proposal" as const,
+        reason: "major-durable" as const,
+      },
+      valueDeltas: [],
+      existingPhaseCandidates: [],
+      boundaryId: "boundary-1",
+    };
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-phase-detail-cold",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        startedAt: null,
+        completedAt: null,
+        version: 1,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-phase-detail-cold",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art-phase-detail-review",
+          runId: "run-phase-detail-cold",
+          taskId: "task-1",
+          attemptId: "attempt-1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "set-phase-detail-cold",
+            evidenceByProposalId: {},
+            relationLabelsByProposalId: {},
+            baseDetailProposals: [baseMetadata],
+            phaseProposals: [phaseMetadata],
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "2026-01-01T00:00:30.000Z",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "set-phase-detail-cold",
+        runId: "run-phase-detail-cold",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          proposalCount: 2,
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {},
+        },
+        createdAt: "2026-01-01T00:00:40.000Z",
+        updatedAt: "2026-01-01T00:00:40.000Z",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-base-cold",
+          proposalSetId: "set-phase-detail-cold",
+          proposalKey: "base-proj-1",
+          kind: CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+          status: "approved",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: {
+              ...baseProposal!.payload,
+              value: { kind: "text", text: "native-base" },
+            },
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "native-base-rev",
+          createdAt: "2026-01-01T00:00:40.000Z",
+          updatedAt: "2026-01-01T00:00:50.000Z",
+          latestDecision: null,
+          application: {
+            commitId: "commit-base-cold",
+            revisionId: "native-base-rev",
+            appliedEntityKind: "codex_detail_value",
+            appliedEntityId: "detail-base-cold",
+            createdAt: "2026-01-01T00:00:55.000Z",
+          },
+        },
+        {
+          proposalId: "prop-phase-cold",
+          proposalSetId: "set-phase-detail-cold",
+          proposalKey: "boundary-1",
+          kind: CODEX_PHASE_BIND_PROPOSAL_KIND,
+          status: "approved",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: {
+              ...phaseProposal.payload,
+              labelSuggestion: "native-phase",
+            },
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "native-phase-rev",
+          createdAt: "2026-01-01T00:00:40.000Z",
+          updatedAt: "2026-01-01T00:00:50.000Z",
+          latestDecision: null,
+          application: {
+            commitId: "commit-phase-cold",
+            revisionId: "native-phase-rev",
+            appliedEntityKind: "codex_entry_phase",
+            appliedEntityId: "phase-cold",
+            createdAt: "2026-01-01T00:00:55.000Z",
+          },
+        },
+      ],
+    });
+
+    const restored = await getCodexStructureExtractionReview(
+      "run-phase-detail-cold",
+      {
+        projectId: "project-cold",
+        workspacePath: "/ws/cold",
+        openRevision: 3,
+        folderId: "folder-cold",
+      },
+    );
+
+    expect(restored.proposals).toEqual([]);
+    expect(restored.relationProposals).toEqual([]);
+    expect(restored.baseDetailCount).toBe(1);
+    expect(restored.phaseCount).toBe(1);
+    expect(restored.approvedCount).toBe(0);
+    expect(restored.baseDetailProposals[0]).toMatchObject({
+      revisionId: "native-base-rev",
+      status: "approved",
+      displayTitle: "State · role.current",
+      evidence: [{ quote: "base evidence" }],
+      proposal: { payload: { value: { kind: "text", text: "native-base" } } },
+      application: {
+        revisionId: "native-base-rev",
+        appliedEntityKind: "codex_detail_value",
+        appliedEntityId: "detail-base-cold",
+      },
+    });
+    expect(restored.phaseProposals[0]).toMatchObject({
+      revisionId: "native-phase-rev",
+      status: "approved",
+      displayTitle: "Artifact phase",
+      evidence: [{ quote: "phase evidence" }],
+      proposal: { payload: { labelSuggestion: "native-phase" } },
+      application: {
+        revisionId: "native-phase-rev",
+        appliedEntityKind: "codex_entry_phase",
+        appliedEntityId: "phase-cold",
+      },
+    });
+
+    useCodexStructureExtractionStore.getState().setProjection(restored);
+    await expect(
+      applyCodexStructureExtractionReview({
+        projectId: "project-cold",
+        entries: [],
+      }),
+    ).resolves.toBe(0);
   });
 
   it("attaches Native application and excludes applied rows from approvedCount", async () => {
@@ -1285,8 +1549,12 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
         },
       ],
       relationProposals: [],
+      baseDetailProposals: [],
+      phaseProposals: [],
       entityCount: 1,
       relationCount: 0,
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 0,
       approvedCount: 0,
       catalog: { entities: [], types: [] },

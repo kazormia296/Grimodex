@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 15,
+  "schemaVersion": 16,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -9593,6 +9593,13 @@
           "default": null,
           "primaryKey": 2
         },
+        "incarnation_token": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "scene_id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -9624,7 +9631,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE scene_events ( scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, PRIMARY KEY (scene_id, event_id) )"
+      "createSql": "CREATE TABLE scene_events ( scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, incarnation_token TEXT NOT NULL DEFAULT '', PRIMARY KEY (scene_id, event_id) )"
     },
     "scene_lens_data": {
       "kind": "table",

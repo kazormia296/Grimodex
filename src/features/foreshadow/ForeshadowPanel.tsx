@@ -16,7 +16,10 @@ import {
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { useForeshadowStore } from "./foreshadowStore";
+import {
+  publishAuthoritativeForeshadowRows,
+  useForeshadowStore,
+} from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { ForeshadowItemSkeletonList } from "@/components/ui/skeleton-patterns";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
@@ -724,9 +727,14 @@ export function ForeshadowPanel() {
                             )
                           }
                           onStrengthChange={(strength) =>
-                            void setSetupStrength(setup.id, strength).then(
-                              () => void loadSetups(item.id),
-                            )
+                            void setSetupStrength(
+                              setup.id,
+                              strength,
+                              item.version,
+                            ).then((row) => {
+                              publishAuthoritativeForeshadowRows([row]);
+                              void loadSetups(item.id);
+                            })
                           }
                         />
                       ))

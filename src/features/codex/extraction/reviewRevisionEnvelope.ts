@@ -1,5 +1,7 @@
 import type { BindCodexEntityPayload } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
 import type { CreateCodexRelationProposalPayload } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import type { BindCodexPhasePayload } from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
+import type { SetCodexBaseDetailPayload } from "@/features/narrative-extraction/proposals/setCodexBaseDetailProposal";
 import type { CodexCompiledDomainOperation } from "../codexStructureExtractionStore";
 
 export const CODEX_REVIEW_REVISION_ENVELOPE_VERSION = 1 as const;
@@ -12,14 +14,18 @@ export interface CodexReviewRevisionEnvelope {
   readonly version: typeof CODEX_REVIEW_REVISION_ENVELOPE_VERSION;
   readonly reviewPayload:
     | BindCodexEntityPayload
-    | CreateCodexRelationProposalPayload;
+    | CreateCodexRelationProposalPayload
+    | BindCodexPhasePayload
+    | SetCodexBaseDetailPayload;
   readonly compiledOperation: CodexCompiledDomainOperation | null;
 }
 
 export function buildCodexReviewRevisionEnvelope(args: {
   readonly reviewPayload:
     | BindCodexEntityPayload
-    | CreateCodexRelationProposalPayload;
+    | CreateCodexRelationProposalPayload
+    | BindCodexPhasePayload
+    | SetCodexBaseDetailPayload;
   readonly compiledOperation?: CodexCompiledDomainOperation | null;
 }): CodexReviewRevisionEnvelope {
   return {

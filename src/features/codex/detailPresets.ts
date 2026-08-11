@@ -6,8 +6,6 @@ import type {
   DetailTemporalPolicy,
   StateFacet,
 } from "./details/semanticBindingTypes";
-import { db } from "@/db/client";
-import { codexDetailSemanticBindings } from "@/db/schema";
 
 export interface DetailFieldPresetSemantic {
   readonly facetKey: StateFacet;
@@ -351,22 +349,19 @@ export async function applyDetailPreset(
         : null,
       sortOrder,
       includeInContext: field.includeInContext ? 1 : 0,
+      ...(field.semantic
+        ? {
+            semanticBinding: {
+              id: crypto.randomUUID(),
+              facetKey: field.semantic.facetKey,
+              projectionKind: field.semantic.projectionKind,
+              temporalPolicy: field.semantic.temporalPolicy,
+              source: "preset" as const,
+              confirmed: false,
+            },
+          }
+        : {}),
     });
-    if (field.semantic) {
-      await db.insert(codexDetailSemanticBindings).values({
-        id: crypto.randomUUID(),
-        projectId,
-        definitionId: id,
-        facetKey: field.semantic.facetKey,
-        projectionKind: field.semantic.projectionKind,
-        temporalPolicy: field.semantic.temporalPolicy,
-        source: "preset",
-        confirmed: false,
-        version: 0,
-        createdAt: definition.createdAt,
-        updatedAt: definition.updatedAt,
-      });
-    }
     added.push(definition);
     existingNames.add(field.name);
   }

@@ -17,21 +17,6 @@ vi.mock("./detailApi", () => ({
   createDefinition: vi.fn(),
 }));
 
-const semanticInsertMock = vi.fn();
-
-vi.mock("@/db/client", () => {
-  return {
-    db: {
-      insert: () => ({
-        values: (value: unknown) => {
-          semanticInsertMock(value);
-          return Promise.resolve();
-        },
-      }),
-    },
-  };
-});
-
 import { createDefinition, listDefinitionsByType } from "./detailApi";
 
 const mockList = vi.mocked(listDefinitionsByType);
@@ -154,13 +139,22 @@ describe("applyDetailPreset", () => {
     );
   });
 
-  it("writes DetailSemanticBinding rows for semantic presets in the same batch", async () => {
+  it("sends semantic presets through the same definition writer transaction", async () => {
     mockList.mockResolvedValue([]);
     await applyDetailPreset("proj-1", "character", null);
     const semanticCount = resolvePresetFields("character", null).filter(
       (field) => field.semantic,
     ).length;
-    expect(semanticInsertMock).toHaveBeenCalledTimes(semanticCount);
+    const semanticCalls = mockCreate.mock.calls.filter(
+      ([input]) => input.semanticBinding !== undefined,
+    );
+    expect(semanticCalls).toHaveLength(semanticCount);
+    for (const [input] of semanticCalls) {
+      expect(input.semanticBinding).toMatchObject({
+        source: "preset",
+        confirmed: false,
+      });
+    }
   });
 
   it("skips fields whose names already exist", async () => {

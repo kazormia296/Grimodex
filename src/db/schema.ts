@@ -1602,6 +1602,7 @@ export const sceneEvents = sqliteTable(
     eventId: text("event_id")
       .notNull()
       .references(() => events.id, { onDelete: "cascade" }),
+    incarnationToken: text("incarnation_token").notNull().default(""),
   },
   (table) => [
     primaryKey({ columns: [table.sceneId, table.eventId] }),

@@ -374,6 +374,29 @@ export async function agentLinkSceneEvent(
   );
 }
 
+export async function agentLinkSceneEventsBatch(
+  sceneIds: readonly string[],
+  eventId: string,
+  opts?: TrackedWriteOpts,
+): Promise<AgentWriteResult> {
+  if (sceneIds.length === 0) {
+    throw new Error("scene event link batch requires at least one scene");
+  }
+  return trackedEventWrite(
+    "agent_scene_event_link_batch",
+    {
+      requestId: opts?.requestId ?? crypto.randomUUID(),
+      // Native/Browser domain writers own canonical sort+dedupe and the raw
+      // 10,000-item admission limit. Preserve the caller payload here so the
+      // two runtimes hash and validate the same request.
+      sceneIds: [...sceneIds],
+      eventId,
+    },
+    "chronicle.agentHistoryUpdate",
+    opts,
+  );
+}
+
 export async function agentUnlinkSceneEvent(
   sceneId: string,
   eventId: string,

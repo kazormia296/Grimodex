@@ -24,6 +24,11 @@ import {
   createPlotThread,
   createPlotThreadLink,
   createPlotThreadBranch,
+  updatePlotThread,
+  updatePlotThreadLink,
+  deletePlotThreadLink,
+  updatePlotThreadBranch,
+  deletePlotThreadBranch,
   movePlotMarkerBundle,
   restorePlotThreadSnapshot,
   deletePlotThreadSnapshot,
@@ -130,6 +135,111 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
     expect(getCreateResultMetadata(row)).toEqual({
       replayed: true,
       entityPresent: false,
+    });
+  });
+
+  it("forwards mandatory OCC versions for every mutable Plot row", async () => {
+    invoke
+      .mockResolvedValueOnce({
+        id: "pt1",
+        project_id: "p1",
+        name: "renamed",
+        sort_order: "a0",
+        version: 8,
+      })
+      .mockResolvedValueOnce({
+        id: "pl1",
+        thread_id: "pt1",
+        node_id: "scene-1",
+        phase_type: "turn",
+        note: "updated",
+        version: 12,
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "pb1",
+        project_id: "p1",
+        from_thread_id: "pt1",
+        to_thread_id: "pt2",
+        at_node_id: "scene-2",
+        kind: "branch",
+        version: 4,
+      })
+      .mockResolvedValueOnce(null);
+
+    await updatePlotThread("pt1", { name: "renamed", baseVersion: 7 });
+    await updatePlotThreadLink("pl1", {
+      note: "updated",
+      baseVersion: 11,
+    });
+    await deletePlotThreadLink("pl1", { baseVersion: 12 });
+    await updatePlotThreadBranch("pb1", {
+      atNodeId: "scene-2",
+      baseVersion: 3,
+    });
+    await deletePlotThreadBranch("pb1", { baseVersion: 4 });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "plot_thread_update", {
+      id: "pt1",
+      patch: { name: "renamed", baseVersion: 7 },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "plot_thread_link_update", {
+      id: "pl1",
+      patch: { note: "updated", baseVersion: 11 },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "plot_thread_link_delete", {
+      id: "pl1",
+      baseVersion: 12,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, "plot_thread_branch_update", {
+      id: "pb1",
+      patch: { atNodeId: "scene-2", baseVersion: 3 },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, "plot_thread_branch_delete", {
+      id: "pb1",
+      baseVersion: 4,
+    });
+  });
+
+  it("forwards explicit null instead of dropping nullable Plot patch fields", async () => {
+    invoke
+      .mockResolvedValueOnce({
+        id: "pt1",
+        project_id: "p1",
+        name: "thread",
+        color: null,
+        description: null,
+        sort_order: "a0",
+        version: 4,
+      })
+      .mockResolvedValueOnce({
+        id: "pl1",
+        thread_id: "pt1",
+        node_id: "scene-1",
+        phase_type: "turn",
+        note: null,
+        sort_order: null,
+        version: 7,
+      });
+
+    await updatePlotThread("pt1", {
+      color: null,
+      description: null,
+      baseVersion: 3,
+    });
+    await updatePlotThreadLink("pl1", {
+      note: null,
+      sortOrder: null,
+      baseVersion: 6,
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "plot_thread_update", {
+      id: "pt1",
+      patch: { color: null, description: null, baseVersion: 3 },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "plot_thread_link_update", {
+      id: "pl1",
+      patch: { note: null, sortOrder: null, baseVersion: 6 },
     });
   });
 
@@ -273,6 +383,11 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
         id: "delete-1",
         deleted: true,
         __idempotency: { replayed: false, entityPresent: true },
+      })
+      .mockResolvedValueOnce({
+        id: "delete-thread-1",
+        deleted: true,
+        __idempotency: { replayed: false, entityPresent: true },
       });
     const thread = {
       id: "pt1",
@@ -324,6 +439,13 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       link,
       branches: [branch],
     });
+    const deletedThread = await deletePlotThreadSnapshot({
+      requestId: "delete-thread-1",
+      projectId: "p1",
+      thread,
+      links: [link],
+      branches: [branch],
+    });
 
     expect(invoke).toHaveBeenNthCalledWith(1, "plot_thread_restore_snapshot", {
       payload: {
@@ -342,12 +464,22 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
         branches: [branch],
       },
     });
+    expect(invoke).toHaveBeenNthCalledWith(3, "plot_thread_delete_snapshot", {
+      payload: {
+        requestId: "delete-thread-1",
+        projectId: "p1",
+        thread,
+        links: [link],
+        branches: [branch],
+      },
+    });
     expect(restored.thread?.projectId).toBe("p1");
     expect(getCreateResultMetadata(restored)).toEqual({
       replayed: true,
       entityPresent: true,
     });
     expect(deleted.deleted).toBe(true);
+    expect(deletedThread.deleted).toBe(true);
   });
 
   it("snapshot unknown outcome exposes the exact reusable requestId", async () => {
@@ -400,7 +532,10 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
 
   it("deletePlotThread は plot_thread_delete を invoke する", async () => {
     invoke.mockResolvedValue(null);
-    await deletePlotThread("pt1");
-    expect(invoke).toHaveBeenCalledWith("plot_thread_delete", { id: "pt1" });
+    await deletePlotThread("pt1", { baseVersion: 9 });
+    expect(invoke).toHaveBeenCalledWith("plot_thread_delete", {
+      id: "pt1",
+      baseVersion: 9,
+    });
   });
 });

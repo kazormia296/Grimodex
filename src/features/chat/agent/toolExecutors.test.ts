@@ -392,12 +392,14 @@ describe("foreshadow write executors", () => {
     });
     const result = await executeTool("update_foreshadow", "call-f5", {
       id: "f1",
+      baseVersion: 3,
       payoffConfirmed: true,
     });
     expect(result.error).toBeUndefined();
     expect(mockAgentUpdateForeshadow).toHaveBeenCalledWith(
       expect.objectContaining({
         foreshadowId: "f1",
+        baseVersion: 3,
         payoffConfirmed: true,
       }),
     );

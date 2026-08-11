@@ -79,9 +79,14 @@ export function CodexStatePhaseReview({
     (s) => s.bulkApproveSafe,
   );
 
-  const baseDetailProposals =
-    baseProp ?? storeProjection?.baseDetailProposals ?? [];
-  const phaseProposals = phaseProp ?? storeProjection?.phaseProposals ?? [];
+  const baseDetailProposals = useMemo(
+    () => baseProp ?? storeProjection?.baseDetailProposals ?? [],
+    [baseProp, storeProjection?.baseDetailProposals],
+  );
+  const phaseProposals = useMemo(
+    () => phaseProp ?? storeProjection?.phaseProposals ?? [],
+    [phaseProp, storeProjection?.phaseProposals],
+  );
 
   const [selectionKind, setSelectionKind] = useState<"base" | "phase" | null>(
     null,
@@ -121,12 +126,14 @@ export function CodexStatePhaseReview({
       (proposal) =>
         proposal.applicability === "applicable" &&
         proposal.status === "unreviewed" &&
+        !proposal.application &&
         isSafeForCodexBaseDetailBulkApprove(proposal.safety),
     ).length +
     phaseProposals.filter(
       (proposal) =>
         proposal.applicability === "applicable" &&
         proposal.status === "unreviewed" &&
+        !proposal.application &&
         isSafeForCodexPhaseBulkApprove(proposal.safety),
     ).length;
 
@@ -218,7 +225,9 @@ export function CodexStatePhaseReview({
       <div className="flex max-h-80 min-w-0 flex-col gap-3 overflow-y-auto px-3 py-2">
         <span className="text-xs font-medium text-foreground">詳細</span>
         {!selectedBase && !selectedPhase ? (
-          <p className="text-xs text-muted-foreground">提案を選択してください</p>
+          <p className="text-xs text-muted-foreground">
+            提案を選択してください
+          </p>
         ) : selectedBase ? (
           <>
             {selectedBase.unbound && (

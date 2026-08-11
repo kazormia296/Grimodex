@@ -138,6 +138,7 @@ vi.mock("@/db/client", async () => {
     CREATE TABLE scene_events (
       scene_id TEXT NOT NULL,
       event_id TEXT NOT NULL,
+      incarnation_token TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (scene_id, event_id)
     );
   `);
@@ -280,12 +281,12 @@ vi.mock("@/db/client", async () => {
         const nextVersion = baseVersion + 1;
         sets.push("version = ?", "updated_at = ?");
         params.push(nextVersion, NOW, eventId, projectId, baseVersion);
-        const updated = sqldb.run(
+        sqldb.run(
           `UPDATE events SET ${sets.join(", ")}
             WHERE id = ? AND project_id = ? AND version = ?`,
           params as BindParams,
         );
-        if (updated === 0) {
+        if (sqldb.getRowsModified() !== 1) {
           throw new Error(`event '${eventId}' version conflict`);
         }
         return agentWriteResult(eventId, nextVersion);
@@ -294,11 +295,11 @@ vi.mock("@/db/client", async () => {
         const eventId = String(payload.eventId);
         const projectId = String(payload.projectId);
         const baseVersion = Number(payload.baseVersion);
-        const deleted = sqldb.run(
+        sqldb.run(
           "DELETE FROM events WHERE id = ? AND project_id = ? AND version = ?",
           [eventId, projectId, baseVersion] as BindParams,
         );
-        if (deleted === 0) {
+        if (sqldb.getRowsModified() !== 1) {
           throw new Error(`event '${eventId}' version conflict`);
         }
         return agentWriteResult(eventId, baseVersion + 1);
@@ -348,6 +349,45 @@ vi.mock("@/db/client", async () => {
           eventId,
           queryEventVersion(eventId, String(payload.projectId)) ?? 0,
         );
+      }
+      case "agent_scene_event_link_batch": {
+        const eventId = String(payload.eventId);
+        const projectId = String(payload.projectId);
+        const sceneIds = [...new Set(payload.sceneIds as string[])];
+        const eventVersion = queryEventVersion(eventId, projectId);
+        if (eventVersion === null) {
+          throw new Error(
+            `event '${eventId}' not found in project '${projectId}'`,
+          );
+        }
+        sqldb.run("BEGIN IMMEDIATE");
+        try {
+          for (const sceneId of sceneIds) {
+            const stmt = sqldb.prepare(
+              "SELECT COUNT(*) FROM tree_nodes WHERE id = ? AND project_id = ? AND node_type = 'scene'",
+            );
+            stmt.bind([sceneId, projectId] as BindParams);
+            const owned = stmt.step() ? Number(stmt.get()[0]) : 0;
+            stmt.free();
+            if (owned !== 1) {
+              throw new Error(
+                `scene '${sceneId}' not found in project '${projectId}'`,
+              );
+            }
+          }
+          for (const sceneId of sceneIds) {
+            sqldb.run(
+              `INSERT OR IGNORE INTO scene_events (scene_id, event_id)
+               VALUES (?, ?)`,
+              [sceneId, eventId] as BindParams,
+            );
+          }
+          sqldb.run("COMMIT");
+        } catch (error) {
+          sqldb.run("ROLLBACK");
+          throw error;
+        }
+        return agentWriteResult(eventId, eventVersion);
       }
       case "agent_scene_event_unlink": {
         const sceneId = String(payload.sceneId);
@@ -421,6 +461,7 @@ import {
   calendarFromRow,
 } from "./api";
 import { EventVersionConflictError } from "./eventOcc";
+import { invoke as invokeTauri } from "@/lib/tauri";
 
 const NOW = "2026-06-27T00:00:00.000Z";
 
@@ -430,6 +471,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  vi.mocked(invokeTauri).mockClear();
   await db.delete(events);
   await db.delete(eventRelations);
   await db.delete(eventParticipants);
@@ -764,6 +806,49 @@ describe("linkScenesToEvent (一括リンク)", () => {
     expect(
       (await listSceneEvents(["e1"])).map((l) => l.sceneId).sort(),
     ).toEqual(["s1", "s2"]);
+    expect(vi.mocked(invokeTauri)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invokeTauri)).toHaveBeenCalledWith(
+      "agent_scene_event_link_batch",
+      {
+        payload: expect.objectContaining({
+          projectId: "p1",
+          eventId: "e1",
+          sceneIds: ["s1", "s2"],
+        }),
+      },
+    );
+  });
+
+  it("filters non-scene tree nodes before invoking the native batch", async () => {
+    await seedScene("s1", "p1");
+    await db.insert(treeNodes).values({
+      id: "note-1",
+      projectId: "p1",
+      nodeType: "note",
+      title: "note-1",
+      sortOrder: "a1",
+      content: "{}",
+      unplacedBeatsDoc: "[]",
+      charCount: 0,
+    });
+    await seed("e1", "p1", "a0");
+
+    await linkScenesToEvent("p1", ["s1", "note-1"], "e1");
+
+    expect(await listSceneEvents(["e1"])).toEqual([
+      { sceneId: "s1", eventId: "e1" },
+    ]);
+    expect(vi.mocked(invokeTauri)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invokeTauri)).toHaveBeenCalledWith(
+      "agent_scene_event_link_batch",
+      {
+        payload: expect.objectContaining({
+          projectId: "p1",
+          eventId: "e1",
+          sceneIds: ["s1"],
+        }),
+      },
+    );
   });
 
   it("event が projectId に属さなければ何も link しない（fail-closed）", async () => {
