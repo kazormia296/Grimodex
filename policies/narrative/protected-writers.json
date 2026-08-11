@@ -57,28 +57,28 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "chronicle.event",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "chronicle-event",
     "table": "event_participants",
     "protection": "table",
     "writer": "chronicle.event",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "chronicle-event",
     "table": "scene_events",
     "protection": "table",
     "writer": "chronicle.event",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "chronicle-event",
     "table": "event_relations",
     "protection": "table",
     "writer": "chronicle.event",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "temporal-scene",

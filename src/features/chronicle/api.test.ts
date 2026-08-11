@@ -1,40 +1,57 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import type { BindParams } from "sql.js";
+import type { Database } from "sql.js";
 
-// setEventParticipants の typed command を下の @/db/client モックと同じ
-// sqldb 上で実行できるよう共有ホルダーを立てる。
-const chronicleTestDb = vi.hoisted(
-  () =>
-    ({ setParticipants: undefined }) as {
-      setParticipants?: (payload: {
-        eventId: string;
-        projectId: string;
-        codexEntryIds: string[];
-        baseVersion: number;
-        updatedAt: string;
-      }) => number | null;
-    },
-);
+type AgentWriteResult = {
+  entityId: string;
+  version: number;
+  changeEventUid: string;
+  undoJournalId: string;
+};
 
-// chronicle のテーブル群は browser-mock のスキーマに無いため、本テスト専用に
-// sql.js(in-memory SQLite) を立て、その上に drizzle-proxy を載せて @/db/client を
-// 差し替える。これで listEvents の ORDER BY / projectId スコープ / ordinal 採番など
-// 「実際の SQL 挙動」を assert できる(SQL 文字列の捕捉では足りない部分)。
+// Native agent_event_* を sql.js 上で再現する共有ホルダー。
+const chronicleTestDb = vi.hoisted(() => ({
+  sqldb: undefined as Database | undefined,
+  handleInvoke: undefined as
+    | ((cmd: string, args?: Record<string, unknown>) => unknown)
+    | undefined,
+}));
+
+vi.mock("i18next", () => ({ default: { t: (k: string) => k } }));
+vi.mock("@/features/ai-policy/policyGuard", () => ({
+  blockIfPolicyOff: vi.fn(() => false),
+}));
+vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: () => "test-session",
+  recordChangeEvent: vi.fn(),
+}));
+vi.mock("@/features/project/projectStore", () => ({
+  getCurrentProjectId: () => "p1",
+}));
+vi.mock("@/features/chronicle/chronicleStore", () => ({
+  useChronicleStore: {
+    getState: () => ({ bumpRevision: vi.fn() }),
+  },
+}));
+vi.mock("@/features/semantic-search/scheduler", () => ({
+  scheduleEventIndex: vi.fn(),
+}));
+vi.mock("@/features/concurrency/documentWriteNotification", () => ({
+  notifySameRendererDocumentWrite: vi.fn(),
+}));
+vi.mock("@/store/globalHistoryStore", () => ({
+  useGlobalHistoryStore: {
+    getState: () => ({ isReplaying: false, push: vi.fn() }),
+  },
+}));
+vi.mock("@/features/agent-writes/undoJournal", () => ({
+  applyUndoJournal: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/tauri", () => ({
-  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "event_set_participants") {
-      return chronicleTestDb.setParticipants?.(
-        args?.payload as {
-          eventId: string;
-          projectId: string;
-          codexEntryIds: string[];
-          baseVersion: number;
-          updatedAt: string;
-        },
-      );
-    }
-    return [];
-  }),
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) =>
+    chronicleTestDb.handleInvoke?.(cmd, args),
+  ),
 }));
 
 vi.mock("@/db/client", async () => {
@@ -136,52 +153,242 @@ vi.mock("@/db/client", async () => {
     },
     { schema },
   );
-  // Route the typed Chronicle aggregate command to the same sqldb.
-  chronicleTestDb.setParticipants = (payload) => {
-    sqldb.run("BEGIN");
-    try {
-      const versionQuery = sqldb.prepare(
-        "SELECT version FROM events WHERE id = ? AND project_id = ?",
-      );
-      versionQuery.bind([payload.eventId, payload.projectId]);
-      const currentVersion = versionQuery.step()
-        ? Number(versionQuery.get()[0])
-        : null;
-      versionQuery.free();
-      if (currentVersion !== payload.baseVersion) {
-        sqldb.run("ROLLBACK");
-        return null;
-      }
 
-      const nextVersion = payload.baseVersion + 1;
-      sqldb.run(
-        `UPDATE events SET version = ?, updated_at = ?
-          WHERE id = ? AND project_id = ? AND version = ?`,
-        [
-          nextVersion,
-          payload.updatedAt,
-          payload.eventId,
-          payload.projectId,
-          payload.baseVersion,
-        ] as BindParams,
-      );
-      sqldb.run("DELETE FROM event_participants WHERE event_id = ?", [
-        payload.eventId,
-      ] as BindParams);
-      for (const codexEntryId of payload.codexEntryIds) {
+  const NOW = "2026-06-27T00:00:00.000Z";
+
+  function queryEventVersion(
+    eventId: string,
+    projectId: string,
+  ): number | null {
+    const stmt = sqldb.prepare(
+      "SELECT version FROM events WHERE id = ? AND project_id = ?",
+    );
+    stmt.bind([eventId, projectId] as BindParams);
+    const version = stmt.step() ? Number(stmt.get()[0]) : null;
+    stmt.free();
+    return version;
+  }
+
+  function agentWriteResult(
+    entityId: string,
+    version: number,
+  ): AgentWriteResult {
+    return {
+      entityId,
+      version,
+      changeEventUid: "uid-test",
+      undoJournalId: "journal-test",
+    };
+  }
+
+  chronicleTestDb.sqldb = sqldb;
+  chronicleTestDb.handleInvoke = (cmd, args) => {
+    const payload = (args?.payload ?? args) as Record<string, unknown>;
+    switch (cmd) {
+      case "event_get_version":
+        return queryEventVersion(
+          String(args?.eventId ?? payload.eventId),
+          String(args?.projectId ?? payload.projectId),
+        );
+      case "agent_event_create": {
+        const eventId = String(payload.eventId);
+        const projectId = String(payload.projectId);
         sqldb.run(
-          `INSERT INTO event_participants (event_id, codex_entry_id, role)
-           VALUES (?, ?, NULL)`,
-          [payload.eventId, codexEntryId] as BindParams,
+          `INSERT INTO events (
+            id, project_id, title, note, detail, ordinal, primary_codex_id,
+            location_codex_id, start_time, end_time, start_minute, end_minute,
+            start_granularity, end_granularity, precision, kind, secret,
+            reveal_scene_id, version, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+          [
+            eventId,
+            projectId,
+            String(payload.title ?? ""),
+            (payload.note as string | null | undefined) ?? null,
+            (payload.detail as string | null | undefined) ?? null,
+            String(payload.ordinal ?? "a0"),
+            (payload.primaryCodexId as string | null | undefined) ?? null,
+            (payload.locationCodexId as string | null | undefined) ?? null,
+            (payload.startTime as number | null | undefined) ?? null,
+            (payload.endTime as number | null | undefined) ?? null,
+            (payload.startMinute as number | null | undefined) ?? null,
+            (payload.endMinute as number | null | undefined) ?? null,
+            String(payload.startGranularity ?? "none"),
+            String(payload.endGranularity ?? "none"),
+            String(payload.precision ?? "exact"),
+            String(payload.kind ?? "generic"),
+            payload.secret ? 1 : 0,
+            (payload.revealSceneId as string | null | undefined) ?? null,
+            NOW,
+            NOW,
+          ] as BindParams,
+        );
+        return agentWriteResult(eventId, 0);
+      }
+      case "agent_event_update": {
+        const eventId = String(payload.eventId);
+        const projectId = String(payload.projectId);
+        const baseVersion = Number(payload.baseVersion);
+        const current = queryEventVersion(eventId, projectId);
+        if (current !== baseVersion) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        const patchKeys = [
+          "title",
+          "note",
+          "detail",
+          "ordinal",
+          "primaryCodexId",
+          "locationCodexId",
+          "startTime",
+          "endTime",
+          "startMinute",
+          "endMinute",
+          "startGranularity",
+          "endGranularity",
+          "precision",
+          "kind",
+          "secret",
+          "revealSceneId",
+        ] as const;
+        const columnMap: Record<string, string> = {
+          title: "title",
+          note: "note",
+          detail: "detail",
+          ordinal: "ordinal",
+          primaryCodexId: "primary_codex_id",
+          locationCodexId: "location_codex_id",
+          startTime: "start_time",
+          endTime: "end_time",
+          startMinute: "start_minute",
+          endMinute: "end_minute",
+          startGranularity: "start_granularity",
+          endGranularity: "end_granularity",
+          precision: "precision",
+          kind: "kind",
+          secret: "secret",
+          revealSceneId: "reveal_scene_id",
+        };
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        for (const key of patchKeys) {
+          if (!(key in payload)) continue;
+          sets.push(`${columnMap[key]} = ?`);
+          const value = payload[key];
+          params.push(key === "secret" ? (value ? 1 : 0) : value);
+        }
+        const nextVersion = baseVersion + 1;
+        sets.push("version = ?", "updated_at = ?");
+        params.push(nextVersion, NOW, eventId, projectId, baseVersion);
+        const updated = sqldb.run(
+          `UPDATE events SET ${sets.join(", ")}
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          params as BindParams,
+        );
+        if (updated === 0) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        return agentWriteResult(eventId, nextVersion);
+      }
+      case "agent_event_delete": {
+        const eventId = String(payload.eventId);
+        const projectId = String(payload.projectId);
+        const baseVersion = Number(payload.baseVersion);
+        const deleted = sqldb.run(
+          "DELETE FROM events WHERE id = ? AND project_id = ? AND version = ?",
+          [eventId, projectId, baseVersion] as BindParams,
+        );
+        if (deleted === 0) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        return agentWriteResult(eventId, baseVersion + 1);
+      }
+      case "agent_event_set_participants": {
+        const eventId = String(payload.eventId);
+        const projectId = String(payload.projectId);
+        const baseVersion = Number(payload.baseVersion);
+        const codexEntryIds = payload.codexEntryIds as string[];
+        const current = queryEventVersion(eventId, projectId);
+        if (current !== baseVersion) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        const nextVersion = baseVersion + 1;
+        sqldb.run("BEGIN");
+        try {
+          sqldb.run(
+            `UPDATE events SET version = ?, updated_at = ?
+              WHERE id = ? AND project_id = ? AND version = ?`,
+            [nextVersion, NOW, eventId, projectId, baseVersion] as BindParams,
+          );
+          sqldb.run("DELETE FROM event_participants WHERE event_id = ?", [
+            eventId,
+          ] as BindParams);
+          for (const codexEntryId of codexEntryIds) {
+            sqldb.run(
+              `INSERT INTO event_participants (event_id, codex_entry_id, role)
+               VALUES (?, ?, NULL)`,
+              [eventId, codexEntryId] as BindParams,
+            );
+          }
+          sqldb.run("COMMIT");
+        } catch (e) {
+          sqldb.run("ROLLBACK");
+          throw e;
+        }
+        return agentWriteResult(eventId, nextVersion);
+      }
+      case "agent_scene_event_link": {
+        const sceneId = String(payload.sceneId);
+        const eventId = String(payload.eventId);
+        sqldb.run(
+          `INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?, ?)`,
+          [sceneId, eventId] as BindParams,
+        );
+        return agentWriteResult(
+          eventId,
+          queryEventVersion(eventId, String(payload.projectId)) ?? 0,
         );
       }
-      sqldb.run("COMMIT");
-      return nextVersion;
-    } catch (e) {
-      sqldb.run("ROLLBACK");
-      throw e;
+      case "agent_scene_event_unlink": {
+        const sceneId = String(payload.sceneId);
+        const eventId = String(payload.eventId);
+        sqldb.run(
+          "DELETE FROM scene_events WHERE scene_id = ? AND event_id = ?",
+          [sceneId, eventId] as BindParams,
+        );
+        return agentWriteResult(
+          eventId,
+          queryEventVersion(eventId, String(payload.projectId)) ?? 0,
+        );
+      }
+      case "agent_event_relation_add": {
+        const causeEventId = String(payload.causeEventId);
+        const effectEventId = String(payload.effectEventId);
+        const projectId = String(payload.projectId);
+        sqldb.run(
+          `INSERT OR IGNORE INTO event_relations
+            (project_id, cause_event_id, effect_event_id)
+           VALUES (?, ?, ?)`,
+          [projectId, causeEventId, effectEventId] as BindParams,
+        );
+        return agentWriteResult(causeEventId, 0);
+      }
+      case "agent_event_relation_remove": {
+        const causeEventId = String(payload.causeEventId);
+        const effectEventId = String(payload.effectEventId);
+        const projectId = String(payload.projectId);
+        sqldb.run(
+          `DELETE FROM event_relations
+            WHERE project_id = ? AND cause_event_id = ? AND effect_event_id = ?`,
+          [projectId, causeEventId, effectEventId] as BindParams,
+        );
+        return agentWriteResult(causeEventId, 0);
+      }
+      default:
+        return [];
     }
   };
+
   return { db };
 });
 

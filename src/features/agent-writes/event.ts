@@ -39,6 +39,8 @@ export interface TrackedWriteOpts {
   surface?: string;
   /** AI 書き込みポリシー(knowledgeWrite)の対象外にする（UI 手動編集など）。 */
   skipPolicyGate?: boolean;
+  /** 明示 project スコープ（legacy api.ts 経路など current project と異なる場合）。 */
+  projectId?: string;
   /** Loaded Event aggregate version; omitted callers resolve it before IPC. */
   baseVersion?: number;
   /** Suppress only when the originating Editor session owns this exact save. */
@@ -51,6 +53,15 @@ export interface TrackedWriteOpts {
 
 function bump(): void {
   useChronicleStore.getState().bumpRevision();
+}
+
+function captureEventWriteAuthority(
+  opts?: TrackedWriteOpts,
+): MutationAuthority {
+  const scopedProjectId = opts?.projectId ?? getCurrentProjectId();
+  return opts?.projectId
+    ? captureMutationAuthority(scopedProjectId, () => scopedProjectId)
+    : captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId);
 }
 
 type EventDocumentOp =
@@ -96,9 +107,7 @@ async function trackedEventWrite(
   if (!opts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
-  const authority =
-    capturedAuthority ??
-    captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId);
+  const authority = capturedAuthority ?? captureEventWriteAuthority(opts);
   const { projectId } = authority;
   const outcome = await runAuthoritativeMutation(
     authority,
@@ -288,10 +297,7 @@ export async function agentUpdateEvent(
   opts?: TrackedWriteOpts,
 ): Promise<AgentWriteResult> {
   const { eventId, baseVersion: suppliedBaseVersion, ...patch } = input;
-  const authority = captureMutationAuthority(
-    getCurrentProjectId(),
-    getCurrentProjectId,
-  );
+  const authority = captureEventWriteAuthority(opts);
   const { projectId } = authority;
   const baseVersion =
     suppliedBaseVersion ??
@@ -318,10 +324,7 @@ export async function agentDeleteEvent(
   eventId: string,
   opts?: TrackedWriteOpts,
 ): Promise<AgentWriteResult> {
-  const authority = captureMutationAuthority(
-    getCurrentProjectId(),
-    getCurrentProjectId,
-  );
+  const authority = captureEventWriteAuthority(opts);
   const { projectId } = authority;
   const baseVersion =
     opts?.baseVersion ?? (await getEventVersion(projectId, eventId));
@@ -342,10 +345,7 @@ export async function agentSetEventParticipants(
   codexEntryIds: string[],
   opts?: TrackedWriteOpts,
 ): Promise<AgentWriteResult> {
-  const authority = captureMutationAuthority(
-    getCurrentProjectId(),
-    getCurrentProjectId,
-  );
+  const authority = captureEventWriteAuthority(opts);
   const { projectId } = authority;
   const baseVersion =
     opts?.baseVersion ?? (await getEventVersion(projectId, eventId));
