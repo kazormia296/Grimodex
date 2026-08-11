@@ -775,6 +775,13 @@ mod tests {
                  INSERT INTO codex_entries (id, project_id, type, name)
                    VALUES ('c1', 'p1', 'character', 'One'),
                           ('foreign-codex', 'p2', 'character', 'Foreign');
+                 INSERT INTO codex_detail_definitions
+                   (id, project_id, type_slug, name)
+                   VALUES ('d1', 'p1', 'character', 'One detail'),
+                          ('d2', 'p2', 'character', 'Foreign detail');
+                 INSERT INTO codex_detail_values
+                   (id, entry_id, definition_id, value)
+                   VALUES ('value-cross-project', 'c1', 'd2', 'Original');
                  INSERT INTO snippets (id, project_id, title, content)
                    VALUES ('s1', 'p1', 'Snippet', '{}');
                  INSERT INTO codex_tags (id, project_id, name, color)
@@ -936,6 +943,39 @@ mod tests {
             Ok(())
         })
         .expect("verify undo");
+    }
+
+    #[test]
+    fn codex_rename_detail_rejects_cross_project_definition() {
+        let db = fixture();
+        let result = undo_codex_rename(
+            &db,
+            CodexRenameUndoPayload {
+                project_id: "p1".to_string(),
+                updated_at: "undo".to_string(),
+                updates: vec![CodexRenameUndoUpdate {
+                    kind: "codex-detail".to_string(),
+                    ref_id: "c1".to_string(),
+                    detail_definition_id: Some("d2".to_string()),
+                    value: "Leaked".to_string(),
+                    char_count: None,
+                    placed_beat_preview: None,
+                }],
+            },
+        );
+
+        assert!(result.is_err());
+        db.with_conn(|conn| {
+            let value: String = conn.query_row(
+                "SELECT value FROM codex_detail_values
+                  WHERE id = 'value-cross-project'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(value, "Original");
+            Ok(())
+        })
+        .expect("read detail value");
     }
 
     #[test]
