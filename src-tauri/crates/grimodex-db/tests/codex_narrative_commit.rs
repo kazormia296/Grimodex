@@ -1,8 +1,8 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, CommitApplicationRef,
-    CommitOperation, CreateRunPayload, EntityBindingSeed, ListResumableRunsPayload,
-    PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload, RunRefPayload,
-    SaveProposalSetPayload, UndoCommitPayload,
+    CommitOperation, CreateRunPayload, EntityBindingSeed, GetCommitStatusPayload,
+    ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
+    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -1291,5 +1291,152 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
             .to_string()
             .contains("NEX_PROPOSAL_ALREADY_APPLIED"),
         "unexpected error: {revise_err}"
+    );
+}
+
+#[test]
+fn prepare_apply_then_status_first_retry_is_idempotent() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-retry", "Retry Hero", "ent:retry"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-retry", "set-retry", &items);
+    let request_id = "req-retry-idem";
+    let plan_digest = "digest-retry-idem";
+
+    let ops = ops_from_pairs(&pairs, &items);
+    let apply_payload = build_apply(
+        request_id,
+        plan_digest,
+        "set-retry",
+        "run-retry",
+        ops.clone(),
+        vec![],
+    );
+
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        PrepareCommitPayload {
+            project_id: apply_payload.project_id.clone(),
+            run_id: apply_payload.run_id.clone(),
+            proposal_set_id: apply_payload.proposal_set_id.clone(),
+            request_id: apply_payload.request_id.clone(),
+            plan_digest: apply_payload.plan_digest.clone(),
+            session_id: apply_payload.session_id.clone(),
+            surface: apply_payload.surface.clone(),
+            operations: apply_payload.operations.clone(),
+            applications: apply_payload.applications.clone(),
+            expected_tail_ordinal: None,
+            entity_bindings: vec![],
+        },
+    )
+    .expect("prepare");
+    assert_eq!(prepared["ok"], true);
+
+    let applied =
+        narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload.clone())
+            .expect("apply");
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["created"].as_array().unwrap().len(), 1);
+    assert_eq!(applied["created"][0]["entityId"], "entry-retry");
+
+    let status = narrative_extraction::narrative_extraction_get_commit_status(
+        &db,
+        GetCommitStatusPayload {
+            project_id: "project-1".to_string(),
+            commit_id: None,
+            request_id: Some(request_id.to_string()),
+        },
+    )
+    .expect("status");
+    assert_eq!(status["found"], true);
+    assert_eq!(status["status"], "applied");
+    assert!(status["receipt"].is_object(), "receipt must be present");
+
+    // Product retry path: status-first short-circuit, then idempotent apply replay.
+    let status_again = narrative_extraction::narrative_extraction_get_commit_status(
+        &db,
+        GetCommitStatusPayload {
+            project_id: "project-1".to_string(),
+            commit_id: None,
+            request_id: Some(request_id.to_string()),
+        },
+    )
+    .expect("status again");
+    assert_eq!(status_again["found"], true);
+    assert_eq!(status_again["status"], "applied");
+
+    let replayed =
+        narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload).expect("replay");
+    assert!(
+        replayed["status"] == "applied" || replayed["idempotentReplay"] == true,
+        "replay should report applied or idempotentReplay: {replayed}"
+    );
+    assert_eq!(replayed["commitId"], applied["commitId"]);
+
+    let entry_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM codex_entries", [], |r| r.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(entry_count, 1);
+
+    // Re-prepare with the same ops fails once applied — status-first avoids this.
+    // For codex.entry.create, ensure_entry_id_available rejects the duplicate entry id
+    // before ensure_proposal_not_applied runs; proposal consumption is still proven below.
+    let prepare_err = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        PrepareCommitPayload {
+            project_id: "project-1".to_string(),
+            run_id: "run-retry".to_string(),
+            proposal_set_id: "set-retry".to_string(),
+            request_id: "req-retry-second-prepare".to_string(),
+            plan_digest: "digest-retry-second-prepare".to_string(),
+            session_id: "sess-codex".to_string(),
+            surface: Some("narrative-extraction".to_string()),
+            operations: ops
+                .iter()
+                .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
+                    kind: kind.clone(),
+                    payload: payload.clone(),
+                    proposal_id: proposal_id.clone(),
+                    revision_id: revision_id.clone(),
+                })
+                .collect(),
+            applications: ops
+                .iter()
+                .map(|(proposal_id, revision_id, _, _)| CommitApplicationRef {
+                    proposal_id: proposal_id.clone(),
+                    revision_id: revision_id.clone(),
+                })
+                .collect(),
+            expected_tail_ordinal: None,
+            entity_bindings: vec![],
+        },
+    )
+    .expect_err("second prepare should fail");
+    assert!(
+        prepare_err.to_string().contains("already exists"),
+        "re-prepare with same entry.create ops must fail: {prepare_err}"
+    );
+
+    let revision_err = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-retry".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: pairs[0].0.clone(),
+            payload_json: entry_create("entry-retry", "Retry Hero", "ent:retry"),
+            expected_current_revision_id: pairs[0].1.clone(),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect_err("revision after apply");
+    assert!(
+        revision_err
+            .to_string()
+            .contains("NEX_PROPOSAL_ALREADY_APPLIED"),
+        "proposal must be marked applied: {revision_err}"
     );
 }
