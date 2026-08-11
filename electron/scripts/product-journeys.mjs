@@ -502,31 +502,35 @@ async function prepareCodexContextEntry(harness) {
     }, "authoring workspace and project authority");
     const entryId = `product-codex-${Date.now()}`;
     const now = new Date().toISOString();
-    await harness.invokeOk(prepared.page, "db_execute_batch", {
-      statements: [
-        {
-          sql: `INSERT OR IGNORE INTO codex_types
-            (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
-            VALUES (?, ?, 'character', 'Character', '#888888', 1, 0, ?)`,
-          params: [`product-character-${projectId}`, projectId, now],
-          method: "run",
-        },
-        {
-          sql: `INSERT INTO codex_entries
-            (id, project_id, type, name, summary, content, context_mode, created_at, updated_at)
-            VALUES (?, ?, 'character', ?, ?, ?, 'mentioned', ?, ?)`,
-          params: [
-            entryId,
-            projectId,
-            "Product Journey Codex",
-            CODEX_CONTEXT_MARKER,
-            sceneDocument(CODEX_CONTEXT_MARKER),
-            now,
-            now,
-          ],
-          method: "run",
-        },
-      ],
+    await harness.invokeOk(prepared.page, "db_execute", {
+      sql: `INSERT OR IGNORE INTO codex_types
+        (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
+        VALUES (?, ?, 'character', 'Character', '#888888', 1, 0, ?)`,
+      params: [`product-character-${projectId}`, projectId, now],
+      method: "run",
+    });
+    await harness.invokeOk(prepared.page, "agent_codex_create", {
+      payload: {
+        requestId: `product-codex-create-${entryId}`,
+        entryId,
+        projectId,
+        sessionId: "electron-product-journey",
+        surface: "cross-feature-authoring",
+        typeSlug: "character",
+        name: "Product Journey Codex",
+        summary: CODEX_CONTEXT_MARKER,
+        content: sceneDocument(CODEX_CONTEXT_MARKER),
+        aliases: null,
+        excludedAliases: null,
+        readings: null,
+        tagsCache: null,
+        parentId: null,
+        sourceChatMessageId: null,
+        model: null,
+        chatMessageId: null,
+        traceId: null,
+        authorshipSpans: [],
+      },
     });
     return { projectId, entryId };
   } finally {
