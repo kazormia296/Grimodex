@@ -1,7 +1,8 @@
 use grimodex_db::narrative_extraction::{
-    self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, EntityBindingSeed, ListResumableRunsPayload, PrepareCommitPayload,
-    ProposalSeed, ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    self, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, CommitApplicationRef,
+    CommitOperation, CreateRunPayload, EntityBindingSeed, ListResumableRunsPayload,
+    PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload, RunRefPayload,
+    SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -1140,4 +1141,155 @@ fn partial_apply_review_bundle_and_resumable_runs() {
         })
         .unwrap();
     assert_eq!(entry_count, 2);
+}
+
+#[test]
+fn partial_apply_then_relation_with_existing_binding_seed() {
+    let db = migrated_db();
+    let items = [
+        (
+            "codex.entry.create",
+            entry_create("entry-partial-rel-a", "Alice", "ent:partial-rel-a"),
+        ),
+        (
+            "codex.entry.create",
+            entry_create("entry-partial-rel-b", "Bob", "ent:partial-rel-b"),
+        ),
+        (
+            "codex.relation.create",
+            relation_create(
+                "rel-partial-rel",
+                "ent:partial-rel-a",
+                "ent:partial-rel-b",
+                None,
+            ),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-partial-rel", "set-partial-rel", &items);
+
+    let applied_a = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-partial-rel-a",
+            "digest-partial-rel-a",
+            "set-partial-rel",
+            "run-partial-rel",
+            ops_from_pairs(&pairs[0..1], &items[0..1]),
+            vec![],
+        ),
+    )
+    .expect("apply entity A");
+    assert_eq!(applied_a["status"], "applied");
+    assert_eq!(applied_a["created"].as_array().unwrap().len(), 1);
+    assert_eq!(applied_a["created"][0]["entityId"], "entry-partial-rel-a");
+
+    let applied_b = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-partial-rel-b",
+            "digest-partial-rel-b",
+            "set-partial-rel",
+            "run-partial-rel",
+            ops_from_pairs(&pairs[1..3], &items[1..3]),
+            vec![EntityBindingSeed {
+                narrative_entity_id: "ent:partial-rel-a".to_string(),
+                codex_entry_id: "entry-partial-rel-a".to_string(),
+                source: "existing".to_string(),
+            }],
+        ),
+    )
+    .expect("apply entity B and relation");
+    assert_eq!(applied_b["status"], "applied");
+
+    let created = applied_b["created"].as_array().expect("created");
+    assert_eq!(created.len(), 2);
+    let entity_kinds: Vec<&str> = created
+        .iter()
+        .map(|row| row["entityKind"].as_str().unwrap())
+        .collect();
+    assert!(entity_kinds.contains(&"codex_entry"));
+    assert!(entity_kinds.contains(&"codex_relation"));
+
+    let entry_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM codex_entries", [], |r| r.get(0))?)
+        })
+        .unwrap();
+    let relation_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM codex_relations", [], |r| r.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(entry_count, 2);
+    assert_eq!(relation_count, 1);
+}
+
+#[test]
+fn applied_proposal_rejects_revision_and_revise_and_decide() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-applied-guard", "Guard", "ent:applied-guard"),
+    )];
+    let pairs = seed_approved_proposals(
+        &db,
+        "run-applied-guard",
+        "set-applied-guard",
+        &items,
+    );
+    let proposal_id = pairs[0].0.clone();
+    let revision_id = pairs[0].1.clone();
+
+    narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        build_apply(
+            "req-applied-guard",
+            "digest-applied-guard",
+            "set-applied-guard",
+            "run-applied-guard",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    )
+    .expect("apply");
+
+    let revision_err = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-applied-guard".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            payload_json: entry_create("entry-applied-guard", "Revised", "ent:applied-guard"),
+            expected_current_revision_id: revision_id.clone(),
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect_err("revision after apply");
+    assert!(
+        revision_err
+            .to_string()
+            .contains("NEX_PROPOSAL_ALREADY_APPLIED"),
+        "unexpected error: {revision_err}"
+    );
+
+    let revise_err = narrative_extraction::narrative_extraction_revise_and_decide(
+        &db,
+        ReviseAndDecidePayload {
+            run_id: "run-applied-guard".to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id,
+            payload_json: entry_create("entry-applied-guard", "Revised", "ent:applied-guard"),
+            expected_current_revision_id: revision_id,
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("test".to_string()),
+        },
+    )
+    .expect_err("revise_and_decide after apply");
+    assert!(
+        revise_err
+            .to_string()
+            .contains("NEX_PROPOSAL_ALREADY_APPLIED"),
+        "unexpected error: {revise_err}"
+    );
 }

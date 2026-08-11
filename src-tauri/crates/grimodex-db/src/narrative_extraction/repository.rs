@@ -16,6 +16,19 @@ use super::task_leases::{
 };
 use crate::Database;
 
+pub(crate) fn ensure_proposal_not_applied(conn: &Connection, proposal_id: &str) -> anyhow::Result<()> {
+    let applied: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_proposal_applications WHERE proposal_id = ?1",
+        params![proposal_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        applied == 0,
+        "NEX_PROPOSAL_ALREADY_APPLIED: proposal '{proposal_id}'"
+    );
+    Ok(())
+}
+
 pub(crate) fn ensure_run_project(
     conn: &Connection,
     run_id: &str,
@@ -698,6 +711,7 @@ fn append_revision_on_conn(
     conn: &Connection,
     payload: &AppendRevisionPayload,
 ) -> anyhow::Result<Value> {
+    ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     let payload_json = serde_json::to_string(&payload.payload_json)?;
     let revision_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
@@ -788,6 +802,7 @@ fn append_decision_on_conn(
     conn: &Connection,
     payload: &AppendDecisionPayload,
 ) -> anyhow::Result<Value> {
+    ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     let decision_json = serde_json::to_string(
         payload
             .decision_json

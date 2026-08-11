@@ -23,7 +23,7 @@ use super::models::{
     ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
     GetCommitStatusPayload, PrepareCommitPayload,
 };
-use super::repository::ensure_run_project;
+use super::repository::{ensure_proposal_not_applied, ensure_run_project};
 use super::task_leases::with_immediate_transaction;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::Database;
@@ -820,19 +820,6 @@ fn revision_payload_for_commit_compare<'a>(
             "NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.payload missing"
         )
     })
-}
-
-fn ensure_proposal_not_applied(conn: &Connection, proposal_id: &str) -> anyhow::Result<()> {
-    let applied: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM narrative_proposal_applications WHERE proposal_id = ?1",
-        params![proposal_id],
-        |row| row.get(0),
-    )?;
-    anyhow::ensure!(
-        applied == 0,
-        "NEX_PROPOSAL_ALREADY_APPLIED: proposal '{proposal_id}'"
-    );
-    Ok(())
 }
 
 fn proposal_kind_allows_operation(proposal_kind: &str, operation_kind: &str) -> bool {
