@@ -2746,6 +2746,314 @@ export async function createBrowserMock(
     return { rows: result.rows };
   }
 
+  function nativeCodexPayload(args: Record<string, unknown>) {
+    return (args.payload ?? {}) as Record<string, unknown>;
+  }
+
+  function nativeNullable(value: unknown): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null || value === "") return null;
+    return String(value);
+  }
+
+  function handleAgentCodexCreate(args: Record<string, unknown>) {
+    const p = nativeCodexPayload(args);
+    const now = new Date().toISOString();
+    const entryId = String(p.entryId);
+    db.run(
+      `INSERT INTO codex_entries
+        (id, project_id, type, name, aliases, excluded_aliases, readings,
+         tags_cache, summary, content, parent_id, source_chat_message_id,
+         version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        entryId,
+        String(p.projectId),
+        String(p.typeSlug),
+        String(p.name),
+        nativeNullable(p.aliases) ?? null,
+        nativeNullable(p.excludedAliases) ?? null,
+        nativeNullable(p.readings) ?? null,
+        nativeNullable(p.tagsCache) ?? null,
+        nativeNullable(p.summary) ?? "",
+        nativeNullable(p.content) ?? "{}",
+        nativeNullable(p.parentId) ?? null,
+        nativeNullable(p.sourceChatMessageId) ?? null,
+        now,
+        now,
+      ],
+    );
+    options.onDatabaseDirty?.();
+    return {
+      entityId: entryId,
+      version: 1,
+      changeEventUid: crypto.randomUUID(),
+      undoJournalId: crypto.randomUUID(),
+    };
+  }
+
+  function handleAgentCodexUpdate(args: Record<string, unknown>) {
+    const p = nativeCodexPayload(args);
+    const columns: Record<string, string> = {
+      typeSlug: "type",
+      name: "name",
+      summary: "summary",
+      content: "content",
+      aliases: "aliases",
+      excludedAliases: "excluded_aliases",
+      readings: "readings",
+      tagsCache: "tags_cache",
+      parentId: "parent_id",
+      contextMode: "context_mode",
+      icon: "icon",
+      childrenBudget: "children_budget",
+      notes: "notes",
+    };
+    const sets: string[] = [];
+    const params: SqlValue[] = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (!(key in p)) continue;
+      sets.push(`${column} = ?`);
+      params.push(
+        column === "type" || column === "name"
+          ? String(p[key])
+          : (nativeNullable(p[key]) ?? null),
+      );
+    }
+    sets.push("version = version + 1", "updated_at = ?");
+    params.push(new Date().toISOString());
+    params.push(String(p.entryId), String(p.projectId), Number(p.baseVersion));
+    db.run(
+      `UPDATE codex_entries SET ${sets.join(", ")}
+        WHERE id = ? AND project_id = ? AND version = ?`,
+      params,
+    );
+    options.onDatabaseDirty?.();
+    return {
+      entityId: String(p.entryId),
+      version: Number(p.baseVersion) + 1,
+      changeEventUid: crypto.randomUUID(),
+      undoJournalId: crypto.randomUUID(),
+    };
+  }
+
+  function handleAgentCodexDelete(args: Record<string, unknown>) {
+    const p = nativeCodexPayload(args);
+    db.run(
+      "DELETE FROM codex_entries WHERE id = ? AND project_id = ? AND version = ?",
+      [String(p.entryId), String(p.projectId), Number(p.baseVersion)],
+    );
+    options.onDatabaseDirty?.();
+    return {
+      entityId: String(p.entryId),
+      version: Number(p.baseVersion),
+      changeEventUid: crypto.randomUUID(),
+      undoJournalId: crypto.randomUUID(),
+    };
+  }
+
+  function handleAgentCodexMutate(args: Record<string, unknown>) {
+    const p = nativeCodexPayload(args);
+    const operation = String(p.operation);
+    const now = new Date().toISOString();
+    if (operation === "relation.create") {
+      db.run(
+        `INSERT INTO codex_relations
+          (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+           directionality, inverse_label, semantic_key, version, depth_hint,
+           source_map_edge_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+        [
+          String(p.relationId),
+          String(p.projectId),
+          String(p.fromCodexId),
+          String(p.toCodexId),
+          String(p.relationType ?? "custom"),
+          nativeNullable(p.label) ?? null,
+          String(p.directionality ?? "directed"),
+          nativeNullable(p.inverseLabel) ?? null,
+          String(p.semanticKey ?? ""),
+          p.depthHint == null ? null : Number(p.depthHint),
+          nativeNullable(p.sourceMapEdgeId) ?? null,
+          now,
+          now,
+        ],
+      );
+    } else if (operation === "relation.delete") {
+      db.run("DELETE FROM codex_relations WHERE id = ? AND project_id = ?", [
+        String(p.relationId),
+        String(p.projectId),
+      ]);
+    } else if (operation === "phase.create") {
+      db.run(
+        `INSERT INTO codex_entry_phases
+          (id, entry_id, anchor_node_id, label, summary_override,
+           content_override, context_mode_override, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          String(p.phaseId),
+          String(p.entryId),
+          nativeNullable(p.anchorNodeId) ?? null,
+          String(p.label ?? ""),
+          nativeNullable(p.summaryOverride) ?? null,
+          nativeNullable(p.contentOverride) ?? null,
+          nativeNullable(p.contextModeOverride) ?? null,
+          Number(p.version ?? 0),
+          String(p.createdAt ?? now),
+          now,
+        ],
+      );
+    } else if (
+      operation === "phase.update" ||
+      operation === "phase.aggregate"
+    ) {
+      const values: SqlValue[] = [];
+      const sets: string[] = [];
+      const phaseColumns: Record<string, string> = {
+        label: "label",
+        anchorNodeId: "anchor_node_id",
+        summaryOverride: "summary_override",
+        contentOverride: "content_override",
+        contextModeOverride: "context_mode_override",
+      };
+      for (const [key, column] of Object.entries(phaseColumns)) {
+        if (!(key in p)) continue;
+        sets.push(`${column} = ?`);
+        values.push(
+          key === "label" ? String(p[key]) : (nativeNullable(p[key]) ?? null),
+        );
+      }
+      sets.push("version = version + 1", "updated_at = ?");
+      values.push(now, String(p.phaseId), Number(p.baseVersion));
+      db.run(
+        `UPDATE codex_entry_phases SET ${sets.join(", ")}
+          WHERE id = ? AND version = ?`,
+        values,
+      );
+      if ("detailOverrides" in p) {
+        db.run("DELETE FROM codex_phase_detail_overrides WHERE phase_id = ?", [
+          String(p.phaseId),
+        ]);
+        for (const override of (p.detailOverrides as Array<
+          Record<string, unknown>
+        >) ?? []) {
+          db.run(
+            `INSERT INTO codex_phase_detail_overrides
+              (phase_id, definition_id, value) VALUES (?, ?, ?)`,
+            [
+              String(p.phaseId),
+              String(override.definitionId),
+              nativeNullable(override.value) ?? null,
+            ],
+          );
+        }
+      }
+    } else if (operation === "phase.delete") {
+      db.run(
+        p.expectedVersion == null
+          ? "DELETE FROM codex_entry_phases WHERE id = ?"
+          : "DELETE FROM codex_entry_phases WHERE id = ? AND version = ?",
+        p.expectedVersion == null
+          ? [String(p.phaseId)]
+          : [String(p.phaseId), Number(p.expectedVersion)],
+      );
+    } else if (operation === "detail.definition.create") {
+      db.run(
+        `INSERT INTO codex_detail_definitions
+          (id, project_id, type_slug, name, field_type, field_config,
+           sort_order, include_in_context, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [
+          String(p.definitionId),
+          String(p.projectId),
+          String(p.typeSlug),
+          String(p.name),
+          String(p.fieldType ?? "text"),
+          nativeNullable(p.fieldConfig) ?? null,
+          Number(p.sortOrder ?? 0),
+          Number(p.includeInContext ?? 0),
+          now,
+          now,
+        ],
+      );
+    } else if (operation === "detail.definition.update") {
+      const assignments: string[] = [];
+      const values: SqlValue[] = [];
+      const definitionColumns: Record<string, string> = {
+        name: "name",
+        fieldType: "field_type",
+        fieldConfig: "field_config",
+        sortOrder: "sort_order",
+        includeInContext: "include_in_context",
+      };
+      for (const [key, column] of Object.entries(definitionColumns)) {
+        if (!(key in p)) continue;
+        assignments.push(`${column} = ?`);
+        values.push(
+          key === "sortOrder"
+            ? Number(p[key])
+            : key === "includeInContext"
+              ? Number(p[key])
+              : (nativeNullable(p[key]) ?? null),
+        );
+      }
+      assignments.push("version = version + 1", "updated_at = ?");
+      values.push(now, String(p.definitionId), Number(p.baseVersion));
+      db.run(
+        `UPDATE codex_detail_definitions SET ${assignments.join(", ")}
+          WHERE id = ? AND version = ?`,
+        values,
+      );
+    } else if (operation === "detail.definition.delete") {
+      db.run(
+        "DELETE FROM codex_detail_definitions WHERE id = ? AND project_id = ?",
+        [String(p.definitionId), String(p.projectId)],
+      );
+    } else if (operation === "detail.value.upsert") {
+      const existing = queryAll(
+        "SELECT id, version FROM codex_detail_values WHERE entry_id = ? AND definition_id = ?",
+        [String(p.entryId), String(p.definitionId)],
+      )[0];
+      if (!existing) {
+        db.run(
+          `INSERT INTO codex_detail_values
+            (id, entry_id, definition_id, value, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 1, ?, ?)`,
+          [
+            String(p.valueId ?? crypto.randomUUID()),
+            String(p.entryId),
+            String(p.definitionId),
+            nativeNullable(p.value) ?? null,
+            now,
+            now,
+          ],
+        );
+      } else {
+        db.run(
+          `UPDATE codex_detail_values SET value = ?, version = version + 1,
+             updated_at = ? WHERE entry_id = ? AND definition_id = ? AND version = ?`,
+          [
+            nativeNullable(p.value) ?? null,
+            now,
+            String(p.entryId),
+            String(p.definitionId),
+            Number(p.baseVersion),
+          ],
+        );
+      }
+    } else {
+      throw new Error(`Unsupported Codex mutation: ${operation}`);
+    }
+    options.onDatabaseDirty?.();
+    return {
+      entityId: String(
+        p.entryId ?? p.phaseId ?? p.definitionId ?? p.relationId,
+      ),
+      version: 1,
+      changeEventUid: crypto.randomUUID(),
+    };
+  }
+
   function lintIgnoreRowsToWire(
     rows: Record<string, unknown>[],
   ): Array<Record<string, unknown>> {
@@ -7562,6 +7870,14 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "agent_codex_create":
+        return handleAgentCodexCreate(args) as T;
+      case "agent_codex_update":
+        return handleAgentCodexUpdate(args) as T;
+      case "agent_codex_delete":
+        return handleAgentCodexDelete(args) as T;
+      case "agent_codex_mutate":
+        return handleAgentCodexMutate(args) as T;
       case "editor_sticky_list":
         return listBrowserEditorStickies(args) as T;
       case "editor_sticky_create":
@@ -7615,6 +7931,14 @@ export async function createBrowserMock(
       case "codex_rename_undo":
         handleCodexRenameUndo(args);
         return undefined as T;
+      case "codex_rename_apply":
+        handleCodexRenameUndo(args);
+        return {
+          entityId: String((args.payload as Record<string, unknown>).entryId),
+          version: 1,
+          changeEventUid: crypto.randomUUID(),
+          undoJournalId: crypto.randomUUID(),
+        } as T;
       case "scan_staging_project_create":
         handleScanStagingProjectCreate(args);
         return undefined as T;
