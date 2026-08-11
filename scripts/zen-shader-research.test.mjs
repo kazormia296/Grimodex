@@ -28,6 +28,8 @@ test("parseZenShaderResearchArguments applies deterministic Full HD ranking defa
       durationMs: 2_000,
       cycles: 6,
       sequenceStart: "abba",
+      upscaleCandidates: "matrix",
+      prewarmFrames: 0,
       dither: false,
       ditherStrength: 0.45,
       halftone: false,
@@ -105,6 +107,8 @@ test("parseZenShaderResearchArguments accepts a single shader and every ablation
       durationMs: 2_000,
       cycles: 6,
       sequenceStart: "abba",
+      upscaleCandidates: "matrix",
+      prewarmFrames: 0,
       dither: true,
       ditherStrength: 0.6,
       halftone: true,
@@ -156,6 +160,8 @@ test("parseZenShaderResearchArguments builds a headed cadence experiment", () =>
       durationMs: 2_500,
       cycles: 6,
       sequenceStart: "abba",
+      upscaleCandidates: "matrix",
+      prewarmFrames: 0,
       dither: false,
       ditherStrength: 0.45,
       halftone: false,
@@ -233,6 +239,61 @@ test("parseZenShaderResearchArguments builds a fixed ABBA experiment", () => {
   assert.equal(parsed.timing, "frame");
 });
 
+test("parseZenShaderResearchArguments builds the fixed upscale matrix experiment", () => {
+  const parsed = parseZenShaderResearchArguments(
+    argv(
+      "--output",
+      "results/upscale.json",
+      "--experiment",
+      "upscale",
+      "--shader",
+      "representative",
+      "--cycles",
+      "4",
+      "--sequence-start",
+      "baab",
+      "--frames",
+      "48",
+    ),
+  );
+
+  assert.equal(parsed.experiment, "upscale");
+  assert.equal(parsed.shader, "representative");
+  assert.equal(parsed.cycles, 4);
+  assert.equal(parsed.sequenceStart, "baab");
+  assert.equal(parsed.frames, 48);
+  assert.equal(parsed.timing, "frame");
+  assert.equal(parsed.upscaleCandidates, "matrix");
+  assert.equal(parsed.prewarmFrames, 0);
+});
+
+test("parseZenShaderResearchArguments builds a focused linear pass-breakdown experiment", () => {
+  const parsed = parseZenShaderResearchArguments(
+    argv(
+      "--output",
+      "results/upscale-linear-focused.json",
+      "--experiment",
+      "upscale",
+      "--upscale-candidates",
+      "linear-focused",
+      "--prewarm-frames",
+      "120",
+      "--cycles",
+      "12",
+      "--frames",
+      "60",
+      "--timing",
+      "pass-breakdown",
+    ),
+  );
+
+  assert.equal(parsed.upscaleCandidates, "linear-focused");
+  assert.equal(parsed.prewarmFrames, 120);
+  assert.equal(parsed.cycles, 12);
+  assert.equal(parsed.frames, 60);
+  assert.equal(parsed.timing, "pass-breakdown");
+});
+
 test("parseZenShaderResearchArguments rejects invalid paths and values", () => {
   assert.throws(() => parseZenShaderResearchArguments(argv()), /output/i);
 
@@ -261,6 +322,8 @@ test("parseZenShaderResearchArguments rejects invalid paths and values", () => {
     ["--frame", "NaN", /frame/i],
     ["--order-seed", "-1", /order-seed/i],
     ["--timing", "blur", /timing/i],
+    ["--upscale-candidates", "linear", /upscale-candidates/i],
+    ["--prewarm-frames", "-1", /prewarm/i],
   ]) {
     assert.throws(
       () =>
@@ -321,12 +384,33 @@ test("parseZenShaderResearchArguments rejects invalid paths and values", () => {
       ),
     /contrast|abba/i,
   );
+  assert.throws(
+    () =>
+      parseZenShaderResearchArguments(
+        argv(
+          "--output",
+          "result.json",
+          "--experiment",
+          "upscale",
+          "--timing",
+          "both",
+        ),
+      ),
+    /frame|pass-breakdown|timing/i,
+  );
 
   for (const [experiment, experimentArguments, expected] of [
     ["pipeline", ["--duration-ms", "1000"], /duration|pipeline/i],
     ["cadence", ["--headed", "--cycles", "8"], /cycles|cadence/i],
     ["baselines", ["--cadence", "native-raf"], /cadence|baseline/i],
     ["abba", ["--resolution", "960x540"], /resolution|abba/i],
+    ["upscale", ["--resolution", "960x540"], /resolution|upscale/i],
+    [
+      "pipeline",
+      ["--upscale-candidates", "linear-focused"],
+      /upscale-candidates|pipeline/i,
+    ],
+    ["abba", ["--prewarm-frames", "60"], /prewarm|abba/i],
   ]) {
     assert.throws(
       () =>
@@ -398,6 +482,8 @@ test("buildZenShaderResearchInvocation isolates the dedicated real-GPU runner", 
           durationMs: 2_000,
           cycles: 6,
           sequenceStart: "abba",
+          upscaleCandidates: "matrix",
+          prewarmFrames: 0,
           dither: true,
           ditherStrength: 0.45,
           halftone: false,

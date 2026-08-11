@@ -20,6 +20,7 @@ const shaderLifecycle = vi.hoisted(() => ({
     maxPixelCount: number;
     speed: number;
     renderPipeline: "direct" | "multipass";
+    sceneScale: number;
   }>,
   researchOptions: [] as unknown[],
   hasResearchOptions: [] as boolean[],
@@ -49,6 +50,7 @@ vi.mock("./ZenMultipassCanvas", () => ({
       compositeFragment: string;
       compositeUniforms: Record<string, unknown>;
       renderPipeline: "direct" | "multipass";
+      sceneScale: number;
       researchOptions?: unknown;
       gpuTimingOptions?: unknown;
     }
@@ -63,6 +65,7 @@ vi.mock("./ZenMultipassCanvas", () => ({
       compositeFragment,
       compositeUniforms,
       renderPipeline,
+      sceneScale,
       ...optionalProps
     },
     forwardedRef,
@@ -77,7 +80,12 @@ vi.mock("./ZenMultipassCanvas", () => ({
         ? compositeUniforms["u_zenUiSurfaceRects[0]"].length
         : 0,
     ).current;
-    shaderLifecycle.props.push({ maxPixelCount, speed, renderPipeline });
+    shaderLifecycle.props.push({
+      maxPixelCount,
+      speed,
+      renderPipeline,
+      sceneScale,
+    });
     shaderLifecycle.researchOptions.push(optionalProps.researchOptions);
     shaderLifecycle.hasResearchOptions.push(
       Object.hasOwn(optionalProps, "researchOptions"),
@@ -287,6 +295,7 @@ describe("ZenShaderSurface", () => {
       maxPixelCount: 2_073_600,
       speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
       renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
 
     rerender(
@@ -300,7 +309,32 @@ describe("ZenShaderSurface", () => {
       maxPixelCount: 2_073_600,
       speed: 0,
       renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
+  });
+
+  it.each([
+    ["dither", { dither: { ...ZEN_SHADER_DEFAULTS.dither, enabled: true } }],
+    [
+      "halftone",
+      { halftone: { ...ZEN_SHADER_DEFAULTS.halftone, enabled: true } },
+    ],
+  ] as const)("keeps %s at native Scene resolution", (_effect, override) => {
+    const { container } = render(
+      <ZenShaderSurface
+        config={{
+          ...ZEN_SHADER_DEFAULTS,
+          resolutionMode: "performance",
+          ...override,
+        }}
+        playing={false}
+      />,
+    );
+
+    expect(shaderLifecycle.props.at(-1)?.sceneScale).toBe(1);
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-zen-shader-scene-scale", "1");
   });
 
   it("does not pass research or timing options to the normal renderer", () => {
@@ -351,6 +385,7 @@ describe("ZenShaderSurface", () => {
       maxPixelCount: 2_073_600,
       speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
       renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
   });
 
@@ -361,6 +396,7 @@ describe("ZenShaderSurface", () => {
       maxPixelCount: 300_000,
       speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
       renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
   });
 
@@ -369,6 +405,7 @@ describe("ZenShaderSurface", () => {
     const onRendererStatusChange = vi.fn();
     const directConfig = {
       ...ZEN_SHADER_DEFAULTS,
+      resolutionMode: "native" as const,
       glass: { ...ZEN_SHADER_DEFAULTS.glass, enabled: false },
       contrastGuard: {
         ...ZEN_SHADER_DEFAULTS.contrastGuard,
@@ -491,6 +528,7 @@ describe("ZenShaderSurface", () => {
   it("restores the direct path after the context-loss fallback is remounted", async () => {
     const config = {
       ...ZEN_SHADER_DEFAULTS,
+      resolutionMode: "native" as const,
       glass: { ...ZEN_SHADER_DEFAULTS.glass, enabled: false },
       contrastGuard: {
         ...ZEN_SHADER_DEFAULTS.contrastGuard,

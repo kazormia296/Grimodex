@@ -5,7 +5,8 @@ export type ZenShaderRenderPipeline = "direct" | "multipass";
 export function resolveZenShaderRenderPipeline(
   config: ZenShaderConfig,
 ): ZenShaderRenderPipeline {
-  return !config.glass.enabled &&
+  return config.resolutionMode === "native" &&
+    !config.glass.enabled &&
     config.contrastGuard.mode === "none" &&
     config.opacity === 100
     ? "direct"

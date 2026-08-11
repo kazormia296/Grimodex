@@ -43,6 +43,7 @@ export default defineConfig({
       "src/features/editor/zen/ZenShaderAbbaResearchRunner.browser.test.tsx",
       "src/features/editor/zen/ZenShaderCadenceResearchRunner.browser.test.tsx",
       "src/features/editor/zen/ZenShaderBaselineResearchRunner.browser.test.tsx",
+      "src/features/editor/zen/ZenShaderUpscaleResearchRunner.browser.test.tsx",
     ],
   },
 });

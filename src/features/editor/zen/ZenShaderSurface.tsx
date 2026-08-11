@@ -14,6 +14,7 @@ import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
 import { hasZenGlassRegion } from "./zenGlassCompositor";
 import { ZenMultipassCanvas } from "./ZenMultipassCanvas";
 import { resolveZenShaderRenderPipeline } from "./zenShaderRenderPipeline";
+import { resolveZenShaderEffectiveSceneScale } from "./zenShaderResolution";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
@@ -120,7 +121,12 @@ export function ZenShaderSurface({
 
   const mountKey = `${config.shader}:${uiSurfaceCapacity}`;
   const renderPipeline = resolveZenShaderRenderPipeline(config);
-  const readinessKey = `${mountKey}:${renderPipeline}`;
+  const sceneScale = resolveZenShaderEffectiveSceneScale({
+    mode: config.resolutionMode,
+    ditherEnabled: config.dither.enabled,
+    halftoneEnabled: config.halftone.enabled,
+  });
+  const readinessKey = `${mountKey}:${renderPipeline}:${sceneScale}`;
   const definition = getPaperShaderDefinition(config.shader);
   const [readyMountKey, setReadyMountKey] = useState<string | null>(null);
   const [lostMountKey, setLostMountKey] = useState<string | null>(null);
@@ -220,6 +226,8 @@ export function ZenShaderSurface({
       data-zen-shader-ready={preparedSceneUniforms ? "true" : "false"}
       data-zen-shader-renderer={rendererStatus}
       data-zen-shader-pipeline={renderPipeline}
+      data-zen-shader-resolution={config.resolutionMode}
+      data-zen-shader-scene-scale={sceneScale}
       data-contrast-guard={config.contrastGuard.mode}
       data-contrast-target={
         config.contrastGuard.mode === "auto"
@@ -260,6 +268,7 @@ export function ZenShaderSurface({
           compositeFragment={compositeFragment}
           compositeUniforms={compositeUniforms}
           renderPipeline={renderPipeline}
+          sceneScale={sceneScale}
           mipmaps={resolved.mipmaps}
           speed={activeAnimationSpeed}
           minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}

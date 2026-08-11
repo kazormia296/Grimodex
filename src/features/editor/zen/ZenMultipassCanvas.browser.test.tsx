@@ -214,6 +214,15 @@ void main() {
   fragColor = vec4(vec3(value), 1.0);
 }`;
 
+const PATTERN_COORDINATE_SCENE = `#version 300 es
+precision highp float;
+in vec2 v_patternUV;
+out vec4 fragColor;
+void main() {
+  float value = step(0.16, v_patternUV.x);
+  fragColor = vec4(vec3(value), 1.0);
+}`;
+
 const BLUR_PROBE_COMPOSITE = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -449,10 +458,12 @@ function BlurProbe({
   name,
   blur,
   renderScale,
+  sceneScale = 1,
 }: {
   name: string;
   blur: number;
   renderScale: number;
+  sceneScale?: number;
 }) {
   return (
     <ZenMultipassCanvas
@@ -462,6 +473,7 @@ function BlurProbe({
       compositeFragment={buildZenMultipassCompositeFragment(1)}
       compositeUniforms={blurCompositeUniforms(blur)}
       minPixelRatio={Math.max(1, renderScale)}
+      sceneScale={sceneScale}
       maxPixelCount={
         BLUR_PROBE_WIDTH * BLUR_PROBE_HEIGHT * renderScale * renderScale
       }
@@ -684,6 +696,13 @@ function readCanvasPixels(canvas: HTMLCanvasElement) {
     pixels,
   );
   return pixels;
+}
+
+function firstBrightPixelX(canvas: HTMLCanvasElement, y: number) {
+  for (let x = 0; x < canvas.width; x += 1) {
+    if ((readPixel(canvas, x, y)[0] ?? 0) >= 128) return x;
+  }
+  return -1;
 }
 
 function readCenterPixel(canvas: HTMLCanvasElement) {
@@ -1029,6 +1048,18 @@ describe("ZenMultipassCanvas live updates", () => {
       { name: "six-point-one", blur: 6.1, renderScale: 1 },
       { name: "twenty-one", blur: 21, renderScale: 1 },
       { name: "twenty-two-full", blur: 22, renderScale: 1 },
+      {
+        name: "twenty-two-balanced",
+        blur: 22,
+        renderScale: 1,
+        sceneScale: 3 / 4,
+      },
+      {
+        name: "twenty-two-performance",
+        blur: 22,
+        renderScale: 1,
+        sceneScale: 2 / 3,
+      },
       { name: "twenty-two-half", blur: 22, renderScale: 0.5 },
       { name: "twenty-two-double", blur: 22, renderScale: 2 },
       { name: "twenty-three", blur: 23, renderScale: 1 },
@@ -1074,6 +1105,12 @@ describe("ZenMultipassCanvas live updates", () => {
     const blur22Full = effectiveHorizontalBlurSigma(
       canvasFor("twenty-two-full"),
     );
+    const blur22Balanced = effectiveHorizontalBlurSigma(
+      canvasFor("twenty-two-balanced"),
+    );
+    const blur22Performance = effectiveHorizontalBlurSigma(
+      canvasFor("twenty-two-performance"),
+    );
     const blur22Half = effectiveHorizontalBlurSigma(
       canvasFor("twenty-two-half"),
     );
@@ -1085,6 +1122,8 @@ describe("ZenMultipassCanvas live updates", () => {
 
     expect(blur22Full).toBeGreaterThanOrEqual(19.8);
     expect(blur22Full).toBeLessThanOrEqual(24.2);
+    expect(Math.abs(blur22Balanced - blur22Full)).toBeLessThanOrEqual(2);
+    expect(Math.abs(blur22Performance - blur22Full)).toBeLessThanOrEqual(2);
     expect(blur22Half).toBeGreaterThanOrEqual(19.8);
     expect(blur22Half).toBeLessThanOrEqual(24.2);
     expect(Math.abs(blur22Half - blur22Full)).toBeLessThanOrEqual(2);
@@ -1521,6 +1560,120 @@ describe("ZenMultipassCanvas live updates", () => {
       const error = consoleError.mock.calls[0]?.[1];
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toBe(
+        "Unable to allocate Zen multipass scene target",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("allocates only the final scaled target for an atomic direct-to-multipass update", () => {
+    const frames = new ManualAnimationFrames();
+    const allocationAttempts: Array<{ width: number; height: number }> = [];
+    _setZenMultipassFaultInjectionForTests({
+      animationFrameDriver: frames,
+      shouldFailSceneTargetAllocation: (size) => {
+        allocationAttempts.push(size);
+        return false;
+      },
+    });
+    const props = {
+      "data-paper-shader": "atomic-render-configuration",
+      sceneFragment: STATIC_SCENE,
+      sceneUniforms: SIZING_UNIFORMS,
+      compositeFragment: STATIC_UNIFORM_COMPOSITE,
+      compositeUniforms: {
+        u_compositeTint: [1, 1, 1],
+        u_zenGlassEnabled: 0,
+        u_zenGlassBlur: 0,
+      },
+      minPixelRatio: 1,
+      maxPixelCount: 64 * 64,
+      speed: 0,
+      style: { position: "relative" as const, width: 64, height: 64 },
+      webGlContextAttributes: PRODUCTION_WEBGL_ATTRIBUTES,
+    };
+    const view = render(
+      <ZenMultipassCanvas {...props} renderPipeline="direct" sceneScale={1} />,
+    );
+    frames.step(0);
+    allocationAttempts.length = 0;
+
+    view.rerender(
+      <ZenMultipassCanvas
+        {...props}
+        renderPipeline="multipass"
+        sceneScale={3 / 4}
+      />,
+    );
+
+    expect(allocationAttempts).toEqual([{ width: 48, height: 48 }]);
+  });
+
+  it("reports one context loss when an atomic resolution switch cannot allocate", async () => {
+    const frames = new ManualAnimationFrames();
+    const allocationAttempts: Array<{ width: number; height: number }> = [];
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    _setZenMultipassFaultInjectionForTests({
+      animationFrameDriver: frames,
+      shouldFailSceneTargetAllocation: (size) => {
+        allocationAttempts.push(size);
+        return size.width === 48 && size.height === 48;
+      },
+    });
+
+    try {
+      const props = {
+        "data-paper-shader": "atomic-render-configuration-failure",
+        sceneFragment: STATIC_SCENE,
+        sceneUniforms: SIZING_UNIFORMS,
+        compositeFragment: STATIC_UNIFORM_COMPOSITE,
+        compositeUniforms: {
+          u_compositeTint: [1, 1, 1],
+          u_zenGlassEnabled: 0,
+          u_zenGlassBlur: 0,
+        },
+        minPixelRatio: 1,
+        maxPixelCount: 64 * 64,
+        speed: 0,
+        style: { position: "relative" as const, width: 64, height: 64 },
+        webGlContextAttributes: PRODUCTION_WEBGL_ATTRIBUTES,
+      };
+      const view = render(
+        <ZenMultipassCanvas
+          {...props}
+          renderPipeline="direct"
+          sceneScale={1}
+        />,
+      );
+      frames.step(0);
+      const host = view.container.querySelector<HTMLElement>(
+        '[data-paper-shader="atomic-render-configuration-failure"]',
+      );
+      if (!host) throw new Error("Atomic configuration probe was not mounted");
+      const contextLostEvents: Event[] = [];
+      host.addEventListener("webglcontextlost", (event) => {
+        contextLostEvents.push(event);
+      });
+      allocationAttempts.length = 0;
+
+      view.rerender(
+        <ZenMultipassCanvas
+          {...props}
+          renderPipeline="multipass"
+          sceneScale={3 / 4}
+        />,
+      );
+
+      await waitFor(() => expect(contextLostEvents).toHaveLength(1));
+      frames.step(16);
+      frames.step(32);
+      expect(contextLostEvents).toHaveLength(1);
+      expect(allocationAttempts).toEqual([{ width: 48, height: 48 }]);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      expect((consoleError.mock.calls[0]?.[1] as Error).message).toBe(
         "Unable to allocate Zen multipass scene target",
       );
     } finally {
@@ -2222,6 +2375,151 @@ describe("ZenMultipassCanvas live updates", () => {
       sceneTargetWidth: 64,
       sceneTargetHeight: 64,
       isStaticFrameReady: true,
+    });
+  });
+
+  it("keeps the output canvas native while reallocating only the product Scene target", () => {
+    const frames = new ManualAnimationFrames();
+    _setZenMultipassFaultInjectionForTests({ animationFrameDriver: frames });
+    const ref = createRef<PaperShaderElement>();
+    const props = {
+      ref,
+      "data-paper-shader": "product-resolution-probe",
+      sceneFragment: PATTERN_COORDINATE_SCENE,
+      sceneUniforms: SIZING_UNIFORMS,
+      compositeFragment: STATIC_UNIFORM_COMPOSITE,
+      compositeUniforms: {
+        u_compositeTint: [1, 1, 1],
+        u_zenGlassEnabled: 0,
+        u_zenGlassBlur: 0,
+      },
+      renderPipeline: "multipass" as const,
+      minPixelRatio: 1,
+      maxPixelCount: 256 * 160,
+      speed: 0,
+      webGlContextAttributes: PRODUCTION_WEBGL_ATTRIBUTES,
+    };
+    const view = render(
+      <ZenMultipassCanvas
+        {...props}
+        sceneScale={1}
+        style={{ position: "relative", width: 96, height: 64 }}
+      />,
+    );
+    const canvas = canvasFrom(view.container);
+    const gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 context is unavailable");
+
+    frames.step(0);
+    expect(canvas.width).toBe(96);
+    expect(canvas.height).toBe(64);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 2,
+      sceneTargetWidth: 96,
+      sceneTargetHeight: 64,
+    });
+    const nativePatternBoundary = firstBrightPixelX(canvas, 32);
+    expect(nativePatternBoundary).toBeGreaterThan(0);
+
+    ref.current?.paperShaderMount?.resetPerformanceStats?.();
+    view.rerender(
+      <ZenMultipassCanvas
+        {...props}
+        sceneScale={3 / 4}
+        style={{ position: "relative", width: 96, height: 64 }}
+      />,
+    );
+    frames.step(16);
+    expect(canvas.getContext("webgl2")).toBe(gl);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 2,
+      sceneTargetWidth: 72,
+      sceneTargetHeight: 48,
+    });
+    expect(firstBrightPixelX(canvas, 32)).toBeCloseTo(nativePatternBoundary, 0);
+
+    ref.current?.paperShaderMount?.resetPerformanceStats?.();
+    view.rerender(
+      <ZenMultipassCanvas
+        {...props}
+        sceneScale={2 / 3}
+        style={{ position: "relative", width: 96, height: 64 }}
+      />,
+    );
+    frames.step(24);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 2,
+      sceneTargetWidth: 64,
+      sceneTargetHeight: 43,
+    });
+    expect(firstBrightPixelX(canvas, 32)).toBeCloseTo(nativePatternBoundary, 0);
+
+    ref.current?.paperShaderMount?.resetPerformanceStats?.();
+    view.rerender(
+      <ZenMultipassCanvas
+        {...props}
+        sceneScale={3 / 4}
+        style={{ position: "relative", width: 128, height: 80 }}
+      />,
+    );
+    window.dispatchEvent(new Event("resize"));
+    frames.step(32);
+    expect(canvas.width).toBe(128);
+    expect(canvas.height).toBe(80);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 2,
+      sceneTargetWidth: 96,
+      sceneTargetHeight: 60,
+    });
+
+    const originalDevicePixelRatio = window.devicePixelRatio;
+    try {
+      Object.defineProperty(window, "devicePixelRatio", {
+        configurable: true,
+        value: 2,
+      });
+      ref.current?.paperShaderMount?.resetPerformanceStats?.();
+      window.dispatchEvent(new Event("resize"));
+      frames.step(48);
+      expect(canvas.width).toBe(256);
+      expect(canvas.height).toBe(160);
+      expect(
+        ref.current?.paperShaderMount?.getPerformanceStats(),
+      ).toMatchObject({
+        drawCount: 1,
+        drawCallCount: 2,
+        sceneTargetWidth: 192,
+        sceneTargetHeight: 120,
+      });
+    } finally {
+      Object.defineProperty(window, "devicePixelRatio", {
+        configurable: true,
+        value: originalDevicePixelRatio,
+      });
+    }
+
+    ref.current?.paperShaderMount?.resetPerformanceStats?.();
+    view.rerender(
+      <ZenMultipassCanvas
+        {...props}
+        sceneScale={1}
+        style={{ position: "relative", width: 128, height: 80 }}
+      />,
+    );
+    window.dispatchEvent(new Event("resize"));
+    frames.step(64);
+    expect(canvas.getContext("webgl2")).toBe(gl);
+    expect(canvas.width).toBe(128);
+    expect(canvas.height).toBe(80);
+    expect(ref.current?.paperShaderMount?.getPerformanceStats()).toMatchObject({
+      drawCount: 1,
+      drawCallCount: 2,
+      sceneTargetWidth: 128,
+      sceneTargetHeight: 80,
     });
   });
 
