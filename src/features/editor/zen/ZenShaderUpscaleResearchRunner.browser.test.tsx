@@ -402,7 +402,9 @@ async function captureCandidate(
   );
   try {
     await waitUntil(
-      () => currentMount(ref).getPerformanceStats().isStaticFrameReady,
+      () =>
+        ref.current?.paperShaderMount?.getPerformanceStats()
+          .isStaticFrameReady === true,
       `${shader}/${candidate.id} did not become ready`,
     );
     const mount = currentMount(ref);
