@@ -13,6 +13,7 @@ const finishTaskMock = vi.hoisted(() => vi.fn());
 const failTaskMock = vi.hoisted(() => vi.fn());
 const buildSnapshotMock = vi.hoisted(() => vi.fn());
 const runPrepassMock = vi.hoisted(() => vi.fn());
+const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/application/narrative-extraction/runRepository", () => ({
   createRun: createRunMock,
@@ -37,6 +38,7 @@ vi.mock(
       narrativeExtractionClaimTask: claimTaskMock,
       narrativeExtractionFinishTask: finishTaskMock,
       narrativeExtractionFailTask: failTaskMock,
+      narrativeExtractionGetRunReviewBundle: getRunReviewBundleMock,
     };
   },
 );
@@ -50,15 +52,23 @@ vi.mock("./extraction/entityCandidatePrepass", () => ({
   runEntityCandidatePrepass: runPrepassMock,
 }));
 
+import { resetNarrativeArtifactIndexForTests } from "@/application/narrative-extraction/artifactRepository";
 import {
   bindExistingCodexEntityProposal,
+  CODEX_ENTITY_BIND_PROPOSAL_KIND,
   createNewBindCodexEntityProposal,
 } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
+import { CODEX_RELATION_CREATE_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import { buildCodexReviewRevisionEnvelope } from "./extraction/reviewRevisionEnvelope";
 import {
   applyCodexStructureExtractionReview,
   buildCodexStructureCatalogs,
   buildRelationCoMentionQuote,
   bulkApproveSafeCodexStructureProposals,
+  CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+  CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+  CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+  decideCodexStructureProposal,
   resetCodexStructureExtractionApiCachesForTests,
   reviseCodexStructureProposal,
   startCodexStructureExtraction,
@@ -1024,6 +1034,177 @@ describe("reviseCodexStructureProposal concurrency", () => {
     await expect(pending).resolves.toBeUndefined();
     expect(useCodexStructureExtractionStore.getState().projection).toBeNull();
   });
+
+  it("forceNative-resyncs Store to Native rev after appendRevision response loss", async () => {
+    resetNarrativeArtifactIndexForTests();
+    getRunReviewBundleMock.mockReset();
+    seedEditableEntity();
+
+    const nativePayload = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-1",
+        canonicalName: "灰の目",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "灰の目", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-edit" },
+    ).payload;
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-edit",
+        projectId: "p1",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-a" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-edit",
+      projectId: "p1",
+      artifacts: [
+        {
+          artifactId: "art-resync",
+          runId: "run-edit",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "ps-1",
+            evidenceByProposalId: {
+              "prop-edit": [
+                {
+                  anchorId: "a1",
+                  quote: "ライカ",
+                  documentRef: "D1",
+                  method: "exact",
+                },
+              ],
+            },
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "t",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "ps-1",
+        runId: "run-edit",
+        projectId: "p1",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          proposalCount: 1,
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {},
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-edit",
+          proposalSetId: "ps-1",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: nativePayload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-2",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+        },
+      ],
+    });
+
+    // Native committed rev2, but the IPC Promise rejects (response loss).
+    appendRevisionMock.mockRejectedValueOnce(new Error("IPC timeout"));
+
+    await expect(
+      reviseCodexStructureProposal({
+        proposalId: "prop-edit",
+        patch: { canonicalName: "灰の目" },
+      }),
+    ).rejects.toThrow("IPC timeout");
+
+    expect(getRunReviewBundleMock).toHaveBeenCalled();
+    const row =
+      useCodexStructureExtractionStore.getState().projection?.proposals[0];
+    expect(row?.revisionId).toBe("rev-2");
+    expect(row?.displayTitle).toBe("灰の目");
+    expect(row?.proposal.payload.canonicalName).toBe("灰の目");
+  });
+
+  it("serializes decide and revise on the same proposal queue", async () => {
+    seedEditableEntity();
+    const order: string[] = [];
+    let releaseDecision: (() => void) | undefined;
+    appendDecisionMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          order.push("decision-start");
+          releaseDecision = () => {
+            order.push("decision-end");
+            resolve();
+          };
+        }),
+    );
+    appendRevisionMock.mockImplementationOnce(async () => {
+      order.push("revision");
+      return { revisionId: "rev-2" };
+    });
+
+    const decidePending = decideCodexStructureProposal({
+      proposalId: "prop-edit",
+      status: "rejected",
+      kind: "entity",
+    });
+    const revisePending = reviseCodexStructureProposal({
+      proposalId: "prop-edit",
+      patch: { canonicalName: "灰の目" },
+    });
+
+    await vi.waitFor(() => {
+      expect(releaseDecision).toEqual(expect.any(Function));
+    });
+    expect(appendRevisionMock).not.toHaveBeenCalled();
+
+    releaseDecision!();
+    await expect(decidePending).resolves.toBeUndefined();
+    await expect(revisePending).resolves.toBeUndefined();
+
+    expect(order).toEqual(["decision-start", "decision-end", "revision"]);
+    const row =
+      useCodexStructureExtractionStore.getState().projection?.proposals[0];
+    expect(row?.revisionId).toBe("rev-2");
+    expect(row?.displayTitle).toBe("灰の目");
+    // Reject published first; revise resets status to unreviewed after Native revision.
+    expect(row?.status).toBe("unreviewed");
+  });
 });
 
 describe("applyCodexStructureExtractionReview opaque refs", () => {
@@ -1358,7 +1539,7 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
     );
     const relationProposal = {
       proposalId: "prop-rel",
-      kind: "codex.relation.create@1" as const,
+      kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
       target: { kind: "new" as const, logicalRef: "rel-1" },
       payload: {
         subjectEntityId: "ne-a",

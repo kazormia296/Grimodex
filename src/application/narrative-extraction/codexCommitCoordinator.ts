@@ -116,21 +116,53 @@ function toCommitWire(
   };
 }
 
-export async function prepareCodexCommit(
+function toWireOperations(
   input: CommitCodexOperationsInput,
-): Promise<PrepareCommitResult & { planDigest: string; commitMap: CommitMap }> {
-  const operations: CommitOperation[] = input.operations.map((item) => ({
+): CommitOperation[] {
+  return input.operations.map((item) => ({
     kind: item.operation.kind,
     payload: item.operation.payload as unknown as Record<string, unknown>,
     proposalId: item.proposalId,
     revisionId: item.revisionId,
   }));
+}
+
+async function resolvePlanDigest(
+  input: CommitCodexOperationsInput,
+): Promise<{ readonly planDigest: string; readonly commitMap: CommitMap }> {
   const commitMap = buildCommitMap(input);
   const planDigest = await computePlanDigest(
-    operations,
+    toWireOperations(input),
     null,
     toEntityBindingSeeds(commitMap),
   );
+  return { planDigest, commitMap };
+}
+
+function receiptFromStatus(
+  status: GetCommitStatusResult,
+  planDigest: string,
+): ApplyCommitResult {
+  if (status.receipt) {
+    return {
+      ...status.receipt,
+      status: status.status ?? status.receipt.status,
+      idempotentReplay: true,
+    };
+  }
+  return {
+    commitId: status.commitId ?? "",
+    requestId: status.requestId ?? "",
+    planDigest: status.planDigest ?? planDigest,
+    status: status.status ?? "applied",
+    idempotentReplay: true,
+  };
+}
+
+export async function prepareCodexCommit(
+  input: CommitCodexOperationsInput,
+): Promise<PrepareCommitResult & { planDigest: string; commitMap: CommitMap }> {
+  const { planDigest, commitMap } = await resolvePlanDigest(input);
   const prepared = await narrativeExtractionPrepareCommit(
     toCommitWire(input, planDigest),
   );
@@ -141,23 +173,15 @@ export async function applyCodexCommit(
   input: CommitCodexOperationsInput,
   planDigest?: string,
 ): Promise<ApplyCommitResult> {
-  const operations: CommitOperation[] = input.operations.map((item) => ({
-    kind: item.operation.kind,
-    payload: item.operation.payload as unknown as Record<string, unknown>,
-    proposalId: item.proposalId,
-    revisionId: item.revisionId,
-  }));
-  const commitMap = buildCommitMap(input);
-  const digest =
-    planDigest ??
-    (await computePlanDigest(
-      operations,
-      null,
-      toEntityBindingSeeds(commitMap),
-    ));
+  const digest = planDigest ?? (await resolvePlanDigest(input)).planDigest;
   return narrativeExtractionApplyCommit(toCommitWire(input, digest));
 }
 
+/**
+ * Idempotent prepare→apply for Codex commits.
+ * Status is checked BEFORE prepare so a lost apply response can replay via
+ * Native receipt without hitting NEX_PROPOSAL_ALREADY_APPLIED in prepare.
+ */
 export async function prepareAndApplyCodexCommit(
   input: CommitCodexOperationsInput,
 ): Promise<{
@@ -166,8 +190,57 @@ export async function prepareAndApplyCodexCommit(
   readonly status: GetCommitStatusResult;
   readonly commitMap: CommitMap;
 }> {
-  const prepared = await prepareCodexCommit(input);
-  const applied = await applyCodexCommit(input, prepared.planDigest);
+  const { planDigest, commitMap } = await resolvePlanDigest(input);
+
+  const existing = await narrativeExtractionGetCommitStatus({
+    projectId: input.projectId,
+    requestId: input.requestId,
+  });
+
+  if (existing.found) {
+    if (existing.planDigest != null && existing.planDigest !== planDigest) {
+      throw new Error(
+        "NEX_COMMIT_IDEMPOTENCY_CONFLICT: request id reused with different planDigest",
+      );
+    }
+    const commitStatus = existing.status ?? "unknown";
+    if (
+      commitStatus === "applied" ||
+      commitStatus === "redone" ||
+      commitStatus === "undone"
+    ) {
+      const applied = receiptFromStatus(existing, planDigest);
+      return {
+        prepared: {
+          ok: true,
+          requestId: input.requestId,
+          planDigest,
+          operationCount: input.operations.length,
+        },
+        applied,
+        status: existing,
+        commitMap,
+      };
+    }
+    if (commitStatus === "failed") {
+      throw new Error(
+        existing.errorMessage ??
+          `NEX_COMMIT_FAILED: request '${input.requestId}' previously failed`,
+      );
+    }
+    if (commitStatus === "pending") {
+      throw new Error(
+        `NEX_COMMIT_PENDING: request '${input.requestId}' is still pending`,
+      );
+    }
+  }
+
+  const prepared = await narrativeExtractionPrepareCommit(
+    toCommitWire(input, planDigest),
+  );
+  const applied = await narrativeExtractionApplyCommit(
+    toCommitWire(input, planDigest),
+  );
   const status = await narrativeExtractionGetCommitStatus({
     projectId: input.projectId,
     requestId: input.requestId,
@@ -176,7 +249,7 @@ export async function prepareAndApplyCodexCommit(
     prepared,
     applied,
     status,
-    commitMap: prepared.commitMap,
+    commitMap,
   };
 }
 

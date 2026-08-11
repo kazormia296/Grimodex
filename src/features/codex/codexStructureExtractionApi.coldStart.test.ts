@@ -1220,6 +1220,179 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     expect(second.approvedCount).toBe(0);
   });
 
+  it("forceNative bypasses warm Store and rebuilds from Native revision", async () => {
+    const entity = sampleEntityProposal("prop-force");
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "ライカ",
+        documentRef: "doc:scene-1",
+        method: "exact" as const,
+      },
+    ];
+    const stalePayload = {
+      ...entity.payload,
+      canonicalName: "古い名前",
+      binding: {
+        kind: "create-new" as const,
+        entry: { name: "古い名前", aliases: [] as string[], summary: null },
+      },
+    };
+    const nativePayload = {
+      ...entity.payload,
+      canonicalName: "灰の目",
+      binding: {
+        kind: "create-new" as const,
+        entry: { name: "灰の目", aliases: [] as string[], summary: null },
+      },
+    };
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId: "run-force",
+      projectId: "project-cold",
+      workspacePath: "/ws",
+      openRevision: 1,
+      proposalSetId: "set-force",
+      folderId: "folder-cold",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-force",
+          revisionId: "rev-1",
+          proposalKey: "ne-1",
+          status: "unreviewed",
+          applicability: "applicable",
+          displayTitle: "古い名前",
+          proposal: { ...entity, payload: stalePayload },
+          evidence,
+          safety: {
+            evidenceExact: true,
+            typeResolved: true,
+            noExistingCandidates: true,
+            explicitProperName: true,
+            explicitAliasesOnly: true,
+            noRelationDeps: true,
+            createNew: true,
+          },
+        },
+      ],
+      relationProposals: [],
+      entityCount: 1,
+      relationCount: 0,
+      unresolvedCount: 0,
+      approvedCount: 0,
+      catalog: { entities: [], types: [] },
+    });
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-force",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-force",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art-force",
+          runId: "run-force",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "set-force",
+            evidenceByProposalId: { "prop-force": evidence },
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "t",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "set-force",
+        runId: "run-force",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          proposalCount: 1,
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {},
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-force",
+          proposalSetId: "set-force",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: nativePayload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-2",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+        },
+      ],
+    });
+
+    const warm = await getCodexStructureExtractionReview("run-force", {
+      projectId: "project-cold",
+      workspacePath: "/ws",
+      openRevision: 1,
+      folderId: "folder-cold",
+    });
+    expect(warm.proposals[0]?.revisionId).toBe("rev-1");
+    expect(getRunReviewBundleMock).not.toHaveBeenCalled();
+
+    const forced = await getCodexStructureExtractionReview(
+      "run-force",
+      {
+        projectId: "project-cold",
+        workspacePath: "/ws",
+        openRevision: 1,
+        folderId: "folder-cold",
+      },
+      { forceNative: true },
+    );
+    expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1);
+    expect(forced.proposals[0]?.revisionId).toBe("rev-2");
+    expect(forced.proposals[0]?.displayTitle).toBe("灰の目");
+  });
+
   it("fails closed when an unapplied proposal lacks Evidence entries", async () => {
     const entity = sampleEntityProposal("prop-no-ev");
     getRunMock.mockResolvedValue({

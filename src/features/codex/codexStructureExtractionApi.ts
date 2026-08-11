@@ -972,12 +972,17 @@ async function resyncReviewAfterEditFailure(
     return;
   }
   try {
-    const refreshed = await getCodexStructureExtractionReview(scope.runId, {
-      projectId: scope.projectId,
-      workspacePath: scope.workspacePath ?? undefined,
-      openRevision: scope.openRevision ?? undefined,
-      folderId: scope.folderId ?? undefined,
-    });
+    // Must bypass warm Store — Native may have advanced past a lost IPC response.
+    const refreshed = await getCodexStructureExtractionReview(
+      scope.runId,
+      {
+        projectId: scope.projectId,
+        workspacePath: scope.workspacePath ?? undefined,
+        openRevision: scope.openRevision ?? undefined,
+        folderId: scope.folderId ?? undefined,
+      },
+      { forceNative: true },
+    );
     if (
       !reviewEditScopeMatches(
         useCodexStructureExtractionStore.getState().projection,
@@ -2167,9 +2172,13 @@ export async function getCodexStructureExtractionReview(
     readonly openRevision?: number;
     readonly folderId?: string;
   },
+  options?: {
+    /** When true, ignore warm Store and rebuild from Native review bundle. */
+    readonly forceNative?: boolean;
+  },
 ): Promise<CodexStructureExtractionReviewProjection> {
   const current = useCodexStructureExtractionStore.getState().projection;
-  if (current && current.runId === runId) {
+  if (current && current.runId === runId && !options?.forceNative) {
     if (scope && current.projectId !== scope.projectId) {
       throw new Error(
         "Codex structure extraction run belongs to another project",
@@ -2700,232 +2709,269 @@ export async function decideCodexStructureProposal(args: {
   readonly status: NarrativeProposalStatus;
   readonly kind?: "entity" | "relation";
 }): Promise<void> {
-  const projection = useCodexStructureExtractionStore.getState().projection;
-  if (!projection)
-    throw new Error("No active codex structure extraction review");
-  const kind = args.kind ?? "entity";
-  const proposal =
-    kind === "entity"
-      ? projection.proposals.find((item) => item.proposalId === args.proposalId)
-      : projection.relationProposals.find(
-          (item) => item.proposalId === args.proposalId,
-        );
-  if (!proposal?.revisionId) {
-    throw new Error(`Proposal ${args.proposalId} missing revisionId`);
-  }
-  assertProposalNotApplied(proposal, "decide");
-  if (
-    kind === "relation" &&
-    (proposal as CodexRelationReviewProposal).applicability ===
-      "already-satisfied"
-  ) {
-    throw new Error(
-      `Cannot decide already-satisfied Relation ${args.proposalId}`,
-    );
-  }
-  if (args.status === "unreviewed") {
-    if (kind === "entity") {
-      useCodexStructureExtractionStore
-        .getState()
-        .updateProposalStatus(args.proposalId, args.status);
-    } else {
-      useCodexStructureExtractionStore
-        .getState()
-        .updateRelationProposalStatus(args.proposalId, args.status);
+  return enqueueProposalEdit(args.proposalId, async () => {
+    const projection = useCodexStructureExtractionStore.getState().projection;
+    if (!projection)
+      throw new Error("No active codex structure extraction review");
+    const scope = captureReviewEditScope(projection);
+    const kind = args.kind ?? "entity";
+    const proposal =
+      kind === "entity"
+        ? projection.proposals.find(
+            (item) => item.proposalId === args.proposalId,
+          )
+        : projection.relationProposals.find(
+            (item) => item.proposalId === args.proposalId,
+          );
+    if (!proposal?.revisionId) {
+      throw new Error(`Proposal ${args.proposalId} missing revisionId`);
     }
-    return;
-  }
-
-  let revisionId = proposal.revisionId;
-  let compiledOperation: CodexCompiledDomainOperation | null = null;
-
-  const decision =
-    args.status === "approved"
-      ? "approved"
-      : args.status === "rejected"
-        ? "rejected"
-        : args.status === "held"
-          ? "held"
-          : "deferred";
-
-  if (args.status === "approved") {
-    // Lock Domain Operation into Native revision before decision so Apply digests match.
-    if (kind === "entity") {
-      const entity = proposal as CodexEntityReviewProposal;
-      const operation = compileEntityOperationForReview(
-        entity,
-        projection.catalog,
+    assertProposalNotApplied(proposal, "decide");
+    if (
+      kind === "relation" &&
+      (proposal as CodexRelationReviewProposal).applicability ===
+        "already-satisfied"
+    ) {
+      throw new Error(
+        `Cannot decide already-satisfied Relation ${args.proposalId}`,
       );
-      if (!operation) {
-        throw new Error(
-          `Cannot approve blocked/unresolved entity proposal ${args.proposalId}`,
-        );
+    }
+    if (args.status === "unreviewed") {
+      if (kind === "entity") {
+        useCodexStructureExtractionStore
+          .getState()
+          .updateProposalStatus(args.proposalId, args.status);
+      } else {
+        useCodexStructureExtractionStore
+          .getState()
+          .updateRelationProposalStatus(args.proposalId, args.status);
       }
-      compiledOperation = {
-        kind: operation.kind,
-        payload: operation.payload as unknown as Readonly<
-          Record<string, unknown>
-        >,
-      };
-    } else {
-      const relation = proposal as CodexRelationReviewProposal;
-      const rematched = evaluateCodexRelationApplicability({
-        relation,
-        entities: projection.proposals,
-        projectId: projection.projectId,
-        existingRelations: projection.existingRelations ?? [],
-        catalog: projection.catalog,
-      });
-      if (rematched.applicability === "already-satisfied") {
-        useCodexStructureExtractionStore.getState().setProjection({
-          ...projection,
-          relationProposals: projection.relationProposals.map((item) =>
-            item.proposalId === args.proposalId ? rematched : item,
-          ),
-          ...recountProjection(
-            projection.proposals,
-            projection.relationProposals.map((item) =>
-              item.proposalId === args.proposalId ? rematched : item,
-            ),
-          ),
-        });
-        if (rematched.revisionId) {
-          await appendDecision({
+      return;
+    }
+
+    const startedRevisionId = proposal.revisionId;
+    let revisionId = startedRevisionId;
+    let compiledOperation: CodexCompiledDomainOperation | null = null;
+    let alreadySatisfiedLocal: CodexRelationReviewProposal | null = null;
+
+    const decision =
+      args.status === "approved"
+        ? "approved"
+        : args.status === "rejected"
+          ? "rejected"
+          : args.status === "held"
+            ? "held"
+            : "deferred";
+
+    try {
+      if (args.status === "approved") {
+        if (kind === "entity") {
+          const entity = proposal as CodexEntityReviewProposal;
+          const operation = compileEntityOperationForReview(
+            entity,
+            projection.catalog,
+          );
+          if (!operation) {
+            throw new Error(
+              `Cannot approve blocked/unresolved entity proposal ${args.proposalId}`,
+            );
+          }
+          compiledOperation = {
+            kind: operation.kind,
+            payload: operation.payload as unknown as Readonly<
+              Record<string, unknown>
+            >,
+          };
+        } else {
+          const relation = proposal as CodexRelationReviewProposal;
+          const rematched = evaluateCodexRelationApplicability({
+            relation,
+            entities: projection.proposals,
+            projectId: projection.projectId,
+            existingRelations: projection.existingRelations ?? [],
+            catalog: projection.catalog,
+          });
+          if (rematched.applicability === "already-satisfied") {
+            if (!rematched.revisionId) {
+              throw new Error(
+                `Cannot defer already-satisfied Relation ${args.proposalId}: missing revisionId`,
+              );
+            }
+            await appendDecision({
+              runId: projection.runId,
+              projectId: projection.projectId,
+              proposalId: rematched.proposalId,
+              revisionId: rematched.revisionId,
+              decision: "deferred",
+              decisionJson: {
+                reason: "already-satisfied",
+                existingRelationRef: rematched.existingRelationRef ?? null,
+              },
+              createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+            });
+            alreadySatisfiedLocal = rematched;
+          } else {
+            if (!relationEndpointsReady(relation, projection.proposals)) {
+              throw new Error(
+                `Cannot approve Relation ${args.proposalId}: 先に両端の Entity proposal を承認してください`,
+              );
+            }
+            let commitMap = emptyCommitMap();
+            for (const entity of projection.proposals) {
+              const op = entity.compiledOperation;
+              if (!op) continue;
+              const narrativeEntityId =
+                entity.proposal.payload.narrativeEntityId;
+              const entryId =
+                typeof op.payload.entryId === "string"
+                  ? op.payload.entryId
+                  : null;
+              if (!entryId) continue;
+              if (op.kind === "codex.entry.create") {
+                commitMap = registerCreatedBinding(
+                  commitMap,
+                  narrativeEntityId,
+                  entryId,
+                );
+              } else {
+                commitMap = registerExistingBinding(
+                  commitMap,
+                  narrativeEntityId,
+                  entryId,
+                );
+              }
+            }
+            const operation = compileCreateCodexRelationOperation(
+              relation.proposal,
+              commitMap,
+              { projectId: projection.projectId },
+            );
+            compiledOperation = {
+              kind: operation.kind,
+              payload: operation.payload as unknown as Readonly<
+                Record<string, unknown>
+              >,
+            };
+          }
+        }
+
+        if (!alreadySatisfiedLocal) {
+          const result = await reviseAndDecide({
             runId: projection.runId,
             projectId: projection.projectId,
-            proposalId: rematched.proposalId,
-            revisionId: rematched.revisionId,
-            decision: "deferred",
-            decisionJson: {
-              reason: "already-satisfied",
-              existingRelationRef: rematched.existingRelationRef ?? null,
-            },
-            createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+            proposalId: args.proposalId,
+            expectedCurrentRevisionId: revisionId,
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload:
+                kind === "entity"
+                  ? (proposal as CodexEntityReviewProposal).proposal.payload
+                  : (proposal as CodexRelationReviewProposal).proposal.payload,
+              compiledOperation,
+            }) as unknown as Readonly<Record<string, unknown>>,
+            decision,
+            createdBy: "codex-structure-extract-dialog",
           });
+          revisionId = result.revisionId;
         }
-        return;
+      } else {
+        await appendDecision({
+          runId: projection.runId,
+          projectId: projection.projectId,
+          proposalId: args.proposalId,
+          revisionId,
+          decision,
+          createdBy: "codex-structure-extract-dialog",
+        });
       }
-      if (!relationEndpointsReady(relation, projection.proposals)) {
-        throw new Error(
-          `Cannot approve Relation ${args.proposalId}: 先に両端の Entity proposal を承認してください`,
-        );
-      }
-      // Relation compile needs CommitMap of approved entity bindings; use provisional map
-      // from already-approved entity compiled ops + this run's create targets.
-      let commitMap = emptyCommitMap();
-      for (const entity of projection.proposals) {
-        const op = entity.compiledOperation;
-        if (!op) continue;
-        const narrativeEntityId = entity.proposal.payload.narrativeEntityId;
-        const entryId =
-          typeof op.payload.entryId === "string" ? op.payload.entryId : null;
-        if (!entryId) continue;
-        if (op.kind === "codex.entry.create") {
-          commitMap = registerCreatedBinding(
-            commitMap,
-            narrativeEntityId,
-            entryId,
-          );
-        } else {
-          commitMap = registerExistingBinding(
-            commitMap,
-            narrativeEntityId,
-            entryId,
-          );
-        }
-      }
-      const operation = compileCreateCodexRelationOperation(
-        relation.proposal,
-        commitMap,
-        { projectId: projection.projectId },
-      );
-      compiledOperation = {
-        kind: operation.kind,
-        payload: operation.payload as unknown as Readonly<
-          Record<string, unknown>
-        >,
-      };
+    } catch (error) {
+      await resyncReviewAfterEditFailure(scope);
+      throw error;
     }
 
-    // Atomic revision + decision in ONE Native transaction so an approve can
-    // never leave a fresh revision without its decision.
-    const result = await reviseAndDecide({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: args.proposalId,
-      expectedCurrentRevisionId: revisionId,
-      payloadJson: buildCodexReviewRevisionEnvelope({
-        reviewPayload:
-          kind === "entity"
-            ? (proposal as CodexEntityReviewProposal).proposal.payload
-            : (proposal as CodexRelationReviewProposal).proposal.payload,
-        compiledOperation,
-      }) as unknown as Readonly<Record<string, unknown>>,
-      decision,
-      createdBy: "codex-structure-extract-dialog",
-    });
-    revisionId = result.revisionId;
-  } else {
-    // Reject / held / deferred keep the current revision — decision only.
-    await appendDecision({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: args.proposalId,
-      revisionId,
-      decision,
-      createdBy: "codex-structure-extract-dialog",
-    });
-  }
+    const latest = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(latest, scope) || !latest) return;
 
-  const latest = useCodexStructureExtractionStore.getState().projection;
-  if (!latest) return;
-  if (kind === "entity") {
-    useCodexStructureExtractionStore.getState().setProjection({
-      ...latest,
-      proposals: latest.proposals.map((item) =>
-        item.proposalId === args.proposalId
-          ? {
-              ...item,
-              status: args.status,
-              revisionId,
-              compiledOperation:
-                args.status === "approved" ? compiledOperation : null,
-            }
-          : item,
-      ),
-      ...recountProjection(
-        latest.proposals.map((item) =>
+    if (alreadySatisfiedLocal) {
+      useCodexStructureExtractionStore.getState().setProjection({
+        ...latest,
+        relationProposals: latest.relationProposals.map((item) =>
+          item.proposalId === args.proposalId ? alreadySatisfiedLocal! : item,
+        ),
+        ...recountProjection(
+          latest.proposals,
+          latest.relationProposals.map((item) =>
+            item.proposalId === args.proposalId ? alreadySatisfiedLocal! : item,
+          ),
+        ),
+      });
+      return;
+    }
+
+    const currentRow =
+      kind === "entity"
+        ? latest.proposals.find((item) => item.proposalId === args.proposalId)
+        : latest.relationProposals.find(
+            (item) => item.proposalId === args.proposalId,
+          );
+    if (!currentRow) return;
+
+    // Do not clobber a revision that advanced while Native was in flight
+    // (e.g. forceNative resync or another surface writing the same run).
+    if (
+      currentRow.revisionId !== startedRevisionId &&
+      currentRow.revisionId !== revisionId
+    ) {
+      return;
+    }
+
+    if (kind === "entity") {
+      useCodexStructureExtractionStore.getState().setProjection({
+        ...latest,
+        proposals: latest.proposals.map((item) =>
           item.proposalId === args.proposalId
-            ? { ...item, status: args.status }
+            ? {
+                ...item,
+                status: args.status,
+                revisionId,
+                compiledOperation:
+                  args.status === "approved" ? compiledOperation : null,
+              }
             : item,
         ),
-        latest.relationProposals,
-      ),
-    });
-  } else {
-    useCodexStructureExtractionStore.getState().setProjection({
-      ...latest,
-      relationProposals: latest.relationProposals.map((item) =>
-        item.proposalId === args.proposalId
-          ? {
-              ...item,
-              status: args.status,
-              revisionId,
-              compiledOperation:
-                args.status === "approved" ? compiledOperation : null,
-            }
-          : item,
-      ),
-      ...recountProjection(
-        latest.proposals,
-        latest.relationProposals.map((item) =>
+        ...recountProjection(
+          latest.proposals.map((item) =>
+            item.proposalId === args.proposalId
+              ? { ...item, status: args.status, revisionId }
+              : item,
+          ),
+          latest.relationProposals,
+        ),
+      });
+    } else {
+      useCodexStructureExtractionStore.getState().setProjection({
+        ...latest,
+        relationProposals: latest.relationProposals.map((item) =>
           item.proposalId === args.proposalId
-            ? { ...item, status: args.status }
+            ? {
+                ...item,
+                status: args.status,
+                revisionId,
+                compiledOperation:
+                  args.status === "approved" ? compiledOperation : null,
+              }
             : item,
         ),
-      ),
-    });
-  }
+        ...recountProjection(
+          latest.proposals,
+          latest.relationProposals.map((item) =>
+            item.proposalId === args.proposalId
+              ? { ...item, status: args.status, revisionId }
+              : item,
+          ),
+        ),
+      });
+    }
+  });
 }
 
 export interface BulkApproveSafeCodexStructureResult {
