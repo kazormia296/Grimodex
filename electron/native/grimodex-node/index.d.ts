@@ -51,6 +51,10 @@ export declare class Backend {
    * 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
    */
   dbExecute(sql: string, params: any, method: string): Promise<string>;
+  /** Read Native-owned Narrative runtime policy. */
+  narrativeRuntimePolicyGet(): Promise<string>;
+  /** CAS update for Native-owned Narrative runtime policy. */
+  narrativeRuntimePolicySet(payload: any): Promise<string>;
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。

@@ -558,9 +558,11 @@ pub mod lint_ignores;
 pub mod lint_terms;
 pub mod map_writes;
 mod migrate;
+pub mod narrative_runtime_policy;
 pub mod plot_threads;
 pub mod post_effect;
 pub mod project_snapshots;
+pub mod protected_writers;
 pub mod runtime_threads;
 pub mod sample_seed;
 pub mod scene_body;
@@ -582,6 +584,22 @@ pub mod workspace_lease;
 // (src-tauri の互換シム `pub(crate) use grimodex_db::{…}` と napi 側の両方が
 // フラットに import できるように)。
 pub use error::{AppError, AppResult, QueryResult};
+pub use execute::{SqlOrigin, RENDERER_SQL_SECURITY_ERROR};
+pub use protected_writers::PROTECTED_WRITER_SQL_ERROR;
+pub use narrative_runtime_policy::{
+    ensure_narrative_runtime_policy_row, load_narrative_runtime_policy,
+    load_narrative_runtime_policy_from_db, require_background_ai_allowed,
+    require_generic_import_allowed, require_generic_import_apply_allowed,
+    require_generic_import_capture_allowed, require_manual_apply_authority_in_tx,
+    require_narrative_apply_allowed, require_narrative_extraction_allowed,
+    require_narrative_maintenance_allowed, require_narrative_maintenance_mutation_allowed,
+    require_narrative_maintenance_preview_allowed, require_narrative_redo_allowed,
+    require_narrative_undo_allowed, set_narrative_runtime_policy,
+    set_narrative_runtime_policy_in_tx, NarrativeRuntimeMode, NarrativeRuntimePolicy,
+    SetNarrativeRuntimePolicyInput, NARRATIVE_APPROVAL_REQUIRED, NARRATIVE_BACKGROUND_AI_DISABLED,
+    NARRATIVE_ENGINE_DISABLED, NARRATIVE_GENERIC_IMPORT_DISABLED, NARRATIVE_MAINTENANCE_DISABLED,
+    NARRATIVE_REVIEW_ONLY, NARRATIVE_RUNTIME_POLICY_CONFLICT,
+};
 pub use recovery::{
     MigrationReceipt, OpenWorkspacePayload, RecoveryCandidate, RecoveryCandidateKind,
     WorkspaceOpenOutcome,

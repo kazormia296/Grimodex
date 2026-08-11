@@ -5,12 +5,17 @@ use rusqlite::{
     params_from_iter, Connection, ErrorCode,
 };
 use serde_json::Value;
+use std::cell::{Cell, RefCell};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::time::Instant;
 
+use super::protected_writers::{
+    bundled_protected_writer_registry, classify_insert_columns, untrusted_mutation_rejection,
+    PROTECTED_WRITER_SQL_ERROR,
+};
 use super::{BatchStatement, Database};
 
 /// Phase 5 instrumentation: log when a single in-Rust DB call takes long
@@ -24,6 +29,30 @@ const SLOW_DB_CALL_MS: u128 = 50;
 /// Stable prefix propagated through N-API and the Electron IPC envelope when
 /// renderer-origin SQL attempts to cross the workspace/file/schema boundary.
 pub const RENDERER_SQL_SECURITY_ERROR: &str = "RENDERER_SQL_SECURITY";
+
+/// SQL caller classification shared by Electron, Tauri, and MCP.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqlOrigin {
+    /// Renderer generic SQL proxy (Drizzle / raw).
+    Renderer,
+    /// MCP generic／untrusted SQL surface.
+    McpGeneric,
+    /// Typed domain writers owned by Native.
+    TrustedDomainWriter,
+    /// Migration supervisor / schema upgrades.
+    TrustedMigration,
+}
+
+impl SqlOrigin {
+    pub fn is_untrusted(self) -> bool {
+        matches!(self, Self::Renderer | Self::McpGeneric)
+    }
+}
+
+thread_local! {
+    static UNTRUSTED_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static PENDING_INSERT_COLUMNS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
 
 const RENDERER_SQL_RESOURCE_ERROR: &str = "RENDERER_SQL_RESOURCE_LIMIT";
 const RENDERER_SQL_LENGTH_LIMIT: i32 = 1_048_576;
@@ -89,6 +118,38 @@ fn renderer_function_denied(name: &str) -> bool {
     .any(|denied| name.eq_ignore_ascii_case(denied))
 }
 
+fn protected_writer_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    let registry = bundled_protected_writer_registry();
+    match &ctx.action {
+        AuthAction::Delete { table_name } => {
+            untrusted_mutation_rejection(registry, table_name, None, false, true, None)
+        }
+        AuthAction::Insert { table_name } => {
+            let insert_columns = PENDING_INSERT_COLUMNS.with(|columns| columns.borrow().clone());
+            untrusted_mutation_rejection(
+                registry,
+                table_name,
+                None,
+                true,
+                false,
+                insert_columns.as_deref(),
+            )
+        }
+        AuthAction::Update {
+            table_name,
+            column_name,
+        } => untrusted_mutation_rejection(
+            registry,
+            table_name,
+            Some(column_name),
+            false,
+            false,
+            None,
+        ),
+        _ => None,
+    }
+}
+
 fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     if !matches!(ctx.database_name, None | Some("main") | Some("temp")) {
         return Some("access to an attached database".to_string());
@@ -104,6 +165,10 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     };
     if mutates_ai_audit {
         return Some("mutation of ai_audit_events".to_string());
+    }
+
+    if let Some(reason) = protected_writer_rejection(&ctx) {
+        return Some(reason);
     }
 
     match ctx.action {
@@ -231,7 +296,7 @@ fn restore_renderer_sql_policy(
     }
 }
 
-fn with_renderer_sql_policy<T, F>(conn: &Connection, operation: F) -> anyhow::Result<T>
+fn with_untrusted_sql_policy<T, F>(conn: &Connection, operation: F) -> anyhow::Result<T>
 where
     F: FnOnce(&Connection) -> anyhow::Result<T>,
 {
@@ -285,7 +350,13 @@ where
         return Err(error.into());
     }
 
+    UNTRUSTED_SQL_ACTIVE.with(|active| active.set(true));
     let result = operation(conn);
+    UNTRUSTED_SQL_ACTIVE.with(|active| active.set(false));
+    PENDING_INSERT_COLUMNS.with(|columns| {
+        *columns.borrow_mut() = None;
+    });
+
     let cleanup_result = restore_renderer_sql_policy(conn, &state);
     if let Err(error) = cleanup_result {
         return Err(anyhow::anyhow!(
@@ -295,9 +366,12 @@ where
 
     let denied = denied_reason.lock().ok().and_then(|reason| reason.clone());
     if let Some(reason) = denied {
-        return Err(anyhow::anyhow!(
-            "{RENDERER_SQL_SECURITY_ERROR}: denied {reason}"
-        ));
+        let code = if reason.contains("protected") {
+            PROTECTED_WRITER_SQL_ERROR
+        } else {
+            RENDERER_SQL_SECURITY_ERROR
+        };
+        return Err(anyhow::anyhow!("{code}: denied {reason}"));
     }
     if budget_exhausted.load(Ordering::Relaxed) {
         return Err(anyhow::anyhow!(
@@ -326,6 +400,23 @@ where
         }
     }
     result
+}
+
+fn prepare_untrusted_statement_context(sql: &str) {
+    let insert_columns = UNTRUSTED_SQL_ACTIVE.with(|active| {
+        if !active.get() {
+            return None;
+        }
+        let lowered = sql.trim_start().to_ascii_lowercase();
+        if lowered.starts_with("insert") {
+            classify_insert_columns(sql)
+        } else {
+            None
+        }
+    });
+    PENDING_INSERT_COLUMNS.with(|columns| {
+        *columns.borrow_mut() = insert_columns;
+    });
 }
 
 impl Database {
@@ -367,15 +458,15 @@ impl Database {
     fn execute_batch_tx_impl(
         &self,
         statements: &[BatchStatement],
-        renderer_origin: bool,
+        origin: SqlOrigin,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
-        let result = if renderer_origin {
-            with_renderer_sql_policy(&conn, |conn| {
+        let result = if origin.is_untrusted() {
+            with_untrusted_sql_policy(&conn, |conn| {
                 Self::execute_batch_tx_with_conn(conn, statements)
             })
         } else {
@@ -388,11 +479,11 @@ impl Database {
                 .map(|s| log_prefix(&s.sql))
                 .unwrap_or_default();
             tracing::warn!(
-                "database.execute_batch_tx lock_wait={}ms sql={}ms stmts={} renderer={} first_sql={:?}",
+                "database.execute_batch_tx lock_wait={}ms sql={}ms stmts={} origin={:?} first_sql={:?}",
                 lock_wait_ms,
                 sql_ms,
                 statements.len(),
-                renderer_origin,
+                origin,
                 first_sql
             );
         }
@@ -407,7 +498,15 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, false)
+        self.execute_batch_tx_impl(statements, SqlOrigin::TrustedDomainWriter)
+    }
+
+    pub fn execute_batch_tx_with_origin(
+        &self,
+        origin: SqlOrigin,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        self.execute_batch_tx_impl(statements, origin)
     }
 
     /// Execute renderer-origin statements under the connection-local
@@ -416,7 +515,19 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, true)
+        self.execute_batch_tx_impl(statements, SqlOrigin::Renderer)
+    }
+
+    pub fn execute_batch_tx_untrusted(
+        &self,
+        origin: SqlOrigin,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        anyhow::ensure!(
+            origin.is_untrusted(),
+            "execute_batch_tx_untrusted requires an untrusted SqlOrigin"
+        );
+        self.execute_batch_tx_impl(statements, origin)
     }
 
     pub fn execute_with_conn(
@@ -425,6 +536,7 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        prepare_untrusted_statement_context(sql);
         let native_params: Vec<Box<dyn rusqlite::types::ToSql>> = params
             .iter()
             .map(|v| -> Box<dyn rusqlite::types::ToSql> {
@@ -502,7 +614,7 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, false)
+        self.execute_impl(sql, params, method, SqlOrigin::TrustedDomainWriter)
     }
 
     /// Execute one renderer-origin statement under the restricted policy.
@@ -512,7 +624,31 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, true)
+        self.execute_impl(sql, params, method, SqlOrigin::Renderer)
+    }
+
+    pub fn execute_with_origin(
+        &self,
+        origin: SqlOrigin,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        self.execute_impl(sql, params, method, origin)
+    }
+
+    pub fn execute_untrusted(
+        &self,
+        origin: SqlOrigin,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        anyhow::ensure!(
+            origin.is_untrusted(),
+            "execute_untrusted requires an untrusted SqlOrigin"
+        );
+        self.execute_impl(sql, params, method, origin)
     }
 
     fn execute_impl(
@@ -520,15 +656,15 @@ impl Database {
         sql: &str,
         params: &[Value],
         method: &str,
-        renderer_origin: bool,
+        origin: SqlOrigin,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
-        let result = if renderer_origin {
-            with_renderer_sql_policy(&conn, |conn| {
+        let result = if origin.is_untrusted() {
+            with_untrusted_sql_policy(&conn, |conn| {
                 Self::execute_with_conn(conn, sql, params, method)
             })
         } else {
@@ -537,11 +673,11 @@ impl Database {
         let sql_ms = sql_started.elapsed().as_millis();
         if lock_wait_ms + sql_ms >= SLOW_DB_CALL_MS {
             tracing::warn!(
-                "database.execute lock_wait={}ms sql={}ms method={} renderer={} sql={:?}",
+                "database.execute lock_wait={}ms sql={}ms method={} origin={:?} sql={:?}",
                 lock_wait_ms,
                 sql_ms,
                 method,
-                renderer_origin,
+                origin,
                 log_prefix(sql)
             );
         }
@@ -923,5 +1059,178 @@ mod tests {
             },
         ])
         .expect("structural restore pragma remains available");
+    }
+
+    #[test]
+    fn renderer_rejects_active_protected_table_mutations_but_trusted_writer_passes() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE narrative_protected_fixture (
+                id TEXT PRIMARY KEY,
+                version INTEGER NOT NULL DEFAULT 1
+             )",
+            &[],
+            "run",
+        )
+        .expect("trusted fixture schema");
+
+        let insert_error = db
+            .execute_renderer(
+                "INSERT INTO narrative_protected_fixture (id, version) VALUES ('a', 1)",
+                &[],
+                "run",
+            )
+            .expect_err("renderer insert into protected fixture");
+        assert!(
+            insert_error
+                .to_string()
+                .contains("PROTECTED_WRITER_SQL: denied mutation of protected narrative table"),
+            "unexpected error: {insert_error}"
+        );
+
+        db.execute(
+            "INSERT INTO narrative_protected_fixture (id, version) VALUES ('a', 1)",
+            &[],
+            "run",
+        )
+        .expect("trusted domain writer may mutate protected tables");
+
+        let update_error = db
+            .execute_untrusted(
+                SqlOrigin::McpGeneric,
+                "UPDATE narrative_protected_fixture SET version = 2 WHERE id = 'a'",
+                &[],
+                "run",
+            )
+            .expect_err("mcp generic update denied");
+        assert!(update_error.to_string().contains("PROTECTED_WRITER_SQL"));
+    }
+
+    #[test]
+    fn renderer_rejects_protected_shared_columns_and_structural_writes() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE narrative_protected_shared_fixture (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                protected_col TEXT DEFAULT 'from-default',
+                version INTEGER NOT NULL DEFAULT 1
+             )",
+            &[],
+            "run",
+        )
+        .expect("trusted shared fixture");
+        db.execute(
+            "INSERT INTO narrative_protected_shared_fixture (id, title, protected_col, version)
+             VALUES ('a', 'old', 'secret', 9)",
+            &[],
+            "run",
+        )
+        .expect("trusted seed");
+
+        let insert_error = db
+            .execute_renderer(
+                "INSERT INTO narrative_protected_shared_fixture (id, title) VALUES ('b', 'ok')",
+                &[],
+                "run",
+            )
+            .expect_err("shared-table insert must fail closed");
+        assert!(
+            insert_error
+                .to_string()
+                .contains("PROTECTED_WRITER_SQL: denied insert into protected shared table"),
+            "unexpected error: {insert_error}"
+        );
+
+        let replace_error = db
+            .execute_renderer(
+                "INSERT OR REPLACE INTO narrative_protected_shared_fixture (id, title)
+                 VALUES ('a', 'new')",
+                &[],
+                "run",
+            )
+            .expect_err("INSERT OR REPLACE must fail closed");
+        assert!(
+            replace_error.to_string().contains("PROTECTED_WRITER_SQL"),
+            "unexpected error: {replace_error}"
+        );
+
+        let delete_error = db
+            .execute_renderer(
+                "DELETE FROM narrative_protected_shared_fixture WHERE id = 'a'",
+                &[],
+                "run",
+            )
+            .expect_err("shared-table delete must fail closed");
+        assert!(
+            delete_error
+                .to_string()
+                .contains("PROTECTED_WRITER_SQL: denied delete from protected shared table"),
+            "unexpected error: {delete_error}"
+        );
+
+        let protected_update = db
+            .execute_renderer(
+                "UPDATE narrative_protected_shared_fixture SET protected_col = 'no' WHERE id = 'a'",
+                &[],
+                "run",
+            )
+            .expect_err("protected column update denied");
+        assert!(
+            protected_update
+                .to_string()
+                .contains("PROTECTED_WRITER_SQL: denied update of protected column"),
+            "unexpected error: {protected_update}"
+        );
+
+        let version_update = db
+            .execute_renderer(
+                "UPDATE narrative_protected_shared_fixture SET version = 99 WHERE id = 'a'",
+                &[],
+                "run",
+            )
+            .expect_err("version column update denied");
+        assert!(
+            version_update.to_string().contains("PROTECTED_WRITER_SQL"),
+            "unexpected error: {version_update}"
+        );
+
+        db.execute_renderer(
+            "UPDATE narrative_protected_shared_fixture SET title = 'later' WHERE id = 'a'",
+            &[],
+            "run",
+        )
+        .expect("unprotected column update remains available");
+
+        let rows = db
+            .execute(
+                "SELECT title, protected_col, version FROM narrative_protected_shared_fixture WHERE id = 'a'",
+                &[],
+                "get",
+            )
+            .expect("read preserved protected values");
+        assert_eq!(rows[0]["title"], Value::from("later"));
+        assert_eq!(rows[0]["protected_col"], Value::from("secret"));
+        assert_eq!(rows[0]["version"], Value::from(9));
+    }
+
+    #[test]
+    fn deferred_domain_tables_remain_mutable_until_cutover() {
+        let db = test_db();
+        db.migrate().expect("migrate");
+        db.execute(
+            "INSERT INTO projects (id, title, created_at, updated_at)
+             VALUES ('p1', 'P', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed project");
+        db.execute_renderer(
+            "INSERT INTO events (id, project_id, title, created_at, updated_at)
+             VALUES ('e1', 'p1', 'Event', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("deferred events table still writable from renderer");
     }
 }

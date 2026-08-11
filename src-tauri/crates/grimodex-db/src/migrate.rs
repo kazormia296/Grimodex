@@ -41,11 +41,11 @@ impl Database {
         );
         if !force_full {
             if current == SCHEMA_VERSION {
-                // Editor-only visual stickies were added after the v3 schema
-                // marker. Keep the current marker stable, but do not let an
-                // older v3 workspace take the healthy read-only fast path
-                // without this additive table.
-                if !Self::has_editor_stickies_table(&conn)? {
+                // Additive tables introduced after a marker must still be present
+                // before the healthy read-only fast path returns.
+                if !Self::has_editor_stickies_table(&conn)?
+                    || !grimodex_core::workspace_schema::has_v4_checkpoint_invariants(&conn)?
+                {
                     // Fall through to the idempotent DDL below.
                 } else {
                     // Crash recovery is an open-time operational invariant, not a
@@ -2182,13 +2182,17 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_chat_summaries_last_msg ON chat_summaries(last_msg_id);",
         )?;
 
+        // SCHEMA 4: Native-owned Narrative runtime policy (Release Gate B Foundation).
+        // Must exist before the marker advances so renderer cannot own authority.
+        crate::narrative_runtime_policy::ensure_narrative_runtime_policy_row(&conn)?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
         // crash or later migration failure.
         anyhow::ensure!(
-            grimodex_core::workspace_schema::has_v3_checkpoint_invariants(&conn)?,
-            "workspace schema did not satisfy version 3 invariants after migration"
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
+            "workspace schema did not satisfy current schema invariants after migration"
         );
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
@@ -3796,61 +3800,30 @@ mod tests {
     }
 
     #[test]
-    fn converged_previous_schema_migrate_does_not_wait_for_writer() {
-        let path = temp_database_path("converged-previous-version-lock");
-        let db = Database::new(&path).expect("open database");
+    fn schema_4_full_migration_restores_runtime_policy_from_previous_marker() {
+        // SCHEMA 4 intentionally disables the v2→v3 marker-only fast path so the
+        // Native-owned narrative_runtime_policy singleton is never skipped.
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.execute("DELETE FROM narrative_runtime_policy", [])?;
+            conn.pragma_update(None, "user_version", 3)?;
             Ok(())
         })
-        .expect("mark database as schema version 2");
+        .expect("simulate schema 3 workspace missing runtime policy");
 
-        let locker = Connection::open(&path).expect("open competing connection");
-        locker
-            .busy_timeout(Duration::from_millis(50))
-            .expect("set competing busy timeout");
-        locker
-            .execute_batch("BEGIN IMMEDIATE")
-            .expect("hold write reservation");
-
-        let started = Instant::now();
         db.migrate()
-            .expect("converged version 2 must use the non-blocking fast path");
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "converged version 2 waited behind an unrelated writer"
-        );
-        let version_while_locked: i32 = db
-            .with_conn(|conn| {
-                conn.pragma_query_value(None, "user_version", |row| row.get(0))
-                    .map_err(Into::into)
-            })
-            .expect("read version after failed migration");
-        assert_eq!(version_while_locked, 2);
-        let restored_timeout_ms: i64 = db
-            .with_conn(|conn| {
-                conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
-                    .map_err(Into::into)
-            })
-            .expect("read restored busy timeout");
-        assert_eq!(restored_timeout_ms, 5_000);
-
-        locker.execute_batch("ROLLBACK").expect("release writer");
-        db.migrate()
-            .expect("retry marker update after lock release");
-        let migrated_version: i32 = db
-            .with_conn(|conn| {
-                conn.pragma_query_value(None, "user_version", |row| row.get(0))
-                    .map_err(Into::into)
-            })
-            .expect("read migrated version");
-        assert_eq!(migrated_version, grimodex_core::SCHEMA_VERSION);
-
-        drop(locker);
-        drop(db);
-        std::fs::remove_dir_all(path.parent().expect("test directory"))
-            .expect("remove migration test directory");
+            .expect("full migration must recreate Native runtime policy");
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            assert!(
+                grimodex_core::workspace_schema::has_v4_checkpoint_invariants(conn)?,
+                "runtime policy singleton must exist after migration"
+            );
+            Ok(())
+        })
+        .expect("verify schema 4 policy restore");
     }
 
     #[test]
@@ -3920,12 +3893,12 @@ mod tests {
     }
 
     #[test]
-    fn converged_previous_schema_reports_blocked_recovery_without_waiting() {
-        let path = temp_database_path("blocked-v2-crash-recovery");
-        let db = Database::new(&path).expect("open crash recovery fixture");
+    fn schema_4_recovers_interrupted_runs_when_upgrading_from_version_3() {
+        let db =
+            Database::new(std::path::Path::new(":memory:")).expect("open crash recovery fixture");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(None, "user_version", 3)?;
             conn.execute(
                 "INSERT INTO post_effect_runs
                     (id, project_id, effect_type, scope_type, model, prompt_version, status)
@@ -3935,25 +3908,10 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("create interrupted v2 run");
+        .expect("create interrupted schema 3 run");
 
-        let locker = Connection::open(&path).expect("open competing connection");
-        locker
-            .execute_batch("BEGIN IMMEDIATE")
-            .expect("hold write reservation");
-
-        let started = Instant::now();
-        let error = db
-            .migrate()
-            .expect_err("blocked recovery must remain retryable");
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "blocked recovery waited for SQLite's normal busy timeout"
-        );
-        assert!(
-            error.to_string().contains("crash recovery is blocked"),
-            "unexpected blocked recovery error: {error:#}"
-        );
+        db.migrate()
+            .expect("recover interrupted run during schema 4 migration");
         db.with_conn(|conn| {
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let status: String = conn.query_row(
@@ -3961,17 +3919,11 @@ mod tests {
                 [],
                 |row| row.get(0),
             )?;
-            assert_eq!(version, 2);
-            assert_eq!(status, "running");
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            assert_eq!(status, "failed");
             Ok(())
         })
-        .expect("blocked recovery must not partially mutate state");
-
-        locker.execute_batch("ROLLBACK").expect("release writer");
-        drop(locker);
-        drop(db);
-        std::fs::remove_dir_all(path.parent().expect("test directory"))
-            .expect("remove migration test directory");
+        .expect("verify crash recovery and marker");
     }
 
     #[test]
@@ -4057,7 +4009,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("did not satisfy version 3 invariants"),
+                .contains("did not satisfy current schema invariants after migration"),
             "unexpected migration error: {error:#}"
         );
         let retained_version: i32 = db

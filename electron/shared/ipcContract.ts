@@ -384,6 +384,8 @@ export function clampZoomFactor(factor: unknown): number {
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
+  narrativeRuntimePolicyGet?(): Promise<string>;
+  narrativeRuntimePolicySet?(payload: unknown): Promise<string>;
   editorStickyList?(projectId: string, documentKey: string): Promise<string>;
   editorStickyCreate?(payload: unknown): Promise<string>;
   editorStickyUpdate?(payload: unknown): Promise<string>;
@@ -898,6 +900,67 @@ function requireRecord(
     );
   }
   return value as CommandArgs;
+}
+
+const NARRATIVE_RUNTIME_MODES = new Set([
+  "disabled",
+  "review-only",
+  "manual-apply",
+  "automatic",
+]);
+
+function requireNarrativeRuntimePolicySetPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_runtime_policy_set";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set([
+    "expectedVersion",
+    "runtimeMode",
+    "maintenanceEnabled",
+    "genericImportEnabled",
+    "backgroundAiEnabled",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of allowedKeys) {
+    if (!Object.hasOwn(payload, key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: missing required key ${key}`,
+      );
+    }
+  }
+  const expectedVersion = requireSafeInteger(
+    payload,
+    "expectedVersion",
+    command,
+  );
+  if (expectedVersion < 0) {
+    throw new Error(
+      `invalid args \`expectedVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  const runtimeMode = requireString(payload, "runtimeMode", command);
+  if (!NARRATIVE_RUNTIME_MODES.has(runtimeMode)) {
+    throw new Error(
+      `invalid args \`runtimeMode\` for command \`${command}\`: expected disabled|review-only|manual-apply|automatic`,
+    );
+  }
+  requireBoolean(payload, "maintenanceEnabled", command);
+  requireBoolean(payload, "genericImportEnabled", command);
+  requireBoolean(payload, "backgroundAiEnabled", command);
+  return {
+    expectedVersion,
+    runtimeMode,
+    maintenanceEnabled: payload.maintenanceEnabled,
+    genericImportEnabled: payload.genericImportEnabled,
+    backgroundAiEnabled: payload.backgroundAiEnabled,
+  };
 }
 
 function requirePlotThreadBranchCreatePayload(args: CommandArgs): CommandArgs {
@@ -3401,6 +3464,26 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.dbExecuteBatch(
           requirePresent(a, "statements", "db_execute_batch"),
         ),
+      ),
+  },
+  narrative_runtime_policy_get: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeRuntimePolicyGet,
+          "narrativeRuntimePolicyGet",
+        )(),
+      ),
+  },
+  narrative_runtime_policy_set: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeRuntimePolicySet,
+          "narrativeRuntimePolicySet",
+        )(requireNarrativeRuntimePolicySetPayload(a)),
       ),
   },
   editor_sticky_list: {

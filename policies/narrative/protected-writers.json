@@ -1,0 +1,174 @@
+[
+  {
+    "aggregate": "foreshadow",
+    "table": "foreshadows",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "foreshadow.aggregate",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "foreshadow",
+    "table": "foreshadow_setups",
+    "protection": "table",
+    "writer": "foreshadow.aggregate",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "foreshadow",
+    "table": "foreshadow_payoffs",
+    "protection": "table",
+    "writer": "foreshadow.aggregate",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "foreshadow",
+    "table": "foreshadow_codex_links",
+    "protection": "table",
+    "writer": "foreshadow.aggregate",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "plot-thread",
+    "table": "plot_threads",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "plot_threads.aggregate",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "plot-thread",
+    "table": "plot_thread_scene_links",
+    "protection": "table",
+    "writer": "plot_threads.aggregate",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "plot-thread",
+    "table": "plot_thread_branches",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "plot_threads.branch",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "chronicle-event",
+    "table": "events",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "chronicle.event",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "chronicle-event",
+    "table": "event_participants",
+    "protection": "table",
+    "writer": "chronicle.event",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "chronicle-event",
+    "table": "scene_events",
+    "protection": "table",
+    "writer": "chronicle.event",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "chronicle-event",
+    "table": "event_relations",
+    "protection": "table",
+    "writer": "chronicle.event",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "temporal-scene",
+    "table": "tree_nodes",
+    "protection": "columns",
+    "columns": [
+      "story_time_order",
+      "story_time_label",
+      "chronicle_start_time",
+      "chronicle_start_minute",
+      "chronicle_start_granularity",
+      "chronicle_end_time",
+      "chronicle_end_minute",
+      "chronicle_end_granularity",
+      "chronicle_precision"
+    ],
+    "versionColumn": "version",
+    "writer": "temporal.scene",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "temporal-calendar",
+    "table": "project_calendar",
+    "protection": "table",
+    "writer": "temporal.calendar",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "codex-entity",
+    "table": "codex_entries",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "codex.entry",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "codex-relation",
+    "table": "codex_relations",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "codex.relation",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "phase",
+    "table": "codex_entry_phases",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "codex.phase",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "detail-definition",
+    "table": "codex_detail_definitions",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "codex.detail",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "detail-value",
+    "table": "codex_detail_values",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "codex.detail",
+    "enforcement": "deferred"
+  },
+  {
+    "aggregate": "narrative-runtime",
+    "table": "narrative_runtime_policy",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "narrative.runtime_policy",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "gate-b-fixture",
+    "table": "narrative_protected_fixture",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "narrative.fixture",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "gate-b-fixture",
+    "table": "narrative_protected_shared_fixture",
+    "protection": "columns",
+    "columns": ["protected_col", "version"],
+    "versionColumn": "version",
+    "writer": "narrative.fixture",
+    "enforcement": "active"
+  }
+]

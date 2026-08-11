@@ -72,6 +72,18 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "dbExecuteBatch",
       Promise.resolve('{"rows":[]}'),
     ) as never,
+    narrativeRuntimePolicyGet: record(
+      "narrativeRuntimePolicyGet",
+      Promise.resolve(
+        '{"runtimeMode":"review-only","maintenanceEnabled":false,"genericImportEnabled":false,"backgroundAiEnabled":false,"version":1,"effectiveMode":"review-only"}',
+      ),
+    ) as never,
+    narrativeRuntimePolicySet: record(
+      "narrativeRuntimePolicySet",
+      Promise.resolve(
+        '{"runtimeMode":"manual-apply","maintenanceEnabled":false,"genericImportEnabled":false,"backgroundAiEnabled":false,"version":2,"effectiveMode":"manual-apply"}',
+      ),
+    ) as never,
     saveSceneBodyBundle: record(
       "saveSceneBodyBundle",
       Promise.resolve(
@@ -1202,6 +1214,161 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
     expect(calls).toEqual([{ method: "dbExecuteBatch", args: [statements] }]);
     expect(env).toEqual({ ok: true, value: { rows: [] } });
+  });
+
+  it("narrative_runtime_policy_get: 引数なしで Native JSON を typed policy へ parse する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "narrative_runtime_policy_get",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "narrativeRuntimePolicyGet", args: [] }]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        runtimeMode: "review-only",
+        maintenanceEnabled: false,
+        genericImportEnabled: false,
+        backgroundAiEnabled: false,
+        version: 1,
+        effectiveMode: "review-only",
+      },
+    });
+  });
+
+  it("narrative_runtime_policy_set: deep-validated CAS payload だけを native adapter へ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      expectedVersion: 1,
+      runtimeMode: "manual-apply",
+      maintenanceEnabled: false,
+      genericImportEnabled: false,
+      backgroundAiEnabled: false,
+    };
+    const env = await dispatchInvoke(
+      "narrative_runtime_policy_set",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "narrativeRuntimePolicySet", args: [payload] },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        runtimeMode: "manual-apply",
+        maintenanceEnabled: false,
+        genericImportEnabled: false,
+        backgroundAiEnabled: false,
+        version: 2,
+        effectiveMode: "manual-apply",
+      },
+    });
+  });
+
+  it("narrative_runtime_policy_set は malformed payload と backend skew を明示拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const valid = {
+      expectedVersion: 1,
+      runtimeMode: "review-only",
+      maintenanceEnabled: false,
+      genericImportEnabled: false,
+      backgroundAiEnabled: false,
+    };
+    const invalidPayloads: unknown[] = [
+      null,
+      [],
+      "payload",
+      {},
+      { ...valid, expectedVersion: -1 },
+      { ...valid, expectedVersion: 1.5 },
+      { ...valid, expectedVersion: "1" },
+      { ...valid, runtimeMode: "full" },
+      { ...valid, maintenanceEnabled: "true" },
+      { ...valid, genericImportEnabled: 1 },
+      { ...valid, backgroundAiEnabled: null },
+      { ...valid, extra: true },
+      {
+        expectedVersion: 1,
+        runtimeMode: "review-only",
+        maintenanceEnabled: false,
+        genericImportEnabled: false,
+      },
+    ];
+
+    for (const payload of invalidPayloads) {
+      const result = await dispatchInvoke(
+        "narrative_runtime_policy_set",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingPayload = await dispatchInvoke(
+      "narrative_runtime_policy_set",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(missingPayload.ok).toBe(false);
+
+    const unavailable = await dispatchInvoke(
+      "narrative_runtime_policy_set",
+      { payload: valid },
+      { backend: null, shell: noShell },
+    );
+    expect(unavailable).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} narrative_runtime_policy_set`,
+    });
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_runtime_policy_set",
+      { payload: valid },
+      {
+        backend: {
+          ...backend,
+          narrativeRuntimePolicySet: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeRuntimePolicySet`,
+    });
+  });
+
+  it("narrative_runtime_policy_set は CAS conflict marker をそのまま伝播する", async () => {
+    const { backend } = fakeBackend({
+      narrativeRuntimePolicySet: vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "NARRATIVE_RUNTIME_POLICY_CONFLICT: runtime policy version conflict",
+          ),
+        ) as never,
+    });
+    const env = await dispatchInvoke(
+      "narrative_runtime_policy_set",
+      {
+        payload: {
+          expectedVersion: 1,
+          runtimeMode: "manual-apply",
+          maintenanceEnabled: false,
+          genericImportEnabled: false,
+          backgroundAiEnabled: false,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(env).toMatchObject({
+      ok: false,
+      error:
+        "NARRATIVE_RUNTIME_POLICY_CONFLICT: runtime policy version conflict",
+    });
   });
 
   it("editor sticky commands keep DTO validation and backend mapping typed", async () => {
@@ -3146,6 +3313,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_scene_lens_for_project",
       "list_system_fonts",
       "map_write_bundle",
+      "narrative_runtime_policy_get",
+      "narrative_runtime_policy_set",
       "open_workspace",
       "plot_thread_branch_create",
       "plot_thread_create",

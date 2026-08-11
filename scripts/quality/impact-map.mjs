@@ -130,6 +130,29 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
       ["node", "scripts/quality/validate-retrieval-fixtures.mjs"],
     ],
   },
+  "narrative-runtime": {
+    failureClasses: ["policy", "quality"],
+    commands: [
+      ["pnpm", "test:narrative:writers"],
+      [
+        "pnpm",
+        "test:node",
+        "--run",
+        "src/features/narrative-extraction/runtime",
+        "src/features/narrative-extraction/maintenance",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_runtime_authority",
+      ],
+    ],
+  },
 });
 
 function unique(values) {

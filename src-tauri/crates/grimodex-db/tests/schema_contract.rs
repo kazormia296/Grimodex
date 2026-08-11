@@ -42,7 +42,10 @@ fn contract_json_is_stable_and_includes_schema_version() {
         .expect("inspect schema contract");
 
     let json = serde_json::to_value(contract).expect("serialize schema contract");
-    assert_eq!(json["schemaVersion"], 3);
+    assert_eq!(
+        json["schemaVersion"],
+        serde_json::Value::from(grimodex_core::SCHEMA_VERSION)
+    );
     assert!(json["tables"].get("projects").is_some());
     assert!(json["indexes"].get("idx_tree_parent").is_some());
     assert!(json["triggers"].get("seed_builtin_codex_types").is_some());

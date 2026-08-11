@@ -1266,6 +1266,51 @@ impl Backend {
         .await
     }
 
+    /// Read Native-owned Narrative runtime policy (Release Gate B Foundation).
+    #[napi]
+    pub async fn narrative_runtime_policy_get(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let policy = grimodex_db::load_narrative_runtime_policy_from_db(db)?;
+                Ok(serde_json::to_string(&serde_json::json!({
+                    "runtimeMode": policy.runtime_mode.as_str(),
+                    "maintenanceEnabled": policy.maintenance_enabled,
+                    "genericImportEnabled": policy.generic_import_enabled,
+                    "backgroundAiEnabled": policy.background_ai_enabled,
+                    "version": policy.version,
+                    "effectiveMode": policy.effective_mode().as_str(),
+                }))?)
+            })
+        })
+        .await
+    }
+
+    /// CAS update for Native-owned Narrative runtime policy.
+    #[napi]
+    pub async fn narrative_runtime_policy_set(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let input: grimodex_db::SetNarrativeRuntimePolicyInput =
+                from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let policy = grimodex_db::set_narrative_runtime_policy(db, input)?;
+                Ok(serde_json::to_string(&serde_json::json!({
+                    "runtimeMode": policy.runtime_mode.as_str(),
+                    "maintenanceEnabled": policy.maintenance_enabled,
+                    "genericImportEnabled": policy.generic_import_enabled,
+                    "backgroundAiEnabled": policy.background_ai_enabled,
+                    "version": policy.version,
+                    "effectiveMode": policy.effective_mode().as_str(),
+                }))?)
+            })
+        })
+        .await
+    }
+
     /// Typed persistence commands for Editor-only visual stickies. The
     /// renderer sends document-shaped DTOs; SQL and typed owner derivation
     /// stay inside grimodex-db.

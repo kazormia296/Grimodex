@@ -10,9 +10,7 @@
 
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::{
-    PREVIOUS_COMPATIBLE_SCHEMA_VERSION, PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION, SCHEMA_VERSION,
-};
+use crate::{PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION, SCHEMA_VERSION};
 
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
@@ -65,44 +63,42 @@ const AI_AUDIT_INDEXES: &[(&str, bool, &[&str])] = &[
 /// caller to run the full idempotent migration; query failures remain errors so
 /// corruption is not mistaken for an old-but-repairable schema.
 pub fn is_converged_v2_workspace_schema(conn: &Connection) -> anyhow::Result<bool> {
-    // Fail closed after the next schema bump. The invariants below prove only
-    // the explicit v2 -> v3 marker-only transition and must be revisited for a
-    // different target schema.
-    if SCHEMA_VERSION != PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION {
+    // The v2 → v3 marker-only fast path is frozen to schema 3. Schema 4+ must
+    // run the full migrator so Native-owned tables (e.g. narrative_runtime_policy)
+    // are created before the marker advances.
+    if SCHEMA_VERSION != 3 || PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION != 3 {
         return Ok(false);
     }
     let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if user_version != PREVIOUS_COMPATIBLE_SCHEMA_VERSION {
+    if user_version != 2 {
         return Ok(false);
     }
 
-    has_v3_checkpoint_invariants(conn)
+    has_v3_physical_invariants(conn)
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
 /// [`SCHEMA_VERSION`]. Schema PRs must update this function (or the helpers it
 /// calls) when they introduce new tables / indexes that the open fast path must
 /// prove before skipping shadow migration.
-///
-/// On SCHEMA 3 this is exactly [`has_v3_checkpoint_invariants`]. Later restacks
-/// layer v4 / v5 / … checks here so Gate A never hard-codes a stale checkpoint.
 pub fn has_current_schema_checkpoint_invariants(
     conn: &Connection,
 ) -> anyhow::Result<bool> {
-    has_v3_checkpoint_invariants(conn)
-}
-
-/// Whether the physical schema and data repairs introduced after v2 satisfy
-/// the checkpoint represented by schema version 3.
-///
-/// Unlike [`is_converged_v2_workspace_schema`], this does not inspect
-/// `user_version`; the full migrator uses it immediately before stamping v3 so
-/// malformed same-name tables or indexes cannot be advertised as current.
-pub fn has_v3_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    if SCHEMA_VERSION != PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION {
+    if !has_v3_physical_invariants(conn)? {
         return Ok(false);
     }
+    has_v4_checkpoint_invariants(conn)
+}
 
+/// Compatibility wrapper used by older call sites／tests that still name the
+/// v3 checkpoint explicitly.
+pub fn has_v3_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    has_v3_physical_invariants(conn)
+}
+
+/// Physical schema and data repairs introduced after v2 that every current
+/// schema must still satisfy.
+pub fn has_v3_physical_invariants(conn: &Connection) -> anyhow::Result<bool> {
     for table in [
         "ai_audit_events",
         "post_effect_runs",
@@ -197,6 +193,42 @@ pub fn has_v3_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     )?;
 
     Ok(!has_unrepaired_live_comment)
+}
+
+/// SCHEMA 4 checkpoint: Native-owned Narrative runtime policy singleton.
+pub fn has_v4_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_runtime_policy")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_runtime_policy")?;
+    // INTEGER PRIMARY KEY reports notnull=0 in pragma_table_info even though it
+    // is never NULL; match SQLite's physical report rather than SQL intent.
+    let expected = [
+        ("singleton_id", "INTEGER", false, 1),
+        ("runtime_mode", "TEXT", true, 0),
+        ("maintenance_enabled", "INTEGER", true, 0),
+        ("generic_import_enabled", "INTEGER", true, 0),
+        ("background_ai_enabled", "INTEGER", true, 0),
+        ("version", "INTEGER", true, 0),
+    ];
+    if columns.len() != expected.len() {
+        return Ok(false);
+    }
+    for (actual, (name, ty, not_null, pk)) in columns.iter().zip(expected) {
+        if actual.name != name
+            || actual.declared_type != ty
+            || actual.not_null != not_null
+            || actual.primary_key != pk
+        {
+            return Ok(false);
+        }
+    }
+    let singleton: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_runtime_policy WHERE singleton_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(singleton == 1)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
@@ -317,13 +349,10 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_converged_v2_schema() {
+    fn schema_4_disables_v2_marker_fast_path() {
         let conn = converged_v2_connection();
-        assert!(is_converged_v2_workspace_schema(&conn).expect("inspect fixture"));
-
-        conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")
-            .expect("remove required index");
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect partial fixture"));
+        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect fixture"));
+        assert!(has_v3_physical_invariants(&conn).expect("v3 physical still holds"));
     }
 
     #[test]
@@ -342,7 +371,7 @@ mod tests {
         )
         .expect("insert unrepaired annotation");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect legacy metadata"));
+        assert!(!has_v3_physical_invariants(&conn).expect("inspect legacy metadata"));
     }
 
     #[test]
@@ -351,7 +380,7 @@ mod tests {
         conn.execute_batch("DROP TABLE editor_stickies")
             .expect("remove editor sticky invariant");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect missing stickies"));
+        assert!(!has_v3_physical_invariants(&conn).expect("inspect missing stickies"));
     }
 
     #[test]
@@ -365,7 +394,7 @@ mod tests {
         )
         .expect("replace required index with partial index");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect partial index"));
+        assert!(!has_v3_physical_invariants(&conn).expect("inspect partial index"));
     }
 
     #[test]
@@ -394,6 +423,28 @@ mod tests {
         )
         .expect("replace audit table without CHECK");
 
-        assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect missing CHECK"));
+        assert!(!has_v3_physical_invariants(&conn).expect("inspect missing CHECK"));
+    }
+
+    #[test]
+    fn v4_checkpoint_requires_singleton_policy_row() {
+        let conn = converged_v2_connection();
+        assert!(!has_v4_checkpoint_invariants(&conn).expect("missing table"));
+        conn.execute_batch(
+            "CREATE TABLE narrative_runtime_policy (
+                singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                runtime_mode TEXT NOT NULL,
+                maintenance_enabled INTEGER NOT NULL,
+                generic_import_enabled INTEGER NOT NULL,
+                background_ai_enabled INTEGER NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1
+             );
+             INSERT INTO narrative_runtime_policy (
+                singleton_id, runtime_mode, maintenance_enabled,
+                generic_import_enabled, background_ai_enabled, version
+             ) VALUES (1, 'review-only', 0, 0, 0, 1);",
+        )
+        .expect("create policy");
+        assert!(has_v4_checkpoint_invariants(&conn).expect("policy present"));
     }
 }

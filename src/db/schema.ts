@@ -1010,6 +1010,26 @@ export const appSettings = sqliteTable("app_settings", {
   value: text("value").notNull(),
 });
 
+/**
+ * Native-owned Narrative Engine runtime authority (Release Gate B Foundation).
+ * Renderer generic SQL must not mutate this table — only the typed Native
+ * setter (`narrative_runtime_policy_set`) may change it.
+ */
+export const narrativeRuntimePolicy = sqliteTable("narrative_runtime_policy", {
+  singletonId: integer("singleton_id").primaryKey(),
+  runtimeMode: text("runtime_mode").notNull().default("review-only"),
+  maintenanceEnabled: integer("maintenance_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  genericImportEnabled: integer("generic_import_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  backgroundAiEnabled: integer("background_ai_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  version: integer("version").notNull().default(1),
+});
+
 // Project-scoped key-value store. Reserved for future per-project overrides.
 export const projectSettings = sqliteTable(
   "project_settings",
