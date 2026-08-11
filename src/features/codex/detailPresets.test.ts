@@ -12,30 +12,30 @@ import {
 import { GENRE_VALUES } from "@/features/project/genreOptions";
 import type { CodexDetailDefinition } from "./detailApi";
 
-const invokeMock = vi.fn();
-
 vi.mock("./detailApi", () => ({
   listDefinitionsByType: vi.fn(),
+  createDefinition: vi.fn(),
 }));
 
-vi.mock("@/lib/tauri", () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
-}));
+const semanticInsertMock = vi.fn();
 
 vi.mock("@/db/client", () => {
-  const toSQL = () => ({ sql: "insert", params: [] });
   return {
     db: {
       insert: () => ({
-        values: () => ({ toSQL }),
+        values: (value: unknown) => {
+          semanticInsertMock(value);
+          return Promise.resolve();
+        },
       }),
     },
   };
 });
 
-import { listDefinitionsByType } from "./detailApi";
+import { createDefinition, listDefinitionsByType } from "./detailApi";
 
 const mockList = vi.mocked(listDefinitionsByType);
+const mockCreate = vi.mocked(createDefinition);
 
 const BUILTIN_SLUGS = ["character", "location", "item", "lore"];
 
@@ -104,7 +104,8 @@ describe("preset catalogs", () => {
   });
 
   it("attaches semantic metadata only to designated character fields", () => {
-    const fields = BASE_DETAIL_PRESETS.character as readonly DetailFieldPreset[];
+    const fields =
+      BASE_DETAIL_PRESETS.character as readonly DetailFieldPreset[];
     expect(fields.find((f) => f.name === "役割")?.semantic?.facetKey).toBe(
       "role.current",
     );
@@ -118,7 +119,16 @@ describe("preset catalogs", () => {
 describe("applyDetailPreset", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    invokeMock.mockResolvedValue([]);
+    mockCreate.mockImplementation(async (input) =>
+      makeDefinition(input.name, input.sortOrder ?? 0, {
+        id: input.id,
+        projectId: input.projectId,
+        typeSlug: input.typeSlug,
+        fieldType: input.fieldType ?? "text",
+        fieldConfig: input.fieldConfig ?? null,
+        includeInContext: input.includeInContext ?? 0,
+      }),
+    );
   });
 
   it("inserts every resolved field when none exist yet", async () => {
@@ -127,11 +137,7 @@ describe("applyDetailPreset", () => {
 
     const result = await applyDetailPreset("proj-1", "character", "Fantasy");
 
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    const statements = invokeMock.mock.calls[0]?.[1]?.statements as unknown[];
-    // Each field inserts a definition; semantic fields also insert a binding.
-    const semanticCount = expected.filter((f) => f.semantic).length;
-    expect(statements).toHaveLength(expected.length + semanticCount);
+    expect(mockCreate).toHaveBeenCalledTimes(expected.length);
     expect(result.added.map((d) => d.name)).toEqual(
       expected.map((f) => f.name),
     );
@@ -151,13 +157,10 @@ describe("applyDetailPreset", () => {
   it("writes DetailSemanticBinding rows for semantic presets in the same batch", async () => {
     mockList.mockResolvedValue([]);
     await applyDetailPreset("proj-1", "character", null);
-    const statements = invokeMock.mock.calls[0]?.[1]?.statements as Array<{
-      sql: string;
-    }>;
-    // At least one binding insert accompanies the definition inserts.
-    expect(statements.length).toBeGreaterThan(
-      resolvePresetFields("character", null).length,
-    );
+    const semanticCount = resolvePresetFields("character", null).filter(
+      (field) => field.semantic,
+    ).length;
+    expect(semanticInsertMock).toHaveBeenCalledTimes(semanticCount);
   });
 
   it("skips fields whose names already exist", async () => {
@@ -169,6 +172,7 @@ describe("applyDetailPreset", () => {
     const result = await applyDetailPreset("proj-1", "character", null);
     expect(result.skipped).toBe(2);
     expect(result.added.length).toBe(expected.length - 2);
+    expect(mockCreate).toHaveBeenCalledTimes(expected.length - 2);
   });
 
   it("returns empty added when every field already exists", async () => {
@@ -179,6 +183,6 @@ describe("applyDetailPreset", () => {
     const result = await applyDetailPreset("proj-1", "character", null);
     expect(result.added).toEqual([]);
     expect(result.skipped).toBe(expected.length);
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 });
