@@ -4,9 +4,11 @@ This research-only runner separates Paper Shader scene cost from Grimodex's
 scene effects and full-screen composite cost. It also ranks all 29 catalog
 shaders under one deterministic 1920x1080, DPR 1 workload.
 
-The normal application renderer is unchanged. GPU timer queries and unmasked
-GPU metadata remain dormant unless a dedicated research runner explicitly
-enables them.
+The research `raw` pipeline remains a benchmark mode. The production renderer
+uses a direct path only when Glass is disabled, Contrast Guard is `none`, and
+opacity is 100%. All other configurations retain the canonical multipass path.
+GPU timer queries and unmasked GPU metadata remain dormant unless a dedicated
+research runner explicitly enables them.
 
 Deterministic direct-path and image-upload regressions run separately from the
 production WebGL suite:
@@ -38,9 +40,11 @@ C -> D: Contrast Guard and the production Composite path
 A:      Paper Shader fragment cost
 ```
 
-`raw` is a measurement prototype, not a production fast path. It deliberately
-uses opacity 100; a product path must preserve the current backdrop/opacity and
-alpha contract before adoption.
+Research `raw` and the production direct path are separate policies. `raw`
+deliberately fixes opacity at 100 for measurement. The production eligibility
+check enforces the same opacity restriction and preserves the existing opaque
+canvas alpha contract; any configuration that needs backdrop/opacity blending
+continues through the Composite path.
 
 The `full` path uses the product's minimum UI-surface shader capacity of 16 and
 a deterministic layout fixture derived from the existing Chromium layout

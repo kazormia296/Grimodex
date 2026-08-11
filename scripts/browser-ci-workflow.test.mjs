@@ -151,6 +151,7 @@ test("CI runs Browser, WebGL, and Storybook as independent jobs", async () => {
 
   const webglCommands = allRunCommands(webgl);
 
+  assert.match(webglCommands, /pnpm test:zen-shader-webgl --run/);
   assert.doesNotMatch(allRunCommands(browser), /--suite storybook/);
   assert.doesNotMatch(allRunCommands(browser), /--suite webgl/);
   assert.doesNotMatch(webglCommands, /--suite browser|--suite storybook/);

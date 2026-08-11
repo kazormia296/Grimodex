@@ -225,6 +225,9 @@ jobs:
         if: steps.pw-cache.outputs.cache-hit == 'true'
         run: pnpm exec playwright install-deps chromium
 
+      - name: Zen shader research WebGL contracts
+        run: pnpm test:zen-shader-webgl --run
+
       - name: Deterministic WebGL tests with resource metrics
         run: pnpm benchmark:browser-ci -- --suite webgl --runs 1 --file-parallelism false --max-workers 1 --output .artifacts/browser-ci/webgl.json
 
