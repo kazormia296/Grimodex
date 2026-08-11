@@ -13,6 +13,7 @@ import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
 import { hasZenGlassRegion } from "./zenGlassCompositor";
 import { ZenMultipassCanvas } from "./ZenMultipassCanvas";
+import { resolveZenShaderRenderPipeline } from "./zenShaderRenderPipeline";
 import {
   buildZenMultipassCompositeFragment,
   buildZenMultipassCompositeUniforms,
@@ -118,11 +119,15 @@ export function ZenShaderSurface({
   );
 
   const mountKey = `${config.shader}:${uiSurfaceCapacity}`;
+  const renderPipeline = resolveZenShaderRenderPipeline(config);
+  const readinessKey = `${mountKey}:${renderPipeline}`;
   const definition = getPaperShaderDefinition(config.shader);
   const [readyMountKey, setReadyMountKey] = useState<string | null>(null);
   const [lostMountKey, setLostMountKey] = useState<string | null>(null);
   const shaderReady =
-    webGlSupported && readyMountKey === mountKey && lostMountKey !== mountKey;
+    webGlSupported &&
+    readyMountKey === readinessKey &&
+    lostMountKey !== mountKey;
   const rendererStatus: ZenShaderRendererStatus = !webGlSupported
     ? "fallback-unsupported"
     : lostMountKey === mountKey
@@ -153,7 +158,7 @@ export function ZenShaderSurface({
       const stats =
         paperMountRef.current?.paperShaderMount?.getPerformanceStats();
       if (stats?.isStaticFrameReady) {
-        setReadyMountKey(mountKey);
+        setReadyMountKey(readinessKey);
         return;
       }
       frameId = requestAnimationFrame(observeFirstDraw);
@@ -163,7 +168,13 @@ export function ZenShaderSurface({
       cancelled = true;
       if (frameId !== null) cancelAnimationFrame(frameId);
     };
-  }, [lostMountKey, mountKey, preparedSceneUniforms, webGlSupported]);
+  }, [
+    lostMountKey,
+    mountKey,
+    preparedSceneUniforms,
+    readinessKey,
+    webGlSupported,
+  ]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -208,6 +219,7 @@ export function ZenShaderSurface({
       data-zen-shader-preview={preview ? "true" : "false"}
       data-zen-shader-ready={preparedSceneUniforms ? "true" : "false"}
       data-zen-shader-renderer={rendererStatus}
+      data-zen-shader-pipeline={renderPipeline}
       data-contrast-guard={config.contrastGuard.mode}
       data-contrast-target={
         config.contrastGuard.mode === "auto"
@@ -226,8 +238,8 @@ export function ZenShaderSurface({
       data-ui-contrast-surface-count={layouts.uiSurfaces.length}
       className="zen-shader-surface absolute inset-0 overflow-hidden"
       style={{
-        // The final GPU pass already composites the configured opacity against
-        // the theme backdrop. Do not apply it again after contrast correction.
+        // Multipass rendering already composites the configured opacity against
+        // the theme backdrop. Direct rendering is eligible only at 100%.
         // A zero opacity setting is an explicit hide contract. Keep the whole
         // surface transparent even after the renderer becomes ready so the
         // final contrast pass (which intentionally renders opaque pixels) does
@@ -247,6 +259,7 @@ export function ZenShaderSurface({
           sceneUniforms={preparedSceneUniforms}
           compositeFragment={compositeFragment}
           compositeUniforms={compositeUniforms}
+          renderPipeline={renderPipeline}
           mipmaps={resolved.mipmaps}
           speed={activeAnimationSpeed}
           minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}

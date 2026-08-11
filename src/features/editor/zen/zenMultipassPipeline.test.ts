@@ -482,6 +482,7 @@ void main() { fragColor = vec4(0.25); }`);
     expect(fragment).toContain("void paperShaderMain()");
     expect(fragment).toContain("applyZenDither(sceneColor.rgb)");
     expect(fragment).toContain("applyZenColorHalftone(sceneColor.rgb)");
+    expect(fragment).toContain("fragColor = vec4(sceneColor.rgb, 1.0)");
     expect(fragment).not.toContain("applyZenFinalContrast");
     expect(fragment).not.toContain("u_blurredTexture");
   });
