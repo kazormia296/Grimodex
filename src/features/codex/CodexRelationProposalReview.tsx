@@ -113,22 +113,24 @@ export function CodexRelationProposalReview({
           </p>
         ) : (
           <>
-            {boundToStore && !selected.application && (
-              <CodexRelationEditor
-                proposal={selected}
-                onChange={(patch) =>
-                  void reviseCodexStructureRelation({
-                    proposalId: selected.proposalId,
-                    patch,
-                  })
-                }
-                onSwapEndpoints={() =>
-                  void swapCodexStructureRelationEndpoints({
-                    proposalId: selected.proposalId,
-                  })
-                }
-              />
-            )}
+            {boundToStore &&
+              !selected.application &&
+              selected.applicability !== "already-satisfied" && (
+                <CodexRelationEditor
+                  proposal={selected}
+                  onChange={(patch) =>
+                    void reviseCodexStructureRelation({
+                      proposalId: selected.proposalId,
+                      patch,
+                    })
+                  }
+                  onSwapEndpoints={() =>
+                    void swapCodexStructureRelationEndpoints({
+                      proposalId: selected.proposalId,
+                    })
+                  }
+                />
+              )}
             {selected.application && (
               <p
                 className="text-[10px] text-muted-foreground"
@@ -137,6 +139,15 @@ export function CodexRelationProposalReview({
                 適用済みのため編集できません
               </p>
             )}
+            {!selected.application &&
+              selected.applicability === "already-satisfied" && (
+                <p
+                  className="text-[10px] text-muted-foreground"
+                  data-testid="codex-relation-already-satisfied-readonly"
+                >
+                  既存Relationと一致するため編集できません
+                </p>
+              )}
             <CodexExtractionEvidencePane
               proposal={{
                 evidence: selected.evidence,

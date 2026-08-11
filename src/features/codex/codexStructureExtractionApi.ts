@@ -2018,6 +2018,22 @@ function assertProposalNotApplied(
   }
 }
 
+function assertRelationEditable(
+  proposal: {
+    readonly proposalId: string;
+    readonly applicability: CodexRelationReviewProposal["applicability"];
+    readonly application?: unknown;
+  },
+  action: string,
+): void {
+  assertProposalNotApplied(proposal, action);
+  if (proposal.applicability === "already-satisfied") {
+    throw new Error(
+      `Cannot ${action} already-satisfied Relation ${proposal.proposalId}`,
+    );
+  }
+}
+
 function rebuildEntityFromNative(args: {
   readonly native: ReviewBundleProposal;
   readonly evidence: readonly CodexReviewEvidenceQuote[];
@@ -3085,6 +3101,7 @@ async function persistNewlySatisfiedRelationDecisions(
   before: CodexStructureExtractionReviewProjection,
   after: CodexStructureExtractionReviewProjection,
 ): Promise<void> {
+  const scope = captureReviewEditScope(after);
   for (const relation of after.relationProposals) {
     if (
       relation.applicability !== "already-satisfied" ||
@@ -3096,18 +3113,40 @@ async function persistNewlySatisfiedRelationDecisions(
       (item) => item.proposalId === relation.proposalId,
     );
     if (previous?.applicability === "already-satisfied") continue;
-    await appendDecision({
-      runId: after.runId,
-      projectId: after.projectId,
-      proposalId: relation.proposalId,
-      revisionId: relation.revisionId,
-      decision: "deferred",
-      decisionJson: {
-        reason: "already-satisfied",
-        existingRelationRef: relation.existingRelationRef ?? null,
-      },
-      createdBy: CODEX_STRUCTURE_LEASE_OWNER,
-    });
+
+    // Relation auto-decision must share the proposal mutation queue with
+    // revise/swap/decide. Failures must not reject the parent Entity edit —
+    // Entity revision is already committed on Native.
+    try {
+      await enqueueProposalEdit(relation.proposalId, async () => {
+        const latest = useCodexStructureExtractionStore.getState().projection;
+        if (!reviewEditScopeMatches(latest, scope) || !latest) return;
+        const current = latest.relationProposals.find(
+          (item) => item.proposalId === relation.proposalId,
+        );
+        if (
+          current?.applicability !== "already-satisfied" ||
+          !current.revisionId ||
+          current.application
+        ) {
+          return;
+        }
+        await appendDecision({
+          runId: latest.runId,
+          projectId: latest.projectId,
+          proposalId: current.proposalId,
+          revisionId: current.revisionId,
+          decision: "deferred",
+          decisionJson: {
+            reason: "already-satisfied",
+            existingRelationRef: current.existingRelationRef ?? null,
+          },
+          createdBy: CODEX_STRUCTURE_LEASE_OWNER,
+        });
+      });
+    } catch {
+      await resyncReviewAfterEditFailure(scope);
+    }
   }
 }
 
@@ -3194,7 +3233,7 @@ export async function reviseCodexStructureRelation(args: {
     if (!current?.revisionId) {
       throw new Error(`Relation ${args.proposalId} missing revisionId`);
     }
-    assertProposalNotApplied(current, "revise");
+    assertRelationEditable(current, "revise");
     const nextPayload = patchCreateCodexRelationPayload(
       current.proposal.payload,
       args.patch,
@@ -3254,7 +3293,7 @@ export async function swapCodexStructureRelationEndpoints(args: {
     if (!current?.revisionId) {
       throw new Error(`Relation ${args.proposalId} missing revisionId`);
     }
-    assertProposalNotApplied(current, "swap endpoints");
+    assertRelationEditable(current, "swap endpoints");
     const nextPayload = swapCreateCodexRelationEndpoints(
       current.proposal.payload,
     );

@@ -57,9 +57,14 @@ import {
   bindExistingCodexEntityProposal,
   CODEX_ENTITY_BIND_PROPOSAL_KIND,
   createNewBindCodexEntityProposal,
+  unresolvedBindCodexEntityProposal,
 } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
-import { CODEX_RELATION_CREATE_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import {
+  CODEX_RELATION_CREATE_PROPOSAL_KIND,
+  createCodexRelationProposalFromHypothesis,
+} from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
 import { buildCodexReviewRevisionEnvelope } from "./extraction/reviewRevisionEnvelope";
+import { buildCodexRelationSemanticKey } from "./extraction/relationVocabulary";
 import {
   applyCodexStructureExtractionReview,
   buildCodexStructureCatalogs,
@@ -70,7 +75,9 @@ import {
   CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
   decideCodexStructureProposal,
   resetCodexStructureExtractionApiCachesForTests,
+  resolveCodexStructureBinding,
   reviseCodexStructureProposal,
+  reviseCodexStructureRelation,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
 import {
@@ -1204,6 +1211,535 @@ describe("reviseCodexStructureProposal concurrency", () => {
     expect(row?.displayTitle).toBe("灰の目");
     // Reject published first; revise resets status to unreviewed after Native revision.
     expect(row?.status).toBe("unreviewed");
+  });
+});
+
+describe("already-satisfied Relation auto-decision queue", () => {
+  const safety = buildCodexEntityProposalSafetyFlags({
+    bindingKind: "create-new",
+    typeStatus: "resolved",
+    evidenceMethods: ["exact"],
+    hasExistingCandidates: true,
+    hasProperNameMention: true,
+    aliasesAllExplicit: true,
+  });
+
+  function seedBindingRematchProjection() {
+    const left = bindExistingCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-1",
+        canonicalName: "ライカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "bind-existing",
+          entityRef: "K0001",
+          enrichment: {
+            aliasesToAdd: [],
+            summary: { kind: "leave" },
+          },
+        },
+      },
+      { proposalId: "ent-1" },
+    );
+    const right = unresolvedBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-2",
+        canonicalName: "ベルカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "unresolved",
+          candidates: [{ ref: "K0002", score: 0.9, methods: ["exact-name"] }],
+          allowCreateNew: true,
+        },
+      },
+      { proposalId: "ent-2" },
+    );
+    const relationProposal = createCodexRelationProposalFromHypothesis({
+      hypothesis: {
+        hypothesisId: "hyp-rel",
+        observationRefs: [],
+        subjectResolved: true,
+        objectResolved: true,
+        payload: {
+          subjectEntityId: "ne-1",
+          objectEntityId: "ne-2",
+          predicate: "friend_of",
+          family: "social",
+          validity: "current",
+          directionality: "symmetric",
+          forwardLabelSuggestion: "友人",
+          inverseLabelSuggestion: "友人",
+        },
+        epistemic: {
+          polarity: "affirmed",
+          commitment: "story-fact",
+          support: "direct",
+          narrativeFrame: "primary",
+        },
+      },
+      gate: { kind: "proposal", validity: "current" },
+      logicalRef: "rel-1",
+      relation: {
+        relationType: "friend_of",
+        directionality: "symmetric",
+        forwardLabel: "友人",
+        inverseLabel: "友人",
+      },
+      dependencyProposalIds: ["ent-1", "ent-2"],
+      createId: () => "rel-1",
+    })!;
+    const semanticKey = buildCodexRelationSemanticKey({
+      projectId: "p1",
+      fromCodexId: "entry-laika",
+      toCodexId: "entry-belka",
+      relationType: "friend_of",
+      directionality: "symmetric",
+      forwardLabel: "友人",
+      inverseLabel: "友人",
+    });
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId: "run-auto",
+      projectId: "p1",
+      workspacePath: "/w",
+      openRevision: 1,
+      proposalSetId: "ps-1",
+      folderId: "folder-a",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: [
+        {
+          proposalId: "ent-1",
+          revisionId: "rev-e1",
+          proposalKey: "ne-1",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ライカ",
+          proposal: left,
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety,
+        },
+        {
+          proposalId: "ent-2",
+          revisionId: "rev-e2",
+          proposalKey: "ne-2",
+          status: "unreviewed",
+          applicability: "applicable",
+          displayTitle: "ベルカ",
+          proposal: right,
+          evidence: [
+            {
+              anchorId: "a2",
+              quote: "ベルカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "unresolved",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact"],
+            hasExistingCandidates: true,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+        },
+      ],
+      relationProposals: [
+        {
+          proposalId: "rel-1",
+          revisionId: "rev-rel-1",
+          proposalKey: "rel-key",
+          status: "unreviewed",
+          applicability: "blocked",
+          displayTitle: "ライカ → 友人 → ベルカ",
+          proposal: relationProposal,
+          evidence: [
+            {
+              anchorId: "a3",
+              quote: "友人",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          subjectLabel: "ライカ",
+          objectLabel: "ベルカ",
+          blockedReason: "先に両端の Entity proposal を承認してください",
+        },
+      ],
+      entityCount: 2,
+      relationCount: 1,
+      unresolvedCount: 1,
+      approvedCount: 1,
+      catalog: {
+        entities: [
+          {
+            ref: "K0001",
+            sourceKey: "entry-laika",
+            name: "ライカ",
+            typeRef: "T0001",
+          },
+          {
+            ref: "K0002",
+            sourceKey: "entry-belka",
+            name: "ベルカ",
+            typeRef: "T0001",
+          },
+        ],
+        types: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+          },
+        ],
+      },
+      existingRelations: [
+        {
+          ref: "R0001",
+          sourceKey: "rel-existing",
+          semanticKey,
+          fromCodexId: "entry-laika",
+          toCodexId: "entry-belka",
+          relationType: "friend_of",
+          directionality: "symmetric",
+          forwardLabel: "友人",
+          inverseLabel: "友人",
+        },
+      ],
+    });
+  }
+
+  beforeEach(() => {
+    resetCodexStructureExtractionStoreForTests();
+    resetCodexStructureExtractionApiCachesForTests();
+    appendRevisionMock.mockReset();
+    appendDecisionMock.mockReset();
+  });
+
+  it("serializes auto already-satisfied decision ahead of Relation revise", async () => {
+    seedBindingRematchProjection();
+    const order: string[] = [];
+    let releaseDecision: (() => void) | undefined;
+
+    appendRevisionMock.mockResolvedValueOnce({ revisionId: "rev-e2b" });
+    appendDecisionMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          order.push("auto-decision-start");
+          releaseDecision = () => {
+            order.push("auto-decision-end");
+            resolve();
+          };
+        }),
+    );
+
+    const bindingPending = resolveCodexStructureBinding({
+      proposalId: "ent-2",
+      resolution: { kind: "bind-existing", entityRef: "K0002" },
+    });
+
+    await vi.waitFor(() => {
+      expect(releaseDecision).toEqual(expect.any(Function));
+    });
+
+    const revisePending = reviseCodexStructureRelation({
+      proposalId: "rel-1",
+      patch: { forwardLabel: "仲間" },
+    });
+    // Relation revise must wait on the same mutation queue.
+    expect(appendRevisionMock).toHaveBeenCalledTimes(1);
+
+    releaseDecision!();
+    await expect(bindingPending).resolves.toBeUndefined();
+    await expect(revisePending).rejects.toThrow(/already-satisfied/);
+    expect(order).toEqual(["auto-decision-start", "auto-decision-end"]);
+    expect(appendDecisionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proposalId: "rel-1",
+        revisionId: "rev-rel-1",
+        decision: "deferred",
+      }),
+    );
+    // No stale Relation appendRevision after the auto-decision.
+    expect(appendRevisionMock).toHaveBeenCalledTimes(1);
+    expect(
+      useCodexStructureExtractionStore
+        .getState()
+        .projection?.proposals.find((row) => row.proposalId === "ent-2")
+        ?.revisionId,
+    ).toBe("rev-e2b");
+  });
+
+  it("keeps Entity Binding success when Relation auto-decision fails", async () => {
+    seedBindingRematchProjection();
+    appendRevisionMock.mockResolvedValueOnce({ revisionId: "rev-e2b" });
+    appendDecisionMock.mockRejectedValueOnce(
+      new Error("NEX_PROPOSAL_REVISION_MISMATCH"),
+    );
+
+    // forceNative resync after auto-decision failure
+    resetNarrativeArtifactIndexForTests();
+    getRunReviewBundleMock.mockReset();
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-auto",
+        projectId: "p1",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-a" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-auto",
+      projectId: "p1",
+      artifacts: [
+        {
+          artifactId: "art",
+          runId: "run-auto",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "ps-1",
+            evidenceByProposalId: {
+              "ent-1": [
+                {
+                  anchorId: "a1",
+                  quote: "ライカ",
+                  documentRef: "D1",
+                  method: "exact",
+                },
+              ],
+              "ent-2": [
+                {
+                  anchorId: "a2",
+                  quote: "ベルカ",
+                  documentRef: "D1",
+                  method: "exact",
+                },
+              ],
+              "rel-1": [
+                {
+                  anchorId: "a3",
+                  quote: "友人",
+                  documentRef: "D1",
+                  method: "exact",
+                },
+              ],
+            },
+            relationLabelsByProposalId: {
+              "rel-1": { subjectLabel: "ライカ", objectLabel: "ベルカ" },
+            },
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "t",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "ps-1",
+        runId: "run-auto",
+        projectId: "p1",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          proposalCount: 3,
+          catalog: {
+            entities: [
+              {
+                ref: "K0001",
+                sourceKey: "entry-laika",
+                name: "ライカ",
+                typeRef: "T0001",
+              },
+              {
+                ref: "K0002",
+                sourceKey: "entry-belka",
+                name: "ベルカ",
+                typeRef: "T0001",
+              },
+            ],
+            types: [
+              {
+                ref: "T0001",
+                sourceKey: "character",
+                slug: "character",
+                label: "character",
+              },
+            ],
+          },
+          existingRelations: [],
+          relationDependencies: {
+            "rel-1": [
+              { kind: "requires-resolution", proposalId: "ent-1" },
+              { kind: "requires-resolution", proposalId: "ent-2" },
+            ],
+          },
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "ent-1",
+          proposalSetId: "ps-1",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "approved",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: bindExistingCodexEntityProposal(
+              {
+                narrativeEntityId: "ne-1",
+                canonicalName: "ライカ",
+                aliases: [],
+                coarseClass: "person",
+                typeResolution: { status: "resolved", typeRef: "T0001" },
+                binding: {
+          kind: "bind-existing",
+          entityRef: "K0001",
+          enrichment: {
+            aliasesToAdd: [],
+            summary: { kind: "leave" },
+          },
+        },
+              },
+              { proposalId: "ent-1" },
+            ).payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-e1",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+        },
+        {
+          proposalId: "ent-2",
+          proposalSetId: "ps-1",
+          proposalKey: "ne-2",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: bindExistingCodexEntityProposal(
+              {
+                narrativeEntityId: "ne-2",
+                canonicalName: "ベルカ",
+                aliases: [],
+                coarseClass: "person",
+                typeResolution: { status: "resolved", typeRef: "T0001" },
+                binding: {
+          kind: "bind-existing",
+          entityRef: "K0002",
+          enrichment: {
+            aliasesToAdd: [],
+            summary: { kind: "leave" },
+          },
+        },
+              },
+              { proposalId: "ent-2" },
+            ).payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-e2b",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+        },
+        {
+          proposalId: "rel-1",
+          proposalSetId: "ps-1",
+          proposalKey: "rel-key",
+          kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: createCodexRelationProposalFromHypothesis({
+              hypothesis: {
+                hypothesisId: "hyp-rel",
+                observationRefs: [],
+                subjectResolved: true,
+                objectResolved: true,
+                payload: {
+                  subjectEntityId: "ne-1",
+                  objectEntityId: "ne-2",
+                  predicate: "friend_of",
+                  family: "social",
+                  validity: "current",
+                  directionality: "symmetric",
+                  forwardLabelSuggestion: "友人",
+                  inverseLabelSuggestion: "友人",
+                },
+                epistemic: {
+                  polarity: "affirmed",
+                  commitment: "story-fact",
+                  support: "direct",
+                  narrativeFrame: "primary",
+                },
+              },
+              gate: { kind: "proposal", validity: "current" },
+              logicalRef: "rel-1",
+              relation: {
+                relationType: "friend_of",
+                directionality: "symmetric",
+                forwardLabel: "友人",
+                inverseLabel: "友人",
+              },
+              dependencyProposalIds: ["ent-1", "ent-2"],
+              createId: () => "rel-1",
+            })!.payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-rel-1",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+        },
+      ],
+    });
+
+    await expect(
+      resolveCodexStructureBinding({
+        proposalId: "ent-2",
+        resolution: { kind: "bind-existing", entityRef: "K0002" },
+      }),
+    ).resolves.toBeUndefined();
+
+    const entity = useCodexStructureExtractionStore
+      .getState()
+      .projection?.proposals.find((row) => row.proposalId === "ent-2");
+    expect(entity?.revisionId).toBe("rev-e2b");
+    expect(entity?.proposal.payload.binding.kind).toBe("bind-existing");
   });
 });
 

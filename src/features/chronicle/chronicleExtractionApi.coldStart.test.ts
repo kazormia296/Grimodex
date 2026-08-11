@@ -398,8 +398,12 @@ describe("restoreChronicleExtractionReview candidate fallback", () => {
     expect(restored?.runId).toBe("run-old-review");
     expect(restored?.proposals[0]?.displayTitle).toBe("Older review event");
     expect(listResumableRunsMock).toHaveBeenCalled();
-    expect(
-      getRunReviewBundleMock.mock.calls.map((call) => call[0]?.runId),
-    ).toEqual(["run-crash", "run-old-review"]);
+    const runIds = getRunReviewBundleMock.mock.calls.map(
+      (call) => call[0]?.runId,
+    );
+    // Bundle hydrate is intentionally not cached after completion (mutable
+    // proposal state). Assert candidate order, not call cardinality.
+    expect([...new Set(runIds)]).toEqual(["run-crash", "run-old-review"]);
+    expect(runIds[0]).toBe("run-crash");
   });
 });

@@ -105,4 +105,26 @@ describe("CodexRelationProposalReview", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("一括承認なし")).toBeInTheDocument();
   });
+
+  it("hides editor for already-satisfied Relations", () => {
+    render(
+      <CodexRelationProposalReview
+        boundToStore
+        proposals={[
+          {
+            ...relationReview(),
+            applicability: "already-satisfied",
+            existingRelationRef: "R0001",
+          },
+        ]}
+        selectedProposalId="rel-proposal-1"
+      />,
+    );
+    expect(
+      screen.queryByTestId("codex-relation-editor"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("codex-relation-already-satisfied-readonly"),
+    ).toBeInTheDocument();
+  });
 });
