@@ -5,6 +5,7 @@ import { resolveZenShaderRenderPipeline } from "./zenShaderRenderPipeline";
 describe("resolveZenShaderRenderPipeline", () => {
   const directConfig = {
     ...ZEN_SHADER_DEFAULTS,
+    resolutionMode: "native" as const,
     opacity: 100,
     glass: { ...ZEN_SHADER_DEFAULTS.glass, enabled: false },
     contrastGuard: {
@@ -35,6 +36,14 @@ describe("resolveZenShaderRenderPipeline", () => {
     {
       name: "opacity is below 100 percent",
       config: { ...directConfig, opacity: 99 },
+    },
+    {
+      name: "the Scene uses Balanced resolution",
+      config: { ...directConfig, resolutionMode: "balanced" as const },
+    },
+    {
+      name: "the Scene uses Performance resolution",
+      config: { ...directConfig, resolutionMode: "performance" as const },
     },
   ])("keeps the multipass path when $name", ({ config }) => {
     expect(resolveZenShaderRenderPipeline(config)).toBe("multipass");

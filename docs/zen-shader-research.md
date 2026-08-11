@@ -222,10 +222,10 @@ RGBA8 Scene FBO plus pass-through Composite.
 
 ### Spatial upscale matrix
 
-The upscale experiment is a research-only comparison. It does not change the
-product renderer or its defaults. Each candidate renders the expensive Paper
-Shader into a scaled RGBA8 Scene target and reconstructs it at the native canvas
-size:
+The upscale experiment remains a research-only comparison and does not share
+its candidate shaders or benchmark resources with the product renderer. Each
+candidate renders the expensive Paper Shader into a scaled RGBA8 Scene target
+and reconstructs it at the native canvas size:
 
 | Scene scale | Full HD Scene size |
 | ----------- | ------------------ |
@@ -257,6 +257,23 @@ The upscale representative set is `liquid-metal`, `halftone-cmyk`,
 Halftone, Glass, and Contrast Guard are fixed off in this first comparison so
 the result isolates Paper Shader resolution and spatial reconstruction. Moving
 pixel-grid effects after upscaling belongs to the later product-pipeline phase.
+
+### Product resolution policy
+
+The focused linear-upscale measurements selected hardware bilinear sampling for
+the product renderer. The product exposes three Scene resolution modes:
+
+| Mode          | Scene scale | Product behavior                                           |
+| ------------- | ----------- | ---------------------------------------------------------- |
+| `native`      | `1`         | Full-resolution Scene rendering                            |
+| `balanced`    | `3/4`       | Default; the existing Composite samples a 75% Scene target |
+| `performance` | `2/3`       | The existing Composite samples a 66.7% Scene target        |
+
+The output canvas, Glass, UI masks, and Contrast Guard remain at native output
+resolution. Dither and Halftone coordinates are converted back to output-pixel
+space before evaluation. Scaled modes use the existing product Composite, so
+they do not add an upscale-only draw. Switching modes, resizing, or changing DPR
+reallocates only the Scene-sized targets and preserves the WebGL context.
 
 The `.artifacts/` directory is ignored by Git. Attach the raw JSON artifacts to
 the research PR or benchmark record rather than committing them.

@@ -197,6 +197,7 @@ export interface ZenMultipassCanvasProps {
   blurTargetPrecision?: "auto" | "rgba8";
   gpuTimingOptions?: Readonly<ZenGpuTimerSamplerOptions>;
   renderPipeline?: ZenShaderRenderPipeline;
+  sceneScale?: number;
   speed?: number;
   className?: string;
   style?: CSSProperties;
@@ -237,6 +238,9 @@ export interface ZenMultipassPerformanceStats {
   gpuTimingSampleDrawCount: number | null;
   isStaticFrameReady: boolean;
   renderPipeline: ZenShaderRenderPipeline;
+  sceneScale: number;
+  canvasWidth: number;
+  canvasHeight: number;
   blurFormat: "rgba16f" | "rgba8";
   blurTargetAFormat: "rgba16f" | "rgba8";
   blurTargetBFormat: "rgba16f" | "rgba8";
@@ -692,7 +696,11 @@ class ZenMultipassRenderer {
     blurTargetPrecision: "auto" | "rgba8" = "auto",
     gpuTimingOptions?: Readonly<ZenGpuTimerSamplerOptions>,
     private renderPipeline: ZenShaderRenderPipeline = "multipass",
+    private sceneScale = 1,
   ) {
+    if (!Number.isFinite(sceneScale) || sceneScale <= 0 || sceneScale > 1) {
+      throw new TypeError("Zen multipass sceneScale must be in (0, 1]");
+    }
     const gl = canvas.getContext("webgl2", contextAttributes);
     if (!gl)
       throw new Error("WebGL2 is unavailable for Zen multipass rendering");
@@ -962,6 +970,8 @@ class ZenMultipassRenderer {
     );
     const width = Math.max(1, Math.round(targetWidth * budgetScale));
     const height = Math.max(1, Math.round(targetHeight * budgetScale));
+    const sceneWidth = Math.max(1, Math.round(width * this.sceneScale));
+    const sceneHeight = Math.max(1, Math.round(height * this.sceneScale));
     const nextRenderScale = width / rect.width;
     const renderScaleChanged = this.renderScale !== nextRenderScale;
     const cssSizeChanged =
@@ -971,7 +981,8 @@ class ZenMultipassRenderer {
     this.cssHeight = rect.height;
     const targetReady =
       this.renderPipeline === "direct" ||
-      (this.sceneTarget.width === width && this.sceneTarget.height === height);
+      (this.sceneTarget.width === sceneWidth &&
+        this.sceneTarget.height === sceneHeight);
     if (
       this.canvas.width === width &&
       this.canvas.height === height &&
@@ -985,7 +996,7 @@ class ZenMultipassRenderer {
     if (this.canvas.height !== height) this.canvas.height = height;
     if (
       this.renderPipeline === "multipass" &&
-      !this.allocateSceneTarget(width, height)
+      !this.allocateSceneTarget(sceneWidth, sceneHeight)
     ) {
       throw new Error("Unable to allocate Zen multipass scene target");
     }
@@ -1241,6 +1252,17 @@ class ZenMultipassRenderer {
       const pixelRatio = this.uniformLocation(this.sceneProgram.program, name);
       if (pixelRatio !== null) gl.uniform1f(pixelRatio, this.renderScale);
     }
+    const sceneToOutputScale = this.uniformLocation(
+      this.sceneProgram.program,
+      "u_zenSceneToOutputScale",
+    );
+    if (sceneToOutputScale !== null) {
+      gl.uniform2f(
+        sceneToOutputScale,
+        this.canvas.width / width,
+        this.canvas.height / height,
+      );
+    }
     const time = this.uniformLocation(this.sceneProgram.program, "u_time");
     if (time !== null) gl.uniform1f(time, this.frame * 0.001);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1248,8 +1270,9 @@ class ZenMultipassRenderer {
   }
 
   private prepareBlurPlan(blurRadius: number, activeGlass: boolean) {
+    const sceneRenderScale = this.renderScale * this.sceneScale;
     const key = activeGlass
-      ? `${blurRadius}:${this.renderScale}:${this.cssWidth}:${this.cssHeight}`
+      ? `${blurRadius}:${sceneRenderScale}:${this.cssWidth}:${this.cssHeight}`
       : "inactive";
     if (key === this.blurPlanKey) return this.activeBlurPlan;
     this.blurPlanKey = "";
@@ -1257,7 +1280,7 @@ class ZenMultipassRenderer {
     const plan = activeGlass
       ? resolveZenMultipassBlurPlan(
           blurRadius,
-          this.renderScale,
+          sceneRenderScale,
           this.cssWidth,
           this.cssHeight,
         )
@@ -1533,7 +1556,10 @@ class ZenMultipassRenderer {
       renderPipeline === "multipass" &&
       this.canvas.width > 0 &&
       this.canvas.height > 0 &&
-      !this.allocateSceneTarget(this.canvas.width, this.canvas.height)
+      !this.allocateSceneTarget(
+        Math.max(1, Math.round(this.canvas.width * this.sceneScale)),
+        Math.max(1, Math.round(this.canvas.height * this.sceneScale)),
+      )
     ) {
       this.fail(new Error("Unable to allocate Zen multipass scene target"));
       return;
@@ -1541,6 +1567,16 @@ class ZenMultipassRenderer {
     this.blurredTexture = this.sceneTarget.texture;
     this.blurPlanKey = "";
     this.invalidateScene();
+  };
+
+  setSceneScale = (sceneScale: number) => {
+    if (!Number.isFinite(sceneScale) || sceneScale <= 0 || sceneScale > 1) {
+      throw new TypeError("Zen multipass sceneScale must be in (0, 1]");
+    }
+    if (sceneScale === this.sceneScale) return;
+    this.sceneScale = sceneScale;
+    this.blurPlanKey = "";
+    this.resizeTargets();
   };
 
   setSpeed = (speed: number) => {
@@ -1592,6 +1628,9 @@ class ZenMultipassRenderer {
       drawCallCount: this.drawCallCount,
       ...gpuTiming,
       renderPipeline: this.renderPipeline,
+      sceneScale: this.sceneScale,
+      canvasWidth: this.canvas.width,
+      canvasHeight: this.canvas.height,
       isStaticFrameReady:
         this.hasRenderedFrame &&
         !this.dirtyScene &&
@@ -1671,6 +1710,7 @@ export const ZenMultipassCanvas = forwardRef<
     blurTargetPrecision = "auto",
     gpuTimingOptions,
     renderPipeline = "multipass",
+    sceneScale = 1,
     speed = 0,
     className,
     style,
@@ -1691,6 +1731,7 @@ export const ZenMultipassCanvas = forwardRef<
     mipmaps,
     speed,
     renderPipeline,
+    sceneScale,
   });
   latestRendererInputsRef.current = {
     sceneUniforms,
@@ -1698,6 +1739,7 @@ export const ZenMultipassCanvas = forwardRef<
     mipmaps,
     speed,
     renderPipeline,
+    sceneScale,
   };
 
   useImperativeHandle(
@@ -1767,6 +1809,7 @@ export const ZenMultipassCanvas = forwardRef<
         blurTargetPrecision,
         gpuTimingOptions,
         latestInputs.renderPipeline,
+        latestInputs.sceneScale,
       );
       failureLoggedRef.current = false;
       renderer.setSpeed(latestInputs.speed);
@@ -1801,6 +1844,10 @@ export const ZenMultipassCanvas = forwardRef<
   useLayoutEffect(() => {
     rendererRef.current?.setRenderPipeline(renderPipeline);
   }, [renderPipeline]);
+
+  useLayoutEffect(() => {
+    rendererRef.current?.setSceneScale(sceneScale);
+  }, [sceneScale]);
 
   useLayoutEffect(() => {
     rendererRef.current?.setSceneUniforms(sceneUniforms, mipmaps);

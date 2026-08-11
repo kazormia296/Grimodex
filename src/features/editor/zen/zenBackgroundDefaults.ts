@@ -58,6 +58,7 @@ export const ZEN_BACKGROUND_DEFAULTS = {
   legacySpeed: 0.42,
   speedPercent: 3,
   speedMode: "fast",
+  resolutionMode: "balanced",
   scale: 1.7,
   rotation: 170,
   offsetX: 0.25,

@@ -448,6 +448,7 @@ uniform float u_zenHalftoneStrength;
 uniform float u_zenHalftoneSize;
 uniform float u_zenHalftoneAngle;
 uniform float u_zenHalftoneSoftness;
+uniform vec2 u_zenSceneToOutputScale;
 
 float zenBayer4(vec2 pixel) {
   ivec2 p = ivec2(mod(floor(pixel), 4.0));
@@ -467,7 +468,8 @@ float zenBayer4(vec2 pixel) {
 vec3 applyZenDither(vec3 color) {
   if (u_zenDitherStrength <= 0.00001) return color;
   float levels = max(2.0, u_zenDitherLevels);
-  float threshold = zenBayer4(gl_FragCoord.xy / max(1.0, u_zenDitherSize)) - 0.5;
+  vec2 outputFragCoord = gl_FragCoord.xy * u_zenSceneToOutputScale;
+  float threshold = zenBayer4(outputFragCoord / max(1.0, u_zenDitherSize)) - 0.5;
   vec3 quantized = floor(color * (levels - 1.0) + threshold + 0.5) / (levels - 1.0);
   return mix(color, clamp(quantized, 0.0, 1.0), u_zenDitherStrength);
 }
@@ -481,7 +483,8 @@ mat2 zenRotation(float degrees) {
 
 float zenHalftoneInk(float amount, float angle) {
   float cellSize = max(3.0, u_zenHalftoneSize);
-  vec2 cell = fract((zenRotation(angle) * gl_FragCoord.xy) / cellSize) - 0.5;
+  vec2 outputFragCoord = gl_FragCoord.xy * u_zenSceneToOutputScale;
+  vec2 cell = fract((zenRotation(angle) * outputFragCoord) / cellSize) - 0.5;
   float distanceToCenter = length(cell);
   float radius = 0.66 * sqrt(clamp(amount, 0.0, 1.0));
   float antialias = max(fwidth(distanceToCenter), 0.01);
