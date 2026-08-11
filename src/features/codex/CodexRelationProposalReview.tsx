@@ -113,7 +113,7 @@ export function CodexRelationProposalReview({
           </p>
         ) : (
           <>
-            {boundToStore && (
+            {boundToStore && !selected.application && (
               <CodexRelationEditor
                 proposal={selected}
                 onChange={(patch) =>
@@ -128,6 +128,14 @@ export function CodexRelationProposalReview({
                   })
                 }
               />
+            )}
+            {selected.application && (
+              <p
+                className="text-[10px] text-muted-foreground"
+                data-testid="codex-relation-applied-readonly"
+              >
+                適用済みのため編集できません
+              </p>
             )}
             <CodexExtractionEvidencePane
               proposal={{

@@ -1067,6 +1067,212 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
     expect(ops[0]?.proposalId).toBe("prop-pending");
   });
 
+  it("wires applied create-new Entity as existingBindings for follow-up Relation Apply", async () => {
+    const applied = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-a",
+        canonicalName: "ライカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ライカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-a" },
+    );
+    const pending = createNewBindCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-b",
+        canonicalName: "ベルカ",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "create-new",
+          entry: { name: "ベルカ", aliases: [], summary: null },
+        },
+      },
+      { proposalId: "prop-b" },
+    );
+    const relationProposal = {
+      proposalId: "prop-rel",
+      kind: "codex.relation.create@1" as const,
+      target: { kind: "new" as const, logicalRef: "rel-1" },
+      payload: {
+        subjectEntityId: "ne-a",
+        objectEntityId: "ne-b",
+        relation: {
+          relationType: "friend_of",
+          directionality: "symmetric" as const,
+          forwardLabel: "友人",
+          inverseLabel: "友人",
+        },
+        validity: "current" as const,
+      },
+      dependencies: [
+        { kind: "requires-resolution" as const, proposalId: "prop-a" },
+        { kind: "requires-resolution" as const, proposalId: "prop-b" },
+      ],
+    };
+
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId: "run-follow-rel",
+      projectId: "p1",
+      workspacePath: "/w",
+      openRevision: 1,
+      proposalSetId: "ps-1",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-a",
+          revisionId: "rev-a",
+          proposalKey: "ne-a",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ライカ",
+          proposal: applied,
+          evidence: [
+            {
+              anchorId: "a1",
+              quote: "ライカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "create-new",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact"],
+            hasExistingCandidates: false,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+          application: {
+            revisionId: "rev-a",
+            appliedEntityKind: "codex_entry",
+            appliedEntityId: "entry-a",
+          },
+        },
+        {
+          proposalId: "prop-b",
+          revisionId: "rev-b",
+          proposalKey: "ne-b",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ベルカ",
+          proposal: pending,
+          evidence: [
+            {
+              anchorId: "a2",
+              quote: "ベルカ",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "create-new",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact"],
+            hasExistingCandidates: false,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+          compiledOperation: {
+            kind: "codex.entry.create",
+            payload: {
+              entryId: "entry-b",
+              typeSlug: "character",
+              name: "ベルカ",
+              summary: null,
+              aliases: [],
+              parentId: null,
+              content: '{"type":"doc","content":[]}',
+              narrativeEntityId: "ne-b",
+            },
+          },
+        },
+      ],
+      relationProposals: [
+        {
+          proposalId: "prop-rel",
+          revisionId: "rev-rel",
+          proposalKey: "rel-1",
+          status: "approved",
+          applicability: "applicable",
+          displayTitle: "ライカ → 友人 → ベルカ",
+          proposal: relationProposal,
+          evidence: [
+            {
+              anchorId: "a3",
+              quote: "友人",
+              documentRef: "D1",
+              method: "exact",
+            },
+          ],
+          subjectLabel: "ライカ",
+          objectLabel: "ベルカ",
+          compiledOperation: {
+            kind: "codex.relation.create",
+            payload: {
+              relationId: "rel-fixed",
+              fromCodexId: "entry-a",
+              toCodexId: "entry-b",
+              subjectEntityId: "ne-a",
+              objectEntityId: "ne-b",
+              relationType: "friend_of",
+              directionality: "symmetric",
+              forwardLabel: "友人",
+              inverseLabel: "友人",
+            },
+          },
+        },
+      ],
+      entityCount: 2,
+      relationCount: 1,
+      unresolvedCount: 0,
+      approvedCount: 2,
+      catalog: {
+        entities: [],
+        types: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+          },
+        ],
+      },
+    });
+
+    const count = await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: [],
+    });
+
+    expect(count).toBe(2);
+    const input = prepareApplyMock.mock.calls[0]?.[0];
+    expect(
+      input?.operations.map((op: { proposalId: string }) => op.proposalId),
+    ).toEqual(["prop-b", "prop-rel"]);
+    expect(input?.existingBindings).toEqual([
+      {
+        narrativeEntityId: "ne-a",
+        codexEntryId: "entry-a",
+        source: "existing",
+      },
+    ]);
+  });
+
   it("resolves K/T via catalog and emits bind-existing when patch is empty", async () => {
     const proposal = bindExistingCodexEntityProposal(
       {

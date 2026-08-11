@@ -800,6 +800,193 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     expect(row?.displayTitle).toBe("ベルカ → 友人 → ライカ");
   });
 
+  it("fails closed when review-projection artifact is missing", async () => {
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-no-artifact",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-no-artifact",
+      projectId: "project-cold",
+      artifacts: [],
+      proposalSet: {
+        proposalSetId: "set-no-art",
+        runId: "run-no-artifact",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {},
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-entity-cold",
+          proposalSetId: "set-no-art",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "unreviewed",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: sampleEntityProposal().payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-1",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: null,
+          application: null,
+        },
+      ],
+    });
+
+    await expect(
+      getCodexStructureExtractionReview("run-no-artifact", {
+        projectId: "project-cold",
+        workspacePath: "/ws",
+        openRevision: 1,
+        folderId: "folder-cold",
+      }),
+    ).rejects.toThrow(/missing review-projection artifact/);
+  });
+
+  it("fails closed when application.revisionId != currentRevisionId", async () => {
+    const entity = sampleEntityProposal("prop-mismatch-app");
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "quote",
+        documentRef: "doc:1",
+        method: "exact" as const,
+      },
+    ];
+
+    getRunMock.mockResolvedValue({
+      run: {
+        runId: "run-app-mismatch",
+        projectId: "project-cold",
+        surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+        scopeJson: { folderId: "folder-cold" },
+        status: "completed",
+        coverageJson: {},
+        outcomeSummaryJson: null,
+        createdAt: "t",
+        startedAt: null,
+        completedAt: null,
+        version: 0,
+      },
+      tasks: [],
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+    });
+
+    getRunReviewBundleMock.mockResolvedValue({
+      runId: "run-app-mismatch",
+      projectId: "project-cold",
+      artifacts: [
+        {
+          artifactId: "art",
+          runId: "run-app-mismatch",
+          taskId: "t1",
+          attemptId: "a1",
+          artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+          payloadStorage: "inline-json",
+          payloadJson: {
+            proposalSetId: "set-mismatch",
+            evidenceByProposalId: { "prop-mismatch-app": evidence },
+            relationLabelsByProposalId: {},
+          },
+          payloadRef: null,
+          payloadDigest: null,
+          createdAt: "t",
+        },
+      ],
+      proposalSet: {
+        proposalSetId: "set-mismatch",
+        runId: "run-app-mismatch",
+        projectId: "project-cold",
+        setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+        status: "draft",
+        summaryJson: {
+          catalog: { entities: [], types: [] },
+          existingRelations: [],
+          relationDependencies: {},
+        },
+        createdAt: "t",
+        updatedAt: "t",
+        version: 0,
+      },
+      proposals: [
+        {
+          proposalId: "prop-mismatch-app",
+          proposalSetId: "set-mismatch",
+          proposalKey: "ne-1",
+          kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+          status: "approved",
+          payloadJson: buildCodexReviewRevisionEnvelope({
+            reviewPayload: entity.payload,
+          }) as unknown as Record<string, unknown>,
+          currentRevisionId: "rev-new",
+          createdAt: "t",
+          updatedAt: "t",
+          latestDecision: {
+            decisionId: "d1",
+            proposalId: "prop-mismatch-app",
+            revisionId: "rev-new",
+            decision: "approved",
+            decisionJson: {},
+            createdAt: "t",
+            createdBy: "r",
+          },
+          application: {
+            commitId: "c1",
+            revisionId: "rev-old-applied",
+            appliedEntityKind: "codex_entry",
+            appliedEntityId: "entry-1",
+            createdAt: "t",
+          },
+        },
+      ],
+    });
+
+    await expect(
+      getCodexStructureExtractionReview("run-app-mismatch", {
+        projectId: "project-cold",
+        workspacePath: "/ws",
+        openRevision: 1,
+        folderId: "folder-cold",
+      }),
+    ).rejects.toThrow(/NEX_APPLICATION_REVISION_MISMATCH/);
+  });
+
   it("rejects folder mismatch before hydrate", async () => {
     getRunMock.mockResolvedValue({
       run: {

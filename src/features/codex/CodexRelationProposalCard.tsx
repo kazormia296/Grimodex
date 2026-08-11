@@ -31,6 +31,7 @@ export function CodexRelationProposalCard({
 }: CodexRelationProposalCardProps) {
   const blocked = proposal.applicability === "blocked";
   const alreadySatisfied = proposal.applicability === "already-satisfied";
+  const applied = Boolean(proposal.application);
   const relation = proposal.proposal.payload.relation;
 
   return (
@@ -66,10 +67,15 @@ export function CodexRelationProposalCard({
                   : "両端 Binding 未解決")}
             </span>
           )}
+          {applied && (
+            <span className="block text-[10px] text-muted-foreground">
+              適用済み（編集不可）
+            </span>
+          )}
         </span>
       </button>
 
-      {!blocked && !alreadySatisfied && (
+      {!blocked && !alreadySatisfied && !applied && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"

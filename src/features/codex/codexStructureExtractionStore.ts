@@ -422,7 +422,12 @@ export const useCodexStructureExtractionStore =
       const current = projection.proposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.applicability === "blocked") return;
+      if (
+        !current ||
+        current.applicability === "blocked" ||
+        current.application
+      )
+        return;
       if (
         status === "approved" &&
         (current.proposal.payload.binding.kind === "unresolved" ||
@@ -457,6 +462,7 @@ export const useCodexStructureExtractionStore =
       );
       if (
         !current ||
+        current.application ||
         current.applicability === "blocked" ||
         current.applicability === "already-satisfied"
       )
@@ -487,7 +493,11 @@ export const useCodexStructureExtractionStore =
       const current = projection.proposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current || current.proposal.payload.binding.kind !== "unresolved") {
+      if (
+        !current ||
+        current.application ||
+        current.proposal.payload.binding.kind !== "unresolved"
+      ) {
         return;
       }
       const payload = current.proposal.payload;
@@ -577,7 +587,7 @@ export const useCodexStructureExtractionStore =
       const current = projection.proposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current) return;
+      if (!current || current.application) return;
       const payload = current.proposal.payload;
       const binding = payload.binding;
       let nextBinding = binding;
@@ -696,7 +706,7 @@ export const useCodexStructureExtractionStore =
       const current = projection.relationProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current) return;
+      if (!current || current.application) return;
       const relation = current.proposal.payload.relation;
       const directionality = patch.directionality ?? relation.directionality;
       const forwardLabel =
@@ -757,7 +767,7 @@ export const useCodexStructureExtractionStore =
       const current = projection.relationProposals.find(
         (proposal) => proposal.proposalId === proposalId,
       );
-      if (!current) return;
+      if (!current || current.application) return;
       const payload = current.proposal.payload;
       const nextProposal: CreateCodexRelationProposal = {
         ...current.proposal,
