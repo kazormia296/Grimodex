@@ -696,6 +696,283 @@ describe("BrowserMock persistence contract", () => {
     ]);
   });
 
+  it("repairs invalid payoff ownership exactly once and preserves the valid aggregate", async () => {
+    const current = await createMock();
+    const runCurrent = (sql: string, params: unknown[] = []) =>
+      current.invoke("db_execute", { sql, params, method: "run" });
+    await runCurrent(
+      `INSERT INTO tree_nodes
+        (id, project_id, node_type, title, sort_order)
+       VALUES
+        ('repair-payoff-folder', 'default-project', 'folder', 'Folder', 'a0'),
+        ('repair-setup-scene', 'default-project', 'scene', 'Setup', 'a1'),
+        ('repair-valid-payoff-scene', 'default-project', 'scene', 'Payoff', 'a2')`,
+    );
+    await runCurrent(
+      `INSERT INTO foreshadows
+        (id, project_id, title, payoff_scene_id, payoff_from_pos,
+         payoff_to_pos, payoff_confirmed, version, created_at, updated_at)
+       VALUES
+        ('repair-foreshadow', 'default-project', 'Repair me',
+         'repair-payoff-folder', 4, 9, 1, 0, 100, 200),
+        ('repair-half-null', 'default-project', 'Repair half-null',
+         'repair-valid-payoff-scene', 4, NULL, 0, 0, 200, 300)`,
+    );
+    await runCurrent(
+      `INSERT INTO codex_entries (id, project_id, type, name)
+       VALUES ('repair-codex', 'default-project', 'character', 'Witness')`,
+    );
+    await runCurrent(
+      `INSERT INTO foreshadow_setups
+        (id, foreshadow_id, scene_id, from_pos, to_pos, kind, attribution,
+         is_orphan, semantic_key, created_at, updated_at)
+       VALUES ('repair-setup', 'repair-foreshadow', 'repair-setup-scene',
+               1, 3, 'designated_existing', 'human', 0,
+               'repair-foreshadow|repair-setup-scene|1|3', 100, 200)`,
+    );
+    await runCurrent(
+      `INSERT INTO foreshadow_payoffs
+        (id, foreshadow_id, scene_id, from_pos, to_pos, role, confirmed,
+         is_primary, attribution, is_orphan, semantic_key, created_at, updated_at)
+       VALUES
+        ('repair-invalid-payoff', 'repair-foreshadow', 'repair-payoff-folder',
+         4, 9, 'primary', 1, 1, 'human', 0,
+         'repair-foreshadow|repair-payoff-folder|4|9', 100, 200),
+        ('repair-valid-payoff', 'repair-foreshadow', 'repair-valid-payoff-scene',
+         10, 12, 'supporting', 1, 0, 'human', 0,
+         'repair-foreshadow|repair-valid-payoff-scene|10|12', 100, 200)`,
+    );
+    await runCurrent(
+      `INSERT INTO foreshadow_setup_payoff_links
+        (foreshadow_id, setup_id, payoff_id, bridge_kind, explanation, created_at)
+       VALUES
+        ('repair-foreshadow', 'repair-setup', 'repair-invalid-payoff',
+         'causal', 'invalid incident edge', 100),
+        ('repair-foreshadow', 'repair-setup', 'repair-valid-payoff',
+         'causal', 'valid edge', 100)`,
+    );
+    await runCurrent(
+      `INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id)
+       VALUES ('repair-foreshadow', 'repair-codex')`,
+    );
+
+    const repairDirty = vi.fn();
+    const repaired = await createMock({
+      databaseBytes: current.exportDatabase(),
+      onDatabaseDirty: repairDirty,
+    });
+    expect(repairDirty).toHaveBeenCalledTimes(1);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos,
+                payoff_confirmed, version, updated_at
+           FROM foreshadows WHERE id = 'repair-foreshadow'`,
+      ),
+    ).toEqual([
+      {
+        payoff_scene_id: null,
+        payoff_from_pos: null,
+        payoff_to_pos: null,
+        payoff_confirmed: 1,
+        version: 1,
+        updated_at: 201,
+      },
+    ]);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos,
+                payoff_confirmed, version, updated_at
+           FROM foreshadows WHERE id = 'repair-half-null'`,
+      ),
+    ).toEqual([
+      {
+        payoff_scene_id: null,
+        payoff_from_pos: null,
+        payoff_to_pos: null,
+        payoff_confirmed: 0,
+        version: 1,
+        updated_at: 301,
+      },
+    ]);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT
+          (SELECT COUNT(*) FROM foreshadow_setups
+            WHERE foreshadow_id = 'repair-foreshadow') AS setups,
+          (SELECT COUNT(*) FROM foreshadow_payoffs
+            WHERE foreshadow_id = 'repair-foreshadow') AS payoffs,
+          (SELECT COUNT(*) FROM foreshadow_setup_payoff_links
+            WHERE foreshadow_id = 'repair-foreshadow') AS edges,
+          (SELECT COUNT(*) FROM foreshadow_codex_links
+            WHERE foreshadow_id = 'repair-foreshadow') AS codex_links`,
+      ),
+    ).toEqual([{ setups: 1, payoffs: 1, edges: 1, codex_links: 1 }]);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT id FROM foreshadow_payoffs
+          WHERE foreshadow_id = 'repair-foreshadow' ORDER BY id`,
+      ),
+    ).toEqual([{ id: "repair-valid-payoff" }]);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT payoff_id FROM foreshadow_setup_payoff_links
+          WHERE foreshadow_id = 'repair-foreshadow' ORDER BY payoff_id`,
+      ),
+    ).toEqual([{ payoff_id: "repair-valid-payoff" }]);
+
+    const reopenedDirty = vi.fn();
+    const reopened = await createMock({
+      databaseBytes: repaired.exportDatabase(),
+      onDatabaseDirty: reopenedDirty,
+    });
+    expect(reopenedDirty).not.toHaveBeenCalled();
+    expect(
+      await queryRows(
+        reopened,
+        `SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version, updated_at
+           FROM foreshadows WHERE id = 'repair-foreshadow'`,
+      ),
+    ).toEqual([
+      {
+        payoff_scene_id: null,
+        payoff_from_pos: null,
+        payoff_to_pos: null,
+        version: 1,
+        updated_at: 201,
+      },
+    ]);
+
+    const receipt = await reopened.invoke<{ undoJournalId: string }>(
+      "foreshadow_delete",
+      {
+        id: "repair-foreshadow",
+        projectId: "default-project",
+        baseVersion: 1,
+        sessionId: "repair-delete",
+      },
+    );
+    expect(
+      await queryRows(
+        reopened,
+        "SELECT id FROM foreshadows WHERE id = 'repair-foreshadow'",
+      ),
+    ).toEqual([]);
+
+    const replay = (direction: "undo" | "redo", requestId: string) =>
+      reopened.invoke("agent_apply_undo_journal", {
+        payload: {
+          requestId,
+          projectId: "default-project",
+          sessionId: "repair-history",
+          journalId: receipt.undoJournalId,
+          direction,
+        },
+      });
+    await replay("undo", "repair-delete-undo");
+    expect(
+      await queryRows(
+        reopened,
+        `SELECT root.payoff_scene_id, root.payoff_from_pos, root.payoff_to_pos,
+                root.payoff_confirmed, root.version,
+                (SELECT COUNT(*) FROM foreshadow_setups
+                  WHERE foreshadow_id = root.id) AS setups,
+                (SELECT COUNT(*) FROM foreshadow_payoffs
+                  WHERE foreshadow_id = root.id) AS payoffs,
+                (SELECT COUNT(*) FROM foreshadow_setup_payoff_links
+                  WHERE foreshadow_id = root.id) AS edges,
+                (SELECT COUNT(*) FROM foreshadow_codex_links
+                  WHERE foreshadow_id = root.id) AS codex_links
+           FROM foreshadows root WHERE root.id = 'repair-foreshadow'`,
+      ),
+    ).toEqual([
+      {
+        payoff_scene_id: null,
+        payoff_from_pos: null,
+        payoff_to_pos: null,
+        payoff_confirmed: 1,
+        version: 2,
+        setups: 1,
+        payoffs: 1,
+        edges: 1,
+        codex_links: 1,
+      },
+    ]);
+    await replay("redo", "repair-delete-redo");
+    expect(
+      await queryRows(
+        reopened,
+        "SELECT id FROM foreshadows WHERE id = 'repair-foreshadow'",
+      ),
+    ).toEqual([]);
+  });
+
+  it("repairs an invalid payoff child when the root anchor is already clear", async () => {
+    const current = await createMock();
+    const runCurrent = (sql: string, params: unknown[] = []) =>
+      current.invoke("db_execute", { sql, params, method: "run" });
+    await runCurrent(
+      `INSERT INTO tree_nodes
+        (id, project_id, node_type, title, sort_order)
+       VALUES ('child-only-payoff-folder', 'default-project', 'folder',
+               'Folder', 'a0')`,
+    );
+    await runCurrent(
+      `INSERT INTO foreshadows
+        (id, project_id, title, version, created_at, updated_at)
+       VALUES ('child-only-foreshadow', 'default-project', 'Child only',
+               0, 100, 200)`,
+    );
+    await runCurrent(
+      `INSERT INTO foreshadow_payoffs
+        (id, foreshadow_id, scene_id, role, confirmed, is_primary,
+         attribution, is_orphan, semantic_key, created_at, updated_at)
+       VALUES ('child-only-invalid-payoff', 'child-only-foreshadow',
+               'child-only-payoff-folder', 'primary', 1, 1, 'human', 0,
+               'child-only-foreshadow|child-only-payoff-folder||', 100, 200)`,
+    );
+
+    const repairDirty = vi.fn();
+    const repaired = await createMock({
+      databaseBytes: current.exportDatabase(),
+      onDatabaseDirty: repairDirty,
+    });
+    expect(repairDirty).toHaveBeenCalledTimes(1);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT id FROM foreshadow_payoffs
+          WHERE foreshadow_id = 'child-only-foreshadow'`,
+      ),
+    ).toEqual([]);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version, updated_at
+           FROM foreshadows WHERE id = 'child-only-foreshadow'`,
+      ),
+    ).toEqual([
+      {
+        payoff_scene_id: null,
+        payoff_from_pos: null,
+        payoff_to_pos: null,
+        version: 0,
+        updated_at: 200,
+      },
+    ]);
+
+    const reopenedDirty = vi.fn();
+    await createMock({
+      databaseBytes: repaired.exportDatabase(),
+      onDatabaseDirty: reopenedDirty,
+    });
+    expect(reopenedDirty).not.toHaveBeenCalled();
+  });
+
   it("closes the SQL.js database and rejects subsequent database access", async () => {
     const mock = await createMock();
     mock.close();

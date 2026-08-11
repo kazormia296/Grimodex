@@ -1815,6 +1815,58 @@ function migrateBrowserDomainSchema(db: Database): boolean {
     browserQueryHasRows(
       db,
       `SELECT 1 FROM foreshadows root
+        WHERE (
+          root.payoff_scene_id IS NULL
+          AND (
+            root.payoff_from_pos IS NOT NULL
+            OR root.payoff_to_pos IS NOT NULL
+          )
+        ) OR (
+          root.payoff_scene_id IS NOT NULL
+          AND (
+            NOT EXISTS (
+              SELECT 1 FROM tree_nodes scene
+               WHERE scene.id = root.payoff_scene_id
+                 AND scene.project_id = root.project_id
+                 AND scene.node_type = 'scene'
+            )
+            OR (
+              root.payoff_from_pos IS NULL
+              AND root.payoff_to_pos IS NOT NULL
+            )
+            OR (
+              root.payoff_from_pos IS NOT NULL
+              AND root.payoff_to_pos IS NULL
+            )
+            OR (
+              root.payoff_from_pos IS NOT NULL
+              AND root.payoff_to_pos IS NOT NULL
+              AND (
+                root.payoff_from_pos < 0
+                OR root.payoff_from_pos > root.payoff_to_pos
+              )
+            )
+          )
+        )
+        LIMIT 1`,
+    ) ||
+    browserQueryHasRows(
+      db,
+      `SELECT 1 FROM foreshadow_payoffs payoff
+        WHERE NOT EXISTS (
+          SELECT 1
+            FROM foreshadows root
+            JOIN tree_nodes scene
+              ON scene.id = payoff.scene_id
+             AND scene.project_id = root.project_id
+             AND scene.node_type = 'scene'
+           WHERE root.id = payoff.foreshadow_id
+        )
+        LIMIT 1`,
+    ) ||
+    browserQueryHasRows(
+      db,
+      `SELECT 1 FROM foreshadows root
         WHERE payoff_scene_id IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM foreshadow_payoffs payoff
@@ -1846,8 +1898,15 @@ function migrateBrowserDomainSchema(db: Database): boolean {
         db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
       }
     }
-    // Mirror native schema 11 and 12 ordering exactly: natural-key backfill,
-    // stable legacy duplicate suffixes, then unique indexes.
+    // Older Browser writers accepted folders/notes as payoff scenes. Repair
+    // those rows before the legacy payoff backfill can copy the invalid root
+    // anchor into a child row. Deleting an invalid payoff cascades only its
+    // incident support edges; valid children and Codex links remain intact.
+    // Advancing repaired root tokens also makes pre-repair undo snapshots stale
+    // instead of allowing them to restore the invalid anchor.
+    //
+    // The remaining backfills mirror native schema 11 and 12 ordering:
+    // natural keys, stable legacy duplicate suffixes, then unique indexes.
     db.run(`
       UPDATE plot_thread_scene_links
          SET semantic_key = thread_id || '|' || node_id || '|' || phase_type
@@ -1886,7 +1945,56 @@ function migrateBrowserDomainSchema(db: Database): boolean {
           WHERE EXISTS (
             SELECT 1 FROM foreshadow_setups b
              WHERE b.semantic_key = a.semantic_key AND b.rowid < a.rowid
-          )
+           )
+       );
+      DELETE FROM foreshadow_payoffs
+       WHERE NOT EXISTS (
+         SELECT 1
+           FROM foreshadows root
+           JOIN tree_nodes scene
+             ON scene.id = foreshadow_payoffs.scene_id
+            AND scene.project_id = root.project_id
+            AND scene.node_type = 'scene'
+          WHERE root.id = foreshadow_payoffs.foreshadow_id
+       );
+      UPDATE foreshadows
+         SET payoff_scene_id = NULL,
+             payoff_from_pos = NULL,
+             payoff_to_pos = NULL,
+             version = version + 1,
+             updated_at = updated_at + 1
+       WHERE (
+         payoff_scene_id IS NULL
+         AND (
+           payoff_from_pos IS NOT NULL
+           OR payoff_to_pos IS NOT NULL
+         )
+       ) OR (
+         payoff_scene_id IS NOT NULL
+         AND (
+           NOT EXISTS (
+             SELECT 1 FROM tree_nodes scene
+              WHERE scene.id = foreshadows.payoff_scene_id
+                AND scene.project_id = foreshadows.project_id
+                AND scene.node_type = 'scene'
+           )
+           OR (
+             payoff_from_pos IS NULL
+             AND payoff_to_pos IS NOT NULL
+           )
+           OR (
+             payoff_from_pos IS NOT NULL
+             AND payoff_to_pos IS NULL
+           )
+           OR (
+             payoff_from_pos IS NOT NULL
+             AND payoff_to_pos IS NOT NULL
+             AND (
+               payoff_from_pos < 0
+               OR payoff_from_pos > payoff_to_pos
+             )
+           )
+         )
        );
       INSERT INTO foreshadow_payoffs (
         id, foreshadow_id, scene_id, from_pos, to_pos, role, confirmed,
@@ -9991,6 +10099,25 @@ export async function createBrowserMock(
     });
   }
 
+  function requireBrowserForeshadowPayoffScene(
+    sceneId: string,
+    projectId: string,
+  ): void {
+    const scene = queryOne(
+      `SELECT 1 AS valid
+         FROM tree_nodes
+        WHERE id = ?
+          AND project_id = ?
+          AND node_type = 'scene'`,
+      [sceneId, projectId],
+    );
+    if (!scene) {
+      throw new Error(
+        "foreshadow payoff scene must reference an existing same project scene",
+      );
+    }
+  }
+
   async function handleForeshadowCreate(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -10086,15 +10213,7 @@ export async function createBrowserMock(
           );
         }
         if (payoffSceneId !== null) {
-          const payoffScene = queryOne(
-            "SELECT project_id FROM tree_nodes WHERE id = ?",
-            [payoffSceneId],
-          );
-          if (payoffScene?.project_id !== projectId) {
-            throw new Error(
-              "foreshadow payoff scene must belong to the same project",
-            );
-          }
+          requireBrowserForeshadowPayoffScene(payoffSceneId, projectId);
         }
         const timestamp = Date.now();
         try {
@@ -10275,14 +10394,7 @@ export async function createBrowserMock(
         ? null
         : Number(current.payoff_to_pos);
     if (payoffSceneId !== null) {
-      const scene = queryOne("SELECT project_id FROM tree_nodes WHERE id = ?", [
-        payoffSceneId,
-      ]);
-      if (scene?.project_id !== projectId) {
-        throw new Error(
-          "foreshadow payoff scene must belong to the same project",
-        );
-      }
+      requireBrowserForeshadowPayoffScene(payoffSceneId, projectId);
     }
     if (
       payoffSceneId === null

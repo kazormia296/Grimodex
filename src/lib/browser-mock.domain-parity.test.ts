@@ -1017,6 +1017,150 @@ describe("browser mock Foreshadow command parity", () => {
     ).toEqual(before);
   });
 
+  it("rejects a same-project folder as a payoff scene without persistence", async () => {
+    await mock.invoke("tree_node_create", {
+      payload: {
+        id: "fs-payoff-folder",
+        projectId: "default-project",
+        parentId: null,
+        nodeType: "folder",
+        title: "Not a scene",
+        sortOrder: "a2",
+      },
+    });
+    onDatabaseDirty.mockClear();
+
+    await expect(
+      mock.invoke("foreshadow_create", {
+        payload: {
+          id: "fs-folder-payoff",
+          projectId: "default-project",
+          title: "Invalid folder payoff",
+          payoffSceneId: "fs-payoff-folder",
+          payoffFromPos: 1,
+          payoffToPos: 3,
+        },
+      }),
+    ).rejects.toThrow("existing same project scene");
+
+    expect(
+      await query(
+        mock,
+        "SELECT id FROM foreshadows WHERE id = 'fs-folder-payoff'",
+      ),
+    ).toEqual([]);
+    expect(
+      await query(
+        mock,
+        `SELECT COUNT(*) AS count FROM idempotency_requests
+          WHERE domain = 'foreshadow_create'
+            AND request_id = 'fs-folder-payoff'`,
+      ),
+    ).toEqual([{ count: 0 }]);
+    expect(onDatabaseDirty).not.toHaveBeenCalled();
+  });
+
+  it("rejects a same-project note payoff update without row, history, or dirty changes", async () => {
+    await mock.invoke("tree_node_create", {
+      payload: {
+        id: "fs-payoff-note",
+        projectId: "default-project",
+        parentId: null,
+        nodeType: "note",
+        title: "Not a scene",
+        sortOrder: "a2",
+      },
+    });
+    await mock.invoke("foreshadow_create", {
+      payload: {
+        id: "fs-note-payoff-update",
+        projectId: "default-project",
+        title: "Valid before update",
+        payoffSceneId: "fs-scene-a",
+        payoffFromPos: 2,
+        payoffToPos: 5,
+      },
+    });
+    const rowBefore = await query(
+      mock,
+      `SELECT title, payoff_scene_id, payoff_from_pos, payoff_to_pos,
+              version, updated_at
+         FROM foreshadows WHERE id = 'fs-note-payoff-update'`,
+    );
+    const historyBefore = await query(
+      mock,
+      `SELECT
+        (SELECT COUNT(*) FROM idempotency_requests) AS idempotency_requests,
+        (SELECT COUNT(*) FROM undo_journal) AS undo_journals,
+        (SELECT COUNT(*) FROM change_events) AS change_events`,
+    );
+    onDatabaseDirty.mockClear();
+
+    await expect(
+      mock.invoke("foreshadow_update", {
+        id: "fs-note-payoff-update",
+        patch: { baseVersion: 0, payoffSceneId: "fs-payoff-note" },
+      }),
+    ).rejects.toThrow("existing same project scene");
+
+    expect(
+      await query(
+        mock,
+        `SELECT title, payoff_scene_id, payoff_from_pos, payoff_to_pos,
+                version, updated_at
+           FROM foreshadows WHERE id = 'fs-note-payoff-update'`,
+      ),
+    ).toEqual(rowBefore);
+    expect(
+      await query(
+        mock,
+        `SELECT
+          (SELECT COUNT(*) FROM idempotency_requests) AS idempotency_requests,
+          (SELECT COUNT(*) FROM undo_journal) AS undo_journals,
+          (SELECT COUNT(*) FROM change_events) AS change_events`,
+      ),
+    ).toEqual(historyBefore);
+    expect(onDatabaseDirty).not.toHaveBeenCalled();
+  });
+
+  it("accepts scene payoff anchors on create and effective-tuple update", async () => {
+    await mock.invoke("foreshadow_create", {
+      payload: {
+        id: "fs-valid-payoff-scenes",
+        projectId: "default-project",
+        title: "Valid scene payoff",
+        payoffSceneId: "fs-scene-a",
+        payoffFromPos: 1,
+        payoffToPos: 3,
+      },
+    });
+
+    await mock.invoke("foreshadow_update", {
+      id: "fs-valid-payoff-scenes",
+      patch: {
+        baseVersion: 0,
+        payoffSceneId: "fs-scene-b",
+        payoffFromPos: 4,
+        payoffToPos: 8,
+      },
+    });
+
+    expect(
+      await query(
+        mock,
+        `SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+           FROM foreshadows WHERE id = 'fs-valid-payoff-scenes'`,
+      ),
+    ).toEqual([
+      {
+        payoff_scene_id: "fs-scene-b",
+        payoff_from_pos: 4,
+        payoff_to_pos: 8,
+        version: 1,
+      },
+    ]);
+  });
+
   it("guards setup identity, preserves duplicate suffixes, and rolls back stale reinserts", async () => {
     for (const [id, title] of [
       ["fs-owner-a", "Owner A"],
