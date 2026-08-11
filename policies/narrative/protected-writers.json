@@ -170,5 +170,63 @@
     "versionColumn": "version",
     "writer": "narrative.fixture",
     "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_proposal_sets",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_proposals",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_proposal_revisions",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_proposal_decisions",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_apply_commits",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_apply_operations",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_proposal_applications",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_commit_journals",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
   }
 ]

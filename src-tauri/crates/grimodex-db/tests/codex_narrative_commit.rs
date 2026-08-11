@@ -4,7 +4,10 @@ use grimodex_db::narrative_extraction::{
     ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
     RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
-use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+    SetNarrativeRuntimePolicyInput,
+};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
@@ -127,14 +130,29 @@ fn relation_create(
     payload
 }
 
-fn build_apply(
+fn enable_manual_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("set manual-apply");
+}
+
+fn build_prepare(
     request_id: &str,
     plan_digest: &str,
     proposal_set_id: &str,
     run_id: &str,
     ops: Vec<(String, String, String, Value)>,
     entity_bindings: Vec<EntityBindingSeed>,
-) -> ApplyCommitPayload {
+) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
         .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
@@ -151,7 +169,7 @@ fn build_apply(
             revision_id: revision_id.clone(),
         })
         .collect();
-    ApplyCommitPayload {
+    PrepareCommitPayload {
         project_id: "project-1".to_string(),
         run_id: run_id.to_string(),
         proposal_set_id: proposal_set_id.to_string(),
@@ -166,6 +184,45 @@ fn build_apply(
         expected_calendar_version: None,
     }
 }
+
+fn prepare_and_apply(db: &Database, prepare: PrepareCommitPayload) -> Value {
+    enable_manual_apply(db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect("prepare");
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("preparedCommitId")
+                .to_string(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply")
+}
+
+fn prepare_then_apply(db: &Database, prepare: PrepareCommitPayload) -> anyhow::Result<Value> {
+    enable_manual_apply(db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())?;
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id,
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing preparedCommitId"))?
+                .to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+}
+
 
 fn codex_review_envelope(review_payload: Value, kind: &str, operation_payload: Value) -> Value {
     json!({
@@ -265,9 +322,9 @@ fn two_entries_and_relation_atomic_commit() {
         ),
     ];
     let pairs = seed_approved_proposals(&db, "run-codex-1", "set-codex-1", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-codex-1",
             "digest-codex-1",
             "set-codex-1",
@@ -275,8 +332,7 @@ fn two_entries_and_relation_atomic_commit() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    )
-    .expect("apply");
+    );
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 3);
     assert_eq!(
@@ -320,9 +376,9 @@ fn relation_failure_rolls_back_entries() {
         ),
     ];
     let pairs = seed_approved_proposals(&db, "run-codex-2", "set-codex-2", &items);
-    let err = narrative_extraction::narrative_extraction_apply_commit(
+    let err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-codex-fail",
             "digest-codex-fail",
             "set-codex-2",
@@ -330,8 +386,7 @@ fn relation_failure_rolls_back_entries() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    )
-    .expect_err("should fail");
+    ).expect_err("should fail");
     assert!(err.to_string().contains("NEX_CODEX_SELF_RELATION"));
 
     let entry_count: i64 = db
@@ -378,9 +433,9 @@ fn patch_create_and_relation_atomic() {
         ),
     ];
     let pairs = seed_approved_proposals(&db, "run-codex-3", "set-codex-3", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-codex-3",
             "digest-codex-3",
             "set-codex-3",
@@ -392,8 +447,7 @@ fn patch_create_and_relation_atomic() {
                 source: "existing".to_string(),
             }],
         ),
-    )
-    .expect("apply");
+    );
     assert_eq!(applied["status"], "applied");
 
     db.with_conn(|conn| {
@@ -456,9 +510,9 @@ fn semantic_duplicate_relation_is_rejected() {
         }),
     )];
     let pairs = seed_approved_proposals(&db, "run-codex-4", "set-codex-4", &items);
-    let err = narrative_extraction::narrative_extraction_apply_commit(
+    let err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-dup",
             "digest-dup",
             "set-codex-4",
@@ -466,8 +520,7 @@ fn semantic_duplicate_relation_is_rejected() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    )
-    .expect_err("duplicate");
+    ).expect_err("duplicate");
     assert!(err
         .to_string()
         .contains("NEX_CODEX_RELATION_SEMANTIC_DUPLICATE"));
@@ -508,9 +561,9 @@ fn commit_map_conflict_and_payload_mismatch_are_rejected() {
         }),
     )];
     let pairs = seed_approved_proposals(&db, "run-codex-map", "set-codex-map", &items);
-    let err = narrative_extraction::narrative_extraction_apply_commit(
+    let err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-map",
             "digest-map",
             "set-codex-map",
@@ -529,8 +582,7 @@ fn commit_map_conflict_and_payload_mismatch_are_rejected() {
                 },
             ],
         ),
-    )
-    .expect_err("endpoint mismatch");
+    ).expect_err("endpoint mismatch");
     assert!(err.to_string().contains("NEX_COMMIT_MAP_ENDPOINT_MISMATCH"));
 
     // Conflicting seed bindings for the same NarrativeEntityId.
@@ -539,9 +591,9 @@ fn commit_map_conflict_and_payload_mismatch_are_rejected() {
         relation_create("rel-conflict", "ent:a", "ent:b", None),
     )];
     let pairs2 = seed_approved_proposals(&db, "run-codex-conflict", "set-codex-conflict", &items2);
-    let err2 = narrative_extraction::narrative_extraction_apply_commit(
+    let err2 = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-conflict",
             "digest-conflict",
             "set-codex-conflict",
@@ -584,9 +636,9 @@ fn revision_payload_mismatch_is_rejected() {
         "codex.entry.create".to_string(),
         entry_create("entry-other", "Other", "ent:other"),
     )];
-    let err = narrative_extraction::narrative_extraction_apply_commit(
+    let err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-mismatch",
             "digest-mismatch",
             "set-codex-mismatch",
@@ -594,8 +646,7 @@ fn revision_payload_mismatch_is_rejected() {
             mismatched,
             vec![],
         ),
-    )
-    .expect_err("payload mismatch");
+    ).expect_err("payload mismatch");
     assert!(err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"));
 }
 
@@ -617,9 +668,9 @@ fn undo_deletes_relation_before_entries() {
         ),
     ];
     let pairs = seed_approved_proposals(&db, "run-codex-5", "set-codex-5", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-undo-codex",
             "digest-undo-codex",
             "set-codex-5",
@@ -627,8 +678,7 @@ fn undo_deletes_relation_before_entries() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    )
-    .expect("apply");
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     let undone = narrative_extraction::narrative_extraction_undo_commit(
@@ -698,9 +748,9 @@ fn external_dependency_blocks_undo() {
         ),
     ];
     let pairs = seed_approved_proposals(&db, "run-codex-6", "set-codex-6", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-ext",
             "digest-ext",
             "set-codex-6",
@@ -708,8 +758,7 @@ fn external_dependency_blocks_undo() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    )
-    .expect("apply");
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     // Human adds an external relation after commit.
@@ -753,9 +802,9 @@ fn external_tag_dependency_blocks_undo() {
         entry_create("entry-tag", "Tagged", "ent:tag"),
     )];
     let pairs = seed_approved_proposals(&db, "run-codex-tag", "set-codex-tag", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-tag",
             "digest-tag",
             "set-codex-tag",
@@ -763,8 +812,7 @@ fn external_tag_dependency_blocks_undo() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    )
-    .expect("apply");
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     db.execute(
@@ -821,9 +869,9 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
         }),
     )];
     let pairs = seed_approved_proposals(&db, "run-patch-cycle", "set-patch-cycle", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-patch-cycle",
             "digest-patch-cycle",
             "set-patch-cycle",
@@ -835,8 +883,7 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
                 source: "existing".to_string(),
             }],
         ),
-    )
-    .expect("apply");
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
     let undo_payload = UndoCommitPayload {
         project_id: "project-1".to_string(),
@@ -894,7 +941,7 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
         &db,
         undo_payload,
     )
-    .expect("final undo after redo cycles");
+    .expect("final undo");
     assert_eq!(undone_final["status"], "undone");
 }
 
@@ -941,7 +988,7 @@ fn envelope_revise_and_decide_prepare_apply_succeeds() {
         "codex.entry.create".to_string(),
         compiled_payload,
     )];
-    let apply_payload = build_apply(
+    let apply_payload = build_prepare(
         "req-env-apply",
         "digest-env-apply",
         "set-env-apply",
@@ -950,27 +997,8 @@ fn envelope_revise_and_decide_prepare_apply_succeeds() {
         vec![],
     );
 
-    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
-        &db,
-        PrepareCommitPayload {
-            project_id: apply_payload.project_id.clone(),
-            run_id: apply_payload.run_id.clone(),
-            proposal_set_id: apply_payload.proposal_set_id.clone(),
-            request_id: apply_payload.request_id.clone(),
-            plan_digest: apply_payload.plan_digest.clone(),
-            session_id: apply_payload.session_id.clone(),
-            surface: apply_payload.surface.clone(),
-            operations: apply_payload.operations.clone(),
-            applications: apply_payload.applications.clone(),
-            expected_tail_ordinal: None,
-            entity_bindings: vec![],
-        },
-    )
-    .expect("prepare");
-    assert_eq!(prepared["ok"], true);
-
-    let applied =
-        narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload).expect("apply");
+    enable_manual_apply(&db);
+    let applied = prepare_and_apply(&db, apply_payload);
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 1);
     assert_eq!(applied["created"][0]["entityId"], "entry-env");
@@ -1029,9 +1057,9 @@ fn envelope_revision_rejects_operation_payload_mismatch() {
         "codex.entry.create".to_string(),
         entry_create("entry-mismatch-env", "Different", "ent:mismatch-env"),
     )];
-    let err = narrative_extraction::narrative_extraction_apply_commit(
+    let err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-env-mismatch",
             "digest-env-mismatch",
             "set-env-mismatch",
@@ -1039,8 +1067,7 @@ fn envelope_revision_rejects_operation_payload_mismatch() {
             mismatched_ops,
             vec![],
         ),
-    )
-    .expect_err("envelope vs operation payload mismatch");
+    ).expect_err("envelope vs operation payload mismatch");
     assert!(
         err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         "unexpected error: {err}"
@@ -1064,9 +1091,9 @@ fn partial_apply_review_bundle_and_resumable_runs() {
     let proposal_a = pairs[0].0.clone();
     let proposal_b = pairs[1].0.clone();
 
-    let applied_a = narrative_extraction::narrative_extraction_apply_commit(
+    let applied_a = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-partial-a",
             "digest-partial-a",
             "set-partial",
@@ -1074,8 +1101,7 @@ fn partial_apply_review_bundle_and_resumable_runs() {
             ops_from_pairs(&pairs[0..1], &items[0..1]),
             vec![],
         ),
-    )
-    .expect("apply A");
+    );
     assert_eq!(applied_a["status"], "applied");
 
     let bundle = narrative_extraction::narrative_extraction_get_run_review_bundle(
@@ -1120,9 +1146,9 @@ fn partial_apply_review_bundle_and_resumable_runs() {
         .collect();
     assert!(run_ids.contains(&"run-partial"));
 
-    let applied_b = narrative_extraction::narrative_extraction_apply_commit(
+    let applied_b = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-partial-b",
             "digest-partial-b",
             "set-partial",
@@ -1130,8 +1156,7 @@ fn partial_apply_review_bundle_and_resumable_runs() {
             ops_from_pairs(&pairs[1..2], &items[1..2]),
             vec![],
         ),
-    )
-    .expect("apply B only");
+    );
     assert_eq!(applied_b["status"], "applied");
     assert_eq!(applied_b["created"].as_array().unwrap().len(), 1);
     assert_eq!(applied_b["created"][0]["entityId"], "entry-partial-b");
@@ -1168,9 +1193,9 @@ fn partial_apply_then_relation_with_existing_binding_seed() {
     ];
     let pairs = seed_approved_proposals(&db, "run-partial-rel", "set-partial-rel", &items);
 
-    let applied_a = narrative_extraction::narrative_extraction_apply_commit(
+    let applied_a = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-partial-rel-a",
             "digest-partial-rel-a",
             "set-partial-rel",
@@ -1178,15 +1203,14 @@ fn partial_apply_then_relation_with_existing_binding_seed() {
             ops_from_pairs(&pairs[0..1], &items[0..1]),
             vec![],
         ),
-    )
-    .expect("apply entity A");
+    );
     assert_eq!(applied_a["status"], "applied");
     assert_eq!(applied_a["created"].as_array().unwrap().len(), 1);
     assert_eq!(applied_a["created"][0]["entityId"], "entry-partial-rel-a");
 
-    let applied_b = narrative_extraction::narrative_extraction_apply_commit(
+    let applied_b = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-partial-rel-b",
             "digest-partial-rel-b",
             "set-partial-rel",
@@ -1198,8 +1222,7 @@ fn partial_apply_then_relation_with_existing_binding_seed() {
                 source: "existing".to_string(),
             }],
         ),
-    )
-    .expect("apply entity B and relation");
+    );
     assert_eq!(applied_b["status"], "applied");
 
     let created = applied_b["created"].as_array().expect("created");
@@ -1241,9 +1264,9 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
     let proposal_id = pairs[0].0.clone();
     let revision_id = pairs[0].1.clone();
 
-    narrative_extraction::narrative_extraction_apply_commit(
+    prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-applied-guard",
             "digest-applied-guard",
             "set-applied-guard",
@@ -1251,8 +1274,7 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    )
-    .expect("apply");
+    );
 
     let revision_err = narrative_extraction::narrative_extraction_append_revision(
         &db,
@@ -1307,7 +1329,7 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
     let plan_digest = "digest-retry-idem";
 
     let ops = ops_from_pairs(&pairs, &items);
-    let apply_payload = build_apply(
+    let apply_payload = build_prepare(
         request_id,
         plan_digest,
         "set-retry",
@@ -1316,28 +1338,25 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
         vec![],
     );
 
+    enable_manual_apply(&db);
     let prepared = narrative_extraction::narrative_extraction_prepare_commit(
         &db,
-        PrepareCommitPayload {
-            project_id: apply_payload.project_id.clone(),
-            run_id: apply_payload.run_id.clone(),
-            proposal_set_id: apply_payload.proposal_set_id.clone(),
-            request_id: apply_payload.request_id.clone(),
-            plan_digest: apply_payload.plan_digest.clone(),
-            session_id: apply_payload.session_id.clone(),
-            surface: apply_payload.surface.clone(),
-            operations: apply_payload.operations.clone(),
-            applications: apply_payload.applications.clone(),
-            expected_tail_ordinal: None,
-            entity_bindings: vec![],
-        },
+        apply_payload.clone(),
     )
     .expect("prepare");
     assert_eq!(prepared["ok"], true);
 
-    let applied =
-        narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload.clone())
-            .expect("apply");
+    let applied = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: apply_payload.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+            request_id: apply_payload.request_id.clone(),
+            session_id: apply_payload.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply");
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 1);
     assert_eq!(applied["created"][0]["entityId"], "entry-retry");
@@ -1368,8 +1387,17 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
     assert_eq!(status_again["found"], true);
     assert_eq!(status_again["status"], "applied");
 
-    let replayed =
-        narrative_extraction::narrative_extraction_apply_commit(&db, apply_payload).expect("replay");
+    let replayed = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: apply_payload.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+            request_id: apply_payload.request_id.clone(),
+            session_id: apply_payload.session_id.clone(),
+            expected_version: None,
+        },
+    )
+    .expect("replay");
     assert!(
         replayed["status"] == "applied" || replayed["idempotentReplay"] == true,
         "replay should report applied or idempotentReplay: {replayed}"
@@ -1414,6 +1442,7 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
                 .collect(),
             expected_tail_ordinal: None,
             entity_bindings: vec![],
+            expected_calendar_version: None,
         },
     )
     .expect_err("second prepare should fail");

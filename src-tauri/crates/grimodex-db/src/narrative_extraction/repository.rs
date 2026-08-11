@@ -1158,6 +1158,8 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             proposal_id TEXT NOT NULL,
             revision_number INTEGER NOT NULL,
             payload_json TEXT NOT NULL,
+            plan_fragment_json TEXT,
+            plan_fragment_digest TEXT,
             created_at TEXT NOT NULL,
             created_by TEXT NOT NULL
         );
@@ -1180,6 +1182,11 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             status TEXT NOT NULL,
             receipt_json TEXT,
             error_message TEXT,
+            prepared_plan_json TEXT,
+            prepared_policy_version INTEGER,
+            prepared_at TEXT,
+            authority_digest TEXT,
+            session_id TEXT,
             created_at TEXT NOT NULL,
             completed_at TEXT,
             version INTEGER NOT NULL DEFAULT 0

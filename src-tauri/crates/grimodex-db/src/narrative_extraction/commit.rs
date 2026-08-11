@@ -67,8 +67,13 @@ use super::models::{
 use super::repository::{ensure_proposal_not_applied, ensure_run_project};
 use super::task_leases::with_immediate_transaction;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+use crate::narrative_runtime_policy::{
+    load_narrative_runtime_policy, require_narrative_apply_allowed,
+    validate_narrative_apply_authority_in_tx,
+};
 use crate::Database;
 
+const STATUS_PREPARED: &str = "prepared";
 const STATUS_APPLIED: &str = "applied";
 const STATUS_UNDONE: &str = "undone";
 const STATUS_REDONE: &str = "redone";
@@ -91,6 +96,36 @@ pub fn narrative_extraction_prepare_commit(
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_apply_allowed(conn)?;
+            let mut sealed_plan = sealed_plan_json(&payload)?;
+            let plan_digest = digest_plan(&json!({
+                "operations": payload.operations,
+                "applications": payload.applications,
+                "entityBindings": payload.entity_bindings,
+                "expectedTailOrdinal": payload.expected_tail_ordinal,
+                "expectedCalendarVersion": payload.expected_calendar_version,
+            }));
+            sealed_plan["planDigest"] = Value::String(plan_digest.clone());
+            if let Some(existing) =
+                load_commit_by_request(conn, &payload.project_id, &payload.request_id)?
+            {
+                if existing.plan_digest != plan_digest {
+                    anyhow::bail!(
+                        "NEX_COMMIT_IDEMPOTENCY_CONFLICT: request id reused with different planDigest"
+                    );
+                }
+                return Ok(json!({
+                    "ok": true,
+                    "preparedCommitId": existing.commit_id,
+                    "requestId": existing.request_id,
+                    "planDigest": existing.plan_digest,
+                    "authorityDigest": existing.authority_digest,
+                    "operationCount": payload.operations.len(),
+                    "status": existing.status,
+                    "version": existing.version,
+                    "idempotentReplay": true,
+                }));
+            }
             validate_commit_plan(
                 conn,
                 CommitPlanValidationContext {
@@ -104,14 +139,139 @@ pub fn narrative_extraction_prepare_commit(
                     entity_bindings: &payload.entity_bindings,
                 },
             )?;
+            let applications = application_pairs(&payload.applications);
+            validate_narrative_apply_authority_in_tx(
+                conn,
+                &payload.proposal_set_id,
+                &applications,
+            )?;
+            let authority_digest =
+                digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
+            let prepared_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+            let policy_version = load_narrative_runtime_policy(conn).version;
+            for operation in &payload.operations {
+                let fragment = json!({
+                    "kind": operation.kind,
+                    "payload": operation.payload,
+                });
+                let updated = conn.execute(
+                    "UPDATE narrative_proposal_revisions
+                        SET plan_fragment_json = ?1,
+                            plan_fragment_digest = ?2
+                      WHERE id = ?3 AND proposal_id = ?4",
+                    params![
+                        fragment.to_string(),
+                        digest_plan(&fragment),
+                        operation.revision_id,
+                        operation.proposal_id,
+                    ],
+                )?;
+                anyhow::ensure!(
+                    updated == 1,
+                    "proposal revision '{}' disappeared while preparing commit",
+                    operation.revision_id
+                );
+            }
+            let prepared_commit_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO narrative_apply_commits
+                    (id, project_id, run_id, proposal_set_id, request_id, plan_digest,
+                     status, receipt_json, error_message, prepared_plan_json,
+                     prepared_policy_version, prepared_at, authority_digest, session_id,
+                     created_at, completed_at, version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9, ?10, ?11, ?12, ?10, NULL, 0)",
+                params![
+                    prepared_commit_id,
+                    payload.project_id,
+                    payload.run_id,
+                    payload.proposal_set_id,
+                    payload.request_id,
+                    plan_digest,
+                    STATUS_PREPARED,
+                    sealed_plan.to_string(),
+                    policy_version,
+                    prepared_at,
+                    authority_digest,
+                    payload.session_id,
+                ],
+            )?;
             Ok(json!({
                 "ok": true,
+                "preparedCommitId": prepared_commit_id,
                 "requestId": payload.request_id,
-                "planDigest": payload.plan_digest,
+                "planDigest": plan_digest,
+                "authorityDigest": authority_digest,
                 "operationCount": payload.operations.len(),
+                "status": STATUS_PREPARED,
+                "version": 0,
             }))
         })
     })
+}
+
+fn sealed_plan_json(payload: &PrepareCommitPayload) -> anyhow::Result<Value> {
+    Ok(json!({
+        "requestId": payload.request_id,
+        "sessionId": payload.session_id,
+        "operations": payload.operations,
+        "applications": payload.applications,
+        "entityBindings": payload.entity_bindings,
+        "expectedTailOrdinal": payload.expected_tail_ordinal,
+        "expectedCalendarVersion": payload.expected_calendar_version,
+        "projectId": payload.project_id,
+        "runId": payload.run_id,
+        "proposalSetId": payload.proposal_set_id,
+        "surface": payload.surface,
+    }))
+}
+
+fn application_pairs(applications: &[CommitApplicationRef]) -> Vec<(String, String)> {
+    applications
+        .iter()
+        .map(|application| {
+            (
+                application.proposal_id.clone(),
+                application.revision_id.clone(),
+            )
+        })
+        .collect()
+}
+
+fn digest_authority_rows(
+    conn: &Connection,
+    _proposal_set_id: &str,
+    applications: &[(String, String)],
+) -> anyhow::Result<String> {
+    let mut rows = Vec::with_capacity(applications.len());
+    for (proposal_id, revision_id) in applications {
+        let decision: String = conn.query_row(
+            "SELECT decision
+               FROM narrative_proposal_decisions
+              WHERE proposal_id = ?1 AND revision_id = ?2
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 1",
+            params![proposal_id, revision_id],
+            |row| row.get(0),
+        )?;
+        rows.push(json!({
+            "proposalId": proposal_id,
+            "revisionId": revision_id,
+            "decision": decision,
+        }));
+    }
+    rows.sort_by(|left, right| {
+        (
+            left["proposalId"].as_str().unwrap_or_default(),
+            left["revisionId"].as_str().unwrap_or_default(),
+            left["decision"].as_str().unwrap_or_default(),
+        )
+            .cmp(&(
+                right["proposalId"].as_str().unwrap_or_default(),
+                right["revisionId"].as_str().unwrap_or_default(),
+                right["decision"].as_str().unwrap_or_default(),
+            ))
+    });
+    Ok(digest_plan(&Value::Array(rows)))
 }
 
 pub fn narrative_extraction_apply_commit(
@@ -120,48 +280,81 @@ pub fn narrative_extraction_apply_commit(
 ) -> anyhow::Result<Value> {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
-    let commit_id = Uuid::new_v4().to_string();
 
     let apply_result = db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
-            if let Some(existing) = load_commit_by_request(
+            let existing = load_commit_by_id(
                 conn,
                 &payload.project_id,
-                &payload.request_id,
-            )? {
-                return replay_or_conflict(existing, &payload.plan_digest);
+                &payload.prepared_commit_id,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("prepared commit not found"))?;
+            anyhow::ensure!(
+                existing.request_id == payload.request_id,
+                "NEX_COMMIT_REQUEST_MISMATCH: request id does not match prepared commit"
+            );
+            if existing.status == STATUS_APPLIED
+                || existing.status == STATUS_REDONE
+                || existing.status == STATUS_UNDONE
+            {
+                let plan_digest = existing.plan_digest.clone();
+                return replay_or_conflict(existing, &plan_digest);
             }
-
+            anyhow::ensure!(
+                existing.status == STATUS_PREPARED,
+                "NEX_COMMIT_NOT_PREPARED: prepared commit status is '{}'",
+                existing.status
+            );
+            if let Some(expected_version) = payload.expected_version {
+                anyhow::ensure!(
+                    existing.version == expected_version,
+                    "NEX_COMMIT_VERSION_MISMATCH: expected version {}, found {}",
+                    expected_version,
+                    existing.version
+                );
+            }
+            if let Some(sealed_session_id) = existing.session_id.as_deref() {
+                anyhow::ensure!(
+                    sealed_session_id == payload.session_id,
+                    "NEX_COMMIT_SESSION_MISMATCH: session does not match prepared commit"
+                );
+            }
+            let sealed_plan: PrepareCommitPayload = serde_json::from_str(
+                existing
+                    .prepared_plan_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("prepared commit has no sealed plan"))?,
+            )?;
+            require_narrative_apply_allowed(conn)?;
             validate_commit_plan(
                 conn,
                 CommitPlanValidationContext {
-                    expected_calendar_version: payload.expected_calendar_version,
-                    project_id: &payload.project_id,
-                    run_id: &payload.run_id,
-                    proposal_set_id: &payload.proposal_set_id,
-                    operations: &payload.operations,
-                    applications: &payload.applications,
-                    expected_tail_ordinal: payload.expected_tail_ordinal.as_deref(),
-                    entity_bindings: &payload.entity_bindings,
+                    expected_calendar_version: sealed_plan.expected_calendar_version,
+                    project_id: &sealed_plan.project_id,
+                    run_id: &sealed_plan.run_id,
+                    proposal_set_id: &sealed_plan.proposal_set_id,
+                    operations: &sealed_plan.operations,
+                    applications: &sealed_plan.applications,
+                    expected_tail_ordinal: sealed_plan.expected_tail_ordinal.as_deref(),
+                    entity_bindings: &sealed_plan.entity_bindings,
                 },
             )?;
-
-            conn.execute(
-                "INSERT INTO narrative_apply_commits
-                    (id, project_id, run_id, proposal_set_id, request_id, plan_digest,
-                     status, created_at, version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, 0)",
-                params![
-                    commit_id,
-                    payload.project_id,
-                    payload.run_id,
-                    payload.proposal_set_id,
-                    payload.request_id,
-                    payload.plan_digest,
-                    now,
-                ],
+            let applications = application_pairs(&sealed_plan.applications);
+            validate_narrative_apply_authority_in_tx(
+                conn,
+                &sealed_plan.proposal_set_id,
+                &applications,
             )?;
+            let current_authority_digest =
+                digest_authority_rows(conn, &sealed_plan.proposal_set_id, &applications)?;
+            anyhow::ensure!(
+                existing.authority_digest.as_deref() == Some(current_authority_digest.as_str()),
+                "NEX_COMMIT_AUTHORITY_CHANGED: prepared authority digest no longer matches"
+            );
+            let commit_id = existing.commit_id.clone();
+            // Keep the existing execution loop operating on the sealed plan only.
+            let payload = sealed_plan;
 
             let mut commit_map = CommitMap::new();
             for seed in &payload.entity_bindings {
@@ -746,10 +939,20 @@ pub fn narrative_extraction_apply_commit(
     match apply_result {
         Ok(receipt) => Ok(receipt),
         Err(err) => {
-            // Apply TX rolled back domain writes. Persist failed audit separately so
-            // STATUS_FAILED idempotent replay remains available.
             let message = err.to_string();
-            let _ = persist_failed_commit_audit(db, &payload, &commit_id, &message, &now);
+            // Precondition failures must not poison a sealed Prepared Commit —
+            // the caller can correct session/version and retry apply.
+            let precondition = message.contains("NEX_COMMIT_SESSION_MISMATCH")
+                || message.contains("NEX_COMMIT_VERSION_MISMATCH")
+                || message.contains("NEX_COMMIT_REQUEST_MISMATCH")
+                || message.contains("NEX_COMMIT_NOT_PREPARED")
+                || message.contains("NEX_COMMIT_AUTHORITY_CHANGED")
+                || message.contains("prepared commit not found")
+                || message.contains("NARRATIVE_REVIEW_ONLY")
+                || message.contains("NARRATIVE_APPROVAL_REQUIRED");
+            if !precondition {
+                let _ = persist_failed_commit_audit(db, &payload, &message, &now);
+            }
             Err(err)
         }
     }
@@ -758,31 +961,29 @@ pub fn narrative_extraction_apply_commit(
 fn persist_failed_commit_audit(
     db: &Database,
     payload: &ApplyCommitPayload,
-    commit_id: &str,
     message: &str,
     now: &str,
 ) -> anyhow::Result<()> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            if load_commit_by_request(conn, &payload.project_id, &payload.request_id)?.is_some() {
-                return Ok(());
-            }
             conn.execute(
-                "INSERT INTO narrative_apply_commits
-                    (id, project_id, run_id, proposal_set_id, request_id, plan_digest,
-                     status, error_message, created_at, completed_at, version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)",
+                "UPDATE narrative_apply_commits
+                    SET status = ?1,
+                        error_message = ?2,
+                        completed_at = ?3,
+                        version = version + 1
+                  WHERE id = ?4
+                    AND project_id = ?5
+                    AND request_id = ?6
+                    AND status = ?7",
                 params![
-                    commit_id,
-                    payload.project_id,
-                    payload.run_id,
-                    payload.proposal_set_id,
-                    payload.request_id,
-                    payload.plan_digest,
                     STATUS_FAILED,
                     message,
                     now,
-                    now,
+                    payload.prepared_commit_id,
+                    payload.project_id,
+                    payload.request_id,
+                    STATUS_PREPARED,
                 ],
             )?;
             Ok(())
@@ -829,6 +1030,9 @@ pub(crate) struct CommitRow {
     pub request_id: String,
     pub plan_digest: String,
     pub status: String,
+    pub prepared_plan_json: Option<String>,
+    pub authority_digest: Option<String>,
+    pub session_id: Option<String>,
     pub receipt_json: Option<String>,
     pub error_message: Option<String>,
     pub created_at: String,
@@ -843,6 +1047,7 @@ pub(crate) fn load_commit_by_id(
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
         "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
+                prepared_plan_json, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
           WHERE id = ?1 AND project_id = ?2",
@@ -860,6 +1065,7 @@ pub(crate) fn load_commit_by_request(
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
         "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
+                prepared_plan_json, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
           WHERE project_id = ?1 AND request_id = ?2
@@ -880,10 +1086,13 @@ fn map_commit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommitRow> {
         plan_digest: row.get(3)?,
         status: row.get(4)?,
         receipt_json: row.get(5)?,
-        error_message: row.get(6)?,
-        created_at: row.get(7)?,
-        completed_at: row.get(8)?,
-        version: row.get(9)?,
+        prepared_plan_json: row.get(6)?,
+        authority_digest: row.get(7)?,
+        session_id: row.get(8)?,
+        error_message: row.get(9)?,
+        created_at: row.get(10)?,
+        completed_at: row.get(11)?,
+        version: row.get(12)?,
     })
 }
 

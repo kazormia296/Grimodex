@@ -6,6 +6,7 @@ import type {
   CommitApplicationRef,
   CommitOperation,
   GetCommitStatusResult,
+  PrepareCommitPayload,
   PrepareCommitResult,
   UndoCommitPayload,
 } from "./nativeApi";
@@ -78,10 +79,10 @@ export async function computePlanDigest(
   return sha256Hex(JSON.stringify(plan));
 }
 
-function toCommitWire(
+function toPrepareWire(
   input: CommitChronicleOperationsInput,
   planDigest: string,
-): ApplyCommitPayload {
+): PrepareCommitPayload {
   const operations: CommitOperation[] = input.operations.map((item) => ({
     kind: item.operation.kind,
     payload: item.operation.payload as unknown as Record<string, unknown>,
@@ -106,6 +107,19 @@ function toCommitWire(
   };
 }
 
+function toApplyWire(
+  input: CommitChronicleOperationsInput,
+  prepared: Pick<PrepareCommitResult, "preparedCommitId" | "version">,
+): ApplyCommitPayload {
+  return {
+    projectId: input.projectId,
+    preparedCommitId: prepared.preparedCommitId,
+    requestId: input.requestId,
+    sessionId: input.sessionId,
+    expectedVersion: prepared.version,
+  };
+}
+
 export async function prepareChronicleCommit(
   input: CommitChronicleOperationsInput,
 ): Promise<PrepareCommitResult & { planDigest: string }> {
@@ -120,25 +134,16 @@ export async function prepareChronicleCommit(
     input.expectedTailOrdinal,
   );
   const prepared = await narrativeExtractionPrepareCommit(
-    toCommitWire(input, planDigest),
+    toPrepareWire(input, planDigest),
   );
-  return { ...prepared, planDigest };
+  return { ...prepared, planDigest: prepared.planDigest };
 }
 
 export async function applyChronicleCommit(
   input: CommitChronicleOperationsInput,
-  planDigest?: string,
+  prepared: Pick<PrepareCommitResult, "preparedCommitId" | "version">,
 ): Promise<ApplyCommitResult> {
-  const operations: CommitOperation[] = input.operations.map((item) => ({
-    kind: item.operation.kind,
-    payload: item.operation.payload as unknown as Record<string, unknown>,
-    proposalId: item.proposalId,
-    revisionId: item.revisionId,
-  }));
-  const digest =
-    planDigest ??
-    (await computePlanDigest(operations, input.expectedTailOrdinal));
-  return narrativeExtractionApplyCommit(toCommitWire(input, digest));
+  return narrativeExtractionApplyCommit(toApplyWire(input, prepared));
 }
 
 export async function prepareAndApplyChronicleCommit(
@@ -149,7 +154,7 @@ export async function prepareAndApplyChronicleCommit(
   readonly status: GetCommitStatusResult;
 }> {
   const prepared = await prepareChronicleCommit(input);
-  const applied = await applyChronicleCommit(input, prepared.planDigest);
+  const applied = await applyChronicleCommit(input, prepared);
   const status = await narrativeExtractionGetCommitStatus({
     projectId: input.projectId,
     requestId: input.requestId,

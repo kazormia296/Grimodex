@@ -1,8 +1,11 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
+    CreateRunPayload, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
 };
-use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
+    SetNarrativeRuntimePolicyInput, Database,
+};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
@@ -120,13 +123,28 @@ fn node_ensure_payload(node_id: &str, subject: Value) -> Value {
     })
 }
 
-fn build_apply(
+fn enable_manual_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("set manual-apply");
+}
+
+fn build_prepare(
     request_id: &str,
     plan_digest: &str,
     proposal_set_id: &str,
     run_id: &str,
     ops: Vec<(String, String, String, Value)>,
-) -> ApplyCommitPayload {
+) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
         .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
@@ -143,7 +161,7 @@ fn build_apply(
             revision_id: revision_id.clone(),
         })
         .collect();
-    ApplyCommitPayload {
+    PrepareCommitPayload {
         project_id: "project-1".to_string(),
         run_id: run_id.to_string(),
         proposal_set_id: proposal_set_id.to_string(),
@@ -157,6 +175,48 @@ fn build_apply(
         entity_bindings: vec![],
         expected_calendar_version: None,
     }
+}
+
+fn prepare_and_apply(
+    db: &Database,
+    prepare: PrepareCommitPayload,
+) -> Value {
+    enable_manual_apply(db);
+    let prepared =
+        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+            .expect("prepare");
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("preparedCommitId")
+                .to_string(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply")
+}
+
+fn prepare_then_apply(db: &Database, prepare: PrepareCommitPayload) -> anyhow::Result<Value> {
+    enable_manual_apply(db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())?;
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id,
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing preparedCommitId"))?
+                .to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
 }
 
 fn zip_ops(
@@ -240,17 +300,16 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
     ];
     let pairs = seed_approved_proposals(&db, "run-1", "set-1", &items);
 
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-atomic-1",
             "digest-atomic-1",
             "set-1",
             "run-1",
             zip_ops(&pairs, &items),
         ),
-    )
-    .expect("apply");
+    );
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 5);
 
@@ -352,9 +411,9 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
     ];
     let pairs = seed_approved_proposals(&db, "run-2", "set-2", &items);
 
-    let err = narrative_extraction::narrative_extraction_apply_commit(
+    let err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-rollback-1",
             "digest-rollback-1",
             "set-2",
@@ -419,17 +478,16 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
         ),
     ];
     let first_pairs = seed_approved_proposals(&db, "run-3a", "set-3a", &first_items);
-    narrative_extraction::narrative_extraction_apply_commit(
+    prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-dup-1",
             "digest-dup-1",
             "set-3a",
             "run-3a",
             zip_ops(&first_pairs, &first_items),
         ),
-    )
-    .expect("first commit applies");
+    );
 
     // Same subject, different client-chosen nodeId: rejected as a semantic
     // duplicate rather than silently created a second time.
@@ -441,9 +499,9 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
         ),
     )];
     let dup_node_pairs = seed_approved_proposals(&db, "run-3b", "set-3b", &duplicate_node_items);
-    let node_err = narrative_extraction::narrative_extraction_apply_commit(
+    let node_err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-dup-2",
             "digest-dup-2",
             "set-3b",
@@ -471,9 +529,9 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
     )];
     let dup_constraint_pairs =
         seed_approved_proposals(&db, "run-3c", "set-3c", &duplicate_constraint_items);
-    let constraint_err = narrative_extraction::narrative_extraction_apply_commit(
+    let constraint_err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-dup-3",
             "digest-dup-3",
             "set-3c",
@@ -521,17 +579,16 @@ fn undo_restores_scene_chronicle_with_a_version_bump_not_a_rewind() {
         }),
     )];
     let pairs = seed_approved_proposals(&db, "run-4", "set-4", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-undo-1",
             "digest-undo-1",
             "set-4",
             "run-4",
             zip_ops(&pairs, &items),
         ),
-    )
-    .expect("apply");
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     db.with_conn(|conn| {
@@ -597,17 +654,16 @@ fn human_edited_scene_after_commit_blocks_undo() {
         }),
     )];
     let pairs = seed_approved_proposals(&db, "run-5", "set-5", &items);
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-block-1",
             "digest-block-1",
             "set-5",
             "run-5",
             zip_ops(&pairs, &items),
         ),
-    )
-    .expect("apply");
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     // Simulate a human edit landing after the commit (e.g. from the editor)

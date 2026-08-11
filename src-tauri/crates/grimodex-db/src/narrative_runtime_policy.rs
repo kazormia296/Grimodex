@@ -487,24 +487,48 @@ pub fn require_background_ai_allowed(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// DB-bound manual apply gate. Loads ProposalSet／revision／decision from the
-/// same connection. Renderer-supplied decision strings are never trusted.
+/// DB-bound apply authority gate for one proposal revision.
+///
+/// Loads Proposal／revision／decision from the same connection. Renderer-supplied
+/// decision strings are never trusted. Schema keys are proposal-scoped:
+/// `narrative_proposals.current_revision_id` and `narrative_proposal_decisions.decision`.
 pub fn require_manual_apply_authority_in_tx(
     conn: &Connection,
     proposal_set_id: &str,
+    proposal_id: &str,
     expected_revision_id: &str,
+) -> anyhow::Result<()> {
+    validate_narrative_apply_authority_in_tx(
+        conn,
+        proposal_set_id,
+        &[(proposal_id.to_string(), expected_revision_id.to_string())],
+    )
+}
+
+/// Validate every application against Runtime Policy + DB Decision authority.
+pub fn validate_narrative_apply_authority_in_tx(
+    conn: &Connection,
+    proposal_set_id: &str,
+    applications: &[(String, String)],
 ) -> anyhow::Result<()> {
     require_narrative_apply_allowed(conn)?;
 
-    if proposal_set_id.trim().is_empty() || expected_revision_id.trim().is_empty() {
+    if proposal_set_id.trim().is_empty() {
         return Err(deny(
             NARRATIVE_APPROVAL_REQUIRED,
-            "proposal set and revision are required",
+            "proposal set is required",
+        ));
+    }
+    if applications.is_empty() {
+        return Err(deny(
+            NARRATIVE_APPROVAL_REQUIRED,
+            "at least one approved application is required",
         ));
     }
 
     for table in [
         "narrative_proposal_sets",
+        "narrative_proposals",
         "narrative_proposal_revisions",
         "narrative_proposal_decisions",
     ] {
@@ -516,81 +540,98 @@ pub fn require_manual_apply_authority_in_tx(
         }
     }
 
-    let (current_revision_id, project_id): (String, String) = conn
-        .query_row(
-            "SELECT current_revision_id, project_id
-               FROM narrative_proposal_sets
-              WHERE id = ?1",
-            [proposal_set_id],
+    let set_exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM narrative_proposal_sets WHERE id = ?1)",
+        [proposal_set_id],
+        |row| row.get(0),
+    )?;
+    if set_exists == 0 {
+        return Err(deny(
+            NARRATIVE_APPROVAL_REQUIRED,
+            "proposal set was not found",
+        ));
+    }
+
+    for (proposal_id, expected_revision_id) in applications {
+        if proposal_id.trim().is_empty() || expected_revision_id.trim().is_empty() {
+            return Err(deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "proposal and revision are required",
+            ));
+        }
+
+        let row: Result<(String, Option<String>), rusqlite::Error> = conn.query_row(
+            "SELECT status, current_revision_id
+               FROM narrative_proposals
+              WHERE id = ?1 AND proposal_set_id = ?2",
+            rusqlite::params![proposal_id, proposal_set_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|_| {
+        );
+        let (status, current_revision_id) = row.map_err(|_| {
             deny(
                 NARRATIVE_APPROVAL_REQUIRED,
-                "proposal set was not found",
+                "proposal was not found in proposal set",
             )
         })?;
 
-    if current_revision_id != expected_revision_id {
-        return Err(deny(
-            NARRATIVE_APPROVAL_REQUIRED,
-            "proposal revision is stale",
-        ));
+        if status != "approved" {
+            return Err(deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "proposal must be approved",
+            ));
+        }
+        if current_revision_id.as_deref() != Some(expected_revision_id.as_str()) {
+            return Err(deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "proposal revision is stale",
+            ));
+        }
+
+        let revision_belongs: i64 = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM narrative_proposal_revisions
+                 WHERE id = ?1 AND proposal_id = ?2
+            )",
+            rusqlite::params![expected_revision_id, proposal_id],
+            |row| row.get(0),
+        )?;
+        if revision_belongs == 0 {
+            return Err(deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "revision does not belong to proposal",
+            ));
+        }
+
+        let decision = conn.query_row(
+            "SELECT decision, revision_id
+               FROM narrative_proposal_decisions
+              WHERE proposal_id = ?1
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 1",
+            [proposal_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        );
+        let (decision, decision_revision_id) = decision.map_err(|_| {
+            deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "no decision exists for proposal",
+            )
+        })?;
+
+        if decision != "approved" {
+            return Err(deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "latest decision must be approved",
+            ));
+        }
+        if decision_revision_id != *expected_revision_id {
+            return Err(deny(
+                NARRATIVE_APPROVAL_REQUIRED,
+                "decision does not match current proposal revision",
+            ));
+        }
     }
 
-    let revision_belongs: i64 = conn.query_row(
-        "SELECT EXISTS(
-            SELECT 1 FROM narrative_proposal_revisions
-             WHERE id = ?1 AND proposal_set_id = ?2
-        )",
-        rusqlite::params![expected_revision_id, proposal_set_id],
-        |row| row.get(0),
-    )?;
-    if revision_belongs == 0 {
-        return Err(deny(
-            NARRATIVE_APPROVAL_REQUIRED,
-            "revision does not belong to proposal set",
-        ));
-    }
-
-    let decision = conn.query_row(
-        "SELECT status, revision_id, proposal_set_id
-           FROM narrative_proposal_decisions
-          WHERE proposal_set_id = ?1
-          ORDER BY created_at DESC, rowid DESC
-          LIMIT 1",
-        [proposal_set_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        },
-    );
-    let (status, decision_revision_id, decision_set_id) = decision.map_err(|_| {
-        deny(
-            NARRATIVE_APPROVAL_REQUIRED,
-            "no decision exists for proposal set",
-        )
-    })?;
-
-    if status != "approved" {
-        return Err(deny(
-            NARRATIVE_APPROVAL_REQUIRED,
-            "latest decision must be approved",
-        ));
-    }
-    if decision_revision_id != expected_revision_id || decision_set_id != proposal_set_id {
-        return Err(deny(
-            NARRATIVE_APPROVAL_REQUIRED,
-            "decision does not match current proposal set revision",
-        ));
-    }
-
-    // project_id is retained for future workspace／project authority checks when
-    // extraction runs land; reading it proves the set is project-scoped.
-    let _ = project_id;
     Ok(())
 }
 
@@ -868,41 +909,48 @@ mod tests {
         .expect("set");
 
         db.with_conn(|conn| {
-            let err = require_manual_apply_authority_in_tx(conn, "ps-1", "rev-1")
-                .expect_err("missing tables");
+            let err = require_manual_apply_authority_in_tx(conn, "ps-1", "prop-1", "rev-1")
+                .expect_err("proposal missing");
             assert!(err.to_string().contains(NARRATIVE_APPROVAL_REQUIRED));
             Ok(())
         })
         .expect("conn");
 
         db.with_conn(|conn| {
-            conn.execute_batch(
-                "CREATE TABLE narrative_proposal_sets (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    current_revision_id TEXT NOT NULL
-                 );
-                 CREATE TABLE narrative_proposal_revisions (
-                    id TEXT PRIMARY KEY,
-                    proposal_set_id TEXT NOT NULL
-                 );
-                 CREATE TABLE narrative_proposal_decisions (
-                    id TEXT PRIMARY KEY,
-                    proposal_set_id TEXT NOT NULL,
-                    revision_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                 );
-                 INSERT INTO narrative_proposal_sets (id, project_id, current_revision_id)
-                 VALUES ('ps-1', 'p1', 'rev-1');
-                 INSERT INTO narrative_proposal_revisions (id, proposal_set_id)
-                 VALUES ('rev-1', 'ps-1');
-                 INSERT INTO narrative_proposal_decisions
-                    (id, proposal_set_id, revision_id, status, created_at)
-                 VALUES ('d1', 'ps-1', 'rev-1', 'approved', '2026-01-01T00:00:00Z');",
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('p1', 'Project')",
+                [],
             )?;
-            require_manual_apply_authority_in_tx(conn, "ps-1", "rev-1")?;
-            let stale = require_manual_apply_authority_in_tx(conn, "ps-1", "rev-old")
+            conn.execute_batch(
+                "INSERT INTO narrative_proposal_sets (
+                    id, run_id, project_id, set_kind, status, summary_json,
+                    created_at, updated_at, version
+                 ) VALUES (
+                    'ps-1', 'run-1', 'p1', 'test', 'draft', '{}',
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0
+                 );
+                 INSERT INTO narrative_proposals (
+                    id, proposal_set_id, proposal_key, kind, status, payload_json,
+                    current_revision_id, created_at, updated_at
+                 ) VALUES (
+                    'prop-1', 'ps-1', 'key-1', 'test.op', 'approved', '{}',
+                    'rev-1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                 );
+                 INSERT INTO narrative_proposal_revisions (
+                    id, proposal_id, revision_number, payload_json, created_at, created_by
+                 ) VALUES (
+                    'rev-1', 'prop-1', 1, '{}', '2026-01-01T00:00:00Z', 'test'
+                 );
+                 INSERT INTO narrative_proposal_decisions (
+                    id, proposal_id, revision_id, decision, decision_json,
+                    created_at, created_by
+                 ) VALUES (
+                    'd1', 'prop-1', 'rev-1', 'approved', '{}',
+                    '2026-01-01T00:00:00Z', 'test'
+                 );",
+            )?;
+            require_manual_apply_authority_in_tx(conn, "ps-1", "prop-1", "rev-1")?;
+            let stale = require_manual_apply_authority_in_tx(conn, "ps-1", "prop-1", "rev-old")
                 .expect_err("stale");
             assert!(stale.to_string().contains(NARRATIVE_APPROVAL_REQUIRED));
             Ok(())

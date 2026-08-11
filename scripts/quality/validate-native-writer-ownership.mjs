@@ -50,6 +50,11 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/protected_writers.rs",
     "src-tauri/crates/grimodex-db/src/execute.rs",
   ],
+  "narrative.authority": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
+  ],
 };
 
 const DML_RE =

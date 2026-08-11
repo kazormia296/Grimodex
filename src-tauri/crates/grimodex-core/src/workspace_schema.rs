@@ -573,15 +573,40 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 14 adds Generic Import capture/seal tables on
-/// top of every v13 invariant.
+/// [`SCHEMA_VERSION`]. Version 15 seals Prepared Commit columns on
+/// `narrative_apply_commits` on top of every v14 invariant.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     Ok(
-        SCHEMA_VERSION == 14
+        SCHEMA_VERSION == 15
             && has_v3_physical_invariants(conn)?
             && has_v13_checkpoint_invariants(conn)?
-            && table_exists(conn, "import_captures")?,
+            && table_exists(conn, "import_captures")?
+            && has_v15_prepared_commit_columns(conn)?,
     )
+}
+
+fn has_v15_prepared_commit_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_apply_commits")?
+        || !table_exists(conn, "narrative_proposal_revisions")?
+    {
+        return Ok(false);
+    }
+    let commit_cols = table_columns(conn, "narrative_apply_commits")?;
+    let revision_cols = table_columns(conn, "narrative_proposal_revisions")?;
+    let has_text = |cols: &[ColumnShape], name: &str| {
+        cols.iter()
+            .any(|c| c.name == name && c.declared_type == "TEXT")
+    };
+    let has_int = |cols: &[ColumnShape], name: &str| {
+        cols.iter()
+            .any(|c| c.name == name && c.declared_type == "INTEGER")
+    };
+    Ok(has_text(&commit_cols, "prepared_plan_json")
+        && has_int(&commit_cols, "prepared_policy_version")
+        && has_text(&commit_cols, "prepared_at")
+        && has_text(&commit_cols, "authority_digest")
+        && has_text(&revision_cols, "plan_fragment_json")
+        && has_text(&revision_cols, "plan_fragment_digest"))
 }
 
 
