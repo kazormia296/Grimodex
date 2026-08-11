@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { codexEntries } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";

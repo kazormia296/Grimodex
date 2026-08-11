@@ -398,6 +398,8 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     // agent_writes 19 コマンド（tracked write result は camelCase）
     agentCodexCreate: record("agentCodexCreate", AGENT_WRITE_RESULT) as never,
     agentCodexUpdate: record("agentCodexUpdate", AGENT_WRITE_RESULT) as never,
+    agentCodexDelete: record("agentCodexDelete", AGENT_WRITE_RESULT) as never,
+    agentCodexMutate: record("agentCodexMutate", AGENT_WRITE_RESULT) as never,
     agentWriteBundle: record("agentWriteBundle", AGENT_WRITE_RESULT) as never,
     agentSnippetCreate: record(
       "agentSnippetCreate",
@@ -3327,6 +3329,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "agent_apply_undo_journal",
       "agent_chronicle_bulk_mutate",
       "agent_codex_create",
+      "agent_codex_delete",
+      "agent_codex_mutate",
       "agent_codex_update",
       "agent_discard_prose_stage",
       "agent_event_create",
@@ -3355,6 +3359,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "codex_match_text",
       "codex_rebuild_matcher",
       "codex_reindex_all",
+      "codex_rename_apply",
       "codex_rename_undo",
       "codex_semantic_search",
       "db_execute",

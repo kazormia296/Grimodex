@@ -6,7 +6,7 @@ import {
   type CodexEntryPhase,
   type CodexPhaseDetailOverride,
 } from "@/db/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import {
   clearImpactBaselinePhaseDeletion,

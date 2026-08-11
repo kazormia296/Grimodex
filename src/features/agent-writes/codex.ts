@@ -74,7 +74,7 @@ interface AgentWriteResult {
 }
 
 function buildCodexAuthorshipSpans(
-  input: { summary?: string; content?: string },
+  input: { summary?: string | null; content?: string | null },
   opts: {
     model?: string | null;
     chatMessageId?: string | null;

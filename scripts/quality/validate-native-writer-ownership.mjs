@@ -71,6 +71,9 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/scene_body.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/sample_seed.rs",
+    "src-tauri/crates/grimodex-db/src/fts.rs",
+    "src-tauri/crates/grimodex-db/src/tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
     "src-tauri/crates/grimodex-core/src/undo_journal.rs",
   ],
   "plot_threads.aggregate": [
@@ -105,12 +108,14 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/tests.rs",
   ],
   "codex.phase": [
     "src-tauri/crates/grimodex-db/src/codex_writes.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/tests.rs",
   ],
   "codex.detail": [
     "src-tauri/crates/grimodex-db/src/codex_writes.rs",
@@ -119,6 +124,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/tests.rs",
   ],
 };
 

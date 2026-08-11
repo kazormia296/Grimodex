@@ -4,12 +4,10 @@
 //! aggregates crosses this module.  The payload deliberately contains data,
 //! not SQL, so the renderer cannot bypass the writer boundary.
 
-use std::collections::HashMap;
-
 use rusqlite::{
     params, params_from_iter,
     types::Value as SqlValue,
-    Connection,
+    Connection, OptionalExtension,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -56,7 +54,7 @@ fn optional_i64(fields: &Map<String, Value>, key: &str) -> anyhow::Result<Option
             .as_i64()
             .map(Some)
             .ok_or_else(|| anyhow::anyhow!("{key} must be an integer")),
-        Some(value) => Err(anyhow::anyhow!("{key} must be an integer or null")),
+        Some(_value) => Err(anyhow::anyhow!("{key} must be an integer or null")),
     }
 }
 
@@ -73,7 +71,7 @@ fn optional_bool_int(fields: &Map<String, Value>, key: &str) -> anyhow::Result<O
             .filter(|value| *value == 0 || *value == 1)
             .map(Some)
             .ok_or_else(|| anyhow::anyhow!("{key} must be a boolean or 0/1")),
-        Some(value) => Err(anyhow::anyhow!("{key} must be a boolean or 0/1")),
+        Some(_value) => Err(anyhow::anyhow!("{key} must be a boolean or 0/1")),
     }
 }
 
@@ -159,7 +157,7 @@ where
         })();
         match result {
             Ok(value) => {
-                crate::commit_or_rollback(conn)?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(value)
             }
             Err(error) => {
@@ -416,7 +414,7 @@ fn optional_f64(fields: &Map<String, Value>, key: &str) -> anyhow::Result<Option
             .as_f64()
             .map(Some)
             .ok_or_else(|| anyhow::anyhow!("{key} must be a number")),
-        Some(value) => Err(anyhow::anyhow!("{key} must be a number or null")),
+        Some(_value) => Err(anyhow::anyhow!("{key} must be a number or null")),
     }
 }
 

@@ -19,6 +19,7 @@ import {
 } from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { invoke } from "@/lib/tauri";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 import {
   emptySkipReport,
