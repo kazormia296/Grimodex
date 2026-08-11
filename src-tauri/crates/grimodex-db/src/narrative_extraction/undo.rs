@@ -612,7 +612,7 @@ fn mutate_commit(
                                     .get("opKind")
                                     .and_then(Value::as_str)
                                     .unwrap_or("create");
-                                if op_kind == "patch" {
+                                let replay_version = if op_kind == "patch" {
                                     let live_version: i64 = conn.query_row(
                                         "SELECT version FROM plot_threads WHERE id = ?1 AND project_id = ?2",
                                         params![entity_id, payload.project_id],
@@ -655,13 +655,18 @@ fn mutate_commit(
                                         &snapshot,
                                         &now,
                                     )?
-                                }
+                                };
+                                (replay_version, snapshot.clone())
                             }
                             "plot_thread_marker" => {
-                                reapply_plot_marker_create_snapshot(conn, &snapshot, &now)?
+                                let replay_version =
+                                    reapply_plot_marker_create_snapshot(conn, &snapshot, &now)?;
+                                (replay_version, snapshot.clone())
                             }
                             "plot_thread_branch" => {
-                                reapply_plot_branch_create_snapshot(conn, &snapshot, &now)?
+                                let replay_version =
+                                    reapply_plot_branch_create_snapshot(conn, &snapshot, &now)?;
+                                (replay_version, snapshot.clone())
                             }
                             other => anyhow::bail!("unsupported journal entity kind '{other}'"),
                         };
