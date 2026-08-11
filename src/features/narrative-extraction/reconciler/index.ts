@@ -1,0 +1,33 @@
+export type {
+  EvidenceFreshness,
+  EvidenceReadSetSeparation,
+  EvidenceSetEntry,
+  NarrativeProposalDraftEnvelope,
+  NarrativeProposalDraftPayload,
+  NarrativeReconciler,
+  NarrativeReconcilerInput,
+  NarrativeReconcilerResult,
+  NarrativeReconcilerRunContext,
+  ProjectionFreshnessInput,
+  ProposalChangeKind,
+  ProposalSchemaRef,
+  ReadSetDigest,
+  ReadSetEntry,
+  ReconcilerIdentity,
+  ReconciliationPropagationSignal,
+  SemanticAssessment,
+  SourceBasis,
+  SourceBasisRevision,
+} from "./types";
+
+export {
+  assertDeclarativeReconcilerResult,
+  buildProposalDraftEnvelope,
+  defaultSemanticAssessmentForFreshness,
+  isAllowedPropagationSignal,
+  isCompensatingChangeKind,
+  isEvidenceFreshness,
+  isSemanticAssessment,
+  rollupProjectionFreshness,
+  staleProjectionRefs,
+} from "./contract";
