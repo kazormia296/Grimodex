@@ -97,14 +97,14 @@
     ],
     "versionColumn": "version",
     "writer": "temporal.scene",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "temporal-calendar",
     "table": "project_calendar",
     "protection": "table",
     "writer": "temporal.calendar",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "codex-entity",

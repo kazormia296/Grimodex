@@ -547,6 +547,7 @@ function toNodeData(
     contextMode: n.contextMode ?? null,
     aliases: n.aliases ?? null,
     excludedAliases: n.excludedAliases ?? null,
+    version: "version" in n && typeof n.version === "number" ? n.version : 0,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   };
@@ -974,9 +975,8 @@ async function persistChronicleDate(
       }
 
       // This outer, project-qualified chain serializes partial-date merge and
-      // validation. api.updateNode then joins the row-wide id chain shared
-      // with content/metadata writes; the keys intentionally differ, so this
-      // nested serialization cannot wait on itself.
+      // validation. api.updateNode routes protected temporal fields through
+      // the typed Native writer while retaining the existing store contract.
       const persisted = await api.updateNode(id, persistedPatch);
       const updatedAt = persisted?.updatedAt ?? node.updatedAt;
       useTreeStore.setState((state) => ({
@@ -1741,7 +1741,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     const oldLabel = node.storyTimeLabel;
     const patch: Parameters<typeof api.updateNode>[1] = {
       // null is a persisted value (Unscheduled), while undefined means
-      // "leave unchanged" to Drizzle. Never collapse null into undefined.
+      // "leave unchanged" to the Native temporal writer.
       storyTimeOrder: order,
     };
     if (label !== undefined) patch.storyTimeLabel = label;

@@ -32,6 +32,7 @@ pub use models::{
     ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
     RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
+pub use temporal_operations::TemporalScenePatchPayload;
 pub use repository::ensure_test_schema;
 
 use serde_json::Value;
@@ -156,4 +157,31 @@ pub fn narrative_extraction_redo_commit(
     payload: UndoCommitPayload,
 ) -> anyhow::Result<Value> {
     undo::narrative_extraction_redo_commit(db, payload)
+}
+
+pub fn temporal_scene_patch(
+    db: &Database,
+    payload: TemporalScenePatchPayload,
+) -> anyhow::Result<Value> {
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let result = temporal_operations::apply_scene_temporal_patch_in_tx(
+            conn,
+            &payload.project_id,
+            &payload,
+            &now,
+        );
+        match result {
+            Ok(value) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    })
 }

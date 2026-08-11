@@ -7848,6 +7848,37 @@ export async function createBrowserMock(
     return { path, projectId: TUTORIAL_PROJECT_ID };
   }
 
+  function browserTreeNodeRow(
+    nodeId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const result = executeBrowserDbStatement(
+      db,
+      `SELECT id, project_id AS projectId, parent_id AS parentId,
+        node_type AS nodeType, title, synopsis, intent,
+        sort_order AS sortOrder, story_time_order AS storyTimeOrder,
+        story_time_label AS storyTimeLabel,
+        pov_character_id AS povCharacterId, location_id AS locationId,
+        chronicle_start_time AS chronicleStartTime,
+        chronicle_start_minute AS chronicleStartMinute,
+        chronicle_start_granularity AS chronicleStartGranularity,
+        chronicle_end_time AS chronicleEndTime,
+        chronicle_end_minute AS chronicleEndMinute,
+        chronicle_end_granularity AS chronicleEndGranularity,
+        chronicle_precision AS chroniclePrecision, status, content,
+        unplaced_beats_doc AS unplacedBeatsDoc, char_count AS charCount,
+        unplaced_beat_preview AS unplacedBeatPreview,
+        placed_beat_preview AS placedBeatPreview, source_uri AS sourceUri,
+        source_mtime AS sourceMtime, archived_at AS archivedAt,
+        context_mode AS contextMode, aliases,
+        excluded_aliases AS excludedAliases, created_at AS createdAt,
+        updated_at AS updatedAt, version
+        FROM tree_nodes WHERE id = ? AND project_id = ?`,
+      [nodeId, projectId],
+    );
+    return result.rows[0] ?? null;
+  }
+
   async function invoke<T = unknown>(
     cmd: string,
     args: Record<string, unknown> = {},
@@ -7945,6 +7976,152 @@ export async function createBrowserMock(
       case "tree_plan_undo":
         handleTreePlanUndo(args);
         return undefined as T;
+      case "tree_node_create": {
+        const payload = args.payload as Record<string, unknown>;
+        const now = new Date().toISOString();
+        db.run(
+          `INSERT INTO tree_nodes
+            (id, project_id, parent_id, node_type, title, synopsis, status,
+             source_uri, source_mtime, content, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            payload.id as string,
+            payload.projectId as string,
+            (payload.parentId as string | null | undefined) ?? null,
+            payload.nodeType as string,
+            payload.title as string,
+            (payload.synopsis as string | null | undefined) ?? null,
+            (payload.status as string | null | undefined) ?? null,
+            (payload.sourceUri as string | null | undefined) ?? null,
+            (payload.sourceMtime as string | null | undefined) ?? null,
+            (payload.content as string | null | undefined) ?? "{}",
+            now,
+            now,
+          ],
+        );
+        options.onDatabaseDirty?.();
+        return browserTreeNodeRow(
+          payload.id as string,
+          payload.projectId as string,
+        ) as T;
+      }
+      case "tree_node_delete": {
+        const payload = args.payload as Record<string, unknown>;
+        db.run("DELETE FROM tree_nodes WHERE id = ? AND project_id = ?", [
+          payload.nodeId as string,
+          payload.projectId as string,
+        ]);
+        options.onDatabaseDirty?.();
+        return undefined as T;
+      }
+      case "tree_node_patch": {
+        const payload = args.payload as Record<string, unknown>;
+        const patch = (payload.patch ?? {}) as Record<string, unknown>;
+        const columnMap: Record<string, string> = {
+          parentId: "parent_id",
+          title: "title",
+          synopsis: "synopsis",
+          intent: "intent",
+          sortOrder: "sort_order",
+          storyTimeOrder: "story_time_order",
+          storyTimeLabel: "story_time_label",
+          povCharacterId: "pov_character_id",
+          locationId: "location_id",
+          chronicleStartTime: "chronicle_start_time",
+          chronicleStartMinute: "chronicle_start_minute",
+          chronicleStartGranularity: "chronicle_start_granularity",
+          chronicleEndTime: "chronicle_end_time",
+          chronicleEndMinute: "chronicle_end_minute",
+          chronicleEndGranularity: "chronicle_end_granularity",
+          chroniclePrecision: "chronicle_precision",
+          status: "status",
+          content: "content",
+          unplacedBeatsDoc: "unplaced_beats_doc",
+          charCount: "char_count",
+          unplacedBeatPreview: "unplaced_beat_preview",
+          placedBeatPreview: "placed_beat_preview",
+          sourceUri: "source_uri",
+          sourceMtime: "source_mtime",
+          archivedAt: "archived_at",
+          contextMode: "context_mode",
+          aliases: "aliases",
+          excludedAliases: "excluded_aliases",
+        };
+        const assignments: string[] = [];
+        const params: SqlValue[] = [];
+        for (const [key, value] of Object.entries(patch)) {
+          const column = columnMap[key];
+          if (!column)
+            throw new Error(`unsupported tree node patch field: ${key}`);
+          assignments.push(`${column} = ?`);
+          params.push((value ?? null) as SqlValue);
+        }
+        assignments.push("updated_at = ?");
+        params.push(new Date().toISOString());
+        if (payload.bumpVersion) assignments.push("version = version + 1");
+        params.push(payload.nodeId as string, payload.projectId as string);
+        let sql = `UPDATE tree_nodes SET ${assignments.join(", ")}
+          WHERE id = ? AND project_id = ?`;
+        if (typeof payload.baseVersion === "number") {
+          sql += " AND version = ?";
+          params.push(payload.baseVersion as number);
+        }
+        db.run(sql, params);
+        options.onDatabaseDirty?.();
+        const row = browserTreeNodeRow(
+          payload.nodeId as string,
+          payload.projectId as string,
+        );
+        if (!row) throw new Error("tree node not found");
+        if (
+          typeof payload.baseVersion === "number" &&
+          row.version !==
+            (payload.baseVersion as number) + (payload.bumpVersion ? 1 : 0)
+        ) {
+          throw new Error("TREE_NODE_VERSION_MISMATCH");
+        }
+        return row as T;
+      }
+      case "temporal_scene_patch": {
+        const payload = args.payload as Record<string, unknown>;
+        db.run(
+          `UPDATE tree_nodes SET story_time_order = ?, story_time_label = ?,
+            chronicle_start_time = ?, chronicle_start_minute = ?,
+            chronicle_start_granularity = ?, chronicle_end_time = ?,
+            chronicle_end_minute = ?, chronicle_end_granularity = ?,
+            chronicle_precision = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND project_id = ? AND node_type = 'scene'
+             AND version = ?`,
+          [
+            payload.storyTimeOrder as SqlValue,
+            payload.storyTimeLabel as SqlValue,
+            payload.startTime as SqlValue,
+            payload.startMinute as SqlValue,
+            payload.startGranularity as SqlValue,
+            payload.endTime as SqlValue,
+            payload.endMinute as SqlValue,
+            payload.endGranularity as SqlValue,
+            payload.precision as SqlValue,
+            new Date().toISOString(),
+            payload.targetId as string,
+            payload.projectId as string,
+            payload.baseVersion as number,
+          ],
+        );
+        options.onDatabaseDirty?.();
+        const row = browserTreeNodeRow(
+          payload.targetId as string,
+          payload.projectId as string,
+        );
+        if (!row || row.version !== (payload.baseVersion as number) + 1) {
+          throw new Error("NEX_TEMPORAL_SCENE_VERSION_MISMATCH");
+        }
+        return {
+          sceneId: payload.targetId,
+          version: row.version,
+          updatedAt: row.updatedAt,
+        } as T;
+      }
       case "map_write_bundle":
         handleMapWriteBundle(args);
         return undefined as T;

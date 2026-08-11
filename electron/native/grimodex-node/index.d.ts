@@ -743,6 +743,10 @@ export declare class Backend {
   agentSceneEventUnlink(payload: any): Promise<string>;
   agentEventRelationAdd(payload: any): Promise<string>;
   agentEventRelationRemove(payload: any): Promise<string>;
+  treeNodeCreate(payload: any): Promise<string>;
+  treeNodeDelete(payload: any): Promise<void>;
+  treeNodePatch(payload: any): Promise<string>;
+  temporalScenePatch(payload: any): Promise<string>;
   narrativeExtractionCreateRun(payload: any): Promise<string>;
   narrativeExtractionGetRun(payload: any): Promise<string>;
   narrativeExtractionListResumableRuns(payload: any): Promise<string>;

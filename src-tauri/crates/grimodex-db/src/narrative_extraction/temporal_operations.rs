@@ -424,6 +424,120 @@ pub(crate) fn restore_event_chronicle_patch(
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TemporalScenePatchPayload {
+    pub project_id: String,
+    pub target_id: String,
+    pub base_version: i64,
+    #[serde(default)]
+    pub story_time_order: Option<String>,
+    #[serde(default)]
+    pub story_time_label: Option<String>,
+    #[serde(default)]
+    pub start_time: Option<i64>,
+    #[serde(default)]
+    pub start_minute: Option<i64>,
+    #[serde(default = "default_granularity")]
+    pub start_granularity: String,
+    #[serde(default)]
+    pub end_time: Option<i64>,
+    #[serde(default)]
+    pub end_minute: Option<i64>,
+    #[serde(default = "default_granularity")]
+    pub end_granularity: String,
+    #[serde(default = "default_precision")]
+    pub precision: String,
+}
+
+/// Human scene temporal metadata write. This is the typed Native boundary for
+/// UI story-order and Chronicle edits; all protected columns advance together
+/// under the scene row's single OCC version.
+pub(crate) fn apply_scene_temporal_patch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    payload: &TemporalScenePatchPayload,
+    now: &str,
+) -> anyhow::Result<Value> {
+    let live_version: Option<i64> = conn
+        .query_row(
+            "SELECT version FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            params![payload.target_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(live_version) = live_version else {
+        anyhow::bail!(
+            "scene '{}' not found in project '{}'",
+            payload.target_id,
+            project_id
+        );
+    };
+    anyhow::ensure!(
+        live_version == payload.base_version,
+        "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' expected version {}, found {}",
+        payload.target_id,
+        payload.base_version,
+        live_version
+    );
+    validate_range(&TemporalChronicleMetadataPatchPayload {
+        target_id: payload.target_id.clone(),
+        base_version: payload.base_version,
+        start_time: payload.start_time,
+        start_minute: payload.start_minute,
+        start_granularity: payload.start_granularity.clone(),
+        end_time: payload.end_time,
+        end_minute: payload.end_minute,
+        end_granularity: payload.end_granularity.clone(),
+        precision: payload.precision.clone(),
+    })?;
+    let next_version = live_version
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("scene version overflow"))?;
+    let updated = conn.execute(
+        "UPDATE tree_nodes
+            SET story_time_order = ?1,
+                story_time_label = ?2,
+                chronicle_start_time = ?3,
+                chronicle_start_minute = ?4,
+                chronicle_start_granularity = ?5,
+                chronicle_end_time = ?6,
+                chronicle_end_minute = ?7,
+                chronicle_end_granularity = ?8,
+                chronicle_precision = ?9,
+                version = ?10,
+                updated_at = ?11
+          WHERE id = ?12 AND project_id = ?13 AND version = ?14",
+        params![
+            payload.story_time_order,
+            payload.story_time_label,
+            payload.start_time,
+            payload.start_minute,
+            payload.start_granularity,
+            payload.end_time,
+            payload.end_minute,
+            payload.end_granularity,
+            payload.precision,
+            next_version,
+            now,
+            payload.target_id,
+            project_id,
+            live_version,
+        ],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' patch conflict",
+        payload.target_id
+    );
+    Ok(serde_json::json!({
+        "sceneId": payload.target_id,
+        "version": next_version,
+        "updatedAt": now,
+    }))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TemporalStoryOrderMaterializePayload {
     pub scene_id: String,
     pub base_version: i64,

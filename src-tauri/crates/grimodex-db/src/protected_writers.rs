@@ -268,6 +268,61 @@ mod tests {
     }
 
     #[test]
+    fn active_tree_columns_reject_structural_mutations_but_allow_metadata_updates() {
+        let registry = ProtectedWriterRegistry::from_json(
+            r#"[
+                {
+                    "aggregate": "temporal-scene",
+                    "table": "tree_nodes",
+                    "protection": "columns",
+                    "columns": ["story_time_order"],
+                    "versionColumn": "version",
+                    "writer": "temporal.scene",
+                    "enforcement": "active"
+                }
+            ]"#,
+        )
+        .expect("parse test registry");
+
+        assert!(untrusted_mutation_rejection(
+            &registry,
+            "tree_nodes",
+            Some("title"),
+            false,
+            false,
+            None,
+        )
+        .is_none());
+        assert!(untrusted_mutation_rejection(
+            &registry,
+            "tree_nodes",
+            Some("story_time_order"),
+            false,
+            false,
+            None,
+        )
+        .is_some());
+        assert!(untrusted_mutation_rejection(
+            &registry,
+            "tree_nodes",
+            None,
+            true,
+            false,
+            Some(&["id".into(), "title".into()]),
+        )
+        .is_some());
+        assert!(untrusted_mutation_rejection(
+            &registry,
+            "tree_nodes",
+            None,
+            false,
+            true,
+            None,
+        )
+        .is_some());
+    }
+
+    #[test]
     fn shared_table_insert_and_delete_fail_closed() {
         let registry = bundled_protected_writer_registry();
         let insert = untrusted_mutation_rejection(

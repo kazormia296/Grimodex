@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq, and, isNull, isNotNull, inArray, lt, sql } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, inArray, lt } from "drizzle-orm";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import {
@@ -10,6 +10,7 @@ import {
   serializeSceneWrite,
 } from "@/features/tree/pendingSceneWrites";
 import { debugLog } from "@/lib/debugLog";
+import { invoke } from "@/lib/tauri";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import {
   nextTreeNodeMutationTimestamp,
@@ -295,12 +296,38 @@ export async function createNode(
       >
     >,
 ): Promise<TreeNode> {
-  const now = nextTreeNodeMutationTimestamp();
-  const rows = await db
-    .insert(treeNodes)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
-  return rows[0];
+  return invoke<TreeNode>("tree_node_create", {
+    payload: Object.fromEntries(
+      Object.entries(data).filter(([, value]) => value !== undefined),
+    ),
+  });
+}
+
+async function patchTreeNodeNative(
+  id: string,
+  projectId: string,
+  patch: Record<string, unknown>,
+  options: {
+    baseVersion?: number;
+    bumpVersion: boolean;
+    updatedAt?: string;
+  },
+): Promise<TreeNode> {
+  const payload = {
+    projectId,
+    nodeId: id,
+    patch: Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ),
+    bumpVersion: options.bumpVersion,
+    updatedAt: options.updatedAt ?? nextTreeNodeMutationTimestamp(),
+    ...(options.baseVersion === undefined
+      ? {}
+      : { baseVersion: options.baseVersion }),
+  };
+  return invoke<TreeNode>("tree_node_patch", {
+    payload,
+  });
 }
 
 export function updateNode(
@@ -341,20 +368,123 @@ export function updateNode(
   // content writes so their returned updatedAt token cannot arrive out of
   // order and poison a later Chronicle bulk OCC request.
   return serializeSceneWrite(id, async () => {
-    const updatedAt = nextTreeNodeMutationTimestamp();
-    const rows = await db
-      .update(treeNodes)
-      .set({ ...data, updatedAt })
-      .where(eq(treeNodes.id, id))
-      .returning();
-    const persisted = rows[0];
+    const current = await getNode(id);
+    if (!current) return undefined;
+    const temporalKeys = new Set([
+      "storyTimeOrder",
+      "storyTimeLabel",
+      "chronicleStartTime",
+      "chronicleStartMinute",
+      "chronicleStartGranularity",
+      "chronicleEndTime",
+      "chronicleEndMinute",
+      "chronicleEndGranularity",
+      "chroniclePrecision",
+    ]);
+    if (Object.keys(data).some((key) => temporalKeys.has(key))) {
+      const value = <T>(key: keyof NewTreeNode, fallback: T): T =>
+        data[key] === undefined ? fallback : (data[key] as T);
+      const temporalResult = await updateTemporalScene(current.projectId, id, {
+        storyTimeOrder: value("storyTimeOrder", current.storyTimeOrder ?? null),
+        storyTimeLabel: value("storyTimeLabel", current.storyTimeLabel ?? null),
+        chronicleStartTime: value(
+          "chronicleStartTime",
+          current.chronicleStartTime ?? null,
+        ),
+        chronicleStartMinute: value(
+          "chronicleStartMinute",
+          current.chronicleStartMinute ?? null,
+        ),
+        chronicleStartGranularity: value(
+          "chronicleStartGranularity",
+          current.chronicleStartGranularity ?? "none",
+        ),
+        chronicleEndTime: value(
+          "chronicleEndTime",
+          current.chronicleEndTime ?? null,
+        ),
+        chronicleEndMinute: value(
+          "chronicleEndMinute",
+          current.chronicleEndMinute ?? null,
+        ),
+        chronicleEndGranularity: value(
+          "chronicleEndGranularity",
+          current.chronicleEndGranularity ?? "none",
+        ),
+        chroniclePrecision: value(
+          "chroniclePrecision",
+          current.chroniclePrecision ?? "exact",
+        ),
+        baseVersion: current.version,
+      });
+      const persisted = {
+        ...current,
+        ...data,
+        version: temporalResult.version,
+        updatedAt: temporalResult.updatedAt,
+      };
+      publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
+      return persisted;
+    }
+    const persisted = await patchTreeNodeNative(id, current.projectId, data, {
+      bumpVersion: false,
+    });
     publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
     return persisted;
   });
 }
 
-export async function deleteNode(id: string): Promise<void> {
-  await db.delete(treeNodes).where(eq(treeNodes.id, id));
+export async function deleteNode(
+  id: string,
+  projectId?: string,
+): Promise<void> {
+  const scopedProjectId = projectId ?? (await getNode(id))?.projectId;
+  if (!scopedProjectId) return;
+  await invoke("tree_node_delete", {
+    payload: { projectId: scopedProjectId, nodeId: id },
+  });
+}
+
+export interface TemporalScenePatch {
+  storyTimeOrder: string | null;
+  storyTimeLabel: string | null;
+  chronicleStartTime: number | null;
+  chronicleStartMinute: number | null;
+  chronicleStartGranularity: string;
+  chronicleEndTime: number | null;
+  chronicleEndMinute: number | null;
+  chronicleEndGranularity: string;
+  chroniclePrecision: string;
+  baseVersion: number;
+}
+
+export interface TemporalScenePatchResult {
+  sceneId: string;
+  version: number;
+  updatedAt: string;
+}
+
+export async function updateTemporalScene(
+  projectId: string,
+  sceneId: string,
+  patch: TemporalScenePatch,
+): Promise<TemporalScenePatchResult> {
+  return invoke<TemporalScenePatchResult>("temporal_scene_patch", {
+    payload: {
+      projectId,
+      targetId: sceneId,
+      baseVersion: patch.baseVersion,
+      storyTimeOrder: patch.storyTimeOrder,
+      storyTimeLabel: patch.storyTimeLabel,
+      startTime: patch.chronicleStartTime,
+      startMinute: patch.chronicleStartMinute,
+      startGranularity: patch.chronicleStartGranularity,
+      endTime: patch.chronicleEndTime,
+      endMinute: patch.chronicleEndMinute,
+      endGranularity: patch.chronicleEndGranularity,
+      precision: patch.chroniclePrecision,
+    },
+  });
 }
 
 // --- Scene content operations ---
@@ -447,12 +577,13 @@ export async function saveSceneContentInner(
 
   const contentUpdatedAt = payload.updatedAt ?? nextTreeNodeMutationTimestamp();
 
-  // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
-  // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
-  const write = Promise.resolve(
-    db
-      .update(treeNodes)
-      .set({
+  const write = (async () => {
+    const current = await getNode(sceneId);
+    if (!current) return [];
+    const persisted = await patchTreeNodeNative(
+      sceneId,
+      current.projectId,
+      {
         content: payload.content,
         ...(payload.unplacedBeatsDoc !== undefined && {
           unplacedBeatsDoc: payload.unplacedBeatsDoc,
@@ -462,27 +593,22 @@ export async function saveSceneContentInner(
           charCount: payload.charCount,
         }),
         placedBeatPreview,
-        // Editor saves provide the version observed at load time. Headless
-        // authoritative writers omit it and intentionally retain the legacy
-        // unconditional write contract.
-        version: sql`${treeNodes.version} + 1`,
+      },
+      {
+        baseVersion: payload.baseVersion,
+        bumpVersion: true,
         updatedAt: contentUpdatedAt,
-      })
-      .where(
-        payload.baseVersion === undefined
-          ? eq(treeNodes.id, sceneId)
-          : and(
-              eq(treeNodes.id, sceneId),
-              eq(treeNodes.version, payload.baseVersion),
-            ),
-      )
-      .returning({
-        id: treeNodes.id,
-        projectId: treeNodes.projectId,
-        contentVersion: treeNodes.version,
-        contentUpdatedAt: treeNodes.updatedAt,
-      }),
-  );
+      },
+    );
+    return [
+      {
+        id: persisted.id,
+        projectId: persisted.projectId,
+        contentVersion: persisted.version,
+        contentUpdatedAt: persisted.updatedAt,
+      },
+    ];
+  })();
   trackSceneContentWrite(sceneId, write);
   const rows = await write;
   const persisted = rows[0];
@@ -563,31 +689,28 @@ export async function saveSceneBeatsOnly(
   const unplacedBeatPreview = deriveUnplacedPreview(payload.unplacedBeatsDoc);
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  const rows = await serializeSceneWrite(sceneId, () =>
-    Promise.resolve(
-      db
-        .update(treeNodes)
-        .set({
-          unplacedBeatsDoc: payload.unplacedBeatsDoc,
-          unplacedBeatPreview,
-          version: sql`${treeNodes.version} + 1`,
-          updatedAt: nextTreeNodeMutationTimestamp(),
-        })
-        .where(
-          and(
-            eq(treeNodes.id, sceneId),
-            eq(treeNodes.projectId, payload.projectId),
-            eq(treeNodes.version, payload.baseVersion),
-          ),
-        )
-        .returning({
-          id: treeNodes.id,
-          projectId: treeNodes.projectId,
-          contentVersion: treeNodes.version,
-          contentUpdatedAt: treeNodes.updatedAt,
-        }),
-    ),
-  );
+  const rows = await serializeSceneWrite(sceneId, async () => {
+    const persisted = await patchTreeNodeNative(
+      sceneId,
+      payload.projectId,
+      {
+        unplacedBeatsDoc: payload.unplacedBeatsDoc,
+        unplacedBeatPreview,
+      },
+      {
+        baseVersion: payload.baseVersion,
+        bumpVersion: true,
+      },
+    );
+    return [
+      {
+        id: persisted.id,
+        projectId: persisted.projectId,
+        contentVersion: persisted.version,
+        contentUpdatedAt: persisted.updatedAt,
+      },
+    ];
+  });
   const persisted = rows[0];
   if (!persisted) {
     throw new SceneContentConflictError(sceneId);
@@ -627,30 +750,25 @@ export async function savePlacedBeatPreviewOnly(
 }> {
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  const rows = await serializeSceneWrite(sceneId, () =>
-    Promise.resolve(
-      db
-        .update(treeNodes)
-        .set({
-          placedBeatPreview: payload.placedBeatPreview,
-          version: sql`${treeNodes.version} + 1`,
-          updatedAt: nextTreeNodeMutationTimestamp(),
-        })
-        .where(
-          and(
-            eq(treeNodes.id, sceneId),
-            eq(treeNodes.projectId, payload.projectId),
-            eq(treeNodes.version, payload.baseVersion),
-          ),
-        )
-        .returning({
-          id: treeNodes.id,
-          projectId: treeNodes.projectId,
-          contentVersion: treeNodes.version,
-          contentUpdatedAt: treeNodes.updatedAt,
-        }),
-    ),
-  );
+  const rows = await serializeSceneWrite(sceneId, async () => {
+    const persisted = await patchTreeNodeNative(
+      sceneId,
+      payload.projectId,
+      { placedBeatPreview: payload.placedBeatPreview },
+      {
+        baseVersion: payload.baseVersion,
+        bumpVersion: true,
+      },
+    );
+    return [
+      {
+        id: persisted.id,
+        projectId: persisted.projectId,
+        contentVersion: persisted.version,
+        contentUpdatedAt: persisted.updatedAt,
+      },
+    ];
+  });
   const persisted = rows[0];
   if (!persisted) {
     throw new SceneContentConflictError(sceneId);
