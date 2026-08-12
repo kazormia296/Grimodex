@@ -8,6 +8,7 @@
     "schemaVersion",
     "contractVersion",
     "gateId",
+    "assuranceScope",
     "manifestDigest",
     "generatedAt",
     "freezeId",
@@ -21,8 +22,9 @@
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "contractVersion": { "type": "integer", "const": 7 },
+    "contractVersion": { "type": "integer", "const": 8 },
     "gateId": { "const": "gate-b2" },
+    "assuranceScope": { "$ref": "#/$defs/assuranceScope" },
     "manifestDigest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
@@ -108,6 +110,10 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "qualityEvaluationRuntimeDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "adrValidatorDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
@@ -125,18 +131,6 @@
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
         "journeyRunnerDigest": {
-          "type": ["string", "null"],
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "chronicleAdapterDigest": {
-          "type": ["string", "null"],
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "chronicleScorerDigest": {
-          "type": ["string", "null"],
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "webConsentJourneyDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
@@ -281,6 +275,22 @@
     }
   ],
   "$defs": {
+    "assuranceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engineeringSafety",
+        "liveProviderExecution",
+        "modelQuality",
+        "externalCredentialsUsed"
+      ],
+      "properties": {
+        "engineeringSafety": { "const": "certified" },
+        "liveProviderExecution": { "const": "excluded" },
+        "modelQuality": { "const": "excluded" },
+        "externalCredentialsUsed": { "const": false }
+      }
+    },
     "attemptAuthority": {
       "type": "object",
       "additionalProperties": false,

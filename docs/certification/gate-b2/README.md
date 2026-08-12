@@ -1,13 +1,28 @@
 # Gate B2 Engineering Certification
 
-Gate B2 の正式認証は Global Release Quality（Related Scenes / Semantic Reranker / Impact Gate 3.1・4）とは分離する。
+Gate B2 Contract v8 は、外部 AI プロバイダへ接続せず、外部 AI 資格情報を使わない
+Engineering Certification である。Live provider execution と model quality は保証範囲外で、
+必要時だけ maintainer-local の Live Model Qualification で別に評価する。
+
+| 系統                              | 実行場所         |     外部 AI キー | マージ判定 | 保証する内容                                                       |
+| --------------------------------- | ---------------- | ---------------: | ---------: | ------------------------------------------------------------------ |
+| Gate B2 Engineering Certification | GitHub Actions   |             なし |       必須 | Writer、Authority、OCC、Apply、Undo、Persistence、Consent、Journey |
+| Live Model Qualification          | maintainer local | ローカル環境のみ |       任意 | 指定 provider/model の実応答、tool call、parser、抽出品質          |
+
+Gate B2 Report／Decision は `assuranceScope` を必須とし、Engineering safety を認証する一方、
+live provider execution と model quality を除外し、外部 AI 資格情報を使用していないことを
+機械可読に記録する。Live Qualification の未実行、`HOLD`、`FAILED`、`INCOMPLETE` は
+Gate B2 Verdict や Stack merge を変更しない。
 
 ## 正本
 
 - Manifest: `evals/certifications/gate-b2.yaml`
 - Report schema: `evals/certifications/schemas/gate-b2-report-v1.schema.json`
+- Decision schema: `evals/certifications/schemas/gate-b2-decision-v1.schema.json`
 - Bootstrap: `scripts/quality/certify-gate-b2-bootstrap.mjs`
 - Frozen candidate runner: `scripts/quality/certify-gate-b2.mjs`
+- Live Qualification manifest: `evals/qualifications/live-models.yaml`
+- Live Qualification runner: `scripts/quality/run-live-model-qualification.mjs`
 - ADR checklist: `policies/narrative/gate-b2-adr-checklist.json`
 - Validator classification: `policies/narrative/gate-b2-classification.json`
 
@@ -22,26 +37,60 @@ cross-cutting negative contract tests を Light suite の先頭で検証する�
 pnpm test:narrative:gate-b2-adr
 ```
 
-## C2 — Production Chronicle live certification
+## C2 — Live model evaluation boundary
 
-C2 は Human Gold 14 case を production の Observation → Evidence resolve →
-Clustering → Event synthesis → Existing match → Proposal planning に通す billed
-OpenRouter Heavy runner を登録する。Chronicle domain Apply は実行せず、
-Attempt 1 だけを正式結果とする。失敗後の再実行は同じ Candidate では行わず、
-修正した新しい Candidate SHA を Freeze する。
-runner が存在しても、意味品質が閾値を満たさない場合は Gate B2 PASS ではなく HOLD となる。
+Production Chronicle を含む5本の billed OpenRouter suite は Formal Gate B2 の必須契約ではない。
+Quality Manifest の Heavy command は維持し、Live Model Qualification の既定 profile から参照する。
+モデル更新、Prompt／Parser変更、主要AI抽出を含むリリース前、provider回帰の調査時にだけ実行する。
+毎PR、毎push、定期scheduleでは実行しない。
 
 ```bash
-OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna \
-  OPENROUTER_REASONING_EFFORT=medium \
-  pnpm eval:narrative:chronicle:production:live
+export OPENROUTER_API_KEY
+pnpm qualify:ai-live -- \
+  --candidate HEAD \
+  --model openai/gpt-5.6-luna \
+  --reasoning-effort medium
+
+# 特定経路だけを評価
+pnpm qualify:ai-live -- \
+  --candidate HEAD \
+  --model openai/gpt-5.6-luna \
+  --reasoning-effort medium \
+  --suite heavy-narrative-chronicle-production
 ```
 
-## C3 — Web AI consent live
+Live runner は `GITHUB_ACTIONS=true` を拒否し、既定では dirty tree も拒否する。
+資格情報がなければ子プロセスを開始せず `INCOMPLETE` にする。結果語彙は次のとおりで、
+Gate B2 の `PASS` / `BLOCK` とは共有しない。
+
+| Result       | 意味                                                   |
+| ------------ | ------------------------------------------------------ |
+| `QUALIFIED`  | 選択した全 suite が成功した                            |
+| `HOLD`       | 実行は成立したが意味品質閾値を満たさない               |
+| `FAILED`     | transport、schema、parser、binding、harness が失敗した |
+| `INCOMPLETE` | API key、入力、または実行が不足している                |
+
+各実行は次のローカル専用領域へ新しい run directory を作り、既存結果を上書きしない。
+
+```text
+.artifacts/live-model-qualification/<candidate-sha>/<run-id>/
+  report.json
+  suites/<suite-id>/
+    stdout.log
+    stderr.log
+    report.json
+```
+
+保存するのは Candidate、provider/model/reasoning、suite、時刻、exit code、各digest、
+Qualification result だけである。API key、Authorization header、生環境一覧、
+credential付きURL、HTTP dumpは保存しない。
+
+## C3 — Credential-free Web AI consent live
 
 C3 は loopback OpenAI-compatible Local LLM に対して、consent dialog・拒否時
 0 HTTP・承認後送信・destination 変更時の再同意・IndexedDB／Local Storage の
-teardown を、実 Chromium で証明する。モデル品質は評価しない。
+teardown を実 Chromium で証明する。外部モデルも外部資格情報も使わず、モデル品質は評価しない。
+Contract v8 の `requiredHeavy` はこの1本だけである。
 
 ```bash
 pnpm eval:web-ai-consent:browser
@@ -50,7 +99,7 @@ pnpm eval:web-ai-consent:browser
 `pnpm eval:web-ai-consent:live` は同じ契約を jsdom + loopback で確認する
 informational 補助であり、Gate B2 Engineering の実ブラウザ証跡にはならない。
 
-## コマンド
+## Formal Gate B2 コマンド
 
 ```bash
 # Candidate digest / freeze 事前確認（PASS は出さない）
@@ -66,16 +115,23 @@ gh workflow run gate-b2-certification.yml \
   -f full_ci_run_id=<successful-ci-run-id>
 ```
 
+専用workflowは `--run-light --run-heavy --run-journeys` を維持する。Contract v8 の
+`--run-heavy` は credential-free Chromium consent suite だけを意味する。
+Formal required Light／Heavy／Journey entry に `requiresEnv` を追加するとcontract testが失敗する。
+`decisionPolicy.credentialShortageIsPass` は `false` のままであり、資格情報不足を
+skipやPASSへ読み替えたのではなく、外部モデルsuiteを必須契約から分離した。
+
 ## Verdict
 
-| Verdict    | 意味                                                                                            |
-| ---------- | ----------------------------------------------------------------------------------------------- |
-| PASS       | 必須 Light / Heavy / Journey がすべて成功。blocked/deferred/skipped なし。Candidate Tree 不変。 |
-| HOLD       | 安全性は成功だが意味品質閾値または再現性が不足。                                                |
-| BLOCK      | runner 不在、credential 不足、critical safety failure、candidate drift など。                   |
-| INCOMPLETE | preflight のみ、または必須 suite 未実行。                                                       |
+| Verdict      | 意味                                                                              |
+| ------------ | --------------------------------------------------------------------------------- |
+| `PASS`       | 必須のcredential-free Light / Heavy / Journeyがすべて成功し、Candidate Treeが不変 |
+| `HOLD`       | 必須Engineering evidenceの再現性または判定条件が不足                              |
+| `BLOCK`      | runner不在、critical safety failure、candidate driftなど                          |
+| `INCOMPLETE` | preflightのみ、または必須suite未実行                                              |
 
-`skipped` / `deferred` / credential 不足を PASS に含めない。
+`skipped` / `deferred` / credential不足をPASSに含めない。Gate B2 `PASS` は実providerや
+model qualityを保証しない。
 
 Attempt履歴の正本はGitHub Actionsの
 `.github/workflows/gate-b2-certification.yml` とする。workflow run名へCandidate
@@ -83,14 +139,13 @@ SHAを固定し、同じSHAの2回目のdispatchと`Re-run jobs`（run attempt 2
 拒否する。失敗したCandidateはPASSへ上書きせず、修正後の新しいSHAで再認証する。
 
 DecisionにはCandidate commit/tree、freezeId、各suiteのAttempt 1とresult、
-report digest、GitHub Actions run IDを記録する。独自の秘密鍵、署名、公開鍵、
-耐改ざんストレージはGate B2契約に含めない。
+report digest、GitHub Actions run ID、`assuranceScope`を記録する。独自の秘密鍵、署名、
+公開鍵、耐改ざんストレージはGate B2契約に含めない。
 
-## Stack
+## StackとFreeze
 
-`#525` の後段に certification PR（#526）を積む。
-
-## C4 — Candidate freeze and Decision artifact
+`#525` の後段に certification PR（#526）を積む。Contract、harness semantics、workflow、
+schemaを変更した既存Freezeは再利用しない。
 
 ```bash
 # Working tree が clean なときだけ freeze できる
@@ -98,6 +153,11 @@ pnpm certify:gate-b2:freeze -- --candidate HEAD --write-results
 
 # 正式なLight / Heavy / Journeyは上記の専用workflowからだけ実行する
 ```
+
+Gate B2 Freeze はEngineering production code、writer registry、runtime policy、migration、
+browser mock、Gate/Journey/Chromium consent runner、Report／Decision schemaを対象とする。
+Prompt、Parser、Human Gold、Chronicle adapter/scorer、live test、model/provider/reasoning設定は
+Live Qualification側のCandidate commit/treeと設定記録へ束縛する。
 
 Freeze時点のprovisional Decisionは
 `evals/certifications/results/gate-b2-<sha>.json` に残す。正式report／Decision／

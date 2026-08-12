@@ -43,6 +43,15 @@ export function liveApiKey(): string | undefined {
 /** 既定モデル（安価で tool calling 対応）。`OPENROUTER_MODEL` で上書き可。 */
 export const DEFAULT_LIVE_MODEL = "openai/gpt-4o-mini";
 
+export const OPENROUTER_REASONING_EFFORTS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+] as const;
+export type OpenRouterReasoningEffort =
+  (typeof OPENROUTER_REASONING_EFFORTS)[number];
+
 /**
  * 既定の出力トークン上限。推論モデル(gpt-5 / o-series 等)は hidden reasoning も
  * この上限に課金されるため、小さすぎると reasoning だけで使い切って `content` が
@@ -55,6 +64,20 @@ export const DEFAULT_LIVE_MAX_TOKENS = 8192;
 /** 使用モデルを解決（env `OPENROUTER_MODEL` 優先）。 */
 export function liveModel(): string {
   return process.env.OPENROUTER_MODEL ?? DEFAULT_LIVE_MODEL;
+}
+
+/** 使用する推論 effort を解決（未指定なら OpenRouter 既定、未知値は拒否）。 */
+export function liveReasoningEffort(): OpenRouterReasoningEffort | undefined {
+  const effort = process.env.OPENROUTER_REASONING_EFFORT;
+  if (!effort) return undefined;
+  if (
+    OPENROUTER_REASONING_EFFORTS.includes(effort as OpenRouterReasoningEffort)
+  ) {
+    return effort as OpenRouterReasoningEffort;
+  }
+  throw new Error(
+    `Unsupported OPENROUTER_REASONING_EFFORT: ${JSON.stringify(effort)}`,
+  );
 }
 
 export const OPENROUTER_ENDPOINT =
@@ -164,7 +187,7 @@ export interface OpenRouterSendOptions {
   endpoint?: string;
   /** OpenRouter reasoning controls used by supported models. */
   reasoning?: {
-    effort: "minimal" | "low" | "medium" | "high";
+    effort: OpenRouterReasoningEffort;
   };
   /** Deterministic seed when the selected provider/model supports it. */
   seed?: number;
@@ -204,6 +227,14 @@ export function createOpenRouterSendToLLM(
   const key = opts.apiKey ?? liveApiKey();
   const model = opts.model ?? liveModel();
   const endpoint = opts.endpoint ?? OPENROUTER_ENDPOINT;
+  const environmentReasoningEffort = opts.reasoning
+    ? undefined
+    : liveReasoningEffort();
+  const reasoning =
+    opts.reasoning ??
+    (environmentReasoningEffort
+      ? { effort: environmentReasoningEffort }
+      : undefined);
   let call = 0;
   return async (msgs, tools) => {
     call++;
@@ -219,7 +250,7 @@ export function createOpenRouterSendToLLM(
         : {}),
       temperature: opts.temperature ?? 0,
       max_tokens: opts.maxTokens ?? DEFAULT_LIVE_MAX_TOKENS,
-      ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+      ...(reasoning ? { reasoning } : {}),
       ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
       ...(opts.responseFormat ? { response_format: opts.responseFormat } : {}),
     } satisfies Record<string, unknown>;

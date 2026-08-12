@@ -26,7 +26,6 @@ jobs:
       GATE_B2_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       GATE_B2_FULL_CI_RUN_ID: ${{ inputs.full_ci_run_id }}
       GH_TOKEN: ${{ github.token }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -67,7 +66,7 @@ jobs:
       - name: Install Chromium and system dependencies
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run Gate B2 Light, Heavy, and Journey suites
+      - name: Run credential-free Gate B2 engineering suites
         run: |
           pnpm certify:gate-b2 -- \
             --run-light \

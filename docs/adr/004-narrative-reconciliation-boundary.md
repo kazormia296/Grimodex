@@ -30,13 +30,13 @@ Grimodex は **semantic belief／自動 truth maintenance を持たない**。�
 
 ### Concern と Authority
 
-| Concern | Authority／実行主体 | 永続 Artifact |
-| --- | --- | --- |
-| Evidence freshness | Deterministic Core | Snapshot、source revision、anchor、quote digest、read-set |
-| Semantic assessment | Reconciler Strategy | Proposal payload／diagnostic として保存可。ただし非権威的 |
-| Apply authority | Runtime Policy／Decision | Decision、actor authority、override |
-| Projection execution | Prepared Plan／Typed Writer | Application、CommitMap、Journal、Domain Entity |
-| Semantic belief maintenance | Core には置かない | 自動 truth state／auto-retraction state machine は持たない |
+| Concern                     | Authority／実行主体         | 永続 Artifact                                              |
+| --------------------------- | --------------------------- | ---------------------------------------------------------- |
+| Evidence freshness          | Deterministic Core          | Snapshot、source revision、anchor、quote digest、read-set  |
+| Semantic assessment         | Reconciler Strategy         | Proposal payload／diagnostic として保存可。ただし非権威的  |
+| Apply authority             | Runtime Policy／Decision    | Decision、actor authority、override                        |
+| Projection execution        | Prepared Plan／Typed Writer | Application、CommitMap、Journal、Domain Entity             |
+| Semantic belief maintenance | Core には置かない           | 自動 truth state／auto-retraction state machine は持たない |
 
 定義：
 
@@ -54,13 +54,13 @@ Grimodex は **semantic belief／自動 truth maintenance を持たない**。�
 論理台帳の分離は概念として採用するが、B2 では `narrative_claims`／`justifications`／
 `belief_environments` などの first-class Claim／TMS Schema は導入しない。
 
-| 論理台帳 | 現在の概念 |
-| --- | --- |
-| Evidence Ledger | Snapshot、Evidence Anchor、Source revision、read-set |
-| Claim（概念） | Proposal payload 内の semantic assertion。Core Entity ではない |
-| Projection Ledger | Application、CommitMap、Journal、Domain Entity |
-| Authority | Runtime Policy、Decision、Prepared Plan、actor context |
-| Reconciliation history | Run、Task、ProposalSet、Revision |
+| 論理台帳               | 現在の概念                                                     |
+| ---------------------- | -------------------------------------------------------------- |
+| Evidence Ledger        | Snapshot、Evidence Anchor、Source revision、read-set           |
+| Claim（概念）          | Proposal payload 内の semantic assertion。Core Entity ではない |
+| Projection Ledger      | Application、CommitMap、Journal、Domain Entity                 |
+| Authority              | Runtime Policy、Decision、Prepared Plan、actor context         |
+| Reconciliation history | Run、Task、ProposalSet、Revision                               |
 
 #### ClaimEnvelope／source basis 方針
 
@@ -175,11 +175,11 @@ stale／needs-reconciliation な Projection は、Runtime Policy により自動
 
 概念上は少なくとも三軸に分ける。
 
-| 軸 | 例 |
-| --- | --- |
+| 軸                 | 例                                   |
+| ------------------ | ------------------------------------ |
 | Evidence freshness | fresh／stale／source-missing（Core） |
-| Authority | proposed／accepted／rejected |
-| Projection | unapplied／applied／compensated |
+| Authority          | proposed／accepted／rejected         |
+| Projection         | unapplied／applied／compensated      |
 
 `unsupported`／`contradicted` は Core の Freshness に入れず、Reconciler の
 Semantic Assessment に留める。
@@ -219,16 +219,22 @@ chunking、ranking、matcher、prompt 構成、Execution DAG は交換可能 Str
 
 ### Gate B2 追加検証
 
-| Gate | 検証内容 |
-| --- | --- |
-| Semantic gate exclusion | 意味的には奇妙でも、構造・参照・Authority が有効な Plan を Writer が受理する |
-| Dirty-only propagation | source revision 変更で `needs-reconciliation` になるが、Domain Entity は変更・削除されない |
-| Immutable history | 適用済み Projection の撤回が、過去 Revision の変更ではなく新 Application になる |
-| Lock enforcement | AI 由来 Decision で locked／user-authored field を書き換える Plan が Writer で拒否される |
-| Source-basis OCC | Proposal 作成後に source revision が変わった場合、古い Prepared Plan の Commit が失敗する |
-| Contract boundary | Reconciler の公開型が SQL／DB Operation／Typed Writer command へ依存していない |
-| Cascade protection | Source／Evidence 削除から Domain Entity への FK cascade が存在しない |
-| Mixed validator split | Invariant と semantic heuristic が混在する Validator は分類だけで済ませず処理を分割する |
+Gate B2 Contract v8 の正式証跡はcredential-free Engineering Certificationに限定する。
+以下のWriter／Authority／OCC／Apply／Undo／Persistence／Consent／Journey contractを
+GitHub Actionsで検証し、実provider executionとmodel qualityは保証範囲外として
+Report／Decisionの`assuranceScope`へ記録する。Production Chronicle等の実モデル品質は
+maintainer-local Live Model Qualificationで別に評価し、Gate B2 PASSやmerge条件へ流用しない。
+
+| Gate                    | 検証内容                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------ |
+| Semantic gate exclusion | 意味的には奇妙でも、構造・参照・Authority が有効な Plan を Writer が受理する               |
+| Dirty-only propagation  | source revision 変更で `needs-reconciliation` になるが、Domain Entity は変更・削除されない |
+| Immutable history       | 適用済み Projection の撤回が、過去 Revision の変更ではなく新 Application になる            |
+| Lock enforcement        | AI 由来 Decision で locked／user-authored field を書き換える Plan が Writer で拒否される   |
+| Source-basis OCC        | Proposal 作成後に source revision が変わった場合、古い Prepared Plan の Commit が失敗する  |
+| Contract boundary       | Reconciler の公開型が SQL／DB Operation／Typed Writer command へ依存していない             |
+| Cascade protection      | Source／Evidence 削除から Domain Entity への FK cascade が存在しない                       |
+| Mixed validator split   | Invariant と semantic heuristic が混在する Validator は分類だけで済ませず処理を分割する    |
 
 ## Consequences
 

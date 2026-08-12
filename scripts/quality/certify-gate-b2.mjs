@@ -16,7 +16,6 @@ import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { performance } from "node:perf_hooks";
 import yaml from "js-yaml";
 import {
   getGateB2GithubAttemptIdentity,
@@ -25,6 +24,7 @@ import {
 
 import {
   FREEZE_RELATIVE,
+  GATE_B2_ASSURANCE_SCOPE,
   GATE_B2_CONTRACT_VERSION,
   HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
@@ -38,18 +38,25 @@ import {
   loadFreezeDocument,
   persistHeavyReport,
   prepareWorktreeDependencies,
-  readHeavyLiveReport,
-  sanitizeCertificationEnv,
-  stripCredentialPlaceholders,
   writeGateB2AttemptArtifact,
-  validateChronicleProductionReport,
   validateFullCiEvidence,
   validateJsonAgainstSchema,
   validateJourneyEvidence,
-  validateWebAiConsentBrowserReport,
-  validateWebAiConsentReport,
   verifyFullCiWithGithub,
 } from "./certify-gate-b2-bindings.mjs";
+import {
+  readHeavyLiveReport,
+  resolveHeavyCommand,
+  runCapturedCommand,
+  runShellStringCommand,
+  sanitizeCertificationEnv,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateWebAiConsentBrowserReport,
+  validateWebAiConsentReport,
+} from "./quality-evaluation-runtime.mjs";
+
+export { runCapturedCommand } from "./quality-evaluation-runtime.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -213,6 +220,17 @@ export function validateGateB2Manifest(raw) {
     errors.push(`contractVersion must be ${GATE_B2_CONTRACT_VERSION}`);
   }
   if (raw.id !== "gate-b2") errors.push("id must be gate-b2");
+  if (
+    !raw.assuranceScope ||
+    Object.keys(raw.assuranceScope).length !== 4 ||
+    Object.entries(GATE_B2_ASSURANCE_SCOPE).some(
+      ([key, value]) => raw.assuranceScope[key] !== value,
+    )
+  ) {
+    errors.push(
+      "assuranceScope must certify engineering safety while excluding live provider execution/model quality and external credentials",
+    );
+  }
   if (!raw.candidate || typeof raw.candidate !== "object") {
     errors.push("candidate contract must be an object");
   } else if (
@@ -254,6 +272,11 @@ export function validateGateB2Manifest(raw) {
         `requiredLight ${entry.id ?? "<missing>"} cannot set certificationCredit:false`,
       );
     }
+    if (Object.hasOwn(entry ?? {}, "requiresEnv")) {
+      errors.push(
+        `requiredLight ${entry.id ?? "<missing>"} must not require external credentials`,
+      );
+    }
   }
   const heavyIds = new Set();
   for (const entry of raw.requiredHeavy ?? []) {
@@ -264,6 +287,11 @@ export function validateGateB2Manifest(raw) {
     if (entry?.certificationCredit === false) {
       errors.push(
         `requiredHeavy ${entry.id ?? "<missing>"} cannot set certificationCredit:false`,
+      );
+    }
+    if (Object.hasOwn(entry ?? {}, "requiresEnv")) {
+      errors.push(
+        `requiredHeavy ${entry.id ?? "<missing>"} must not require external credentials`,
       );
     }
   }
@@ -328,6 +356,11 @@ export function validateGateB2Manifest(raw) {
     if (entry.certificationCredit === false) {
       errors.push(
         `requiredManualJourneys ${entry.id} cannot set certificationCredit:false`,
+      );
+    }
+    if (Object.hasOwn(entry ?? {}, "requiresEnv")) {
+      errors.push(
+        `requiredManualJourneys ${entry.id} must not require external credentials`,
       );
     }
     if (entry.status !== "blocked") {
@@ -620,81 +653,6 @@ async function pathExists(target) {
   } catch {
     return false;
   }
-}
-
-function packageScriptExists(packageJson, scriptName) {
-  return Boolean(packageJson?.scripts?.[scriptName]);
-}
-
-function resolvePnpmRunnerCommand(runner) {
-  if (typeof runner !== "string") return null;
-  const match = runner.match(/^pnpm\s+(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  const script = match[1];
-  const rest = match[2] ? match[2].split(/\s+/).filter(Boolean) : [];
-  return { script, command: ["pnpm", script, ...rest] };
-}
-
-export async function runCapturedCommand(
-  command,
-  args,
-  cwd,
-  env = process.env,
-) {
-  const started = performance.now();
-  const startedAt = new Date().toISOString();
-  return new Promise((resolve) => {
-    // npm-style Windows shims are executable directly. Do not route the
-    // frozen argv through caller-controlled ComSpec/cmd.exe meta parsing.
-    const executable =
-      process.platform === "win32" && command === "pnpm" ? "pnpm.cmd" : command;
-    const commandArgs = args;
-    const child = spawn(executable, commandArgs, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      env,
-    });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat([
-        ...stderr,
-        Buffer.from(String(error.message)),
-      ]);
-      resolve({
-        status: "failed",
-        exitCode: null,
-        error: error.message,
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdout: stdoutBuf,
-        stderr: stderrBuf,
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-    child.on("exit", (exitCode, signal) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat(stderr);
-      resolve({
-        status: exitCode === 0 ? "passed" : "failed",
-        exitCode,
-        ...(signal ? { signal } : {}),
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdout: stdoutBuf,
-        stderr: stderrBuf,
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-  });
 }
 
 async function evaluateFullCiEvidence({
@@ -1082,6 +1040,7 @@ async function runLightSuites({
   repoRoot,
   artifactDir,
   executionAuthorized,
+  env = process.env,
 }) {
   if (!args.dryRun && !executionAuthorized) {
     return manifest.requiredLight.map((entry) =>
@@ -1164,7 +1123,7 @@ async function runLightSuites({
       }
     }
     const [bin, ...cmdArgs] = command;
-    const captured = await runCapturedCommand(bin, cmdArgs, repoRoot);
+    const captured = await runCapturedCommand(bin, cmdArgs, repoRoot, env);
     const suiteResult = {
       suiteId: entry.id,
       bucket: "requiredLight",
@@ -1193,109 +1152,6 @@ async function runLightSuites({
     if (recorded.result !== "passed") previousFailure = entry.id;
   }
   return suites;
-}
-
-async function resolveHeavyCommand({ entry, qualityIndex, packageJson }) {
-  if (entry.qualityManifestId) {
-    const heavy = qualityIndex.heavy.get(entry.qualityManifestId);
-    if (heavy?.command) {
-      return {
-        kind: "shell-string",
-        commandString: heavy.command,
-        available: true,
-      };
-    }
-    const blocked = qualityIndex.blocked.get(entry.qualityManifestId);
-    if (blocked) {
-      return {
-        kind: "blocked",
-        available: false,
-        message: blocked.reason,
-        requiredAction: blocked.requiredAction,
-      };
-    }
-    return {
-      kind: "missing",
-      available: false,
-      message: `qualityManifestId ${entry.qualityManifestId} not found`,
-    };
-  }
-  if (entry.runner) {
-    const resolved = resolvePnpmRunnerCommand(entry.runner);
-    if (!resolved) {
-      return {
-        kind: "missing",
-        available: false,
-        message: `Unsupported runner form: ${entry.runner}`,
-      };
-    }
-    if (!packageScriptExists(packageJson, resolved.script)) {
-      return {
-        kind: "missing",
-        available: false,
-        message: `Runner script not registered in package.json: ${resolved.script}`,
-      };
-    }
-    return {
-      kind: "argv",
-      command: resolved.command,
-      available: true,
-    };
-  }
-  return {
-    kind: "missing",
-    available: false,
-    message: "No qualityManifestId or runner configured",
-  };
-}
-
-async function runShellStringCommand(commandString, cwd, env = process.env) {
-  // Strip VAR=... placeholders so parent-process secrets are inherited.
-  const sanitized = stripCredentialPlaceholders(commandString);
-  const started = performance.now();
-  const startedAt = new Date().toISOString();
-  return new Promise((resolve) => {
-    const child = spawn(sanitized, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: true,
-      env,
-    });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat([
-        ...stderr,
-        Buffer.from(String(error.message)),
-      ]);
-      resolve({
-        status: "failed",
-        exitCode: null,
-        error: error.message,
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-    child.on("exit", (exitCode) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat(stderr);
-      resolve({
-        status: exitCode === 0 ? "passed" : "failed",
-        exitCode,
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-  });
 }
 
 async function runHeavySuites({
@@ -1820,6 +1676,7 @@ export async function certifyGateB2({
           repoRoot: executionRoot,
           artifactDir,
           executionAuthorized,
+          env: certEnv,
         })),
       );
     } else {
@@ -2055,6 +1912,7 @@ export async function certifyGateB2({
       schemaVersion: 1,
       contractVersion: GATE_B2_CONTRACT_VERSION,
       gateId: "gate-b2",
+      assuranceScope: { ...GATE_B2_ASSURANCE_SCOPE },
       manifestDigest,
       generatedAt: new Date().toISOString(),
       startedAt,

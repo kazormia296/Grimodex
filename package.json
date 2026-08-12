@@ -38,7 +38,7 @@
     "research:zen-shader-abba": "node scripts/zen-shader-research.mjs --experiment abba",
     "perf:budget": "node scripts/check-performance-budgets.mjs",
     "validate:architecture": "node --test scripts/validate-architecture.test.mjs && node scripts/validate-architecture.mjs",
-    "test:quality": "node --test scripts/quality/impact-map.test.mjs scripts/quality/eval-fixtures.test.mjs scripts/quality/quality-workflow.test.mjs scripts/quality/validate-narrative-writers.test.mjs scripts/quality/validate-gate-b2-adr.test.mjs scripts/quality/gate-b2-github-attempt.test.mjs scripts/quality/write-gate-b2-full-ci-evidence.test.mjs scripts/quality/certify-gate-b2-bindings.test.mjs scripts/quality/certify-gate-b2.test.mjs scripts/quality/run-gate-b2-journey.test.mjs scripts/quality/freeze-gate-b2-candidate.test.mjs",
+    "test:quality": "node --test scripts/quality/impact-map.test.mjs scripts/quality/eval-fixtures.test.mjs scripts/quality/quality-workflow.test.mjs scripts/quality/validate-narrative-writers.test.mjs scripts/quality/validate-gate-b2-adr.test.mjs scripts/quality/gate-b2-github-attempt.test.mjs scripts/quality/write-gate-b2-full-ci-evidence.test.mjs scripts/quality/certify-gate-b2-bindings.test.mjs scripts/quality/certify-gate-b2.test.mjs scripts/quality/run-live-model-qualification.test.mjs scripts/quality/run-gate-b2-journey.test.mjs scripts/quality/freeze-gate-b2-candidate.test.mjs",
     "test:narrative:gate-b2-adr": "node scripts/quality/validate-gate-b2-adr.mjs",
     "test:narrative:gate-b2-adr:certifiable": "node scripts/quality/validate-gate-b2-adr.mjs -- --require-certifiable",
     "test:narrative:writers": "node scripts/quality/validate-narrative-writers.mjs",
@@ -97,6 +97,7 @@
     "test:gate-b2:semantic-gate-exclusion": "node scripts/quality/run-gate-b2-journey.mjs --journey-id semantic-gate-exclusion",
     "eval:web-ai-consent:live": "pnpm test:node --run src/features/ai-policy/webAiConsent.live.test.tsx",
     "eval:web-ai-consent:browser": "node scripts/quality/run-web-ai-consent-browser.mjs",
+    "qualify:ai-live": "node scripts/quality/run-live-model-qualification.mjs",
     "certify:gate-b2:freeze": "node scripts/quality/freeze-gate-b2-candidate.mjs"
   },
   "dependencies": {

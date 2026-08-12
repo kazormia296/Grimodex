@@ -139,4 +139,27 @@ describe("createOpenRouterSendToLLM — 既定 max_tokens", () => {
       }),
     ]);
   });
+
+  it("OPENROUTER_REASONING_EFFORT を既定の reasoning 設定として使う", async () => {
+    const previousEffort = process.env.OPENROUTER_REASONING_EFFORT;
+    process.env.OPENROUTER_REASONING_EFFORT = "medium";
+    try {
+      const fetchMock = mockFetchOnce({
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+      });
+
+      await runLiveSingleShot("hi", { send: { apiKey: "sk-test" } });
+
+      const init = fetchMock.mock.calls[0][1] as unknown as { body: string };
+      expect(JSON.parse(init.body)).toMatchObject({
+        reasoning: { effort: "medium" },
+      });
+    } finally {
+      if (previousEffort === undefined) {
+        delete process.env.OPENROUTER_REASONING_EFFORT;
+      } else {
+        process.env.OPENROUTER_REASONING_EFFORT = previousEffort;
+      }
+    }
+  });
 });

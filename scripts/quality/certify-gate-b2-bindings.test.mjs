@@ -109,9 +109,15 @@ test("certification environments bind candidate and GitHub run metadata", () => 
   const baseEnv = sanitizeCertificationEnv({
     KEEP_ME: "yes",
     NARRATIVE_EVAL_LIMIT: "1",
+    OPENROUTER_API_KEY: "must-not-reach-gate",
+    OPEN_ROUTER_API_KEY: "legacy-alias-must-not-reach-gate",
+    ANTHROPIC_AUTH_TOKEN: "other-provider-must-not-reach-gate",
   });
   assert.equal(baseEnv.KEEP_ME, "yes");
   assert.equal(baseEnv.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(baseEnv.OPENROUTER_API_KEY, undefined);
+  assert.equal(baseEnv.OPEN_ROUTER_API_KEY, undefined);
+  assert.equal(baseEnv.ANTHROPIC_AUTH_TOKEN, undefined);
   assert.equal(
     stripCredentialPlaceholders(
       "OPENROUTER_API_KEY=... EMBED_NODE_MODULES=... pnpm test:node --run x.ts",
@@ -519,6 +525,13 @@ test("Decision contains only current suite attempts and GitHub authority", async
     },
   ]);
   assert.equal(decision.attemptAuthority.runId, "9001");
+  assert.equal(decision.contractVersion, 8);
+  assert.deepEqual(decision.assuranceScope, {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  });
 
   const schema = JSON.parse(
     await readFile(
@@ -537,7 +550,7 @@ test("Decision contains only current suite attempts and GitHub authority", async
   assert.equal(validateJsonAgainstSchema(unbound, schema).ok, false);
 });
 
-test("freeze and harness digests are fixed to contract v7 authority", () => {
+test("freeze and harness digests are fixed to contract v8 authority", () => {
   const harness = Object.fromEntries(
     Object.keys(HARNESS_DIGEST_PATHS).map((key) => [key, digest]),
   );

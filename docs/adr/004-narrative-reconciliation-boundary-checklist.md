@@ -8,6 +8,10 @@ ADR 004 の機械可読な判定正本は
 以下の人間向け checklist はレビュー時の説明用であり、判定上は secondary。
 各 Aggregate を `active` にする PR では機械可読正本を更新する。
 
+Contract v8 の正式認証は外部AI資格情報を使わないEngineering evidenceに限定する。
+実provider/model品質はこのchecklistのPASS根拠ではなく、maintainer-localの
+Live Model Qualificationで別に記録する。
+
 ## 使い方
 
 対象 Slice の Gate／Validator／Matcher／Compiler を列挙し、次のいずれかへ振り分ける。
@@ -16,11 +20,11 @@ ADR 004 の機械可読な判定正本は
 Strategy が Native Writer に残っていたら merge しない。
 混合 Validator は分類だけで済ませず、structural／semantic／ranking へ物理分割する。
 
-| 分類 | 配置先 | Apply 許可条件にしてよいか |
-| --- | --- | --- |
-| Invariant | Rust Typed Writer／Schema／Prepared Plan validator | はい |
-| Strategy | Reconciler／Prompt／Candidate planner | いいえ（Proposal Draft のみ） |
-| Signal／Prefilter | Signal index／cheap prepass／Ranking | いいえ（候補生成のみ） |
+| 分類              | 配置先                                             | Apply 許可条件にしてよいか    |
+| ----------------- | -------------------------------------------------- | ----------------------------- |
+| Invariant         | Rust Typed Writer／Schema／Prepared Plan validator | はい                          |
+| Strategy          | Reconciler／Prompt／Candidate planner              | いいえ（Proposal Draft のみ） |
+| Signal／Prefilter | Signal index／cheap prepass／Ranking               | いいえ（候補生成のみ）        |
 
 ## 横断 Gate（全 Slice）
 

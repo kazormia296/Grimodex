@@ -16,12 +16,34 @@ import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
+import {
+  readHeavyLiveReport,
+  sanitizeCertificationEnv,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateWebAiConsentBrowserReport,
+  validateWebAiConsentReport,
+} from "./quality-evaluation-runtime.mjs";
+
+export {
+  readHeavyLiveReport,
+  sanitizeCertificationEnv,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateWebAiConsentBrowserReport,
+  validateWebAiConsentReport,
+};
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
-const PLACEHOLDER_ENV_ASSIGN = /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
+export const GATE_B2_CONTRACT_VERSION = 8;
 
-export const GATE_B2_CONTRACT_VERSION = 7;
+export const GATE_B2_ASSURANCE_SCOPE = Object.freeze({
+  engineeringSafety: "certified",
+  liveProviderExecution: "excluded",
+  modelQuality: "excluded",
+  externalCredentialsUsed: false,
+});
 
 export const FREEZE_RELATIVE =
   "evals/certifications/gate-b2-candidate.freeze.json";
@@ -31,6 +53,8 @@ export const HARNESS_DIGEST_PATHS = {
   certifyBootstrapDigest: "scripts/quality/certify-gate-b2-bootstrap.mjs",
   certifyRunnerDigest: "scripts/quality/certify-gate-b2.mjs",
   certifyBindingsDigest: "scripts/quality/certify-gate-b2-bindings.mjs",
+  qualityEvaluationRuntimeDigest:
+    "scripts/quality/quality-evaluation-runtime.mjs",
   adrValidatorDigest: "scripts/quality/validate-gate-b2-adr.mjs",
   reportSchemaDigest:
     "evals/certifications/schemas/gate-b2-report-v1.schema.json",
@@ -39,11 +63,6 @@ export const HARNESS_DIGEST_PATHS = {
   journeySchemaDigest:
     "evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json",
   journeyRunnerDigest: "scripts/quality/run-gate-b2-journey.mjs",
-  chronicleAdapterDigest:
-    "src/features/narrative-extraction/eval/productionChronicleAdapter.ts",
-  chronicleScorerDigest:
-    "src/features/narrative-extraction/eval/productionChronicleScoring.ts",
-  webConsentJourneyDigest: "src/features/ai-policy/webAiConsent.live.test.tsx",
   webConsentBrowserJourneyDigest:
     "src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx",
   webConsentBrowserRunnerDigest:
@@ -66,11 +85,6 @@ const INPUT_DIGEST_KEYS = [
 
 export function sha256Text(text) {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
-}
-
-/** Remove `VAR=...` placeholder assignments so parent env credentials are used. */
-export function stripCredentialPlaceholders(commandString) {
-  return String(commandString).replace(PLACEHOLDER_ENV_ASSIGN, "");
 }
 
 export async function pathExists(target) {
@@ -405,15 +419,6 @@ export function assertDigestsMatchFreeze(
   }
 
   return errors;
-}
-
-export function sanitizeCertificationEnv(baseEnv = process.env) {
-  const env = { ...baseEnv };
-  // Full certification must not use partial/diagnostic overrides.
-  delete env.NARRATIVE_EVAL_LIMIT;
-  delete env.NARRATIVE_EVAL_CASE_ID;
-  delete env.NARRATIVE_EVAL_ATTEMPT;
-  return env;
 }
 
 function gateB2AttemptAuthorityEnv(candidate) {
@@ -1213,7 +1218,9 @@ export function buildDecisionDocument({
   };
   return {
     schemaVersion: 1,
+    contractVersion: GATE_B2_CONTRACT_VERSION,
     gateId: "gate-b2",
+    assuranceScope: { ...GATE_B2_ASSURANCE_SCOPE },
     candidateCommitSha: candidate.commitSha,
     candidateTreeSha: candidate.treeSha,
     baseMasterSha: candidate.baseMasterSha,
@@ -1248,249 +1255,6 @@ export function buildDecisionDocument({
       })),
     generatedAt: new Date().toISOString(),
   };
-}
-
-function validateHeavyReportBinding(report, candidate, expected) {
-  const commitSha = expected?.commitSha ?? candidate?.commitSha;
-  const treeSha = expected?.treeSha ?? candidate?.treeSha;
-  if (!report.candidateCommitSha || report.candidateCommitSha !== commitSha) {
-    return {
-      ok: false,
-      message: `report candidateCommitSha mismatch (expected ${commitSha})`,
-    };
-  }
-  if (!report.candidateTreeSha || report.candidateTreeSha !== treeSha) {
-    return {
-      ok: false,
-      message: `report candidateTreeSha mismatch (expected ${treeSha})`,
-    };
-  }
-  if (!expected?.suiteId || report.suiteId !== expected.suiteId) {
-    return {
-      ok: false,
-      message: "report suiteId mismatch or missing",
-    };
-  }
-  if (!expected?.runId || report.runId !== expected.runId) {
-    return {
-      ok: false,
-      message: "report runId mismatch or missing",
-    };
-  }
-  if (
-    !expected?.commandDigest ||
-    report.commandDigest !== expected.commandDigest
-  ) {
-    return {
-      ok: false,
-      message: "report commandDigest mismatch or missing",
-    };
-  }
-  if (expected?.freezeId && report.freezeId !== expected.freezeId) {
-    return {
-      ok: false,
-      message: "report freezeId mismatch or missing",
-    };
-  }
-  if (
-    expected?.certificationRunId &&
-    report.certificationRunId !== expected.certificationRunId
-  ) {
-    return {
-      ok: false,
-      message: "report certificationRunId mismatch or missing",
-    };
-  }
-  if (expected?.attempt && report.attempt !== expected.attempt) {
-    return {
-      ok: false,
-      message: `report attempt ${report.attempt} != expected ${expected.attempt}`,
-    };
-  }
-  const completedAt = report.completedAt ?? report.finishedAt;
-  if (!report.startedAt || !completedAt) {
-    return {
-      ok: false,
-      message: "report startedAt/completedAt required",
-    };
-  }
-  return { ok: true };
-}
-
-export async function readHeavyLiveReport(artifactDir, suiteId, options = {}) {
-  const { outputPath, allowedPaths = [], env = process.env } = options;
-  const candidates = [];
-  const primary = outputPath ?? env.GATE_B2_OUTPUT_PATH;
-  if (primary) candidates.push(primary);
-  if (!primary) {
-    candidates.push(path.join(artifactDir, "heavy", suiteId, "report.json"));
-  }
-  for (const allowed of allowedPaths) {
-    if (allowed) candidates.push(allowed);
-  }
-
-  for (const candidatePath of candidates) {
-    if (await pathExists(candidatePath)) {
-      return JSON.parse(await readFile(candidatePath, "utf8"));
-    }
-  }
-  return null;
-}
-
-export function validateChronicleProductionReport(report, candidate, expected) {
-  if (!report) {
-    return {
-      ok: false,
-      message: "chronicle production report missing under heavy artifacts",
-    };
-  }
-  const binding = validateHeavyReportBinding(report, candidate, expected);
-  if (!binding.ok) return binding;
-  if (report.diagnosticOnly === true || report.attempt === 2) {
-    return {
-      ok: false,
-      message: "diagnostic-only / attempt 2 cannot pass certification Heavy",
-    };
-  }
-  if (report.attempt !== 1) {
-    return { ok: false, message: `expected attempt 1, got ${report.attempt}` };
-  }
-  if (report.caseCount !== 14) {
-    return {
-      ok: false,
-      message: `expected caseCount 14, got ${report.caseCount}`,
-    };
-  }
-  if (report.certificationEligible !== true) {
-    return {
-      ok: false,
-      message: "certificationEligible must be true",
-    };
-  }
-  return { ok: true, message: "chronicle production report accepted" };
-}
-
-export function validateWebAiConsentReport(report, expected) {
-  if (!report) {
-    return { ok: false, message: "web AI consent report missing" };
-  }
-  const binding = validateHeavyReportBinding(
-    report,
-    {
-      commitSha: expected?.commitSha,
-      treeSha: expected?.treeSha,
-    },
-    expected,
-  );
-  if (!binding.ok) return binding;
-  if (report.certificationEligible !== true) {
-    return { ok: false, message: "consent certificationEligible must be true" };
-  }
-  const teardown = report.teardown ?? {};
-  if (teardown.serverClosed !== true || teardown.localStorageCleared !== true) {
-    return {
-      ok: false,
-      message: "consent teardown flags must be observed true after teardown",
-    };
-  }
-  return { ok: true, message: "consent report accepted" };
-}
-
-export function validateWebAiConsentBrowserReport(report, expected) {
-  if (!report) {
-    return { ok: false, message: "web AI browser consent report missing" };
-  }
-  const binding = validateHeavyReportBinding(
-    report,
-    {
-      commitSha: expected?.commitSha,
-      treeSha: expected?.treeSha,
-    },
-    expected,
-  );
-  if (!binding.ok) return binding;
-  if (report.mode !== "web-ai-consent-browser-live") {
-    return { ok: false, message: "browser consent report mode is invalid" };
-  }
-  if (report.certificationEligible !== true) {
-    return {
-      ok: false,
-      message: "browser consent certificationEligible must be true",
-    };
-  }
-  const browser = report.browser ?? {};
-  if (
-    browser.realBrowser !== true ||
-    browser.provider !== "@vitest/browser-playwright" ||
-    browser.engine !== "chromium"
-  ) {
-    return {
-      ok: false,
-      message: "browser consent report must prove real Chromium execution",
-    };
-  }
-  const counts = [
-    report.requestCountBeforeConsent,
-    report.requestCountAfterRefuse,
-    report.requestCountAfterApprove,
-    report.requestCountAfterDestinationChangeRefuse,
-    report.providerRequestCount,
-  ];
-  if (!counts.every((value) => Number.isInteger(value) && value >= 0)) {
-    return {
-      ok: false,
-      message: "browser consent request counts must be non-negative integers",
-    };
-  }
-  if (
-    report.requestCountBeforeConsent !== 0 ||
-    report.requestCountAfterRefuse !== 0 ||
-    report.requestCountAfterApprove <= 0 ||
-    report.requestCountAfterDestinationChangeRefuse !==
-      report.requestCountAfterApprove ||
-    report.providerRequestCount !==
-      report.requestCountAfterDestinationChangeRefuse
-  ) {
-    return {
-      ok: false,
-      message:
-        "browser consent report does not prove refusal=0, approval>0, and destination re-consent",
-    };
-  }
-  const requiredAssertions = [
-    "refusal-before-provider-is-zero-http",
-    "approval-dispatches-provider-http",
-    "destination-change-requires-fresh-consent",
-    "indexeddb-and-localstorage-are-cleared",
-    "browser-mock-is-closed-before-evidence",
-  ];
-  if (
-    !Array.isArray(report.assertions) ||
-    !requiredAssertions.every((assertion) =>
-      report.assertions.includes(assertion),
-    )
-  ) {
-    return {
-      ok: false,
-      message: "browser consent report is missing required journey assertions",
-    };
-  }
-  const teardown = report.teardown ?? {};
-  if (
-    teardown.serverClosed !== true ||
-    teardown.evidenceServerClosed !== true ||
-    teardown.localStorageCleared !== true ||
-    teardown.indexedDbCleared !== true ||
-    teardown.consentBrokerDeclined !== true ||
-    teardown.browserMockClosed !== true
-  ) {
-    return {
-      ok: false,
-      message:
-        "browser consent teardown must close servers, storage, broker, and mock",
-    };
-  }
-  return { ok: true, message: "browser consent report accepted" };
 }
 
 async function resolvePnpmStoreDir(repoRoot, baseEnv = process.env) {

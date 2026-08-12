@@ -473,12 +473,15 @@ requirements:
     definedIn: policies/quality/iron-laws.md#GDX-ISOLATION-001
     implementedBy:
       - scripts/quality/eval-fixtures.mjs
+      - scripts/quality/run-live-model-qualification.mjs
+      - evals/qualifications/live-models.yaml
       - evals/fixtures/routing.yaml
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
     lightTests:
       - scripts/quality/eval-fixtures.test.mjs
+      - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
@@ -495,7 +498,11 @@ requirements:
     implementedBy:
       - scripts/quality/impact-map.mjs
       - scripts/quality/certify-gate-b2.mjs
+      - scripts/quality/quality-evaluation-runtime.mjs
+      - scripts/quality/run-live-model-qualification.mjs
       - evals/certifications/gate-b2.yaml
+      - evals/qualifications/live-models.yaml
+      - evals/qualifications/schemas/live-model-qualification-v1.schema.json
       - evals/impact-map.yaml
       - src/features/ai-verification/aiPathRegistry.ts
       - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
@@ -513,6 +520,7 @@ requirements:
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - scripts/quality/certify-gate-b2.test.mjs
+      - scripts/quality/run-live-model-qualification.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
       - scripts/semantic-reranker-release.test.mjs
@@ -534,11 +542,11 @@ heavyEvaluations:
   - id: heavy-agent-tool-loop
     suiteId: tool-policy
     command: pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts
-    reason: Preserved desktop-route validation; requires billed OpenRouter access and an isolated workspace, and is not a managed Web Editor route.
+    reason: Maintainer-local live model qualification for the desktop agent loop; requires billed OpenRouter access and an isolated workspace, and is not a managed Web Editor route.
   - id: heavy-single-shot-surfaces
     suiteId: ai-routing
     command: pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts
-    reason: Preserved desktop-route validation; requires billed OpenRouter access, and missing credentials must not become a pass.
+    reason: Maintainer-local live model qualification for desktop single-shot surfaces; missing credentials produce INCOMPLETE, never QUALIFIED.
   - id: heavy-related-scenes
     suiteId: retrieval-grounding
     command: node scripts/quality/run-related-scenes-heavy.mjs
@@ -554,15 +562,15 @@ heavyEvaluations:
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
     command: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
-    reason: Preserved desktop Rust-route validation; requires a billed OpenRouter model and isolated credentials.
+    reason: Maintainer-local live model qualification for the desktop Rust route; requires a billed OpenRouter model and isolated credentials.
   - id: heavy-codex-prompt-surfaces
     suiteId: prompt-contract
     command: pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
-    reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
+    reason: Maintainer-local live model qualification for desktop prompt surfaces; requires a billed OpenRouter model, while wording checks remain Light evidence.
   - id: heavy-narrative-chronicle-production
     suiteId: narrative-extraction
     command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
-    reason: Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Requires billed OpenRouter; credential shortage must not pass.
+    reason: Maintainer-local Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Missing credentials are INCOMPLETE and semantic threshold misses are HOLD.
   - id: heavy-narrative-chronicle-legacy-baseline
     suiteId: narrative-extraction
     command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live

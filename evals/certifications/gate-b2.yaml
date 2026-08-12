@@ -3,8 +3,14 @@
 # Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
 # candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
 schemaVersion: 1
-contractVersion: 7
+contractVersion: 8
 id: gate-b2
+
+assuranceScope:
+  engineeringSafety: certified
+  liveProviderExecution: excluded
+  modelQuality: excluded
+  externalCredentialsUsed: false
 
 candidate:
   commitSha: null
@@ -23,14 +29,12 @@ candidate:
   certifyBootstrapDigest: null
   certifyRunnerDigest: null
   certifyBindingsDigest: null
+  qualityEvaluationRuntimeDigest: null
   adrValidatorDigest: null
   reportSchemaDigest: null
   decisionSchemaDigest: null
   journeySchemaDigest: null
   journeyRunnerDigest: null
-  chronicleAdapterDigest: null
-  chronicleScorerDigest: null
-  webConsentJourneyDigest: null
   webConsentBrowserJourneyDigest: null
   webConsentBrowserRunnerDigest: null
   webConsentBrowserConfigDigest: null
@@ -58,14 +62,12 @@ inputs:
   certifyBootstrap: scripts/quality/certify-gate-b2-bootstrap.mjs
   certifyRunner: scripts/quality/certify-gate-b2.mjs
   certifyBindings: scripts/quality/certify-gate-b2-bindings.mjs
+  qualityEvaluationRuntime: scripts/quality/quality-evaluation-runtime.mjs
   adrValidator: scripts/quality/validate-gate-b2-adr.mjs
   reportSchema: evals/certifications/schemas/gate-b2-report-v1.schema.json
   decisionSchema: evals/certifications/schemas/gate-b2-decision-v1.schema.json
   journeySchema: evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json
   journeyRunner: scripts/quality/run-gate-b2-journey.mjs
-  chronicleAdapter: src/features/narrative-extraction/eval/productionChronicleAdapter.ts
-  chronicleScorer: src/features/narrative-extraction/eval/productionChronicleScoring.ts
-  webConsentJourney: src/features/ai-policy/webAiConsent.live.test.tsx
   webConsentBrowserJourney: src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx
   webConsentBrowserRunner: scripts/quality/run-web-ai-consent-browser.mjs
   webConsentBrowserConfig: vitest.gate-b2-web-ai-consent.config.ts
@@ -111,21 +113,6 @@ fullCi:
   requireCheckoutIdentityArtifact: true
 
 requiredHeavy:
-  - id: heavy-agent-tool-loop
-    qualityManifestId: heavy-agent-tool-loop
-    requiresEnv: [OPENROUTER_API_KEY]
-  - id: heavy-single-shot-surfaces
-    qualityManifestId: heavy-single-shot-surfaces
-    requiresEnv: [OPENROUTER_API_KEY]
-  - id: heavy-rust-post-effect-live
-    qualityManifestId: heavy-rust-post-effect-live
-    requiresEnv: [OPENROUTER_API_KEY]
-  - id: heavy-codex-prompt-surfaces
-    qualityManifestId: heavy-codex-prompt-surfaces
-    requiresEnv: [OPENROUTER_API_KEY]
-  - id: heavy-narrative-chronicle-production
-    qualityManifestId: heavy-narrative-chronicle-production
-    requiresEnv: [OPENROUTER_API_KEY]
   - id: heavy-web-ai-consent-browser-live
     qualityManifestId: heavy-web-ai-consent-browser-live
 
@@ -155,10 +142,17 @@ requiredManualJourneys:
   - id: prepared-plan-toctou
     runnerId: gate-b2-prepared-plan-toctou-journey
     runnerVersion: "1"
-    requiredAssertions: [source-changed-after-prepare, apply-rejected-or-revalidated]
+    requiredAssertions:
+      [source-changed-after-prepare, apply-rejected-or-revalidated]
     command: [pnpm, test:gate-b2:prepared-plan-toctou]
     runner:
-      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, prepared-plan-toctou]
+      command:
+        [
+          node,
+          scripts/quality/run-gate-b2-journey.mjs,
+          --journey-id,
+          prepared-plan-toctou,
+        ]
       sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: runtime-terminalization
     runnerId: gate-b2-runtime-terminalization-journey
@@ -166,7 +160,13 @@ requiredManualJourneys:
     requiredAssertions: [runtime-terminal-state, no-partial-apply]
     command: [pnpm, test:gate-b2:runtime-terminalization]
     runner:
-      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, runtime-terminalization]
+      command:
+        [
+          node,
+          scripts/quality/run-gate-b2-journey.mjs,
+          --journey-id,
+          runtime-terminalization,
+        ]
       sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: browser-electron-writer-parity
     runnerId: gate-b2-browser-electron-writer-parity-journey
@@ -174,15 +174,33 @@ requiredManualJourneys:
     requiredAssertions: [parity-write-result, parity-event-shape]
     command: [pnpm, test:gate-b2:browser-electron-writer-parity]
     runner:
-      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, browser-electron-writer-parity]
+      command:
+        [
+          node,
+          scripts/quality/run-gate-b2-journey.mjs,
+          --journey-id,
+          browser-electron-writer-parity,
+        ]
       sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: locked-field-enforcement
     runnerId: gate-b2-locked-field-journey
     runnerVersion: "1"
-    requiredAssertions: [locked-write-rejected, target-value-unchanged, no-change-event, no-undo-journal]
+    requiredAssertions:
+      [
+        locked-write-rejected,
+        target-value-unchanged,
+        no-change-event,
+        no-undo-journal,
+      ]
     command: [pnpm, test:gate-b2:locked-field-enforcement]
     runner:
-      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, locked-field-enforcement]
+      command:
+        [
+          node,
+          scripts/quality/run-gate-b2-journey.mjs,
+          --journey-id,
+          locked-field-enforcement,
+        ]
       sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: dirty-only-propagation
     runnerId: gate-b2-dirty-only-propagation-journey
@@ -190,7 +208,13 @@ requiredManualJourneys:
     requiredAssertions: [dirty-only-propagated, clean-fields-untouched]
     command: [pnpm, test:gate-b2:dirty-only-propagation]
     runner:
-      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, dirty-only-propagation]
+      command:
+        [
+          node,
+          scripts/quality/run-gate-b2-journey.mjs,
+          --journey-id,
+          dirty-only-propagation,
+        ]
       sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: immutable-retraction-history
     runnerId: gate-b2-immutable-retraction-history-journey
@@ -198,15 +222,32 @@ requiredManualJourneys:
     requiredAssertions: [retraction-appended, prior-history-immutable]
     command: [pnpm, test:gate-b2:immutable-retraction-history]
     runner:
-      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, immutable-retraction-history]
+      command:
+        [
+          node,
+          scripts/quality/run-gate-b2-journey.mjs,
+          --journey-id,
+          immutable-retraction-history,
+        ]
       sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: semantic-gate-exclusion
     runnerId: gate-b2-semantic-gate-exclusion-journey
     runnerVersion: "1"
-    requiredAssertions: [semantic-oddity-applied, structural-invalidity-rejected, decision-authority-still-required]
+    requiredAssertions:
+      [
+        semantic-oddity-applied,
+        structural-invalidity-rejected,
+        decision-authority-still-required,
+      ]
     command: [pnpm, test:gate-b2:semantic-gate-exclusion]
     runner:
-      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, semantic-gate-exclusion]
+      command:
+        [
+          node,
+          scripts/quality/run-gate-b2-journey.mjs,
+          --journey-id,
+          semantic-gate-exclusion,
+        ]
       sourcePath: scripts/quality/run-gate-b2-journey.mjs
 
 decisionPolicy:

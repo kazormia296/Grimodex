@@ -6,7 +6,9 @@
   "additionalProperties": false,
   "required": [
     "schemaVersion",
+    "contractVersion",
     "gateId",
+    "assuranceScope",
     "candidateCommitSha",
     "candidateTreeSha",
     "baseMasterSha",
@@ -22,7 +24,9 @@
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
+    "contractVersion": { "type": "integer", "const": 8 },
     "gateId": { "const": "gate-b2" },
+    "assuranceScope": { "$ref": "#/$defs/assuranceScope" },
     "candidateCommitSha": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
@@ -165,6 +169,22 @@
     }
   ],
   "$defs": {
+    "assuranceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engineeringSafety",
+        "liveProviderExecution",
+        "modelQuality",
+        "externalCredentialsUsed"
+      ],
+      "properties": {
+        "engineeringSafety": { "const": "certified" },
+        "liveProviderExecution": { "const": "excluded" },
+        "modelQuality": { "const": "excluded" },
+        "externalCredentialsUsed": { "const": false }
+      }
+    },
     "attemptAuthority": {
       "type": "object",
       "additionalProperties": false,

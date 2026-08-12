@@ -54,7 +54,7 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     });
     assert.match(result.freeze.candidate.commitSha, /^[0-9a-f]{40}$/);
     assert.match(result.freeze.candidate.treeSha, /^[0-9a-f]{40}$/);
-    assert.equal(result.freeze.contractVersion, 7);
+    assert.equal(result.freeze.contractVersion, 8);
     assert.match(result.freeze.freezeId, /^[0-9a-f-]{36}$/);
     assert.equal(
       result.freeze.candidateCommitSha,
@@ -81,6 +81,28 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
       /^sha256:[0-9a-f]{64}$/,
     );
     assert.equal(result.provisionalDecision.verdict, "INCOMPLETE");
+    assert.equal(result.provisionalDecision.contractVersion, 8);
+    assert.equal(
+      result.freeze.freezeRules
+        .engineeringHarnessChangeRequiresCertificationRerun,
+      true,
+    );
+    assert.equal(
+      result.freeze.freezeRules.liveModelQualificationChangeRequiresGateRerun,
+      false,
+    );
+    assert.equal(
+      result.freeze.freezeRules.liveProviderModelQualificationRequired,
+      false,
+    );
+    assert.deepEqual(result.provisionalDecision.reasons, [
+      "Candidate frozen; required credential-free Engineering evidence is not yet attached.",
+      "Live provider/model qualification is explicitly outside Gate B2 scope.",
+    ]);
+    assert.equal(
+      result.provisionalDecision.assuranceScope.liveProviderExecution,
+      "excluded",
+    );
     assert.equal(
       result.provisionalDecision.suiteSummaries.requiredLight.notRun,
       manifest.requiredLight.length,

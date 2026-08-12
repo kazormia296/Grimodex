@@ -4,8 +4,8 @@
  *
  *   pnpm certify:gate-b2:freeze -- --candidate HEAD
  *
- * Does not claim PASS. After freeze, production/prompt/writer changes require a
- * new candidate.
+ * Does not claim PASS. Engineering production, authority, persistence, and
+ * certification-harness changes require a new candidate.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -15,6 +15,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   FREEZE_RELATIVE,
+  GATE_B2_ASSURANCE_SCOPE,
   GATE_B2_CONTRACT_VERSION,
   bindCandidateDigestRoot,
   pathExists,
@@ -175,19 +176,20 @@ export async function freezeGateB2Candidate({
     },
     freezeRules: {
       invalidateOn: [
-        "production code",
-        "prompt",
-        "response schema",
-        "parser",
-        "Human Gold",
+        "Engineering production code",
         "writer registry",
         "runtime policy",
         "migration",
         "browser mock",
-        "test harness semantics",
+        "Gate B2 runner",
+        "Journey runner",
+        "Chromium consent runner",
+        "Gate B2 Report or Decision schema",
       ],
       docsTypoOnlyRerunHeavy: false,
-      evaluationCodeChangeRequiresHeavyRerun: true,
+      engineeringHarnessChangeRequiresCertificationRerun: true,
+      liveModelQualificationChangeRequiresGateRerun: false,
+      liveProviderModelQualificationRequired: false,
     },
   };
 
@@ -207,13 +209,14 @@ export async function freezeGateB2Candidate({
   }
 
   const provisionalReasons = [
-    "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
-    "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
-    "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
+    "Candidate frozen; required credential-free Engineering evidence is not yet attached.",
+    "Live provider/model qualification is explicitly outside Gate B2 scope.",
   ];
   const provisionalDecision = {
     schemaVersion: 1,
+    contractVersion: GATE_B2_CONTRACT_VERSION,
     gateId: "gate-b2",
+    assuranceScope: { ...GATE_B2_ASSURANCE_SCOPE },
     freezeId,
     certificationRunId: null,
     candidateCommitSha: identity.commitSha,

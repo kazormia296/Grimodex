@@ -26,10 +26,10 @@ const repoRoot = path.resolve(
   "../..",
 );
 
-test("Gate B2 v7 manifest uses the dedicated GitHub Actions authority", async () => {
+test("Gate B2 v8 is credential-free and uses the dedicated GitHub Actions authority", async () => {
   const { raw } = await loadGateB2Manifest(repoRoot);
   assert.deepEqual(validateGateB2Manifest(raw), []);
-  assert.equal(raw.contractVersion, 7);
+  assert.equal(raw.contractVersion, 8);
   assert.deepEqual(
     raw.candidate.attemptAuthority,
     getGateB2GithubAttemptIdentity(),
@@ -42,15 +42,21 @@ test("Gate B2 v7 manifest uses the dedicated GitHub Actions authority", async ()
   assert.equal(raw.requiredManualJourneys.length, 7);
   assert.deepEqual(
     raw.requiredHeavy.map((entry) => entry.id),
-    [
-      "heavy-agent-tool-loop",
-      "heavy-single-shot-surfaces",
-      "heavy-rust-post-effect-live",
-      "heavy-codex-prompt-surfaces",
-      "heavy-narrative-chronicle-production",
-      "heavy-web-ai-consent-browser-live",
-    ],
+    ["heavy-web-ai-consent-browser-live"],
   );
+  for (const bucket of [
+    raw.requiredLight,
+    raw.requiredHeavy,
+    raw.requiredManualJourneys,
+  ]) {
+    assert.ok(bucket.every((entry) => !Object.hasOwn(entry, "requiresEnv")));
+  }
+  assert.deepEqual(raw.assuranceScope, {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  });
 });
 
 test("dedicated workflow takes candidate and successful Full CI run IDs", async () => {
@@ -67,6 +73,9 @@ test("dedicated workflow takes candidate and successful Full CI run IDs", async 
   assert.match(workflowText, /--run-light/);
   assert.match(workflowText, /--run-heavy/);
   assert.match(workflowText, /--run-journeys/);
+  assert.match(workflowText, /credential-free Gate B2 engineering suites/);
+  assert.doesNotMatch(workflowText, /\$\{\{\s*secrets\./);
+  assert.doesNotMatch(workflowText, /OPENROUTER_API_KEY/);
   assert.doesNotMatch(workflowText, /private.?key|ed25519|signature/i);
 });
 
@@ -101,6 +110,58 @@ test("manifest rejects required-suite opt-outs and unfrozen Journey runners", as
     validateGateB2Manifest(unsafePolicy).join("\n"),
     /blockedIsPass must be false/i,
   );
+
+  for (const bucket of [
+    "requiredLight",
+    "requiredHeavy",
+    "requiredManualJourneys",
+  ]) {
+    const { raw: credentialed } = await loadGateB2Manifest(repoRoot);
+    credentialed[bucket][0].requiresEnv = ["OPENROUTER_API_KEY"];
+    assert.match(
+      validateGateB2Manifest(credentialed).join("\n"),
+      /must not require external credentials/i,
+    );
+  }
+});
+
+test("credential absence does not block an otherwise complete formal Gate B2 decision", async () => {
+  const { raw } = await loadGateB2Manifest(repoRoot);
+  const suites = [
+    ...raw.requiredLight.map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredLight",
+      attempt: 1,
+      result: "passed",
+    })),
+    ...raw.requiredHeavy.map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredHeavy",
+      attempt: 1,
+      result: "passed",
+    })),
+    ...raw.requiredManualJourneys.map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredJourneys",
+      attempt: 1,
+      result: "passed",
+    })),
+  ];
+  const previousKey = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    assert.equal(
+      decideVerdict({
+        suites,
+        candidate: { frozen: true, dirty: false },
+        decisionPolicy: raw.decisionPolicy,
+        preflightOnly: false,
+      }).verdict,
+      "PASS",
+    );
+  } finally {
+    if (previousKey !== undefined) process.env.OPENROUTER_API_KEY = previousKey;
+  }
 });
 
 test("CLI defaults to preflight and rejects unknown options", () => {
@@ -423,8 +484,6 @@ test("preflight writes a schema-valid INCOMPLETE report without a run ID", async
 
 test("registered Heavy suites resolve in dry-run without becoming PASS", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-heavy-dry-"));
-  const previousKey = process.env.OPENROUTER_API_KEY;
-  process.env.OPENROUTER_API_KEY = "test-key-not-for-network";
   try {
     const { report } = await certifyGateB2({
       repoRoot,
@@ -440,24 +499,24 @@ test("registered Heavy suites resolve in dry-run without becoming PASS", async (
         "json",
       ]),
     });
-    const production = report.suites.find(
-      (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
-    );
     const browserConsent = report.suites.find(
       (suite) => suite.suiteId === "heavy-web-ai-consent-browser-live",
     );
     const informationalConsent = report.suites.find(
       (suite) => suite.suiteId === "heavy-web-ai-consent-live",
     );
-    assert.equal(production.result, "not-run");
     assert.equal(browserConsent.result, "not-run");
     assert.equal(informationalConsent.result, "not-run");
-    assert.match(production.command.join(" "), /chronicle:production:live/);
     assert.match(browserConsent.command.join(" "), /web-ai-consent:browser/);
+    assert.equal(report.summary.requiredHeavy.total, 1);
+    assert.equal(
+      report.suites.some(
+        (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
+      ),
+      false,
+    );
     assert.equal(report.verdict, "INCOMPLETE");
   } finally {
-    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
-    else process.env.OPENROUTER_API_KEY = previousKey;
     await rm(temp, { recursive: true, force: true });
   }
 });
@@ -507,7 +566,7 @@ test("execution cannot bypass the candidate bootstrap", (t) => {
   assert.match(`${run.stdout}\n${run.stderr}`, /bootstrap/i);
 });
 
-test("active schemas use the minimal v7 GitHub authority contract", async () => {
+test("active schemas use the v8 credential-free assurance contract", async () => {
   const reportSchema = JSON.parse(
     await readFile(
       path.join(
@@ -526,7 +585,10 @@ test("active schemas use the minimal v7 GitHub authority contract", async () => 
       "utf8",
     ),
   );
-  assert.equal(reportSchema.properties.contractVersion.const, 7);
+  assert.equal(reportSchema.properties.contractVersion.const, 8);
+  assert.ok(reportSchema.properties.assuranceScope);
+  assert.equal(decisionSchema.properties.contractVersion.const, 8);
+  assert.ok(decisionSchema.properties.assuranceScope);
   assert.ok(decisionSchema.properties.attemptAuthority);
   assert.deepEqual(decisionSchema.$defs.attemptAuthority.required, [
     "provider",
@@ -537,4 +599,55 @@ test("active schemas use the minimal v7 GitHub authority contract", async () => 
     "runId",
     "runAttempt",
   ]);
+
+  const assurance = {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  };
+  const minimalDecision = {
+    schemaVersion: 1,
+    contractVersion: 8,
+    gateId: "gate-b2",
+    assuranceScope: assurance,
+    candidateCommitSha: "a".repeat(40),
+    candidateTreeSha: "b".repeat(40),
+    baseMasterSha: null,
+    freezeId: null,
+    certificationRunId: null,
+    attemptAuthority: getGateB2GithubAttemptIdentity(),
+    verdict: "INCOMPLETE",
+    reasons: ["not run"],
+    suiteSummaries: {
+      requiredLight: { passed: 0, failed: 0, blocked: 0, hold: 0, notRun: 1 },
+      requiredHeavy: { passed: 0, failed: 0, blocked: 0, hold: 0, notRun: 1 },
+      requiredJourneys: {
+        passed: 0,
+        failed: 0,
+        blocked: 0,
+        hold: 0,
+        notRun: 1,
+      },
+    },
+    digests: {
+      writerRegistryDigest: `sha256:${"a".repeat(64)}`,
+      aiPathRegistryDigest: `sha256:${"a".repeat(64)}`,
+      qualityManifestDigest: `sha256:${"a".repeat(64)}`,
+      narrativeEvalManifestDigest: `sha256:${"a".repeat(64)}`,
+      reportDigest: null,
+    },
+    suiteAttempts: [],
+    generatedAt: new Date().toISOString(),
+  };
+  assert.equal(
+    validateJsonAgainstSchema(minimalDecision, decisionSchema).ok,
+    true,
+  );
+  delete minimalDecision.assuranceScope;
+  assert.equal(
+    validateJsonAgainstSchema(minimalDecision, decisionSchema).ok,
+    false,
+    "assuranceScope is mandatory",
+  );
 });

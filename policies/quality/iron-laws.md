@@ -184,3 +184,10 @@ denial; `[quality]` for stale or ungrounded evidence; and `[artifact]` for outpu
 When one automatic suite spans several boundaries, it reports the bounded candidate classes and
 `pending-triage` instead of inventing a single class. That state blocks completion until the failing
 step is assigned exactly one of the six classes.
+
+A credential-free formal certification never places an external-credential-dependent evaluation in
+a required bucket and never converts missing credentials into a pass or skip. Live provider/model
+quality is recorded by a separate maintainer-local qualification with its own schema, artifacts, and
+`QUALIFIED` / `HOLD` / `FAILED` / `INCOMPLETE` vocabulary. Qualification evidence cannot be reused
+as a formal certification report or decision, and its absence or failure cannot silently change a
+certification or merge verdict that explicitly excludes live model quality.

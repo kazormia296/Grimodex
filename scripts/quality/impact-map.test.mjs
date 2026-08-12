@@ -24,15 +24,22 @@ test("the AI routing light suite executes browser transport contracts", () => {
 });
 
 test("Windows command runners invoke pnpm shims directly", async () => {
-  const [impactSource, certifySource] = await Promise.all([
-    readFile(new URL("./impact-map.mjs", import.meta.url), "utf8"),
-    readFile(new URL("./certify-gate-b2.mjs", import.meta.url), "utf8"),
-  ]);
+  const [impactSource, evaluationRuntimeSource, certifySource] =
+    await Promise.all([
+      readFile(new URL("./impact-map.mjs", import.meta.url), "utf8"),
+      readFile(
+        new URL("./quality-evaluation-runtime.mjs", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("./certify-gate-b2.mjs", import.meta.url), "utf8"),
+    ]);
   assert.match(impactSource, /pnpm\.cmd/);
-  assert.match(certifySource, /pnpm\.cmd/);
+  assert.match(evaluationRuntimeSource, /pnpm\.cmd/);
   assert.doesNotMatch(impactSource, /process\.env\.ComSpec/);
+  assert.doesNotMatch(evaluationRuntimeSource, /process\.env\.ComSpec/);
   assert.doesNotMatch(certifySource, /process\.env\.ComSpec/);
   assert.doesNotMatch(impactSource, /\["\/d", "\/s", "\/c"/);
+  assert.doesNotMatch(evaluationRuntimeSource, /\["\/d", "\/s", "\/c"/);
   assert.doesNotMatch(certifySource, /\["\/d", "\/s", "\/c"/);
 });
 
