@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractVersion": 8,
   "gateId": "gate-b2",
-  "freezeId": "98852a3b-9f7a-4077-84ff-dc48c20e68c8",
-  "candidateCommitSha": "562687e4c3f6356e20ce6aa1b58b6e507abbda0d",
-  "candidateTreeSha": "f6e7985b2b3b4d512689fc7a6e21534d1fd42375",
+  "freezeId": "ad167ca4-b001-4720-b012-319aee595ecc",
+  "candidateCommitSha": "cc0e76ebd383cd4ed59defc4a80918f79abcbb95",
+  "candidateTreeSha": "6d387b4b258dae7744ae57cb2759d1411b20d752",
   "attemptAuthority": {
     "provider": "github-actions",
     "configDigest": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4",
@@ -15,10 +15,10 @@
     "runAttempt": null
   },
   "productSchemaVersion": 20,
-  "frozenAt": "2026-08-12T22:38:13.312Z",
+  "frozenAt": "2026-08-12T22:32:30.089Z",
   "candidate": {
-    "commitSha": "562687e4c3f6356e20ce6aa1b58b6e507abbda0d",
-    "treeSha": "f6e7985b2b3b4d512689fc7a6e21534d1fd42375",
+    "commitSha": "cc0e76ebd383cd4ed59defc4a80918f79abcbb95",
+    "treeSha": "6d387b4b258dae7744ae57cb2759d1411b20d752",
     "baseMasterSha": "e0d0b5c16c2dde71f0af81caed59d59900583e5b",
     "schemaVersion": 20,
     "attemptAuthority": {
@@ -69,5 +69,8 @@
     "engineeringHarnessChangeRequiresCertificationRerun": true,
     "liveModelQualificationChangeRequiresGateRerun": false,
     "liveProviderModelQualificationRequired": false
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "562687e4c3f6356e20ce6aa1b58b6e507abbda0d",
+  "supersededAt": "2026-08-12T22:38:13.311Z"
 }
