@@ -62,7 +62,8 @@ function reasoningEffort(): "minimal" | "low" | "medium" | "high" {
 }
 
 function attemptNumber(): 1 | 2 {
-  const raw = process.env.NARRATIVE_EVAL_ATTEMPT ?? "1";
+  const raw =
+    process.env.GATE_B2_ATTEMPT ?? process.env.NARRATIVE_EVAL_ATTEMPT ?? "1";
   if (raw !== "1" && raw !== "2") {
     throw new Error("NARRATIVE_EVAL_ATTEMPT must be 1 or 2");
   }
@@ -76,6 +77,8 @@ function gateB2BindingFromEnv() {
     suiteId: process.env.GATE_B2_SUITE_ID,
     runId: process.env.GATE_B2_RUN_ID,
     commandDigest: process.env.GATE_B2_COMMAND_DIGEST,
+    freezeId: process.env.GATE_B2_FREEZE_ID,
+    certificationRunId: process.env.GATE_B2_CERTIFICATION_RUN_ID,
     outputPath: process.env.GATE_B2_OUTPUT_PATH,
   };
 }
@@ -266,6 +269,10 @@ describeLive("Chronicle production OpenRouter live certification", () => {
         ...(gateB2.suiteId ? { suiteId: gateB2.suiteId } : {}),
         ...(gateB2.commandDigest
           ? { commandDigest: gateB2.commandDigest }
+          : {}),
+        ...(gateB2.freezeId ? { freezeId: gateB2.freezeId } : {}),
+        ...(gateB2.certificationRunId
+          ? { certificationRunId: gateB2.certificationRunId }
           : {}),
         model: { provider: "openrouter", requestedModel: model, effort },
         caseCount: caseReports.length,

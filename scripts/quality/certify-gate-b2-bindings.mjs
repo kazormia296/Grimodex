@@ -3,7 +3,15 @@
  */
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, access } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+  access,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -83,6 +91,18 @@ export function assertFreezeActive(freeze) {
   if (freeze.status === "superseded") {
     throw new Error(
       "Gate B2 candidate freeze is superseded; create a new freeze before certification",
+    );
+  }
+  const identity = freeze.candidate ?? {};
+  if (
+    typeof freeze.freezeId !== "string" ||
+    freeze.freezeId.length === 0 ||
+    freeze.candidateCommitSha !== identity.commitSha ||
+    freeze.candidateTreeSha !== identity.treeSha ||
+    freeze.productSchemaVersion !== identity.schemaVersion
+  ) {
+    throw new Error(
+      "Gate B2 freeze is missing the immutable certification epoch identity; create a new freeze",
     );
   }
 }
@@ -248,6 +268,76 @@ export async function bindExecutionRoot({
   };
 }
 
+/**
+ * Bind freeze input reads to the candidate tree itself. Freeze metadata lives
+ * outside the candidate, but its digests must never come from the current
+ * checkout when --candidate points at another commit.
+ */
+export async function bindCandidateDigestRoot({ repoRoot, candidateSha }) {
+  if (!candidateSha || !COMMIT_RE.test(candidateSha)) {
+    throw new Error("candidate SHA required for candidate digest binding");
+  }
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-freeze-wt-"));
+  const worktreePath = path.join(temp, "tree");
+  try {
+    await runGit(
+      ["worktree", "add", "--detach", worktreePath, candidateSha],
+      repoRoot,
+    );
+  } catch (error) {
+    await rm(temp, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    executionRoot: worktreePath,
+    cleanup: async () => {
+      try {
+        await runGit(["worktree", "remove", "--force", worktreePath], repoRoot);
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
+function safeAttemptPathSegment(value) {
+  const segment = String(value).replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!segment || segment === "." || segment === "..") {
+    throw new Error(`invalid Gate B2 suite id for attempt ledger: ${value}`);
+  }
+  return segment;
+}
+
+/**
+ * Reserve the next append-only attempt directory for one candidate/suite.
+ * A non-recursive mkdir makes the reservation unique across processes; a
+ * crashed process still consumes its directory and cannot be overwritten by a
+ * later retry.
+ */
+export async function allocateGateB2Attempt({ artifactDir, suiteId }) {
+  const suiteSegment = safeAttemptPathSegment(suiteId);
+  const attemptsRoot = path.join(artifactDir, "attempts", suiteSegment);
+  await mkdir(attemptsRoot, { recursive: true });
+  for (let attempt = 1; ; attempt += 1) {
+    const attemptDir = path.join(attemptsRoot, `attempt-${attempt}`);
+    try {
+      await mkdir(attemptDir);
+      return { attempt, attemptDir };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+}
+
+export async function writeGateB2AttemptRecord({ attemptDir, record }) {
+  const recordPath = path.join(attemptDir, "attempt.json");
+  await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+  });
+  return recordPath;
+}
+
 export function assertDigestsMatchFreeze(
   currentDigests,
   freezeCandidate,
@@ -305,9 +395,13 @@ export function buildHeavyCertificationEnv({
   runId,
   outputPath,
   commandDigest,
+  freezeId,
+  certificationRunId,
+  attempt,
+  attemptDir,
   baseEnv = process.env,
 }) {
-  return {
+  const env = {
     ...sanitizeCertificationEnv(baseEnv),
     GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
     GATE_B2_CANDIDATE_TREE_SHA: candidate.treeSha,
@@ -316,6 +410,13 @@ export function buildHeavyCertificationEnv({
     GATE_B2_OUTPUT_PATH: outputPath,
     GATE_B2_COMMAND_DIGEST: commandDigest,
   };
+  if (freezeId) env.GATE_B2_FREEZE_ID = freezeId;
+  if (certificationRunId) {
+    env.GATE_B2_CERTIFICATION_RUN_ID = certificationRunId;
+  }
+  if (Number.isInteger(attempt)) env.GATE_B2_ATTEMPT = String(attempt);
+  if (attemptDir) env.GATE_B2_ATTEMPT_DIR = attemptDir;
+  return env;
 }
 
 const FULL_CI_REQUIRED = [
@@ -900,6 +1001,8 @@ export function validateJourneyEvidence(
 
 export function buildDecisionDocument({
   candidate,
+  freezeId = null,
+  certificationRunId = null,
   verdict,
   reasons,
   suites,
@@ -930,7 +1033,9 @@ export function buildDecisionDocument({
     candidateCommitSha: candidate.commitSha,
     candidateTreeSha: candidate.treeSha,
     baseMasterSha: candidate.baseMasterSha,
-    schemaVersionProduct: 16,
+    freezeId,
+    certificationRunId,
+    schemaVersionProduct: candidate.schemaVersion,
     verdict,
     reasons,
     suiteSummaries: {
@@ -996,6 +1101,27 @@ function validateHeavyReportBinding(report, candidate, expected) {
       message: "report commandDigest mismatch or missing",
     };
   }
+  if (expected?.freezeId && report.freezeId !== expected.freezeId) {
+    return {
+      ok: false,
+      message: "report freezeId mismatch or missing",
+    };
+  }
+  if (
+    expected?.certificationRunId &&
+    report.certificationRunId !== expected.certificationRunId
+  ) {
+    return {
+      ok: false,
+      message: "report certificationRunId mismatch or missing",
+    };
+  }
+  if (expected?.attempt && report.attempt !== expected.attempt) {
+    return {
+      ok: false,
+      message: `report attempt ${report.attempt} != expected ${expected.attempt}`,
+    };
+  }
   const completedAt = report.completedAt ?? report.finishedAt;
   if (!report.startedAt || !completedAt) {
     return {
@@ -1011,7 +1137,9 @@ export async function readHeavyLiveReport(artifactDir, suiteId, options = {}) {
   const candidates = [];
   const primary = outputPath ?? env.GATE_B2_OUTPUT_PATH;
   if (primary) candidates.push(primary);
-  candidates.push(path.join(artifactDir, "heavy", suiteId, "report.json"));
+  if (!primary) {
+    candidates.push(path.join(artifactDir, "heavy", suiteId, "report.json"));
+  }
   for (const allowed of allowedPaths) {
     if (allowed) candidates.push(allowed);
   }
@@ -1165,11 +1293,18 @@ export function validateJsonAgainstSchema(document, schema) {
   };
 }
 
-export async function persistHeavyReport({ report, artifactDir, suiteId }) {
-  const reportPath = path.join(artifactDir, "heavy", suiteId, "report.json");
+export async function persistHeavyReport({
+  report,
+  artifactDir,
+  suiteId,
+  attemptDir = null,
+}) {
+  const reportPath =
+    attemptDir != null
+      ? path.join(attemptDir, "report.json")
+      : path.join(artifactDir, "heavy", suiteId, "report.json");
   const content = `${JSON.stringify(report, null, 2)}\n`;
-  const { mkdir, writeFile } = await import("node:fs/promises");
   await mkdir(path.dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, content, "utf8");
+  await writeFile(reportPath, content, { encoding: "utf8", flag: "wx" });
   return sha256Text(content);
 }

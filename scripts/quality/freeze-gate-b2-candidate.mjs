@@ -9,6 +9,7 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,6 +17,7 @@ import {
   FREEZE_RELATIVE,
   GATE_B2_CONTRACT_VERSION,
   buildDecisionDocument,
+  bindCandidateDigestRoot,
   pathExists,
   validateJsonAgainstSchema,
 } from "./certify-gate-b2-bindings.mjs";
@@ -91,8 +93,6 @@ export async function freezeGateB2Candidate({
   artifactRoot = null,
   resultsDir = null,
 } = {}) {
-  const { raw: manifest, digest: manifestDigest } =
-    await loadGateB2Manifest(repoRoot);
   const identity = await resolveCandidateIdentity({
     candidate: candidate ?? undefined,
     baseMaster: baseMaster ?? undefined,
@@ -103,17 +103,39 @@ export async function freezeGateB2Candidate({
       "Refusing to freeze a dirty working tree. Commit or stash first.",
     );
   }
-  const digests = await collectInputDigests(manifest, repoRoot, {
-    manifestDigest,
+  const digestRoot = await bindCandidateDigestRoot({
+    repoRoot,
+    candidateSha: identity.commitSha,
   });
+  let manifest;
+  let manifestDigest;
+  let digests;
+  try {
+    const loaded = await loadGateB2Manifest(digestRoot.executionRoot);
+    manifest = loaded.raw;
+    manifestDigest = loaded.digest;
+    digests = await collectInputDigests(manifest, digestRoot.executionRoot, {
+      manifestDigest,
+    });
+  } finally {
+    await digestRoot.cleanup();
+  }
+  const freezeId = randomUUID();
+  const productSchemaVersion = manifest.candidate.schemaVersion;
+  const requiredLightCount = Array.isArray(manifest.requiredLight)
+    ? manifest.requiredLight.length
+    : 0;
+  const requiredHeavyCount = Array.isArray(manifest.requiredHeavy)
+    ? manifest.requiredHeavy.length
+    : 0;
+  const requiredJourneyCount = Array.isArray(manifest.requiredManualJourneys)
+    ? manifest.requiredManualJourneys.length
+    : 0;
   const repoFreezePath = path.join(repoRoot, FREEZE_RELATIVE);
   let archivedPath = null;
   if (writeRepoFreeze && (await pathExists(repoFreezePath))) {
     const oldFreeze = JSON.parse(await readFile(repoFreezePath, "utf8"));
-    if (
-      oldFreeze?.candidate?.commitSha &&
-      oldFreeze.candidate.commitSha !== identity.commitSha
-    ) {
+    if (oldFreeze?.candidate?.commitSha && oldFreeze.freezeId !== freezeId) {
       archivedPath = await archiveSupersededFreeze({
         repoRoot,
         oldFreeze,
@@ -126,12 +148,16 @@ export async function freezeGateB2Candidate({
     schemaVersion: 1,
     contractVersion: GATE_B2_CONTRACT_VERSION,
     gateId: "gate-b2",
+    freezeId,
+    candidateCommitSha: identity.commitSha,
+    candidateTreeSha: identity.treeSha,
+    productSchemaVersion,
     frozenAt: new Date().toISOString(),
     candidate: {
       commitSha: identity.commitSha,
       treeSha: identity.treeSha,
       baseMasterSha: identity.baseMasterSha,
-      schemaVersion: 16,
+      schemaVersion: productSchemaVersion,
       ...digests,
     },
     freezeRules: {
@@ -178,7 +204,10 @@ export async function freezeGateB2Candidate({
         commitSha: identity.commitSha,
         treeSha: identity.treeSha,
         baseMasterSha: identity.baseMasterSha,
+        schemaVersion: productSchemaVersion,
       },
+      freezeId,
+      certificationRunId: null,
       verdict: "INCOMPLETE",
       reasons: provisionalReasons,
       suites: provisionalSuites(manifest),

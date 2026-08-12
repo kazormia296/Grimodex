@@ -31,6 +31,9 @@ function gateB2BindingFromEnv() {
     suiteId: process.env.GATE_B2_SUITE_ID,
     runId: process.env.GATE_B2_RUN_ID,
     commandDigest: process.env.GATE_B2_COMMAND_DIGEST,
+    freezeId: process.env.GATE_B2_FREEZE_ID,
+    certificationRunId: process.env.GATE_B2_CERTIFICATION_RUN_ID,
+    attempt: process.env.GATE_B2_ATTEMPT,
     outputPath: process.env.GATE_B2_OUTPUT_PATH,
   };
 }
@@ -319,6 +322,11 @@ describe("Web AI consent live journey (loopback Local LLM)", () => {
         : {}),
       ...(gateB2.suiteId ? { suiteId: gateB2.suiteId } : {}),
       ...(gateB2.commandDigest ? { commandDigest: gateB2.commandDigest } : {}),
+      ...(gateB2.freezeId ? { freezeId: gateB2.freezeId } : {}),
+      ...(gateB2.certificationRunId
+        ? { certificationRunId: gateB2.certificationRunId }
+        : {}),
+      ...(gateB2.attempt ? { attempt: Number(gateB2.attempt) } : {}),
       certificationEligible: true,
       requestCountBeforeConsent: 0,
       requestCountAfterRefuse: 0,

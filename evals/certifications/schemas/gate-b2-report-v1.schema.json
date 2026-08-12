@@ -10,6 +10,8 @@
     "gateId",
     "manifestDigest",
     "generatedAt",
+    "freezeId",
+    "certificationRunId",
     "candidate",
     "environment",
     "verdict",
@@ -29,6 +31,8 @@
     "generatedAt": { "type": "string", "format": "date-time" },
     "startedAt": { "type": ["string", "null"], "format": "date-time" },
     "completedAt": { "type": ["string", "null"], "format": "date-time" },
+    "freezeId": { "type": ["string", "null"], "minLength": 1 },
+    "certificationRunId": { "type": "string", "minLength": 1 },
     "mode": {
       "type": "string",
       "enum": ["preflight", "light", "heavy", "journeys", "full", "decision"]
@@ -45,6 +49,7 @@
         "aiPathRegistryDigest",
         "qualityManifestDigest",
         "narrativeEvalManifestDigest",
+        "freezeId",
         "frozen",
         "dirty"
       ],
@@ -75,6 +80,7 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "freezeId": { "type": ["string", "null"], "minLength": 1 },
         "adrChecklistDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"

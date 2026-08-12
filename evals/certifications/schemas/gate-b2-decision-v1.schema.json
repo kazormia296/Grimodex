@@ -10,6 +10,8 @@
     "candidateCommitSha",
     "candidateTreeSha",
     "baseMasterSha",
+    "freezeId",
+    "certificationRunId",
     "verdict",
     "reasons",
     "suiteSummaries",
@@ -32,6 +34,8 @@
       "pattern": "^[0-9a-f]{40}$"
     },
     "schemaVersionProduct": { "type": "integer", "const": 16 },
+    "freezeId": { "type": ["string", "null"], "minLength": 1 },
+    "certificationRunId": { "type": ["string", "null"], "minLength": 1 },
     "verdict": {
       "type": "string",
       "enum": ["PASS", "HOLD", "BLOCK", "INCOMPLETE"]

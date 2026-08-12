@@ -10,6 +10,7 @@ import {
   HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
   assertFreezeActive,
+  allocateGateB2Attempt,
   buildDecisionDocument,
   buildGhRunDownloadArgs,
   buildHeavyCertificationEnv,
@@ -146,6 +147,10 @@ test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
     runId: "run-42",
     outputPath: "/tmp/consent-report.json",
     commandDigest: heavyExpected.commandDigest,
+    freezeId: "freeze-42",
+    certificationRunId: "certification-42",
+    attempt: 2,
+    attemptDir: "/tmp/gate-b2/attempt-2",
     baseEnv: { HOME: "/home/tester" },
   });
   assert.equal(env.GATE_B2_CANDIDATE_COMMIT_SHA, candidate.commitSha);
@@ -154,8 +159,34 @@ test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
   assert.equal(env.GATE_B2_RUN_ID, "run-42");
   assert.equal(env.GATE_B2_OUTPUT_PATH, "/tmp/consent-report.json");
   assert.equal(env.GATE_B2_COMMAND_DIGEST, heavyExpected.commandDigest);
+  assert.equal(env.GATE_B2_FREEZE_ID, "freeze-42");
+  assert.equal(env.GATE_B2_CERTIFICATION_RUN_ID, "certification-42");
+  assert.equal(env.GATE_B2_ATTEMPT, "2");
+  assert.equal(env.GATE_B2_ATTEMPT_DIR, "/tmp/gate-b2/attempt-2");
   assert.equal(env.HOME, "/home/tester");
   assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
+});
+
+test("Gate B2 attempt ledger allocates append-only attempts per candidate suite", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-attempts-"));
+  try {
+    const first = await allocateGateB2Attempt({
+      artifactDir: temp,
+      suiteId: "heavy-narrative-chronicle-production",
+    });
+    const second = await allocateGateB2Attempt({
+      artifactDir: temp,
+      suiteId: "heavy-narrative-chronicle-production",
+    });
+
+    assert.equal(first.attempt, 1);
+    assert.equal(second.attempt, 2);
+    assert.notEqual(first.attemptDir, second.attemptDir);
+    assert.match(first.attemptDir, /attempts\/heavy-narrative-chronicle-production\/attempt-1$/);
+    assert.match(second.attemptDir, /attempts\/heavy-narrative-chronicle-production\/attempt-2$/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("full-ci evidence rejects bare passed:true without structured fields", () => {

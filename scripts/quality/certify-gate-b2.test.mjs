@@ -432,6 +432,39 @@ test("decideVerdict never promotes blocked/deferred/skipped to PASS", () => {
   assert.equal(informational.verdict, "BLOCK");
 });
 
+test("decideVerdict never promotes a non-normative Attempt 2 success to PASS", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const result = decideVerdict({
+    suites: [
+      {
+        suiteId: "heavy-agent-tool-loop",
+        bucket: "requiredHeavy",
+        attempt: 2,
+        result: "passed",
+        message: "diagnostic retry passed",
+      },
+    ],
+    candidate: {
+      frozen: true,
+      dirty: false,
+      commitSha: "a".repeat(40),
+      treeSha: "b".repeat(40),
+      writerRegistryDigest: digest,
+    },
+    decisionPolicy: {
+      requireCandidateFreeze: true,
+      blockedIsPass: false,
+      deferredIsPass: false,
+      skippedIsPass: false,
+      retryOverwritePass: false,
+    },
+    preflightOnly: false,
+  });
+
+  assert.equal(result.verdict, "BLOCK");
+  assert.match(result.reasons.join("\n"), /Attempt 2|non-normative|normative/i);
+});
+
 test("tallyBucket counts suite results without inventing passes", () => {
   const summary = tallyBucket(
     [
@@ -770,6 +803,8 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId", a
     generatedAt: "2026-01-01T00:00:00.000Z",
     startedAt: "2026-01-01T00:00:00.000Z",
     completedAt: "2026-01-01T00:00:01.000Z",
+    freezeId: "freeze-test",
+    certificationRunId: "certification-test",
     mode: "heavy",
     candidate: {
       commitSha: "b".repeat(40),
@@ -780,6 +815,7 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId", a
       aiPathRegistryDigest: digest,
       qualityManifestDigest: digest,
       narrativeEvalManifestDigest: digest,
+      freezeId: "freeze-test",
       frozen: true,
       dirty: false,
       boundVia: "detached-worktree",

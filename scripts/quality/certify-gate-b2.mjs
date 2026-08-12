@@ -12,7 +12,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile, access } from "node:fs/promises";
+import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,6 +26,7 @@ import {
   assertDigestsMatchFreeze,
   assertFreezeActive,
   assertWorkingTreeClean,
+  allocateGateB2Attempt,
   bindExecutionRoot,
   buildDecisionDocument,
   buildHeavyCertificationEnv,
@@ -35,6 +36,7 @@ import {
   readHeavyLiveReport,
   sanitizeCertificationEnv,
   stripCredentialPlaceholders,
+  writeGateB2AttemptRecord,
   validateChronicleProductionReport,
   validateFullCiEvidence,
   validateJsonAgainstSchema,
@@ -203,6 +205,14 @@ export function validateGateB2Manifest(raw) {
     errors.push(`contractVersion must be ${GATE_B2_CONTRACT_VERSION}`);
   }
   if (raw.id !== "gate-b2") errors.push("id must be gate-b2");
+  if (!raw.candidate || typeof raw.candidate !== "object") {
+    errors.push("candidate contract must be an object");
+  } else if (
+    !Number.isSafeInteger(raw.candidate.schemaVersion) ||
+    raw.candidate.schemaVersion < 1
+  ) {
+    errors.push("candidate.schemaVersion must be a positive integer");
+  }
   for (const key of [
     "requiredLight",
     "requiredHeavy",
@@ -837,6 +847,9 @@ export function decideVerdict({
   const hold = required.filter((suite) => suite.result === "hold");
   const notRun = required.filter((suite) => suite.result === "not-run");
   const deferred = required.filter((suite) => suite.result === "deferred");
+  const nonNormativeAttempts = required.filter(
+    (suite) => Number.isInteger(suite.attempt) && suite.attempt > 1,
+  );
   const skippedLike = required.filter((suite) =>
     ["skipped", "deferred"].includes(suite.result),
   );
@@ -862,6 +875,14 @@ export function decideVerdict({
       `required suites not run: ${notRun.map((s) => s.suiteId).join(", ")}`,
     );
     return { verdict: "INCOMPLETE", reasons };
+  }
+  if (nonNormativeAttempts.length > 0) {
+    reasons.push(
+      `non-normative retry attempts cannot count as PASS: ${nonNormativeAttempts
+        .map((suite) => `${suite.suiteId} Attempt ${suite.attempt}`)
+        .join(", ")}`,
+    );
+    return { verdict: "BLOCK", reasons };
   }
   if (hold.length > 0) {
     reasons.push(
@@ -1146,6 +1167,8 @@ async function runHeavySuites({
   dryRun,
   creditInformational = false,
   candidate,
+  freeze,
+  certificationRunId,
   artifactDir,
   env = process.env,
 }) {
@@ -1230,9 +1253,11 @@ async function runHeavySuites({
         : [stripCredentialPlaceholders(resolved.commandString)];
     const commandDigest = sha256Text(JSON.stringify(commandForDigest));
     const runId = randomUUID();
-    const outputPath = path.join(artifactDir, "heavy", entry.id, "report.json");
-    await mkdir(path.dirname(outputPath), { recursive: true });
-    await rm(outputPath, { force: true });
+    const { attempt, attemptDir } = await allocateGateB2Attempt({
+      artifactDir,
+      suiteId: entry.id,
+    });
+    const outputPath = path.join(attemptDir, "report.json");
 
     const heavyEnv = buildHeavyCertificationEnv({
       candidate,
@@ -1240,6 +1265,10 @@ async function runHeavySuites({
       runId,
       outputPath,
       commandDigest,
+      freezeId: freeze?.freezeId,
+      certificationRunId,
+      attempt,
+      attemptDir,
       baseEnv: env,
     });
 
@@ -1279,6 +1308,9 @@ async function runHeavySuites({
       suiteId: entry.id,
       runId,
       commandDigest,
+      freezeId: freeze?.freezeId,
+      certificationRunId,
+      attempt,
     };
     const artifactDigests = [];
 
@@ -1314,11 +1346,17 @@ async function runHeavySuites({
       }
 
       if (liveReport && result !== "failed") {
-        const digest = await persistHeavyReport({
-          report: liveReport,
-          artifactDir,
-          suiteId: entry.id,
-        });
+        let digest;
+        if (await pathExists(outputPath)) {
+          digest = sha256Text(await readFile(outputPath, "utf8"));
+        } else {
+          digest = await persistHeavyReport({
+            report: liveReport,
+            artifactDir,
+            suiteId: entry.id,
+            attemptDir,
+          });
+        }
         artifactDigests.push(digest);
       } else if (
         bucket === "requiredHeavy" &&
@@ -1337,7 +1375,7 @@ async function runHeavySuites({
     const suiteResult = {
       suiteId: entry.id,
       bucket,
-      attempt: 1,
+      attempt,
       startedAt: captured.startedAt,
       completedAt: captured.completedAt,
       exitCode: captured.exitCode,
@@ -1351,6 +1389,29 @@ async function runHeavySuites({
       command: commandForDigest,
       runId,
     };
+    await writeGateB2AttemptRecord({
+      attemptDir,
+      record: {
+        schemaVersion: 1,
+        candidateCommitSha: candidate.commitSha,
+        candidateTreeSha: candidate.treeSha,
+        freezeId: freeze?.freezeId ?? null,
+        certificationRunId: certificationRunId ?? null,
+        suiteId: entry.id,
+        attempt,
+        runId,
+        commandDigest,
+        startedAt: captured.startedAt,
+        completedAt: captured.completedAt,
+        exitCode: captured.exitCode,
+        environmentDigest: environment.digest,
+        stdoutDigest: captured.stdoutDigest,
+        stderrDigest: captured.stderrDigest,
+        artifactDigests,
+        result,
+        message,
+      },
+    });
     suites.push(suiteResult);
     if (
       bucket === "requiredHeavy" &&
@@ -1370,6 +1431,7 @@ export async function certifyGateB2({
   boundExecution = false,
 }) {
   const startedAt = new Date().toISOString();
+  const certificationRunId = randomUUID();
   const needsExecution =
     args.runLight ||
     args.runHeavy ||
@@ -1507,7 +1569,8 @@ export async function certifyGateB2({
       commitSha: identity.commitSha,
       treeSha: identity.treeSha,
       baseMasterSha: identity.baseMasterSha,
-      schemaVersion: manifest.candidate?.schemaVersion ?? 16,
+      schemaVersion: manifest.candidate.schemaVersion,
+      freezeId: freeze?.freezeId ?? null,
       ...digests,
       frozen,
       dirty: identity.dirty,
@@ -1579,6 +1642,8 @@ export async function certifyGateB2({
           repoRoot: executionRoot,
           dryRun: args.dryRun,
           candidate,
+          freeze,
+          certificationRunId,
           artifactDir,
           env: certEnv,
         })),
@@ -1633,6 +1698,8 @@ export async function certifyGateB2({
           dryRun: args.dryRun,
           creditInformational: true,
           candidate,
+          freeze,
+          certificationRunId,
           artifactDir,
           env: certEnv,
         })),
@@ -1677,6 +1744,8 @@ export async function certifyGateB2({
             repoRoot: executionRoot,
             dryRun: args.dryRun,
             candidate,
+            freeze,
+            certificationRunId,
             artifactDir,
             env: certEnv,
           })),
@@ -1698,6 +1767,15 @@ export async function certifyGateB2({
     for (const suite of suites) {
       if (suite.result === "blocked") {
         blockedReasons.push(`${suite.suiteId}: ${suite.message}`);
+      }
+      if (Number.isInteger(suite.attempt) && suite.attempt > 1) {
+        retries.push({
+          suiteId: suite.suiteId,
+          attempt: suite.attempt,
+          result: suite.result,
+          normative: false,
+          message: suite.message,
+        });
       }
     }
 
@@ -1748,6 +1826,8 @@ export async function certifyGateB2({
       generatedAt: new Date().toISOString(),
       startedAt,
       completedAt: new Date().toISOString(),
+      freezeId: freeze?.freezeId ?? null,
+      certificationRunId,
       mode,
       candidate,
       environment,
@@ -1793,6 +1873,8 @@ export async function certifyGateB2({
     const decisionPath = path.join(artifactDir, "decision.json");
     const decisionDoc = buildDecisionDocument({
       candidate,
+      freezeId: freeze?.freezeId ?? null,
+      certificationRunId,
       verdict: report.verdict,
       reasons: report.verdictReasons,
       suites,
