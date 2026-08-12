@@ -231,6 +231,10 @@ fn retraction_event_payload() -> Value {
     let mut payload = event_payload();
     payload["eventId"] = Value::String("event-retraction-1".to_string());
     payload["title"] = Value::String("Retraction".to_string());
+    payload["compensation"] = json!({
+        "strategy": "chronicle.event.retract",
+        "targetEntityId": "event-prepared-1"
+    });
     payload
 }
 
@@ -946,7 +950,7 @@ fn prepare_seals_prepared_commit_row() {
 #[test]
 fn revision_envelope_and_source_basis_contract_rows_are_immutable() -> anyhow::Result<()> {
     let db = migrated_db();
-    let (run_id, _set_id, _proposal_id, revision_id) = seed_one_approved(&db);
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
     enable_manual_apply(&db);
 
     let envelope_error = db.with_conn(|conn| {
@@ -975,17 +979,6 @@ fn revision_envelope_and_source_basis_contract_rows_are_immutable() -> anyhow::R
     })?;
     assert!(digest_error.contains("NEX_REVISION_ENVELOPE_IMMUTABLE"));
 
-    let source_delete_error = db.with_conn(|conn| {
-        let error = conn
-            .execute(
-                "DELETE FROM narrative_revision_source_basis WHERE revision_id = ?1",
-                rusqlite::params![revision_id],
-            )
-            .expect_err("source basis rows must be immutable");
-        Ok(error.to_string())
-    })?;
-    assert!(source_delete_error.contains("NEX_REVISION_SOURCE_BASIS_IMMUTABLE"));
-
     db.execute(
         "INSERT INTO narrative_revision_source_basis
             (revision_id, ordinal, source_kind, source_key, revision_token)
@@ -999,12 +992,37 @@ fn revision_envelope_and_source_basis_contract_rows_are_immutable() -> anyhow::R
     .expect("extra source row is observable before prepare");
     let prepare_error = narrative_extraction::narrative_extraction_prepare_commit(
         &db,
-        build_prepare(&run_id, "set-prepared", "prop-prepared", &revision_id),
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
     )
     .expect_err("extra source basis row must fail the prepare contract");
     assert!(prepare_error
         .to_string()
         .contains("NEX_SOURCE_BASIS_STORAGE_MISMATCH"));
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_revision_source_basis
+              WHERE revision_id = ?1 AND ordinal = 1",
+            rusqlite::params![revision_id],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })?;
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+    )?;
+    apply_prepared(&db, &prepared)?;
+
+    let source_delete_error = db.with_conn(|conn| {
+        let error = conn
+            .execute(
+                "DELETE FROM narrative_revision_source_basis WHERE revision_id = ?1",
+                rusqlite::params![revision_id],
+            )
+            .expect_err("applied source basis rows must be immutable");
+        Ok(error.to_string())
+    })?;
+    assert!(source_delete_error.contains("NEX_REVISION_SOURCE_BASIS_IMMUTABLE"));
     Ok(())
 }
 

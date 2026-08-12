@@ -947,6 +947,59 @@ mod tests {
             "run",
         )
         .expect("seed project");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json,
+                     spec_digest, status, created_at)
+                 VALUES ('run-delete', 'project-1', 'surface', '{}', '{}',
+                         'digest', 'completed', datetime('now'));
+                 INSERT INTO narrative_extraction_tasks
+                    (id, run_id, task_kind, status, input_json, created_at)
+                 VALUES ('task-delete', 'run-delete', 'task', 'completed', '{}', datetime('now'));
+                 INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at)
+                 VALUES ('attempt-delete', 'task-delete', 1, 'completed', datetime('now'));
+                 INSERT INTO narrative_extraction_task_edges
+                    (id, run_id, from_task_id, to_task_id, edge_kind, created_at)
+                 VALUES ('edge-delete', 'run-delete', 'task-delete', 'task-delete', 'depends_on', datetime('now'));
+                 INSERT INTO narrative_extraction_artifacts
+                    (id, run_id, task_id, attempt_id, artifact_kind, payload_json, created_at)
+                 VALUES ('artifact-delete', 'run-delete', 'task-delete', 'attempt-delete', 'test', '{}', datetime('now'));
+                 INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, status, summary_json, created_at, updated_at)
+                 VALUES ('set-delete', 'run-delete', 'project-1', 'test', 'draft', '{}', datetime('now'), datetime('now'));
+                 INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json, created_at, updated_at)
+                 VALUES ('proposal-delete', 'set-delete', 'key-delete', 'test', '{}', datetime('now'), datetime('now'));
+                 INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind, created_at, created_by)
+                 VALUES ('revision-delete', 'proposal-delete', 1, '{}', 'legacy-unbound', datetime('now'), 'test');
+                 UPDATE narrative_proposals
+                    SET current_revision_id = 'revision-delete'
+                  WHERE id = 'proposal-delete';
+                 INSERT INTO narrative_revision_source_basis
+                    (revision_id, ordinal, source_kind, source_key, revision_token)
+                 VALUES ('revision-delete', 0, 'snapshot-document', 'source-delete', 'revision-1');
+                 INSERT INTO narrative_proposal_decisions
+                    (id, proposal_id, revision_id, decision, decision_json, created_at, created_by)
+                 VALUES ('decision-delete', 'proposal-delete', 'revision-delete', 'deferred', '{}', datetime('now'), 'test');
+                 INSERT INTO narrative_apply_commits
+                    (id, project_id, run_id, proposal_set_id, request_id, plan_digest, status, created_at)
+                 VALUES ('commit-delete', 'project-1', 'run-delete', 'set-delete', 'request-delete', 'plan-delete', 'prepared', datetime('now'));
+                 INSERT INTO narrative_apply_operations
+                    (id, commit_id, operation_index, operation_kind, payload_json, status, created_at)
+                 VALUES ('operation-delete', 'commit-delete', 0, 'test', '{}', 'prepared', datetime('now'));
+                 INSERT INTO narrative_commit_journals
+                    (id, commit_id, project_id, after_json, created_at)
+                 VALUES ('journal-delete', 'commit-delete', 'project-1', '{}', datetime('now'));
+                 INSERT INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind, updated_at)
+                 VALUES ('project-1', 'codex-entry', 'entry-delete', '/summary', 'ai', datetime('now'));",
+            )?;
+            Ok(())
+        })
+        .expect("seed un-applied narrative graph");
         db.execute(
             "INSERT INTO lint_term_dictionary
              (id, project_id, preferred, variants, created_at, updated_at)
@@ -1011,6 +1064,36 @@ mod tests {
             )
             .expect("query retained ledger");
         assert_eq!(rows[0]["n"], Value::from(1));
+
+        for (table, predicate) in [
+            ("narrative_extraction_runs", "id = 'run-delete'"),
+            ("narrative_extraction_tasks", "id = 'task-delete'"),
+            ("narrative_extraction_attempts", "id = 'attempt-delete'"),
+            ("narrative_extraction_task_edges", "id = 'edge-delete'"),
+            ("narrative_extraction_artifacts", "id = 'artifact-delete'"),
+            ("narrative_proposal_sets", "id = 'set-delete'"),
+            ("narrative_proposals", "id = 'proposal-delete'"),
+            ("narrative_proposal_revisions", "id = 'revision-delete'"),
+            ("narrative_revision_source_basis", "revision_id = 'revision-delete'"),
+            ("narrative_proposal_decisions", "id = 'decision-delete'"),
+            ("narrative_apply_commits", "id = 'commit-delete'"),
+            ("narrative_apply_operations", "id = 'operation-delete'"),
+            ("narrative_commit_journals", "id = 'journal-delete'"),
+            ("narrative_field_authority", "project_id = 'project-1'"),
+        ] {
+            let remaining = db
+                .execute(
+                    &format!("SELECT count(*) AS n FROM {table} WHERE {predicate}"),
+                    &[],
+                    "get",
+                )
+                .expect("query deleted narrative graph row");
+            assert_eq!(
+                remaining[0]["n"],
+                Value::from(0),
+                "project delete left rows in {table}"
+            );
+        }
 
         let missing = crate::domain_writes::project_delete(
             &db,

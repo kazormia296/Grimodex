@@ -27,6 +27,7 @@ candidate:
   reportSchemaDigest: null
   decisionSchemaDigest: null
   journeySchemaDigest: null
+  journeyRunnerDigest: null
   chronicleAdapterDigest: null
   chronicleScorerDigest: null
   webConsentJourneyDigest: null
@@ -48,7 +49,8 @@ inputs:
   adrValidator: scripts/quality/validate-gate-b2-adr.mjs
   reportSchema: evals/certifications/schemas/gate-b2-report-v1.schema.json
   decisionSchema: evals/certifications/schemas/gate-b2-decision-v1.schema.json
-  journeySchema: evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json
+  journeySchema: evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json
+  journeyRunner: scripts/quality/run-gate-b2-journey.mjs
   chronicleAdapter: src/features/narrative-extraction/eval/productionChronicleAdapter.ts
   chronicleScorer: src/features/narrative-extraction/eval/productionChronicleScoring.ts
   webConsentJourney: src/features/ai-policy/webAiConsent.live.test.tsx
@@ -138,51 +140,41 @@ releaseAdjacent:
     status: blocked
 
 requiredManualJourneys:
-  # Journeys stay BLOCKED until real runners emit candidate-bound evidence under
-  # GATE_B2_* env (or GitHub-attested artifacts). Handwritten JSON alone cannot PASS.
   - id: prepared-plan-toctou
     runnerId: gate-b2-prepared-plan-toctou-journey
     runnerVersion: "1"
     requiredAssertions: [source-changed-after-prepare, apply-rejected-or-revalidated]
-    status: blocked
-    requiredAction: >
-      Implement pnpm test:gate-b2:prepared-plan-toctou that runs on the frozen
-      candidate worktree and writes GATE_B2_OUTPUT_PATH evidence with binding fields.
+    command: [pnpm, test:gate-b2:prepared-plan-toctou]
   - id: runtime-terminalization
     runnerId: gate-b2-runtime-terminalization-journey
     runnerVersion: "1"
     requiredAssertions: [runtime-terminal-state, no-partial-apply]
-    status: blocked
-    requiredAction: >
-      Implement pnpm test:gate-b2:runtime-terminalization with GATE_B2_* bound evidence.
+    command: [pnpm, test:gate-b2:runtime-terminalization]
   - id: browser-electron-writer-parity
     runnerId: gate-b2-browser-electron-writer-parity-journey
     runnerVersion: "1"
     requiredAssertions: [parity-write-result, parity-event-shape]
-    status: blocked
-    requiredAction: >
-      Implement pnpm test:gate-b2:browser-electron-writer-parity with GATE_B2_* bound evidence.
+    command: [pnpm, test:gate-b2:browser-electron-writer-parity]
   - id: locked-field-enforcement
     runnerId: gate-b2-locked-field-journey
     runnerVersion: "1"
     requiredAssertions: [locked-write-rejected, target-value-unchanged, no-change-event, no-undo-journal]
-    status: blocked
-    requiredAction: >
-      Implement pnpm test:gate-b2:locked-field-enforcement with GATE_B2_* bound evidence.
+    command: [pnpm, test:gate-b2:locked-field-enforcement]
   - id: dirty-only-propagation
     runnerId: gate-b2-dirty-only-propagation-journey
     runnerVersion: "1"
     requiredAssertions: [dirty-only-propagated, clean-fields-untouched]
-    status: blocked
-    requiredAction: >
-      Implement pnpm test:gate-b2:dirty-only-propagation with GATE_B2_* bound evidence.
+    command: [pnpm, test:gate-b2:dirty-only-propagation]
   - id: immutable-retraction-history
     runnerId: gate-b2-immutable-retraction-history-journey
     runnerVersion: "1"
     requiredAssertions: [retraction-appended, prior-history-immutable]
-    status: blocked
-    requiredAction: >
-      Implement pnpm test:gate-b2:immutable-retraction-history with GATE_B2_* bound evidence.
+    command: [pnpm, test:gate-b2:immutable-retraction-history]
+  - id: semantic-gate-exclusion
+    runnerId: gate-b2-semantic-gate-exclusion-journey
+    runnerVersion: "1"
+    requiredAssertions: [semantic-oddity-applied, structural-invalidity-rejected, decision-authority-still-required]
+    command: [pnpm, test:gate-b2:semantic-gate-exclusion]
 
 decisionPolicy:
   blockedIsPass: false

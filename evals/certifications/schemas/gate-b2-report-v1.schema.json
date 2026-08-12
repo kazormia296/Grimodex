@@ -121,6 +121,10 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "journeyRunnerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "chronicleAdapterDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"

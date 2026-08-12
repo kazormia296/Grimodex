@@ -715,14 +715,33 @@ fn has_v20_retraction_columns(conn: &Connection) -> anyhow::Result<bool> {
               'narrative_decision_immutable_after_apply_delete',
               'narrative_application_immutable_update',
               'narrative_application_immutable_delete',
-              'narrative_application_kind_guard'
+              'narrative_application_kind_guard',
+              'narrative_application_compensation_guard'
             )",
         [],
         |row| row.get(0),
     )?;
+    let source_delete_trigger: Option<String> = conn
+        .query_row(
+            "SELECT sql
+               FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_source_basis_immutable_delete'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(has_text("application_kind")
         && has_text("compensates_application_id")
-        && triggers == 10)
+        && triggers == 11
+        && source_delete_trigger
+            .as_deref()
+            .map(compact_sql)
+            .is_some_and(|sql| {
+                sql.contains(
+                    "whenexists(select1fromnarrative_proposal_applicationswhererevision_id=old.revision_id)",
+                )
+            }))
 }
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

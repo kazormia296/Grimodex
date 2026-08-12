@@ -10,6 +10,8 @@ export interface ExistingRelationCatalogRecord {
   readonly directionality: "directed" | "symmetric";
   readonly forwardLabel: string;
   readonly inverseLabel: string | null;
+  /** OCC token captured with the catalog read. */
+  readonly expectedVersion?: number;
 }
 
 export type ExistingRelationMatch =
@@ -40,6 +42,7 @@ export function buildExistingRelationCatalog(
     readonly label: string | null;
     readonly inverseLabel: string | null;
     readonly semanticKey: string;
+    readonly version?: number;
   }[],
 ): ExistingRelationCatalogRecord[] {
   const catalog: ExistingRelationCatalogRecord[] = [];
@@ -57,6 +60,7 @@ export function buildExistingRelationCatalog(
       directionality: row.directionality,
       forwardLabel: row.label ?? "",
       inverseLabel: row.inverseLabel,
+      expectedVersion: row.version ?? 0,
     });
   }
   return catalog;

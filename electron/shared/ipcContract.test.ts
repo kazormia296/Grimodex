@@ -1898,6 +1898,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
                 kind: "node-title",
                 refId: "scene-1",
                 detailDefinitionId: null,
+                baseVersion: 0,
                 value: "Old title",
                 charCount: null,
                 placedBeatPreview: null,

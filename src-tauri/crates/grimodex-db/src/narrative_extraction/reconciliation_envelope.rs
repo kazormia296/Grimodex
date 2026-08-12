@@ -310,6 +310,16 @@ pub(crate) fn validate_reconciliation_envelope(
         "NEX_ENVELOPE_TARGET_FORBIDDEN: add cannot specify targetProjectionRef"
     );
 
+    // Schema v1 predates the mandatory read-set binding.  Keep those rows
+    // readable for migration/review, but never promote them to the
+    // `enveloped` origin: without a complete token vector Native cannot prove
+    // what the reconciler actually read, and a live token lookup at save time
+    // would leave a TOCTOU gap.  The caller therefore persists this as an
+    // explicit legacy-unbound revision, which the prepare/apply path rejects.
+    if !has_revision_tokens {
+        return Ok(None);
+    }
+
     let canonical_json = canonical_json_string(envelope)?;
     let digest = digest_bytes(canonical_json.as_bytes());
     Ok(Some(ValidatedReconciliationEnvelope {
@@ -397,7 +407,7 @@ fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> anyhow::R
 fn read_set_kind_for_source_kind(source_kind: &str) -> anyhow::Result<&'static str> {
     match source_kind {
         "snapshot-document" | "scene-body" => Ok("snapshot-document"),
-        "projection" | "domain-projection" => Ok("projection"),
+        "projection" | "domain-projection" | "codex-catalog" => Ok("projection"),
         "evidence" | "evidence-anchor" | "narrative-artifact" | "import-capture" => Ok("evidence"),
         "signal" => Ok("signal"),
         other => Err(anyhow!(

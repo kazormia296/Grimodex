@@ -185,7 +185,12 @@ pub fn narrative_extraction_prepare_commit(
                 &payload.run_id,
                 &applications,
             )?;
-            validate_retraction_targets(conn, &payload.project_id, &applications)?;
+            validate_retraction_targets(
+                conn,
+                &payload.project_id,
+                &applications,
+                &payload.operations,
+            )?;
             sealed_plan["sourceContract"] = serde_json::to_value(&source_contract)?;
             let prepared_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
             let policy_version = load_narrative_runtime_policy(conn).version;
@@ -525,8 +530,13 @@ fn validate_retraction_targets(
     conn: &Connection,
     project_id: &str,
     applications: &[(String, String)],
+    operations: &[CommitOperation],
 ) -> anyhow::Result<()> {
-    for (proposal_id, revision_id) in applications {
+    anyhow::ensure!(
+        applications.len() == operations.len(),
+        "NEX_RETRACTION_APPLICATIONS_MISMATCH: operation/application counts differ"
+    );
+    for ((proposal_id, revision_id), operation) in applications.iter().zip(operations) {
         let (change_kind, target) = load_retraction_metadata(conn, proposal_id, revision_id)?;
         if change_kind != "retract" {
             continue;
@@ -536,17 +546,33 @@ fn validate_retraction_targets(
                 "NEX_RETRACTION_TARGET_REQUIRED: retract revision '{revision_id}' has no target application"
             )
         })?;
-        let target_row: Option<(String, String, String)> = conn
+        let target_row: Option<(String, String, String, String, String)> = conn
             .query_row(
-                "SELECT c.project_id, a.revision_id, a.application_kind
+                "SELECT c.project_id, a.revision_id, a.application_kind,
+                        a.applied_entity_kind, a.applied_entity_id
                    FROM narrative_proposal_applications a
                    INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
                   WHERE a.id = ?1",
                 params![target],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((target_project_id, target_revision_id, target_kind)) = target_row else {
+        let Some((
+            target_project_id,
+            target_revision_id,
+            target_kind,
+            target_entity_kind,
+            target_entity_id,
+        )) = target_row
+        else {
             anyhow::bail!(
                 "NEX_RETRACTION_TARGET_MISSING: target application '{target}' is not applied"
             );
@@ -563,7 +589,128 @@ fn validate_retraction_targets(
             target_revision_id != revision_id.as_str(),
             "NEX_RETRACTION_TARGET_INVALID: a revision cannot compensate itself"
         );
+        let already_compensated: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_proposal_applications
+              WHERE application_kind = 'compensation'
+                AND compensates_application_id = ?1",
+            params![target],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            already_compensated == 0,
+            "NEX_RETRACTION_TARGET_ALREADY_COMPENSATED: target application '{target}' already has a compensation"
+        );
+        anyhow::ensure!(
+            !target_entity_id.is_empty(),
+            "NEX_RETRACTION_TARGET_INVALID: target application '{target}' has no entity id"
+        );
+        validate_compensation_operation(operation, &target_entity_kind, &target_entity_id)?;
     }
+    Ok(())
+}
+
+fn compensation_strategy(operation_kind: &str) -> anyhow::Result<(&'static str, &'static str)> {
+    let strategy = match operation_kind {
+        OP_KIND_EVENT_CREATE => ("event", "chronicle.event.retract"),
+        OP_KIND_ENTRY_CREATE | OP_KIND_ENTRY_PATCH | OP_KIND_ENTITY_BIND_EXISTING => {
+            ("codex_entry", "codex.entry.retract")
+        }
+        OP_KIND_RELATION_CREATE => ("codex_relation", "codex.relation.retract"),
+        OP_KIND_DETAIL_VALUE_SET => ("codex_detail_value", "codex.detail-value.retract"),
+        OP_KIND_PHASE_CREATE | OP_KIND_PHASE_PATCH => ("codex_phase", "codex.phase.retract"),
+        OP_KIND_SEMANTIC_BINDING_UPSERT => (
+            "codex_semantic_binding",
+            "codex.semantic-binding.retract",
+        ),
+        OP_KIND_NODE_ENSURE => ("temporal_node", "temporal.node.retract"),
+        OP_KIND_CONSTRAINT_CREATE => ("temporal_constraint", "temporal.constraint.retract"),
+        OP_KIND_SCENE_METADATA_PATCH => (
+            "temporal_scene_chronicle",
+            "temporal.scene-metadata.retract",
+        ),
+        OP_KIND_EVENT_METADATA_PATCH => (
+            "temporal_event_chronicle",
+            "temporal.event-metadata.retract",
+        ),
+        OP_KIND_STORY_ORDER_MATERIALIZE => (
+            "temporal_scene_story_order",
+            "temporal.story-order.retract",
+        ),
+        OP_KIND_PROJECTION_RECORD => ("temporal_projection", "temporal.projection.retract"),
+        OP_KIND_PLOT_THREAD_CREATE | OP_KIND_PLOT_THREAD_PATCH => {
+            ("plot_thread", "plot.thread.retract")
+        }
+        OP_KIND_PLOT_MARKER_CREATE => ("plot_thread_marker", "plot.marker.retract"),
+        OP_KIND_PLOT_BRANCH_CREATE => ("plot_thread_branch", "plot.branch.retract"),
+        OP_KIND_FORESHADOW_AGGREGATE_CREATE | OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
+            ("foreshadow", "foreshadow.retract")
+        }
+        other => anyhow::bail!(
+            "NEX_RETRACTION_OPERATION_UNSUPPORTED: operation '{other}' cannot be a compensation"
+        ),
+    };
+    Ok(strategy)
+}
+
+fn validate_compensation_operation(
+    operation: &CommitOperation,
+    target_entity_kind: &str,
+    target_entity_id: &str,
+) -> anyhow::Result<()> {
+    let (expected_entity_kind, expected_strategy) = compensation_strategy(&operation.kind)?;
+    anyhow::ensure!(
+        target_entity_kind == expected_entity_kind,
+        "NEX_RETRACTION_OPERATION_MISMATCH: operation '{}' cannot compensate entity kind '{}' (expected '{}')",
+        operation.kind,
+        target_entity_kind,
+        expected_entity_kind
+    );
+    let compensation = operation
+        .payload
+        .as_object()
+        .and_then(|payload| payload.get("compensation"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_COMPENSATION_MISSING: operation '{}' must declare a compensation strategy and targetEntityId",
+                operation.kind
+            )
+        })?;
+    let strategy = compensation
+        .get("strategy")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_COMPENSATION_INVALID: operation '{}' compensation strategy is missing",
+                operation.kind
+            )
+        })?;
+    let declared_target = compensation
+        .get("targetEntityId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_COMPENSATION_INVALID: operation '{}' compensation targetEntityId is missing",
+                operation.kind
+            )
+        })?;
+    anyhow::ensure!(
+        strategy == expected_strategy,
+        "NEX_RETRACTION_COMPENSATION_STRATEGY_MISMATCH: operation '{}' requires strategy '{}', got '{}'",
+        operation.kind,
+        expected_strategy,
+        strategy
+    );
+    anyhow::ensure!(
+        declared_target == target_entity_id,
+        "NEX_RETRACTION_COMPENSATION_TARGET_MISMATCH: operation '{}' targets '{}' but compensates '{}'",
+        operation.kind,
+        declared_target,
+        target_entity_id
+    );
     Ok(())
 }
 
@@ -715,7 +862,12 @@ pub fn narrative_extraction_apply_commit(
                 &sealed_plan.operations,
                 &validation_commit_map,
             )?;
-            validate_retraction_targets(conn, &sealed_plan.project_id, &applications)?;
+            validate_retraction_targets(
+                conn,
+                &sealed_plan.project_id,
+                &applications,
+                &sealed_plan.operations,
+            )?;
             let current_authority_digest =
                 digest_authority_rows(conn, &sealed_plan.proposal_set_id, &applications)?;
             anyhow::ensure!(

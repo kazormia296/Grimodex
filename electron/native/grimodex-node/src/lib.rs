@@ -1907,12 +1907,14 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn codex_rename_undo(&self, payload: serde_json::Value) -> Result<()> {
+    pub async fn codex_rename_undo(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: CodexRenameUndoPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                domain_writes::undo_codex_rename(db, payload)
+                Ok(serde_json::to_string(&domain_writes::undo_codex_rename(
+                    db, payload,
+                )?)?)
             })
         })
         .await

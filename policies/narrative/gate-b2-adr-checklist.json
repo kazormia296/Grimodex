@@ -7,13 +7,12 @@
       "id": "B2-X01",
       "section": "cross-cutting",
       "text": "Proposal Revision に source basis、read-set digest、evidence set、reconciler id/version、schema id/version がある",
-      "status": "FAIL",
-      "reason": "Reconciler の Draft envelope 型には必須フィールドがあるが、Native の永続 Proposal Revision へ同契約を保存・検証する実装がない。",
+      "status": "PASS",
       "evidence": [
         {
           "kind": "test",
-          "path": "src/features/narrative-extraction/reconciler/gateB2Negatives.test.ts",
-          "name": "requires source-basis fields on every draft envelope"
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_reconciliation_envelope.rs",
+          "name": "saves_canonical_envelope_and_normalized_source_basis"
         }
       ]
     },
@@ -21,21 +20,35 @@
       "id": "B2-X02",
       "section": "cross-cutting",
       "text": "Commit 時に source-basis/read-set precondition（TOCTOU 防止）がある",
-      "status": "FAIL",
-      "reason": "Native prepare/apply は Domain version CAS を行うが、source revision vector と read-set digest を Apply 時に再照合していない。",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "stale_source_invalidates_prepared_commit_without_domain_mutation"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "actual_scene_writer_invalidates_prepared_commit_on_scene_body_change"
+        }
+      ]
     },
     {
       "id": "B2-X03",
       "section": "cross-cutting",
       "text": "Reconciler-originated retract は補償 Proposal/Application であり、過去 Revision を変更せず Undo と分離される",
-      "status": "FAIL",
-      "reason": "Reconciler contract は新 draftId の補償 Draft を表現できるが、Native Application 層で semantic retraction の前向き Commit と過去 Revision 不変性を強制する契約がない。",
+      "status": "PASS",
       "evidence": [
         {
           "kind": "test",
-          "path": "src/features/narrative-extraction/reconciler/gateB2Negatives.test.ts",
-          "name": "creates semantic retraction as a new compensating draft without mutating history"
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "semantic_retraction_appends_compensation_and_preserves_prior_history"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/schema_contract.rs",
+          "name": "immutable_history_contract_contains_retraction_guards"
         }
       ]
     },
@@ -56,17 +69,32 @@
       "id": "B2-X05",
       "section": "cross-cutting",
       "text": "Source/Evidence 削除から Domain への FK cascade がない",
-      "status": "FAIL",
-      "reason": "Source/Evidence 失効を全 Narrative Domain で stale 化へ変換し、Domain Entity への cascade delete がないことを証明する schema contract test が未整備である。",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/schema_contract.rs",
+          "name": "provenance_and_field_authority_rows_have_no_domain_cascade_foreign_keys"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/src/execute.rs",
+          "name": "typed_project_delete_cascades_protected_rows_and_retains_ai_audit_events"
+        }
+      ]
     },
     {
       "id": "B2-X06",
       "section": "cross-cutting",
       "text": "Locked/user-authored projection/field の override は Decision/actor context 由来で検証される",
-      "status": "FAIL",
-      "reason": "Native Writer に locked/user-authored field と human-authorized override を照合する Commit precondition がない。",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "locked_field_invalidates_ai_apply_without_partial_mutation"
+        }
+      ]
     },
     {
       "id": "B2-X07",
@@ -94,9 +122,13 @@
       "id": "B2-CH-I",
       "section": "chronicle",
       "text": "Invariant: Project 所属、Scene/participant 存在、時刻形式、version CAS、atomic child、read-set OCC",
-      "status": "FAIL",
-      "reason": "Project/Scene/version/atomicity の Native tests はあるが、Chronicle Apply の source-basis/read-set OCC がない。",
+      "status": "PASS",
       "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "stale_source_invalidates_prepared_commit_without_domain_mutation"
+        },
         {
           "kind": "test",
           "path": "src-tauri/crates/grimodex-db/tests/narrative_extraction.rs",
@@ -157,13 +189,22 @@
       "id": "B2-CX-S",
       "section": "codex",
       "text": "Strategy: Mention 同一性、関係の物語上の意味、Alias と別 Entity の判断を Writer から分離する",
-      "status": "FAIL",
-      "reason": "evaluateRelationDomainGate が self-relation/endpoint/directionality の構造検証と polarity/commitment/support の意味判断を同一 Validator に混在させており、物理分割されていない。",
+      "status": "PASS",
       "evidence": [
         {
           "kind": "test",
+          "path": "src/features/codex/extraction/relationInvariant.ts",
+          "name": "structural relation invariant boundary"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/codex/extraction/relationStrategy.ts",
+          "name": "semantic relation strategy boundary"
+        },
+        {
+          "kind": "test",
           "path": "src/features/codex/extraction/relationSynthesis.test.ts",
-          "name": "relation domain gate behavior"
+          "name": "keeps structural validity separate from narrative strategy"
         }
       ]
     },
@@ -339,13 +380,22 @@
       "id": "B2-FS-S",
       "section": "foreshadow",
       "text": "Strategy: 機能的接続、object-use vs Q&A、misdirection 解消、resolved 判定、semantic retract",
-      "status": "FAIL",
-      "reason": "evaluateForeshadowGate が materiality/callback 等の意味判断と reading-order の構造検証を同一 Validator に混在させており、structural/semantic branch が物理分割されていない。",
+      "status": "PASS",
       "evidence": [
+        {
+          "kind": "implementation",
+          "path": "src/features/foreshadow/extraction/foreshadowInvariant.ts",
+          "name": "structural foreshadow invariant boundary"
+        },
+        {
+          "kind": "implementation",
+          "path": "src/features/foreshadow/extraction/foreshadowStrategy.ts",
+          "name": "semantic foreshadow strategy boundary"
+        },
         {
           "kind": "test",
           "path": "src/features/foreshadow/extraction/foreshadowGates.test.ts",
-          "name": "foreshadowGates"
+          "name": "keeps structural order separate from semantic oddity"
         }
       ]
     },
@@ -371,9 +421,13 @@
       "id": "B2-IM-I",
       "section": "import-maintenance",
       "text": "Invariant: Capture vs Apply runtime guard、sealed plan、参照整合、source-basis OCC",
-      "status": "FAIL",
-      "reason": "Runtime guard、sealed Prepared Commit、参照整合の tests はあるが、Apply 時 source-basis/read-set OCC がない。",
+      "status": "PASS",
       "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "stale_source_invalidates_prepared_commit_without_domain_mutation"
+        },
         {
           "kind": "test",
           "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",

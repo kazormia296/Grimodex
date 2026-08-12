@@ -36,7 +36,8 @@ export const HARNESS_DIGEST_PATHS = {
   decisionSchemaDigest:
     "evals/certifications/schemas/gate-b2-decision-v1.schema.json",
   journeySchemaDigest:
-    "evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json",
+    "evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json",
+  journeyRunnerDigest: "scripts/quality/run-gate-b2-journey.mjs",
   chronicleAdapterDigest:
     "src/features/narrative-extraction/eval/productionChronicleAdapter.ts",
   chronicleScorerDigest:
@@ -551,6 +552,40 @@ export function buildHeavyCertificationEnv({
   return env;
 }
 
+export function buildJourneyCertificationEnv({
+  candidate,
+  journeyId,
+  outputPath,
+  runnerArtifactPath,
+  commandDigest,
+  environmentDigest,
+  runnerId,
+  runnerVersion,
+  freezeId,
+  certificationRunId,
+  attempt,
+  attemptDir,
+  baseEnv = process.env,
+}) {
+  const env = {
+    ...sanitizeCertificationEnv(baseEnv),
+    GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
+    GATE_B2_CANDIDATE_TREE_SHA: candidate.treeSha,
+    GATE_B2_SUITE_ID: journeyId,
+    GATE_B2_OUTPUT_PATH: outputPath,
+    GATE_B2_RUNNER_ARTIFACT_PATH: runnerArtifactPath,
+    GATE_B2_COMMAND_DIGEST: commandDigest,
+    GATE_B2_ENVIRONMENT_DIGEST: environmentDigest,
+    GATE_B2_RUNNER_ID: runnerId,
+    GATE_B2_RUNNER_VERSION: String(runnerVersion),
+    GATE_B2_FREEZE_ID: freezeId,
+    GATE_B2_CERTIFICATION_RUN_ID: certificationRunId,
+    GATE_B2_ATTEMPT: String(attempt),
+  };
+  if (attemptDir) env.GATE_B2_ATTEMPT_DIR = attemptDir;
+  return env;
+}
+
 const FULL_CI_REQUIRED = [
   "commitSha",
   "treeSha",
@@ -998,22 +1033,37 @@ const JOURNEY_REQUIRED = [
   "journeyId",
   "candidateCommitSha",
   "candidateTreeSha",
+  "freezeId",
+  "certificationRunId",
   "runnerId",
   "runnerVersion",
   "environmentDigest",
+  "commandDigest",
+  "runnerArtifactDigest",
   "assertions",
   "result",
   "startedAt",
   "completedAt",
+  "artifactDigests",
 ];
 
 export function validateJourneyEvidence(
   raw,
-  { journeyId, candidate, contract },
+  { journeyId, candidate, contract, expected = {} },
 ) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey evidence must be an object",
+    };
+  }
   const missing = JOURNEY_REQUIRED.filter((key) => {
     if (key === "assertions") {
       return !Array.isArray(raw.assertions) || raw.assertions.length === 0;
+    }
+    if (key === "artifactDigests") {
+      return !Array.isArray(raw.artifactDigests) || raw.artifactDigests.length === 0;
     }
     return raw[key] === undefined || raw[key] === null || raw[key] === "";
   });
@@ -1024,18 +1074,18 @@ export function validateJourneyEvidence(
       message: `journey evidence missing required fields: ${missing.join(", ")}`,
     };
   }
-  if (raw.schemaVersion !== 1) {
+  if (raw.schemaVersion !== 2) {
     return {
       ok: false,
       result: "failed",
-      message: "journey schemaVersion must be 1",
+      message: "journey schemaVersion must be 2",
     };
   }
   if (raw.journeyId !== journeyId) {
     return {
       ok: false,
       result: "failed",
-      message: `journeyId ${raw.journeyId} != filename/manifest ${journeyId}`,
+      message: `journeyId ${raw.journeyId} != manifest ${journeyId}`,
     };
   }
   if (raw.candidateCommitSha !== candidate.commitSha) {
@@ -1059,15 +1109,90 @@ export function validateJourneyEvidence(
       message: "journey environmentDigest must be sha256:...",
     };
   }
+  for (const [key, label] of [
+    ["commandDigest", "commandDigest"],
+    ["runnerArtifactDigest", "runnerArtifactDigest"],
+  ]) {
+    if (!SHA256_RE.test(String(raw[key]))) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `journey ${label} must be sha256:...`,
+      };
+    }
+  }
+  if (!raw.artifactDigests.every((digest) => SHA256_RE.test(String(digest)))) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey artifactDigests must contain sha256:... values",
+    };
+  }
+  if (!raw.artifactDigests.includes(raw.runnerArtifactDigest)) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey artifactDigests must include runnerArtifactDigest",
+    };
+  }
+
+  if (expected.freezeId !== undefined && raw.freezeId !== expected.freezeId) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey freezeId mismatch",
+    };
+  }
+  if (
+    expected.certificationRunId !== undefined &&
+    raw.certificationRunId !== expected.certificationRunId
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey certificationRunId mismatch",
+    };
+  }
+  if (expected.commandDigest !== undefined && raw.commandDigest !== expected.commandDigest) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey commandDigest mismatch",
+    };
+  }
+  if (
+    expected.runnerArtifactDigest !== undefined &&
+    raw.runnerArtifactDigest !== expected.runnerArtifactDigest
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey runnerArtifactDigest mismatch",
+    };
+  }
+  if (
+    expected.environmentDigest !== undefined &&
+    raw.environmentDigest !== expected.environmentDigest
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey environmentDigest mismatch",
+    };
+  }
+
   if (
     !raw.assertions.every(
-      (a) => a && typeof a.id === "string" && a.passed === true,
+      (assertion) =>
+        assertion &&
+        typeof assertion.id === "string" &&
+        typeof assertion.passed === "boolean",
     )
   ) {
     return {
       ok: false,
       result: "failed",
-      message: "journey assertions must all have id and passed:true",
+      message: "journey assertions must all have id and boolean passed",
     };
   }
 
@@ -1116,6 +1241,13 @@ export function validateJourneyEvidence(
 
   const result = String(raw.result).toLowerCase();
   if (result === "passed") {
+    if (!raw.assertions.every((assertion) => assertion.passed === true)) {
+      return {
+        ok: false,
+        result: "failed",
+        message: "passed Journey evidence must have passed:true for every assertion",
+      };
+    }
     return { ok: true, result: "passed", message: "journey evidence accepted" };
   }
   if (result === "hold") {

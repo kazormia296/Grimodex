@@ -14,6 +14,8 @@ import {
   evaluateJourneyEvidence,
   loadGateB2Manifest,
   parseCertifyArgs,
+  resolveAttemptLedgerRoot,
+  runJourneySuite,
   tallyBucket,
   validateGateB2Manifest,
 } from "./certify-gate-b2.mjs";
@@ -76,8 +78,19 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   assert.equal(journey.runnerVersion, "1");
   assert.ok(Array.isArray(journey.requiredAssertions));
   assert.ok(journey.requiredAssertions.length > 0);
-  assert.equal(journey.status, "blocked");
-  assert.ok(journey.requiredAction);
+  assert.deepEqual(journey.command, [
+    "pnpm",
+    "test:gate-b2:prepared-plan-toctou",
+  ]);
+  assert.equal(raw.requiredManualJourneys.length, 7);
+  assert.equal(
+    raw.inputs.journeySchema,
+    "evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json",
+  );
+  assert.equal(
+    raw.inputs.journeyRunner,
+    "scripts/quality/run-gate-b2-journey.mjs",
+  );
 
   const releaseAdjacent = raw.releaseAdjacent.map((entry) => entry.id);
   assert.ok(releaseAdjacent.includes("heavy-related-scenes"));
@@ -105,6 +118,10 @@ test("package script and report schema exist for certify:gate-b2", async () => {
   assert.equal(
     packageJson.scripts["test:narrative:gate-b2-adr:certifiable"],
     "node scripts/quality/validate-gate-b2-adr.mjs -- --require-certifiable",
+  );
+  assert.equal(
+    packageJson.scripts["test:gate-b2:prepared-plan-toctou"],
+    "node scripts/quality/run-gate-b2-journey.mjs --journey-id prepared-plan-toctou",
   );
   assert.match(
     packageJson.scripts["test:quality"],
@@ -151,6 +168,11 @@ test("parseCertifyArgs defaults to preflight and rejects unknown flags", () => {
   assert.deepEqual(parseCertifyArgs([]).preflight, true);
   assert.equal(parseCertifyArgs(["--run-light"]).runLight, true);
   assert.equal(parseCertifyArgs(["--run-light"]).preflight, false);
+  assert.equal(
+    parseCertifyArgs(["--attempt-ledger-root", "/var/lib/gate-b2"])
+      .attemptLedgerRoot,
+    "/var/lib/gate-b2",
+  );
   assert.throws(() => parseCertifyArgs(["--nope"]), /Unknown argument/);
   assert.throws(
     () => parseCertifyArgs(["--preflight", "--run-light"]),
@@ -360,6 +382,94 @@ test("direct execution cannot bypass the frozen candidate bootstrap", () => {
   assert.match(result.stderr, /must be launched through.*bootstrap/);
 });
 
+test("Gate B2 attempt ledger must be explicit and outside the checkout", () => {
+  const checkout = "/tmp/gate-b2-checkout-a";
+  assert.equal(
+    resolveAttemptLedgerRoot({
+      repoRoot: checkout,
+      configuredRoot: "/var/lib/gate-b2",
+    }),
+    "/var/lib/gate-b2",
+  );
+  assert.equal(
+    resolveAttemptLedgerRoot({
+      repoRoot: checkout,
+      env: { GATE_B2_ATTEMPT_LEDGER_ROOT: "/var/lib/gate-b2" },
+    }),
+    "/var/lib/gate-b2",
+  );
+  assert.equal(resolveAttemptLedgerRoot({ repoRoot: checkout, env: {} }), null);
+  assert.throws(
+    () =>
+      resolveAttemptLedgerRoot({
+        repoRoot: checkout,
+        configuredRoot: ".artifacts/gate-b2-ledger",
+      }),
+    /outside the candidate checkout/,
+  );
+});
+
+test("candidate-bound Journey keeps the durable allocation attempt", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-attempt-"));
+  try {
+    const runnerPath = path.join(temp, "runner.mjs");
+    await writeFile(
+      runnerPath,
+      `import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+const artifact = Buffer.from(JSON.stringify({ ok: true }) + "\\n", "utf8");
+const artifactDigest = "sha256:" + createHash("sha256").update(artifact).digest("hex");
+writeFileSync(process.env.GATE_B2_RUNNER_ARTIFACT_PATH, artifact, { flag: "wx" });
+writeFileSync(process.env.GATE_B2_OUTPUT_PATH, JSON.stringify({
+  schemaVersion: 2,
+  journeyId: process.env.GATE_B2_SUITE_ID,
+  candidateCommitSha: process.env.GATE_B2_CANDIDATE_COMMIT_SHA,
+  candidateTreeSha: process.env.GATE_B2_CANDIDATE_TREE_SHA,
+  freezeId: process.env.GATE_B2_FREEZE_ID,
+  certificationRunId: process.env.GATE_B2_CERTIFICATION_RUN_ID,
+  runnerId: process.env.GATE_B2_RUNNER_ID,
+  runnerVersion: process.env.GATE_B2_RUNNER_VERSION,
+  environmentDigest: process.env.GATE_B2_ENVIRONMENT_DIGEST,
+  commandDigest: process.env.GATE_B2_COMMAND_DIGEST,
+  runnerArtifactDigest: artifactDigest,
+  assertions: [{ id: "attempt-preserved", passed: true }],
+  result: "passed",
+  startedAt: "2026-01-01T00:00:00.000Z",
+  completedAt: "2026-01-01T00:00:01.000Z",
+  artifactDigests: [artifactDigest]
+}) + "\\n", { flag: "wx" });
+`,
+      "utf8",
+    );
+
+    const result = await runJourneySuite({
+      journeyEntry: {
+        id: "attempt-preserved",
+        runnerId: "gate-b2-attempt-preserved-journey",
+        runnerVersion: "1",
+        requiredAssertions: ["attempt-preserved"],
+        command: [process.execPath, runnerPath],
+      },
+      candidate: {
+        commitSha: "a".repeat(40),
+        treeSha: "b".repeat(40),
+      },
+      environment: { digest: `sha256:${"c".repeat(64)}` },
+      repoRoot,
+      dryRun: false,
+      freeze: { freezeId: "freeze-4" },
+      certificationRunId: "run-4",
+      allocation: { attempt: 4, attemptDir: temp },
+      env: {},
+    });
+
+    assert.equal(result.result, "passed");
+    assert.equal(result.attempt, 4);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("decideVerdict never promotes blocked/deferred/skipped to PASS", () => {
   const baseCandidate = {
     frozen: true,
@@ -500,7 +610,10 @@ test("decideVerdict never forgets a prior failed candidate attempt", () => {
   });
 
   assert.equal(result.verdict, "BLOCK");
-  assert.match(result.reasons.join("\n"), /historical|required-suite|Attempt 2/i);
+  assert.match(
+    result.reasons.join("\n"),
+    /historical|required-suite|Attempt 2/i,
+  );
 });
 
 test("tallyBucket counts suite results without inventing passes", () => {
@@ -820,7 +933,7 @@ test("full-ci evidence rejects bare passed:true and incomplete binding", async (
   }
 });
 
-test("report schema requires contractVersion 5 and accepts SuiteResult.runId", async () => {
+test("report schema requires contractVersion 5 and accepts SuiteResult.runId from an executed heavy", async () => {
   const { validateJsonAgainstSchema, sha256Text } =
     await import("./certify-gate-b2-bindings.mjs");
   const schema = JSON.parse(
@@ -955,7 +1068,7 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId", a
   assert.equal(typeof sha256Text, "function");
 });
 
-test("journey evidence rejects handwritten PASS while journeys remain blocked", async () => {
+test("journey evidence rejects handwritten PASS when the runner is not executed", async () => {
   const { mkdir } = await import("node:fs/promises");
   const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-"));
@@ -965,13 +1078,17 @@ test("journey evidence rejects handwritten PASS while journeys remain blocked", 
     await writeFile(
       path.join(journeyDir, "prepared-plan-toctou.json"),
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         journeyId: "prepared-plan-toctou",
         candidateCommitSha: "a".repeat(40),
         candidateTreeSha: "b".repeat(40),
+        freezeId: "forged-freeze",
+        certificationRunId: "forged-run",
         runnerId: "gate-b2-prepared-plan-toctou-journey",
         runnerVersion: "1",
         environmentDigest: `sha256:${"c".repeat(64)}`,
+        commandDigest: `sha256:${"d".repeat(64)}`,
+        runnerArtifactDigest: `sha256:${"e".repeat(64)}`,
         assertions: [
           { id: "source-changed-after-prepare", passed: true },
           { id: "apply-rejected-or-revalidated", passed: true },
@@ -1004,9 +1121,9 @@ test("journey evidence rejects handwritten PASS while journeys remain blocked", 
     const journey = report.suites.find(
       (suite) => suite.suiteId === "prepared-plan-toctou",
     );
-    assert.equal(journey.result, "blocked");
-    assert.match(journey.message, /GATE_B2_OUTPUT_PATH|Implement pnpm/i);
-    assert.equal(report.verdict, "BLOCK");
+    assert.equal(journey.result, "not-run");
+    assert.match(journey.message, /dry-run|external evidence/i);
+    assert.equal(report.verdict, "INCOMPLETE");
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

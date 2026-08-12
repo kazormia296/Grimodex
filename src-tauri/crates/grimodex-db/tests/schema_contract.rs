@@ -135,6 +135,7 @@ fn immutable_history_contract_contains_retraction_guards() {
         "narrative_application_immutable_update",
         "narrative_application_immutable_delete",
         "narrative_application_kind_guard",
+        "narrative_application_compensation_guard",
     ] {
         assert!(
             contract.triggers.contains_key(trigger_name),

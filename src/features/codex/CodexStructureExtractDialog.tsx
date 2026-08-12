@@ -28,6 +28,7 @@ import {
 } from "./codexStructureExtractionApi";
 import { useCodexStore } from "./codexStore";
 import { listCodexRelations } from "./codexRelationApi";
+import { listCodexTypes } from "./typeApi";
 import { buildExistingRelationCatalog } from "./extraction/existingRelationMatcher";
 
 /**
@@ -153,6 +154,7 @@ export function CodexStructureExtractDialog({
         projectId,
         getCurrentProjectId,
       );
+      const projectTypes = await listCodexTypes(projectId);
       const catalogs = buildCodexStructureCatalogs({
         entries: entries.map((entry) => ({
           id: entry.id,
@@ -161,6 +163,7 @@ export function CodexStructureExtractDialog({
           type: entry.type,
           version: entry.version,
         })),
+        projectTypes,
       });
       const existingRelations = buildExistingRelationCatalog(
         (await listCodexRelations(projectId)).map((row) => ({
@@ -173,6 +176,7 @@ export function CodexStructureExtractDialog({
           label: row.label,
           inverseLabel: row.inverseLabel,
           semanticKey: row.semanticKey,
+          version: row.version,
         })),
       );
       const next = await startCodexStructureExtraction({

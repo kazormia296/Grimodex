@@ -432,7 +432,7 @@ export interface NapiBackendLike {
   projectCalendarUpsert?(payload: unknown): Promise<string>;
   authorshipReplaceLane?(payload: unknown): Promise<void>;
   entityTagsSet?(payload: unknown): Promise<void>;
-  codexRenameUndo?(payload: unknown): Promise<void>;
+  codexRenameUndo?(payload: unknown): Promise<string>;
   codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
   projectDelete?(payload: unknown): Promise<void>;
@@ -1980,6 +1980,16 @@ function requireCodexRenameUndoPayload(args: CommandArgs): CommandArgs {
         `invalid args \`updates[${index}].detailDefinitionId\` for command \`${command}\`: expected a non-empty string`,
       );
     }
+    const baseVersion = requirePresent(update, "baseVersion", command);
+    if (
+      typeof baseVersion !== "number" ||
+      !Number.isSafeInteger(baseVersion) ||
+      baseVersion < 0
+    ) {
+      throw new Error(
+        `invalid args \`updates[${index}].baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
     const charCount = requirePresent(update, "charCount", command);
     if (
       charCount !== null &&
@@ -1998,6 +2008,22 @@ function requireCodexRenameUndoPayload(args: CommandArgs): CommandArgs {
     }
     requireNullableStringField(update, "placedBeatPreview", command);
   });
+  return payload;
+}
+
+function requireCodexRenameApplyPayload(args: CommandArgs): CommandArgs {
+  const payload = requireCodexRenameUndoPayload(args);
+  const command = "codex_rename_apply";
+  requireNonEmptyString(payload, "sessionId", command);
+  requireNonEmptyString(payload, "entryId", command);
+  requireNonEmptyString(payload, "eventSummary", command);
+  requireNonEmptyString(payload, "eventUid", command);
+  const timestamp = requirePresent(payload, "timestamp", command);
+  if (typeof timestamp !== "number" || !Number.isSafeInteger(timestamp)) {
+    throw new Error(
+      `invalid args \`timestamp\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
   return payload;
 }
 
@@ -4462,14 +4488,14 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     },
   },
   codex_rename_undo: {
-    run: async (b, a) => {
-      await requireNapiMethod(
-        b,
-        b.codexRenameUndo,
-        "codexRenameUndo",
-      )(requireCodexRenameUndoPayload(a));
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexRenameUndo,
+          "codexRenameUndo",
+        )(requireCodexRenameUndoPayload(a)),
+      ),
   },
   codex_rename_apply: {
     run: async (b, a) =>
@@ -4478,7 +4504,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b,
           b.codexRenameApply,
           "codexRenameApply",
-        )(requirePresent(a, "payload", "codex_rename_apply")),
+        )(requireCodexRenameApplyPayload(a)),
       ),
   },
   scan_staging_project_create: {

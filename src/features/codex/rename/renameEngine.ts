@@ -135,6 +135,7 @@ export async function gatherRenameSources(
       sources.push({
         kind: "node-title",
         refId: n.id,
+        baseVersion: n.version,
         refLabel: label,
         text: n.title,
       });
@@ -143,6 +144,7 @@ export async function gatherRenameSources(
       sources.push({
         kind: "node-synopsis",
         refId: n.id,
+        baseVersion: n.version,
         refLabel: label,
         text: n.synopsis,
       });
@@ -154,6 +156,7 @@ export async function gatherRenameSources(
         sources.push({
           kind: "scene-body",
           refId: n.id,
+          baseVersion: n.version,
           refLabel: label,
           text: flat.text,
           isRubyByOffset: flat.isRubyByOffset,
@@ -170,6 +173,7 @@ export async function gatherRenameSources(
       sources.push({
         kind: "codex-summary",
         refId: e.id,
+        baseVersion: e.version,
         refLabel: e.name,
         text: e.summary,
       });
@@ -184,6 +188,7 @@ export async function gatherRenameSources(
         sources.push({
           kind,
           refId: e.id,
+          baseVersion: e.version,
           refLabel: e.name,
           text: flat.text,
           isRubyByOffset: flat.isRubyByOffset,
@@ -199,6 +204,7 @@ export async function gatherRenameSources(
       entryId: codexDetailValues.entryId,
       definitionId: codexDetailValues.definitionId,
       value: codexDetailValues.value,
+      version: codexDetailValues.version,
       fieldType: codexDetailDefinitions.fieldType,
       fieldName: codexDetailDefinitions.name,
     })
@@ -213,6 +219,7 @@ export async function gatherRenameSources(
     sources.push({
       kind: "codex-detail",
       refId: r.entryId,
+      baseVersion: r.version,
       refLabel: r.fieldName,
       detailDefinitionId: r.definitionId,
       text: r.value,
@@ -226,6 +233,7 @@ export async function gatherRenameSources(
       sources.push({
         kind: "codex-relation-label",
         refId: r.id,
+        baseVersion: r.version,
         refLabel: r.label,
         text: r.label,
       });
@@ -282,6 +290,7 @@ interface RenameUndoUpdate {
   kind: RenameSourceText["kind"];
   refId: string;
   detailDefinitionId: string | null;
+  baseVersion: number;
   value: string;
   charCount: number | null;
   placedBeatPreview: string | null;
@@ -295,6 +304,7 @@ function buildRenameUndoUpdate(
     kind: source.kind,
     refId: source.refId,
     detailDefinitionId: source.detailDefinitionId ?? null,
+    baseVersion: source.baseVersion,
     value: oldValue,
     charCount:
       source.kind === "scene-body"
@@ -422,8 +432,76 @@ export async function applyRenamePropagation(
   const eventUid = crypto.randomUUID();
   const summary = JSON.stringify({ entryId, oldName, newName, applied });
 
+  const renameAggregateKey = (update: RenameUndoUpdate): string =>
+    update.kind === "codex-detail"
+      ? `codex-detail:${update.refId}:${update.detailDefinitionId ?? ""}`
+      : update.kind.startsWith("codex-")
+        ? `codex-entry:${update.refId}`
+        : `tree-node:${update.refId}`;
+
+  // Native increments exactly one OCC version per selected source.  Keep the
+  // inverse side at the version produced by the successful transaction so an
+  // undo/redo remains CAS-protected without rereading a partially changed set.
+  const advanceInverseVersions = (
+    appliedUpdates: RenameUndoUpdate[],
+    inverseUpdates: RenameUndoUpdate[],
+  ) => {
+    const finalVersions = new Map<string, number>();
+    const counts = new Map<string, number>();
+    for (let index = 0; index < appliedUpdates.length; index += 1) {
+      const appliedUpdate = appliedUpdates[index];
+      if (!appliedUpdate) continue;
+      const key = renameAggregateKey(appliedUpdate);
+      const count = (counts.get(key) ?? 0) + 1;
+      counts.set(key, count);
+      finalVersions.set(key, appliedUpdate.baseVersion + count);
+    }
+    for (const inverseUpdate of inverseUpdates) {
+      const version = finalVersions.get(renameAggregateKey(inverseUpdate));
+      if (version !== undefined) inverseUpdate.baseVersion = version;
+    }
+  };
+
+  const setInverseVersions = (
+    appliedUpdates: RenameUndoUpdate[],
+    inverseUpdates: RenameUndoUpdate[],
+    result: unknown,
+  ) => {
+    const versions =
+      result && typeof result === "object" && "versions" in result
+        ? (result as { versions?: unknown }).versions
+        : undefined;
+    if (
+      Array.isArray(versions) &&
+      versions.length === inverseUpdates.length &&
+      versions.every(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          typeof (item as { version?: unknown }).version === "number" &&
+          Number.isSafeInteger((item as { version: number }).version),
+      )
+    ) {
+      const finalVersions = new Map<string, number>();
+      for (let index = 0; index < inverseUpdates.length; index += 1) {
+        const appliedUpdate = appliedUpdates[index];
+        if (!appliedUpdate) continue;
+        finalVersions.set(
+          renameAggregateKey(appliedUpdate),
+          (versions[index] as { version: number }).version,
+        );
+      }
+      for (const inverseUpdate of inverseUpdates) {
+        const version = finalVersions.get(renameAggregateKey(inverseUpdate));
+        if (version !== undefined) inverseUpdate.baseVersion = version;
+      }
+      return;
+    }
+    advanceInverseVersions(appliedUpdates, inverseUpdates);
+  };
+
   const runForward = async () => {
-    await invoke("codex_rename_apply", {
+    const result = await invoke("codex_rename_apply", {
       payload: {
         projectId,
         sessionId: getRecorderSessionId(),
@@ -436,17 +514,20 @@ export async function applyRenamePropagation(
         timestamp: Date.now(),
       },
     });
+    setInverseVersions(forward, undoUpdates, result);
     await resync(liveNew);
   };
 
   const runUndo = async () => {
-    await invoke("codex_rename_undo", {
+    const result = await invoke("codex_rename_undo", {
       payload: {
         projectId,
+        sessionId: getRecorderSessionId(),
         updatedAt: now,
         updates: undoUpdates,
       },
     });
+    setInverseVersions(undoUpdates, forward, result);
     await resync(liveOld);
   };
 

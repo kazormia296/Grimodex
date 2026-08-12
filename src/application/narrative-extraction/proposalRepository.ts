@@ -112,6 +112,7 @@ export async function buildNativeReconciliationEnvelope(input: {
       return "evidence";
     }
     if (sourceKind === "signal") return "signal";
+    if (sourceKind === "codex-catalog") return "projection";
     return "snapshot-document";
   };
   const readSetByRef = new Map<string, ReadSetEntry>();

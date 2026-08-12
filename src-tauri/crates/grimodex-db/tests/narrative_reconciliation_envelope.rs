@@ -134,6 +134,44 @@ fn saves_canonical_envelope_and_normalized_source_basis() {
 }
 
 #[test]
+fn tokenless_v1_envelope_is_reviewable_but_saved_as_legacy_unbound() {
+    let db = migrated_db();
+    create_run(&db, "run-tokenless", "task-tokenless");
+    let mut tokenless = envelope("run-tokenless", "task-tokenless");
+    tokenless["readSet"][0]
+        .as_object_mut()
+        .expect("read-set entry")
+        .remove("revisionToken");
+    tokenless["readSetDigest"] = json!(format!(
+        "sha256:{}",
+        narrative_extraction::digest_plan(&tokenless["readSet"])
+    ));
+
+    let saved = save(&db, "run-tokenless", "proposal-tokenless", Some(tokenless));
+    let proposal = &saved["proposals"][0];
+    assert_eq!(proposal["originKind"], "legacy-unbound");
+    assert!(proposal["reconciliationEnvelopeDigest"].is_null());
+
+    let revision_id = proposal["revisionId"].as_str().expect("revision id");
+    db.with_conn(|conn| {
+        let (origin, envelope_json, basis_count): (String, Option<String>, i64) = conn.query_row(
+            "SELECT origin_kind, reconciliation_envelope_json,
+                        (SELECT COUNT(*) FROM narrative_revision_source_basis
+                          WHERE revision_id = ?1)
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1",
+            [revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(origin, "legacy-unbound");
+        assert!(envelope_json.is_none());
+        assert_eq!(basis_count, 0);
+        Ok(())
+    })
+    .expect("verify tokenless envelope downgrade");
+}
+
+#[test]
 fn native_rejects_read_set_digest_and_identity_mismatches() {
     let db = migrated_db();
     create_run(&db, "run-envelope-errors", "task-envelope-errors");

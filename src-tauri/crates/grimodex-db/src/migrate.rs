@@ -3001,7 +3001,12 @@ impl Database {
             "TEXT",
         )?;
         conn.execute_batch(
-            "CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_update
+            "DROP TRIGGER IF EXISTS narrative_source_basis_immutable_delete;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_compensation_target
+                ON narrative_proposal_applications(compensates_application_id)
+                WHERE application_kind = 'compensation'
+                  AND compensates_application_id IS NOT NULL;
+            CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_update
                 BEFORE UPDATE ON narrative_proposal_revisions
                 WHEN EXISTS(
                     SELECT 1 FROM narrative_proposal_applications
@@ -3025,6 +3030,10 @@ impl Database {
                 END;
             CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_delete
                 BEFORE DELETE ON narrative_revision_source_basis
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE revision_id = OLD.revision_id
+                )
                 BEGIN
                     SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE');
                 END;
@@ -3072,6 +3081,13 @@ impl Database {
                 WHEN NEW.application_kind NOT IN ('normal','compensation')
                 BEGIN
                     SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_compensation_guard
+                BEFORE INSERT ON narrative_proposal_applications
+                WHEN (NEW.application_kind = 'normal' AND NEW.compensates_application_id IS NOT NULL)
+                  OR (NEW.application_kind = 'compensation' AND NEW.compensates_application_id IS NULL)
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_APPLICATION_COMPENSATION_SHAPE_INVALID');
                 END;",
         )?;
 

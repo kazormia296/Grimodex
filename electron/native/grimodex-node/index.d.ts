@@ -104,7 +104,7 @@ export declare class Backend {
    */
   authorshipReplaceLane(payload: any): Promise<void>
   entityTagsSet(payload: any): Promise<void>
-  codexRenameUndo(payload: any): Promise<void>
+  codexRenameUndo(payload: any): Promise<string>
   codexRenameApply(payload: any): Promise<string>
   scanStagingProjectCreate(payload: any): Promise<void>
   projectDelete(payload: any): Promise<void>

@@ -2,7 +2,7 @@
 //! SQL batches. Each command owns its SQL, transaction boundary, and project
 //! checks here; renderer payloads contain domain data only.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Deserialize;
@@ -376,6 +376,7 @@ pub struct CodexRenameUndoUpdate {
     pub kind: String,
     pub ref_id: String,
     pub detail_definition_id: Option<String>,
+    pub base_version: i64,
     pub value: String,
     pub char_count: Option<i64>,
     pub placed_beat_preview: Option<String>,
@@ -387,12 +388,18 @@ pub struct CodexRenameUndoPayload {
     pub project_id: String,
     pub updated_at: String,
     pub updates: Vec<CodexRenameUndoUpdate>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 fn validate_codex_rename_updates(updates: &[CodexRenameUndoUpdate]) -> anyhow::Result<()> {
     let mut update_keys = HashSet::new();
     for update in updates {
         require_non_empty(&update.ref_id, "updates[].refId")?;
+        anyhow::ensure!(
+            update.base_version >= 0,
+            "codex rename baseVersion must be non-negative"
+        );
         if update.kind == "codex-detail" {
             require_non_empty(
                 update.detail_definition_id.as_deref().unwrap_or_default(),
@@ -425,9 +432,47 @@ fn apply_codex_rename_updates_in_tx(
     conn: &rusqlite::Connection,
     project_id: &str,
     updated_at: &str,
+    session_id: &str,
     updates: &[CodexRenameUndoUpdate],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Value>> {
+    let mut versions = Vec::with_capacity(updates.len());
+    let mut aggregate_versions: HashMap<String, (i64, i64)> = HashMap::new();
     for update in updates {
+        let aggregate_key = match update.kind.as_str() {
+            "scene-body" | "node-title" | "node-synopsis" => {
+                format!("tree-node:{}", update.ref_id)
+            }
+            "codex-summary" | "codex-content" | "codex-notes" => {
+                format!("codex-entry:{}", update.ref_id)
+            }
+            "codex-detail" => format!(
+                "codex-detail:{}:{}",
+                update.ref_id,
+                update.detail_definition_id.as_deref().unwrap_or_default()
+            ),
+            "codex-relation-label" => format!("codex-relation:{}", update.ref_id),
+            _ => anyhow::bail!("unsupported codex rename kind '{}'", update.kind),
+        };
+        let expected_version = if let Some((initial_version, current_version)) =
+            aggregate_versions.get(&aggregate_key)
+        {
+            anyhow::ensure!(
+                update.base_version == *initial_version,
+                "CODEX_RENAME_VERSION_MISMATCH: target '{}' supplied inconsistent base versions",
+                update.ref_id
+            );
+            *current_version
+        } else {
+            update.base_version
+        };
+        let next_version = expected_version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("codex rename version overflow"))?;
+        let initial_version = aggregate_versions
+            .get(&aggregate_key)
+            .map(|(initial, _)| *initial)
+            .unwrap_or(update.base_version);
+        aggregate_versions.insert(aggregate_key, (initial_version, next_version));
         let changed = match update.kind.as_str() {
             "scene-body" => {
                 let char_count =
@@ -441,29 +486,43 @@ fn apply_codex_rename_updates_in_tx(
                     "UPDATE tree_nodes
                         SET content = ?1, char_count = ?2,
                             placed_beat_preview = ?3,
-                            version = version + 1, updated_at = ?4
-                      WHERE id = ?5 AND project_id = ?6
-                        AND node_type = 'scene'",
+                            version = ?4, updated_at = ?5
+                      WHERE id = ?6 AND project_id = ?7
+                        AND node_type = 'scene' AND version = ?8",
                     params![
                         update.value,
                         char_count,
                         update.placed_beat_preview,
+                        next_version,
                         updated_at,
                         update.ref_id,
-                        project_id
+                        project_id,
+                        expected_version
                     ],
                 )?
             }
-            "node-title" => conn.execute(
-                "UPDATE tree_nodes SET title = ?1, updated_at = ?2
-                  WHERE id = ?3 AND project_id = ?4",
-                params![update.value, updated_at, update.ref_id, project_id],
-            )?,
-            "node-synopsis" => conn.execute(
-                "UPDATE tree_nodes SET synopsis = ?1, updated_at = ?2
-                  WHERE id = ?3 AND project_id = ?4",
-                params![update.value, updated_at, update.ref_id, project_id],
-            )?,
+            "node-title" | "node-synopsis" => {
+                let column = if update.kind == "node-title" {
+                    "title"
+                } else {
+                    "synopsis"
+                };
+                conn.execute(
+                    &format!(
+                        "UPDATE tree_nodes SET {column} = ?1,
+                                version = ?2, updated_at = ?3
+                          WHERE id = ?4 AND project_id = ?5 AND version = ?6"
+                    ),
+                    params![
+                        update.value,
+                        next_version,
+                        updated_at,
+                        update.ref_id,
+                        project_id,
+                        expected_version
+                    ],
+                )?
+            }
             "codex-summary" | "codex-content" | "codex-notes" => {
                 let column = match update.kind.as_str() {
                     "codex-summary" => "summary",
@@ -474,64 +533,210 @@ fn apply_codex_rename_updates_in_tx(
                 conn.execute(
                     &format!(
                         "UPDATE codex_entries
-                            SET {column} = ?1, updated_at = ?2
-                          WHERE id = ?3 AND project_id = ?4"
+                            SET {column} = ?1, version = ?2, updated_at = ?3
+                          WHERE id = ?4 AND project_id = ?5 AND version = ?6"
                     ),
-                    params![update.value, updated_at, update.ref_id, project_id],
+                    params![
+                        update.value,
+                        next_version,
+                        updated_at,
+                        update.ref_id,
+                        project_id,
+                        expected_version
+                    ],
                 )?
             }
             "codex-detail" => conn.execute(
                 "UPDATE codex_detail_values
-                    SET value = ?1
-                  WHERE entry_id = ?2 AND definition_id = ?3
+                    SET value = ?1, version = ?2, updated_at = ?3
+                  WHERE entry_id = ?4 AND definition_id = ?5
+                    AND version = ?6
                     AND EXISTS (
                       SELECT 1 FROM codex_entries
-                       WHERE id = ?2 AND project_id = ?4
+                       WHERE id = ?4 AND project_id = ?7
                     )
                     AND EXISTS (
                       SELECT 1 FROM codex_detail_definitions
-                       WHERE id = ?3 AND project_id = ?4
+                       WHERE id = ?5 AND project_id = ?7
                     )",
                 params![
                     update.value,
+                    next_version,
+                    updated_at,
                     update.ref_id,
                     update.detail_definition_id,
+                    expected_version,
                     project_id
                 ],
             )?,
             "codex-relation-label" => conn.execute(
-                "UPDATE codex_relations SET label = ?1
-                  WHERE id = ?2 AND project_id = ?3",
-                params![update.value, update.ref_id, project_id],
+                "UPDATE codex_relations
+                    SET label = ?1, version = ?2, updated_at = ?3
+                  WHERE id = ?4 AND project_id = ?5 AND version = ?6",
+                params![
+                    update.value,
+                    next_version,
+                    updated_at,
+                    update.ref_id,
+                    project_id,
+                    expected_version
+                ],
             )?,
             _ => anyhow::bail!("unsupported codex rename kind '{}'", update.kind),
         };
         if changed != 1 {
             anyhow::bail!(
-                "codex rename target '{}' is not in project '{}'",
-                update.ref_id,
-                project_id
+                "CODEX_RENAME_VERSION_MISMATCH: target '{}' is missing, outside project '{}', or expected version {} is stale",
+                update.ref_id, project_id, expected_version
             );
         }
+
+        match update.kind.as_str() {
+            "scene-body" => {
+                crate::narrative_extraction::record_human_field_write(
+                    conn,
+                    project_id,
+                    "scene",
+                    &update.ref_id,
+                    &["/content", "/charCount", "/placedBeatPreview"],
+                    updated_at,
+                )?;
+                let source_key = format!("project:scene:{}", update.ref_id);
+                let source_token = format!("v{next_version}@{updated_at}");
+                crate::narrative_extraction::propagate_source_change_freshness_in_tx(
+                    conn,
+                    project_id,
+                    "scene-body",
+                    &source_key,
+                    Some(&source_token),
+                    updated_at,
+                    session_id,
+                )?;
+            }
+            "node-title" => {
+                crate::narrative_extraction::record_human_field_write(
+                    conn,
+                    project_id,
+                    "scene",
+                    &update.ref_id,
+                    &["/title"],
+                    updated_at,
+                )?;
+            }
+            "node-synopsis" => {
+                crate::narrative_extraction::record_human_field_write(
+                    conn,
+                    project_id,
+                    "scene",
+                    &update.ref_id,
+                    &["/synopsis"],
+                    updated_at,
+                )?;
+            }
+            "codex-summary" | "codex-content" | "codex-notes" => {
+                let field_path = match update.kind.as_str() {
+                    "codex-summary" => "/summary",
+                    "codex-content" => "/content",
+                    "codex-notes" => "/notes",
+                    _ => unreachable!("kind matched above"),
+                };
+                crate::narrative_extraction::record_human_field_write(
+                    conn,
+                    project_id,
+                    "codex-entry",
+                    &update.ref_id,
+                    &[field_path],
+                    updated_at,
+                )?;
+            }
+            "codex-detail" => {
+                let definition_id = update
+                    .detail_definition_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("codex detail definition id is required"))?;
+                let field_path = format!("/details/{definition_id}");
+                crate::narrative_extraction::record_human_field_write(
+                    conn,
+                    project_id,
+                    "codex-entry",
+                    &update.ref_id,
+                    &[field_path.as_str()],
+                    updated_at,
+                )?;
+            }
+            "codex-relation-label" => {
+                crate::narrative_extraction::record_human_field_write(
+                    conn,
+                    project_id,
+                    "codex-relation",
+                    &update.ref_id,
+                    &["/forwardLabel"],
+                    updated_at,
+                )?;
+            }
+            _ => unreachable!("unsupported rename kind was rejected above"),
+        }
+        versions.push(serde_json::json!({
+            "kind": update.kind,
+            "refId": update.ref_id,
+            "detailDefinitionId": update.detail_definition_id,
+            "version": next_version,
+            "baseVersion": expected_version,
+        }));
     }
-    Ok(())
+    Ok(versions)
 }
 
-pub fn undo_codex_rename(db: &Database, payload: CodexRenameUndoPayload) -> anyhow::Result<()> {
+pub fn undo_codex_rename(db: &Database, payload: CodexRenameUndoPayload) -> anyhow::Result<Value> {
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.updated_at, "updatedAt")?;
     validate_codex_rename_updates(&payload.updates)?;
 
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
-        apply_codex_rename_updates_in_tx(
+        let versions = apply_codex_rename_updates_in_tx(
             &tx,
             &payload.project_id,
             &payload.updated_at,
+            payload
+                .session_id
+                .as_deref()
+                .filter(|session| !session.is_empty())
+                .unwrap_or("codex-rename-undo"),
             &payload.updates,
         )?;
+        if !payload.updates.is_empty() {
+            let event_uid = uuid::Uuid::new_v4().to_string();
+            let timestamp = chrono::DateTime::parse_from_rfc3339(&payload.updated_at)
+                .map(|value| value.timestamp_millis())
+                .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
+            crate::change_events::append_change_events_in_tx(
+                &tx,
+                &payload.project_id,
+                payload
+                    .session_id
+                    .as_deref()
+                    .filter(|session| !session.is_empty())
+                    .unwrap_or("codex-rename-undo"),
+                &[crate::change_events::AppendChangeEvent {
+                    event_uid,
+                    scene_id: None,
+                    domain: "codex".to_string(),
+                    op_type: "codex.renameUndo".to_string(),
+                    entity_type: Some("codex_rename".to_string()),
+                    entity_id: payload.updates.first().map(|update| update.ref_id.clone()),
+                    payload: serde_json::json!({
+                        "updateCount": payload.updates.len(),
+                    })
+                    .to_string(),
+                    timestamp,
+                }],
+            )?;
+        }
         tx.commit()?;
-        Ok(())
+        Ok(serde_json::json!({
+            "versions": versions,
+        }))
     })
 }
 
@@ -589,10 +794,11 @@ pub fn apply_codex_rename(
                 payload.entry_id,
                 payload.project_id
             );
-            apply_codex_rename_updates_in_tx(
+            let versions = apply_codex_rename_updates_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.updated_at,
+                &payload.session_id,
                 &payload.updates,
             )?;
 
@@ -634,7 +840,8 @@ pub fn apply_codex_rename(
 
             Ok(serde_json::json!({
                 "entityId": payload.entry_id,
-                "version": 1,
+                "version": versions.last().and_then(|item| item.get("version")).and_then(Value::as_i64).unwrap_or(0),
+                "versions": versions,
                 "changeEventUid": payload.event_uid,
                 "undoJournalId": undo_id,
             }))
@@ -676,6 +883,141 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
     require_non_empty(&payload.project_id, "projectId")?;
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        let immutable_applications: i64 = tx.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_proposal_applications a
+               INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
+              WHERE c.project_id = ?1",
+            rusqlite::params![payload.project_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            immutable_applications == 0,
+            "project '{}' has immutable Narrative applications; export or retain the project before deletion",
+            payload.project_id
+        );
+
+        // Several provenance tables intentionally have no FK to domain rows:
+        // immutable history must survive source deletion. A project delete is
+        // therefore allowed only before any immutable Application exists, and
+        // explicitly removes the remaining un-applied narrative graph so no
+        // run/task/revision rows are orphaned behind the root project row.
+        tx.execute(
+            "DELETE FROM narrative_projection_freshness
+              WHERE application_id IN (
+                SELECT a.id
+                  FROM narrative_proposal_applications a
+                  INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
+                 WHERE c.project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_projection_dependencies
+              WHERE application_id IN (
+                SELECT a.id
+                  FROM narrative_proposal_applications a
+                  INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
+                 WHERE c.project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_apply_operations
+              WHERE commit_id IN (
+                SELECT id FROM narrative_apply_commits WHERE project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_proposal_decisions
+              WHERE proposal_id IN (
+                SELECT p.id
+                  FROM narrative_proposals p
+                  INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                 WHERE s.project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_revision_source_basis
+              WHERE revision_id IN (
+                SELECT r.id
+                  FROM narrative_proposal_revisions r
+                  INNER JOIN narrative_proposals p ON p.id = r.proposal_id
+                  INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                 WHERE s.project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_proposal_revisions
+              WHERE proposal_id IN (
+                SELECT p.id
+                  FROM narrative_proposals p
+                  INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                 WHERE s.project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_proposals
+              WHERE proposal_set_id IN (
+                SELECT id FROM narrative_proposal_sets WHERE project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_extraction_artifacts
+              WHERE run_id IN (
+                SELECT id FROM narrative_extraction_runs WHERE project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_extraction_attempts
+              WHERE task_id IN (
+                SELECT t.id
+                  FROM narrative_extraction_tasks t
+                  INNER JOIN narrative_extraction_runs r ON r.id = t.run_id
+                 WHERE r.project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_extraction_task_edges
+              WHERE run_id IN (
+                SELECT id FROM narrative_extraction_runs WHERE project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_extraction_tasks
+              WHERE run_id IN (
+                SELECT id FROM narrative_extraction_runs WHERE project_id = ?1
+              )",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_field_authority WHERE project_id = ?1",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_commit_journals WHERE project_id = ?1",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_apply_commits WHERE project_id = ?1",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_proposal_sets WHERE project_id = ?1",
+            rusqlite::params![payload.project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM narrative_extraction_runs WHERE project_id = ?1",
+            rusqlite::params![payload.project_id],
+        )?;
         // Upgraded workspaces may have received project_id through ALTER TABLE,
         // which cannot add the fresh-schema foreign key. Keep that legacy
         // cleanup inside the same trusted transaction as the root delete.
@@ -1479,6 +1821,7 @@ mod tests {
             kind: "node-title".to_string(),
             ref_id: ref_id.to_string(),
             detail_definition_id: None,
+            base_version: 0,
             value: value.to_string(),
             char_count: None,
             placed_beat_preview: None,
@@ -1492,6 +1835,7 @@ mod tests {
                     update("moved", "Restored"),
                     update("foreign-node", "Leaked"),
                 ],
+                session_id: None,
             },
         )
         .is_err());
@@ -1512,6 +1856,7 @@ mod tests {
                 project_id: "p1".to_string(),
                 updated_at: "undo".to_string(),
                 updates: vec![update("moved", "Restored")],
+                session_id: None,
             },
         )
         .expect("undo rename");
@@ -1539,10 +1884,12 @@ mod tests {
                     kind: "codex-detail".to_string(),
                     ref_id: "c1".to_string(),
                     detail_definition_id: Some("d2".to_string()),
+                    base_version: 0,
                     value: "Leaked".to_string(),
                     char_count: None,
                     placed_beat_preview: None,
                 }],
+                session_id: None,
             },
         );
 
@@ -1558,6 +1905,129 @@ mod tests {
             Ok(())
         })
         .expect("read detail value");
+    }
+
+    #[test]
+    fn codex_rename_cas_authority_and_undo_event_cover_all_storage_lanes() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO codex_entries (id, project_id, type, name)
+                   VALUES ('c2', 'p1', 'character', 'Two');
+                 INSERT INTO codex_detail_values (id, entry_id, definition_id, value)
+                   VALUES ('value-p1', 'c1', 'd1', 'Original detail');
+                 INSERT INTO codex_relations
+                   (id, project_id, from_codex_id, to_codex_id, label)
+                   VALUES ('relation-p1', 'p1', 'c1', 'c2', 'Original relation');",
+            )?;
+            Ok(())
+        })
+        .expect("seed rename lanes");
+
+        let update = |kind: &str,
+                      ref_id: &str,
+                      detail_definition_id: Option<&str>,
+                      base_version: i64,
+                      value: &str| CodexRenameUndoUpdate {
+            kind: kind.to_string(),
+            ref_id: ref_id.to_string(),
+            detail_definition_id: detail_definition_id.map(str::to_string),
+            base_version,
+            value: value.to_string(),
+            char_count: (kind == "scene-body").then_some(0),
+            placed_beat_preview: None,
+        };
+
+        undo_codex_rename(
+            &db,
+            CodexRenameUndoPayload {
+                project_id: "p1".to_string(),
+                updated_at: "undo".to_string(),
+                updates: vec![
+                    // Two writes to one aggregate use the same snapshot base
+                    // and are sequenced inside the Native transaction.
+                    update("scene-body", "moved", None, 0, "{}"),
+                    update("node-title", "moved", None, 0, "Renamed scene"),
+                    update("codex-summary", "c1", None, 0, "Summary"),
+                    update("codex-content", "c1", None, 0, "{}"),
+                    update("codex-detail", "c1", Some("d1"), 0, "Detail"),
+                    update(
+                        "codex-relation-label",
+                        "relation-p1",
+                        None,
+                        1,
+                        "Relation",
+                    ),
+                ],
+                session_id: Some("rename-test".to_string()),
+            },
+        )
+        .expect("apply rename lanes");
+
+        db.with_conn(|conn| {
+            let tree_version: i64 = conn.query_row(
+                "SELECT version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| row.get(0),
+            )?;
+            let entry_version: i64 = conn.query_row(
+                "SELECT version FROM codex_entries WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let detail_version: i64 = conn.query_row(
+                "SELECT version FROM codex_detail_values WHERE id = 'value-p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let relation_version: i64 = conn.query_row(
+                "SELECT version FROM codex_relations WHERE id = 'relation-p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(tree_version, 2);
+            assert_eq!(entry_version, 2);
+            assert_eq!(detail_version, 1);
+            assert_eq!(relation_version, 2);
+
+            for (entity_kind, entity_id, field_path) in [
+                ("scene", "moved", "/content"),
+                ("scene", "moved", "/title"),
+                ("codex-entry", "c1", "/summary"),
+                ("codex-entry", "c1", "/content"),
+                ("codex-entry", "c1", "/details/d1"),
+                ("codex-relation", "relation-p1", "/forwardLabel"),
+            ] {
+                let owner: String = conn.query_row(
+                    "SELECT owner_kind FROM narrative_field_authority
+                      WHERE project_id = 'p1' AND entity_kind = ?1
+                        AND entity_id = ?2 AND field_path = ?3",
+                    params![entity_kind, entity_id, field_path],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(owner, "human", "{entity_kind} {entity_id} {field_path}");
+            }
+            let undo_event_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM change_events
+                  WHERE project_id = 'p1' AND op_type = 'codex.renameUndo'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(undo_event_count, 1);
+            Ok(())
+        })
+        .expect("verify rename lanes");
+
+        let stale = undo_codex_rename(
+            &db,
+            CodexRenameUndoPayload {
+                project_id: "p1".to_string(),
+                updated_at: "undo-stale".to_string(),
+                updates: vec![update("node-title", "moved", None, 0, "Stale")],
+                session_id: None,
+            },
+        );
+        assert!(stale.is_err());
     }
 
     #[test]

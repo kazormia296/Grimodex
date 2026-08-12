@@ -70,7 +70,10 @@ import {
   type ReviewBundleProposal,
 } from "@/application/narrative-extraction/nativeApi";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
-import { sha256Digest } from "@/features/narrative-extraction/source/digest";
+import {
+  digestStableJson,
+  sha256Digest,
+} from "@/features/narrative-extraction/source/digest";
 import { parseAliases } from "./codexMatcher";
 import { BUILTIN_CODEX_TYPES } from "./api";
 import {
@@ -683,22 +686,62 @@ export function deriveRelationSeedsFromCoMentions(input: {
   return seeds;
 }
 
-function digestStableString(value: string): Sha256Digest {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-  return `sha256:${hash.toString(16).padStart(64, "0")}` as Sha256Digest;
+function codexCatalogVersionVector(
+  catalog: CodexStructureCatalogSnapshot,
+  relations: readonly ExistingRelationCatalogRecord[],
+): {
+  readonly entries: readonly {
+    readonly sourceKey: string;
+    readonly version: number;
+  }[];
+  readonly relations: readonly {
+    readonly sourceKey: string;
+    readonly version: number;
+  }[];
+  readonly types: readonly {
+    readonly sourceKey: string;
+    readonly version: number;
+  }[];
+} {
+  return {
+    entries: [...catalog.entities]
+      .map((entry) => ({
+        sourceKey: entry.sourceKey,
+        version: entry.expectedVersion ?? 0,
+      }))
+      .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
+    relations: [...relations]
+      .map((relation) => ({
+        sourceKey: relation.sourceKey,
+        version: relation.expectedVersion ?? 0,
+      }))
+      .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
+    types: [...catalog.types]
+      .map((type) => ({
+        sourceKey: type.sourceKey,
+        version: type.expectedVersion ?? 0,
+      }))
+      .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
+  };
 }
 
 async function nativeEvidenceSet(
   evidence: readonly CodexReviewEvidenceQuote[],
-  proposalSchemaId: string,
   sourceRevisionByDocumentRef: ReadonlyMap<
     string,
     { readonly sourceKey: string; readonly revisionToken: string }
   >,
-) {
+): Promise<
+  | readonly {
+      readonly evidenceRef: string;
+      readonly documentRef: string;
+      readonly quote: string;
+      readonly quoteDigest: Sha256Digest;
+      readonly sourceKey?: string;
+      readonly revisionToken?: string;
+    }[]
+  | undefined
+> {
   if (
     evidence.length === 0 ||
     evidence.some(
@@ -710,9 +753,7 @@ async function nativeEvidenceSet(
         !row.quote.trim(),
     )
   ) {
-    throw new Error(
-      `Cannot persist ${proposalSchemaId} without resolved proposal evidence`,
-    );
+    return undefined;
   }
   return Promise.all(
     evidence.map(async (row) => ({
@@ -784,6 +825,12 @@ export function buildCodexStructureCatalogs(args: {
     readonly version: number;
   }[];
   readonly typeCatalog?: readonly KnowledgeTypeCatalogRecord[];
+  /** Project-backed type rows; when supplied, the catalog covers custom types too. */
+  readonly projectTypes?: readonly {
+    readonly slug: string;
+    readonly label: string;
+    readonly expectedVersion?: number;
+  }[];
   readonly existingEntries?: readonly ExistingEntityCatalogRecord[];
 }): {
   readonly existingCatalog: ExistingEntityCatalogRecord[];
@@ -793,14 +840,23 @@ export function buildCodexStructureCatalogs(args: {
   const typeCatalog =
     args.typeCatalog && args.typeCatalog.length > 0
       ? [...args.typeCatalog]
-      : BUILTIN_CODEX_TYPES.map((slug, index) => ({
-          ref: `T${String(index + 1).padStart(4, "0")}`,
-          sourceKey: slug,
-          slug,
-          label: slug,
-          coarseClassHints: [coarseClassForSlug(slug)],
-          expectedVersion: 1,
-        }));
+      : args.projectTypes !== undefined
+        ? args.projectTypes.map((type, index) => ({
+            ref: `T${String(index + 1).padStart(4, "0")}`,
+            sourceKey: type.slug,
+            slug: type.slug,
+            label: type.label,
+            coarseClassHints: [coarseClassForSlug(type.slug)],
+            expectedVersion: type.expectedVersion ?? 1,
+          }))
+        : BUILTIN_CODEX_TYPES.map((slug, index) => ({
+            ref: `T${String(index + 1).padStart(4, "0")}`,
+            sourceKey: slug,
+            slug,
+            label: slug,
+            coarseClassHints: [coarseClassForSlug(slug)],
+            expectedVersion: 1,
+          }));
   const typeRefBySlug = new Map(
     typeCatalog.map((type) => [type.slug, type.ref] as const),
   );
@@ -837,6 +893,7 @@ export function buildCodexStructureCatalogs(args: {
         sourceKey: type.sourceKey,
         slug: type.slug,
         label: type.label,
+        expectedVersion: type.expectedVersion,
       })),
     },
   };
@@ -888,6 +945,8 @@ export interface CodexStructureExtractionBaseDetailSeed {
   readonly temporalEligibility?: "timeless" | "corpus-initial";
   readonly existingValue?: ProjectedDetailValue | null;
   readonly unbound?: boolean;
+  /** Resolved source evidence; a quote-only hint is never promoted to evidence. */
+  readonly evidence?: readonly CodexReviewEvidenceQuote[];
   readonly quote?: string;
 }
 
@@ -1204,32 +1263,33 @@ function buildPhaseDetailReviewProposals(input: {
         input.entityLabelById.get(item.proposal.payload.narrativeEntityId) ??
         item.proposal.payload.narrativeEntityId;
       const existingValue = seed?.existingValue ?? null;
+      const evidence = seed?.evidence ?? [];
+      const evidenceResolved = hasResolvedReviewEvidence(evidence);
+      const applicability = evidenceResolved
+        ? ("applicable" as const)
+        : ("blocked" as const);
       return {
         proposalId: item.proposal.proposalId,
         revisionId: null,
         proposalKey: item.projectionId,
         status: "unreviewed",
-        applicability: "applicable",
+        applicability,
         displayTitle: `${entityLabel} · ${item.proposal.payload.facetKey}`,
         proposal: item.proposal,
-        evidence: [
-          {
-            anchorId: `base-anchor-${item.proposal.proposalId}`,
-            quote: seed?.quote ?? item.proposal.payload.facetKey,
-            documentRef: `B${String(index + 1).padStart(6, "0")}`,
-            method: "exact",
-          },
-        ],
+        evidence,
         safety: buildCodexBaseDetailProposalSafetyFlags({
           temporalEligibility: item.proposal.payload.temporalEligibility,
           existingValue,
-          evidenceMethods: ["exact"],
+          evidenceMethods: evidence.map((row) => row.method),
           bound: true,
           valueKind: item.proposal.payload.value.kind,
         }),
         entityLabel,
         facetKey: item.proposal.payload.facetKey,
         existingValue,
+        blockedReason: !evidenceResolved
+          ? "根拠が未解決です。再抽出して根拠を確認してください"
+          : undefined,
       };
     });
   const unboundBase: CodexBaseDetailReviewProposal[] = input.baseDetailSeeds
@@ -1238,6 +1298,7 @@ function buildPhaseDetailReviewProposals(input: {
       const entityLabel =
         input.entityLabelById.get(seed.entityId) ?? seed.entityId;
       const proposalId = input.createId();
+      const evidence = seed.evidence ?? [];
       return {
         proposalId,
         revisionId: null,
@@ -1261,18 +1322,11 @@ function buildPhaseDetailReviewProposals(input: {
           },
           dependencies: [],
         },
-        evidence: [
-          {
-            anchorId: `unbound-base-anchor-${index + 1}`,
-            quote: seed.quote ?? seed.facetKey,
-            documentRef: `U${String(index + 1).padStart(6, "0")}`,
-            method: "exact",
-          },
-        ],
+        evidence,
         safety: buildCodexBaseDetailProposalSafetyFlags({
           temporalEligibility: seed.temporalEligibility ?? "timeless",
           existingValue: seed.existingValue ?? null,
-          evidenceMethods: ["exact"],
+          evidenceMethods: evidence.map((row) => row.method),
           bound: false,
           valueKind: seed.value.kind,
         }),
@@ -1872,14 +1926,16 @@ export async function startCodexStructureExtraction(
         version: 1,
         taskChain: [CODEX_STRUCTURE_TASK_KIND],
       },
-      specDigest: digestStableString("codex.structure.extract.v1"),
+      specDigest: await sha256Digest("codex.structure.extract.v1"),
       snapshotDigest: sourceRevisionToken,
       coverageJson: {
         mode: "complete",
         documentCount: coverageDocumentCount,
         windowCount: coverageWindowCount,
       },
-      catalogDigest: digestStableString(JSON.stringify(catalogSnapshot)),
+      catalogDigest: await digestStableJson(
+        codexCatalogVersionVector(catalogSnapshot, existingRelations),
+      ),
       tasks: [
         {
           taskKind: CODEX_STRUCTURE_TASK_KIND,
@@ -1894,7 +1950,17 @@ export async function startCodexStructureExtraction(
         "Cannot persist Codex proposals without a sealed snapshot",
       );
     }
-    const sourceBasis = buildSnapshotSourceBasis(runId, persistenceSnapshot);
+    const catalogRevisionToken = await digestStableJson(
+      codexCatalogVersionVector(catalogSnapshot, existingRelations),
+    );
+    const sourceBasis = [
+      ...buildSnapshotSourceBasis(runId, persistenceSnapshot),
+      {
+        sourceKind: "codex-catalog",
+        sourceKey: `project:codex-catalog:${request.projectId}`,
+        revisionToken: catalogRevisionToken,
+      },
+    ];
     sourceRevisionByDocumentRef = new Map(
       persistenceSnapshot.documents.flatMap((document) => {
         if (document.origin.kind !== "project-node") return [];
@@ -1925,20 +1991,22 @@ export async function startCodexStructureExtraction(
       const buildEnvelope = async (
         proposalSchemaId: string,
         evidence: readonly CodexReviewEvidenceQuote[],
-      ) =>
-        buildNativeReconciliationEnvelope({
+      ) => {
+        const evidenceSet = await nativeEvidenceSet(
+          evidence,
+          sourceRevisionByDocumentRef,
+        );
+        if (!evidenceSet) return undefined;
+        return buildNativeReconciliationEnvelope({
           runId,
           taskId: claimedTask.taskId,
           sourceRevisionToken,
           sourceBasis,
           proposalSchemaId,
           reconcilerId: "grimodex.codex-structure-extraction",
-          evidenceSet: await nativeEvidenceSet(
-            evidence,
-            proposalSchemaId,
-            sourceRevisionByDocumentRef,
-          ),
+          evidenceSet,
         });
+      };
 
       const saved = await saveProposalSet({
         runId,
@@ -2488,6 +2556,23 @@ function existingRelationsFromSummaryJson(
   return Array.isArray(raw) ? (raw as ExistingRelationCatalogRecord[]) : [];
 }
 
+function hasResolvedReviewEvidence(
+  evidence: readonly CodexReviewEvidenceQuote[] | undefined,
+): boolean {
+  return Boolean(
+    evidence &&
+    evidence.length > 0 &&
+    evidence.every(
+      (row) =>
+        row.documentRef.trim().length > 0 &&
+        row.anchorId.trim().length > 0 &&
+        row.quote.trim().length > 0 &&
+        !row.blocked &&
+        row.method !== "unknown",
+    ),
+  );
+}
+
 function assertReviewEvidenceComplete(args: {
   readonly runId: string;
   readonly proposals: readonly ReviewBundleProposal[];
@@ -2496,22 +2581,10 @@ function assertReviewEvidenceComplete(args: {
     readonly CodexReviewEvidenceQuote[]
   >;
 }): void {
-  for (const proposal of args.proposals) {
-    if (proposal.application) continue;
-    const evidence = args.evidenceByProposalId.get(proposal.proposalId);
-    if (!evidence || evidence.length === 0) {
-      throw new Error(
-        `Codex structure extraction run ${args.runId} missing evidence for proposal ${proposal.proposalId}`,
-      );
-    }
-    for (const row of evidence) {
-      if (!row.documentRef || !row.anchorId) {
-        throw new Error(
-          `Codex structure extraction run ${args.runId} evidence for proposal ${proposal.proposalId} missing documentRef/anchorId`,
-        );
-      }
-    }
-  }
+  // Missing evidence is a review-only/blocked state. Do not turn a cold-start
+  // restore of a legacy or partially emitted proposal set into a whole-run
+  // failure; Apply eligibility is derived from this same predicate below.
+  void args;
 }
 
 function parseEvidenceArtifact(
@@ -2675,18 +2748,8 @@ function rebuildEntityFromNative(args: {
     return null;
   }
   const proposal = wrapBindProposal(args.native.proposalId, reviewPayload);
-  const evidence =
-    args.evidence.length > 0
-      ? args.evidence
-      : [
-          {
-            anchorId: `missing-${args.native.proposalId}`,
-            quote: "",
-            documentRef: "",
-            method: "unknown" as const,
-            blocked: true,
-          },
-        ];
+  const evidence = args.evidence;
+  const evidenceResolved = hasResolvedReviewEvidence(evidence);
   const safety = buildCodexEntityProposalSafetyFlags({
     bindingKind: proposal.payload.binding.kind,
     typeStatus: proposal.payload.typeResolution.status,
@@ -2699,6 +2762,7 @@ function rebuildEntityFromNative(args: {
   });
   const typeResolved = proposal.payload.typeResolution.status === "resolved";
   const applicability =
+    !evidenceResolved ||
     proposal.payload.binding.kind === "unresolved" ||
     (proposal.payload.binding.kind === "create-new" && !typeResolved)
       ? ("blocked" as const)
@@ -2724,9 +2788,11 @@ function rebuildEntityFromNative(args: {
     safety,
     blockedReason:
       applicability === "blocked"
-        ? proposal.payload.binding.kind === "unresolved"
-          ? "Binding が未解決です"
-          : "Codex Type が未解決です"
+        ? !evidenceResolved
+          ? "根拠が未解決です。再抽出して根拠を確認してください"
+          : proposal.payload.binding.kind === "unresolved"
+            ? "Binding が未解決です"
+            : "Codex Type が未解決です"
         : undefined,
     compiledOperation,
     application: applicationFromNative(args.native),
@@ -2756,6 +2822,7 @@ function rebuildRelationFromNative(args: {
     return null;
   }
   const satisfied = decisionAlreadySatisfied(args.native);
+  const evidenceResolved = hasResolvedReviewEvidence(args.evidence);
   // Prefer live Entity titles (covers rename / endpoint swap). Artifact labels
   // are fallback for endpoints not present in the entity title map.
   const subjectLabel =
@@ -2790,7 +2857,11 @@ function rebuildRelationFromNative(args: {
     reconciliationEnvelopeDigest: args.native.reconciliationEnvelopeDigest,
     proposalKey: args.native.proposalKey,
     status: args.native.status,
-    applicability: satisfied ? "already-satisfied" : "applicable",
+    applicability: satisfied
+      ? "already-satisfied"
+      : evidenceResolved
+        ? "applicable"
+        : "blocked",
     displayTitle: `${subjectLabel} → ${reviewPayload.relation.forwardLabel} → ${objectLabel}`,
     proposal,
     evidence: args.evidence,
@@ -2799,7 +2870,9 @@ function rebuildRelationFromNative(args: {
     existingRelationRef: satisfied?.existingRelationRef,
     blockedReason: satisfied
       ? "既に同じ関係が登録されています（適用不要）"
-      : undefined,
+      : evidenceResolved
+        ? undefined
+        : "根拠が未解決です。再抽出して根拠を確認してください",
     compiledOperation,
     application: applicationFromNative(args.native),
   };
@@ -2848,6 +2921,7 @@ function rebuildBaseDetailFromNative(args: {
   if (!envelope || !isPersistedBaseDetailPayload(envelope.reviewPayload)) {
     return null;
   }
+  const evidenceResolved = hasResolvedReviewEvidence(args.metadata.evidence);
   return {
     ...args.metadata,
     proposalId: args.native.proposalId,
@@ -2855,6 +2929,10 @@ function rebuildBaseDetailFromNative(args: {
     reconciliationEnvelopeDigest: args.native.reconciliationEnvelopeDigest,
     proposalKey: args.native.proposalKey,
     status: args.native.status,
+    applicability: evidenceResolved ? args.metadata.applicability : "blocked",
+    blockedReason: evidenceResolved
+      ? args.metadata.blockedReason
+      : "根拠が未解決です。再抽出して根拠を確認してください",
     proposal: {
       ...args.metadata.proposal,
       proposalId: args.native.proposalId,
@@ -2876,6 +2954,7 @@ function rebuildPhaseFromNative(args: {
   if (!envelope || !isPersistedPhasePayload(envelope.reviewPayload)) {
     return null;
   }
+  const evidenceResolved = hasResolvedReviewEvidence(args.metadata.evidence);
   return {
     ...args.metadata,
     proposalId: args.native.proposalId,
@@ -2883,6 +2962,10 @@ function rebuildPhaseFromNative(args: {
     reconciliationEnvelopeDigest: args.native.reconciliationEnvelopeDigest,
     proposalKey: args.native.proposalKey,
     status: args.native.status,
+    applicability: evidenceResolved ? args.metadata.applicability : "blocked",
+    blockedReason: evidenceResolved
+      ? args.metadata.blockedReason
+      : "根拠が未解決です。再抽出して根拠を確認してください",
     proposal: {
       ...args.metadata.proposal,
       proposalId: args.native.proposalId,
@@ -3098,6 +3181,23 @@ export async function getCodexStructureExtractionReview(
     existingRelations,
     catalog,
   }).map((relation) => {
+    if (
+      relation.applicability !== "already-satisfied" &&
+      !hasResolvedReviewEvidence(
+        artifact.evidenceByProposalId.get(relation.proposalId),
+      )
+    ) {
+      return {
+        ...relation,
+        applicability: "blocked" as const,
+        blockedReason: "根拠が未解決です。再抽出して根拠を確認してください",
+        status:
+          relation.status === "approved"
+            ? ("unreviewed" as const)
+            : relation.status,
+        compiledOperation: null,
+      };
+    }
     if (
       relation.applicability === "already-satisfied" ||
       !nativeAlreadySatisfiedRefById.has(relation.proposalId)

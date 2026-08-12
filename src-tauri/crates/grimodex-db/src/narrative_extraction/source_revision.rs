@@ -6,7 +6,7 @@
 //! tables.  Unknown kinds and malformed keys fail closed.
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::Digest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +27,7 @@ pub(crate) fn resolve_source_revision(
         "domain-projection" | "projection" => {
             resolve_domain_projection(conn, project_id, source_key)
         }
+        "codex-catalog" => resolve_codex_catalog(conn, project_id, source_key),
         "narrative-artifact" => resolve_narrative_artifact(conn, project_id, source_key),
         "import-capture" => resolve_import_capture(conn, source_key),
         "evidence-anchor" | "evidence" => {
@@ -134,6 +135,76 @@ fn resolve_domain_projection(
         "NEX_SOURCE_STALE: projection '{projection_id}' is not current"
     );
     ensure_non_empty_token(format!("v{version}@{updated_at}"))
+}
+
+fn resolve_codex_catalog(
+    conn: &Connection,
+    project_id: &str,
+    source_key: &str,
+) -> anyhow::Result<CurrentSourceRevision> {
+    let catalog_project_id = source_key
+        .strip_prefix("project:codex-catalog:")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_SOURCE_KEY_INVALID: codex-catalog sourceKey must be project:codex-catalog:<id>"
+            )
+        })?;
+    anyhow::ensure!(
+        catalog_project_id == project_id,
+        "NEX_SOURCE_PROJECT_MISMATCH: codex catalog does not belong to project"
+    );
+
+    let entries = conn
+        .prepare(
+            "SELECT id, version
+               FROM codex_entries
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "sourceKey": row.get::<_, String>(0)?,
+                "version": row.get::<_, i64>(1)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let relations = conn
+        .prepare(
+            "SELECT id, version
+               FROM codex_relations
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "sourceKey": row.get::<_, String>(0)?,
+                "version": row.get::<_, i64>(1)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let types = conn
+        .prepare(
+            "SELECT slug
+               FROM codex_types
+              WHERE project_id = ?1
+              ORDER BY slug ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "sourceKey": row.get::<_, String>(0)?,
+                "version": 1,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure_non_empty_token(format!(
+        "sha256:{}",
+        digest_json(&json!({
+            "entries": entries,
+            "relations": relations,
+            "types": types,
+        }))?
+    ))
 }
 
 fn resolve_narrative_artifact(

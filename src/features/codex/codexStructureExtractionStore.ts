@@ -147,6 +147,7 @@ export interface CodexStructureCatalogType {
   readonly sourceKey: string;
   readonly slug: string;
   readonly label: string;
+  readonly expectedVersion?: number;
 }
 
 export interface CodexStructureCatalogSnapshot {

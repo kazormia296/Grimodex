@@ -14,6 +14,7 @@ import {
   buildDecisionDocument,
   buildGhRunDownloadArgs,
   buildHeavyCertificationEnv,
+  buildJourneyCertificationEnv,
   checkoutIdentityArtifactName,
   fetchCheckoutIdentityArtifact,
   listRunArtifacts,
@@ -28,6 +29,7 @@ import {
   verifyFullCiWithGithub,
   writeGateB2AttemptRecord,
 } from "./certify-gate-b2-bindings.mjs";
+import { resolveAttemptLedgerRoot } from "./certify-gate-b2.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -119,6 +121,32 @@ function validHeavyReport(overrides = {}) {
   };
 }
 
+const journeyExpected = {
+  freezeId: "freeze-1",
+  certificationRunId: "certification-1",
+  environmentDigest: `sha256:${"c".repeat(64)}`,
+  commandDigest: `sha256:${"d".repeat(64)}`,
+  runnerArtifactDigest: `sha256:${"e".repeat(64)}`,
+};
+
+function validJourneyEvidence(overrides = {}) {
+  return {
+    schemaVersion: 2,
+    journeyId: "prepared-plan-toctou",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    ...journeyExpected,
+    runnerId: "manual",
+    runnerVersion: "1",
+    assertions: [{ id: "source-changed", passed: true }],
+    result: "passed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    artifactDigests: [journeyExpected.runnerArtifactDigest],
+    ...overrides,
+  };
+}
+
 test("stripCredentialPlaceholders removes VAR=... assignments", () => {
   const cleaned = stripCredentialPlaceholders(
     "OPENROUTER_API_KEY=... EMBED_NODE_MODULES=... pnpm test:node --run x.ts",
@@ -169,11 +197,60 @@ test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
   assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
 });
 
-test("Gate B2 attempt ledger is candidate-global across artifact directories", async () => {
+test("buildJourneyCertificationEnv binds candidate-runner metadata", () => {
+  const env = buildJourneyCertificationEnv({
+    candidate,
+    journeyId: "prepared-plan-toctou",
+    outputPath: "/tmp/journey-evidence.json",
+    runnerArtifactPath: "/tmp/runner-artifact.json",
+    commandDigest: journeyExpected.commandDigest,
+    environmentDigest: journeyExpected.environmentDigest,
+    runnerId: "gate-b2-prepared-plan-toctou-journey",
+    runnerVersion: "1",
+    freezeId: journeyExpected.freezeId,
+    certificationRunId: journeyExpected.certificationRunId,
+    attempt: 1,
+    attemptDir: "/tmp/gate-b2-attempt",
+    baseEnv: { HOME: "/home/tester" },
+  });
+  assert.equal(env.GATE_B2_CANDIDATE_COMMIT_SHA, candidate.commitSha);
+  assert.equal(env.GATE_B2_CANDIDATE_TREE_SHA, candidate.treeSha);
+  assert.equal(env.GATE_B2_SUITE_ID, "prepared-plan-toctou");
+  assert.equal(env.GATE_B2_OUTPUT_PATH, "/tmp/journey-evidence.json");
+  assert.equal(env.GATE_B2_RUNNER_ARTIFACT_PATH, "/tmp/runner-artifact.json");
+  assert.equal(env.GATE_B2_COMMAND_DIGEST, journeyExpected.commandDigest);
+  assert.equal(
+    env.GATE_B2_ENVIRONMENT_DIGEST,
+    journeyExpected.environmentDigest,
+  );
+  assert.equal(env.GATE_B2_RUNNER_ID, "gate-b2-prepared-plan-toctou-journey");
+  assert.equal(env.GATE_B2_RUNNER_VERSION, "1");
+  assert.equal(env.GATE_B2_FREEZE_ID, journeyExpected.freezeId);
+  assert.equal(
+    env.GATE_B2_CERTIFICATION_RUN_ID,
+    journeyExpected.certificationRunId,
+  );
+  assert.equal(env.GATE_B2_ATTEMPT, "1");
+  assert.equal(env.GATE_B2_ATTEMPT_DIR, "/tmp/gate-b2-attempt");
+});
+
+test("Gate B2 attempt ledger is candidate-global across fresh clone directories", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-attempts-"));
   try {
+    const cloneA = path.join(temp, "clone-a");
+    const cloneB = path.join(temp, "clone-b");
+    const ledgerFromCloneA = resolveAttemptLedgerRoot({
+      repoRoot: cloneA,
+      configuredRoot: "../durable-ledger",
+    });
+    const ledgerFromCloneB = resolveAttemptLedgerRoot({
+      repoRoot: cloneB,
+      configuredRoot: "../durable-ledger",
+    });
+    assert.notEqual(cloneA, cloneB);
+    assert.equal(ledgerFromCloneA, ledgerFromCloneB);
     const first = await allocateGateB2Attempt({
-      ledgerRoot: path.join(temp, "ledger"),
+      ledgerRoot: ledgerFromCloneA,
       candidateCommitSha: candidate.commitSha,
       candidateTreeSha: candidate.treeSha,
       contractVersion: GATE_B2_CONTRACT_VERSION,
@@ -194,7 +271,7 @@ test("Gate B2 attempt ledger is candidate-global across artifact directories", a
       },
     });
     const second = await allocateGateB2Attempt({
-      ledgerRoot: path.join(temp, "ledger"),
+      ledgerRoot: ledgerFromCloneB,
       candidateCommitSha: candidate.commitSha,
       candidateTreeSha: candidate.treeSha,
       contractVersion: GATE_B2_CONTRACT_VERSION,
@@ -204,16 +281,26 @@ test("Gate B2 attempt ledger is candidate-global across artifact directories", a
     assert.equal(first.attempt, 1);
     assert.equal(second.attempt, 2);
     assert.notEqual(first.attemptDir, second.attemptDir);
-    assert.match(first.attemptDir, /candidates\/[^/]+\/attempts\/heavy-narrative-chronicle-production\/attempt-1$/);
-    assert.match(second.attemptDir, /candidates\/[^/]+\/attempts\/heavy-narrative-chronicle-production\/attempt-2$/);
+    assert.match(
+      first.attemptDir,
+      /candidates\/[^/]+\/attempts\/heavy-narrative-chronicle-production\/attempt-1$/,
+    );
+    assert.match(
+      second.attemptDir,
+      /candidates\/[^/]+\/attempts\/heavy-narrative-chronicle-production\/attempt-2$/,
+    );
     const history = await loadGateB2AttemptHistory({
-      ledgerRoot: path.join(temp, "ledger"),
+      ledgerRoot: ledgerFromCloneB,
       candidateCommitSha: candidate.commitSha,
       candidateTreeSha: candidate.treeSha,
       contractVersion: GATE_B2_CONTRACT_VERSION,
     });
     assert.deepEqual(
-      history.map(({ suiteId, attempt, result }) => ({ suiteId, attempt, result })),
+      history.map(({ suiteId, attempt, result }) => ({
+        suiteId,
+        attempt,
+        result,
+      })),
       [
         {
           suiteId: "heavy-narrative-chronicle-production",
@@ -556,22 +643,11 @@ test("journey evidence requires candidate binding and assertions", () => {
   );
   assert.equal(forged.ok, false);
 
-  const ok = validateJourneyEvidence(
-    {
-      schemaVersion: 1,
-      journeyId: "prepared-plan-toctou",
-      candidateCommitSha: candidate.commitSha,
-      candidateTreeSha: candidate.treeSha,
-      runnerId: "manual",
-      runnerVersion: "1",
-      environmentDigest: `sha256:${"c".repeat(64)}`,
-      assertions: [{ id: "source-changed", passed: true }],
-      result: "passed",
-      startedAt: "2026-01-01T00:00:00.000Z",
-      completedAt: "2026-01-01T00:01:00.000Z",
-    },
-    { journeyId: "prepared-plan-toctou", candidate },
-  );
+  const ok = validateJourneyEvidence(validJourneyEvidence(), {
+    journeyId: "prepared-plan-toctou",
+    candidate,
+    expected: journeyExpected,
+  });
   assert.equal(ok.ok, true);
 });
 
@@ -581,31 +657,16 @@ test("journey contract mismatch rejects forged runner metadata", () => {
     runnerVersion: "2",
     requiredAssertions: ["source-changed", "plan-bound"],
   };
-  const mismatch = validateJourneyEvidence(
-    {
-      schemaVersion: 1,
-      journeyId: "prepared-plan-toctou",
-      candidateCommitSha: candidate.commitSha,
-      candidateTreeSha: candidate.treeSha,
-      runnerId: "manual",
-      runnerVersion: "1",
-      environmentDigest: `sha256:${"c".repeat(64)}`,
-      assertions: [{ id: "source-changed", passed: true }],
-      result: "passed",
-      startedAt: "2026-01-01T00:00:00.000Z",
-      completedAt: "2026-01-01T00:01:00.000Z",
-    },
-    { journeyId: "prepared-plan-toctou", candidate, contract },
-  );
+  const mismatch = validateJourneyEvidence(validJourneyEvidence(), {
+    journeyId: "prepared-plan-toctou",
+    candidate,
+    contract,
+  });
   assert.equal(mismatch.ok, false);
   assert.match(mismatch.message, /runnerId/);
 
   const ok = validateJourneyEvidence(
-    {
-      schemaVersion: 1,
-      journeyId: "prepared-plan-toctou",
-      candidateCommitSha: candidate.commitSha,
-      candidateTreeSha: candidate.treeSha,
+    validJourneyEvidence({
       runnerId: contract.runnerId,
       runnerVersion: contract.runnerVersion,
       environmentDigest: `sha256:${"c".repeat(64)}`,
@@ -616,10 +677,35 @@ test("journey contract mismatch rejects forged runner metadata", () => {
       result: "passed",
       startedAt: "2026-01-01T00:00:00.000Z",
       completedAt: "2026-01-01T00:01:00.000Z",
+    }),
+    {
+      journeyId: "prepared-plan-toctou",
+      candidate,
+      contract,
+      expected: journeyExpected,
     },
-    { journeyId: "prepared-plan-toctou", candidate, contract },
   );
   assert.equal(ok.ok, true);
+});
+
+test("journey evidence binds freeze, command, and runner artifact digests", () => {
+  const mismatch = validateJourneyEvidence(
+    validJourneyEvidence({ commandDigest: `sha256:${"f".repeat(64)}` }),
+    {
+      journeyId: "prepared-plan-toctou",
+      candidate,
+      expected: journeyExpected,
+    },
+  );
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.message, /commandDigest/);
+
+  const legacy = validateJourneyEvidence(
+    { ...validJourneyEvidence(), schemaVersion: 1 },
+    { journeyId: "prepared-plan-toctou", candidate },
+  );
+  assert.equal(legacy.ok, false);
+  assert.match(legacy.message, /schemaVersion must be 2/);
 });
 
 test("chronicle report must bind candidate metadata and remain 14/14 eligible", () => {
