@@ -34,6 +34,7 @@ candidate:
   webConsentBrowserJourneyDigest: null
   webConsentBrowserRunnerDigest: null
   webConsentBrowserConfigDigest: null
+  attemptLedgerSourceDigest: null
   attemptLedgerConfigDigest: sha256:ce082226e3055f8b8eec29ae501a27ef743133f21299a0af2e308bf4c7fdffeb
   attemptLedgerId: grimodex-gate-b2-attempt-ledger-v1
   attemptLedgerDigest: null

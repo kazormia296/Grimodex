@@ -1014,6 +1014,7 @@ test("report schema requires contractVersion 6 and ledger state fields", async (
       aiPathRegistryDigest: digest,
       qualityManifestDigest: digest,
       narrativeEvalManifestDigest: digest,
+      attemptLedgerSourceDigest: digest,
       attemptLedgerId: "grimodex-gate-b2-attempt-ledger-v1",
       attemptLedgerConfigDigest: digest,
       attemptLedgerDigest: digest,

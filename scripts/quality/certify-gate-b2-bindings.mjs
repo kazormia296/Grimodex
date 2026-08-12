@@ -58,7 +58,7 @@ export const HARNESS_DIGEST_PATHS = {
     "scripts/quality/run-web-ai-consent-browser.mjs",
   webConsentBrowserConfigDigest:
     "vitest.gate-b2-web-ai-consent.config.ts",
-  attemptLedgerConfigDigest: "scripts/quality/gate-b2-controller-config.mjs",
+  attemptLedgerSourceDigest: "scripts/quality/gate-b2-controller-config.mjs",
 };
 
 const INPUT_DIGEST_KEYS = [

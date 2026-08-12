@@ -49,6 +49,7 @@
         "aiPathRegistryDigest",
         "qualityManifestDigest",
         "narrativeEvalManifestDigest",
+        "attemptLedgerSourceDigest",
         "freezeId",
         "attemptLedgerId",
         "attemptLedgerConfigDigest",
@@ -160,6 +161,10 @@
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
         "attemptLedgerConfigDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptLedgerSourceDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
