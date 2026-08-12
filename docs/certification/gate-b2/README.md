@@ -35,6 +35,16 @@ OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna \
   pnpm eval:narrative:chronicle:production:live
 ```
 
+## C3 — Web AI consent live
+
+C3 は loopback OpenAI-compatible Local LLM に対して、consent dialog・拒否時
+0 HTTP・承認後送信・destination 変更時の再同意・teardown を証明する。
+モデル品質は評価しない。
+
+```bash
+pnpm eval:web-ai-consent:live
+```
+
 ## コマンド
 
 ```bash

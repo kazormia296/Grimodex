@@ -64,9 +64,7 @@ requiredHeavy:
     qualityManifestId: heavy-narrative-chronicle-production
     requiresEnv: [OPENROUTER_API_KEY]
   - id: heavy-web-ai-consent-live
-    # C3 で blocked → heavy へ昇格。未実装は BLOCK
-    qualityManifestId: null
-    runner: pnpm eval:web-ai-consent:live
+    qualityManifestId: heavy-web-ai-consent-live
     requiresEnv: []
 
 informational:

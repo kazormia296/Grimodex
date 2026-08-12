@@ -87,7 +87,8 @@
     "generate:db-contract": "cargo run --manifest-path src-tauri/crates/grimodex-db/Cargo.toml --bin schema-contract -- src/db/generated/schema-contract.json",
     "seed:sample-en": "python3 scripts/seed-sample-en.py",
     "seed:sample-ja": "python3 scripts/seed-sample-ja.py",
-    "certify:gate-b2": "node scripts/quality/certify-gate-b2.mjs"
+    "certify:gate-b2": "node scripts/quality/certify-gate-b2.mjs",
+    "eval:web-ai-consent:live": "pnpm test:node --run src/features/ai-policy/webAiConsent.live.test.tsx"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -234,7 +234,7 @@ test("preflight loads manifest digests and writes report without claiming PASS",
   }
 });
 
-test("registered Chronicle heavy runner resolves while the next missing runner stays blocked", async () => {
+test("registered Gate B2 heavy runners resolve in dry-run without becoming passed", async () => {
   const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-heavy-"));
   const previousKey = process.env.OPENROUTER_API_KEY;
@@ -267,16 +267,56 @@ test("registered Chronicle heavy runner resolves while the next missing runner s
       (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
     );
     assert.equal(production.result, "not-run");
+    assert.equal(consent.result, "not-run");
     assert.match(
       production.command.join(" "),
       /eval:narrative:chronicle:production:live/,
     );
+    assert.match(consent.command.join(" "), /eval:web-ai-consent:live/);
+    assert.match(production.message, /dry-run/i);
+    assert.match(consent.message, /dry-run/i);
     assert.notEqual(production.result, "passed");
-    assert.notEqual(production.result, "skipped");
-    assert.equal(consent.result, "blocked");
-    assert.match(consent.message, /not registered|Runner script/i);
+    assert.notEqual(consent.result, "skipped");
+    assert.equal(report.verdict, "INCOMPLETE");
+  } finally {
+    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousKey;
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("credential shortage for billed heavies is BLOCK not passed/skipped", async () => {
+  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-cred-"));
+  const previousKey = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    const { report } = await certifyGateB2({
+      repoRoot,
+      args: {
+        preflight: false,
+        runLight: false,
+        runHeavy: true,
+        runJourneys: false,
+        runInformational: false,
+        runReleaseAdjacent: false,
+        candidate: null,
+        baseMaster: null,
+        report: path.join(temp, "report.json"),
+        artifactDir: path.join(temp, "artifacts"),
+        format: "json",
+        ciEvidence: null,
+        journeyEvidenceDir: null,
+        dryRun: false,
+      },
+    });
+    const agent = report.suites.find(
+      (suite) => suite.suiteId === "heavy-agent-tool-loop",
+    );
+    assert.equal(agent.result, "blocked");
+    assert.match(agent.message, /OPENROUTER_API_KEY/);
     assert.equal(report.verdict, "BLOCK");
-    assert.equal(report.firstFailure.suiteId, "heavy-web-ai-consent-live");
+    assert.equal(report.firstFailure.suiteId, "heavy-agent-tool-loop");
   } finally {
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;
