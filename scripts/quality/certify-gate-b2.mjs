@@ -6,7 +6,7 @@
  * - 必須 suite を減らさない
  * - credential 不足を passed / skipped へ変換しない
  * - 最初の失敗を保持する
- * - 再試行履歴を残す（Attempt 2 は diagnostic only）
+ * - 各 suite は Attempt 1 だけを正式結果として記録する
  * - artifact digest を生成する
  */
 
@@ -19,9 +19,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import yaml from "js-yaml";
 import {
-  GATE_B2_ATTEMPT_LEDGER_ROOT,
-  getGateB2AttemptLedgerIdentity,
-} from "./gate-b2-controller-config.mjs";
+  getGateB2GithubAttemptIdentity,
+  readGateB2GithubAttemptContext,
+} from "./gate-b2-github-attempt.mjs";
 
 import {
   FREEZE_RELATIVE,
@@ -29,22 +29,19 @@ import {
   HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
   assertFreezeActive,
-  assertFreezeLedgerBound,
-  assertGateB2LedgerSnapshotMatchesFreeze,
   assertWorkingTreeClean,
-  allocateGateB2Attempt,
+  allocateGateB2ArtifactAttempt,
   bindExecutionRoot,
   buildDecisionDocument,
   buildHeavyCertificationEnv,
   buildJourneyCertificationEnv,
   loadFreezeDocument,
-  loadGateB2AttemptLedgerSnapshot,
   persistHeavyReport,
   prepareWorktreeDependencies,
   readHeavyLiveReport,
   sanitizeCertificationEnv,
   stripCredentialPlaceholders,
-  writeGateB2AttemptRecord,
+  writeGateB2AttemptArtifact,
   validateChronicleProductionReport,
   validateFullCiEvidence,
   validateJsonAgainstSchema,
@@ -68,22 +65,8 @@ const JOURNEY_SCHEMA_RELATIVE =
   "evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json";
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
-const ATTEMPT_LEDGER_ENV = "GATE_B2_ATTEMPT_LEDGER_ROOT";
-const DURABLE_ATTEMPT_LEDGER_MESSAGE =
-  "durable Gate B2 attempt ledger is required for execution; the fixed controller ledger must be provisioned before certification";
-
-export function resolveAttemptLedgerRoot({
-  configuredRoot = null,
-  env = process.env,
-} = {}) {
-  const raw = configuredRoot ?? env[ATTEMPT_LEDGER_ENV] ?? null;
-  if (raw != null && String(raw).trim() !== "") {
-    throw new Error(
-      "Gate B2 attempt ledger is controller-bound; --attempt-ledger-root and GATE_B2_ATTEMPT_LEDGER_ROOT are rejected",
-    );
-  }
-  return path.resolve(GATE_B2_ATTEMPT_LEDGER_ROOT);
-}
+const GITHUB_ATTEMPT_AUTHORITY_MESSAGE =
+  "Gate B2 execution is authoritative only in the dedicated first-attempt GitHub Actions workflow";
 
 export function sha256Text(text) {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
@@ -153,7 +136,6 @@ export function parseCertifyArgs(argv) {
     baseMaster: null,
     report: null,
     artifactDir: null,
-    attemptLedgerRoot: null,
     format: "markdown",
     ciEvidence: null,
     journeyEvidenceDir: null,
@@ -182,12 +164,6 @@ export function parseCertifyArgs(argv) {
     else if (arg === "--report") result.report = readValue(arg, index++);
     else if (arg === "--artifact-dir")
       result.artifactDir = readValue(arg, index++);
-    else if (arg === "--attempt-ledger-root") {
-      readValue(arg, index);
-      throw new Error(
-        "--attempt-ledger-root is rejected; Gate B2 certification uses the fixed controller ledger",
-      );
-    }
     else if (arg === "--format") result.format = readValue(arg, index++);
     else if (arg === "--ci-evidence")
       result.ciEvidence = readValue(arg, index++);
@@ -245,33 +221,16 @@ export function validateGateB2Manifest(raw) {
   ) {
     errors.push("candidate.schemaVersion must be a positive integer");
   }
-  const ledger = getGateB2AttemptLedgerIdentity();
-  if (raw.candidate?.attemptLedgerId !== ledger.attemptLedgerId) {
-    errors.push("candidate.attemptLedgerId must match the fixed controller ledger");
-  }
+  const authority = getGateB2GithubAttemptIdentity();
   if (
-    raw.candidate?.attemptLedgerAttestation !==
-    ledger.attemptLedgerAttestation
+    raw.candidate?.attemptAuthority?.provider !== authority.provider ||
+    raw.candidate?.attemptAuthority?.configDigest !== authority.configDigest ||
+    raw.candidate?.attemptAuthority?.repository !== authority.repository ||
+    raw.candidate?.attemptAuthority?.workflowPath !== authority.workflowPath ||
+    raw.candidate?.attemptAuthority?.event !== authority.event
   ) {
     errors.push(
-      "candidate.attemptLedgerAttestation must match the fixed controller configuration",
-    );
-  }
-  if (
-    raw.candidate?.attemptLedgerConfigDigest !==
-    ledger.attemptLedgerConfigDigest
-  ) {
-    errors.push(
-      "candidate.attemptLedgerConfigDigest must match the fixed controller configuration",
-    );
-  }
-  if (
-    raw.candidate?.controllerPublicKeyId !== ledger.controllerPublicKeyId ||
-    raw.candidate?.controllerPublicKeyFingerprint !==
-      ledger.controllerPublicKeyFingerprint
-  ) {
-    errors.push(
-      "candidate controller public key trust anchor must match the fixed controller configuration",
+      "candidate.attemptAuthority must match the fixed GitHub Actions authority",
     );
   }
   for (const key of [
@@ -425,24 +384,6 @@ export function validateGateB2Manifest(raw) {
     }
   }
   return errors;
-}
-
-export function buildGateB2SuiteBuckets(manifest) {
-  const entries = [
-    ...(manifest.requiredLight ?? []).map((entry) => [entry.id, "requiredLight"]),
-    ...(manifest.requiredHeavy ?? []).map((entry) => [entry.id, "requiredHeavy"]),
-    ...(manifest.requiredManualJourneys ?? []).map((entry) => [entry.id, "requiredJourneys"]),
-    ...(manifest.informational ?? []).map((entry) => [entry.id, "informational"]),
-    ...(manifest.releaseAdjacent ?? []).map((entry) => [entry.id, "releaseAdjacent"]),
-  ];
-  const result = Object.create(null);
-  for (const [suiteId, bucket] of entries) {
-    if (result[suiteId] && result[suiteId] !== bucket) {
-      throw new Error(`Gate B2 suite appears in multiple manifest buckets: ${suiteId}`);
-    }
-    result[suiteId] = bucket;
-  }
-  return result;
 }
 
 export function parseQualityHeavyIndex(qualityManifest) {
@@ -647,30 +588,16 @@ async function recordCertificationSuiteAttempt({
 }) {
   if (!allocation) return result;
   const normalized = { ...result, attempt: allocation.attempt };
-  const ledger = allocation.ledgerIdentity;
-  if (!ledger || !Number.isInteger(allocation.sequence)) {
-    throw new Error("Gate B2 attempt allocation is missing controller ledger state");
-  }
-  await writeGateB2AttemptRecord({
+  await writeGateB2AttemptArtifact({
     attemptDir: allocation.attemptDir,
     record: {
       schemaVersion: 1,
       contractVersion: GATE_B2_CONTRACT_VERSION,
-      attemptLedgerId: ledger.attemptLedgerId,
-      attemptLedgerConfigDigest: ledger.attemptLedgerConfigDigest,
-      attemptLedgerInstanceId: ledger.attemptLedgerInstanceId,
-      controllerPublicKeyId: ledger.controllerPublicKeyId,
-      controllerPublicKeyFingerprint: ledger.controllerPublicKeyFingerprint,
-      controllerSignature: ledger.controllerSignature,
-      controllerReceiptDigest: ledger.controllerReceiptDigest,
-      attemptLedgerAttestation: ledger.attemptLedgerAttestation,
       candidateCommitSha: candidate.commitSha,
       candidateTreeSha: candidate.treeSha,
       suiteId: normalized.suiteId,
       bucket: normalized.bucket,
       attempt: normalized.attempt,
-      sequence: allocation.sequence,
-      previousRecordDigest: allocation.previousRecordDigest,
       startedAt: normalized.startedAt,
       completedAt: normalized.completedAt,
       exitCode: normalized.exitCode,
@@ -904,7 +831,6 @@ export async function runJourneySuite({
     certificationRunId,
     attempt: allocation.attempt,
     attemptDir: allocation.attemptDir,
-    ledgerSnapshot: allocation.ledgerSnapshot,
     baseEnv: env,
   });
 
@@ -1008,7 +934,6 @@ export function decideVerdict({
   candidate,
   decisionPolicy,
   preflightOnly,
-  attemptHistory = [],
 }) {
   const reasons = [];
   if (preflightOnly) {
@@ -1036,17 +961,6 @@ export function decideVerdict({
   const deferred = required.filter((suite) => suite.result === "deferred");
   const nonNormativeAttempts = required.filter(
     (suite) => Number.isInteger(suite.attempt) && suite.attempt > 1,
-  );
-  const priorRequired = attemptHistory.filter((suite) =>
-    ["requiredLight", "requiredHeavy", "requiredJourneys"].includes(
-      suite.bucket,
-    ),
-  );
-  const priorNonNormativeAttempts = priorRequired.filter(
-    (suite) => Number.isInteger(suite.attempt) && suite.attempt > 1,
-  );
-  const priorNonSuccess = priorRequired.filter(
-    (suite) => !["passed", "informational"].includes(suite.result),
   );
   const skippedLike = required.filter((suite) =>
     ["skipped", "deferred"].includes(suite.result),
@@ -1080,26 +994,6 @@ export function decideVerdict({
         .map((suite) => `${suite.suiteId} Attempt ${suite.attempt}`)
         .join(", ")}`,
     );
-    return { verdict: "BLOCK", reasons };
-  }
-  if (priorNonNormativeAttempts.length > 0 || priorNonSuccess.length > 0) {
-    if (priorNonNormativeAttempts.length > 0) {
-      reasons.push(
-        `candidate has non-normative historical retries: ${priorNonNormativeAttempts
-          .map((suite) => `${suite.suiteId} Attempt ${suite.attempt}`)
-          .join(", ")}`,
-      );
-    }
-    if (priorNonSuccess.length > 0) {
-      reasons.push(
-        `candidate has historical required-suite failures: ${priorNonSuccess
-          .map(
-            (suite) =>
-              `${suite.suiteId} Attempt ${suite.attempt}=${suite.result}`,
-          )
-          .join(", ")}`,
-      );
-    }
     return { verdict: "BLOCK", reasons };
   }
   if (hold.length > 0) {
@@ -1187,16 +1081,14 @@ async function runLightSuites({
   environment,
   repoRoot,
   artifactDir,
-  ledgerRoot,
-  suiteBuckets,
-  onAllocation = () => {},
+  executionAuthorized,
 }) {
-  if (!args.dryRun && !ledgerRoot) {
+  if (!args.dryRun && !executionAuthorized) {
     return manifest.requiredLight.map((entry) =>
       blockedSuite({
         suiteId: entry.id,
         bucket: "requiredLight",
-        message: DURABLE_ATTEMPT_LEDGER_MESSAGE,
+        message: GITHUB_ATTEMPT_AUTHORITY_MESSAGE,
         command: entry.command ?? null,
         environmentDigest: environment.digest,
       }),
@@ -1216,19 +1108,13 @@ async function runLightSuites({
       );
       continue;
     }
-    const allocation =
-      ledgerRoot && !args.dryRun
-        ? await allocateGateB2Attempt({
-            ledgerRoot,
-            candidateCommitSha: candidate.commitSha,
-            candidateTreeSha: candidate.treeSha,
-            contractVersion: GATE_B2_CONTRACT_VERSION,
-            suiteId: entry.id,
-            bucket: "requiredLight",
-            suiteBuckets,
-          })
-        : null;
-    if (allocation) onAllocation(allocation);
+    const allocation = args.dryRun
+      ? null
+      : await allocateGateB2ArtifactAttempt({
+          artifactRoot: artifactDir,
+          suiteId: entry.id,
+          bucket: "requiredLight",
+        });
     if (entry.kind === "external-evidence" || entry.id === "full-ci") {
       const result = await evaluateFullCiEvidence({
         artifactDir,
@@ -1425,17 +1311,15 @@ async function runHeavySuites({
   freeze,
   certificationRunId,
   artifactDir,
-  ledgerRoot,
-  suiteBuckets,
-  onAllocation = () => {},
+  executionAuthorized,
   env = process.env,
 }) {
-  if (!dryRun && !ledgerRoot) {
+  if (!dryRun && !executionAuthorized) {
     return entries.map((entry) =>
       blockedSuite({
         suiteId: entry.id,
         bucket,
-        message: DURABLE_ATTEMPT_LEDGER_MESSAGE,
+        message: GITHUB_ATTEMPT_AUTHORITY_MESSAGE,
         environmentDigest: environment.digest,
       }),
     );
@@ -1531,16 +1415,11 @@ async function runHeavySuites({
       continue;
     }
 
-    allocation = await allocateGateB2Attempt({
-      ledgerRoot,
-      candidateCommitSha: candidate.commitSha,
-      candidateTreeSha: candidate.treeSha,
-      contractVersion: GATE_B2_CONTRACT_VERSION,
+    allocation = await allocateGateB2ArtifactAttempt({
+      artifactRoot: artifactDir,
       suiteId: entry.id,
       bucket,
-      suiteBuckets,
     });
-    onAllocation(allocation);
 
     const commandForDigest =
       resolved.kind === "argv"
@@ -1561,7 +1440,6 @@ async function runHeavySuites({
       certificationRunId,
       attempt,
       attemptDir,
-      ledgerSnapshot: allocation.ledgerSnapshot,
       baseEnv: env,
     });
 
@@ -1696,24 +1574,11 @@ async function runHeavySuites({
       command: commandForDigest,
       runId,
     };
-    await writeGateB2AttemptRecord({
+    await writeGateB2AttemptArtifact({
       attemptDir,
       record: {
         schemaVersion: 1,
         contractVersion: GATE_B2_CONTRACT_VERSION,
-        attemptLedgerId: allocation.ledgerIdentity.attemptLedgerId,
-        attemptLedgerConfigDigest:
-          allocation.ledgerIdentity.attemptLedgerConfigDigest,
-        attemptLedgerInstanceId:
-          allocation.ledgerIdentity.attemptLedgerInstanceId,
-        controllerPublicKeyId:
-          allocation.ledgerIdentity.controllerPublicKeyId,
-        controllerPublicKeyFingerprint:
-          allocation.ledgerIdentity.controllerPublicKeyFingerprint,
-        controllerSignature: allocation.ledgerIdentity.controllerSignature,
-        controllerReceiptDigest: allocation.ledgerIdentity.controllerReceiptDigest,
-        attemptLedgerAttestation:
-          allocation.ledgerIdentity.attemptLedgerAttestation,
         candidateCommitSha: candidate.commitSha,
         candidateTreeSha: candidate.treeSha,
         freezeId: freeze?.freezeId ?? null,
@@ -1721,8 +1586,6 @@ async function runHeavySuites({
         suiteId: entry.id,
         bucket,
         attempt,
-        sequence: allocation.sequence,
-        previousRecordDigest: allocation.previousRecordDigest,
         runId,
         commandDigest,
         startedAt: captured.startedAt,
@@ -1768,7 +1631,6 @@ export async function certifyGateB2({
   let executionRoot = repoRoot;
   let cleanup = async () => {};
   let boundVia = "unbound";
-  let freezeLedgerError = null;
 
   try {
     const { raw: manifestProbe } = await loadGateB2Manifest(repoRoot);
@@ -1778,13 +1640,6 @@ export async function certifyGateB2({
         throw new Error(
           `Freeze contractVersion ${freeze.contractVersion} != ${GATE_B2_CONTRACT_VERSION}`,
         );
-      }
-      if (!args.dryRun) {
-        try {
-          assertFreezeLedgerBound(freeze);
-        } catch (error) {
-          freezeLedgerError = error;
-        }
       }
     }
     if (needsExecution) {
@@ -1903,12 +1758,26 @@ export async function certifyGateB2({
       baseMasterSha: identity.baseMasterSha,
       schemaVersion: manifest.candidate.schemaVersion,
       freezeId: freeze?.freezeId ?? null,
-      ...getGateB2AttemptLedgerIdentity(),
+      attemptAuthority: getGateB2GithubAttemptIdentity(),
       ...digests,
       frozen,
       dirty: identity.dirty,
       boundVia,
     };
+
+    const authorityContext =
+      needsExecution && !args.dryRun
+        ? readGateB2GithubAttemptContext({
+            candidateCommitSha: candidate.commitSha,
+          })
+        : {
+            ok: true,
+            message: "Gate B2 execution context not required",
+            attemptAuthority: getGateB2GithubAttemptIdentity(),
+          };
+    candidate.attemptAuthority = authorityContext.attemptAuthority;
+    const executionAuthorized =
+      args.dryRun || (candidate.frozen && authorityContext.ok);
 
     const artifactDir =
       args.artifactDir ??
@@ -1922,49 +1791,7 @@ export async function certifyGateB2({
     await mkdir(path.join(artifactDir, "heavy"), { recursive: true });
     await mkdir(path.join(artifactDir, "journeys"), { recursive: true });
     await mkdir(path.join(artifactDir, "environment"), { recursive: true });
-    const configuredAttemptLedgerRoot = resolveAttemptLedgerRoot({
-      repoRoot,
-      configuredRoot: args.attemptLedgerRoot,
-    });
-    const suiteBuckets = buildGateB2SuiteBuckets(manifest);
-    const allocatedAttempts = [];
-    const onAllocation = (allocation) => allocatedAttempts.push(allocation);
-    let attemptLedgerSnapshot = null;
-    let attemptLedgerError = freezeLedgerError;
-    if (candidate.frozen && !args.dryRun) {
-      if (!attemptLedgerError) {
-        try {
-          attemptLedgerSnapshot = await loadGateB2AttemptLedgerSnapshot({
-            ledgerRoot: configuredAttemptLedgerRoot,
-            candidateCommitSha: candidate.commitSha,
-            candidateTreeSha: candidate.treeSha,
-            contractVersion: GATE_B2_CONTRACT_VERSION,
-            suiteBuckets,
-          });
-          assertGateB2LedgerSnapshotMatchesFreeze(
-            attemptLedgerSnapshot,
-            freeze,
-          );
-        } catch (error) {
-          attemptLedgerError = error;
-          attemptLedgerSnapshot = null;
-        }
-      }
-    }
-    if (attemptLedgerSnapshot) {
-      Object.assign(candidate, attemptLedgerSnapshot);
-    }
-    const attemptLedgerRoot =
-      attemptLedgerError ||
-      (needsExecution && !args.dryRun && !candidate.frozen)
-        ? null
-        : configuredAttemptLedgerRoot;
-    let attemptHistory = attemptLedgerSnapshot
-      ? attemptLedgerSnapshot.history
-      : [];
-
     const suites = [];
-    const retries = [];
     const blockedReasons = [];
     const certEnv = sanitizeCertificationEnv(process.env);
 
@@ -1973,10 +1800,8 @@ export async function certifyGateB2({
       if (needsExecution && !candidate.frozen) {
         blockedReasons.push("candidate not freeze-bound");
       }
-      if (needsExecution && !args.dryRun && !attemptLedgerRoot) {
-        blockedReasons.push(
-          attemptLedgerError?.message ?? DURABLE_ATTEMPT_LEDGER_MESSAGE,
-        );
+      if (needsExecution && !args.dryRun && !authorityContext.ok) {
+        blockedReasons.push(authorityContext.message);
       }
       for (const [key, value] of Object.entries(digests)) {
         if (!SHA256_RE.test(value)) {
@@ -1994,9 +1819,7 @@ export async function certifyGateB2({
           environment,
           repoRoot: executionRoot,
           artifactDir,
-          ledgerRoot: attemptLedgerRoot,
-          suiteBuckets,
-          onAllocation,
+          executionAuthorized,
         })),
       );
     } else {
@@ -2026,9 +1849,7 @@ export async function certifyGateB2({
           freeze,
           certificationRunId,
           artifactDir,
-          ledgerRoot: attemptLedgerRoot,
-          suiteBuckets,
-          onAllocation,
+          executionAuthorized,
           env: certEnv,
         })),
       );
@@ -2045,13 +1866,13 @@ export async function certifyGateB2({
     }
 
     if (args.runJourneys) {
-      if (!args.dryRun && !attemptLedgerRoot) {
+      if (!args.dryRun && !executionAuthorized) {
         suites.push(
           ...manifest.requiredManualJourneys.map((entry) =>
             blockedSuite({
               suiteId: entry.id,
               bucket: "requiredJourneys",
-              message: DURABLE_ATTEMPT_LEDGER_MESSAGE,
+              message: GITHUB_ATTEMPT_AUTHORITY_MESSAGE,
               command: entry.command ?? null,
               environmentDigest: environment.digest,
             }),
@@ -2061,16 +1882,11 @@ export async function certifyGateB2({
         for (const entry of manifest.requiredManualJourneys) {
           const allocation = args.dryRun
             ? null
-            : await allocateGateB2Attempt({
-                ledgerRoot: attemptLedgerRoot,
-                candidateCommitSha: candidate.commitSha,
-                candidateTreeSha: candidate.treeSha,
-                contractVersion: GATE_B2_CONTRACT_VERSION,
+            : await allocateGateB2ArtifactAttempt({
+                artifactRoot: artifactDir,
                 suiteId: entry.id,
                 bucket: "requiredJourneys",
-                suiteBuckets,
               });
-          if (allocation) onAllocation(allocation);
           const result = await runJourneySuite({
             journeyEntry: entry,
             candidate,
@@ -2118,9 +1934,7 @@ export async function certifyGateB2({
           freeze,
           certificationRunId,
           artifactDir,
-          ledgerRoot: attemptLedgerRoot,
-          suiteBuckets,
-          onAllocation,
+          executionAuthorized,
           env: certEnv,
         })),
       );
@@ -2167,9 +1981,7 @@ export async function certifyGateB2({
             freeze,
             certificationRunId,
             artifactDir,
-            ledgerRoot: attemptLedgerRoot,
-            suiteBuckets,
-            onAllocation,
+            executionAuthorized,
             env: certEnv,
           })),
         );
@@ -2191,46 +2003,7 @@ export async function certifyGateB2({
       if (suite.result === "blocked") {
         blockedReasons.push(`${suite.suiteId}: ${suite.message}`);
       }
-      if (Number.isInteger(suite.attempt) && suite.attempt > 1) {
-        retries.push({
-          suiteId: suite.suiteId,
-          attempt: suite.attempt,
-          result: suite.result,
-          normative: false,
-          message: suite.message,
-        });
-      }
     }
-
-    if (candidate.frozen && !args.dryRun && attemptLedgerRoot) {
-      try {
-        const finalLedgerSnapshot = await loadGateB2AttemptLedgerSnapshot({
-          ledgerRoot: attemptLedgerRoot,
-          candidateCommitSha: candidate.commitSha,
-          candidateTreeSha: candidate.treeSha,
-          contractVersion: GATE_B2_CONTRACT_VERSION,
-          suiteBuckets,
-        });
-        Object.assign(candidate, finalLedgerSnapshot);
-        attemptHistory = finalLedgerSnapshot.history;
-        for (const allocation of allocatedAttempts) {
-          const row = finalLedgerSnapshot.history.find(
-            (entry) =>
-              entry.sequence === allocation.sequence &&
-              entry.attempt === allocation.attempt &&
-              entry.suiteId === allocation.suiteId,
-          );
-          if (!row || row.recordDigest !== allocation.reservationDigest) {
-            blockedReasons.push(
-              `allocated Gate B2 attempt is missing from final controller ledger: ${allocation.attemptDir}`,
-            );
-          }
-        }
-      } catch (error) {
-        blockedReasons.push(`final attempt ledger snapshot invalid: ${error.message}`);
-      }
-    }
-
     const preflightOnly =
       args.preflight &&
       !args.runLight &&
@@ -2256,7 +2029,6 @@ export async function certifyGateB2({
       candidate,
       decisionPolicy: manifest.decisionPolicy ?? {},
       preflightOnly,
-      attemptHistory,
     });
     if (
       blockedReasons.length > 0 &&
@@ -2304,7 +2076,6 @@ export async function certifyGateB2({
         releaseAdjacent: tallyBucket(suites, "releaseAdjacent"),
       },
       suites,
-      retries,
       blockedReasons,
       firstFailure: firstFailureOf(suites),
     };
@@ -2339,7 +2110,6 @@ export async function certifyGateB2({
       verdict: report.verdict,
       reasons: report.verdictReasons,
       suites,
-      attemptHistory,
       reportDigest,
       digests,
     });

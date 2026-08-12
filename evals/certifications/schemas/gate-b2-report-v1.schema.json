@@ -17,12 +17,11 @@
     "verdict",
     "summary",
     "suites",
-    "retries",
     "blockedReasons"
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "contractVersion": { "type": "integer", "const": 6 },
+    "contractVersion": { "type": "integer", "const": 7 },
     "gateId": { "const": "gate-b2" },
     "manifestDigest": {
       "type": "string",
@@ -49,21 +48,11 @@
         "aiPathRegistryDigest",
         "qualityManifestDigest",
         "narrativeEvalManifestDigest",
-        "attemptLedgerSourceDigest",
+        "attemptAuthoritySourceDigest",
+        "attemptWorkflowDigest",
+        "fullCiEvidenceWriterDigest",
         "freezeId",
-        "attemptLedgerId",
-        "attemptLedgerConfigDigest",
-        "attemptLedgerDigest",
-        "attemptLedgerInstanceId",
-        "attemptLedgerHeadDigest",
-        "attemptHistoryDigest",
-        "attemptLedgerRecordCount",
-        "attemptLedgerMaxSequence",
-        "controllerPublicKeyId",
-        "controllerPublicKeyFingerprint",
-        "controllerSignature",
-        "controllerReceiptDigest",
-        "attemptLedgerAttestation",
+        "attemptAuthority",
         "frozen",
         "dirty"
       ],
@@ -163,53 +152,19 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "attemptLedgerConfigDigest": {
+        "attemptAuthoritySourceDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "attemptLedgerSourceDigest": {
+        "attemptWorkflowDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "attemptLedgerId": { "type": "string", "minLength": 1 },
-        "attemptLedgerDigest": {
+        "fullCiEvidenceWriterDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "attemptLedgerInstanceId": {
-          "type": ["string", "null"],
-          "minLength": 1
-        },
-        "attemptLedgerHeadDigest": {
-          "type": ["string", "null"],
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "attemptHistoryDigest": {
-          "type": ["string", "null"],
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "attemptLedgerRecordCount": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "attemptLedgerMaxSequence": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "controllerPublicKeyId": { "type": "string", "minLength": 1 },
-        "controllerPublicKeyFingerprint": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "controllerSignature": {
-          "type": ["string", "null"],
-          "minLength": 1
-        },
-        "controllerReceiptDigest": {
-          "type": ["string", "null"],
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "attemptLedgerAttestation": { "type": "string", "minLength": 1 },
+        "attemptAuthority": { "$ref": "#/$defs/attemptAuthority" },
         "boundVia": { "type": "string" },
         "frozen": { "type": "boolean" },
         "dirty": { "type": "boolean" }
@@ -259,10 +214,6 @@
       "type": "array",
       "items": { "$ref": "#/$defs/suiteResult" }
     },
-    "retries": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/retryRecord" }
-    },
     "artifactDigests": {
       "type": "array",
       "items": {
@@ -296,7 +247,73 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "verdict": { "const": "PASS" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "freezeId": { "type": "string", "minLength": 1 },
+          "candidate": {
+            "properties": {
+              "commitSha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "treeSha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "frozen": { "const": true },
+              "dirty": { "const": false },
+              "attemptAuthority": {
+                "properties": {
+                  "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+                  "runAttempt": { "const": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
+    "attemptAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "configDigest",
+        "repository",
+        "workflowPath",
+        "event",
+        "runId",
+        "runAttempt"
+      ],
+      "properties": {
+        "provider": { "const": "github-actions" },
+        "configDigest": {
+          "const": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4"
+        },
+        "repository": { "const": "kazormia296/Grimodex" },
+        "workflowPath": {
+          "const": ".github/workflows/gate-b2-certification.yml"
+        },
+        "event": { "const": "workflow_dispatch" },
+        "runId": {
+          "type": ["string", "null"],
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "runAttempt": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 1
+        }
+      }
+    },
     "bucketSummary": {
       "type": "object",
       "additionalProperties": false,
@@ -348,7 +365,7 @@
             "releaseAdjacent"
           ]
         },
-        "attempt": { "type": "integer", "minimum": 1 },
+        "attempt": { "const": 1 },
         "startedAt": { "type": ["string", "null"] },
         "completedAt": { "type": ["string", "null"] },
         "exitCode": { "type": ["integer", "null"] },
@@ -396,18 +413,6 @@
           "type": "array",
           "items": { "type": "string" }
         }
-      }
-    },
-    "retryRecord": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["suiteId", "attempt", "result", "normative"],
-      "properties": {
-        "suiteId": { "type": "string" },
-        "attempt": { "type": "integer", "minimum": 1 },
-        "result": { "type": "string" },
-        "normative": { "type": "boolean" },
-        "message": { "type": "string" }
       }
     }
   }

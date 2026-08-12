@@ -27,7 +27,8 @@ pnpm test:narrative:gate-b2-adr
 C2 は Human Gold 14 case を production の Observation → Evidence resolve →
 Clustering → Event synthesis → Existing match → Proposal planning に通す billed
 OpenRouter Heavy runner を登録する。Chronicle domain Apply は実行せず、
-Attempt 1 だけを normative とし、Attempt 2 は diagnostic-only として記録する。
+Attempt 1 だけを正式結果とする。失敗後の再実行は同じ Candidate では行わず、
+修正した新しい Candidate SHA を Freeze する。
 runner が存在しても、意味品質が閾値を満たさない場合は Gate B2 PASS ではなく HOLD となる。
 
 ```bash
@@ -55,36 +56,39 @@ informational 補助であり、Gate B2 Engineering の実ブラウザ証跡に�
 # Candidate digest / freeze 事前確認（PASS は出さない）
 pnpm certify:gate-b2 -- --preflight --candidate <sha>
 
-# Light / Heavy / Journey
-pnpm certify:gate-b2 -- \
-  --run-light \
-  --run-heavy \
-  --run-journeys \
-  --candidate <sha> \
-  --ci-evidence .artifacts/gate-b2/<sha>/light/full-ci.json \
-  --report .artifacts/gate-b2/<sha>/report.json
+# Candidate の Full CI を workflow_dispatch で完走させ、run ID を記録
+gh workflow run ci.yml --ref <candidate-ref>
+
+# Freeze を commit/push 後、専用 workflow を対象 Candidate につき1回だけ起動
+gh workflow run gate-b2-certification.yml \
+  --ref <freeze-ref> \
+  -f candidate_sha=<frozen-sha> \
+  -f full_ci_run_id=<successful-ci-run-id>
 ```
 
 ## Verdict
 
-| Verdict | 意味 |
-| --- | --- |
-| PASS | 必須 Light / Heavy / Journey がすべて成功。blocked/deferred/skipped なし。Candidate Tree 不変。 |
-| HOLD | 安全性は成功だが意味品質閾値または再現性が不足。 |
-| BLOCK | runner 不在、credential 不足、critical safety failure、candidate drift など。 |
-| INCOMPLETE | preflight のみ、または必須 suite 未実行。 |
+| Verdict    | 意味                                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------------- |
+| PASS       | 必須 Light / Heavy / Journey がすべて成功。blocked/deferred/skipped なし。Candidate Tree 不変。 |
+| HOLD       | 安全性は成功だが意味品質閾値または再現性が不足。                                                |
+| BLOCK      | runner 不在、credential 不足、critical safety failure、candidate drift など。                   |
+| INCOMPLETE | preflight のみ、または必須 suite 未実行。                                                       |
 
 `skipped` / `deferred` / credential 不足を PASS に含めない。
 
-Attempt ledger は candidate checkout の外にある固定 controller 管理の
-append-only ledger (`grimodex-gate-b2-attempt-ledger-v1`) を正本とする。
-`--attempt-ledger-root` と `GATE_B2_ATTEMPT_LEDGER_ROOT` による caller 側の
-root 差し替えは認証 runner が拒否し、Freeze／Decision には ledger ID・digest・
-controller attestation を記録する。
+Attempt履歴の正本はGitHub Actionsの
+`.github/workflows/gate-b2-certification.yml` とする。workflow run名へCandidate
+SHAを固定し、同じSHAの2回目のdispatchと`Re-run jobs`（run attempt 2）を開始時に
+拒否する。失敗したCandidateはPASSへ上書きせず、修正後の新しいSHAで再認証する。
+
+DecisionにはCandidate commit/tree、freezeId、各suiteのAttempt 1とresult、
+report digest、GitHub Actions run IDを記録する。独自の秘密鍵、署名、公開鍵、
+耐改ざんストレージはGate B2契約に含めない。
 
 ## Stack
 
-`#518`（`codex/fix-gate-b2-review`）の後段に certification PR を積む。
+`#525` の後段に certification PR（#526）を積む。
 
 ## C4 — Candidate freeze and Decision artifact
 
@@ -92,12 +96,10 @@ controller attestation を記録する。
 # Working tree が clean なときだけ freeze できる
 pnpm certify:gate-b2:freeze -- --candidate HEAD --write-results
 
-# Freeze 後に Light / Heavy / Journey を同一 tree へ実行し decision を更新
-pnpm certify:gate-b2 -- \
-  --run-light --run-heavy --run-journeys \
-  --candidate <frozen-sha> \
-  --report .artifacts/gate-b2/<frozen-sha>/report.json
+# 正式なLight / Heavy / Journeyは上記の専用workflowからだけ実行する
 ```
 
-Digest と Decision のみを `evals/certifications/results/gate-b2-<sha>.json` に残す。
-生ログ全体はリポジトリへ入れない。
+Freeze時点のprovisional Decisionは
+`evals/certifications/results/gate-b2-<sha>.json` に残す。正式report／Decision／
+suite artifactは専用workflowのGitHub Actions artifactへ保存し、生ログ全体は
+リポジトリへ入れない。

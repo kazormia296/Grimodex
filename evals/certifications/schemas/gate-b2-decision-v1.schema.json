@@ -12,23 +12,12 @@
     "baseMasterSha",
     "freezeId",
     "certificationRunId",
-    "attemptLedgerId",
-    "attemptLedgerConfigDigest",
-    "attemptLedgerDigest",
-    "attemptLedgerInstanceId",
-    "attemptLedgerHeadDigest",
-    "attemptHistoryDigest",
-    "attemptLedgerRecordCount",
-    "attemptLedgerMaxSequence",
-    "controllerPublicKeyId",
-    "controllerPublicKeyFingerprint",
-    "controllerSignature",
-    "controllerReceiptDigest",
-    "attemptLedgerAttestation",
+    "attemptAuthority",
     "verdict",
     "reasons",
     "suiteSummaries",
     "digests",
+    "suiteAttempts",
     "generatedAt"
   ],
   "properties": {
@@ -46,55 +35,10 @@
       "type": ["string", "null"],
       "pattern": "^[0-9a-f]{40}$"
     },
-      "schemaVersionProduct": { "type": "integer", "const": 20 },
+    "schemaVersionProduct": { "type": "integer", "const": 20 },
     "freezeId": { "type": ["string", "null"], "minLength": 1 },
     "certificationRunId": { "type": ["string", "null"], "minLength": 1 },
-    "attemptLedgerId": { "type": "string", "minLength": 1 },
-    "attemptLedgerConfigDigest": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "attemptLedgerDigest": {
-      "type": ["string", "null"],
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "attemptLedgerInstanceId": {
-      "type": ["string", "null"],
-      "minLength": 1
-    },
-    "attemptLedgerHeadDigest": {
-      "type": ["string", "null"],
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "attemptHistoryDigest": {
-      "type": ["string", "null"],
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "attemptLedgerRecordCount": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "attemptLedgerMaxSequence": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "controllerPublicKeyId": {
-      "type": "string",
-      "minLength": 1
-    },
-    "controllerPublicKeyFingerprint": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "controllerSignature": {
-      "type": ["string", "null"],
-      "minLength": 1
-    },
-    "controllerReceiptDigest": {
-      "type": ["string", "null"],
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "attemptLedgerAttestation": { "type": "string", "minLength": 1 },
+    "attemptAuthority": { "$ref": "#/$defs/attemptAuthority" },
     "verdict": {
       "type": "string",
       "enum": ["PASS", "HOLD", "BLOCK", "INCOMPLETE"]
@@ -154,22 +98,7 @@
         }
       }
     },
-    "heavyAttempts": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["suiteId", "attempt", "result", "normative"],
-        "properties": {
-          "suiteId": { "type": "string" },
-          "attempt": { "type": "integer", "minimum": 1 },
-          "result": { "type": "string" },
-          "normative": { "type": "boolean" },
-          "message": { "type": "string" }
-        }
-      }
-    },
-    "attemptHistory": {
+    "suiteAttempts": {
       "type": "array",
       "items": {
         "type": "object",
@@ -179,10 +108,27 @@
           "suiteId": { "type": "string", "minLength": 1 },
           "bucket": {
             "type": "string",
-            "enum": ["requiredLight", "requiredHeavy", "requiredJourneys", "informational", "releaseAdjacent"]
+            "enum": [
+              "requiredLight",
+              "requiredHeavy",
+              "requiredJourneys",
+              "informational",
+              "releaseAdjacent"
+            ]
           },
-          "attempt": { "type": "integer", "minimum": 1 },
-          "result": { "type": "string" },
+          "attempt": { "const": 1 },
+          "result": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "blocked",
+              "hold",
+              "not-run",
+              "deferred",
+              "informational"
+            ]
+          },
           "message": { "type": "string" }
         }
       }
@@ -190,7 +136,68 @@
     "generatedAt": { "type": "string" },
     "notes": { "type": "string" }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "verdict": { "const": "PASS" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "freezeId": { "type": "string", "minLength": 1 },
+          "certificationRunId": { "type": "string", "minLength": 1 },
+          "attemptAuthority": {
+            "properties": {
+              "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+              "runAttempt": { "const": 1 }
+            }
+          },
+          "digests": {
+            "properties": {
+              "reportDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
+    "attemptAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "configDigest",
+        "repository",
+        "workflowPath",
+        "event",
+        "runId",
+        "runAttempt"
+      ],
+      "properties": {
+        "provider": { "const": "github-actions" },
+        "configDigest": {
+          "const": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4"
+        },
+        "repository": { "const": "kazormia296/Grimodex" },
+        "workflowPath": {
+          "const": ".github/workflows/gate-b2-certification.yml"
+        },
+        "event": { "const": "workflow_dispatch" },
+        "runId": {
+          "type": ["string", "null"],
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "runAttempt": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 1
+        }
+      }
+    },
     "counts": {
       "type": "object",
       "additionalProperties": false,

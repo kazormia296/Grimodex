@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import yaml from "js-yaml";
-import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
+import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -54,33 +54,24 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     });
     assert.match(result.freeze.candidate.commitSha, /^[0-9a-f]{40}$/);
     assert.match(result.freeze.candidate.treeSha, /^[0-9a-f]{40}$/);
-    assert.equal(result.freeze.contractVersion, 6);
+    assert.equal(result.freeze.contractVersion, 7);
     assert.match(result.freeze.freezeId, /^[0-9a-f-]{36}$/);
-    assert.equal(result.freeze.candidateCommitSha, result.freeze.candidate.commitSha);
-    assert.equal(result.freeze.candidateTreeSha, result.freeze.candidate.treeSha);
-    assert.equal(result.freeze.productSchemaVersion, manifest.candidate.schemaVersion);
-    const ledger = getGateB2AttemptLedgerIdentity();
-    assert.deepEqual(
-      {
-        attemptLedgerId: result.freeze.candidate.attemptLedgerId,
-        attemptLedgerConfigDigest:
-          result.freeze.candidate.attemptLedgerConfigDigest,
-        attemptLedgerDigest: result.freeze.candidate.attemptLedgerDigest,
-        attemptLedgerInstanceId: result.freeze.candidate.attemptLedgerInstanceId,
-        attemptLedgerHeadDigest: result.freeze.candidate.attemptLedgerHeadDigest,
-        attemptHistoryDigest: result.freeze.candidate.attemptHistoryDigest,
-        attemptLedgerRecordCount:
-          result.freeze.candidate.attemptLedgerRecordCount,
-        attemptLedgerMaxSequence: result.freeze.candidate.attemptLedgerMaxSequence,
-        controllerPublicKeyId: result.freeze.candidate.controllerPublicKeyId,
-        controllerPublicKeyFingerprint:
-          result.freeze.candidate.controllerPublicKeyFingerprint,
-        controllerSignature: result.freeze.candidate.controllerSignature,
-        controllerReceiptDigest: result.freeze.candidate.controllerReceiptDigest,
-        attemptLedgerAttestation: result.freeze.candidate.attemptLedgerAttestation,
-      },
-      ledger,
+    assert.equal(
+      result.freeze.candidateCommitSha,
+      result.freeze.candidate.commitSha,
     );
+    assert.equal(
+      result.freeze.candidateTreeSha,
+      result.freeze.candidate.treeSha,
+    );
+    assert.equal(
+      result.freeze.productSchemaVersion,
+      manifest.candidate.schemaVersion,
+    );
+    const authority = getGateB2GithubAttemptIdentity();
+    assert.deepEqual(result.freeze.attemptAuthority, authority);
+    assert.deepEqual(result.freeze.candidate.attemptAuthority, authority);
+    assert.deepEqual(result.provisionalDecision.attemptAuthority, authority);
     assert.match(
       result.freeze.candidate.writerRegistryDigest,
       /^sha256:[0-9a-f]{64}$/,

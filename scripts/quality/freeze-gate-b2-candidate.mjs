@@ -17,18 +17,13 @@ import {
   FREEZE_RELATIVE,
   GATE_B2_CONTRACT_VERSION,
   bindCandidateDigestRoot,
-  loadGateB2AttemptLedgerSnapshot,
   pathExists,
   validateJsonAgainstSchema,
 } from "./certify-gate-b2-bindings.mjs";
-import {
-  GATE_B2_ATTEMPT_LEDGER_ROOT,
-  getGateB2AttemptLedgerIdentity,
-} from "./gate-b2-controller-config.mjs";
+import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
 import {
   collectInputDigests,
   loadGateB2Manifest,
-  buildGateB2SuiteBuckets,
   parseCertifyArgs,
   resolveCandidateIdentity,
 } from "./certify-gate-b2.mjs";
@@ -136,21 +131,7 @@ export async function freezeGateB2Candidate({
     await digestRoot.cleanup();
   }
   const freezeId = randomUUID();
-  let attemptLedger = getGateB2AttemptLedgerIdentity();
-  // Freeze can be prepared before a controller volume is mounted in a local
-  // checkout, but once a fixed root exists its metadata/state must be captured
-  // rather than silently ignored. The certification runner remains fail-closed
-  // when the root is absent at execution time.
-  if (await pathExists(GATE_B2_ATTEMPT_LEDGER_ROOT)) {
-    const snapshot = await loadGateB2AttemptLedgerSnapshot({
-      ledgerRoot: GATE_B2_ATTEMPT_LEDGER_ROOT,
-      candidateCommitSha: identity.commitSha,
-      candidateTreeSha: identity.treeSha,
-      contractVersion: GATE_B2_CONTRACT_VERSION,
-      suiteBuckets: buildGateB2SuiteBuckets(manifest),
-    });
-    attemptLedger = { ...attemptLedger, ...snapshot };
-  }
+  const attemptAuthority = getGateB2GithubAttemptIdentity();
   const productSchemaVersion = manifest.candidate.schemaVersion;
   const requiredLightCount = Array.isArray(manifest.requiredLight)
     ? manifest.requiredLight.length
@@ -181,7 +162,7 @@ export async function freezeGateB2Candidate({
     freezeId,
     candidateCommitSha: identity.commitSha,
     candidateTreeSha: identity.treeSha,
-    ...attemptLedger,
+    attemptAuthority,
     productSchemaVersion,
     frozenAt: new Date().toISOString(),
     candidate: {
@@ -189,7 +170,7 @@ export async function freezeGateB2Candidate({
       treeSha: identity.treeSha,
       baseMasterSha: identity.baseMasterSha,
       schemaVersion: productSchemaVersion,
-      ...attemptLedger,
+      attemptAuthority,
       ...digests,
     },
     freezeRules: {
@@ -229,11 +210,6 @@ export async function freezeGateB2Candidate({
     "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
     "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
     "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
-    ...(attemptLedger.attemptLedgerInstanceId
-      ? []
-      : [
-          "Controller ledger is not provisioned; this freeze is preflight-only and must be replaced before normative execution.",
-        ]),
   ];
   const provisionalDecision = {
     schemaVersion: 1,
@@ -243,8 +219,7 @@ export async function freezeGateB2Candidate({
     candidateCommitSha: identity.commitSha,
     candidateTreeSha: identity.treeSha,
     baseMasterSha: identity.baseMasterSha,
-    ...attemptLedger,
-    attemptLedgerDigest: attemptLedger.attemptLedgerDigest,
+    attemptAuthority,
     schemaVersionProduct: productSchemaVersion,
     verdict: "INCOMPLETE",
     reasons: provisionalReasons,
@@ -262,10 +237,10 @@ export async function freezeGateB2Candidate({
       classificationDigest: digests.classificationDigest ?? null,
       reportDigest: null,
     },
-    heavyAttempts: [],
+    suiteAttempts: [],
     generatedAt: new Date().toISOString(),
     notes:
-      "Provisional freeze decision only. Replace after --run-light/--run-heavy/--run-journeys against this candidate.",
+      "Provisional freeze decision only. The dedicated Gate B2 workflow produces the formal Decision for this candidate.",
   };
   const decisionSchema = JSON.parse(
     await readFile(

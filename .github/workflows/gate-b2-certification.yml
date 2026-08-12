@@ -1,0 +1,87 @@
+name: Gate B2 Certification
+run-name: Gate B2 candidate ${{ inputs.candidate_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Frozen candidate commit SHA
+        required: true
+        type: string
+      full_ci_run_id:
+        description: Successful CI workflow_dispatch run ID for the same candidate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  certify:
+    name: Gate B2 first attempt
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GATE_B2_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      GATE_B2_FULL_CI_RUN_ID: ${{ inputs.full_ci_run_id }}
+      GH_TOKEN: ${{ github.token }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Reject duplicate dispatches and reruns
+        run: node scripts/quality/gate-b2-github-attempt.mjs --candidate "$GATE_B2_CANDIDATE_SHA"
+
+      - name: Verify active freeze targets the requested candidate
+        run: |
+          node -e 'const fs=require("node:fs"); const freeze=JSON.parse(fs.readFileSync("evals/certifications/gate-b2-candidate.freeze.json","utf8")); if (freeze.status === "superseded" || freeze.candidate?.commitSha !== process.env.GATE_B2_CANDIDATE_SHA) throw new Error("active Gate B2 freeze does not match candidate_sha");'
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Bind successful Full CI evidence
+        run: |
+          node scripts/quality/write-gate-b2-full-ci-evidence.mjs \
+            --candidate "$GATE_B2_CANDIDATE_SHA" \
+            --run-id "$GATE_B2_FULL_CI_RUN_ID" \
+            --output ".artifacts/gate-b2/$GATE_B2_CANDIDATE_SHA/light/full-ci.json"
+
+      - name: Build shared workspace dependencies
+        run: pnpm build:workspace:dependencies
+
+      - name: Install Chromium and system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Gate B2 Light, Heavy, and Journey suites
+        run: |
+          pnpm certify:gate-b2 -- \
+            --run-light \
+            --run-heavy \
+            --run-journeys \
+            --candidate "$GATE_B2_CANDIDATE_SHA" \
+            --ci-evidence ".artifacts/gate-b2/$GATE_B2_CANDIDATE_SHA/light/full-ci.json" \
+            --report ".artifacts/gate-b2/$GATE_B2_CANDIDATE_SHA/report.json"
+
+      - name: Upload Gate B2 evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gate-b2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/gate-b2
+          if-no-files-found: warn
+          retention-days: 90
