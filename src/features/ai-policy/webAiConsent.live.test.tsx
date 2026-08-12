@@ -24,6 +24,17 @@ const repoRoot = path.resolve(
   "../../..",
 );
 
+function gateB2BindingFromEnv() {
+  return {
+    candidateCommitSha: process.env.GATE_B2_CANDIDATE_COMMIT_SHA,
+    candidateTreeSha: process.env.GATE_B2_CANDIDATE_TREE_SHA,
+    suiteId: process.env.GATE_B2_SUITE_ID,
+    runId: process.env.GATE_B2_RUN_ID,
+    commandDigest: process.env.GATE_B2_COMMAND_DIGEST,
+    outputPath: process.env.GATE_B2_OUTPUT_PATH,
+  };
+}
+
 interface LoopbackServer {
   readonly baseUrlA: string;
   readonly baseUrlB: string;
@@ -263,6 +274,30 @@ describe("Web AI consent live journey (loopback Local LLM)", () => {
     await reconsentExpectation;
     expect(server.requestCount()).toBe(afterApprove);
 
+    const requestCountAfterDestinationChangeRefuse = server.requestCount();
+    const accessLogDigest = `sha256:${createHash("sha256")
+      .update(JSON.stringify(server.accessLog))
+      .digest("hex")}`;
+    const endpoints = {
+      a: server.baseUrlA,
+      b: server.baseUrlB,
+    };
+
+    // Teardown first; report must record observed post-teardown state.
+    mock.close();
+    await server.close();
+    server = null;
+    localStorage.clear();
+    declineActiveAiDataConsent();
+
+    const localStorageCleared = localStorage.length === 0;
+    expect(localStorageCleared).toBe(true);
+
+    const gateB2 = gateB2BindingFromEnv();
+    const startedAt = new Date().toISOString();
+    const completedAt = new Date().toISOString();
+    const runId =
+      gateB2.runId ?? `web-ai-consent-${startedAt.replace(/[:.]/g, "-")}`;
     const artifactRoot = path.join(
       repoRoot,
       ".artifacts",
@@ -272,33 +307,36 @@ describe("Web AI consent live journey (loopback Local LLM)", () => {
     const report = {
       schemaVersion: 1,
       mode: "web-ai-consent-live",
+      runId,
+      startedAt,
+      completedAt,
+      finishedAt: completedAt,
+      ...(gateB2.candidateCommitSha
+        ? { candidateCommitSha: gateB2.candidateCommitSha }
+        : {}),
+      ...(gateB2.candidateTreeSha
+        ? { candidateTreeSha: gateB2.candidateTreeSha }
+        : {}),
+      ...(gateB2.suiteId ? { suiteId: gateB2.suiteId } : {}),
+      ...(gateB2.commandDigest ? { commandDigest: gateB2.commandDigest } : {}),
       certificationEligible: true,
       requestCountBeforeConsent: 0,
       requestCountAfterRefuse: 0,
       requestCountAfterApprove: afterApprove,
-      requestCountAfterDestinationChangeRefuse: server.requestCount(),
-      accessLogDigest: `sha256:${createHash("sha256")
-        .update(JSON.stringify(server.accessLog))
-        .digest("hex")}`,
-      endpoints: {
-        a: server.baseUrlA,
-        b: server.baseUrlB,
-      },
+      requestCountAfterDestinationChangeRefuse,
+      accessLogDigest,
+      endpoints,
       teardown: {
-        localStorageCleared: true,
-        serverClosed: false,
+        localStorageCleared,
+        serverClosed: true,
+        consentBrokerDeclined: true,
       },
     };
-    await writeFile(
-      path.join(artifactRoot, "report.json"),
-      `${JSON.stringify(report, null, 2)}\n`,
-      "utf8",
-    );
-
-    mock.close();
-    await server.close();
-    server = null;
-    localStorage.clear();
-    declineActiveAiDataConsent();
+    expect(report.teardown.serverClosed).toBe(true);
+    const reportJson = `${JSON.stringify(report, null, 2)}\n`;
+    const reportPath =
+      gateB2.outputPath ?? path.join(artifactRoot, "report.json");
+    await mkdir(path.dirname(reportPath), { recursive: true });
+    await writeFile(reportPath, reportJson, "utf8");
   }, 60_000);
 });

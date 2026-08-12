@@ -13,6 +13,7 @@ import type {
   Sha256Digest,
 } from "@/features/narrative-extraction/source/types";
 import { clusterEventObservations } from "@/features/chronicle/extraction/eventClustering";
+import { mergeObservationsByEvidence } from "@/features/chronicle/extraction/observationMerger";
 import {
   matchExistingChronicleEvent,
   type ChronicleExistingMatch,
@@ -277,23 +278,6 @@ export async function observeChronicleEventsFromSnapshot(
 
 function evidenceFingerprint(sourceRef: string, quote: string): string {
   return `${sourceRef}\0${quote}`;
-}
-
-function mergeObservationsByEvidence(
-  observations: readonly RawChronicleEventObservation[],
-): readonly RawChronicleEventObservation[] {
-  const seen = new Set<string>();
-  const merged: RawChronicleEventObservation[] = [];
-  for (const observation of observations) {
-    const key = observation.evidence
-      .map((item) => evidenceFingerprint(item.sourceRef, item.quote))
-      .sort()
-      .join("||");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(observation);
-  }
-  return merged;
 }
 
 async function resolveObservationEvidence(

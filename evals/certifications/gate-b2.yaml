@@ -3,6 +3,7 @@
 # Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
 # candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
 schemaVersion: 1
+contractVersion: 5
 id: gate-b2
 
 candidate:
@@ -17,6 +18,18 @@ candidate:
   narrativeEvalManifestDigest: null
   adrChecklistDigest: null
   classificationDigest: null
+  # Harness / runner digests (see HARNESS_DIGEST_PATHS in certify-gate-b2-bindings.mjs)
+  certificationManifestDigest: null
+  certifyBootstrapDigest: null
+  certifyRunnerDigest: null
+  certifyBindingsDigest: null
+  adrValidatorDigest: null
+  reportSchemaDigest: null
+  decisionSchemaDigest: null
+  journeySchemaDigest: null
+  chronicleAdapterDigest: null
+  chronicleScorerDigest: null
+  webConsentJourneyDigest: null
 
 inputs:
   writerRegistry: policies/narrative/protected-writers.json
@@ -27,11 +40,23 @@ inputs:
   adrChecklist: policies/narrative/gate-b2-adr-checklist.json
   adrChecklistDocument: docs/adr/004-narrative-reconciliation-boundary-checklist.md
   classification: policies/narrative/gate-b2-classification.json
+  # Harness paths (digested at freeze; keys match HARNESS_DIGEST_PATHS)
+  certificationManifest: evals/certifications/gate-b2.yaml
+  certifyBootstrap: scripts/quality/certify-gate-b2-bootstrap.mjs
+  certifyRunner: scripts/quality/certify-gate-b2.mjs
+  certifyBindings: scripts/quality/certify-gate-b2-bindings.mjs
+  adrValidator: scripts/quality/validate-gate-b2-adr.mjs
+  reportSchema: evals/certifications/schemas/gate-b2-report-v1.schema.json
+  decisionSchema: evals/certifications/schemas/gate-b2-decision-v1.schema.json
+  journeySchema: evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json
+  chronicleAdapter: src/features/narrative-extraction/eval/productionChronicleAdapter.ts
+  chronicleScorer: src/features/narrative-extraction/eval/productionChronicleScoring.ts
+  webConsentJourney: src/features/ai-policy/webAiConsent.live.test.tsx
 
 # Light / Heavy / Journey の ID は runner が減らさない。欠落は BLOCK。
 requiredLight:
   - id: adr-static-certification
-    command: [pnpm, test:narrative:gate-b2-adr]
+    command: [pnpm, test:narrative:gate-b2-adr:certifiable]
   - id: narrative-writer-release
     command: [pnpm, test:narrative:release]
   - id: native-writer-ownership
@@ -46,6 +71,24 @@ requiredLight:
     # ローカルでは実行しない。候補 SHA の CI 証跡ファイルが必須。
     kind: external-evidence
     evidenceRelativePath: light/full-ci.json
+
+# Full CI は Evidence 側が必須 Job を決めてはならない。ここに固定する。
+# pull_request の merge commit は Candidate tree と一致しないため受理しない。
+fullCi:
+  workflowId: 261224650
+  workflowPath: .github/workflows/ci.yml
+  acceptedEvents:
+    - push
+    - workflow_dispatch
+  requiredJobs:
+    - Quality (traceability / impact-selected light gates)
+    - Frontend (type-check / lint / test)
+    - Shared Rust crates (check / clippy / test)
+    - Browser (Vitest browser)
+    - Electron (workflow contract / type-check / test / build)
+    - Electron native (N-API / release features / MCP)
+    - Electron product journeys (persistence / workspace authority)
+  requireCheckoutIdentityArtifact: true
 
 requiredHeavy:
   - id: heavy-agent-tool-loop
@@ -63,13 +106,23 @@ requiredHeavy:
   - id: heavy-narrative-chronicle-production
     qualityManifestId: heavy-narrative-chronicle-production
     requiresEnv: [OPENROUTER_API_KEY]
-  - id: heavy-web-ai-consent-live
-    qualityManifestId: heavy-web-ai-consent-live
-    requiresEnv: []
+  # Real browser consent is still required for Gate B2 Engineering PASS.
+  # jsdom loopback remains informational only (below).
+  - id: heavy-web-ai-consent-browser-live
+    status: blocked
+    requiredAction: >
+      Add Playwright/Vitest Browser Web Editor journey proving
+      refusal=0 HTTP, approval>0 HTTP, destination re-consent,
+      IndexedDB/localStorage cleanup and server teardown on a real browser.
 
 informational:
   - id: heavy-narrative-chronicle-legacy-baseline
     qualityManifestId: heavy-narrative-chronicle-legacy-baseline
+    certificationCredit: false
+  # jsdom loopback journey — not certification credit for Gate B2 Engineering PASS
+  - id: heavy-web-ai-consent-live
+    qualityManifestId: heavy-web-ai-consent-live
+    requiresEnv: []
     certificationCredit: false
 
 # Gate B2 Engineering 認証には含めない。Global Release Quality 判定用。
@@ -85,12 +138,51 @@ releaseAdjacent:
     status: blocked
 
 requiredManualJourneys:
+  # Journeys stay BLOCKED until real runners emit candidate-bound evidence under
+  # GATE_B2_* env (or GitHub-attested artifacts). Handwritten JSON alone cannot PASS.
   - id: prepared-plan-toctou
+    runnerId: gate-b2-prepared-plan-toctou-journey
+    runnerVersion: "1"
+    requiredAssertions: [source-changed-after-prepare, apply-rejected-or-revalidated]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:prepared-plan-toctou that runs on the frozen
+      candidate worktree and writes GATE_B2_OUTPUT_PATH evidence with binding fields.
   - id: runtime-terminalization
+    runnerId: gate-b2-runtime-terminalization-journey
+    runnerVersion: "1"
+    requiredAssertions: [runtime-terminal-state, no-partial-apply]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:runtime-terminalization with GATE_B2_* bound evidence.
   - id: browser-electron-writer-parity
+    runnerId: gate-b2-browser-electron-writer-parity-journey
+    runnerVersion: "1"
+    requiredAssertions: [parity-write-result, parity-event-shape]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:browser-electron-writer-parity with GATE_B2_* bound evidence.
   - id: locked-field-enforcement
+    runnerId: gate-b2-locked-field-journey
+    runnerVersion: "1"
+    requiredAssertions: [locked-write-rejected, target-value-unchanged, no-change-event, no-undo-journal]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:locked-field-enforcement with GATE_B2_* bound evidence.
   - id: dirty-only-propagation
+    runnerId: gate-b2-dirty-only-propagation-journey
+    runnerVersion: "1"
+    requiredAssertions: [dirty-only-propagated, clean-fields-untouched]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:dirty-only-propagation with GATE_B2_* bound evidence.
   - id: immutable-retraction-history
+    runnerId: gate-b2-immutable-retraction-history-journey
+    runnerVersion: "1"
+    requiredAssertions: [retraction-appended, prior-history-immutable]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:immutable-retraction-history with GATE_B2_* bound evidence.
 
 decisionPolicy:
   blockedIsPass: false

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  parseValidationMode,
   REQUIRED_CHECKLIST_IDS,
   validateGateB2Adr,
 } from "./validate-gate-b2-adr.mjs";
@@ -17,6 +18,19 @@ const DOMAINS = [
   "plot",
   "foreshadow",
 ];
+
+test("parses default and explicit CLI validation modes", () => {
+  assert.equal(parseValidationMode([]), "validate-format");
+  assert.equal(parseValidationMode(["--validate-format"]), "validate-format");
+  assert.equal(
+    parseValidationMode(["--", "--require-certifiable"]),
+    "require-certifiable",
+  );
+  assert.throws(
+    () => parseValidationMode(["--unknown"]),
+    /Usage: validate-gate-b2-adr/,
+  );
+});
 
 async function writePolicies(root, { checklist, classification }) {
   const policyDir = path.join(root, "policies/narrative");
@@ -88,7 +102,7 @@ function validClassification() {
   };
 }
 
-test("accepts complete checklist statuses, evidence, deferrals, and domains", async () => {
+test("format mode accepts FAIL and allowlisted OUT-OF-SCOPE statuses", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gate-b2-adr-valid-"));
   try {
     await mkdir(path.join(root, "proof"), { recursive: true });
@@ -98,7 +112,100 @@ test("accepts complete checklist statuses, evidence, deferrals, and domains", as
       classification: validClassification(),
     });
 
-    assert.deepEqual(await validateGateB2Adr({ repoRoot: root }), []);
+    assert.deepEqual(
+      await validateGateB2Adr({
+        repoRoot: root,
+        mode: "validate-format",
+      }),
+      [],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("certifiable mode accepts PASS and allowlisted OUT-OF-SCOPE statuses", async () => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "gate-b2-adr-certifiable-"),
+  );
+  try {
+    await mkdir(path.join(root, "proof"), { recursive: true });
+    await writeFile(path.join(root, "proof/contract.test.ts"), "export {};\n");
+    const checklist = validChecklist();
+    Object.assign(
+      checklist.items.find((item) => item.id === "B2-X02"),
+      {
+        status: "PASS",
+        evidence: [
+          {
+            kind: "test",
+            path: "proof/contract.test.ts",
+            name: "contract boundary",
+          },
+        ],
+      },
+    );
+    delete checklist.items.find((item) => item.id === "B2-X02").reason;
+    await writePolicies(root, {
+      checklist,
+      classification: validClassification(),
+    });
+
+    assert.deepEqual(
+      await validateGateB2Adr({
+        repoRoot: root,
+        mode: "require-certifiable",
+      }),
+      [],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("certifiable mode rejects FAIL, mixed, and unallowlisted OUT-OF-SCOPE", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gate-b2-adr-blocked-"));
+  try {
+    await mkdir(path.join(root, "proof"), { recursive: true });
+    await writeFile(path.join(root, "proof/contract.test.ts"), "export {};\n");
+    const checklist = validChecklist();
+    Object.assign(
+      checklist.items.find((item) => item.id === "B2-X08"),
+      {
+        status: "OUT-OF-SCOPE",
+        reason: "Deferred outside Gate B2",
+        deferredTo: "#999",
+        evidence: [],
+      },
+    );
+    const classification = validClassification();
+    classification.entries.push({
+      id: "chronicle-mixed-case",
+      domain: "chronicle",
+      classification: "MiXeD",
+      implementation: "proof/contract.test.ts",
+      symbol: "mixedChronicle",
+      tests: ["proof/contract.test.ts"],
+    });
+    await writePolicies(root, { checklist, classification });
+
+    const errors = await validateGateB2Adr({
+      repoRoot: root,
+      mode: "require-certifiable",
+    });
+    assert.ok(
+      errors.some((error) => /B2-X02.*FAIL.*not certifiable/.test(error)),
+    );
+    assert.ok(
+      errors.some((error) =>
+        /B2-X08.*OUT-OF-SCOPE.*not allowlisted/.test(error),
+      ),
+    );
+    assert.ok(
+      errors.some((error) =>
+        /chronicle-mixed-case.*mixed.*not certifiable/i.test(error),
+      ),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -123,7 +230,9 @@ test("rejects missing or invalid checklist status and missing PASS evidence", as
     assert.ok(errors.some((error) => /B2-X08.*invalid section/.test(error)));
     assert.ok(errors.some((error) => /B2-X02.*missing status/.test(error)));
     assert.ok(
-      errors.some((error) => /B2-X04.*evidence path does not exist/.test(error)),
+      errors.some((error) =>
+        /B2-X04.*evidence path does not exist/.test(error),
+      ),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -149,7 +258,9 @@ test("rejects PASS without evidence and FAIL/OUT-OF-SCOPE without rationale", as
     );
     assert.ok(errors.some((error) => /B2-X02.*requires reason/.test(error)));
     assert.ok(errors.some((error) => /B2-X07.*requires reason/.test(error)));
-    assert.ok(errors.some((error) => /B2-X07.*requires deferredTo/.test(error)));
+    assert.ok(
+      errors.some((error) => /B2-X07.*requires deferredTo/.test(error)),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -192,7 +303,9 @@ test("rejects empty classifications and missing required domains", async () => {
 
     const emptyErrors = await validateGateB2Adr({ repoRoot: root });
     assert.ok(
-      emptyErrors.some((error) => /classification entries must not be empty/.test(error)),
+      emptyErrors.some((error) =>
+        /classification entries must not be empty/.test(error),
+      ),
     );
 
     await writePolicies(root, {

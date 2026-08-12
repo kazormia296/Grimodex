@@ -533,15 +533,15 @@ requirements:
 heavyEvaluations:
   - id: heavy-agent-tool-loop
     suiteId: tool-policy
-    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts
+    command: pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts
     reason: Preserved desktop-route validation; requires billed OpenRouter access and an isolated workspace, and is not a managed Web Editor route.
   - id: heavy-single-shot-surfaces
     suiteId: ai-routing
-    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts
+    command: pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts
     reason: Preserved desktop-route validation; requires billed OpenRouter access, and missing credentials must not become a pass.
   - id: heavy-related-scenes
     suiteId: retrieval-grounding
-    command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
+    command: node scripts/quality/run-related-scenes-heavy.mjs
     reason: Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.
   - id: heavy-semantic-reranker-fixed-fixture
     suiteId: retrieval-grounding
@@ -553,19 +553,19 @@ heavyEvaluations:
     reason: Requires both pinned local FP32 model snapshots and several minutes of isolated CPU time to measure every window from 30 complete scenes plus the saturated 30-window stress.
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
-    command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
+    command: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
     reason: Preserved desktop Rust-route validation; requires a billed OpenRouter model and isolated credentials.
   - id: heavy-codex-prompt-surfaces
     suiteId: prompt-contract
-    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
+    command: pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
     reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
   - id: heavy-narrative-chronicle-production
     suiteId: narrative-extraction
-    command: OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
+    command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
     reason: Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Requires billed OpenRouter; credential shortage must not pass.
   - id: heavy-narrative-chronicle-legacy-baseline
     suiteId: narrative-extraction
-    command: OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live
+    command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live
     reason: Measures the current production Chronicle Prompt and Parser against Human Gold with billed OpenRouter access; the legacy schema lacks exact Evidence and semantic dimensions, so completion is explicitly not certification.
   - id: heavy-web-ai-consent-live
     suiteId: tool-policy

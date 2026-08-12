@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schemaVersion",
+    "contractVersion",
     "gateId",
     "manifestDigest",
     "generatedAt",
@@ -15,11 +16,11 @@
     "summary",
     "suites",
     "retries",
-    "artifactDigests",
     "blockedReasons"
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
+    "contractVersion": { "type": "integer", "const": 5 },
     "gateId": { "const": "gate-b2" },
     "manifestDigest": {
       "type": "string",
@@ -48,7 +49,10 @@
         "dirty"
       ],
       "properties": {
-        "commitSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "commitSha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
         "treeSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
         "baseMasterSha": {
           "type": ["string", "null"],
@@ -79,6 +83,51 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "certificationManifestDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyBootstrapDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyRunnerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyBindingsDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "adrValidatorDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reportSchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "decisionSchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "journeySchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "chronicleAdapterDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "chronicleScorerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "webConsentJourneyDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "boundVia": { "type": "string" },
         "frozen": { "type": "boolean" },
         "dirty": { "type": "boolean" }
       }
@@ -256,6 +305,10 @@
           ]
         },
         "message": { "type": "string" },
+        "runId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
         "command": {
           "type": "array",
           "items": { "type": "string" }

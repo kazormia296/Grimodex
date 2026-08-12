@@ -2,6 +2,7 @@ import { runEventSynthesisTask } from "@/application/narrative-extraction/aiTask
 import { runObservationExtractionTask } from "@/application/narrative-extraction/aiTasks/runObservationExtractionTask";
 import { clusterEventObservations } from "@/features/chronicle/extraction/eventClustering";
 import { matchExistingChronicleEvent } from "@/features/chronicle/extraction/existingEventMatcher";
+import { mergeObservationsByEvidence } from "@/features/chronicle/extraction/observationMerger";
 import { planChronicleEventProposals } from "@/features/chronicle/extraction/proposalPlanner";
 import { resolveEvidenceReference } from "@/features/narrative-extraction/evidence/resolveEvidence";
 import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
@@ -80,11 +81,10 @@ export async function runProductionChroniclePipeline(
     );
   }
   assertUniqueObservationLocalIds(collectedObservations);
-  const observations = collectedObservations;
 
   const anchors: ResolvedEvidenceAnchor[] = [];
   let unresolvedEvidenceCount = 0;
-  for (const observation of observations) {
+  for (const observation of collectedObservations) {
     for (const evidence of observation.evidence) {
       const resolution = await resolveEvidenceReference(evidence, {
         snapshot: prepared.fixture.snapshot,
@@ -96,6 +96,7 @@ export async function runProductionChroniclePipeline(
     }
   }
 
+  const observations = mergeObservationsByEvidence(collectedObservations);
   const clusters = clusterEventObservations(observations);
   const observationById = new Map(
     observations.map((observation) => [observation.localId, observation]),
