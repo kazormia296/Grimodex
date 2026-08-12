@@ -12,6 +12,9 @@
     "baseMasterSha",
     "freezeId",
     "certificationRunId",
+    "attemptLedgerId",
+    "attemptLedgerDigest",
+    "attemptLedgerAttestation",
     "verdict",
     "reasons",
     "suiteSummaries",
@@ -36,6 +39,12 @@
       "schemaVersionProduct": { "type": "integer", "const": 20 },
     "freezeId": { "type": ["string", "null"], "minLength": 1 },
     "certificationRunId": { "type": ["string", "null"], "minLength": 1 },
+    "attemptLedgerId": { "type": "string", "minLength": 1 },
+    "attemptLedgerDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "attemptLedgerAttestation": { "type": "string", "minLength": 1 },
     "verdict": {
       "type": "string",
       "enum": ["PASS", "HOLD", "BLOCK", "INCOMPLETE"]

@@ -30,7 +30,7 @@ import {
   verifyFullCiWithGithub,
   writeGateB2AttemptRecord,
 } from "./certify-gate-b2-bindings.mjs";
-import { resolveAttemptLedgerRoot } from "./certify-gate-b2.mjs";
+import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -163,12 +163,14 @@ test("sanitizeCertificationEnv strips narrative overrides but keeps GATE_B2 vars
     NARRATIVE_EVAL_ATTEMPT: "2",
     GATE_B2_RUN_ID: "run-1",
     GATE_B2_OUTPUT_PATH: "/tmp/report.json",
+    GATE_B2_ATTEMPT_LEDGER_ROOT: "/srv/gate-b2-forged",
   });
   assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
   assert.equal(env.NARRATIVE_EVAL_CASE_ID, undefined);
   assert.equal(env.NARRATIVE_EVAL_ATTEMPT, undefined);
   assert.equal(env.GATE_B2_RUN_ID, "run-1");
   assert.equal(env.GATE_B2_OUTPUT_PATH, "/tmp/report.json");
+  assert.equal(env.GATE_B2_ATTEMPT_LEDGER_ROOT, undefined);
 });
 
 test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
@@ -194,6 +196,15 @@ test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
   assert.equal(env.GATE_B2_CERTIFICATION_RUN_ID, "certification-42");
   assert.equal(env.GATE_B2_ATTEMPT, "2");
   assert.equal(env.GATE_B2_ATTEMPT_DIR, "/tmp/gate-b2/attempt-2");
+  assert.equal(
+    env.GATE_B2_ATTEMPT_LEDGER_ID,
+    "grimodex-gate-b2-attempt-ledger-v1",
+  );
+  assert.match(env.GATE_B2_ATTEMPT_LEDGER_DIGEST, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(
+    env.GATE_B2_ATTEMPT_LEDGER_ATTESTATION,
+    "fixed-controller-config-v1",
+  );
   assert.equal(env.HOME, "/home/tester");
   assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
 });
@@ -240,14 +251,8 @@ test("Gate B2 attempt ledger is candidate-global across fresh clone directories"
   try {
     const cloneA = path.join(temp, "clone-a");
     const cloneB = path.join(temp, "clone-b");
-    const ledgerFromCloneA = resolveAttemptLedgerRoot({
-      repoRoot: cloneA,
-      configuredRoot: "../durable-ledger",
-    });
-    const ledgerFromCloneB = resolveAttemptLedgerRoot({
-      repoRoot: cloneB,
-      configuredRoot: "../durable-ledger",
-    });
+    const ledgerFromCloneA = path.join(temp, "controller-ledger");
+    const ledgerFromCloneB = path.join(temp, "controller-ledger");
     assert.notEqual(cloneA, cloneB);
     assert.equal(ledgerFromCloneA, ledgerFromCloneB);
     const first = await allocateGateB2Attempt({
@@ -262,6 +267,7 @@ test("Gate B2 attempt ledger is candidate-global across fresh clone directories"
       record: {
         schemaVersion: 1,
         contractVersion: GATE_B2_CONTRACT_VERSION,
+        ...getGateB2AttemptLedgerIdentity(),
         candidateCommitSha: candidate.commitSha,
         candidateTreeSha: candidate.treeSha,
         suiteId: "heavy-narrative-chronicle-production",
@@ -868,6 +874,9 @@ test("decision document includes suiteSummaries and digests", () => {
   assert.equal(doc.suiteSummaries.requiredLight.notRun, 1);
   assert.equal(doc.suiteSummaries.requiredHeavy.blocked, 1);
   assert.match(doc.digests.reportDigest, /^sha256:/);
+  assert.equal(doc.attemptLedgerId, "grimodex-gate-b2-attempt-ledger-v1");
+  assert.match(doc.attemptLedgerDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(doc.attemptLedgerAttestation, "fixed-controller-config-v1");
 });
 
 test("assertDigestsMatchFreeze detects input and harness drift", () => {
@@ -932,7 +941,7 @@ test("assertDigestsMatchFreeze errors on missing harness digests and contractVer
       error.startsWith("certificationManifestDigest: missing in freeze"),
     ),
   );
-  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 14);
+  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 15);
   assert.equal(
     HARNESS_DIGEST_PATHS.certifyBootstrapDigest,
     "scripts/quality/certify-gate-b2-bootstrap.mjs",
@@ -947,6 +956,31 @@ test("assertFreezeActive rejects superseded freeze", () => {
         candidate: { commitSha: candidate.commitSha },
       }),
     /superseded/i,
+  );
+});
+
+test("assertFreezeActive rejects a freeze bound to another attempt ledger", () => {
+  const ledger = getGateB2AttemptLedgerIdentity();
+  const freeze = {
+    freezeId: "freeze-ledger-test",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    productSchemaVersion: 20,
+    ...ledger,
+    candidate: {
+      commitSha: candidate.commitSha,
+      treeSha: candidate.treeSha,
+      schemaVersion: 20,
+      ...ledger,
+    },
+  };
+  assert.throws(
+    () =>
+      assertFreezeActive({
+        ...freeze,
+        candidate: { ...freeze.candidate, attemptLedgerId: "root-b" },
+      }),
+    /fixed controller attempt ledger/i,
   );
 });
 

@@ -16,11 +16,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   FREEZE_RELATIVE,
   GATE_B2_CONTRACT_VERSION,
-  buildDecisionDocument,
   bindCandidateDigestRoot,
   pathExists,
   validateJsonAgainstSchema,
 } from "./certify-gate-b2-bindings.mjs";
+import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
 import {
   collectInputDigests,
   loadGateB2Manifest,
@@ -61,6 +61,16 @@ function provisionalSuites(manifest) {
       result: "not-run",
     })),
   ];
+}
+
+function emptySuiteCounts(notRun) {
+  return {
+    passed: 0,
+    failed: 0,
+    blocked: 0,
+    hold: 0,
+    notRun,
+  };
 }
 
 async function archiveSupersededFreeze({ repoRoot, oldFreeze, newCommitSha }) {
@@ -121,6 +131,7 @@ export async function freezeGateB2Candidate({
     await digestRoot.cleanup();
   }
   const freezeId = randomUUID();
+  const attemptLedger = getGateB2AttemptLedgerIdentity();
   const productSchemaVersion = manifest.candidate.schemaVersion;
   const requiredLightCount = Array.isArray(manifest.requiredLight)
     ? manifest.requiredLight.length
@@ -151,6 +162,7 @@ export async function freezeGateB2Candidate({
     freezeId,
     candidateCommitSha: identity.commitSha,
     candidateTreeSha: identity.treeSha,
+    ...attemptLedger,
     productSchemaVersion,
     frozenAt: new Date().toISOString(),
     candidate: {
@@ -158,6 +170,7 @@ export async function freezeGateB2Candidate({
       treeSha: identity.treeSha,
       baseMasterSha: identity.baseMasterSha,
       schemaVersion: productSchemaVersion,
+      ...attemptLedger,
       ...digests,
     },
     freezeRules: {
@@ -199,21 +212,28 @@ export async function freezeGateB2Candidate({
     "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
   ];
   const provisionalDecision = {
-    ...buildDecisionDocument({
-      candidate: {
-        commitSha: identity.commitSha,
-        treeSha: identity.treeSha,
-        baseMasterSha: identity.baseMasterSha,
-        schemaVersion: productSchemaVersion,
-      },
-      freezeId,
-      certificationRunId: null,
-      verdict: "INCOMPLETE",
-      reasons: provisionalReasons,
-      suites: provisionalSuites(manifest),
+    schemaVersion: 1,
+    gateId: "gate-b2",
+    freezeId,
+    certificationRunId: null,
+    candidateCommitSha: identity.commitSha,
+    candidateTreeSha: identity.treeSha,
+    baseMasterSha: identity.baseMasterSha,
+    ...attemptLedger,
+    schemaVersionProduct: productSchemaVersion,
+    verdict: "INCOMPLETE",
+    reasons: provisionalReasons,
+    suiteSummaries: {
+      requiredLight: emptySuiteCounts(requiredLightCount),
+      requiredHeavy: emptySuiteCounts(requiredHeavyCount),
+      requiredJourneys: emptySuiteCounts(requiredJourneyCount),
+    },
+    digests: {
+      ...digests,
       reportDigest: null,
-      digests,
-    }),
+    },
+    heavyAttempts: [],
+    generatedAt: new Date().toISOString(),
     notes:
       "Provisional freeze decision only. Replace after --run-light/--run-heavy/--run-journeys against this candidate.",
   };

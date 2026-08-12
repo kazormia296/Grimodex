@@ -22,7 +22,7 @@
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "contractVersion": { "type": "integer", "const": 5 },
+    "contractVersion": { "type": "integer", "const": 6 },
     "gateId": { "const": "gate-b2" },
     "manifestDigest": {
       "type": "string",
@@ -50,6 +50,9 @@
         "qualityManifestDigest",
         "narrativeEvalManifestDigest",
         "freezeId",
+        "attemptLedgerId",
+        "attemptLedgerDigest",
+        "attemptLedgerAttestation",
         "frozen",
         "dirty"
       ],
@@ -149,6 +152,16 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "attemptLedgerConfigDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptLedgerId": { "type": "string", "minLength": 1 },
+        "attemptLedgerDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptLedgerAttestation": { "type": "string", "minLength": 1 },
         "boundVia": { "type": "string" },
         "frozen": { "type": "boolean" },
         "dirty": { "type": "boolean" }

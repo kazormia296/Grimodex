@@ -15,12 +15,13 @@ import {
 import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
+import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const PLACEHOLDER_ENV_ASSIGN = /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
 
-export const GATE_B2_CONTRACT_VERSION = 5;
+export const GATE_B2_CONTRACT_VERSION = 6;
 
 export const FREEZE_RELATIVE =
   "evals/certifications/gate-b2-candidate.freeze.json";
@@ -49,6 +50,7 @@ export const HARNESS_DIGEST_PATHS = {
     "scripts/quality/run-web-ai-consent-browser.mjs",
   webConsentBrowserConfigDigest:
     "vitest.gate-b2-web-ai-consent.config.ts",
+  attemptLedgerConfigDigest: "scripts/quality/gate-b2-controller-config.mjs",
 };
 
 const INPUT_DIGEST_KEYS = [
@@ -110,6 +112,21 @@ export function assertFreezeActive(freeze) {
   ) {
     throw new Error(
       "Gate B2 freeze is missing the immutable certification epoch identity; create a new freeze",
+    );
+  }
+  const expectedLedger = getGateB2AttemptLedgerIdentity();
+  if (
+    freeze.attemptLedgerId !== expectedLedger.attemptLedgerId ||
+    freeze.attemptLedgerDigest !== expectedLedger.attemptLedgerDigest ||
+    freeze.attemptLedgerAttestation !==
+      expectedLedger.attemptLedgerAttestation ||
+    identity.attemptLedgerId !== expectedLedger.attemptLedgerId ||
+    identity.attemptLedgerDigest !== expectedLedger.attemptLedgerDigest ||
+    identity.attemptLedgerAttestation !==
+      expectedLedger.attemptLedgerAttestation
+  ) {
+    throw new Error(
+      "Gate B2 freeze is not bound to the fixed controller attempt ledger; create a new freeze",
     );
   }
 }
@@ -399,6 +416,7 @@ export async function loadGateB2AttemptHistory({
   suiteBuckets = {},
 }) {
   if (!ledgerRoot) return [];
+  const ledger = getGateB2AttemptLedgerIdentity();
   const candidateKey = gateB2AttemptLedgerKey({
     candidateCommitSha,
     candidateTreeSha,
@@ -436,6 +454,9 @@ export async function loadGateB2AttemptHistory({
           history.push({
             schemaVersion: 1,
             contractVersion,
+            attemptLedgerId: ledger.attemptLedgerId,
+            attemptLedgerDigest: ledger.attemptLedgerDigest,
+            attemptLedgerAttestation: ledger.attemptLedgerAttestation,
             candidateCommitSha,
             candidateTreeSha,
             suiteId: suiteEntry.name,
@@ -452,6 +473,9 @@ export async function loadGateB2AttemptHistory({
         record.candidateCommitSha !== candidateCommitSha ||
         record.candidateTreeSha !== candidateTreeSha ||
         record.contractVersion !== contractVersion ||
+        record.attemptLedgerId !== ledger.attemptLedgerId ||
+        record.attemptLedgerDigest !== ledger.attemptLedgerDigest ||
+        record.attemptLedgerAttestation !== ledger.attemptLedgerAttestation ||
         safeAttemptPathSegment(record.suiteId) !== suiteEntry.name ||
         !Number.isInteger(record.attempt) ||
         record.attempt < 1
@@ -524,6 +548,9 @@ export function sanitizeCertificationEnv(baseEnv = process.env) {
   delete env.NARRATIVE_EVAL_LIMIT;
   delete env.NARRATIVE_EVAL_CASE_ID;
   delete env.NARRATIVE_EVAL_ATTEMPT;
+  // The attempt ledger is controller-bound; never forward the retired
+  // caller-selected override into a suite runner.
+  delete env.GATE_B2_ATTEMPT_LEDGER_ROOT;
   // Preserve GATE_B2_* binding vars for heavy suite runners.
   return env;
 }
@@ -540,6 +567,7 @@ export function buildHeavyCertificationEnv({
   attemptDir,
   baseEnv = process.env,
 }) {
+  const ledger = getGateB2AttemptLedgerIdentity();
   const env = {
     ...sanitizeCertificationEnv(baseEnv),
     GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
@@ -548,6 +576,9 @@ export function buildHeavyCertificationEnv({
     GATE_B2_RUN_ID: runId,
     GATE_B2_OUTPUT_PATH: outputPath,
     GATE_B2_COMMAND_DIGEST: commandDigest,
+    GATE_B2_ATTEMPT_LEDGER_ID: ledger.attemptLedgerId,
+    GATE_B2_ATTEMPT_LEDGER_DIGEST: ledger.attemptLedgerDigest,
+    GATE_B2_ATTEMPT_LEDGER_ATTESTATION: ledger.attemptLedgerAttestation,
   };
   if (freezeId) env.GATE_B2_FREEZE_ID = freezeId;
   if (certificationRunId) {
@@ -573,6 +604,7 @@ export function buildJourneyCertificationEnv({
   attemptDir,
   baseEnv = process.env,
 }) {
+  const ledger = getGateB2AttemptLedgerIdentity();
   const env = {
     ...sanitizeCertificationEnv(baseEnv),
     GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
@@ -584,6 +616,9 @@ export function buildJourneyCertificationEnv({
     GATE_B2_ENVIRONMENT_DIGEST: environmentDigest,
     GATE_B2_RUNNER_ID: runnerId,
     GATE_B2_RUNNER_VERSION: String(runnerVersion),
+    GATE_B2_ATTEMPT_LEDGER_ID: ledger.attemptLedgerId,
+    GATE_B2_ATTEMPT_LEDGER_DIGEST: ledger.attemptLedgerDigest,
+    GATE_B2_ATTEMPT_LEDGER_ATTESTATION: ledger.attemptLedgerAttestation,
     GATE_B2_FREEZE_ID: freezeId,
     GATE_B2_CERTIFICATION_RUN_ID: certificationRunId,
     GATE_B2_ATTEMPT: String(attempt),
@@ -1280,6 +1315,15 @@ export function buildDecisionDocument({
   reportDigest,
   digests,
 }) {
+  const fixedLedger = getGateB2AttemptLedgerIdentity();
+  const ledger = {
+    attemptLedgerId: candidate.attemptLedgerId ?? fixedLedger.attemptLedgerId,
+    attemptLedgerDigest:
+      candidate.attemptLedgerDigest ?? fixedLedger.attemptLedgerDigest,
+    attemptLedgerAttestation:
+      candidate.attemptLedgerAttestation ??
+      fixedLedger.attemptLedgerAttestation,
+  };
   const tally = (bucket) => {
     const rows = suites.filter((s) => s.bucket === bucket);
     const counts = {
@@ -1306,6 +1350,7 @@ export function buildDecisionDocument({
     baseMasterSha: candidate.baseMasterSha,
     freezeId,
     certificationRunId,
+    ...ledger,
     schemaVersionProduct: candidate.schemaVersion,
     verdict,
     reasons,

@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import yaml from "js-yaml";
+import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -58,6 +59,15 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     assert.equal(result.freeze.candidateCommitSha, result.freeze.candidate.commitSha);
     assert.equal(result.freeze.candidateTreeSha, result.freeze.candidate.treeSha);
     assert.equal(result.freeze.productSchemaVersion, manifest.candidate.schemaVersion);
+    const ledger = getGateB2AttemptLedgerIdentity();
+    assert.deepEqual(
+      {
+        attemptLedgerId: result.freeze.candidate.attemptLedgerId,
+        attemptLedgerDigest: result.freeze.candidate.attemptLedgerDigest,
+        attemptLedgerAttestation: result.freeze.candidate.attemptLedgerAttestation,
+      },
+      ledger,
+    );
     assert.match(
       result.freeze.candidate.writerRegistryDigest,
       /^sha256:[0-9a-f]{64}$/,

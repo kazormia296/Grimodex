@@ -18,6 +18,10 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import yaml from "js-yaml";
+import {
+  GATE_B2_ATTEMPT_LEDGER_ROOT,
+  getGateB2AttemptLedgerIdentity,
+} from "./gate-b2-controller-config.mjs";
 
 import {
   FREEZE_RELATIVE,
@@ -64,27 +68,19 @@ const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const ATTEMPT_LEDGER_ENV = "GATE_B2_ATTEMPT_LEDGER_ROOT";
 const DURABLE_ATTEMPT_LEDGER_MESSAGE =
-  "durable Gate B2 attempt ledger is required for execution; set --attempt-ledger-root <shared-path> or GATE_B2_ATTEMPT_LEDGER_ROOT (outside the candidate checkout)";
+  "durable Gate B2 attempt ledger is required for execution; the fixed controller ledger must be provisioned before certification";
 
 export function resolveAttemptLedgerRoot({
-  repoRoot = DEFAULT_REPO_ROOT,
   configuredRoot = null,
   env = process.env,
 } = {}) {
   const raw = configuredRoot ?? env[ATTEMPT_LEDGER_ENV] ?? null;
-  if (raw == null || String(raw).trim() === "") return null;
-
-  const checkoutRoot = path.resolve(repoRoot);
-  const resolved = path.resolve(checkoutRoot, String(raw));
-  if (
-    resolved === checkoutRoot ||
-    resolved.startsWith(`${checkoutRoot}${path.sep}`)
-  ) {
+  if (raw != null && String(raw).trim() !== "") {
     throw new Error(
-      `Gate B2 attempt ledger must be outside the candidate checkout: ${resolved}`,
+      "Gate B2 attempt ledger is controller-bound; --attempt-ledger-root and GATE_B2_ATTEMPT_LEDGER_ROOT are rejected",
     );
   }
-  return resolved;
+  return path.resolve(GATE_B2_ATTEMPT_LEDGER_ROOT);
 }
 
 export function sha256Text(text) {
@@ -184,8 +180,12 @@ export function parseCertifyArgs(argv) {
     else if (arg === "--report") result.report = readValue(arg, index++);
     else if (arg === "--artifact-dir")
       result.artifactDir = readValue(arg, index++);
-    else if (arg === "--attempt-ledger-root")
-      result.attemptLedgerRoot = readValue(arg, index++);
+    else if (arg === "--attempt-ledger-root") {
+      readValue(arg, index);
+      throw new Error(
+        "--attempt-ledger-root is rejected; Gate B2 certification uses the fixed controller ledger",
+      );
+    }
     else if (arg === "--format") result.format = readValue(arg, index++);
     else if (arg === "--ci-evidence")
       result.ciEvidence = readValue(arg, index++);
@@ -242,6 +242,18 @@ export function validateGateB2Manifest(raw) {
     raw.candidate.schemaVersion < 1
   ) {
     errors.push("candidate.schemaVersion must be a positive integer");
+  }
+  const ledger = getGateB2AttemptLedgerIdentity();
+  if (raw.candidate?.attemptLedgerId !== ledger.attemptLedgerId) {
+    errors.push("candidate.attemptLedgerId must match the fixed controller ledger");
+  }
+  if (
+    raw.candidate?.attemptLedgerAttestation !==
+    ledger.attemptLedgerAttestation
+  ) {
+    errors.push(
+      "candidate.attemptLedgerAttestation must match the fixed controller configuration",
+    );
   }
   for (const key of [
     "requiredLight",
@@ -598,11 +610,15 @@ async function recordCertificationSuiteAttempt({
 }) {
   if (!allocation) return result;
   const normalized = { ...result, attempt: allocation.attempt };
+  const ledger = getGateB2AttemptLedgerIdentity();
   await writeGateB2AttemptRecord({
     attemptDir: allocation.attemptDir,
     record: {
       schemaVersion: 1,
       contractVersion: GATE_B2_CONTRACT_VERSION,
+      attemptLedgerId: ledger.attemptLedgerId,
+      attemptLedgerDigest: ledger.attemptLedgerDigest,
+      attemptLedgerAttestation: ledger.attemptLedgerAttestation,
       candidateCommitSha: candidate.commitSha,
       candidateTreeSha: candidate.treeSha,
       suiteId: normalized.suiteId,
@@ -1378,15 +1394,7 @@ async function runHeavySuites({
       );
       continue;
     }
-    const allocation = dryRun
-      ? null
-      : await allocateGateB2Attempt({
-          ledgerRoot,
-          candidateCommitSha: candidate.commitSha,
-          candidateTreeSha: candidate.treeSha,
-          contractVersion: GATE_B2_CONTRACT_VERSION,
-          suiteId: entry.id,
-        });
+    let allocation = null;
     if (entry.status === "blocked" || entry.id.startsWith("blocked-")) {
       const blocked = blockedSuite({
         suiteId: entry.id,
@@ -1463,6 +1471,14 @@ async function runHeavySuites({
       );
       continue;
     }
+
+    allocation = await allocateGateB2Attempt({
+      ledgerRoot,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
+      suiteId: entry.id,
+    });
 
     const commandForDigest =
       resolved.kind === "argv"
@@ -1801,6 +1817,7 @@ export async function certifyGateB2({
       baseMasterSha: identity.baseMasterSha,
       schemaVersion: manifest.candidate.schemaVersion,
       freezeId: freeze?.freezeId ?? null,
+      ...getGateB2AttemptLedgerIdentity(),
       ...digests,
       frozen,
       dirty: identity.dirty,

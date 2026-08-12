@@ -76,6 +76,12 @@ pnpm certify:gate-b2 -- \
 
 `skipped` / `deferred` / credential 不足を PASS に含めない。
 
+Attempt ledger は candidate checkout の外にある固定 controller 管理の
+append-only ledger (`grimodex-gate-b2-attempt-ledger-v1`) を正本とする。
+`--attempt-ledger-root` と `GATE_B2_ATTEMPT_LEDGER_ROOT` による caller 側の
+root 差し替えは認証 runner が拒否し、Freeze／Decision には ledger ID・digest・
+controller attestation を記録する。
+
 ## Stack
 
 `#518`（`codex/fix-gate-b2-review`）の後段に certification PR を積む。

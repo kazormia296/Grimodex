@@ -3,7 +3,7 @@
 # Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
 # candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
 schemaVersion: 1
-contractVersion: 5
+contractVersion: 6
 id: gate-b2
 
 candidate:
@@ -34,6 +34,10 @@ candidate:
   webConsentBrowserJourneyDigest: null
   webConsentBrowserRunnerDigest: null
   webConsentBrowserConfigDigest: null
+  attemptLedgerConfigDigest: null
+  attemptLedgerId: grimodex-gate-b2-attempt-ledger-v1
+  attemptLedgerDigest: null
+  attemptLedgerAttestation: fixed-controller-config-v1
 
 inputs:
   writerRegistry: policies/narrative/protected-writers.json
@@ -60,6 +64,7 @@ inputs:
   webConsentBrowserJourney: src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx
   webConsentBrowserRunner: scripts/quality/run-web-ai-consent-browser.mjs
   webConsentBrowserConfig: vitest.gate-b2-web-ai-consent.config.ts
+  attemptLedgerConfig: scripts/quality/gate-b2-controller-config.mjs
 
 # Light / Heavy / Journey の ID は runner が減らさない。欠落は BLOCK。
 requiredLight:

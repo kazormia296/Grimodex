@@ -34,7 +34,7 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   const raw = yaml.load(text);
   assert.deepEqual(validateGateB2Manifest(raw), []);
   assert.equal(raw.id, "gate-b2");
-  assert.equal(raw.contractVersion, 5);
+  assert.equal(raw.contractVersion, 6);
   assert.equal(raw.decisionPolicy.blockedIsPass, false);
   assert.equal(raw.decisionPolicy.deferredIsPass, false);
   assert.equal(raw.decisionPolicy.credentialShortageIsPass, false);
@@ -147,7 +147,7 @@ test("package script and report schema exist for certify:gate-b2", async () => {
   );
   assert.equal(schema.title, "Gate B2 Certification Report");
   assert.ok(schema.required.includes("contractVersion"));
-  assert.equal(schema.properties.contractVersion.const, 5);
+  assert.equal(schema.properties.contractVersion.const, 6);
   assert.deepEqual(schema.properties.verdict.enum, [
     "PASS",
     "HOLD",
@@ -164,14 +164,13 @@ test("package script and report schema exist for certify:gate-b2", async () => {
   );
 });
 
-test("parseCertifyArgs defaults to preflight and rejects unknown flags", () => {
+test("parseCertifyArgs defaults to preflight and rejects caller-selected ledgers", () => {
   assert.deepEqual(parseCertifyArgs([]).preflight, true);
   assert.equal(parseCertifyArgs(["--run-light"]).runLight, true);
   assert.equal(parseCertifyArgs(["--run-light"]).preflight, false);
-  assert.equal(
-    parseCertifyArgs(["--attempt-ledger-root", "/var/lib/gate-b2"])
-      .attemptLedgerRoot,
-    "/var/lib/gate-b2",
+  assert.throws(
+    () => parseCertifyArgs(["--attempt-ledger-root", "/var/lib/gate-b2"]),
+    /fixed controller ledger/i,
   );
   assert.throws(() => parseCertifyArgs(["--nope"]), /Unknown argument/);
   assert.throws(
@@ -382,31 +381,66 @@ test("direct execution cannot bypass the frozen candidate bootstrap", () => {
   assert.match(result.stderr, /must be launched through.*bootstrap/);
 });
 
-test("Gate B2 attempt ledger must be explicit and outside the checkout", () => {
-  const checkout = "/tmp/gate-b2-checkout-a";
-  assert.equal(
-    resolveAttemptLedgerRoot({
-      repoRoot: checkout,
-      configuredRoot: "/var/lib/gate-b2",
-    }),
-    "/var/lib/gate-b2",
+test("Gate B2 attempt ledger is fixed-controller bound", () => {
+  const rootA = "/srv/gate-b2-a";
+  const rootB = "/srv/gate-b2-b";
+  assert.throws(
+    () => resolveAttemptLedgerRoot({ configuredRoot: rootA }),
+    /controller-bound/i,
   );
-  assert.equal(
-    resolveAttemptLedgerRoot({
-      repoRoot: checkout,
-      env: { GATE_B2_ATTEMPT_LEDGER_ROOT: "/var/lib/gate-b2" },
-    }),
-    "/var/lib/gate-b2",
-  );
-  assert.equal(resolveAttemptLedgerRoot({ repoRoot: checkout, env: {} }), null);
   assert.throws(
     () =>
       resolveAttemptLedgerRoot({
-        repoRoot: checkout,
+        env: { GATE_B2_ATTEMPT_LEDGER_ROOT: rootB },
+      }),
+    /controller-bound/i,
+  );
+  assert.match(resolveAttemptLedgerRoot({ env: {} }), /gate-b2\/attempt-ledger$/);
+  assert.throws(
+    () =>
+      resolveAttemptLedgerRoot({
         configuredRoot: ".artifacts/gate-b2-ledger",
       }),
-    /outside the candidate checkout/,
+    /controller-bound/i,
   );
+});
+
+test("normative certification cannot switch from ledger root A to root B", async () => {
+  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-ledger-roots-"));
+  const baseArgs = {
+    preflight: false,
+    runLight: false,
+    runHeavy: true,
+    runJourneys: false,
+    runInformational: false,
+    runReleaseAdjacent: false,
+    candidate: null,
+    baseMaster: null,
+    report: path.join(temp, "report.json"),
+    artifactDir: path.join(temp, "artifacts"),
+    format: "json",
+    ciEvidence: null,
+    journeyEvidenceDir: null,
+    dryRun: true,
+  };
+  try {
+    for (const root of [
+      path.join(temp, "root-a"),
+      path.join(temp, "root-b"),
+    ]) {
+      await assert.rejects(
+        () =>
+          certifyGateB2({
+            repoRoot,
+            args: { ...baseArgs, attemptLedgerRoot: root },
+          }),
+        /controller-bound/i,
+      );
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("candidate-bound Journey keeps the durable allocation attempt", async () => {
@@ -659,7 +693,7 @@ test("preflight loads manifest digests and writes report without claiming PASS",
     });
 
     assert.equal(report.gateId, "gate-b2");
-    assert.equal(report.contractVersion, 5);
+    assert.equal(report.contractVersion, 6);
     assert.equal(report.mode, "preflight");
     assert.equal(report.verdict, "INCOMPLETE");
     assert.match(report.manifestDigest, /^sha256:[0-9a-f]{64}$/);
@@ -950,7 +984,7 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId fro
   const report = {
     schemaVersion: 1,
     gateId: "gate-b2",
-    contractVersion: 5,
+    contractVersion: 6,
     manifestDigest: digest,
     generatedAt: "2026-01-01T00:00:00.000Z",
     startedAt: "2026-01-01T00:00:00.000Z",
@@ -967,6 +1001,9 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId fro
       aiPathRegistryDigest: digest,
       qualityManifestDigest: digest,
       narrativeEvalManifestDigest: digest,
+      attemptLedgerId: "grimodex-gate-b2-attempt-ledger-v1",
+      attemptLedgerDigest: digest,
+      attemptLedgerAttestation: "fixed-controller-config-v1",
       freezeId: "freeze-test",
       frozen: true,
       dirty: false,
