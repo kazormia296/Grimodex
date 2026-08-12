@@ -19,6 +19,20 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import yaml from "js-yaml";
 
+import {
+  assertDigestsMatchFreeze,
+  bindExecutionRoot,
+  buildDecisionDocument,
+  loadFreezeDocument,
+  readHeavyLiveReport,
+  sanitizeCertificationEnv,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateFullCiEvidence,
+  validateJourneyEvidence,
+  validateWebAiConsentReport,
+} from "./certify-gate-b2-bindings.mjs";
+
 const DEFAULT_REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
@@ -377,7 +391,12 @@ function resolvePnpmRunnerCommand(runner) {
   return { script, command: ["pnpm", script, ...rest] };
 }
 
-export async function runCapturedCommand(command, args, cwd) {
+export async function runCapturedCommand(
+  command,
+  args,
+  cwd,
+  env = process.env,
+) {
   const started = performance.now();
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
@@ -393,7 +412,7 @@ export async function runCapturedCommand(command, args, cwd) {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
-      env: process.env,
+      env,
     });
     const stdout = [];
     const stderr = [];
@@ -440,7 +459,7 @@ export async function runCapturedCommand(command, args, cwd) {
 async function evaluateFullCiEvidence({
   artifactDir,
   ciEvidence,
-  candidateCommitSha,
+  candidate,
 }) {
   const evidencePath =
     ciEvidence ??
@@ -455,44 +474,21 @@ async function evaluateFullCiEvidence({
   }
   const raw = JSON.parse(await readFile(evidencePath, "utf8"));
   const digest = sha256Text(JSON.stringify(raw));
-  if (raw.commitSha && raw.commitSha !== candidateCommitSha) {
-    return {
-      suiteId: "full-ci",
-      bucket: "requiredLight",
-      attempt: 1,
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
-      exitCode: 1,
-      environmentDigest: null,
-      commandDigest: null,
-      stdoutDigest: null,
-      stderrDigest: null,
-      artifactDigests: [digest],
-      result: "failed",
-      message: `full-ci evidence commitSha ${raw.commitSha} does not match candidate ${candidateCommitSha}`,
-    };
-  }
-  const conclusion = String(raw.conclusion ?? raw.status ?? "").toLowerCase();
-  const passed =
-    conclusion === "success" ||
-    conclusion === "passed" ||
-    raw.passed === true;
+  const validation = validateFullCiEvidence(raw, candidate);
   return {
     suiteId: "full-ci",
     bucket: "requiredLight",
     attempt: 1,
     startedAt: new Date().toISOString(),
     completedAt: new Date().toISOString(),
-    exitCode: passed ? 0 : 1,
+    exitCode: validation.ok ? 0 : 1,
     environmentDigest: null,
     commandDigest: null,
     stdoutDigest: null,
     stderrDigest: null,
     artifactDigests: [digest],
-    result: passed ? "passed" : "failed",
-    message: passed
-      ? `full-ci evidence accepted from ${evidencePath}`
-      : `full-ci evidence is not successful (${conclusion || "unknown"})`,
+    result: validation.result,
+    message: validation.message,
   };
 }
 
@@ -500,6 +496,7 @@ async function evaluateJourneyEvidence({
   journeyId,
   artifactDir,
   journeyEvidenceDir,
+  candidate,
 }) {
   const baseDir =
     journeyEvidenceDir ??
@@ -522,55 +519,21 @@ async function evaluateJourneyEvidence({
   }
   const raw = JSON.parse(await readFile(evidencePath, "utf8"));
   const digest = sha256Text(JSON.stringify(raw));
-  const result = String(raw.result ?? raw.status ?? "").toLowerCase();
-  if (result === "passed" || raw.passed === true) {
-    return {
-      suiteId: journeyId,
-      bucket: "requiredJourneys",
-      attempt: 1,
-      startedAt: raw.startedAt ?? new Date().toISOString(),
-      completedAt: raw.completedAt ?? new Date().toISOString(),
-      exitCode: 0,
-      environmentDigest: null,
-      commandDigest: null,
-      stdoutDigest: null,
-      stderrDigest: null,
-      artifactDigests: [digest],
-      result: "passed",
-      message: `Journey evidence accepted: ${evidencePath}`,
-    };
-  }
-  if (result === "hold") {
-    return {
-      suiteId: journeyId,
-      bucket: "requiredJourneys",
-      attempt: 1,
-      startedAt: raw.startedAt ?? null,
-      completedAt: raw.completedAt ?? new Date().toISOString(),
-      exitCode: null,
-      environmentDigest: null,
-      commandDigest: null,
-      stdoutDigest: null,
-      stderrDigest: null,
-      artifactDigests: [digest],
-      result: "hold",
-      message: raw.message ?? "Journey recorded HOLD",
-    };
-  }
+  const validation = validateJourneyEvidence(raw, { journeyId, candidate });
   return {
     suiteId: journeyId,
     bucket: "requiredJourneys",
     attempt: 1,
     startedAt: raw.startedAt ?? null,
     completedAt: raw.completedAt ?? new Date().toISOString(),
-    exitCode: 1,
-    environmentDigest: null,
+    exitCode: validation.result === "passed" ? 0 : 1,
+    environmentDigest: raw.environmentDigest ?? null,
     commandDigest: null,
     stdoutDigest: null,
     stderrDigest: null,
     artifactDigests: [digest],
-    result: result === "blocked" ? "blocked" : "failed",
-    message: raw.message ?? `Journey evidence result=${result || "unknown"}`,
+    result: validation.result,
+    message: validation.message,
   };
 }
 
@@ -729,7 +692,7 @@ async function runLightSuites({
       const result = await evaluateFullCiEvidence({
         artifactDir,
         ciEvidence: args.ciEvidence,
-        candidateCommitSha: candidate.commitSha,
+        candidate,
       });
       suites.push(result);
       if (result.result !== "passed") previousFailure = entry.id;
@@ -850,17 +813,17 @@ async function resolveHeavyCommand({
   };
 }
 
-async function runShellStringCommand(commandString, cwd) {
-  // Heavy commands in quality-manifest are shell strings with env assignments.
-  // We still refuse to treat missing credentials as pass; caller checks env first.
+async function runShellStringCommand(commandString, cwd, env = process.env) {
+  // Strip VAR=... placeholders so parent-process secrets are inherited.
+  const sanitized = stripCredentialPlaceholders(commandString);
   const started = performance.now();
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
-    const child = spawn(commandString, {
+    const child = spawn(sanitized, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       shell: true,
-      env: process.env,
+      env,
     });
     const stdout = [];
     const stderr = [];
@@ -908,6 +871,9 @@ async function runHeavySuites({
   repoRoot,
   dryRun,
   creditInformational = false,
+  candidate,
+  artifactDir,
+  env = process.env,
 }) {
   const suites = [];
   let previousFailure = null;
@@ -963,7 +929,7 @@ async function runHeavySuites({
           command:
             resolved.kind === "argv"
               ? resolved.command
-              : [resolved.commandString],
+              : [stripCredentialPlaceholders(resolved.commandString)],
         }),
       );
       continue;
@@ -974,19 +940,66 @@ async function runHeavySuites({
             resolved.command[0],
             resolved.command.slice(1),
             repoRoot,
+            env,
           )
-        : await runShellStringCommand(resolved.commandString, repoRoot);
+        : await runShellStringCommand(resolved.commandString, repoRoot, env);
     const commandForDigest =
-      resolved.kind === "argv" ? resolved.command : [resolved.commandString];
+      resolved.kind === "argv"
+        ? resolved.command
+        : [stripCredentialPlaceholders(resolved.commandString)];
     let result =
       captured.status === "passed"
         ? creditInformational
           ? "informational"
           : "passed"
         : "failed";
+    let message =
+      result === "informational"
+        ? "completed without certification credit"
+        : captured.error ?? result;
+
     if (entry.certificationCredit === false && captured.status === "passed") {
       result = "informational";
+      message = "completed without certification credit";
     }
+
+    // Heavy report binding for certification-critical suites.
+    if (
+      bucket === "requiredHeavy" &&
+      result === "passed" &&
+      entry.id === "heavy-narrative-chronicle-production"
+    ) {
+      const liveReport = await readHeavyLiveReport(
+        artifactDir,
+        entry.id,
+        repoRoot,
+      );
+      const validation = validateChronicleProductionReport(
+        liveReport,
+        candidate,
+      );
+      if (!validation.ok) {
+        result = "failed";
+        message = validation.message;
+      }
+    }
+    if (
+      bucket === "requiredHeavy" &&
+      result === "passed" &&
+      entry.id === "heavy-web-ai-consent-live"
+    ) {
+      const report = await readHeavyLiveReport(
+        artifactDir,
+        entry.id,
+        repoRoot,
+      );
+      const validation = validateWebAiConsentReport(report);
+      if (!validation.ok) {
+        result = "failed";
+        message = validation.message;
+      }
+    }
+
     const suiteResult = {
       suiteId: entry.id,
       bucket,
@@ -1000,10 +1013,7 @@ async function runHeavySuites({
       stderrDigest: captured.stderrDigest,
       artifactDigests: [],
       result,
-      message:
-        result === "informational"
-          ? "completed without certification credit"
-          : captured.error ?? result,
+      message,
       command: commandForDigest,
     };
     suites.push(suiteResult);
@@ -1022,305 +1032,399 @@ export async function certifyGateB2({
   args,
 }) {
   const startedAt = new Date().toISOString();
-  const { raw: manifest, digest: manifestDigest } =
-    await loadGateB2Manifest(repoRoot);
-  const qualityText = await readText(repoRoot, QUALITY_MANIFEST_RELATIVE);
-  const qualityManifest = yaml.load(qualityText);
-  const qualityIndex = parseQualityHeavyIndex(qualityManifest);
-  const packageJson = JSON.parse(await readText(repoRoot, "package.json"));
-  const environment = environmentInfo();
-  const identity = await resolveCandidateIdentity({
-    candidate: args.candidate ?? undefined,
-    baseMaster: args.baseMaster ?? undefined,
-    repoRoot,
-  });
-  const digests = await collectInputDigests(manifest, repoRoot);
-  const frozen = Boolean(args.candidate) && COMMIT_RE.test(identity.commitSha);
-  const candidate = {
-    commitSha: identity.commitSha,
-    treeSha: identity.treeSha,
-    baseMasterSha: identity.baseMasterSha,
-    schemaVersion: manifest.candidate?.schemaVersion ?? 16,
-    ...digests,
-    frozen,
-    dirty: identity.dirty,
-  };
+  const needsExecution =
+    args.runLight || args.runHeavy || args.runJourneys || args.runInformational;
+  const freeze = await loadFreezeDocument(repoRoot);
+  let executionRoot = repoRoot;
+  let cleanup = async () => {};
+  let boundVia = "unbound";
 
-  const artifactDir =
-    args.artifactDir ??
-    path.join(
-      repoRoot,
-      ".artifacts/gate-b2",
-      candidate.commitSha ?? "unfrozen",
-    );
-  await mkdir(artifactDir, { recursive: true });
-  await mkdir(path.join(artifactDir, "light"), { recursive: true });
-  await mkdir(path.join(artifactDir, "heavy"), { recursive: true });
-  await mkdir(path.join(artifactDir, "journeys"), { recursive: true });
-  await mkdir(path.join(artifactDir, "environment"), { recursive: true });
-
-  const suites = [];
-  const retries = [];
-  const blockedReasons = [];
-
-  // Preflight always records candidate + digest checks.
-  if (args.preflight || args.runLight || args.runHeavy || args.runJourneys) {
-    if (candidate.dirty) {
-      blockedReasons.push("working tree dirty");
-    }
-    for (const [key, value] of Object.entries(digests)) {
-      if (!SHA256_RE.test(value)) {
-        blockedReasons.push(`invalid digest for ${key}`);
+  try {
+    const { raw: manifestProbe } = await loadGateB2Manifest(repoRoot);
+    if (needsExecution) {
+      if (!args.candidate) {
+        if (!args.dryRun) {
+          throw new Error(
+            "--candidate <frozen-sha> is required when running light/heavy/journeys",
+          );
+        }
+        // Dry-run without candidate stays unbound (unit tests / local probes only).
+        boundVia = "dry-run-unbound";
+      } else {
+        if (!freeze) {
+          throw new Error(
+            "Freeze file missing; run pnpm certify:gate-b2:freeze before certification runs",
+          );
+        }
+        const requireTree =
+          manifestProbe.decisionPolicy?.requireTreeShaMatch !== false;
+        try {
+          const bound = await bindExecutionRoot({
+            repoRoot,
+            candidateSha: args.candidate,
+            freeze,
+            requireTreeShaMatch: requireTree,
+            createWorktree: !args.dryRun,
+          });
+          executionRoot = bound.executionRoot;
+          cleanup = bound.cleanup;
+          boundVia = bound.identity.boundVia;
+        } catch (headMatchError) {
+          if (args.dryRun) {
+            const bound = await bindExecutionRoot({
+              repoRoot,
+              candidateSha: args.candidate,
+              freeze,
+              requireTreeShaMatch: requireTree,
+              createWorktree: true,
+            });
+            executionRoot = bound.executionRoot;
+            cleanup = bound.cleanup;
+            boundVia = bound.identity.boundVia;
+          } else {
+            throw headMatchError;
+          }
+        }
       }
     }
-  }
 
-  if (args.runLight) {
-    suites.push(
-      ...(await runLightSuites({
-        manifest,
-        args,
-        candidate,
-        environment,
-        repoRoot,
-        artifactDir,
-      })),
+    const { raw: manifest, digest: manifestDigest } =
+      await loadGateB2Manifest(executionRoot);
+    const qualityText = await readText(executionRoot, QUALITY_MANIFEST_RELATIVE);
+    const qualityManifest = yaml.load(qualityText);
+    const qualityIndex = parseQualityHeavyIndex(qualityManifest);
+    const packageJson = JSON.parse(
+      await readText(executionRoot, "package.json"),
     );
-  } else {
-    for (const entry of manifest.requiredLight) {
-      suites.push(
-        notRunSuite({
-          suiteId: entry.id,
-          bucket: "requiredLight",
-          message: "not requested (--run-light)",
-          command: entry.command ?? null,
-        }),
-      );
-    }
-  }
+    const environment = environmentInfo();
+    const identity = await resolveCandidateIdentity({
+      candidate: args.candidate ?? undefined,
+      baseMaster: args.baseMaster ?? undefined,
+      repoRoot: executionRoot,
+    });
+    const digests = await collectInputDigests(manifest, executionRoot);
 
-  if (args.runHeavy) {
-    suites.push(
-      ...(await runHeavySuites({
-        entries: manifest.requiredHeavy,
-        bucket: "requiredHeavy",
-        qualityIndex,
-        packageJson,
-        environment,
-        repoRoot,
-        dryRun: args.dryRun,
-      })),
-    );
-  } else {
-    for (const entry of manifest.requiredHeavy) {
-      suites.push(
-        notRunSuite({
-          suiteId: entry.id,
-          bucket: "requiredHeavy",
-          message: "not requested (--run-heavy)",
-        }),
-      );
-    }
-  }
-
-  if (args.runJourneys) {
-    for (const entry of manifest.requiredManualJourneys) {
-      suites.push(
-        await evaluateJourneyEvidence({
-          journeyId: entry.id,
-          artifactDir,
-          journeyEvidenceDir: args.journeyEvidenceDir,
-        }),
-      );
-    }
-  } else {
-    for (const entry of manifest.requiredManualJourneys) {
-      suites.push(
-        notRunSuite({
-          suiteId: entry.id,
-          bucket: "requiredJourneys",
-          message: "not requested (--run-journeys)",
-        }),
-      );
-    }
-  }
-
-  if (args.runInformational) {
-    suites.push(
-      ...(await runHeavySuites({
-        entries: manifest.informational,
-        bucket: "informational",
-        qualityIndex,
-        packageJson,
-        environment,
-        repoRoot,
-        dryRun: args.dryRun,
-        creditInformational: true,
-      })),
-    );
-  } else {
-    for (const entry of manifest.informational) {
-      suites.push(
-        notRunSuite({
-          suiteId: entry.id,
-          bucket: "informational",
-          message: "not requested (--run-informational)",
-        }),
-      );
-    }
-  }
-
-  if (args.runReleaseAdjacent) {
-    for (const entry of manifest.releaseAdjacent) {
-      if (entry.status === "blocked" || entry.id.startsWith("blocked-")) {
-        const blocked = qualityIndex.blocked.get(
-          entry.qualityManifestId ?? entry.id,
+    if (needsExecution && freeze && boundVia !== "dry-run-unbound") {
+      const digestErrors = assertDigestsMatchFreeze(digests, freeze.candidate);
+      if (digestErrors.length > 0) {
+        throw new Error(
+          `Execution digests drifted from freeze:\n- ${digestErrors.join("\n- ")}`,
         );
+      }
+      if (identity.commitSha !== freeze.candidate.commitSha) {
+        throw new Error("Execution commit SHA drifted from freeze");
+      }
+      if (identity.treeSha !== freeze.candidate.treeSha) {
+        throw new Error("Execution tree SHA drifted from freeze");
+      }
+    }
+
+    const frozen =
+      Boolean(args.candidate) &&
+      Boolean(freeze) &&
+      freeze.candidate.commitSha === identity.commitSha &&
+      freeze.candidate.treeSha === identity.treeSha &&
+      !identity.dirty;
+    const candidate = {
+      commitSha: identity.commitSha,
+      treeSha: identity.treeSha,
+      baseMasterSha: identity.baseMasterSha,
+      schemaVersion: manifest.candidate?.schemaVersion ?? 16,
+      ...digests,
+      frozen,
+      dirty: identity.dirty,
+      boundVia,
+    };
+
+    const artifactDir =
+      args.artifactDir ??
+      path.join(
+        repoRoot,
+        ".artifacts/gate-b2",
+        candidate.commitSha ?? "unfrozen",
+      );
+    await mkdir(artifactDir, { recursive: true });
+    await mkdir(path.join(artifactDir, "light"), { recursive: true });
+    await mkdir(path.join(artifactDir, "heavy"), { recursive: true });
+    await mkdir(path.join(artifactDir, "journeys"), { recursive: true });
+    await mkdir(path.join(artifactDir, "environment"), { recursive: true });
+
+    const suites = [];
+    const retries = [];
+    const blockedReasons = [];
+    const certEnv = sanitizeCertificationEnv(process.env);
+
+    if (args.preflight || needsExecution) {
+      if (candidate.dirty) blockedReasons.push("working tree dirty");
+      if (needsExecution && !candidate.frozen) {
+        blockedReasons.push("candidate not freeze-bound");
+      }
+      for (const [key, value] of Object.entries(digests)) {
+        if (!SHA256_RE.test(value)) {
+          blockedReasons.push(`invalid digest for ${key}`);
+        }
+      }
+    }
+
+    if (args.runLight) {
+      suites.push(
+        ...(await runLightSuites({
+          manifest,
+          args,
+          candidate,
+          environment,
+          repoRoot: executionRoot,
+          artifactDir,
+        })),
+      );
+    } else {
+      for (const entry of manifest.requiredLight) {
         suites.push(
-          blockedSuite({
+          notRunSuite({
             suiteId: entry.id,
-            bucket: "releaseAdjacent",
-            environmentDigest: environment.digest,
-            message:
-              blocked?.reason ??
-              "Release-adjacent blocked evaluation; not part of Gate B2 Engineering PASS.",
+            bucket: "requiredLight",
+            message: "not requested (--run-light)",
+            command: entry.command ?? null,
           }),
         );
-        continue;
       }
+    }
+
+    if (args.runHeavy) {
       suites.push(
         ...(await runHeavySuites({
-          entries: [entry],
-          bucket: "releaseAdjacent",
+          entries: manifest.requiredHeavy,
+          bucket: "requiredHeavy",
           qualityIndex,
           packageJson,
           environment,
-          repoRoot,
+          repoRoot: executionRoot,
           dryRun: args.dryRun,
+          candidate,
+          artifactDir,
+          env: certEnv,
         })),
       );
+    } else {
+      for (const entry of manifest.requiredHeavy) {
+        suites.push(
+          notRunSuite({
+            suiteId: entry.id,
+            bucket: "requiredHeavy",
+            message: "not requested (--run-heavy)",
+          }),
+        );
+      }
     }
-  } else {
-    for (const entry of manifest.releaseAdjacent) {
+
+    if (args.runJourneys) {
+      for (const entry of manifest.requiredManualJourneys) {
+        suites.push(
+          await evaluateJourneyEvidence({
+            journeyId: entry.id,
+            artifactDir,
+            journeyEvidenceDir: args.journeyEvidenceDir,
+            candidate,
+          }),
+        );
+      }
+    } else {
+      for (const entry of manifest.requiredManualJourneys) {
+        suites.push(
+          notRunSuite({
+            suiteId: entry.id,
+            bucket: "requiredJourneys",
+            message: "not requested (--run-journeys)",
+          }),
+        );
+      }
+    }
+
+    if (args.runInformational) {
       suites.push(
-        notRunSuite({
-          suiteId: entry.id,
-          bucket: "releaseAdjacent",
-          message: "not requested (--run-release-adjacent); not required for Gate B2 Engineering",
-        }),
+        ...(await runHeavySuites({
+          entries: manifest.informational,
+          bucket: "informational",
+          qualityIndex,
+          packageJson,
+          environment,
+          repoRoot: executionRoot,
+          dryRun: args.dryRun,
+          creditInformational: true,
+          candidate,
+          artifactDir,
+          env: certEnv,
+        })),
       );
+    } else {
+      for (const entry of manifest.informational) {
+        suites.push(
+          notRunSuite({
+            suiteId: entry.id,
+            bucket: "informational",
+            message: "not requested (--run-informational)",
+          }),
+        );
+      }
     }
-  }
 
-  for (const suite of suites) {
-    if (suite.result === "blocked") {
-      blockedReasons.push(`${suite.suiteId}: ${suite.message}`);
+    if (args.runReleaseAdjacent) {
+      for (const entry of manifest.releaseAdjacent) {
+        if (entry.status === "blocked" || entry.id.startsWith("blocked-")) {
+          const blocked = qualityIndex.blocked.get(
+            entry.qualityManifestId ?? entry.id,
+          );
+          suites.push(
+            blockedSuite({
+              suiteId: entry.id,
+              bucket: "releaseAdjacent",
+              environmentDigest: environment.digest,
+              message:
+                blocked?.reason ??
+                "Release-adjacent blocked evaluation; not part of Gate B2 Engineering PASS.",
+            }),
+          );
+          continue;
+        }
+        suites.push(
+          ...(await runHeavySuites({
+            entries: [entry],
+            bucket: "releaseAdjacent",
+            qualityIndex,
+            packageJson,
+            environment,
+            repoRoot: executionRoot,
+            dryRun: args.dryRun,
+            candidate,
+            artifactDir,
+            env: certEnv,
+          })),
+        );
+      }
+    } else {
+      for (const entry of manifest.releaseAdjacent) {
+        suites.push(
+          notRunSuite({
+            suiteId: entry.id,
+            bucket: "releaseAdjacent",
+            message:
+              "not requested (--run-release-adjacent); not required for Gate B2 Engineering",
+          }),
+        );
+      }
     }
-  }
 
-  const preflightOnly =
-    args.preflight &&
-    !args.runLight &&
-    !args.runHeavy &&
-    !args.runJourneys &&
-    !args.runInformational &&
-    !args.runReleaseAdjacent;
+    for (const suite of suites) {
+      if (suite.result === "blocked") {
+        blockedReasons.push(`${suite.suiteId}: ${suite.message}`);
+      }
+    }
 
-  const mode = preflightOnly
-    ? "preflight"
-    : args.runLight && args.runHeavy && args.runJourneys
-      ? "full"
-      : args.runHeavy
-        ? "heavy"
-        : args.runLight
-          ? "light"
-          : args.runJourneys
-            ? "journeys"
-            : "preflight";
+    const preflightOnly =
+      args.preflight &&
+      !args.runLight &&
+      !args.runHeavy &&
+      !args.runJourneys &&
+      !args.runInformational &&
+      !args.runReleaseAdjacent;
 
-  const decision = decideVerdict({
-    suites,
-    candidate,
-    decisionPolicy: manifest.decisionPolicy ?? {},
-    preflightOnly,
-  });
+    const mode = preflightOnly
+      ? "preflight"
+      : args.runLight && args.runHeavy && args.runJourneys
+        ? "full"
+        : args.runHeavy
+          ? "heavy"
+          : args.runLight
+            ? "light"
+            : args.runJourneys
+              ? "journeys"
+              : "preflight";
 
-  const report = {
-    schemaVersion: 1,
-    gateId: "gate-b2",
-    manifestDigest,
-    generatedAt: new Date().toISOString(),
-    startedAt,
-    completedAt: new Date().toISOString(),
-    mode,
-    candidate,
-    environment,
-    verdict: decision.verdict,
-    verdictReasons: [...decision.reasons, ...blockedReasons].filter(
-      (value, index, all) => all.indexOf(value) === index,
-    ),
-    summary: {
-      requiredLight: tallyBucket(suites, "requiredLight"),
-      requiredHeavy: tallyBucket(suites, "requiredHeavy"),
-      requiredJourneys: tallyBucket(suites, "requiredJourneys"),
-      informational: tallyBucket(suites, "informational"),
-      releaseAdjacent: tallyBucket(suites, "releaseAdjacent"),
-    },
-    suites,
-    retries,
-    artifactDigests: [],
-    blockedReasons,
-    firstFailure: firstFailureOf(suites),
-  };
+    const decision = decideVerdict({
+      suites,
+      candidate,
+      decisionPolicy: manifest.decisionPolicy ?? {},
+      preflightOnly,
+    });
 
-  const defaultReportPath = path.join(artifactDir, "report.json");
-  const reportPath = args.report
-    ? path.isAbsolute(args.report)
-      ? args.report
-      : path.join(repoRoot, args.report)
-    : defaultReportPath;
-  await mkdir(path.dirname(reportPath), { recursive: true });
-  const reportJson = `${JSON.stringify(report, null, 2)}\n`;
-  await writeFile(reportPath, reportJson, "utf8");
-  report.artifactDigests.push({
-    path: path.relative(repoRoot, reportPath),
-    digest: sha256Text(reportJson),
-  });
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-
-  const decisionPath = path.join(artifactDir, "decision.json");
-  const decisionDoc = {
-    schemaVersion: 1,
-    gateId: "gate-b2",
-    candidateCommitSha: candidate.commitSha,
-    candidateTreeSha: candidate.treeSha,
-    verdict: report.verdict,
-    reasons: report.verdictReasons,
-    reportDigest: report.artifactDigests[0]?.digest ?? null,
-    generatedAt: report.completedAt,
-  };
-  await writeFile(
-    decisionPath,
-    `${JSON.stringify(decisionDoc, null, 2)}\n`,
-    "utf8",
-  );
-
-  const manifestCopyPath = path.join(artifactDir, "manifest.json");
-  await writeFile(
-    manifestCopyPath,
-    `${JSON.stringify(
-      {
-        source: MANIFEST_RELATIVE,
-        digest: manifestDigest,
-        candidate,
+    const report = {
+      schemaVersion: 1,
+      gateId: "gate-b2",
+      manifestDigest,
+      generatedAt: new Date().toISOString(),
+      startedAt,
+      completedAt: new Date().toISOString(),
+      mode,
+      candidate,
+      environment,
+      verdict: decision.verdict,
+      verdictReasons: [...decision.reasons, ...blockedReasons].filter(
+        (value, index, all) => all.indexOf(value) === index,
+      ),
+      summary: {
+        requiredLight: tallyBucket(suites, "requiredLight"),
+        requiredHeavy: tallyBucket(suites, "requiredHeavy"),
+        requiredJourneys: tallyBucket(suites, "requiredJourneys"),
+        informational: tallyBucket(suites, "informational"),
+        releaseAdjacent: tallyBucket(suites, "releaseAdjacent"),
       },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+      suites,
+      retries,
+      blockedReasons,
+      firstFailure: firstFailureOf(suites),
+    };
 
-  return { report, reportPath, artifactDir, decisionPath };
+    const defaultReportPath = path.join(artifactDir, "report.json");
+    const reportPath = args.report
+      ? path.isAbsolute(args.report)
+        ? args.report
+        : path.join(repoRoot, args.report)
+      : defaultReportPath;
+    await mkdir(path.dirname(reportPath), { recursive: true });
+    const reportJson = `${JSON.stringify(report, null, 2)}\n`;
+    await writeFile(reportPath, reportJson, "utf8");
+    const reportDigest = sha256Text(reportJson);
+    await writeFile(`${reportPath}.sha256`, `${reportDigest}\n`, "utf8");
+
+    const decisionPath = path.join(artifactDir, "decision.json");
+    const decisionDoc = buildDecisionDocument({
+      candidate,
+      verdict: report.verdict,
+      reasons: report.verdictReasons,
+      suites,
+      reportDigest,
+      digests,
+    });
+    await writeFile(
+      decisionPath,
+      `${JSON.stringify(decisionDoc, null, 2)}\n`,
+      "utf8",
+    );
+
+    await writeFile(
+      path.join(artifactDir, "manifest.json"),
+      `${JSON.stringify(
+        {
+          source: MANIFEST_RELATIVE,
+          digest: manifestDigest,
+          candidate,
+          freezeBound: Boolean(freeze),
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    return {
+      report: { ...report, reportDigest },
+      reportPath,
+      artifactDir,
+      decisionPath,
+    };
+  } finally {
+    await cleanup();
+  }
 }
 
 async function main() {

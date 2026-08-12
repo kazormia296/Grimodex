@@ -263,6 +263,25 @@ describe("Web AI consent live journey (loopback Local LLM)", () => {
     await reconsentExpectation;
     expect(server.requestCount()).toBe(afterApprove);
 
+    const requestCountAfterDestinationChangeRefuse = server.requestCount();
+    const accessLogDigest = `sha256:${createHash("sha256")
+      .update(JSON.stringify(server.accessLog))
+      .digest("hex")}`;
+    const endpoints = {
+      a: server.baseUrlA,
+      b: server.baseUrlB,
+    };
+
+    // Teardown first; report must record observed post-teardown state.
+    mock.close();
+    await server.close();
+    server = null;
+    localStorage.clear();
+    declineActiveAiDataConsent();
+
+    const localStorageCleared = localStorage.length === 0;
+    expect(localStorageCleared).toBe(true);
+
     const artifactRoot = path.join(
       repoRoot,
       ".artifacts",
@@ -276,29 +295,20 @@ describe("Web AI consent live journey (loopback Local LLM)", () => {
       requestCountBeforeConsent: 0,
       requestCountAfterRefuse: 0,
       requestCountAfterApprove: afterApprove,
-      requestCountAfterDestinationChangeRefuse: server.requestCount(),
-      accessLogDigest: `sha256:${createHash("sha256")
-        .update(JSON.stringify(server.accessLog))
-        .digest("hex")}`,
-      endpoints: {
-        a: server.baseUrlA,
-        b: server.baseUrlB,
-      },
+      requestCountAfterDestinationChangeRefuse,
+      accessLogDigest,
+      endpoints,
       teardown: {
-        localStorageCleared: true,
-        serverClosed: false,
+        localStorageCleared,
+        serverClosed: true,
+        consentBrokerDeclined: true,
       },
     };
+    expect(report.teardown.serverClosed).toBe(true);
     await writeFile(
       path.join(artifactRoot, "report.json"),
       `${JSON.stringify(report, null, 2)}\n`,
       "utf8",
     );
-
-    mock.close();
-    await server.close();
-    server = null;
-    localStorage.clear();
-    declineActiveAiDataConsent();
   }, 60_000);
 });

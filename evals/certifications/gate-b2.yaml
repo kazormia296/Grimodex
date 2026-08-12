@@ -31,7 +31,7 @@ inputs:
 # Light / Heavy / Journey の ID は runner が減らさない。欠落は BLOCK。
 requiredLight:
   - id: adr-static-certification
-    command: [pnpm, test:narrative:gate-b2-adr]
+    command: [pnpm, test:narrative:gate-b2-adr:certifiable]
   - id: narrative-writer-release
     command: [pnpm, test:narrative:release]
   - id: native-writer-ownership

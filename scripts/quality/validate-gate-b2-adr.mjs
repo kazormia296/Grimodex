@@ -9,8 +9,7 @@ const DEFAULT_REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
 );
-const CHECKLIST_RELATIVE =
-  "policies/narrative/gate-b2-adr-checklist.json";
+const CHECKLIST_RELATIVE = "policies/narrative/gate-b2-adr-checklist.json";
 const CLASSIFICATION_RELATIVE =
   "policies/narrative/gate-b2-classification.json";
 const VALID_STATUSES = new Set(["PASS", "FAIL", "OUT-OF-SCOPE"]);
@@ -39,6 +38,8 @@ const REQUIRED_DOMAINS = [
   "foreshadow",
 ];
 const REQUIRED_DOMAIN_CLASSIFICATIONS = ["invariant", "strategy", "signal"];
+const VALID_MODES = new Set(["validate-format", "require-certifiable"]);
+const CERTIFIABLE_OUT_OF_SCOPE_IDS = new Set(["B2-X07", "B2-IM-S"]);
 export const REQUIRED_CHECKLIST_IDS = [
   "B2-X01",
   "B2-X02",
@@ -95,7 +96,7 @@ async function loadJson(repoRoot, relativePath) {
   return JSON.parse(await readFile(path.join(repoRoot, relativePath), "utf8"));
 }
 
-async function validateChecklist(checklist, repoRoot) {
+async function validateChecklist(checklist, repoRoot, mode) {
   const errors = [];
   if (!isRecord(checklist)) return ["checklist must be an object"];
   if (checklist.schemaVersion !== 1) {
@@ -110,9 +111,8 @@ async function validateChecklist(checklist, repoRoot) {
 
   const ids = new Set();
   for (const [index, item] of checklist.items.entries()) {
-    const id = isRecord(item) && isNonEmptyString(item.id)
-      ? item.id
-      : `item[${index}]`;
+    const id =
+      isRecord(item) && isNonEmptyString(item.id) ? item.id : `item[${index}]`;
     if (!isRecord(item)) {
       errors.push(`${id}: item must be an object`);
       continue;
@@ -144,11 +144,18 @@ async function validateChecklist(checklist, repoRoot) {
     ) {
       errors.push(`${id}: ${item.status} requires reason`);
     }
-    if (
-      item.status === "OUT-OF-SCOPE" &&
-      !isNonEmptyString(item.deferredTo)
-    ) {
+    if (item.status === "OUT-OF-SCOPE" && !isNonEmptyString(item.deferredTo)) {
       errors.push(`${id}: OUT-OF-SCOPE requires deferredTo`);
+    }
+    if (mode === "require-certifiable" && item.status === "FAIL") {
+      errors.push(`${id}: FAIL is not certifiable`);
+    }
+    if (
+      mode === "require-certifiable" &&
+      item.status === "OUT-OF-SCOPE" &&
+      !CERTIFIABLE_OUT_OF_SCOPE_IDS.has(item.id)
+    ) {
+      errors.push(`${id}: OUT-OF-SCOPE is not allowlisted for certification`);
     }
 
     const evidence = Array.isArray(item.evidence) ? item.evidence : [];
@@ -181,7 +188,7 @@ async function validateChecklist(checklist, repoRoot) {
   return errors;
 }
 
-async function validateClassification(classification, repoRoot) {
+async function validateClassification(classification, repoRoot, mode) {
   const errors = [];
   if (!isRecord(classification)) {
     return ["classification must be an object"];
@@ -201,9 +208,10 @@ async function validateClassification(classification, repoRoot) {
 
   const ids = new Set();
   for (const [index, entry] of classification.entries.entries()) {
-    const id = isRecord(entry) && isNonEmptyString(entry.id)
-      ? entry.id
-      : `entry[${index}]`;
+    const id =
+      isRecord(entry) && isNonEmptyString(entry.id)
+        ? entry.id
+        : `entry[${index}]`;
     if (!isRecord(entry)) {
       errors.push(`${id}: classification entry must be an object`);
       continue;
@@ -222,6 +230,13 @@ async function validateClassification(classification, repoRoot) {
       errors.push(
         `${id}: invalid classification '${String(entry.classification)}'`,
       );
+    }
+    if (
+      mode === "require-certifiable" &&
+      typeof entry.classification === "string" &&
+      entry.classification.toLocaleLowerCase("und") === "mixed"
+    ) {
+      errors.push(`${id}: mixed classification is not certifiable`);
     }
     if (!isNonEmptyString(entry.implementation)) {
       errors.push(`${id}: missing implementation`);
@@ -269,27 +284,50 @@ export async function validateGateB2Adr({
   repoRoot = DEFAULT_REPO_ROOT,
   checklistPath = CHECKLIST_RELATIVE,
   classificationPath = CLASSIFICATION_RELATIVE,
+  mode = "validate-format",
 } = {}) {
+  if (!VALID_MODES.has(mode)) {
+    throw new Error(`Unsupported Gate B2 ADR validation mode: ${mode}`);
+  }
   const [checklist, classification] = await Promise.all([
     loadJson(repoRoot, checklistPath),
     loadJson(repoRoot, classificationPath),
   ]);
   return [
-    ...(await validateChecklist(checklist, repoRoot)),
-    ...(await validateClassification(classification, repoRoot)),
+    ...(await validateChecklist(checklist, repoRoot, mode)),
+    ...(await validateClassification(classification, repoRoot, mode)),
   ];
 }
 
+export function parseValidationMode(argv) {
+  const args = argv.filter((argument) => argument !== "--");
+  if (args.length === 0) return "validate-format";
+  if (args.length === 1 && args[0] === "--validate-format") {
+    return "validate-format";
+  }
+  if (args.length === 1 && args[0] === "--require-certifiable") {
+    return "require-certifiable";
+  }
+  throw new Error(
+    "Usage: validate-gate-b2-adr.mjs [--validate-format|--require-certifiable]",
+  );
+}
+
 async function main() {
-  const errors = await validateGateB2Adr();
+  const mode = parseValidationMode(process.argv.slice(2));
+  const errors = await validateGateB2Adr({ mode });
   if (errors.length > 0) {
     process.stderr.write(
-      `Gate B2 ADR certification failed:\n- ${errors.join("\n- ")}\n`,
+      `Gate B2 ADR ${mode} failed:\n- ${errors.join("\n- ")}\n`,
     );
     process.exitCode = 1;
     return;
   }
-  process.stdout.write("Gate B2 ADR checklist and classification are valid.\n");
+  process.stdout.write(
+    mode === "require-certifiable"
+      ? "Gate B2 ADR checklist and classification are certifiable.\n"
+      : "Gate B2 ADR checklist and classification format is valid.\n",
+  );
 }
 
 if (

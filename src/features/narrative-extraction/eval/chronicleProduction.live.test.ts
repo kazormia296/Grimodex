@@ -112,10 +112,10 @@ describeLive("Chronicle production OpenRouter live certification", () => {
     async () => {
       const cases = await loadCases();
       const attempt = attemptNumber();
-      const diagnosticOnly = attempt === 2;
       const fullCertificationRun =
         !process.env.NARRATIVE_EVAL_CASE_ID &&
         !process.env.NARRATIVE_EVAL_LIMIT;
+      const diagnosticOnly = attempt === 2 || !fullCertificationRun;
       const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna";
       const effort = reasoningEffort();
       const startedAt = new Date().toISOString();
@@ -242,25 +242,31 @@ describeLive("Chronicle production OpenRouter live certification", () => {
         },
         cases: caseReports,
       };
+      const reportJson = `${JSON.stringify(report, null, 2)}\n`;
       await writeFile(
         path.join(artifactRoot, "report.json"),
-        `${JSON.stringify(report, null, 2)}\n`,
+        reportJson,
         "utf8",
       );
+      // Stable path for Gate B2 certification runner binding.
+      const stableRoot = path.join(
+        repoRoot,
+        ".artifacts",
+        "narrative-eval",
+        "chronicle-production-live",
+      );
+      await mkdir(stableRoot, { recursive: true });
+      await writeFile(path.join(stableRoot, "report.json"), reportJson, "utf8");
 
       console.info(
         JSON.stringify({
           artifactRoot,
+          stableReport: path.join(stableRoot, "report.json"),
           certificationEligible,
           summary: report.summary,
         }),
       );
       expect(report.mode).toBe("chronicle-production-live");
-      expect(report.certificationEligible).toBe(
-        fullCertificationRun &&
-          !diagnosticOnly &&
-          isCertificationEligible(eligibilityInput),
-      );
       expect(
         caseReports.every(
           (entry) =>
@@ -274,8 +280,17 @@ describeLive("Chronicle production OpenRouter live certification", () => {
             ),
         ),
       ).toBe(true);
-      if (fullCertificationRun) expect(report.caseCount).toBe(14);
       expect(parseFailureCount).toBe(0);
+      if (fullCertificationRun && attempt === 1 && !diagnosticOnly) {
+        expect(fullCertificationRun).toBe(true);
+        expect(attempt).toBe(1);
+        expect(report.caseCount).toBe(14);
+        expect(report.summary.passed).toBe(14);
+        expect(report.summary.failed).toBe(0);
+        expect(report.certificationEligible).toBe(true);
+      } else {
+        expect(report.certificationEligible).toBe(false);
+      }
     },
     30 * 60 * 1000,
   );

@@ -8,6 +8,7 @@ import {
   isCertificationEligible,
   prepareProductionChronicleEvalCase,
   runProductionChroniclePipeline,
+  type ProductionChroniclePipelineDeps,
 } from "./productionChronicleAdapter";
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
@@ -136,6 +137,120 @@ async function runPassingCase(evalCase = miniCase()) {
   };
 }
 
+function clusteringCase(
+  goldClusterLabels: readonly string[],
+): NarrativeEvalCaseV1 {
+  return {
+    schemaVersion: 1,
+    id: "chronicle.micro.production-clustering",
+    scope: { slice: "chronicle", tier: "micro" },
+    locale: "ja-JP",
+    timezone: "Asia/Tokyo",
+    frozenTime: "2026-08-10T00:00:00.000Z",
+    coverage: {
+      mode: "complete",
+      includedDocumentIds: goldClusterLabels.map(
+        (_, index) => `scene-${index + 1}`,
+      ),
+      omittedDocumentIds: [],
+    },
+    documents: goldClusterLabels.map((_, index) => ({
+      id: `scene-${index + 1}`,
+      title: `場面${index + 1}`,
+      text: `出来事${index + 1}が起きた。`,
+    })),
+    expected: {
+      observations: {
+        required: goldClusterLabels.map((clustering, index) => ({
+          id: `required-${index + 1}`,
+          semanticKey: `event-${index + 1}`,
+          dimensions: {
+            eventDetection: true,
+            actuality: "actual",
+            attribution: "narrator",
+            narrativeFrame: "story-world",
+            evidence: [
+              {
+                documentId: `scene-${index + 1}`,
+                quote: `出来事${index + 1}が起きた。`,
+              },
+            ],
+            clustering,
+            significance: "major",
+            proposalGate: "propose",
+          },
+        })),
+        forbidden: [],
+      },
+    },
+    criticalViolationClasses: [],
+  };
+}
+
+async function evaluateClusterGroups(
+  goldClusterLabels: readonly string[],
+  actualClusterLabels: readonly string[],
+) {
+  const prepared = await prepareProductionChronicleEvalCase(
+    clusteringCase(goldClusterLabels),
+  );
+  const artifacts = await runProductionChroniclePipeline(prepared, {
+    createId: (() => {
+      let index = 0;
+      return () => `production-id-${++index}`;
+    })(),
+    observeWithAi: async ({ windows }) => {
+      const window = windows[0];
+      if (!window) throw new Error("missing extraction window");
+      return [
+        {
+          localId: "obs",
+          evidence: [{ sourceRef: window.sourceRef, quote: window.text }],
+          assertion: {
+            attribution: "narrator",
+            narrativeFrame: "story-world",
+          },
+          payload: {
+            predicate: window.text,
+            actuality: "actual",
+            participants: [],
+            temporalExpressions: [],
+            durationKind: "instant",
+          },
+        },
+      ];
+    },
+    synthesizeWithAi: async ({ clusterRef, observations }) => [
+      {
+        hypothesisId: `hypothesis-${clusterRef}`,
+        clusterRef,
+        observationRefs: observations.map((entry) => entry.localId),
+        titleSuggestion: "出来事",
+        summary: "出来事が起きた",
+        actuality: "actual",
+        significance: "major",
+      },
+    ],
+  });
+  const refsByCluster = new Map<string, string[]>();
+  artifacts.observations.forEach((observation, index) => {
+    const label = actualClusterLabels[index];
+    if (!label) throw new Error(`missing actual cluster label at ${index}`);
+    const refs = refsByCluster.get(label) ?? [];
+    refs.push(observation.localId);
+    refsByCluster.set(label, refs);
+  });
+  const controlledArtifacts = {
+    ...artifacts,
+    clusters: [...refsByCluster].map(([clusterRef, observationRefs]) => ({
+      clusterRef,
+      observationRefs,
+      blockingKey: clusterRef,
+    })),
+  };
+  return evaluateProductionChronicleArtifacts(prepared, controlledArtifacts);
+}
+
 describe("productionChronicleAdapter", () => {
   it("observes all eight dimensions through the production stages without Apply", async () => {
     const { artifacts, evaluation } = await runPassingCase();
@@ -165,7 +280,7 @@ describe("productionChronicleAdapter", () => {
     });
     expect(actual?.dimensions.clustering).toEqual({
       status: "observed",
-      value: "north-gate-collapse",
+      value: "c0",
     });
     expect(evaluation.actual.appliedProposalIds).toEqual([]);
     expect(evaluation.passed).toBe(true);
@@ -175,6 +290,109 @@ describe("productionChronicleAdapter", () => {
         cases: [{ evaluation }],
       }),
     ).toBe(true);
+  });
+
+  it("scores production clustering by pairwise grouping without Gold labels", async () => {
+    const equivalent = await evaluateClusterGroups(
+      ["gold-collapse", "gold-collapse", "gold-aftermath"],
+      ["production-group-a", "production-group-a", "production-group-b"],
+    );
+
+    expect(
+      equivalent.actual.observations.map(
+        (observation) =>
+          observation.dimensions.clustering?.status === "observed" &&
+          observation.dimensions.clustering.value,
+      ),
+    ).toEqual(["c0", "c0", "c1"]);
+    expect(equivalent.dimensions.clustering).toEqual({
+      truePositive: 3,
+      falsePositive: 0,
+      falseNegative: 0,
+      unobservable: 0,
+    });
+    expect(equivalent.passed).toBe(true);
+
+    const different = await evaluateClusterGroups(
+      ["gold-collapse", "gold-collapse", "gold-aftermath"],
+      ["production-group-a", "production-group-b", "production-group-b"],
+    );
+    expect(different.dimensions.clustering.falsePositive).toBeGreaterThan(0);
+    expect(different.dimensions.clustering.falseNegative).toBeGreaterThan(0);
+    expect(different.passed).toBe(false);
+  });
+
+  it("merges observations with identical evidence before clustering", async () => {
+    const prepared = await prepareProductionChronicleEvalCase(miniCase());
+    const synthesizeWithAi = vi.fn(
+      async ({
+        clusterRef,
+        observations,
+      }: Parameters<
+        NonNullable<ProductionChroniclePipelineDeps["synthesizeWithAi"]>
+      >[0]) =>
+        [
+          {
+            hypothesisId: "hypothesis-merged",
+            clusterRef,
+            observationRefs: observations.map((entry) => entry.localId),
+            titleSuggestion: "北門の倒壊",
+            summary: "北門が倒壊した",
+            actuality: "actual",
+            significance: "major",
+          },
+        ] satisfies readonly EventHypothesis[],
+    );
+    const artifacts = await runProductionChroniclePipeline(prepared, {
+      observeWithAi: async ({ windows }) => {
+        const window = windows[0];
+        if (!window) throw new Error("missing extraction window");
+        const evidence = [
+          {
+            sourceRef: window.sourceRef,
+            quote: "北門の鎖が切れ、重い門扉が街路へ倒れた。",
+          },
+        ];
+        return [
+          {
+            localId: "obs-1",
+            evidence,
+            assertion: {
+              attribution: "narrator",
+              narrativeFrame: "story-world",
+            },
+            payload: {
+              predicate: "北門が倒れた",
+              actuality: "actual",
+              participants: [],
+              temporalExpressions: [],
+              durationKind: "instant",
+            },
+          },
+          {
+            localId: "obs-2",
+            evidence,
+            assertion: {
+              attribution: "narrator",
+              narrativeFrame: "story-world",
+            },
+            payload: {
+              predicate: "門扉が街路へ倒れた",
+              actuality: "actual",
+              participants: [],
+              temporalExpressions: [],
+              durationKind: "instant",
+            },
+          },
+        ];
+      },
+      synthesizeWithAi,
+    });
+
+    expect(artifacts.observations).toHaveLength(1);
+    expect(artifacts.clusters).toHaveLength(1);
+    expect(synthesizeWithAi).toHaveBeenCalledTimes(1);
+    expect(synthesizeWithAi.mock.calls[0]?.[0].observations).toHaveLength(1);
   });
 
   it("does not make complete or absence claims for partial coverage", async () => {

@@ -8,6 +8,7 @@ import type {
 import type {
   NarrativeActualGraph,
   NarrativeCriticalViolation,
+  NarrativeEvalCaseV1,
   NarrativeEvalExpectedObservation,
 } from "./types";
 
@@ -36,10 +37,36 @@ function alignRequiredObservation(
   );
 }
 
-function buildActualGraph(
+function normalizeClusterLabels(
+  entries: readonly { readonly key: string; readonly clusterLabel: string }[],
+): Map<string, string> {
+  const normalizedByKey = new Map<string, string>();
+  const classByClusterLabel = new Map<string, string>();
+  for (const entry of entries) {
+    let normalized = classByClusterLabel.get(entry.clusterLabel);
+    if (!normalized) {
+      normalized = `c${classByClusterLabel.size}`;
+      classByClusterLabel.set(entry.clusterLabel, normalized);
+    }
+    normalizedByKey.set(entry.key, normalized);
+  }
+  return normalizedByKey;
+}
+
+function withoutClustering(
+  dimensions: NarrativeEvalExpectedObservation["dimensions"],
+): NarrativeEvalExpectedObservation["dimensions"] {
+  const { clustering: _clustering, ...rest } = dimensions;
+  return rest;
+}
+
+function buildScoringInputs(
   prepared: PreparedProductionChronicleEvalCase,
   artifacts: ProductionChronicleArtifacts,
-): NarrativeActualGraph {
+): {
+  readonly actual: NarrativeActualGraph;
+  readonly evalCase: NarrativeEvalCaseV1;
+} {
   const clusterByObservationId = new Map(
     artifacts.clusters.flatMap((cluster) =>
       cluster.observationRefs.map((ref) => [ref, cluster.clusterRef] as const),
@@ -66,7 +93,7 @@ function buildActualGraph(
   );
   const usedExpectationIds = new Set<string>();
 
-  const observations = artifacts.observations.map((observation) => {
+  const alignedObservations = artifacts.observations.map((observation) => {
     const evidence = observation.evidence.flatMap((item) => {
       if (
         !resolvedEvidence.has(evidenceFingerprint(item.sourceRef, item.quote))
@@ -81,59 +108,120 @@ function buildActualGraph(
       usedExpectationIds,
     );
     if (expected) usedExpectationIds.add(expected.id);
-    const hypotheses = hypothesesByObservationId.get(observation.localId) ?? [];
-    const hypothesis =
-      hypotheses.find((entry) =>
-        proposedHypothesisIds.has(entry.hypothesisId),
-      ) ?? hypotheses[0];
-    const clusterRef =
-      clusterByObservationId.get(observation.localId) ?? "not-clustered";
     return {
-      id: observation.localId,
-      semanticKey:
-        expected?.semanticKey ??
-        `production-observation:${observation.localId}`,
-      dimensions: {
-        eventDetection: { status: "observed" as const, value: true },
-        actuality: {
-          status: "observed" as const,
-          value: observation.payload.actuality,
-        },
-        attribution: {
-          status: "observed" as const,
-          value: observation.assertion.attribution,
-        },
-        narrativeFrame: {
-          status: "observed" as const,
-          value: observation.assertion.narrativeFrame,
-        },
-        evidence: { status: "observed" as const, value: evidence },
-        clustering: {
-          status: "observed" as const,
-          value: expected?.dimensions.clustering ?? clusterRef,
-        },
-        significance: {
-          status: "observed" as const,
-          value: hypothesis?.significance ?? "not-synthesized",
-        },
-        proposalGate: {
-          status: "observed" as const,
-          value:
-            hypothesis && proposedHypothesisIds.has(hypothesis.hypothesisId)
-              ? "propose"
-              : "suppress",
-        },
-      },
+      observation,
+      evidence,
+      expected,
+      clusterRef:
+        clusterByObservationId.get(observation.localId) ?? "not-clustered",
     };
   });
+  const alignedByExpectationId = new Map(
+    alignedObservations.flatMap((entry) =>
+      entry.expected ? [[entry.expected.id, entry] as const] : [],
+    ),
+  );
+  const matchedRequiredWithClustering =
+    prepared.evalCase.expected.observations.required.filter(
+      (expected) =>
+        typeof expected.dimensions.clustering === "string" &&
+        alignedByExpectationId.has(expected.id),
+    );
+  const normalizedExpectedClustering = normalizeClusterLabels(
+    matchedRequiredWithClustering.map((expected) => ({
+      key: expected.id,
+      clusterLabel: expected.dimensions.clustering as string,
+    })),
+  );
+  const normalizedActualClustering = normalizeClusterLabels(
+    matchedRequiredWithClustering.map((expected) => ({
+      key: expected.id,
+      clusterLabel:
+        alignedByExpectationId.get(expected.id)?.clusterRef ?? "not-clustered",
+    })),
+  );
+  const scoringCase: NarrativeEvalCaseV1 = {
+    ...prepared.evalCase,
+    expected: {
+      ...prepared.evalCase.expected,
+      observations: {
+        ...prepared.evalCase.expected.observations,
+        required: prepared.evalCase.expected.observations.required.map(
+          (expected) => {
+            if (expected.dimensions.clustering === undefined) return expected;
+            const normalized = normalizedExpectedClustering.get(expected.id);
+            return {
+              ...expected,
+              dimensions: normalized
+                ? { ...expected.dimensions, clustering: normalized }
+                : withoutClustering(expected.dimensions),
+            };
+          },
+        ),
+      },
+    },
+  };
+
+  const observations = alignedObservations.map(
+    ({ observation, evidence, expected, clusterRef }) => {
+      const hypotheses =
+        hypothesesByObservationId.get(observation.localId) ?? [];
+      const hypothesis =
+        hypotheses.find((entry) =>
+          proposedHypothesisIds.has(entry.hypothesisId),
+        ) ?? hypotheses[0];
+      return {
+        id: observation.localId,
+        semanticKey:
+          expected?.semanticKey ??
+          `production-observation:${observation.localId}`,
+        dimensions: {
+          eventDetection: { status: "observed" as const, value: true },
+          actuality: {
+            status: "observed" as const,
+            value: observation.payload.actuality,
+          },
+          attribution: {
+            status: "observed" as const,
+            value: observation.assertion.attribution,
+          },
+          narrativeFrame: {
+            status: "observed" as const,
+            value: observation.assertion.narrativeFrame,
+          },
+          evidence: { status: "observed" as const, value: evidence },
+          clustering: {
+            status: "observed" as const,
+            value:
+              (expected && normalizedActualClustering.get(expected.id)) ??
+              clusterRef,
+          },
+          significance: {
+            status: "observed" as const,
+            value: hypothesis?.significance ?? "not-synthesized",
+          },
+          proposalGate: {
+            status: "observed" as const,
+            value:
+              hypothesis && proposedHypothesisIds.has(hypothesis.hypothesisId)
+                ? "propose"
+                : "suppress",
+          },
+        },
+      };
+    },
+  );
 
   return {
-    observations,
-    coverageClaims:
-      prepared.evalCase.coverage.mode === "partial"
-        ? [{ kind: "resolved", value: "partial-corpus" }]
-        : [],
-    appliedProposalIds: [],
+    actual: {
+      observations,
+      coverageClaims:
+        prepared.evalCase.coverage.mode === "partial"
+          ? [{ kind: "resolved", value: "partial-corpus" }]
+          : [],
+      appliedProposalIds: [],
+    },
+    evalCase: scoringCase,
   };
 }
 
@@ -141,8 +229,8 @@ export function evaluateProductionChronicleArtifacts(
   prepared: PreparedProductionChronicleEvalCase,
   artifacts: ProductionChronicleArtifacts,
 ): ProductionChronicleEvaluation {
-  const actual = buildActualGraph(prepared, artifacts);
-  const score = scoreNarrativeEvalCase(prepared.evalCase, actual);
+  const { actual, evalCase } = buildScoringInputs(prepared, artifacts);
+  const score = scoreNarrativeEvalCase(evalCase, actual);
   const adapterViolations: NarrativeCriticalViolation[] = [];
   if (artifacts.parseFailureCount > 0) {
     adapterViolations.push({

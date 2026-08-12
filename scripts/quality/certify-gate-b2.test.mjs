@@ -34,7 +34,7 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   assert.equal(raw.decisionPolicy.retryOverwritePass, false);
   assert.deepEqual(raw.requiredLight[0], {
     id: "adr-static-certification",
-    command: ["pnpm", "test:narrative:gate-b2-adr"],
+    command: ["pnpm", "test:narrative:gate-b2-adr:certifiable"],
   });
 
   const requiredHeavy = raw.requiredHeavy.map((entry) => entry.id);
@@ -70,7 +70,18 @@ test("package script and report schema exist for certify:gate-b2", async () => {
     packageJson.scripts["test:narrative:gate-b2-adr"],
     "node scripts/quality/validate-gate-b2-adr.mjs",
   );
-  assert.match(packageJson.scripts["test:quality"], /certify-gate-b2\.test\.mjs/);
+  assert.equal(
+    packageJson.scripts["test:narrative:gate-b2-adr:certifiable"],
+    "node scripts/quality/validate-gate-b2-adr.mjs -- --require-certifiable",
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /certify-gate-b2\.test\.mjs/,
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /certify-gate-b2-bindings\.test\.mjs/,
+  );
   assert.match(
     packageJson.scripts["test:quality"],
     /validate-gate-b2-adr\.test\.mjs/,
@@ -213,10 +224,19 @@ test("preflight loads manifest digests and writes report without claiming PASS",
     assert.equal(report.mode, "preflight");
     assert.equal(report.verdict, "INCOMPLETE");
     assert.match(report.manifestDigest, /^sha256:[0-9a-f]{64}$/);
-    assert.match(report.candidate.writerRegistryDigest, /^sha256:[0-9a-f]{64}$/);
-    assert.match(report.candidate.aiPathRegistryDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(
+      report.candidate.writerRegistryDigest,
+      /^sha256:[0-9a-f]{64}$/,
+    );
+    assert.match(
+      report.candidate.aiPathRegistryDigest,
+      /^sha256:[0-9a-f]{64}$/,
+    );
     assert.match(report.candidate.adrChecklistDigest, /^sha256:[0-9a-f]{64}$/);
-    assert.match(report.candidate.classificationDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(
+      report.candidate.classificationDigest,
+      /^sha256:[0-9a-f]{64}$/,
+    );
     assert.equal(report.summary.requiredHeavy.total, 6);
     assert.equal(report.summary.requiredHeavy.notRun, 6);
 
@@ -227,8 +247,16 @@ test("preflight loads manifest digests and writes report without claiming PASS",
 
     const saved = JSON.parse(await readFile(reportPath, "utf8"));
     assert.equal(saved.verdict, "INCOMPLETE");
-    assert.match(saved.artifactDigests[0].digest, /^sha256:[0-9a-f]{64}$/);
-    assert.equal(saved.artifactDigests[0].path.endsWith("report.json"), true);
+    assert.equal(saved.artifactDigests, undefined);
+    const sidecar = (await readFile(`${reportPath}.sha256`, "utf8")).trim();
+    assert.match(sidecar, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(report.reportDigest, sidecar);
+    const decision = JSON.parse(
+      await readFile(path.join(temp, "artifacts", "decision.json"), "utf8"),
+    );
+    assert.equal(decision.schemaVersion, 1);
+    assert.ok(decision.suiteSummaries.requiredLight);
+    assert.equal(decision.digests.reportDigest, sidecar);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -287,6 +315,12 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
 
 test("credential shortage for billed heavies is BLOCK not passed/skipped", async () => {
   const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
+  const freeze = JSON.parse(
+    await readFile(
+      path.join(repoRoot, "evals/certifications/gate-b2-candidate.freeze.json"),
+      "utf8",
+    ),
+  );
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-cred-"));
   const previousKey = process.env.OPENROUTER_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
@@ -300,7 +334,7 @@ test("credential shortage for billed heavies is BLOCK not passed/skipped", async
         runJourneys: false,
         runInformational: false,
         runReleaseAdjacent: false,
-        candidate: null,
+        candidate: freeze.candidate.commitSha,
         baseMaster: null,
         report: path.join(temp, "report.json"),
         artifactDir: path.join(temp, "artifacts"),
@@ -317,6 +351,8 @@ test("credential shortage for billed heavies is BLOCK not passed/skipped", async
     assert.match(agent.message, /OPENROUTER_API_KEY/);
     assert.equal(report.verdict, "BLOCK");
     assert.equal(report.firstFailure.suiteId, "heavy-agent-tool-loop");
+    assert.equal(report.candidate.boundVia, "detached-worktree");
+    assert.equal(report.candidate.commitSha, freeze.candidate.commitSha);
   } finally {
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;
@@ -332,21 +368,49 @@ test("loadGateB2Manifest rejects policy that would pass blocked suites", async (
   );
 });
 
-test("full-ci evidence mismatch fails rather than skipping", async () => {
+test("full-ci evidence rejects bare passed:true and incomplete binding", async () => {
   const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-ci-"));
   try {
+    const bare = path.join(temp, "bare-ci.json");
+    await writeFile(bare, JSON.stringify({ passed: true }), "utf8");
+    const { report: bareReport } = await certifyGateB2({
+      repoRoot,
+      args: {
+        preflight: false,
+        runLight: true,
+        runHeavy: false,
+        runJourneys: false,
+        runInformational: false,
+        runReleaseAdjacent: false,
+        candidate: null,
+        baseMaster: null,
+        report: path.join(temp, "bare-report.json"),
+        artifactDir: path.join(temp, "bare-artifacts"),
+        format: "json",
+        ciEvidence: bare,
+        journeyEvidenceDir: null,
+        dryRun: true,
+      },
+    });
+    const bareCi = bareReport.suites.find((suite) => suite.suiteId === "full-ci");
+    assert.equal(bareCi.result, "failed");
+    assert.match(bareCi.message, /missing required fields/);
+
     const evidence = path.join(temp, "full-ci.json");
     await writeFile(
       evidence,
       JSON.stringify({
         commitSha: "c".repeat(40),
+        treeSha: "d".repeat(40),
+        workflowId: "ci.yml",
+        runId: "1",
+        runAttempt: 1,
         conclusion: "success",
+        requiredJobs: ["verify"],
       }),
       "utf8",
     );
-    // dry-run light still evaluates full-ci evidence path first entries with commands as not-run,
-    // but full-ci uses evidence. Use run-light with dryRun so commands aren't executed.
     const { report } = await certifyGateB2({
       repoRoot,
       args: {
@@ -368,7 +432,48 @@ test("full-ci evidence mismatch fails rather than skipping", async () => {
     });
     const fullCi = report.suites.find((suite) => suite.suiteId === "full-ci");
     assert.equal(fullCi.result, "failed");
-    assert.match(fullCi.message, /does not match candidate/);
+    assert.match(fullCi.message, /commitSha .* != candidate/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("journey evidence rejects forged passed:true without candidate binding", async () => {
+  const { mkdir } = await import("node:fs/promises");
+  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-"));
+  try {
+    const journeyDir = path.join(temp, "journeys");
+    await mkdir(journeyDir, { recursive: true });
+    await writeFile(
+      path.join(journeyDir, "prepared-plan-toctou.json"),
+      JSON.stringify({ result: "passed", startedAt: "x", completedAt: "y" }),
+      "utf8",
+    );
+    const { report } = await certifyGateB2({
+      repoRoot,
+      args: {
+        preflight: false,
+        runLight: false,
+        runHeavy: false,
+        runJourneys: true,
+        runInformational: false,
+        runReleaseAdjacent: false,
+        candidate: null,
+        baseMaster: null,
+        report: path.join(temp, "report.json"),
+        artifactDir: path.join(temp, "artifacts"),
+        format: "json",
+        ciEvidence: null,
+        journeyEvidenceDir: journeyDir,
+        dryRun: true,
+      },
+    });
+    const journey = report.suites.find(
+      (suite) => suite.suiteId === "prepared-plan-toctou",
+    );
+    assert.equal(journey.result, "failed");
+    assert.match(journey.message, /missing required fields/);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

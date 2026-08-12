@@ -34,11 +34,24 @@ function parseFreezeArgs(argv) {
   };
 }
 
+function emptySuiteCounts(notRun) {
+  return {
+    passed: 0,
+    failed: 0,
+    blocked: 0,
+    hold: 0,
+    notRun,
+  };
+}
+
 export async function freezeGateB2Candidate({
   repoRoot = DEFAULT_REPO_ROOT,
   candidate = null,
   baseMaster = null,
   writeResults = true,
+  writeRepoFreeze = true,
+  artifactRoot = null,
+  resultsDir = null,
 } = {}) {
   const { raw: manifest, digest: manifestDigest } =
     await loadGateB2Manifest(repoRoot);
@@ -53,6 +66,15 @@ export async function freezeGateB2Candidate({
     );
   }
   const digests = await collectInputDigests(manifest, repoRoot);
+  const requiredLightCount = Array.isArray(manifest.requiredLight)
+    ? manifest.requiredLight.length
+    : 0;
+  const requiredHeavyCount = Array.isArray(manifest.requiredHeavy)
+    ? manifest.requiredHeavy.length
+    : 0;
+  const requiredJourneyCount = Array.isArray(manifest.requiredManualJourneys)
+    ? manifest.requiredManualJourneys.length
+    : 0;
 
   const freeze = {
     schemaVersion: 1,
@@ -84,11 +106,9 @@ export async function freezeGateB2Candidate({
     },
   };
 
-  const artifactDir = path.join(
-    repoRoot,
-    ".artifacts/gate-b2",
-    identity.commitSha,
-  );
+  const artifactDir =
+    artifactRoot ??
+    path.join(repoRoot, ".artifacts/gate-b2", identity.commitSha);
   await mkdir(path.join(artifactDir, "environment"), { recursive: true });
   const freezePath = path.join(artifactDir, "freeze.json");
   await writeFile(freezePath, `${JSON.stringify(freeze, null, 2)}\n`, "utf8");
@@ -97,11 +117,13 @@ export async function freezeGateB2Candidate({
     repoRoot,
     "evals/certifications/gate-b2-candidate.freeze.json",
   );
-  await writeFile(
-    repoFreezePath,
-    `${JSON.stringify(freeze, null, 2)}\n`,
-    "utf8",
-  );
+  if (writeRepoFreeze) {
+    await writeFile(
+      repoFreezePath,
+      `${JSON.stringify(freeze, null, 2)}\n`,
+      "utf8",
+    );
+  }
 
   const provisionalDecision = {
     schemaVersion: 1,
@@ -117,27 +139,9 @@ export async function freezeGateB2Candidate({
       "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
     ],
     suiteSummaries: {
-      requiredLight: {
-        passed: 0,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 5,
-      },
-      requiredHeavy: {
-        passed: 0,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 6,
-      },
-      requiredJourneys: {
-        passed: 0,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 6,
-      },
+      requiredLight: emptySuiteCounts(requiredLightCount),
+      requiredHeavy: emptySuiteCounts(requiredHeavyCount),
+      requiredJourneys: emptySuiteCounts(requiredJourneyCount),
     },
     digests: {
       ...digests,
@@ -157,10 +161,10 @@ export async function freezeGateB2Candidate({
 
   if (writeResults) {
     const resultsPath = path.join(
-      repoRoot,
-      "evals/certifications/results",
+      resultsDir ?? path.join(repoRoot, "evals/certifications/results"),
       `gate-b2-${identity.commitSha}.json`,
     );
+    await mkdir(path.dirname(resultsPath), { recursive: true });
     await writeFile(
       resultsPath,
       `${JSON.stringify(provisionalDecision, null, 2)}\n`,
