@@ -237,6 +237,9 @@ export async function freezeGateB2Candidate({
     candidateTreeSha: identity.treeSha,
     baseMasterSha: identity.baseMasterSha,
     ...attemptLedger,
+    attemptLedgerDigest:
+      attemptLedger.attemptLedgerDigest ??
+      attemptLedger.attemptLedgerConfigDigest,
     schemaVersionProduct: productSchemaVersion,
     verdict: "INCOMPLETE",
     reasons: provisionalReasons,
