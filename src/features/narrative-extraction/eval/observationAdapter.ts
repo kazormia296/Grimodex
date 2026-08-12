@@ -7,6 +7,7 @@ import { normalizeWindowObservations } from "@/features/chronicle/extraction/win
 import { planExtractionWindows } from "@/features/chronicle/extraction/windowPlanner";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
+import type { NarrativeSourceView } from "@/features/narrative-extraction/source/types";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import {
   buildNarrativeEvalFixture,
@@ -33,9 +34,12 @@ export interface PreparedObservationEvalCase {
   readonly fixture: NarrativeEvalFixture;
   readonly prompt: string;
   readonly windows: readonly { sourceRef: string; text: string }[];
+  readonly sourceViews: readonly NarrativeSourceView[];
   readonly allowedSourceRefs: ReadonlySet<string>;
   /** sourceRef → canonical document text (for exact-substring checks). */
   readonly textBySourceRef: ReadonlyMap<string, string>;
+  /** Production Source View ref → fixture document id (snapshot sourceKey). */
+  readonly documentIdBySourceRef: ReadonlyMap<string, string>;
   readonly versions: NarrativeEvalVersions;
 }
 
@@ -68,7 +72,9 @@ export async function prepareObservationEvalCase(
     fixture.snapshot.documents.map((document) => [document.ref, document]),
   );
   const windows: { sourceRef: string; text: string }[] = [];
+  const sourceViews: NarrativeSourceView[] = [];
   const textBySourceRef = new Map<string, string>();
+  const documentIdBySourceRef = new Map<string, string>();
 
   for (const window of plan.windows) {
     const document = documentByRef.get(window.documentRef);
@@ -88,8 +94,10 @@ export async function prepareObservationEvalCase(
       document,
       documentRange: { start, end },
     });
+    sourceViews.push(view);
     windows.push({ sourceRef: window.sourceRef, text: view.text });
     textBySourceRef.set(window.sourceRef, view.text);
+    documentIdBySourceRef.set(window.sourceRef, document.sourceKey);
   }
 
   return {
@@ -97,8 +105,10 @@ export async function prepareObservationEvalCase(
     fixture,
     prompt: buildObservationExtractionPrompt(windows),
     windows,
+    sourceViews,
     allowedSourceRefs: new Set(windows.map((window) => window.sourceRef)),
     textBySourceRef,
+    documentIdBySourceRef,
     versions: OBSERVATION_CHRONICLE_EVAL_VERSIONS,
   };
 }

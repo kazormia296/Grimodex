@@ -21,6 +21,20 @@ cross-cutting negative contract tests を Light suite の先頭で検証する�
 pnpm test:narrative:gate-b2-adr
 ```
 
+## C2 — Production Chronicle live certification
+
+C2 は Human Gold 14 case を production の Observation → Evidence resolve →
+Clustering → Event synthesis → Existing match → Proposal planning に通す billed
+OpenRouter Heavy runner を登録する。Chronicle domain Apply は実行せず、
+Attempt 1 だけを normative とし、Attempt 2 は diagnostic-only として記録する。
+runner が存在しても、意味品質が閾値を満たさない場合は Gate B2 PASS ではなく HOLD となる。
+
+```bash
+OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna \
+  OPENROUTER_REASONING_EFFORT=medium \
+  pnpm eval:narrative:chronicle:production:live
+```
+
 ## コマンド
 
 ```bash

@@ -306,14 +306,18 @@ requirements:
       - src/features/narrative-extraction/eval/caseSchema.ts
       - src/features/narrative-extraction/eval/replay.ts
       - src/features/narrative-extraction/eval/liveRunner.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
+      - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - evals/narrative/manifest.yaml
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/replay.test.ts
       - src/features/narrative-extraction/eval/liveRunner.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+      - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
     evaluatedBy:
       - eval-narrative-replay-provenance
   - id: GDX-NARR-EVIDENCE-001
@@ -323,12 +327,16 @@ requirements:
       - src/features/narrative-extraction/evidence/resolveEvidence.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.ts
       - src/features/narrative-extraction/eval/caseSchema.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
+      - src/features/narrative-extraction/eval/productionChronicleScoring.ts
     lightTests:
       - src/features/narrative-extraction/evidence/resolveEvidence.test.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+      - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
     evaluatedBy:
       - eval-narrative-exact-evidence
   - id: GDX-NARR-SEMANTIC-001
@@ -338,12 +346,15 @@ requirements:
       - src/features/narrative-extraction/eval/types.ts
       - src/features/narrative-extraction/eval/scorer.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.ts
+      - src/features/narrative-extraction/eval/productionChronicleScoring.ts
     lightTests:
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+      - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
     evaluatedBy:
       - eval-narrative-semantic-frame
   - id: GDX-NARR-COVERAGE-001
@@ -352,13 +363,16 @@ requirements:
     implementedBy:
       - src/features/narrative-extraction/eval/types.ts
       - src/features/narrative-extraction/eval/scorer.ts
+      - src/features/narrative-extraction/eval/productionChronicleScoring.ts
       - evals/narrative/cases/chronicle-micro-v1.yaml
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
+      - src/features/narrative-extraction/eval/productionChronicleAdapter.test.ts
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
+      - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
     evaluatedBy:
       - eval-narrative-partial-coverage
   - id: GDX-NARR-DETAIL-001
@@ -542,6 +556,10 @@ heavyEvaluations:
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
     reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
+  - id: heavy-narrative-chronicle-production
+    suiteId: narrative-extraction
+    command: OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
+    reason: Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Requires billed OpenRouter; credential shortage must not pass.
   - id: heavy-narrative-chronicle-legacy-baseline
     suiteId: narrative-extraction
     command: OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live
@@ -555,7 +573,3 @@ blockedEvaluations:
     suiteId: tool-policy
     reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, and teardown against a real user-selected HTTP Local LLM or BYOK provider.
     requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.
-  - id: blocked-narrative-chronicle-certification
-    suiteId: narrative-extraction
-    reason: The production Chronicle route still emits legacy title and Scene-ID proposals without exact quotes, actuality, attribution, narrative frame, significance, or Proposal gating.
-    requiredAction: Implement the production observation Prompt, response schema, parser, Evidence normalization, and Proposal gate, then run the same Human Gold corpus through that shared production seam.

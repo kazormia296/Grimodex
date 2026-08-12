@@ -234,7 +234,7 @@ test("preflight loads manifest digests and writes report without claiming PASS",
   }
 });
 
-test("missing heavy runner stays blocked and is not converted to skipped/passed", async () => {
+test("registered Chronicle heavy runner resolves while the next missing runner stays blocked", async () => {
   const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-heavy-"));
   const previousKey = process.env.OPENROUTER_API_KEY;
@@ -266,17 +266,17 @@ test("missing heavy runner stays blocked and is not converted to skipped/passed"
     const production = report.suites.find(
       (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
     );
-    assert.equal(production.result, "blocked");
-    assert.match(production.message, /not registered|Runner script/i);
-    // Fail-fast retains the first blocker; later required heavies stay not-run.
-    assert.ok(
-      consent.result === "blocked" || consent.result === "not-run",
-      `consent result should be blocked or not-run, got ${consent.result}`,
+    assert.equal(production.result, "not-run");
+    assert.match(
+      production.command.join(" "),
+      /eval:narrative:chronicle:production:live/,
     );
     assert.notEqual(production.result, "passed");
     assert.notEqual(production.result, "skipped");
+    assert.equal(consent.result, "blocked");
+    assert.match(consent.message, /not registered|Runner script/i);
     assert.equal(report.verdict, "BLOCK");
-    assert.equal(report.firstFailure.suiteId, "heavy-narrative-chronicle-production");
+    assert.equal(report.firstFailure.suiteId, "heavy-web-ai-consent-live");
   } finally {
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;

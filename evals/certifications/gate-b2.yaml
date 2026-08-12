@@ -61,9 +61,7 @@ requiredHeavy:
     qualityManifestId: heavy-codex-prompt-surfaces
     requiresEnv: [OPENROUTER_API_KEY]
   - id: heavy-narrative-chronicle-production
-    # C2 で昇格。未実装 runner は BLOCK（passed/skipped へ変換しない）
-    qualityManifestId: null
-    runner: pnpm eval:narrative:chronicle:production:live
+    qualityManifestId: heavy-narrative-chronicle-production
     requiresEnv: [OPENROUTER_API_KEY]
   - id: heavy-web-ai-consent-live
     # C3 で blocked → heavy へ昇格。未実装は BLOCK
