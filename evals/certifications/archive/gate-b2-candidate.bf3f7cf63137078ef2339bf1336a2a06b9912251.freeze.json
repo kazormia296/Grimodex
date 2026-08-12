@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractVersion": 8,
   "gateId": "gate-b2",
-  "freezeId": "75f71cc5-069a-426d-a8e6-02e08c0ba0e6",
-  "candidateCommitSha": "b628eca9215f2047518e57cfb24cc612330d5c27",
-  "candidateTreeSha": "c2f07c70006223e5b6555688282e8c9fe058ff9c",
+  "freezeId": "5062b80e-2804-41ac-8603-ee8681e3239b",
+  "candidateCommitSha": "bf3f7cf63137078ef2339bf1336a2a06b9912251",
+  "candidateTreeSha": "30a4ffc5feb912f4a1b3960f71fa0f4dd7117f6b",
   "attemptAuthority": {
     "provider": "github-actions",
     "configDigest": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4",
@@ -15,11 +15,11 @@
     "runAttempt": null
   },
   "productSchemaVersion": 20,
-  "frozenAt": "2026-08-12T20:13:58.586Z",
+  "frozenAt": "2026-08-12T19:33:59.064Z",
   "candidate": {
-    "commitSha": "b628eca9215f2047518e57cfb24cc612330d5c27",
-    "treeSha": "c2f07c70006223e5b6555688282e8c9fe058ff9c",
-    "baseMasterSha": "8f7d6b8109eb7eb9c07d03b4486761f24c350ff8",
+    "commitSha": "bf3f7cf63137078ef2339bf1336a2a06b9912251",
+    "treeSha": "30a4ffc5feb912f4a1b3960f71fa0f4dd7117f6b",
+    "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
     "schemaVersion": 20,
     "attemptAuthority": {
       "provider": "github-actions",
@@ -50,7 +50,7 @@
     "webConsentBrowserRunnerDigest": "sha256:5b80938d7c88bada059ad07f602d2508f9f5774ae2f0ebdae3b4035c0aabe565",
     "webConsentBrowserConfigDigest": "sha256:ef5d137a4085ba12d97671a51e28ad791ec3b12dc53fbc81d3ecd9b40cccd764",
     "attemptAuthoritySourceDigest": "sha256:98a41ad9351a0bcdd165b9f3f55a806fdf23185c0b61c6bddbe82ad2a2292ed8",
-    "attemptWorkflowDigest": "sha256:67ef23ff511cbe1f818ebdd9f67f730923be2edece5d2f36b16ad5e8aac9cd92",
+    "attemptWorkflowDigest": "sha256:4c9f3c460053a9403696309fa88798cee32a2b28cb8e5957ed9532ce67fa34f8",
     "fullCiEvidenceWriterDigest": "sha256:5394beb9a67670cc8c6e78bf5bd999680539816c28d9f092bb213daac88e5bc4"
   },
   "freezeRules": {
@@ -69,5 +69,8 @@
     "engineeringHarnessChangeRequiresCertificationRerun": true,
     "liveModelQualificationChangeRequiresGateRerun": false,
     "liveProviderModelQualificationRequired": false
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "b628eca9215f2047518e57cfb24cc612330d5c27",
+  "supersededAt": "2026-08-12T20:13:58.585Z"
 }
