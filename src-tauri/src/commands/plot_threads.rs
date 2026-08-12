@@ -12,9 +12,9 @@
 use serde_json::Value;
 
 use crate::database::plot_threads::{
-    self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
-    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
-    PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
+    self, PlotThreadBranchCreatePayload, PlotThreadBranchPatch, PlotThreadCreatePayload,
+    PlotThreadDeleteSnapshotPayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
+    PlotThreadMoveMarkerBundlePayload, PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 
 use super::{with_db, AppError, WorkspaceState};
@@ -100,6 +100,24 @@ pub(crate) fn plot_thread_branch_create(
     payload: PlotThreadBranchCreatePayload,
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| plot_threads::branch_create(db, payload))
+}
+
+#[tauri::command(async)]
+pub(crate) fn plot_thread_branch_update(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    id: String,
+    patch: PlotThreadBranchPatch,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| plot_threads::branch_update(db, id, patch))
+}
+
+#[tauri::command(async)]
+pub(crate) fn plot_thread_branch_delete(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    id: String,
+    base_version: Option<i64>,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| plot_threads::branch_delete(db, id, base_version))
 }
 
 #[tauri::command(async)]

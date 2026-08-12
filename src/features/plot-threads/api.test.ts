@@ -86,7 +86,7 @@ describe("plot-threads api normalization", () => {
       toThreadId: "t2",
       atNodeId: "s1",
       kind: "merge",
-      semanticKey: "",
+      semanticKey: "t1|t2|s1|merge",
       version: 0,
       createdAt: "",
       updatedAt: "",

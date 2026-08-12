@@ -63,6 +63,28 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/temporal_operations.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
   ],
+  "foreshadow.aggregate": [
+    "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/foreshadow_operations.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/foreshadow_undo.rs",
+    "src-tauri/crates/grimodex-db/src/scene_body.rs",
+    "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/sample_seed.rs",
+    "src-tauri/crates/grimodex-core/src/undo_journal.rs",
+  ],
+  "plot_threads.aggregate": [
+    "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/plot_thread_operations.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/plot_thread_undo.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
+    "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+  ],
+  "plot_threads.branch": [
+    "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/plot_thread_operations.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/plot_thread_undo.rs",
+  ],
 };
 
 const DML_RE =

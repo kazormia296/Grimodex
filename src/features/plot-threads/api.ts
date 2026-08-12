@@ -173,53 +173,17 @@ export async function updatePlotThread(
     Pick<PlotThreadRow, "name" | "color" | "description" | "sortOrder">
   > & { baseVersion?: number },
 ): Promise<PlotThreadRow> {
-  if (nativeBackend()) {
-    const p: Record<string, unknown> = {};
-    if (patch.name !== undefined) p.name = patch.name;
-    if (patch.color !== undefined) p.color = patch.color;
-    if (patch.description !== undefined) p.description = patch.description;
-    if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
-    if (patch.baseVersion !== undefined) p.baseVersion = patch.baseVersion;
-    return normalizeThread(
-      await invoke("plot_thread_update", { id, patch: p }),
-    );
-  }
-  const [current] = await db
-    .select()
-    .from(plotThreads)
-    .where(eq(plotThreads.id, id));
-  if (!current) throw new Error(`plot thread not found: ${id}`);
-  if (
-    patch.baseVersion !== undefined &&
-    Number(current.version ?? 0) !== patch.baseVersion
-  ) {
-    throw new Error(
-      `PLOT_THREAD_VERSION_MISMATCH: expected ${patch.baseVersion}, found ${current.version}`,
-    );
-  }
-  const { baseVersion: _baseVersion, ...fields } = patch;
-  await db
-    .update(plotThreads)
-    .set({
-      ...fields,
-      version: Number(current.version ?? 0) + 1,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(plotThreads.id, id));
-  const [updated] = await db
-    .select()
-    .from(plotThreads)
-    .where(eq(plotThreads.id, id));
-  if (!updated) throw new Error(`plot thread not found after update: ${id}`);
-  return normalizeThread(updated);
+  const p: Record<string, unknown> = {};
+  if (patch.name !== undefined) p.name = patch.name;
+  if (patch.color !== undefined) p.color = patch.color;
+  if (patch.description !== undefined) p.description = patch.description;
+  if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
+  if (patch.baseVersion !== undefined) p.baseVersion = patch.baseVersion;
+  return normalizeThread(await invoke("plot_thread_update", { id, patch: p }));
 }
 
 export async function deletePlotThread(id: string): Promise<void> {
-  if (nativeBackend()) {
-    await invoke("plot_thread_delete", { id });
-    return;
-  }
-  await db.delete(plotThreads).where(eq(plotThreads.id, id));
+  await invoke("plot_thread_delete", { id });
 }
 
 export async function listPlotThreads(
@@ -292,36 +256,19 @@ export async function updatePlotThreadLink(
     >
   >,
 ): Promise<PlotThreadLinkRow> {
-  if (nativeBackend()) {
-    const p: Record<string, unknown> = {};
-    if (patch.threadId !== undefined) p.threadId = patch.threadId;
-    if (patch.nodeId !== undefined) p.nodeId = patch.nodeId;
-    if (patch.phaseType !== undefined) p.phaseType = patch.phaseType;
-    if (patch.note !== undefined) p.note = patch.note;
-    if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
-    return normalizeLink(
-      await invoke("plot_thread_link_update", { id, patch: p }),
-    );
-  }
-  await db
-    .update(plotThreadSceneLinks)
-    .set({ ...patch, updatedAt: new Date().toISOString() })
-    .where(eq(plotThreadSceneLinks.id, id));
-  const [updated] = await db
-    .select()
-    .from(plotThreadSceneLinks)
-    .where(eq(plotThreadSceneLinks.id, id));
-  if (!updated)
-    throw new Error(`plot thread link not found after update: ${id}`);
-  return normalizeLink(updated);
+  const p: Record<string, unknown> = {};
+  if (patch.threadId !== undefined) p.threadId = patch.threadId;
+  if (patch.nodeId !== undefined) p.nodeId = patch.nodeId;
+  if (patch.phaseType !== undefined) p.phaseType = patch.phaseType;
+  if (patch.note !== undefined) p.note = patch.note;
+  if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
+  return normalizeLink(
+    await invoke("plot_thread_link_update", { id, patch: p }),
+  );
 }
 
 export async function deletePlotThreadLink(id: string): Promise<void> {
-  if (nativeBackend()) {
-    await invoke("plot_thread_link_delete", { id });
-    return;
-  }
-  await db.delete(plotThreadSceneLinks).where(eq(plotThreadSceneLinks.id, id));
+  await invoke("plot_thread_link_delete", { id });
 }
 
 export async function listPlotThreadLinks(
@@ -617,70 +564,24 @@ export async function updatePlotThreadBranch(
     Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
   > & { baseVersion?: number },
 ): Promise<PlotThreadBranchRow> {
-  // Branch update remains Drizzle until Native CAS IPC exists; OCC version is
-  // still advanced so AI apply / human writers share the same column.
-  const [current] = await db
-    .select()
-    .from(plotThreadBranches)
-    .where(eq(plotThreadBranches.id, id));
-  if (!current) {
-    throw new Error(`plot thread branch not found: ${id}`);
-  }
-  if (
-    patch.baseVersion !== undefined &&
-    Number(current.version ?? 0) !== patch.baseVersion
-  ) {
-    throw new Error(
-      `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${patch.baseVersion}, found ${current.version}`,
-    );
-  }
-  const nextVersion = Number(current.version ?? 0) + 1;
-  const fromThreadId = patch.fromThreadId ?? current.fromThreadId;
-  const toThreadId = patch.toThreadId ?? current.toThreadId;
-  const atNodeId = patch.atNodeId ?? current.atNodeId;
-  const semanticKey = `${fromThreadId}|${toThreadId}|${atNodeId}|${current.kind}`;
-  await db
-    .update(plotThreadBranches)
-    .set({
-      ...(patch.fromThreadId !== undefined
-        ? { fromThreadId: patch.fromThreadId }
-        : {}),
-      ...(patch.toThreadId !== undefined
-        ? { toThreadId: patch.toThreadId }
-        : {}),
-      ...(patch.atNodeId !== undefined ? { atNodeId: patch.atNodeId } : {}),
-      semanticKey,
-      version: nextVersion,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(plotThreadBranches.id, id));
-  const [updated] = await db
-    .select()
-    .from(plotThreadBranches)
-    .where(eq(plotThreadBranches.id, id));
-  if (!updated) {
-    throw new Error(`plot thread branch not found after update: ${id}`);
-  }
-  return normalizeBranch(updated);
+  const p: Record<string, unknown> = {};
+  if (patch.fromThreadId !== undefined) p.fromThreadId = patch.fromThreadId;
+  if (patch.toThreadId !== undefined) p.toThreadId = patch.toThreadId;
+  if (patch.atNodeId !== undefined) p.atNodeId = patch.atNodeId;
+  if (patch.baseVersion !== undefined) p.baseVersion = patch.baseVersion;
+  return normalizeBranch(
+    await invoke("plot_thread_branch_update", { id, patch: p }),
+  );
 }
 
 export async function deletePlotThreadBranch(
   id: string,
   options?: { baseVersion?: number },
 ): Promise<void> {
-  if (options?.baseVersion !== undefined) {
-    const [current] = await db
-      .select()
-      .from(plotThreadBranches)
-      .where(eq(plotThreadBranches.id, id));
-    if (!current) return;
-    if (Number(current.version ?? 0) !== options.baseVersion) {
-      throw new Error(
-        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${options.baseVersion}, found ${current.version}`,
-      );
-    }
-  }
-  await db.delete(plotThreadBranches).where(eq(plotThreadBranches.id, id));
+  await invoke("plot_thread_branch_delete", {
+    id,
+    baseVersion: options?.baseVersion ?? null,
+  });
 }
 
 export async function listPlotThreadBranches(

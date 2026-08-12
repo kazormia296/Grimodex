@@ -671,6 +671,8 @@ export interface NapiBackendLike {
   plotThreadList(projectId: string): Promise<string>;
   plotThreadLinkCreate(payload: unknown): Promise<string>;
   plotThreadBranchCreate?(payload: unknown): Promise<string>;
+  plotThreadBranchUpdate?(id: string, patch: unknown): Promise<string>;
+  plotThreadBranchDelete?(id: string, baseVersion?: number): Promise<void>;
   plotThreadMoveMarkerBundle?(payload: unknown): Promise<string>;
   plotThreadRestoreSnapshot?(payload: unknown): Promise<string>;
   plotThreadDeleteSnapshot?(payload: unknown): Promise<string>;
@@ -691,6 +693,10 @@ export interface NapiBackendLike {
   foreshadowGet(id: string): Promise<string>;
   foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>;
   foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>;
+  foreshadowMarkLinkedCodexDirty?(
+    projectId: string,
+    codexEntryId: string,
+  ): Promise<void>;
   foreshadowListLinkedCodex(foreshadowId: string): Promise<string>;
   foreshadowSetSetupStrength(
     setupId: string,
@@ -4854,6 +4860,32 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requirePlotThreadBranchCreatePayload(a)),
       ),
   },
+  plot_thread_branch_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.plotThreadBranchUpdate,
+          "plotThreadBranchUpdate",
+        )(
+          requireString(a, "id", "plot_thread_branch_update"),
+          requirePresent(a, "patch", "plot_thread_branch_update"),
+        ),
+      ),
+  },
+  plot_thread_branch_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.plotThreadBranchDelete,
+        "plotThreadBranchDelete",
+      )(
+        requireString(a, "id", "plot_thread_branch_delete"),
+        optionalNumber(a, "baseVersion", "plot_thread_branch_delete"),
+      );
+      return null;
+    },
+  },
   plot_thread_move_marker_bundle: {
     run: async (b, a) =>
       parseWire(
@@ -5023,6 +5055,19 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       await b.foreshadowUnlinkCodex(
         requireString(a, "foreshadowId", "foreshadow_unlink_codex"),
         requireString(a, "codexId", "foreshadow_unlink_codex"),
+      );
+      return null;
+    },
+  },
+  foreshadow_mark_linked_codex_dirty: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.foreshadowMarkLinkedCodexDirty,
+        "foreshadowMarkLinkedCodexDirty",
+      )(
+        requireString(a, "projectId", "foreshadow_mark_linked_codex_dirty"),
+        requireString(a, "codexEntryId", "foreshadow_mark_linked_codex_dirty"),
       );
       return null;
     },
