@@ -19,7 +19,7 @@
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "contractVersion": { "type": "integer", "const": 2 },
+    "contractVersion": { "type": "integer", "const": 3 },
     "gateId": { "const": "gate-b2" },
     "manifestDigest": {
       "type": "string",
@@ -297,6 +297,10 @@
           ]
         },
         "message": { "type": "string" },
+        "runId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
         "command": {
           "type": "array",
           "items": { "type": "string" }

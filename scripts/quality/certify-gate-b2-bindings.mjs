@@ -8,8 +8,6 @@ import {
   readFile,
   rm,
   access,
-  symlink,
-  lstat,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +18,7 @@ const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const PLACEHOLDER_ENV_ASSIGN =
   /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
 
-export const GATE_B2_CONTRACT_VERSION = 2;
+export const GATE_B2_CONTRACT_VERSION = 3;
 
 export const FREEZE_RELATIVE =
   "evals/certifications/gate-b2-candidate.freeze.json";
@@ -114,10 +112,11 @@ function runGit(args, cwd) {
   });
 }
 
-function runCommand(command, args, cwd) {
+function runCommand(command, args, cwd, env = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
     });
@@ -328,7 +327,19 @@ const FULL_CI_REQUIRED = [
   "requiredJobs",
 ];
 
-export function validateFullCiEvidence(raw, candidate) {
+function requiredJobsMatchContract(evidenceJobs, contractJobs) {
+  const evidence = [...evidenceJobs].sort();
+  const contract = [...contractJobs].sort();
+  if (evidence.length !== contract.length) return false;
+  return evidence.every((job, index) => job === contract[index]);
+}
+
+/**
+ * Validate full-ci evidence structure and candidate binding.
+ * When `contract` is provided, `raw.requiredJobs` must equal `contract.requiredJobs`
+ * exactly (same set; order may differ).
+ */
+export function validateFullCiEvidence(raw, candidate, contract) {
   const missing = FULL_CI_REQUIRED.filter((key) => {
     if (key === "requiredJobs") {
       return !Array.isArray(raw.requiredJobs) || raw.requiredJobs.length === 0;
@@ -363,6 +374,41 @@ export function validateFullCiEvidence(raw, candidate) {
       result: "failed",
       message: `full-ci conclusion is ${conclusion}`,
     };
+  }
+  if (
+    contract?.requiredJobs &&
+    !requiredJobsMatchContract(raw.requiredJobs, contract.requiredJobs)
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message:
+        "full-ci evidence requiredJobs must match contract requiredJobs exactly",
+    };
+  }
+  if (contract?.requireCheckoutIdentityArtifact) {
+    if (!raw.checkoutCommitSha || !raw.checkoutTreeSha) {
+      return {
+        ok: false,
+        result: "failed",
+        message:
+          "full-ci evidence missing checkoutCommitSha/checkoutTreeSha from CI checkout-identity artifact",
+      };
+    }
+    if (String(raw.checkoutCommitSha).toLowerCase() !== candidate.commitSha) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `checkoutCommitSha ${raw.checkoutCommitSha} != candidate ${candidate.commitSha}`,
+      };
+    }
+    if (String(raw.checkoutTreeSha).toLowerCase() !== candidate.treeSha) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `checkoutTreeSha ${raw.checkoutTreeSha} != candidate ${candidate.treeSha}`,
+      };
+    }
   }
   // Do not accept bare passed:true without structured fields (already required above).
   return { ok: true, result: "passed", message: "full-ci evidence accepted" };
@@ -407,13 +453,35 @@ async function defaultFetchGithubRun(runId, { repoRoot, raw }) {
   };
 }
 
+function workflowPathMatches(runPath, contractPath) {
+  const normalizedRunPath = String(runPath);
+  const normalizedContractPath = String(contractPath);
+  return (
+    normalizedRunPath === normalizedContractPath ||
+    normalizedRunPath.endsWith(normalizedContractPath)
+  );
+}
+
 export async function verifyFullCiWithGithub(
   raw,
   candidate,
-  { fetchRun, repoRoot } = {},
+  { fetchRun, repoRoot, fullCiContract } = {},
 ) {
-  const base = validateFullCiEvidence(raw, candidate);
+  const base = validateFullCiEvidence(raw, candidate, fullCiContract);
   if (!base.ok) return base;
+
+  if (
+    fullCiContract?.requiredJobs &&
+    Array.isArray(raw.requiredJobs) &&
+    !requiredJobsMatchContract(raw.requiredJobs, fullCiContract.requiredJobs)
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message:
+        "full-ci evidence requiredJobs must match contract requiredJobs exactly",
+    };
+  }
 
   try {
     const resolvedRepoRoot = repoRoot ?? process.cwd();
@@ -447,7 +515,33 @@ export async function verifyFullCiWithGithub(
       };
     }
 
-    for (const requiredJob of raw.requiredJobs) {
+    if (fullCiContract) {
+      if (Number(run.workflow_id) !== Number(fullCiContract.workflowId)) {
+        return {
+          ok: false,
+          result: "failed",
+          message: `github workflow_id ${run.workflow_id} != contract ${fullCiContract.workflowId}`,
+        };
+      }
+      if (!workflowPathMatches(run.path, fullCiContract.workflowPath)) {
+        return {
+          ok: false,
+          result: "failed",
+          message: `github workflow path ${run.path} != contract ${fullCiContract.workflowPath}`,
+        };
+      }
+      const event = String(run.event);
+      if (!fullCiContract.acceptedEvents.includes(event)) {
+        return {
+          ok: false,
+          result: "failed",
+          message: `github event ${event} not in acceptedEvents`,
+        };
+      }
+    }
+
+    const requiredJobs = fullCiContract?.requiredJobs ?? raw.requiredJobs;
+    for (const requiredJob of requiredJobs) {
       const job = jobs.find((entry) => entry.name === requiredJob);
       if (!job) {
         return {
@@ -805,6 +899,33 @@ export function validateWebAiConsentReport(report, expected) {
   return { ok: true, message: "consent report accepted" };
 }
 
+async function resolvePnpmStoreDir(repoRoot, baseEnv = process.env) {
+  if (baseEnv.PNPM_STORE_DIR) {
+    return baseEnv.PNPM_STORE_DIR;
+  }
+  return runCommand("pnpm", ["store", "path"], repoRoot, baseEnv);
+}
+
+async function verifyWorkspacePackageUnderExecutionRoot(executionRoot) {
+  const resolvedExecutionRoot = path.resolve(executionRoot);
+  const script = `
+import { realpathSync } from 'fs';
+import path from 'path';
+const executionRoot = ${JSON.stringify(resolvedExecutionRoot)};
+const pkgLink = path.join(executionRoot, 'node_modules', '@grimodex', 'scan-core');
+const resolved = realpathSync(pkgLink);
+const resolvedRoot = realpathSync(executionRoot);
+if (!resolved.startsWith(resolvedRoot + path.sep) && resolved !== resolvedRoot) {
+  throw new Error('workspace package resolved outside executionRoot: ' + resolved);
+}
+`;
+  await runCommand(
+    "node",
+    ["--input-type=module", "-e", script],
+    resolvedExecutionRoot,
+  );
+}
+
 export async function prepareWorktreeDependencies({ repoRoot, executionRoot }) {
   const resolvedRepoRoot = path.resolve(repoRoot);
   const resolvedExecutionRoot = path.resolve(executionRoot);
@@ -824,27 +945,30 @@ export async function prepareWorktreeDependencies({ repoRoot, executionRoot }) {
     );
   }
 
-  const sourceNodeModules = path.join(resolvedRepoRoot, "node_modules");
-  const targetNodeModules = path.join(resolvedExecutionRoot, "node_modules");
-  if (!(await pathExists(sourceNodeModules))) {
-    throw new Error(`repo node_modules missing at ${sourceNodeModules}`);
+  const storeDir = await resolvePnpmStoreDir(resolvedRepoRoot);
+  const installEnv = { ...process.env, PNPM_STORE_DIR: storeDir };
+
+  let mode;
+  try {
+    await runCommand(
+      "pnpm",
+      ["install", "--frozen-lockfile", "--offline"],
+      resolvedExecutionRoot,
+      installEnv,
+    );
+    mode = "offline-install";
+  } catch {
+    await runCommand(
+      "pnpm",
+      ["install", "--frozen-lockfile"],
+      resolvedExecutionRoot,
+      installEnv,
+    );
+    mode = "online-install";
   }
 
-  if (await pathExists(targetNodeModules)) {
-    const stat = await lstat(targetNodeModules);
-    if (stat.isSymbolicLink()) {
-      await rm(targetNodeModules, { force: true });
-    } else if (stat.isDirectory()) {
-      throw new Error(
-        "executionRoot node_modules exists as a real directory; remove it before binding",
-      );
-    } else {
-      throw new Error("executionRoot node_modules exists and is not a symlink");
-    }
-  }
-
-  await symlink(sourceNodeModules, targetNodeModules, "dir");
-  return { mode: "symlink-node_modules", lockfileDigest: repoDigest };
+  await verifyWorkspacePackageUnderExecutionRoot(resolvedExecutionRoot);
+  return { mode, lockfileDigest: repoDigest };
 }
 
 export function validateJsonAgainstSchema(document, schema) {

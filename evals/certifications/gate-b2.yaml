@@ -3,7 +3,7 @@
 # Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
 # candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
 schemaVersion: 1
-contractVersion: 2
+contractVersion: 3
 id: gate-b2
 
 candidate:
@@ -70,6 +70,24 @@ requiredLight:
     kind: external-evidence
     evidenceRelativePath: light/full-ci.json
 
+# Full CI は Evidence 側が必須 Job を決めてはならない。ここに固定する。
+# pull_request の merge commit は Candidate tree と一致しないため受理しない。
+fullCi:
+  workflowId: 261224650
+  workflowPath: .github/workflows/ci.yml
+  acceptedEvents:
+    - push
+    - workflow_dispatch
+  requiredJobs:
+    - Quality (traceability / impact-selected light gates)
+    - Frontend (type-check / lint / test)
+    - Shared Rust crates (check / clippy / test)
+    - Browser (Vitest browser)
+    - Electron (workflow contract / type-check / test / build)
+    - Electron native (N-API / release features / MCP)
+    - Electron product journeys (persistence / workspace authority)
+  requireCheckoutIdentityArtifact: true
+
 requiredHeavy:
   - id: heavy-agent-tool-loop
     qualityManifestId: heavy-agent-tool-loop
@@ -86,6 +104,14 @@ requiredHeavy:
   - id: heavy-narrative-chronicle-production
     qualityManifestId: heavy-narrative-chronicle-production
     requiresEnv: [OPENROUTER_API_KEY]
+  # Real browser consent is still required for Gate B2 Engineering PASS.
+  # jsdom loopback remains informational only (below).
+  - id: heavy-web-ai-consent-browser-live
+    status: blocked
+    requiredAction: >
+      Add Playwright/Vitest Browser Web Editor journey proving
+      refusal=0 HTTP, approval>0 HTTP, destination re-consent,
+      IndexedDB/localStorage cleanup and server teardown on a real browser.
 
 informational:
   - id: heavy-narrative-chronicle-legacy-baseline

@@ -39,6 +39,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Record checkout identity for Gate B2
+        run: |
+          mkdir -p .artifacts/ci
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" \
+            > .artifacts/ci/checkout-identity.json
+          echo "checkout commit=${COMMIT_SHA} tree=${TREE_SHA} event=${GITHUB_EVENT_NAME} github.sha=${GITHUB_SHA}"
+
+      - name: Upload checkout identity
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: checkout-identity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/ci/checkout-identity.json
+          if-no-files-found: error
+
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.33.0
@@ -60,6 +76,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Quality model and selector contracts
+        env:
+          GATE_B2_WORKTREE_SMOKE: "1"
         run: pnpm verify:quality
 
       - name: Impact-selected light gates

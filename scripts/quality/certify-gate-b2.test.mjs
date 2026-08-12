@@ -30,7 +30,7 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   const raw = yaml.load(text);
   assert.deepEqual(validateGateB2Manifest(raw), []);
   assert.equal(raw.id, "gate-b2");
-  assert.equal(raw.contractVersion, 2);
+  assert.equal(raw.contractVersion, 3);
   assert.equal(raw.decisionPolicy.blockedIsPass, false);
   assert.equal(raw.decisionPolicy.deferredIsPass, false);
   assert.equal(raw.decisionPolicy.credentialShortageIsPass, false);
@@ -47,7 +47,15 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
     "heavy-rust-post-effect-live",
     "heavy-codex-prompt-surfaces",
     "heavy-narrative-chronicle-production",
+    "heavy-web-ai-consent-browser-live",
   ]);
+  const browserConsent = raw.requiredHeavy.find(
+    (entry) => entry.id === "heavy-web-ai-consent-browser-live",
+  );
+  assert.equal(browserConsent.status, "blocked");
+  assert.ok(raw.fullCi?.workflowId);
+  assert.equal(raw.fullCi.workflowPath, ".github/workflows/ci.yml");
+  assert.equal(raw.fullCi.acceptedEvents.includes("pull_request"), false);
 
   const informational = raw.informational.map((entry) => entry.id);
   assert.ok(informational.includes("heavy-web-ai-consent-live"));
@@ -115,7 +123,7 @@ test("package script and report schema exist for certify:gate-b2", async () => {
     ),
   );
   assert.equal(schema.title, "Gate B2 Certification Report");
-  assert.equal(schema.properties.contractVersion.const, 2);
+  assert.equal(schema.properties.contractVersion.const, 3);
   assert.deepEqual(schema.properties.verdict.enum, [
     "PASS",
     "HOLD",
@@ -240,7 +248,7 @@ test("preflight loads manifest digests and writes report without claiming PASS",
     });
 
     assert.equal(report.gateId, "gate-b2");
-    assert.equal(report.contractVersion, 2);
+    assert.equal(report.contractVersion, 3);
     assert.equal(report.mode, "preflight");
     assert.equal(report.verdict, "INCOMPLETE");
     assert.match(report.manifestDigest, /^sha256:[0-9a-f]{64}$/);
@@ -257,8 +265,8 @@ test("preflight loads manifest digests and writes report without claiming PASS",
       report.candidate.classificationDigest,
       /^sha256:[0-9a-f]{64}$/,
     );
-    assert.equal(report.summary.requiredHeavy.total, 5);
-    assert.equal(report.summary.requiredHeavy.notRun, 5);
+    assert.equal(report.summary.requiredHeavy.total, 6);
+    assert.equal(report.summary.requiredHeavy.notRun, 6);
     assert.equal(report.summary.informational.total, 2);
 
     const production = report.suites.find(
@@ -318,6 +326,11 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
     assert.equal(production.result, "not-run");
     assert.equal(consent.result, "not-run");
     assert.equal(consent.bucket, "informational");
+    const browserConsent = report.suites.find(
+      (suite) => suite.suiteId === "heavy-web-ai-consent-browser-live",
+    );
+    assert.equal(browserConsent.result, "blocked");
+    assert.match(browserConsent.message, /Playwright|Vitest Browser|IndexedDB/i);
     assert.match(
       production.command.join(" "),
       /eval:narrative:chronicle:production:live/,
@@ -327,7 +340,7 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
     assert.match(consent.message, /dry-run/i);
     assert.notEqual(production.result, "passed");
     assert.notEqual(consent.result, "skipped");
-    assert.equal(report.verdict, "INCOMPLETE");
+    assert.equal(report.verdict, "BLOCK");
   } finally {
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;
@@ -350,8 +363,9 @@ test("credential shortage for billed heavies is BLOCK not passed/skipped", async
     return;
   }
 
-  const { certifyGateB2, freezeGateB2Candidate } = await import(
-    "./certify-gate-b2.mjs"
+  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
+  const { freezeGateB2Candidate } = await import(
+    "./freeze-gate-b2-candidate.mjs"
   );
   const freezePath = path.join(
     repoRoot,
@@ -442,16 +456,19 @@ test("full-ci evidence rejects bare passed:true and incomplete binding", async (
     assert.match(bareCi.message, /missing required fields/);
 
     const evidence = path.join(temp, "full-ci.json");
+    const { raw: manifest } = await loadGateB2Manifest(repoRoot);
     await writeFile(
       evidence,
       JSON.stringify({
         commitSha: "c".repeat(40),
         treeSha: "d".repeat(40),
-        workflowId: "ci.yml",
+        workflowId: manifest.fullCi.workflowId,
         runId: "1",
         runAttempt: 1,
         conclusion: "success",
-        requiredJobs: ["verify"],
+        requiredJobs: manifest.fullCi.requiredJobs,
+        checkoutCommitSha: "c".repeat(40),
+        checkoutTreeSha: "d".repeat(40),
       }),
       "utf8",
     );
@@ -482,18 +499,142 @@ test("full-ci evidence rejects bare passed:true and incomplete binding", async (
       {
         commitSha: "c".repeat(40),
         treeSha: "d".repeat(40),
-        workflowId: "ci.yml",
+        workflowId: manifest.fullCi.workflowId,
         runId: "1",
         runAttempt: 1,
         conclusion: "success",
-        requiredJobs: ["verify"],
+        requiredJobs: manifest.fullCi.requiredJobs,
+        checkoutCommitSha: "c".repeat(40),
+        checkoutTreeSha: "d".repeat(40),
       },
       { commitSha: "c".repeat(40), treeSha: "d".repeat(40) },
+      manifest.fullCi,
     );
     assert.equal(structuralOnly.ok, true);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
+});
+
+test("report schema accepts SuiteResult.runId from an executed heavy", async () => {
+  const { validateJsonAgainstSchema, sha256Text } = await import(
+    "./certify-gate-b2-bindings.mjs"
+  );
+  const schema = JSON.parse(
+    await readFile(
+      path.join(
+        repoRoot,
+        "evals/certifications/schemas/gate-b2-report-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  const digest = `sha256:${"a".repeat(64)}`;
+  const report = {
+    schemaVersion: 1,
+    gateId: "gate-b2",
+    contractVersion: 3,
+    manifestDigest: digest,
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    mode: "heavy",
+    candidate: {
+      commitSha: "b".repeat(40),
+      treeSha: "c".repeat(40),
+      baseMasterSha: "d".repeat(40),
+      schemaVersion: 16,
+      writerRegistryDigest: digest,
+      aiPathRegistryDigest: digest,
+      qualityManifestDigest: digest,
+      narrativeEvalManifestDigest: digest,
+      frozen: true,
+      dirty: false,
+      boundVia: "detached-worktree",
+    },
+    environment: {
+      node: "v20.0.0",
+      platform: "linux",
+      arch: "x64",
+      digest,
+    },
+    verdict: "BLOCK",
+    verdictReasons: ["heavy-web-ai-consent-browser-live blocked"],
+    summary: {
+      requiredLight: {
+        total: 0,
+        passed: 0,
+        failed: 0,
+        blocked: 0,
+        hold: 0,
+        notRun: 0,
+        deferred: 0,
+      },
+      requiredHeavy: {
+        total: 1,
+        passed: 1,
+        failed: 0,
+        blocked: 0,
+        hold: 0,
+        notRun: 0,
+        deferred: 0,
+      },
+      requiredJourneys: {
+        total: 0,
+        passed: 0,
+        failed: 0,
+        blocked: 0,
+        hold: 0,
+        notRun: 0,
+        deferred: 0,
+      },
+      informational: {
+        total: 0,
+        passed: 0,
+        failed: 0,
+        blocked: 0,
+        hold: 0,
+        notRun: 0,
+        deferred: 0,
+      },
+      releaseAdjacent: {
+        total: 0,
+        passed: 0,
+        failed: 0,
+        blocked: 0,
+        hold: 0,
+        notRun: 0,
+        deferred: 0,
+      },
+    },
+    suites: [
+      {
+        suiteId: "fake-heavy-success",
+        bucket: "requiredHeavy",
+        attempt: 1,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:00:01.000Z",
+        exitCode: 0,
+        environmentDigest: digest,
+        commandDigest: digest,
+        stdoutDigest: digest,
+        stderrDigest: digest,
+        artifactDigests: [digest],
+        result: "passed",
+        message: "passed",
+        runId: "00000000-0000-4000-8000-000000000001",
+      },
+    ],
+    retries: [],
+    blockedReasons: [],
+  };
+  const validated = validateJsonAgainstSchema(report, schema);
+  assert.equal(
+    validated.ok,
+    true,
+    JSON.stringify(validated.errors, null, 2),
+  );
+  assert.equal(typeof sha256Text, "function");
 });
 
 test("journey evidence rejects forged passed:true without candidate binding", async () => {
@@ -580,7 +721,9 @@ test(
         repoRoot,
         executionRoot: worktreePath,
       });
-      assert.equal(prepared.mode, "symlink-node_modules");
+      assert.ok(
+        prepared.mode === "offline-install" || prepared.mode === "online-install",
+      );
 
       const exitCode = await new Promise((resolve) => {
         const child = spawn(

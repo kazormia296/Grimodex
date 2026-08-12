@@ -242,6 +242,36 @@ export function validateGateB2Manifest(raw) {
       );
     }
   }
+  const fullCi = raw.fullCi;
+  if (!fullCi || typeof fullCi !== "object") {
+    errors.push("fullCi contract must be an object");
+  } else {
+    if (!Number.isFinite(Number(fullCi.workflowId))) {
+      errors.push("fullCi.workflowId must be a number");
+    }
+    if (
+      typeof fullCi.workflowPath !== "string" ||
+      !fullCi.workflowPath.endsWith(".yml")
+    ) {
+      errors.push("fullCi.workflowPath must be a .yml path");
+    }
+    if (
+      !Array.isArray(fullCi.acceptedEvents) ||
+      fullCi.acceptedEvents.length === 0
+    ) {
+      errors.push("fullCi.acceptedEvents must be a non-empty array");
+    } else if (fullCi.acceptedEvents.includes("pull_request")) {
+      errors.push(
+        "fullCi.acceptedEvents must not include pull_request (merge commits are not candidate trees)",
+      );
+    }
+    if (
+      !Array.isArray(fullCi.requiredJobs) ||
+      fullCi.requiredJobs.length === 0
+    ) {
+      errors.push("fullCi.requiredJobs must be a non-empty array");
+    }
+  }
   return errors;
 }
 
@@ -510,6 +540,7 @@ async function evaluateFullCiEvidence({
   dryRun = false,
   repoRoot = DEFAULT_REPO_ROOT,
   fetchRun,
+  fullCiContract = null,
 }) {
   const evidencePath =
     ciEvidence ??
@@ -524,11 +555,12 @@ async function evaluateFullCiEvidence({
   }
   const raw = JSON.parse(await readFile(evidencePath, "utf8"));
   const digest = sha256Text(JSON.stringify(raw));
-  let validation = validateFullCiEvidence(raw, candidate);
+  let validation = validateFullCiEvidence(raw, candidate, fullCiContract);
   if (validation.ok && !dryRun) {
     validation = await verifyFullCiWithGithub(raw, candidate, {
       fetchRun,
       repoRoot,
+      fullCiContract,
     });
   }
   return {
@@ -756,6 +788,7 @@ async function runLightSuites({
         candidate,
         dryRun: args.dryRun,
         repoRoot,
+        fullCiContract: manifest.fullCi ?? null,
       });
       suites.push(result);
       if (result.result !== "passed") previousFailure = entry.id;
@@ -949,6 +982,21 @@ async function runHeavySuites({
           message: `Fail-fast after ${previousFailure}; first failure retained.`,
         }),
       );
+      continue;
+    }
+    if (entry.status === "blocked" || entry.id.startsWith("blocked-")) {
+      const blocked = blockedSuite({
+        suiteId: entry.id,
+        bucket,
+        environmentDigest: environment.digest,
+        message:
+          (entry.requiredAction
+            ? String(entry.requiredAction).trim()
+            : entry.reason) ||
+          `Heavy suite ${entry.id} is blocked until requiredAction is satisfied.`,
+      });
+      suites.push(blocked);
+      if (bucket === "requiredHeavy") previousFailure = entry.id;
       continue;
     }
     const missing = missingEnv(entry.requiresEnv);

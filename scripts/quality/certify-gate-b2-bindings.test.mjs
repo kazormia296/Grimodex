@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   GATE_B2_CONTRACT_VERSION,
@@ -21,10 +22,53 @@ import {
   verifyFullCiWithGithub,
 } from "./certify-gate-b2-bindings.mjs";
 
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+
 const candidate = {
   commitSha: "a".repeat(40),
   treeSha: "b".repeat(40),
 };
+
+const fullCiContract = {
+  workflowId: 12345678,
+  workflowPath: ".github/workflows/ci.yml",
+  acceptedEvents: ["push", "pull_request"],
+  requiredJobs: ["Frontend", "Rust"],
+};
+
+function fullCiEvidence(overrides = {}) {
+  return {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    workflowId: String(fullCiContract.workflowId),
+    runId: "999",
+    runAttempt: 1,
+    conclusion: "success",
+    requiredJobs: [...fullCiContract.requiredJobs],
+    ...overrides,
+  };
+}
+
+function githubRunPayload(overrides = {}) {
+  return {
+    run: {
+      head_sha: candidate.commitSha,
+      run_attempt: 1,
+      conclusion: "success",
+      workflow_id: fullCiContract.workflowId,
+      path: fullCiContract.workflowPath,
+      event: "push",
+      ...overrides.run,
+    },
+    jobs: overrides.jobs ?? [
+      { name: "Frontend", conclusion: "success" },
+      { name: "Rust", conclusion: "success" },
+    ],
+  };
+}
 
 const heavyExpected = {
   commitSha: candidate.commitSha,
@@ -97,69 +141,83 @@ test("full-ci evidence rejects bare passed:true without structured fields", () =
   assert.equal(bare.ok, false);
   assert.match(bare.message, /missing required fields/);
 
-  const ok = validateFullCiEvidence(
-    {
-      commitSha: candidate.commitSha,
-      treeSha: candidate.treeSha,
-      workflowId: "ci.yml",
-      runId: "123",
-      runAttempt: 1,
-      conclusion: "success",
-      requiredJobs: ["Frontend"],
-    },
-    candidate,
-  );
+  const ok = validateFullCiEvidence(fullCiEvidence(), candidate);
   assert.equal(ok.ok, true);
 });
 
-test("verifyFullCiWithGithub accepts injected github payload", async () => {
-  const raw = {
-    commitSha: candidate.commitSha,
-    treeSha: candidate.treeSha,
-    workflowId: "ci.yml",
-    runId: "999",
-    runAttempt: 1,
-    conclusion: "success",
-    requiredJobs: ["Frontend", "Rust"],
-  };
-  const fetchRun = async () => ({
-    run: {
-      head_sha: candidate.commitSha,
-      run_attempt: 1,
-      conclusion: "success",
-    },
-    jobs: [
-      { name: "Frontend", conclusion: "success" },
-      { name: "Rust", conclusion: "success" },
-    ],
+test("validateFullCiEvidence rejects requiredJobs that shrink contract set", () => {
+  const shrunk = validateFullCiEvidence(
+    fullCiEvidence({ requiredJobs: ["Frontend"] }),
+    candidate,
+    fullCiContract,
+  );
+  assert.equal(shrunk.ok, false);
+  assert.match(shrunk.message, /requiredJobs must match contract/);
+
+  const ok = validateFullCiEvidence(fullCiEvidence(), candidate, fullCiContract);
+  assert.equal(ok.ok, true);
+});
+
+test("verifyFullCiWithGithub accepts injected github payload with contract", async () => {
+  const raw = fullCiEvidence();
+  const fetchRun = async () => githubRunPayload();
+  const ok = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun,
+    fullCiContract,
   });
-  const ok = await verifyFullCiWithGithub(raw, candidate, { fetchRun });
   assert.equal(ok.ok, true);
 
   const badJobs = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () => ({
-      run: {
-        head_sha: candidate.commitSha,
-        run_attempt: 1,
-        conclusion: "success",
-      },
-      jobs: [{ name: "Frontend", conclusion: "success" }],
-    }),
+    fetchRun: async () =>
+      githubRunPayload({
+        jobs: [{ name: "Frontend", conclusion: "success" }],
+      }),
+    fullCiContract,
   });
   assert.equal(badJobs.ok, false);
   assert.match(badJobs.message, /missing required job Rust/);
 });
 
+test("verifyFullCiWithGithub rejects workflow, path, and event mismatches", async () => {
+  const raw = fullCiEvidence();
+  const fetchRun = async () => githubRunPayload();
+
+  const badWorkflow = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun: async () =>
+      githubRunPayload({ run: { workflow_id: 99999999 } }),
+    fullCiContract,
+  });
+  assert.equal(badWorkflow.ok, false);
+  assert.match(badWorkflow.message, /workflow_id/);
+
+  const badPath = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun: async () =>
+      githubRunPayload({ run: { path: ".github/workflows/release.yml" } }),
+    fullCiContract,
+  });
+  assert.equal(badPath.ok, false);
+  assert.match(badPath.message, /workflow path/);
+
+  const badEvent = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun: async () => githubRunPayload({ run: { event: "workflow_dispatch" } }),
+    fullCiContract,
+  });
+  assert.equal(badEvent.ok, false);
+  assert.match(badEvent.message, /acceptedEvents/);
+});
+
+test("verifyFullCiWithGithub rejects evidence that shrinks contract requiredJobs", async () => {
+  const raw = fullCiEvidence({ requiredJobs: ["Frontend"] });
+  const result = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun: async () => githubRunPayload(),
+    fullCiContract,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.message, /requiredJobs must match contract/);
+});
+
 test("verifyFullCiWithGithub fails when fetchRun throws", async () => {
-  const raw = {
-    commitSha: candidate.commitSha,
-    treeSha: candidate.treeSha,
-    workflowId: "ci.yml",
-    runId: "999",
-    runAttempt: 1,
-    conclusion: "success",
-    requiredJobs: ["Frontend"],
-  };
+  const raw = fullCiEvidence({ requiredJobs: ["Frontend"] });
   const failed = await verifyFullCiWithGithub(raw, candidate, {
     fetchRun: async () => {
       throw new Error("gh unavailable");
@@ -437,3 +495,77 @@ test("prepareWorktreeDependencies returns in-place for same root", async () => {
     await rm(temp, { recursive: true, force: true });
   }
 });
+
+test(
+  "prepareWorktreeDependencies installs workspace deps under executionRoot in detached worktree",
+  {
+    skip:
+      process.env.GATE_B2_WORKTREE_INSTALL_SMOKE === "0"
+        ? "set GATE_B2_WORKTREE_INSTALL_SMOKE=1 or unset to enable"
+        : false,
+  },
+  async () => {
+    const { spawn } = await import("node:child_process");
+    const { realpathSync } = await import("node:fs");
+
+    const headSha = await new Promise((resolve, reject) => {
+      const child = spawn("git", ["rev-parse", "HEAD"], {
+        cwd: repoRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const stdout = [];
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        if (code !== 0) reject(new Error("git rev-parse HEAD failed"));
+        else resolve(Buffer.concat(stdout).toString("utf8").trim());
+      });
+    });
+
+    const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-install-"));
+    const worktreePath = path.join(temp, "tree");
+    try {
+      await new Promise((resolve, reject) => {
+        const child = spawn(
+          "git",
+          ["worktree", "add", "--detach", worktreePath, headSha],
+          { cwd: repoRoot, stdio: "inherit" },
+        );
+        child.on("error", reject);
+        child.on("exit", (code) => {
+          if (code !== 0) reject(new Error("git worktree add failed"));
+          else resolve();
+        });
+      });
+
+      const prepared = await prepareWorktreeDependencies({
+        repoRoot,
+        executionRoot: worktreePath,
+      });
+      assert.ok(
+        prepared.mode === "offline-install" || prepared.mode === "online-install",
+      );
+      assert.match(prepared.lockfileDigest, /^sha256:/);
+
+      const resolved = realpathSync(
+        path.join(worktreePath, "node_modules", "@grimodex", "scan-core"),
+      );
+      const resolvedRoot = realpathSync(worktreePath);
+      assert.ok(
+        resolved.startsWith(`${resolvedRoot}${path.sep}`) ||
+          resolved === resolvedRoot,
+        `scan-core resolved outside executionRoot: ${resolved}`,
+      );
+    } finally {
+      await new Promise((resolve) => {
+        const child = spawn(
+          "git",
+          ["worktree", "remove", "--force", worktreePath],
+          { cwd: repoRoot, stdio: "inherit" },
+        );
+        child.on("exit", () => resolve());
+      });
+      await rm(temp, { recursive: true, force: true });
+    }
+  },
+);
