@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { runEventSynthesisTask } from "@/application/narrative-extraction/aiTasks/runEventSynthesisTask";
 import { runObservationExtractionTask } from "@/application/narrative-extraction/aiTasks/runObservationExtractionTask";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import type { NarrativeEvalCaseV1 } from "./types";
@@ -233,5 +234,51 @@ describe("productionChronicleAdapter", () => {
         cases: [{ evaluation }],
       }),
     ).toBe(false);
+  });
+
+  it("fails closed when the production synthesis response has the wrong shape", async () => {
+    const prepared = await prepareProductionChronicleEvalCase(miniCase());
+    const sourceRef = prepared.windows[0]?.sourceRef;
+    if (!sourceRef) throw new Error("fixture did not create a Source View");
+    const artifacts = await runProductionChroniclePipeline(prepared, {
+      observeWithAi: async () => [
+        {
+          localId: "obs-1",
+          evidence: [
+            {
+              sourceRef,
+              quote: "北門の鎖が切れ、重い門扉が街路へ倒れた。",
+            },
+          ],
+          assertion: {
+            attribution: "narrator",
+            narrativeFrame: "story-world",
+          },
+          payload: {
+            predicate: "北門が倒れた",
+            actuality: "actual",
+            participants: [],
+            temporalExpressions: [],
+            durationKind: "instant",
+          },
+        },
+      ],
+      synthesizeWithAi: (input) =>
+        runEventSynthesisTask({
+          ...input,
+          send: async () => ({
+            text: '{"wrong":[]}',
+            inputTokens: 1,
+            outputTokens: 1,
+          }),
+        }),
+    });
+    const evaluation = evaluateProductionChronicleArtifacts(
+      prepared,
+      artifacts,
+    );
+
+    expect(evaluation.parseFailureCount).toBe(1);
+    expect(evaluation.passed).toBe(false);
   });
 });

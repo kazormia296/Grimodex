@@ -266,6 +266,7 @@ describeLive("Chronicle production OpenRouter live certification", () => {
           (entry) =>
             entry.corpusDigest.startsWith("sha256:") &&
             entry.fixturePromptDigest.startsWith("sha256:") &&
+            entry.dispatches.length > 0 &&
             entry.dispatches.every(
               (dispatch) =>
                 dispatch.promptDigest.startsWith("sha256:") &&

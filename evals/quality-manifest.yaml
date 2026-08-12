@@ -308,6 +308,7 @@ requirements:
       - src/features/narrative-extraction/eval/liveRunner.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
+      - src/features/narrative-extraction/eval/productionChronicleTypes.ts
       - evals/narrative/manifest.yaml
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
@@ -347,6 +348,7 @@ requirements:
       - src/features/narrative-extraction/eval/scorer.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.ts
       - src/features/narrative-extraction/eval/productionChronicleScoring.ts
+      - src/features/narrative-extraction/eval/productionChronicleTypes.ts
     lightTests:
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
