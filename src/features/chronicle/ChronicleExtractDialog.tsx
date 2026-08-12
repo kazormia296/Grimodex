@@ -27,10 +27,13 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { listEvents } from "./api";
 import {
-  proposeEvents,
-  importExtractedEvents,
-  type EventProposal,
+  startChronicleExtraction,
+  applyChronicleExtractionReview,
+  restoreChronicleExtractionReview,
 } from "./extractEventsApi";
+import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
+import { ChronicleProposalReview } from "./ChronicleProposalReview";
+import { useChronicleExtractionStore } from "./chronicleExtractionStore";
 import {
   chronicleScopeKey,
   type ChronicleScope,
@@ -43,11 +46,6 @@ export interface ChronicleExtractionSession {
   projectId: string;
   generation: number;
   authority: MutationAuthority;
-}
-
-interface ChronicleExtractionResult {
-  session: ChronicleExtractionSession;
-  candidates: EventProposal[];
 }
 
 export async function loadChronicleExtractionScenes(
@@ -66,7 +64,8 @@ export async function loadChronicleExtractionScenes(
 
 /**
  * 本文（章/フォルダ）から LLM で作中の出来事候補を抽出し、確認のうえ一括取り込みする
- * ウィザード。ライブ出力の品質検証は実機 QA（キー必須）に委ねる。
+ * ウィザード。Run-based Narrative Extraction が唯一の製品経路
+ *（`extractEventsApi.USE_NARRATIVE_EXTRACTION_RUN === true`）。
  */
 export function ChronicleExtractDialog({
   open,
@@ -83,21 +82,20 @@ export function ChronicleExtractDialog({
 }) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
+  const runProjection = useChronicleExtractionStore((s) => s.projection);
+  const clearProjection = useChronicleExtractionStore((s) => s.clearProjection);
+  const clearIfScopeMismatch = useChronicleExtractionStore(
+    (s) => s.clearIfScopeMismatch,
+  );
 
   const folders = useMemo(
     () => nodes.filter((n) => n.nodeType === "folder"),
-    [nodes],
-  );
-  const titleById = useMemo(
-    () => new Map(nodes.map((n) => [n.id, n.title] as const)),
     [nodes],
   );
 
   const [folderId, setFolderId] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [extractionResult, setExtractionResult] =
-    useState<ChronicleExtractionResult | null>(null);
   const currentScopeKey = scope ? chronicleScopeKey(scope) : null;
   const generationRef = useRef(0);
   const dialogScopeKeyRef = useRef<ChronicleScopeKey | null>(null);
@@ -108,11 +106,14 @@ export function ChronicleExtractDialog({
   isActiveRef.current = isActive;
   currentScopeKeyRef.current = currentScopeKey;
 
-  const candidates =
+  const scopedRunProjection =
     isActive &&
-    currentScopeKey &&
-    extractionResult?.session.scopeKey === currentScopeKey
-      ? extractionResult.candidates
+    scope &&
+    runProjection &&
+    runProjection.projectId === scope.projectId &&
+    runProjection.workspacePath === scope.workspacePath &&
+    runProjection.openRevision === scope.openRevision
+      ? runProjection
       : null;
 
   const isSessionCurrent = (session: ChronicleExtractionSession): boolean => {
@@ -131,54 +132,80 @@ export function ChronicleExtractDialog({
     );
   };
 
-  // ダイアログは親側で常時マウントされるため、開く（再オープン含む）たびに
-  // 選択フォルダと抽出候補を初期化する。これをしないと前回の候補が残り、
-  // 再度「取り込む」を押すと同じ出来事が UUID 違いで二重生成されてしまう。
+  // ダイアログは親側で常時マウントされる。閉じても同 scope の Run 投影は保持し、
+  // 再オープン時に Review を復元する。scope 不一致時のみ破棄する。
   useEffect(() => {
     if (!open) {
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
       setFolderId("");
-      setExtractionResult(null);
       setAnalyzing(false);
       setImporting(false);
       return;
     }
 
-    if (!isActive || !currentScopeKey) {
+    if (!isActive || !currentScopeKey || !scope) {
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
-      setExtractionResult(null);
+      clearProjection();
       setAnalyzing(false);
       setImporting(false);
       onOpenChange(false);
       return;
     }
 
+    clearIfScopeMismatch({
+      projectId: scope.projectId,
+      workspacePath: scope.workspacePath,
+      openRevision: scope.openRevision,
+    });
+
     if (dialogScopeKeyRef.current === null) {
       dialogScopeKeyRef.current = currentScopeKey;
       generationRef.current += 1;
       setFolderId("");
-      setExtractionResult(null);
       setAnalyzing(false);
       setImporting(false);
+      const current = useChronicleExtractionStore.getState().projection;
+      const matched =
+        current &&
+        current.projectId === scope.projectId &&
+        current.workspacePath === scope.workspacePath &&
+        current.openRevision === scope.openRevision;
+      if (!matched) {
+        void restoreChronicleExtractionReview({
+          projectId: scope.projectId,
+          workspacePath: scope.workspacePath,
+          openRevision: scope.openRevision,
+        }).catch(() => {
+          // Soft-fail: empty review until the user runs analyze.
+        });
+      }
       return;
     }
 
     if (dialogScopeKeyRef.current !== currentScopeKey) {
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
-      setExtractionResult(null);
+      clearProjection();
       setAnalyzing(false);
       setImporting(false);
       onOpenChange(false);
     }
-  }, [currentScopeKey, isActive, onOpenChange, open]);
+  }, [
+    clearIfScopeMismatch,
+    clearProjection,
+    currentScopeKey,
+    isActive,
+    onOpenChange,
+    open,
+    scope,
+  ]);
 
   const handleSelectFolder = (id: string) => {
     if (analyzing || importing) return;
     setFolderId(id);
-    setExtractionResult(null);
+    clearProjection();
   };
 
   const handleAnalyze = async () => {
@@ -197,7 +224,7 @@ export function ChronicleExtractDialog({
     if (!isSessionCurrent(session)) return;
 
     setAnalyzing(true);
-    setExtractionResult(null);
+    clearProjection();
     try {
       const activeId = useTreeStore.getState().activeSceneId;
       if (activeId) await saveScene(activeId);
@@ -214,12 +241,31 @@ export function ChronicleExtractDialog({
       if (!isSessionCurrent(session)) return;
       const existing = await listEvents(session.projectId);
       if (!isSessionCurrent(session)) return;
-      const result = await proposeEvents({
-        scenes,
-        existingTitles: existing.map((e) => e.title).filter(Boolean),
+
+      await startChronicleExtraction({
+        projectId: session.projectId,
+        folderId,
+        sceneIds: scenes.map((scene) => scene.sceneId),
+        authority: session.authority,
+        workspacePath: session.scope.workspacePath,
+        openRevision: session.scope.openRevision,
+        existingEvents: existing.map((event) => ({
+          ref: event.id,
+          sourceKey: event.id,
+          title: event.title,
+          note: event.note ?? null,
+          version: event.version,
+          linkedDocumentSourceKeys: [],
+          participantEntityRefs: [],
+          startTime: event.startTime,
+          endTime: event.endTime,
+          digest: `sha256:${event.id}`,
+        })),
       });
-      if (!isSessionCurrent(session)) return;
-      setExtractionResult({ session, candidates: result });
+      if (!isSessionCurrent(session)) {
+        clearProjection();
+        return;
+      }
     } catch {
       if (isSessionCurrent(session)) {
         toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
@@ -232,17 +278,29 @@ export function ChronicleExtractDialog({
   };
 
   const handleImport = async () => {
-    if (
-      !extractionResult ||
-      !candidates ||
-      candidates.length === 0 ||
-      importing
-    ) {
-      return;
-    }
-    const { session } = extractionResult;
+    if (importing || !scopedRunProjection || !scope) return;
+
+    const approvedCount = scopedRunProjection.proposals.filter(
+      (proposal) =>
+        proposal.applicability === "applicable" &&
+        proposal.status === "approved",
+    ).length;
+    if (approvedCount === 0) return;
+
+    const generation = generationRef.current;
+    const authority = captureMutationAuthority(
+      scope.projectId,
+      getCurrentProjectId,
+    );
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey ?? chronicleScopeKey(scope),
+      projectId: scope.projectId,
+      generation,
+      authority,
+    };
     if (!isSessionCurrent(session)) {
-      setExtractionResult(null);
+      clearProjection();
       onOpenChange(false);
       return;
     }
@@ -250,10 +308,13 @@ export function ChronicleExtractDialog({
     setImporting(true);
     try {
       const outcome = await runAuthoritativeMutation(session.authority, () =>
-        importExtractedEvents(session.projectId, candidates),
+        applyChronicleExtractionReview({
+          projectId: session.projectId,
+          proposals: scopedRunProjection.proposals,
+        }),
       );
       if (outcome.status === "stale" || !isSessionCurrent(session)) {
-        setExtractionResult(null);
+        clearProjection();
         onOpenChange(false);
         return;
       }
@@ -262,17 +323,13 @@ export function ChronicleExtractDialog({
         t(
           "chronicle.extract.imported",
           "{{count}}件のイベントを取り込みました",
-          {
-            count: n,
-          },
+          { count: n },
         ),
       );
-      // 取り込み成功後は候補を即クリアして、再オープン時の二重取り込みを防ぐ。
-      setExtractionResult(null);
+      clearProjection();
       onImported?.();
       onOpenChange(false);
     } catch {
-      // 失敗時はダイアログを閉じず候補も保持し、再試行できる状態を保つ。
       if (isSessionCurrent(session)) {
         toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
       }
@@ -288,9 +345,25 @@ export function ChronicleExtractDialog({
     onOpenChange(nextOpen);
   };
 
+  const approvedReady =
+    !!scopedRunProjection &&
+    scopedRunProjection.proposals.some(
+      (proposal) =>
+        proposal.applicability === "applicable" &&
+        proposal.status === "approved" &&
+        (proposal.match.status !== "probable-duplicate" ||
+          proposal.probableDuplicateChoice === "create-as-new"),
+    );
+
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent
+        className={
+          scopedRunProjection
+            ? "flex max-h-[85vh] max-w-3xl flex-col"
+            : "max-w-lg"
+        }
+      >
         <DialogHeader>
           <DialogTitle>
             {t("chronicle.extract.title", "本文からイベントを抽出")}
@@ -336,44 +409,20 @@ export function ChronicleExtractDialog({
             </button>
           </div>
 
-          {candidates !== null && (
-            <div className="max-h-72 overflow-y-auto rounded border border-border">
-              {candidates.length === 0 ? (
-                <div className="px-3 py-3 text-xs text-muted-foreground">
-                  {t(
-                    "chronicle.extract.none",
-                    "抽出できるイベントが見つかりませんでした。",
-                  )}
-                </div>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {candidates.map((c, ci) => (
-                    <li key={ci} className="flex flex-col gap-1 px-3 py-2">
-                      <span className="font-medium text-foreground">
-                        {c.title}
-                      </span>
-                      {c.note && (
-                        <span className="text-xs text-muted-foreground">
-                          {c.note}
-                        </span>
-                      )}
-                      <div className="flex flex-wrap gap-1">
-                        {c.evidenceSceneIds.map((sid) => (
-                          <span
-                            key={sid}
-                            className="inline-flex max-w-[140px] items-center truncate rounded bg-accent/60 px-1.5 py-0.5 text-[10px] text-foreground"
-                            title={titleById.get(sid) ?? sid}
-                          >
-                            {titleById.get(sid) ?? sid}
-                          </span>
-                        ))}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+          {(analyzing || scopedRunProjection) && (
+            <ChronicleExtractionProgress
+              analyzing={analyzing}
+              coverage={scopedRunProjection?.coverage ?? null}
+              taskCounts={scopedRunProjection?.taskCounts ?? null}
+              proposalCount={
+                scopedRunProjection?.proposals.filter(
+                  (proposal) => proposal.applicability === "applicable",
+                ).length ?? 0
+              }
+            />
           )}
+
+          {scopedRunProjection && <ChronicleProposalReview boundToStore />}
         </div>
 
         <DialogFooter>
@@ -388,7 +437,7 @@ export function ChronicleExtractDialog({
           <button
             type="button"
             onClick={handleImport}
-            disabled={!candidates || candidates.length === 0 || importing}
+            disabled={importing || !approvedReady}
             className="inline-flex items-center gap-1 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {importing && (

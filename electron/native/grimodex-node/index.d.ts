@@ -103,6 +103,11 @@ export declare class Backend {
   eventGetVersion(projectId: string, eventId: string): Promise<string>;
   eventSetParticipants(payload: any): Promise<string>;
   /**
+   * Project Calendar create/update, single-row OCC (see `chronicle` module
+   * docs). Returns the persisted row as JSON, or JSON `null` on conflict.
+   */
+  projectCalendarUpsert(payload: any): Promise<string>
+  /**
    * Renderer domain aggregates that previously crossed the preload
    * boundary as renderer-authored SQL batches.
    */
@@ -440,6 +445,12 @@ export declare class Backend {
    */
   codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>;
   /**
+   * Canonical Source View から決定的な Entity Seed を抽出する。
+   * workspace/DB 状態を一切参照せず、strict DTO validation 後に blocking pool で
+   * UniDic 解析を行う。返り値は camelCase Entity Seed response の JSON 文字列。
+   */
+  extractCodexEntitySeeds(request: object): Promise<string>;
+  /**
    * 本文から未知の固有名詞候補を抽出する
    * (`grimodex_semantic::codex_candidates` を Tauri と共用)。
    *
@@ -717,6 +728,23 @@ export declare class Backend {
   agentSceneEventUnlink(payload: any): Promise<string>;
   agentEventRelationAdd(payload: any): Promise<string>;
   agentEventRelationRemove(payload: any): Promise<string>;
+  narrativeExtractionCreateRun(payload: any): Promise<string>;
+  narrativeExtractionGetRun(payload: any): Promise<string>;
+  narrativeExtractionListResumableRuns(payload: any): Promise<string>;
+  narrativeExtractionCancelRun(payload: any): Promise<string>;
+  narrativeExtractionClaimTask(payload: any): Promise<string>;
+  narrativeExtractionFinishTask(payload: any): Promise<string>;
+  narrativeExtractionFailTask(payload: any): Promise<string>;
+  narrativeExtractionSaveProposalSet(payload: any): Promise<string>;
+  narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>;
+  narrativeExtractionAppendRevision(payload: any): Promise<string>;
+  narrativeExtractionAppendDecision(payload: any): Promise<string>;
+  narrativeExtractionReviseAndDecide(payload: any): Promise<string>;
+  narrativeExtractionPrepareCommit(payload: any): Promise<string>;
+  narrativeExtractionApplyCommit(payload: any): Promise<string>;
+  narrativeExtractionGetCommitStatus(payload: any): Promise<string>;
+  narrativeExtractionUndoCommit(payload: any): Promise<string>;
+  narrativeExtractionRedoCommit(payload: any): Promise<string>;
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(
     projectId: string,

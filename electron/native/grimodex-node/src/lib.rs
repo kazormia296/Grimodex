@@ -36,7 +36,7 @@ use grimodex_db::agent_writes;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
-use grimodex_db::chronicle::{self, SetParticipantsPayload};
+use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
 use grimodex_db::domain_writes::{
     self, CodexRenameUndoPayload, CreateScanStagingProjectPayload, ReplaceAuthorshipLanePayload,
     SetEntityTagsPayload, UndoTreePlanPayload,
@@ -58,6 +58,7 @@ use grimodex_db::lint_terms::{
     self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
+use grimodex_db::narrative_extraction::{self, ListResumableRunsPayload, RunRefPayload};
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
     NativeWorkspaceOpenTrace,
@@ -152,6 +153,312 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+const ENTITY_SEED_MAX_SOURCES: u32 = 900;
+const ENTITY_SEED_MAX_REQUEST_UTF8_BYTES: usize = 8 * 1024 * 1024;
+const ENTITY_SEED_MAX_REF_UTF8_BYTES: usize = 1024;
+const ENTITY_SEED_MAX_LANGUAGE_UTF8_BYTES: usize = 64;
+const ENTITY_SEED_MAX_PROPERTY_NAME_UTF8_BYTES: usize = 64;
+
+fn invalid_entity_seed_request(message: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("invalid request: {message}"))
+}
+
+#[derive(Default)]
+struct EntitySeedJsStringBudget {
+    raw_utf8_bytes: usize,
+}
+
+impl EntitySeedJsStringBudget {
+    fn admit(
+        &mut self,
+        value: &napi::JsString,
+        label: &str,
+        field_max_utf8_bytes: Option<usize>,
+    ) -> Result<()> {
+        // V8 can expose the UTF-16 length without first allocating a Rust
+        // copy. Every valid scalar requires at least one UTF-8 byte per
+        // UTF-16 unit, so this rejects obviously oversized strings before the
+        // potentially expensive UTF-8 length scan as well.
+        let utf16_len = value
+            .utf16_len()
+            .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+        if let Some(field_max) = field_max_utf8_bytes {
+            if utf16_len > field_max {
+                return Err(invalid_entity_seed_request(format!(
+                    "{label} exceeds {field_max} UTF-8 bytes"
+                )));
+            }
+        }
+        let remaining = ENTITY_SEED_MAX_REQUEST_UTF8_BYTES
+            .checked_sub(self.raw_utf8_bytes)
+            .ok_or_else(|| {
+                invalid_entity_seed_request("entity seed request exceeds the 8 MiB wire budget")
+            })?;
+        if utf16_len > remaining {
+            return Err(invalid_entity_seed_request(
+                "entity seed request exceeds the 8 MiB wire budget",
+            ));
+        }
+
+        let utf8_len = value
+            .utf8_len()
+            .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+        if let Some(field_max) = field_max_utf8_bytes {
+            if utf8_len > field_max {
+                return Err(invalid_entity_seed_request(format!(
+                    "{label} exceeds {field_max} UTF-8 bytes"
+                )));
+            }
+        }
+        self.raw_utf8_bytes = self
+            .raw_utf8_bytes
+            .checked_add(utf8_len)
+            .filter(|total| *total <= ENTITY_SEED_MAX_REQUEST_UTF8_BYTES)
+            .ok_or_else(|| {
+                invalid_entity_seed_request("entity seed request exceeds the 8 MiB wire budget")
+            })?;
+        Ok(())
+    }
+}
+
+fn entity_seed_utf16_string(value: napi::JsString, label: &str) -> Result<String> {
+    let utf16 = value
+        .into_utf16()
+        .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+    utf16.as_str().map_err(|_| {
+        invalid_entity_seed_request(format!("{label} contains a lone UTF-16 surrogate"))
+    })
+}
+
+fn entity_seed_string_property(
+    object: &napi::JsObject,
+    name: &str,
+    label: &str,
+    budget: &mut EntitySeedJsStringBudget,
+    field_max_utf8_bytes: Option<usize>,
+) -> Result<String> {
+    let value: napi::JsString = object
+        .get_named_property(name)
+        .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+    budget.admit(&value, label, field_max_utf8_bytes)?;
+    entity_seed_utf16_string(value, label)
+}
+
+fn validate_entity_seed_object_keys(
+    object: &napi::JsObject,
+    label: &str,
+    expected: &[&str],
+) -> Result<()> {
+    let properties = object
+        .get_property_names()
+        .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+    let length = properties
+        .get_array_length()
+        .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+    let mut actual = Vec::with_capacity(length as usize);
+    for index in 0..length {
+        let key: napi::JsString = properties
+            .get_element(index)
+            .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+        let key_label = format!("{label} property name");
+        let key_utf16_len = key
+            .utf16_len()
+            .map_err(|error| invalid_entity_seed_request(format!("{key_label}: {error}")))?;
+        if key_utf16_len > ENTITY_SEED_MAX_PROPERTY_NAME_UTF8_BYTES {
+            return Err(invalid_entity_seed_request(format!(
+                "{key_label} exceeds {ENTITY_SEED_MAX_PROPERTY_NAME_UTF8_BYTES} UTF-8 bytes"
+            )));
+        }
+        let key_utf8_len = key
+            .utf8_len()
+            .map_err(|error| invalid_entity_seed_request(format!("{key_label}: {error}")))?;
+        if key_utf8_len > ENTITY_SEED_MAX_PROPERTY_NAME_UTF8_BYTES {
+            return Err(invalid_entity_seed_request(format!(
+                "{key_label} exceeds {ENTITY_SEED_MAX_PROPERTY_NAME_UTF8_BYTES} UTF-8 bytes"
+            )));
+        }
+        let key = entity_seed_utf16_string(key, &key_label)?;
+        if !expected.contains(&key.as_str()) {
+            return Err(invalid_entity_seed_request(format!(
+                "unknown field `{key}` in {label}"
+            )));
+        }
+        actual.push(key);
+    }
+    for required in expected {
+        if !actual.iter().any(|key| key == required) {
+            return Err(invalid_entity_seed_request(format!(
+                "missing field `{required}` in {label}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn entity_seed_u32_property(object: &napi::JsObject, name: &str, label: &str) -> Result<u32> {
+    let value: f64 = object
+        .get_named_property(name)
+        .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 || value > u32::MAX as f64 {
+        return Err(invalid_entity_seed_request(format!(
+            "{label} must be an unsigned 32-bit integer"
+        )));
+    }
+    Ok(value as u32)
+}
+
+fn entity_seed_object_property(
+    object: &napi::JsObject,
+    name: &str,
+    label: &str,
+) -> Result<napi::JsObject> {
+    object
+        .get_named_property(name)
+        .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))
+}
+
+fn entity_seed_request_from_js(
+    request: napi::JsObject,
+) -> Result<grimodex_semantic::entity_seeds::ExtractCodexEntitySeedsRequestV1> {
+    validate_entity_seed_object_keys(
+        &request,
+        "request",
+        &[
+            "schemaVersion",
+            "normalizerVersion",
+            "language",
+            "minimumOccurrenceCount",
+            "sources",
+        ],
+    )?;
+    let mut string_budget = EntitySeedJsStringBudget::default();
+    let schema_version =
+        entity_seed_u32_property(&request, "schemaVersion", "request.schemaVersion")?;
+    let normalizer_version = entity_seed_string_property(
+        &request,
+        "normalizerVersion",
+        "request.normalizerVersion",
+        &mut string_budget,
+        None,
+    )?;
+    let language = entity_seed_string_property(
+        &request,
+        "language",
+        "request.language",
+        &mut string_budget,
+        Some(ENTITY_SEED_MAX_LANGUAGE_UTF8_BYTES),
+    )?;
+    let minimum_occurrence_count = entity_seed_u32_property(
+        &request,
+        "minimumOccurrenceCount",
+        "request.minimumOccurrenceCount",
+    )?;
+    let sources_object = entity_seed_object_property(&request, "sources", "request.sources")?;
+    if !sources_object
+        .is_array()
+        .map_err(|error| invalid_entity_seed_request(format!("request.sources: {error}")))?
+    {
+        return Err(invalid_entity_seed_request(
+            "request.sources must be an array",
+        ));
+    }
+    let source_count = sources_object
+        .get_array_length()
+        .map_err(|error| invalid_entity_seed_request(format!("request.sources: {error}")))?;
+    if source_count > ENTITY_SEED_MAX_SOURCES {
+        return Err(invalid_entity_seed_request(format!(
+            "request.sources must contain at most {ENTITY_SEED_MAX_SOURCES} items"
+        )));
+    }
+
+    let mut sources = Vec::with_capacity(source_count as usize);
+    for index in 0..source_count {
+        let label = format!("request.sources[{index}]");
+        let source: napi::JsObject = sources_object
+            .get_element(index)
+            .map_err(|error| invalid_entity_seed_request(format!("{label}: {error}")))?;
+        validate_entity_seed_object_keys(
+            &source,
+            &label,
+            &["sourceRef", "documentRef", "documentRange", "text"],
+        )?;
+        let range_label = format!("{label}.documentRange");
+        let range = entity_seed_object_property(&source, "documentRange", &range_label)?;
+        validate_entity_seed_object_keys(&range, &range_label, &["start", "end"])?;
+        sources.push(
+            grimodex_semantic::entity_seeds::EntitySeedCanonicalSourceV1 {
+                source_ref: entity_seed_string_property(
+                    &source,
+                    "sourceRef",
+                    &format!("{label}.sourceRef"),
+                    &mut string_budget,
+                    Some(ENTITY_SEED_MAX_REF_UTF8_BYTES),
+                )?,
+                document_ref: entity_seed_string_property(
+                    &source,
+                    "documentRef",
+                    &format!("{label}.documentRef"),
+                    &mut string_budget,
+                    Some(ENTITY_SEED_MAX_REF_UTF8_BYTES),
+                )?,
+                document_range: grimodex_semantic::entity_seeds::CanonicalRangeV1 {
+                    start: entity_seed_u32_property(
+                        &range,
+                        "start",
+                        &format!("{range_label}.start"),
+                    )?,
+                    end: entity_seed_u32_property(&range, "end", &format!("{range_label}.end"))?,
+                },
+                text: entity_seed_string_property(
+                    &source,
+                    "text",
+                    &format!("{label}.text"),
+                    &mut string_budget,
+                    None,
+                )?,
+            },
+        );
+    }
+
+    Ok(
+        grimodex_semantic::entity_seeds::ExtractCodexEntitySeedsRequestV1 {
+            schema_version,
+            normalizer_version,
+            language,
+            minimum_occurrence_count,
+            sources,
+        },
+    )
+}
+
+pub struct ExtractCodexEntitySeedsTask {
+    request: std::result::Result<
+        grimodex_semantic::entity_seeds::ExtractCodexEntitySeedsRequestV1,
+        String,
+    >,
+}
+
+impl napi::Task for ExtractCodexEntitySeedsTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let request = self
+            .request
+            .as_ref()
+            .map_err(|reason| Error::from_reason(reason.clone()))?;
+        let response = grimodex_semantic::entity_seeds::extract_codex_entity_seeds(request)
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        serde_json::to_string(&response).map_err(|error| {
+            Error::from_reason(format!("failed to serialize entity seeds: {error}"))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
 }
 
 fn native_workspace_open_trace_enabled() -> bool {
@@ -1537,6 +1844,22 @@ impl Backend {
         .await
     }
 
+    /// Project Calendar create/update, single-row OCC (see `chronicle` module
+    /// docs). Returns the persisted row as JSON, or JSON `null` on conflict.
+    #[napi]
+    pub async fn project_calendar_upsert(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: UpsertProjectCalendarPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::upsert_project_calendar(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
     /// Renderer domain aggregates that previously crossed the preload
     /// boundary as renderer-authored SQL batches.
     #[napi]
@@ -2633,6 +2956,18 @@ impl Backend {
         })
         .await
         .map_err(join_err_to_napi)?
+    }
+
+    /// Canonical Source View から決定的な Entity Seed を抽出する。
+    /// workspace/DB 状態を一切参照せず、strict DTO validation 後に blocking pool で
+    /// UniDic 解析を行う。返り値は camelCase Entity Seed response の JSON 文字列。
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn extract_codex_entity_seeds(
+        &self,
+        request: napi::JsObject,
+    ) -> Result<AsyncTask<ExtractCodexEntitySeedsTask>> {
+        let request = entity_seed_request_from_js(request).map_err(|error| error.reason);
+        Ok(AsyncTask::new(ExtractCodexEntitySeedsTask { request }))
     }
 
     /// 本文から未知の固有名詞候補を抽出する
@@ -3834,6 +4169,258 @@ impl Backend {
             |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
                 agent_writes::agent_event_relation_mutate_impl(db, p, false)
             },
+        )
+        .await
+    }
+
+    // ─────────────────────── narrative_extraction (Chronicle Vertical Slice PR2 —
+    // persistent run / task / proposal runtime; payload → JSON string) ─────────
+
+    #[napi]
+    pub async fn narrative_extraction_create_run(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_create_run,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_get_run(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RunRefPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&narrative_extraction::narrative_extraction_get_run(
+                    db,
+                    dto.run_id,
+                    dto.project_id,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_list_resumable_runs(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: ListResumableRunsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_list_resumable_runs(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_cancel_run(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_cancel_run,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_claim_task(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_claim_task,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_finish_task(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_finish_task,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_fail_task(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_fail_task,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_save_proposal_set(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_save_proposal_set,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_get_run_review_bundle(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RunRefPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_get_run_review_bundle(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_append_revision(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_append_revision,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_append_decision(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_append_decision,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_revise_and_decide(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_revise_and_decide,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_prepare_commit(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_prepare_commit,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_apply_commit(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_apply_commit,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_get_commit_status(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_get_commit_status,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_undo_commit(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_undo_commit,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_redo_commit(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_redo_commit,
         )
         .await
     }

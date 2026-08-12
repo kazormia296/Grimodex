@@ -160,6 +160,147 @@ describe("BrowserMock persistence contract", () => {
     ).toEqual([]);
   });
 
+  it("migrates persisted pre-v4 databases to the semantic binding table exactly once", async () => {
+    const legacy = await createMock();
+    await legacy.invoke("db_execute", {
+      sql: "DROP TABLE IF EXISTS codex_detail_semantic_bindings",
+      params: [],
+      method: "run",
+    });
+
+    const onDatabaseDirty = vi.fn();
+    const migrated = await createMock({
+      databaseBytes: legacy.exportDatabase(),
+      onDatabaseDirty,
+    });
+    expect(
+      await queryRows(
+        migrated,
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ["codex_detail_semantic_bindings"],
+      ),
+    ).toEqual([{ name: "codex_detail_semantic_bindings" }]);
+    expect(onDatabaseDirty).toHaveBeenCalledTimes(1);
+
+    const reopenedDirty = vi.fn();
+    const reopened = await createMock({
+      databaseBytes: migrated.exportDatabase(),
+      onDatabaseDirty: reopenedDirty,
+    });
+    expect(
+      await queryRows(
+        reopened,
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ["codex_detail_semantic_bindings"],
+      ),
+    ).toEqual([{ name: "codex_detail_semantic_bindings" }]);
+    expect(reopenedDirty).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for a malformed prerelease semantic binding table", async () => {
+    const prerelease = await createMock();
+    await prerelease.invoke("db_execute", {
+      sql: "DROP TABLE codex_detail_semantic_bindings",
+      params: [],
+      method: "run",
+    });
+    await prerelease.invoke("db_execute", {
+      sql: "CREATE TABLE codex_detail_semantic_bindings (id TEXT PRIMARY KEY)",
+      params: [],
+      method: "run",
+    });
+    const bytes = prerelease.exportDatabase();
+
+    await expect(
+      createPersistentBrowserMock({ databaseBytes: bytes }),
+    ).rejects.toThrow(/Unsupported prerelease codex_detail_semantic_bindings/);
+  });
+
+  it("rejects a lookalike semantic binding table without the v4 constraints", async () => {
+    const prerelease = await createMock();
+    await prerelease.invoke("db_execute", {
+      sql: "DROP TABLE codex_detail_semantic_bindings",
+      params: [],
+      method: "run",
+    });
+    await prerelease.invoke("db_execute", {
+      sql: `CREATE TABLE codex_detail_semantic_bindings (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+              definition_id TEXT NOT NULL,
+              facet_key TEXT NOT NULL,
+              projection_kind TEXT NOT NULL,
+              temporal_policy TEXT NOT NULL,
+              source TEXT NOT NULL,
+              confirmed INTEGER NOT NULL,
+              version INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (project_id, definition_id)
+                REFERENCES codex_detail_definitions(project_id, id)
+                ON DELETE CASCADE
+            )`,
+      params: [],
+      method: "run",
+    });
+    await prerelease.invoke("db_execute", {
+      sql: `CREATE UNIQUE INDEX uq_codex_detail_semantic_binding_definition_facet
+              ON codex_detail_semantic_bindings(definition_id, facet_key)`,
+      params: [],
+      method: "run",
+    });
+    await prerelease.invoke("db_execute", {
+      sql: `CREATE INDEX idx_codex_detail_semantic_bindings_project_facet
+              ON codex_detail_semantic_bindings(project_id, facet_key)`,
+      params: [],
+      method: "run",
+    });
+
+    await expect(
+      createPersistentBrowserMock({
+        databaseBytes: prerelease.exportDatabase(),
+      }),
+    ).rejects.toThrow(/Unsupported prerelease codex_detail_semantic_bindings/);
+  });
+
+  it("migrates persisted pre-v5 calendar rows to version zero exactly once", async () => {
+    const legacy = await createMock();
+    await legacy.invoke("db_execute", {
+      sql: "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries) VALUES (?, ?, ?)",
+      params: ["default-project", 400, "[]"],
+      method: "run",
+    });
+    await legacy.invoke("db_execute", {
+      sql: "ALTER TABLE project_calendar DROP COLUMN version",
+      params: [],
+      method: "run",
+    });
+
+    const onDatabaseDirty = vi.fn();
+    const migrated = await createMock({
+      databaseBytes: legacy.exportDatabase(),
+      onDatabaseDirty,
+    });
+    expect(
+      await queryRows(
+        migrated,
+        "SELECT days_per_year, version FROM project_calendar WHERE project_id = ?",
+        ["default-project"],
+      ),
+    ).toEqual([{ days_per_year: 400, version: 0 }]);
+    expect(onDatabaseDirty).toHaveBeenCalledTimes(1);
+
+    const reopenedDirty = vi.fn();
+    const reopened = await createMock({
+      databaseBytes: migrated.exportDatabase(),
+      onDatabaseDirty: reopenedDirty,
+    });
+    expect(
+      await queryRows(reopened, "SELECT version FROM project_calendar"),
+    ).toEqual([{ version: 0 }]);
+    expect(reopenedDirty).not.toHaveBeenCalled();
+  });
+
   it("closes the SQL.js database and rejects subsequent database access", async () => {
     const mock = await createMock();
     mock.close();

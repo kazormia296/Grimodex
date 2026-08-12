@@ -855,7 +855,11 @@ export function DetailsTab({
         entry={entry}
         activePhase={
           !isPreviewMode && activePhase
-            ? { id: activePhase.id, label: activePhase.label }
+            ? {
+                id: activePhase.id,
+                label: activePhase.label,
+                version: activePhase.version,
+              }
             : null
         }
         activeResolvedDetailValues={activeResolvedDetailValues}

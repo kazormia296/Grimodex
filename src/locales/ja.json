@@ -483,6 +483,17 @@
       "folder-too-large": "フォルダー内の原稿ファイル合計が大きすぎます（上限 {{maxMiB}} MiB）",
       "path-too-deep": "フォルダー階層が深すぎます（上限 {{maxDepth}} 階層）"
     },
+    "generic": {
+      "wizardTitle": "Generic インポート（プレビュー）",
+      "runPreview": "プレビュー実行",
+      "resourceTreeHint": "取り込み対象ファイルと推定ロール（プレビュー）。",
+      "noResources": "リソースがありません",
+      "rolePickerHint": "リソースの semantic role を確認します（プレビュー）。",
+      "disposition": "配置",
+      "summaryHint": "Generic インポートの組み立て概要（プレビュー）。",
+      "skipped": "スキップ",
+      "decoderPickerHint": "デコーダーは拡張子とマジックバイトから自動選択されます（プレビュー）。"
+    },
     "scan": {
       "description": "Scan のプライベート editor seed (JSON) を読み込み、新規プロジェクトへ段階適用します。既存プロジェクトは変更されません。",
       "tooLarge": "Scan seed が大きすぎます（最大32MB）。",
@@ -1498,7 +1509,29 @@
         "codex_judgment": "固有名詞候補の判定",
         "codex_yomi": "読み推定",
         "plot_thread_extract": "プロットスレッド抽出",
-        "chronicle_extract": "作中年表 出来事抽出"
+        "chronicle_extract": "作中年表 出来事抽出",
+        "narrative_observation_extract": "Narrative Observation 抽出",
+        "narrative_event_synthesize": "Narrative Event 統合",
+        "narrative_entity_resolve": "Narrative Entity 解決",
+        "narrative_relation_synthesize": "Narrative Relation 統合",
+        "narrative_state_synthesize": "Narrative State 統合",
+        "narrative_phase_synthesize": "Narrative Phase 統合",
+        "narrative_detail_compose": "Narrative Detail 整形",
+        "narrative_temporal_attach": "時間表現 Attachment",
+        "narrative_temporal_synthesize": "時間関係 Synthesis",
+        "narrative_structured_repair": "Narrative JSON 修復",
+        "narrative_plot_thread_synthesize": "プロットスレッド候補 統合",
+        "narrative_plot_development_classify": "プロット進展 分類",
+        "narrative_plot_marker_assign": "プロットマーカー 補助",
+        "narrative_plot_relation_synthesize": "プロット関係 統合",
+        "narrative_foreshadow_signal_synthesize": "伏線 setup 信号 統合",
+        "narrative_setup_payoff_link": "Setup/Payoff リンク",
+        "narrative_foreshadow_global_reconcile": "伏線候補 グローバル調停",
+        "narrative_foreshadow_quality_evaluate": "伏線品質 評価",
+        "generic_import_role_classify": "Generic Import ロール分類",
+        "generic_import_document_partition": "Generic Import 文書分割",
+        "generic_import_custom_extract": "Generic Import カスタム抽出",
+        "generic_import_record_reconcile": "Generic Import レコード統合"
       }
     }
   },
@@ -2421,7 +2454,8 @@
       "fieldTypeText": "テキスト",
       "fieldTypeDropdown": "ドロップダウン",
       "fieldTypeCodexReference": "Codex 参照",
-      "manageFieldsTitle": "フィールドを管理: {{type}}"
+      "manageFieldsTitle": "フィールドを管理: {{type}}",
+      "editConflict": "この詳細は別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。"
     },
     "relation": {
       "title": "階層（親子）",
@@ -5711,6 +5745,24 @@
       },
       "failed": "抽出に失敗しました",
       "none": "抽出できるサブプロットが見つかりませんでした。"
+    },
+    "reviewExtract": {
+      "button": "抽出プレビュー",
+      "title": "プロットスレッド候補レビュー",
+      "hint": "AI が提案したプロットスレッド候補をレビューします（プレビュー機能）。",
+      "empty": "レビュー待ちの提案はまだありません。",
+      "markerCount": "マーカー {{n}} 件",
+      "blocked": "要確認",
+      "binding": {
+        "createNew": "新規作成",
+        "bindExisting": "既存スレッドへ統合",
+        "unresolved": "候補が複数あり未解決"
+      },
+      "prominence": {
+        "primary": "主要",
+        "supporting": "補助",
+        "minor": "小規模"
+      }
     },
     "structure": {
       "title": "構造分析",

@@ -26,7 +26,11 @@ import {
   buildShellCommandHandlers,
   registerShellBridgeHandlers,
 } from "./shellCommands.js";
-import { focusPanelWindow, openPanelWindow } from "./windows.js";
+import {
+  focusPanelWindow,
+  hasPanelWindow,
+  openPanelWindow,
+} from "./windows.js";
 
 export type ExtraShellHandlers =
   | ShellCommandHandlers
@@ -126,5 +130,6 @@ export function registerIpcRouter(
   registerShellBridgeHandlers({
     open: openPanelWindow,
     focusByLabel: focusPanelWindow,
+    existsByLabel: hasPanelWindow,
   });
 }

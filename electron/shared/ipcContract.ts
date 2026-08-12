@@ -246,6 +246,7 @@ export const IPC = {
   /** パネル別窓（§6.5）。main 側実装は S7（S4 は IPC_UNIMPLEMENTED スタブ）。 */
   panelOpen: "grim:panel-open",
   panelFocus: "grim:panel-focus-by-label",
+  panelExists: "grim:panel-exists-by-label",
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -381,6 +382,26 @@ export function clampZoomFactor(factor: unknown): number {
 // 生成物 index.js は gitignore のため import せず構造的に一致させる）
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface EntitySeedCanonicalRangeV1 {
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface EntitySeedCanonicalSourceV1 {
+  readonly sourceRef: string;
+  readonly documentRef: string;
+  readonly documentRange: EntitySeedCanonicalRangeV1;
+  readonly text: string;
+}
+
+export interface ExtractCodexEntitySeedsRequestV1 {
+  readonly schemaVersion: 1;
+  readonly normalizerVersion: "gdx-canonical-text/1";
+  readonly language: string;
+  readonly minimumOccurrenceCount: number;
+  readonly sources: readonly EntitySeedCanonicalSourceV1[];
+}
+
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
@@ -408,6 +429,7 @@ export interface NapiBackendLike {
   lintTermDictionaryDelete?(projectId: string, id: string): Promise<void>;
   eventGetVersion?(projectId: string, eventId: string): Promise<string>;
   eventSetParticipants?(payload: unknown): Promise<string>;
+  projectCalendarUpsert?(payload: unknown): Promise<string>;
   authorshipReplaceLane?(payload: unknown): Promise<void>;
   entityTagsSet?(payload: unknown): Promise<void>;
   codexRenameUndo?(payload: unknown): Promise<void>;
@@ -556,6 +578,10 @@ export interface NapiBackendLike {
     projectId: string,
     minCount?: number | null,
   ): Promise<string>;
+  /** Optional so an older native binding fails with an explicit version-skew marker. */
+  extractCodexEntitySeeds?(
+    request: ExtractCodexEntitySeedsRequestV1,
+  ): Promise<string>;
   // Semantic Phase 3 Batch 4。optional は旧 .node とのversion skewを
   // requireNapiMethodで明示エラーにするため。usize相当はIPCでu32へ狭める。
   semanticDownloadModel?(language: string): Promise<string>;
@@ -699,6 +725,23 @@ export interface NapiBackendLike {
   agentSceneEventUnlink(payload: unknown): Promise<string>;
   agentEventRelationAdd(payload: unknown): Promise<string>;
   agentEventRelationRemove(payload: unknown): Promise<string>;
+  narrativeExtractionCreateRun(payload: unknown): Promise<string>;
+  narrativeExtractionGetRun(payload: unknown): Promise<string>;
+  narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
+  narrativeExtractionCancelRun(payload: unknown): Promise<string>;
+  narrativeExtractionClaimTask(payload: unknown): Promise<string>;
+  narrativeExtractionFinishTask(payload: unknown): Promise<string>;
+  narrativeExtractionFailTask(payload: unknown): Promise<string>;
+  narrativeExtractionSaveProposalSet(payload: unknown): Promise<string>;
+  narrativeExtractionGetRunReviewBundle(payload: unknown): Promise<string>;
+  narrativeExtractionAppendRevision(payload: unknown): Promise<string>;
+  narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
+  narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
+  narrativeExtractionPrepareCommit(payload: unknown): Promise<string>;
+  narrativeExtractionApplyCommit(payload: unknown): Promise<string>;
+  narrativeExtractionGetCommitStatus(payload: unknown): Promise<string>;
+  narrativeExtractionUndoCommit(payload: unknown): Promise<string>;
+  narrativeExtractionRedoCommit(payload: unknown): Promise<string>;
   // post_effect pure-db 7 コマンド
   listPostEffectRuns(
     projectId: string,
@@ -1618,6 +1661,46 @@ function requireEventSetParticipantsPayload(args: CommandArgs): CommandArgs {
   return payload;
 }
 
+function requireProjectCalendarUpsertPayload(args: CommandArgs): CommandArgs {
+  const command = "project_calendar_upsert";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  for (const key of [
+    "seasonBoundaries",
+    "months",
+    "weekdayNames",
+    "leapRule",
+    "ageReckoning",
+    "eras",
+    "reform",
+    "timezone",
+  ] as const) {
+    requireString(payload, key, command);
+  }
+  for (const key of [
+    "daysPerYear",
+    "startYear",
+    "weekdayStartIndex",
+    "lunarTzMinutes",
+  ] as const) {
+    requireSafeInteger(payload, key, command);
+  }
+  if (payload.baseVersion !== undefined && payload.baseVersion !== null) {
+    const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer when present`,
+      );
+    }
+  } else if (payload.baseVersion === undefined) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: missing required key baseVersion`,
+    );
+  }
+  return payload;
+}
+
 function requireNullableStringField(
   args: CommandArgs,
   key: string,
@@ -1961,6 +2044,7 @@ const PROJECT_SNAPSHOT_RESTORE_TABLES = new Set([
   "codex_entries",
   "codex_tags",
   "codex_detail_definitions",
+  "codex_detail_semantic_bindings",
   "codex_entry_tags",
   "codex_detail_values",
   "codex_entry_phases",
@@ -3118,6 +3202,219 @@ function optionalUnsignedInteger(
   return value;
 }
 
+const ENTITY_SEED_NORMALIZER_VERSION = "gdx-canonical-text/1";
+const MAX_ENTITY_SEED_SOURCES = 900;
+const MAX_ENTITY_SEED_OPAQUE_REF_BYTES = 1024;
+const MAX_ENTITY_SEED_REQUEST_BYTES = 8 * 1024 * 1024;
+const MAX_ENTITY_SEED_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+function hasLoneUtf16Surrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function requireExactEntitySeedKeys(
+  value: CommandArgs,
+  allowedKeys: readonly string[],
+  path: string,
+  command: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  const actual = Object.keys(value);
+  if (
+    actual.length !== allowedKeys.length ||
+    actual.some((key) => !allowed.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`${path}\` for command \`${command}\`: expected exact fields ${allowedKeys.join(", ")}`,
+    );
+  }
+}
+
+function requireEntitySeedRecord(
+  value: unknown,
+  path: string,
+  command: string,
+): CommandArgs {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`${path}\` for command \`${command}\`: expected an object`,
+    );
+  }
+  return value as CommandArgs;
+}
+
+function requireEntitySeedOpaqueRef(
+  value: CommandArgs,
+  key: "sourceRef" | "documentRef",
+  path: string,
+  command: string,
+): string {
+  const ref = requireString(value, key, command);
+  if (
+    ref.length === 0 ||
+    hasLoneUtf16Surrogate(ref) ||
+    /\p{Cc}/u.test(ref) ||
+    new TextEncoder().encode(ref).length > MAX_ENTITY_SEED_OPAQUE_REF_BYTES
+  ) {
+    throw new Error(
+      `invalid args \`${path}.${key}\` for command \`${command}\`: expected a non-empty opaque reference of at most ${MAX_ENTITY_SEED_OPAQUE_REF_BYTES} UTF-8 bytes`,
+    );
+  }
+  return ref;
+}
+
+function entitySeedRequestFromArgs(args: CommandArgs): CommandArgs {
+  // The renderer facade sends the request fields directly. The nested form is
+  // retained for the initial command-contract caller; both forms are exact.
+  if (Object.keys(args).length === 1 && Object.hasOwn(args, "request")) {
+    return requireEntitySeedRecord(
+      requirePresent(args, "request", "extract_codex_entity_seeds"),
+      "request",
+      "extract_codex_entity_seeds",
+    );
+  }
+  return args;
+}
+
+function requireExtractCodexEntitySeedsRequest(
+  args: CommandArgs,
+): ExtractCodexEntitySeedsRequestV1 {
+  const command = "extract_codex_entity_seeds";
+  const request = entitySeedRequestFromArgs(args);
+  requireExactEntitySeedKeys(
+    request,
+    [
+      "schemaVersion",
+      "normalizerVersion",
+      "language",
+      "minimumOccurrenceCount",
+      "sources",
+    ],
+    "request",
+    command,
+  );
+
+  if (requirePresent(request, "schemaVersion", command) !== 1) {
+    throw new Error(
+      `invalid args \`schemaVersion\` for command \`${command}\`: expected 1`,
+    );
+  }
+  if (
+    requireString(request, "normalizerVersion", command) !==
+    ENTITY_SEED_NORMALIZER_VERSION
+  ) {
+    throw new Error(
+      `invalid args \`normalizerVersion\` for command \`${command}\`: unsupported canonical normalizer`,
+    );
+  }
+  const language = requireNonEmptyString(request, "language", command);
+  if (
+    hasLoneUtf16Surrogate(language) ||
+    /\p{Cc}/u.test(language) ||
+    new TextEncoder().encode(language).length > 64
+  ) {
+    throw new Error(
+      `invalid args \`language\` for command \`${command}\`: expected at most 64 UTF-8 bytes without control characters`,
+    );
+  }
+  const minimumOccurrenceCount = requireNumber(
+    request,
+    "minimumOccurrenceCount",
+    command,
+  );
+  if (
+    !Number.isSafeInteger(minimumOccurrenceCount) ||
+    minimumOccurrenceCount < 1 ||
+    minimumOccurrenceCount > 0xffff_ffff
+  ) {
+    throw new Error(
+      `invalid args \`minimumOccurrenceCount\` for command \`${command}\`: expected a positive u32 integer`,
+    );
+  }
+
+  const sources = requireArray(request, "sources", command);
+  if (sources.length > MAX_ENTITY_SEED_SOURCES) {
+    throw new Error(
+      `invalid args \`sources\` for command \`${command}\`: expected at most ${MAX_ENTITY_SEED_SOURCES} sources`,
+    );
+  }
+  const sourceRefs = new Set<string>();
+  for (const [index, candidate] of sources.entries()) {
+    const path = `sources[${index}]`;
+    const source = requireEntitySeedRecord(candidate, path, command);
+    requireExactEntitySeedKeys(
+      source,
+      ["sourceRef", "documentRef", "documentRange", "text"],
+      path,
+      command,
+    );
+    const sourceRef = requireEntitySeedOpaqueRef(
+      source,
+      "sourceRef",
+      path,
+      command,
+    );
+    requireEntitySeedOpaqueRef(source, "documentRef", path, command);
+    if (sourceRefs.has(sourceRef)) {
+      throw new Error(
+        `invalid args \`${path}.sourceRef\` for command \`${command}\`: duplicate source reference`,
+      );
+    }
+    sourceRefs.add(sourceRef);
+
+    const rangePath = `${path}.documentRange`;
+    const range = requireEntitySeedRecord(
+      requirePresent(source, "documentRange", command),
+      rangePath,
+      command,
+    );
+    requireExactEntitySeedKeys(range, ["start", "end"], rangePath, command);
+    const start = requireNumber(range, "start", command);
+    const end = requireNumber(range, "end", command);
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start < 0 ||
+      end < start ||
+      end > 0xffff_ffff
+    ) {
+      throw new Error(
+        `invalid args \`${rangePath}\` for command \`${command}\`: expected a non-negative safe CanonicalRange`,
+      );
+    }
+
+    const text = requireString(source, "text", command);
+    if (hasLoneUtf16Surrogate(text)) {
+      throw new Error(
+        `invalid args \`${path}.text\` for command \`${command}\`: invalid UTF-16`,
+      );
+    }
+    if (end - start !== text.length) {
+      throw new Error(
+        `invalid args \`${rangePath}\` for command \`${command}\`: range width must equal text UTF-16 length`,
+      );
+    }
+  }
+
+  const encodedRequest = new TextEncoder().encode(JSON.stringify(request));
+  if (encodedRequest.length > MAX_ENTITY_SEED_REQUEST_BYTES) {
+    throw new Error(
+      `invalid args \`request\` for command \`${command}\`: encoded payload exceeds 8 MiB`,
+    );
+  }
+  return request as unknown as ExtractCodexEntitySeedsRequestV1;
+}
+
 /** Tauri の Option<String> 引数の写像（欠落 / null は None。文字列以外は拒否）。 */
 function optionalString(
   args: CommandArgs,
@@ -3393,6 +3690,16 @@ function nullableString(
 /** napi は JSON 文字列を返す（Tauri ワイヤと同形にするため parse して返す）。 */
 function parseWire(json: string): unknown {
   return JSON.parse(json) as unknown;
+}
+
+function parseEntitySeedWire(json: string): unknown {
+  if (
+    json.length > MAX_ENTITY_SEED_RESPONSE_BYTES ||
+    new TextEncoder().encode(json).length > MAX_ENTITY_SEED_RESPONSE_BYTES
+  ) {
+    throw new Error("entity seed response exceeds the 8 MiB wire budget");
+  }
+  return parseWire(json);
 }
 
 /** native mutationは既にcommit済みなので、window配信失敗でinvokeを失敗へ反転しない。 */
@@ -3682,6 +3989,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.eventSetParticipants,
           "eventSetParticipants",
         )(requireEventSetParticipantsPayload(a)),
+      ),
+  },
+  project_calendar_upsert: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectCalendarUpsert,
+          "projectCalendarUpsert",
+        )(requireProjectCalendarUpsertPayload(a)),
       ),
   },
   authorship_replace_lane: {
@@ -4188,6 +4505,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           optionalUnsignedInteger(a, "minCount", "extract_codex_candidates"),
         ),
       ),
+  },
+  extract_codex_entity_seeds: {
+    run: async (b, a) => {
+      const request = requireExtractCodexEntitySeedsRequest(a);
+      return parseEntitySeedWire(
+        await requireNapiMethod(
+          b,
+          b.extractCodexEntitySeeds,
+          "extractCodexEntitySeeds",
+        )(request),
+      );
+    },
   },
   // Semantic Phase 3 Batch 4。native methodsはversion skewを許容する構造型にし、
   // 実行時は必ず存在検証する。JSON文字列をparseしてTauri invokeと同じwireへ戻す。
@@ -4904,6 +5233,162 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.agentEventRelationRemove(
           requirePresent(a, "payload", "agent_event_relation_remove"),
+        ),
+      ),
+  },
+  narrative_extraction_create_run: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionCreateRun(
+          requirePresent(a, "payload", "narrative_extraction_create_run"),
+        ),
+      ),
+  },
+  narrative_extraction_get_run: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionGetRun(
+          requirePresent(a, "payload", "narrative_extraction_get_run"),
+        ),
+      ),
+  },
+  narrative_extraction_list_resumable_runs: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionListResumableRuns(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_list_resumable_runs",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_cancel_run: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionCancelRun(
+          requirePresent(a, "payload", "narrative_extraction_cancel_run"),
+        ),
+      ),
+  },
+  narrative_extraction_claim_task: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionClaimTask(
+          requirePresent(a, "payload", "narrative_extraction_claim_task"),
+        ),
+      ),
+  },
+  narrative_extraction_finish_task: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionFinishTask(
+          requirePresent(a, "payload", "narrative_extraction_finish_task"),
+        ),
+      ),
+  },
+  narrative_extraction_fail_task: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionFailTask(
+          requirePresent(a, "payload", "narrative_extraction_fail_task"),
+        ),
+      ),
+  },
+  narrative_extraction_save_proposal_set: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionSaveProposalSet(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_save_proposal_set",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_get_run_review_bundle: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionGetRunReviewBundle(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_get_run_review_bundle",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_append_revision: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionAppendRevision(
+          requirePresent(a, "payload", "narrative_extraction_append_revision"),
+        ),
+      ),
+  },
+  narrative_extraction_append_decision: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionAppendDecision(
+          requirePresent(a, "payload", "narrative_extraction_append_decision"),
+        ),
+      ),
+  },
+  narrative_extraction_revise_and_decide: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionReviseAndDecide(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_revise_and_decide",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_prepare_commit: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionPrepareCommit(
+          requirePresent(a, "payload", "narrative_extraction_prepare_commit"),
+        ),
+      ),
+  },
+  narrative_extraction_apply_commit: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionApplyCommit(
+          requirePresent(a, "payload", "narrative_extraction_apply_commit"),
+        ),
+      ),
+  },
+  narrative_extraction_get_commit_status: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionGetCommitStatus(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_get_commit_status",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_undo_commit: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionUndoCommit(
+          requirePresent(a, "payload", "narrative_extraction_undo_commit"),
+        ),
+      ),
+  },
+  narrative_extraction_redo_commit: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionRedoCommit(
+          requirePresent(a, "payload", "narrative_extraction_redo_commit"),
         ),
       ),
   },

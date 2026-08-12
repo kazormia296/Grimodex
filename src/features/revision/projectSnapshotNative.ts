@@ -7,6 +7,7 @@ export const SNAPSHOT_RESTORE_TABLES = [
   "codex_entries",
   "codex_tags",
   "codex_detail_definitions",
+  "codex_detail_semantic_bindings",
   "codex_entry_tags",
   "codex_detail_values",
   "codex_entry_phases",

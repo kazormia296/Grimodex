@@ -36,7 +36,9 @@ const makeDefinition = (
   fieldConfig: null,
   sortOrder: 1.0,
   includeInContext: 1,
+  version: 0,
   createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
 });
 
 const EMPTY_DOC = JSON.stringify({

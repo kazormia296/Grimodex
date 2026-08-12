@@ -60,6 +60,7 @@ import {
 } from "@/lib/chatNavigationGuard";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { publishSceneAuthorityCommit } from "@/application/tree/sceneAuthorityRegistry";
+import { tryAcquireTreeTopologyMutationLease } from "@/application/tree/treeTopologyMutationRegistry";
 
 export type { NodeType, SceneStatus, TreeNodeData } from "./types";
 
@@ -86,13 +87,35 @@ async function withTreeCreationAuthority<T>(
 }
 
 function tryAcquireTreeNavigationAuthority() {
-  if (!canScheduleQuiescenceMutation()) return null;
-  return tryAcquireTreeNavigationLease();
+  const topology = tryAcquireTreeTopologyMutationLease();
+  if (!topology) return null;
+  const navigation = tryAcquireTreeNavigationLease();
+  if (!navigation) {
+    topology.release();
+    return null;
+  }
+  return {
+    release() {
+      navigation.release();
+      topology.release();
+    },
+  };
 }
 
 function tryAcquireTreeCreationAuthority() {
-  if (!canScheduleQuiescenceMutation()) return null;
-  return tryAcquireTreeCreationLease();
+  const topology = tryAcquireTreeTopologyMutationLease();
+  if (!topology) return null;
+  const navigation = tryAcquireTreeCreationLease();
+  if (!navigation) {
+    topology.release();
+    return null;
+  }
+  return {
+    release() {
+      navigation.release();
+      topology.release();
+    },
+  };
 }
 
 /**
@@ -1968,6 +1991,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async moveNode(id, newParentId, afterId) {
     await moveTreeNode(id, newParentId, afterId, {
+      tryAcquireNavigationAuthority: tryAcquireTreeNavigationAuthority,
       getNodes: () => get().nodes,
       applyNodes: (nodes) => set({ nodes, scenes: computeScenes(nodes) }),
       persist: async (nodeId, patch) => {

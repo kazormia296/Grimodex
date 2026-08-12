@@ -328,6 +328,11 @@ export function focusPanelWindow(label: string): boolean {
   return true;
 }
 
+/** label のパネル窓が存在するかを、復元・focus などの副作用なしで返す。 */
+export function hasPanelWindow(label: string): boolean {
+  return isValidPanelLabel(label) && getWindow(label) !== undefined;
+}
+
 /** 生存中の全パネル窓に close を要求する（veto プロトコル §6.4 を通る）。 */
 function closeAllPanelWindows(): void {
   for (const [label, win] of [...registry]) {

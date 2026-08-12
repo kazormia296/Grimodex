@@ -55,6 +55,7 @@ pub enum SnapshotRestoreTable {
     CodexEntries,
     CodexTags,
     CodexDetailDefinitions,
+    CodexDetailSemanticBindings,
     CodexEntryTags,
     CodexDetailValues,
     CodexEntryPhases,
@@ -103,6 +104,7 @@ impl SnapshotRestoreTable {
             Self::CodexEntries => "codex_entries",
             Self::CodexTags => "codex_tags",
             Self::CodexDetailDefinitions => "codex_detail_definitions",
+            Self::CodexDetailSemanticBindings => "codex_detail_semantic_bindings",
             Self::CodexEntryTags => "codex_entry_tags",
             Self::CodexDetailValues => "codex_detail_values",
             Self::CodexEntryPhases => "codex_entry_phases",
@@ -151,6 +153,7 @@ impl SnapshotRestoreTable {
             | Self::CodexEntries
             | Self::CodexTags
             | Self::CodexDetailDefinitions
+            | Self::CodexDetailSemanticBindings
             | Self::CodexEntryTags
             | Self::CodexDetailValues
             | Self::CodexEntryPhases
@@ -253,6 +256,7 @@ const AUX_SPECS: &[AuxSpec] = &[
     AuxSpec { scope: "codex_tags", owner: RestoreScope::Codex, table: "codex_tags", predicate: "project_id = ?", binds: 1 },
     AuxSpec { scope: "codex_entry_tags", owner: RestoreScope::Codex, table: "codex_entry_tags", predicate: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "codex_detail_definitions", owner: RestoreScope::Codex, table: "codex_detail_definitions", predicate: "project_id = ?", binds: 1 },
+    AuxSpec { scope: "codex_detail_semantic_bindings", owner: RestoreScope::Codex, table: "codex_detail_semantic_bindings", predicate: "project_id = ?", binds: 1 },
     AuxSpec { scope: "codex_detail_values", owner: RestoreScope::Codex, table: "codex_detail_values", predicate: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "codex_entry_phases", owner: RestoreScope::Codex, table: "codex_entry_phases", predicate: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)", binds: 1 },
     AuxSpec { scope: "codex_phase_detail_overrides", owner: RestoreScope::Codex, table: "codex_phase_detail_overrides", predicate: "phase_id IN (SELECT id FROM codex_entry_phases WHERE entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?))", binds: 1 },
@@ -687,6 +691,72 @@ fn snapshot_has_aux(
         .is_some())
 }
 
+fn calendar_version_from_snapshot(
+    transaction: &Transaction<'_>,
+    snapshot_id: &str,
+    project_id: &str,
+) -> anyhow::Result<Option<i64>> {
+    let payload_json = transaction
+        .query_row(
+            "SELECT payload_json FROM project_snapshot_aux
+              WHERE snapshot_id = ?1 AND scope = 'project_calendar'",
+            params![snapshot_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(payload_json) = payload_json else {
+        return Ok(None);
+    };
+    let payload: Value = serde_json::from_str(&payload_json)?;
+    let rows = payload
+        .get("rows")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("project_calendar snapshot payload has no rows"))?;
+    let snapshot_row = rows
+        .iter()
+        .find(|row| row.get("project_id").and_then(Value::as_str) == Some(project_id))
+        .ok_or_else(|| anyhow::anyhow!("project_calendar snapshot has no project row"))?;
+    let Some(version) = snapshot_row.get("version") else {
+        // Structural snapshots created before Calendar OCC did not include a
+        // version. Treat that historical generation as zero, but never accept
+        // a present malformed value.
+        return Ok(Some(0));
+    };
+    let version = version
+        .as_i64()
+        .ok_or_else(|| anyhow::anyhow!("project_calendar snapshot version must be an integer"))?;
+    if version < 0 {
+        anyhow::bail!("project_calendar snapshot version must be non-negative");
+    }
+    Ok(Some(version))
+}
+
+fn next_calendar_restore_version(
+    transaction: &Transaction<'_>,
+    snapshot_id: &str,
+    project_id: &str,
+) -> anyhow::Result<i64> {
+    let live_version = transaction
+        .query_row(
+            "SELECT version FROM project_calendar WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if live_version.is_some_and(|value| value < 0) {
+        anyhow::bail!("live project_calendar version must be non-negative");
+    }
+    let snapshot_version = calendar_version_from_snapshot(transaction, snapshot_id, project_id)?;
+    let baseline = live_version
+        .into_iter()
+        .chain(snapshot_version)
+        .max()
+        .unwrap_or(-1);
+    baseline
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("project_calendar version overflow during restore"))
+}
+
 fn delete_for_project(
     transaction: &Transaction<'_>,
     table: &str,
@@ -882,6 +952,33 @@ pub fn apply_project_snapshot_restore(
         let transaction = conn.unchecked_transaction()?;
         transaction.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
 
+        // A body restore is a new Calendar generation, not a resurrection of
+        // the version captured in the snapshot. Derive the token from trusted
+        // DB state before deleting the live row; never trust renderer input.
+        let calendar_restore_version = if scopes.contains(&RestoreScope::Body)
+            && payload
+                .inserts
+                .iter()
+                .any(|insert| insert.table == SnapshotRestoreTable::ProjectCalendar)
+        {
+            Some(next_calendar_restore_version(
+                &transaction,
+                &payload.snapshot_id,
+                &payload.project_id,
+            )?)
+        } else {
+            None
+        };
+        let calendar_restore_updated_at = if calendar_restore_version.is_some() {
+            Some(transaction.query_row(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+                [],
+                |row| row.get::<_, String>(0),
+            )?)
+        } else {
+            None
+        };
+
         let tree_prefix = format!("__grimodex_snapshot_tree_{}__", payload.snapshot_id);
         let codex_prefix = format!("__grimodex_snapshot_codex_{}__", payload.snapshot_id);
         let park_tree = scopes.contains(&RestoreScope::Body)
@@ -1021,10 +1118,21 @@ pub fn apply_project_snapshot_restore(
         }
 
         for insert in &payload.inserts {
+            let mut row = insert.row.clone();
+            if insert.table == SnapshotRestoreTable::ProjectCalendar {
+                let version = calendar_restore_version.ok_or_else(|| {
+                    anyhow::anyhow!("project_calendar restore version was not prepared")
+                })?;
+                row.insert("version".to_string(), Value::from(version));
+                let updated_at = calendar_restore_updated_at.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("project_calendar restore timestamp was not prepared")
+                })?;
+                row.insert("updated_at".to_string(), Value::from(updated_at.clone()));
+            }
             insert_record(
                 &transaction,
                 insert.table.as_str(),
-                &insert.row,
+                &row,
                 insert.mode == SnapshotInsertMode::Replace,
             )?;
         }
@@ -1132,6 +1240,130 @@ mod tests {
             .filter_map(|row| row["id"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["l1"]);
+    }
+
+    #[test]
+    fn body_restore_advances_calendar_generation_past_the_live_version() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO project_calendar
+                    (project_id, days_per_year, season_boundaries, version)
+                 VALUES ('p1', 400, '[]', 2)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed snapshot calendar");
+        create_project_snapshot(&db, empty_snapshot("s-calendar"))
+            .expect("create calendar snapshot");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE project_calendar
+                    SET days_per_year = 999, version = 8
+                  WHERE project_id = 'p1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("advance live calendar");
+
+        apply_project_snapshot_restore(
+            &db,
+            ApplyProjectSnapshotRestorePayload {
+                project_id: "p1".to_string(),
+                snapshot_id: "s-calendar".to_string(),
+                scopes: vec![RestoreScope::Body],
+                inserts: vec![SnapshotInsertPlan {
+                    table: SnapshotRestoreTable::ProjectCalendar,
+                    mode: SnapshotInsertMode::Insert,
+                    row: raw(json!({
+                        "project_id": "p1",
+                        "days_per_year": 400,
+                        "season_boundaries": "[]",
+                        "version": 2,
+                        "updated_at": "2000-01-01T00:00:00.000Z"
+                    })),
+                }],
+            },
+        )
+        .expect("restore body calendar");
+
+        db.with_conn(|conn| {
+            let (days_per_year, version, updated_at): (i64, i64, String) = conn.query_row(
+                "SELECT days_per_year, version, updated_at
+                   FROM project_calendar
+                  WHERE project_id = 'p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(days_per_year, 400);
+            assert_eq!(version, 9);
+            assert_ne!(updated_at, "2000-01-01T00:00:00.000Z");
+            let stale_write = conn.execute(
+                "UPDATE project_calendar
+                    SET days_per_year = 401, version = version + 1
+                  WHERE project_id = 'p1' AND version = 2",
+                [],
+            )?;
+            assert_eq!(stale_write, 0);
+            let stale_live_write = conn.execute(
+                "UPDATE project_calendar
+                    SET days_per_year = 402, version = version + 1
+                  WHERE project_id = 'p1' AND version = 8",
+                [],
+            )?;
+            assert_eq!(stale_live_write, 0);
+            Ok(())
+        })
+        .expect("verify restored calendar generation");
+
+        db.with_conn(|conn| {
+            let payload_json: String = conn.query_row(
+                "SELECT payload_json FROM project_snapshot_aux
+                  WHERE snapshot_id = 's-calendar' AND scope = 'project_calendar'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut snapshot_payload: Value = serde_json::from_str(&payload_json)?;
+            snapshot_payload["rows"][0]["version"] = json!("not-an-integer");
+            conn.execute(
+                "UPDATE project_snapshot_aux SET payload_json = ?1
+                  WHERE snapshot_id = 's-calendar' AND scope = 'project_calendar'",
+                params![snapshot_payload.to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("corrupt snapshot calendar version");
+        let malformed_restore = apply_project_snapshot_restore(
+            &db,
+            ApplyProjectSnapshotRestorePayload {
+                project_id: "p1".to_string(),
+                snapshot_id: "s-calendar".to_string(),
+                scopes: vec![RestoreScope::Body],
+                inserts: vec![SnapshotInsertPlan {
+                    table: SnapshotRestoreTable::ProjectCalendar,
+                    mode: SnapshotInsertMode::Insert,
+                    row: raw(json!({
+                        "project_id": "p1",
+                        "days_per_year": 400,
+                        "season_boundaries": "[]",
+                        "version": 0
+                    })),
+                }],
+            },
+        );
+        assert!(malformed_restore.is_err());
+        db.with_conn(|conn| {
+            let (days_per_year, version): (i64, i64) = conn.query_row(
+                "SELECT days_per_year, version FROM project_calendar WHERE project_id = 'p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!((days_per_year, version), (400, 9));
+            Ok(())
+        })
+        .expect("malformed restore leaves live calendar untouched");
     }
 
     #[test]

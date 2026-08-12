@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 14,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -1604,7 +1604,7 @@
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 8,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -1665,6 +1665,20 @@
           "notNull": true,
           "default": null,
           "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
         }
       },
       "foreignKeys": [
@@ -1708,11 +1722,134 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
+      "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
+    },
+    "codex_detail_semantic_bindings": {
+      "kind": "table",
+      "columns": {
+        "confirmed": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "definition_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "facet_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "projection_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "temporal_policy": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "codex_detail_definitions",
+          "from": "project_id",
+          "to": "project_id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 0,
+          "sequence": 1,
+          "table": "codex_detail_definitions",
+          "from": "definition_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE codex_detail_semantic_bindings ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, definition_id TEXT NOT NULL, facet_key TEXT NOT NULL, projection_kind TEXT NOT NULL CHECK(projection_kind IN ('scalar-text', 'summary-text', 'enum', 'entity-reference')), temporal_policy TEXT NOT NULL CHECK(temporal_policy IN ('base-only', 'phase-on-durable-change', 'base-and-phase', 'derived', 'manual-only')), source TEXT NOT NULL CHECK(source IN ('preset', 'user', 'reviewed-ai')), confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed IN (0, 1)), version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (project_id, definition_id) REFERENCES codex_detail_definitions(project_id, id) ON DELETE CASCADE )"
     },
     "codex_detail_values": {
       "kind": "table",
       "columns": {
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
         "definition_id": {
           "ordinal": 2,
           "declaredType": "TEXT",
@@ -1734,11 +1871,25 @@
           "default": null,
           "primaryKey": 1
         },
+        "updated_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
         "value": {
           "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -1772,7 +1923,7 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, UNIQUE(entry_id, definition_id) )"
+      "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entry_id, definition_id) )"
     },
     "codex_dismissed_relations": {
       "kind": "table",
@@ -2324,17 +2475,24 @@
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 8,
+          "ordinal": 12,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
           "primaryKey": 0
         },
         "depth_hint": {
-          "ordinal": 6,
+          "ordinal": 10,
           "declaredType": "INTEGER",
           "notNull": false,
           "default": null,
+          "primaryKey": 0
+        },
+        "directionality": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'directed'",
           "primaryKey": 0
         },
         "from_codex_id": {
@@ -2350,6 +2508,13 @@
           "notNull": false,
           "default": null,
           "primaryKey": 1
+        },
+        "inverse_label": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
         },
         "label": {
           "ordinal": 5,
@@ -2372,8 +2537,15 @@
           "default": "'custom'",
           "primaryKey": 0
         },
+        "semantic_key": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "source_map_edge_id": {
-          "ordinal": 7,
+          "ordinal": 11,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -2387,10 +2559,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 9,
+          "ordinal": 13,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "1",
           "primaryKey": 0
         }
       },
@@ -2427,7 +2606,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE codex_relations ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, to_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, relation_type TEXT NOT NULL DEFAULT 'custom', label TEXT, depth_hint INTEGER, source_map_edge_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE codex_relations ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, to_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, relation_type TEXT NOT NULL DEFAULT 'custom', label TEXT, directionality TEXT NOT NULL DEFAULT 'directed' CHECK (directionality IN ('directed', 'symmetric')), inverse_label TEXT, semantic_key TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, depth_hint INTEGER, source_map_edge_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "codex_tags": {
       "kind": "table",
@@ -3298,41 +3477,41 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE foreshadow_codex_links ( foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, PRIMARY KEY (foreshadow_id, codex_entry_id) )"
     },
-    "foreshadow_setups": {
+    "foreshadow_payoffs": {
       "kind": "table",
       "columns": {
         "ai_rationale": {
-          "ordinal": 10,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "ai_reasoning": {
-          "ordinal": 8,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "ai_strength": {
-          "ordinal": 7,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "attribution": {
-          "ordinal": 9,
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "'human'",
+          "primaryKey": 0
+        },
+        "confirmed": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         },
         "created_at": {
           "ordinal": 13,
           "declaredType": "INTEGER",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_anchor_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -3346,7 +3525,7 @@
         "from_pos": {
           "ordinal": 3,
           "declaredType": "INTEGER",
-          "notNull": true,
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -3358,24 +3537,24 @@
           "primaryKey": 1
         },
         "is_orphan": {
-          "ordinal": 12,
+          "ordinal": 10,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": "0",
           "primaryKey": 0
         },
-        "kind": {
+        "is_primary": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "role": {
           "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "last_evaluated_at": {
-          "ordinal": 11,
-          "declaredType": "INTEGER",
-          "notNull": false,
-          "default": null,
+          "default": "'unspecified'",
           "primaryKey": 0
         },
         "scene_id": {
@@ -3385,17 +3564,17 @@
           "default": null,
           "primaryKey": 0
         },
-        "strength": {
-          "ordinal": 6,
+        "semantic_key": {
+          "ordinal": 12,
           "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
+          "notNull": true,
+          "default": "''",
           "primaryKey": 0
         },
         "to_pos": {
           "ordinal": 4,
           "declaredType": "INTEGER",
-          "notNull": true,
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -3430,7 +3609,243 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE foreshadow_setups ( id TEXT PRIMARY KEY, foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, from_pos INTEGER NOT NULL, to_pos INTEGER NOT NULL, kind TEXT NOT NULL, strength TEXT, ai_strength TEXT, ai_reasoning TEXT, attribution TEXT NOT NULL DEFAULT 'human', ai_rationale TEXT, last_evaluated_at INTEGER, is_orphan INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
+      "createSql": "CREATE TABLE foreshadow_payoffs ( id TEXT PRIMARY KEY, foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, from_pos INTEGER, to_pos INTEGER, role TEXT NOT NULL DEFAULT 'unspecified', confirmed INTEGER NOT NULL DEFAULT 0, is_primary INTEGER NOT NULL DEFAULT 0, attribution TEXT NOT NULL DEFAULT 'human', ai_rationale TEXT, is_orphan INTEGER NOT NULL DEFAULT 0, evidence_anchor_id TEXT, semantic_key TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
+    },
+    "foreshadow_setup_payoff_links": {
+      "kind": "table",
+      "columns": {
+        "bridge_kind": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'unspecified'",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "explanation": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "foreshadow_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "payoff_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "setup_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "foreshadow_payoffs",
+          "from": "payoff_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "foreshadow_setups",
+          "from": "setup_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
+          "sequence": 0,
+          "table": "foreshadows",
+          "from": "foreshadow_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE foreshadow_setup_payoff_links ( foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, setup_id TEXT NOT NULL REFERENCES foreshadow_setups(id) ON DELETE CASCADE, payoff_id TEXT NOT NULL REFERENCES foreshadow_payoffs(id) ON DELETE CASCADE, bridge_kind TEXT NOT NULL DEFAULT 'unspecified', explanation TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (foreshadow_id, setup_id, payoff_id) )"
+    },
+    "foreshadow_setups": {
+      "kind": "table",
+      "columns": {
+        "ai_rationale": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "ai_reasoning": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "ai_strength": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "attribution": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'human'",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 16,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_anchor_id": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "foreshadow_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "from_pos": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "is_orphan": {
+          "ordinal": 13,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "kind": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "last_evaluated_at": {
+          "ordinal": 12,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "role": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'unspecified'",
+          "primaryKey": 0
+        },
+        "scene_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_key": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
+        "strength": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "to_pos": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 17,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "tree_nodes",
+          "from": "scene_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "foreshadows",
+          "from": "foreshadow_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE foreshadow_setups ( id TEXT PRIMARY KEY, foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, from_pos INTEGER NOT NULL, to_pos INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'unspecified', strength TEXT, ai_strength TEXT, ai_reasoning TEXT, attribution TEXT NOT NULL DEFAULT 'human', ai_rationale TEXT, last_evaluated_at INTEGER, is_orphan INTEGER NOT NULL DEFAULT 0, evidence_anchor_id TEXT, semantic_key TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
     },
     "foreshadows": {
       "kind": "table",
@@ -3443,14 +3858,14 @@
           "primaryKey": 0
         },
         "codex_link_dirty_at": {
-          "ordinal": 12,
+          "ordinal": 14,
           "declaredType": "INTEGER",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 13,
+          "ordinal": 15,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": null,
@@ -3472,6 +3887,13 @@
         },
         "load_bearing": {
           "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "mechanism": {
+          "ordinal": 12,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -3534,10 +3956,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 14,
+          "ordinal": 16,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 13,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -3564,7 +3993,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE foreshadows ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL, intent TEXT, notes TEXT, payoff_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, payoff_from_pos INTEGER, payoff_to_pos INTEGER, payoff_confirmed INTEGER NOT NULL DEFAULT 0, abandoned INTEGER NOT NULL DEFAULT 0, secret INTEGER NOT NULL DEFAULT 1, load_bearing TEXT, codex_link_dirty_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
+      "createSql": "CREATE TABLE foreshadows ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL, intent TEXT, notes TEXT, payoff_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, payoff_from_pos INTEGER, payoff_to_pos INTEGER, payoff_confirmed INTEGER NOT NULL DEFAULT 0, abandoned INTEGER NOT NULL DEFAULT 0, secret INTEGER NOT NULL DEFAULT 1, load_bearing TEXT, mechanism TEXT, version INTEGER NOT NULL DEFAULT 0, codex_link_dirty_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL )"
     },
     "fts_meta": {
       "kind": "table",
@@ -3693,6 +4122,70 @@
       ],
       "createSql": "CREATE TABLE generation_logs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')), command_id TEXT, instruction TEXT, prompt_full TEXT, model TEXT, trace_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "generic_extraction_schemas": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "description": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "name": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "schema_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "id",
+            "revision"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE generic_extraction_schemas ( id TEXT NOT NULL, revision INTEGER NOT NULL, name TEXT NOT NULL, description TEXT, digest TEXT NOT NULL, schema_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(id, revision) )"
+    },
     "idempotency_requests": {
       "kind": "table",
       "columns": {
@@ -3817,6 +4310,794 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE impact_review_baselines ( entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, snapshot_json TEXT NOT NULL, content_hash TEXT NOT NULL, reviewed_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "import_capture_blobs": {
+      "kind": "table",
+      "columns": {
+        "byte_length": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_capture_blobs ( digest TEXT PRIMARY KEY, byte_length INTEGER NOT NULL, created_at TEXT NOT NULL )"
+    },
+    "import_capture_entries": {
+      "kind": "table",
+      "columns": {
+        "blob_ref": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "byte_length": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "capture_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "capture_status": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "extension": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "parent_resource_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "raw_digest": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "relative_path": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resource_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_captures",
+          "from": "capture_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_capture_entries ( id TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE, resource_key TEXT NOT NULL, parent_resource_key TEXT, relative_path TEXT NOT NULL, kind TEXT NOT NULL, byte_length INTEGER NOT NULL, extension TEXT, capture_status TEXT NOT NULL, raw_digest TEXT, blob_ref TEXT, created_at TEXT NOT NULL )"
+    },
+    "import_captures": {
+      "kind": "table",
+      "columns": {
+        "budget_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "sealed_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_captures ( id TEXT PRIMARY KEY, state TEXT NOT NULL, source_kind TEXT NOT NULL, sealed_digest TEXT, budget_json TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "import_commits": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "error_message": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "plan_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "receipt_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "request_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE import_commits ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, project_id TEXT, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, created_at TEXT NOT NULL, UNIQUE(request_id) )"
+    },
+    "import_decoded_resources": {
+      "kind": "table",
+      "columns": {
+        "capture_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decoded_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decoder_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decoder_version": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "resource_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_captures",
+          "from": "capture_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_decoded_resources ( id TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE, resource_key TEXT NOT NULL, decoder_id TEXT NOT NULL, decoder_version TEXT NOT NULL, kind TEXT NOT NULL, digest TEXT NOT NULL, decoded_json TEXT NOT NULL, created_at TEXT NOT NULL )"
+    },
+    "import_evidence_bindings": {
+      "kind": "table",
+      "columns": {
+        "committed_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "committed_storage_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_anchor_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "projection_status": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_document_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_document_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_scene_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_evidence_bindings ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL, evidence_anchor_id TEXT NOT NULL, source_document_key TEXT NOT NULL, target_scene_id TEXT NOT NULL, source_document_digest TEXT NOT NULL, committed_storage_digest TEXT NOT NULL, projection_status TEXT NOT NULL, committed_at TEXT NOT NULL )"
+    },
+    "import_sessions": {
+      "kind": "table",
+      "columns": {
+        "adapter_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "adapter_version": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "error_message": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "extraction_run_ids_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "proposal_set_ids_json": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "source_package_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_package_ref": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 10,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_sessions ( id TEXT PRIMARY KEY, state TEXT NOT NULL, adapter_id TEXT, adapter_version TEXT, target_json TEXT NOT NULL, source_package_digest TEXT, source_package_ref TEXT, extraction_run_ids_json TEXT NOT NULL DEFAULT '[]', proposal_set_ids_json TEXT NOT NULL DEFAULT '[]', error_message TEXT, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "import_source_baselines": {
+      "kind": "table",
+      "columns": {
+        "adapter_version": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "committed_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "mapping_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "normalized_body_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "normalizer_version": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_digest": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_digest": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_version": {
+          "ordinal": 4,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_source_mappings",
+          "from": "mapping_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_source_baselines ( mapping_id TEXT PRIMARY KEY REFERENCES import_source_mappings(id) ON DELETE CASCADE, source_digest TEXT NOT NULL, target_digest TEXT NOT NULL, normalized_body_digest TEXT, target_version INTEGER, adapter_version TEXT NOT NULL, normalizer_version TEXT NOT NULL, committed_at TEXT NOT NULL )"
+    },
+    "import_source_mappings": {
+      "kind": "table",
+      "columns": {
+        "adapter_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "adapter_version": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "first_import_session_id": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "last_import_session_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_object_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_object_kind": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_record_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_set_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'active'",
+          "primaryKey": 0
+        },
+        "target_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_state_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 15,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 13,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_source_mappings ( id TEXT PRIMARY KEY, source_set_id TEXT NOT NULL, source_object_key TEXT NOT NULL, source_object_kind TEXT NOT NULL, target_kind TEXT NOT NULL, target_id TEXT NOT NULL, source_record_digest TEXT NOT NULL, target_state_digest TEXT NOT NULL, adapter_id TEXT NOT NULL, adapter_version TEXT NOT NULL, first_import_session_id TEXT NOT NULL, last_import_session_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "import_source_packages": {
+      "kind": "table",
+      "columns": {
+        "adapter_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "adapter_version": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "digest": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "package_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "import_sessions",
+          "from": "session_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE import_source_packages ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES import_sessions(id) ON DELETE CASCADE, digest TEXT NOT NULL, adapter_id TEXT NOT NULL, adapter_version TEXT NOT NULL, package_json TEXT NOT NULL, created_at TEXT NOT NULL )"
     },
     "labels": {
       "kind": "table",
@@ -4815,6 +6096,1001 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE map_stickies ( id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE, title TEXT, body TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}', preview_text TEXT, palette_id TEXT NOT NULL DEFAULT 'post-it-playful', color_slot INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0), ai_branch_id TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL, -- AI由来フラグ。ai_branch_id は「現在の所属 branch」(採用で NULL 化)、 -- こちらは「AI が生成した付箋か」という出自で採用後も保持する。 ai_derived INTEGER NOT NULL DEFAULT 0, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "narrative_apply_commits": {
+      "kind": "table",
+      "columns": {
+        "completed_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "error_message": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "plan_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "proposal_set_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "receipt_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 11,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_apply_commits ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT, proposal_set_id TEXT, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, created_at TEXT NOT NULL, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
+    },
+    "narrative_apply_operations": {
+      "kind": "table",
+      "columns": {
+        "commit_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "operation_index": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "operation_kind": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "result_entity_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "result_entity_kind": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_apply_operations ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, operation_index INTEGER NOT NULL, operation_kind TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', result_entity_kind TEXT, result_entity_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL )"
+    },
+    "narrative_commit_journals": {
+      "kind": "table",
+      "columns": {
+        "after_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "before_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "commit_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_commit_journals ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, before_json TEXT, after_json TEXT, created_at TEXT NOT NULL )"
+    },
+    "narrative_extraction_artifacts": {
+      "kind": "table",
+      "columns": {
+        "artifact_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "attempt_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "payload_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_ref": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_storage": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'inline-json'",
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_extraction_artifacts ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT, attempt_id TEXT, artifact_kind TEXT NOT NULL, payload_storage TEXT NOT NULL DEFAULT 'inline-json', payload_json TEXT, payload_ref TEXT, payload_digest TEXT, created_at TEXT NOT NULL )"
+    },
+    "narrative_extraction_attempts": {
+      "kind": "table",
+      "columns": {
+        "attempt_number": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "completed_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "error_message": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "output_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "started_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_extraction_attempts ( id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, error_message TEXT, output_json TEXT )"
+    },
+    "narrative_extraction_runs": {
+      "kind": "table",
+      "columns": {
+        "catalog_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "completed_at": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "coverage_json": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "outcome_summary_json": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "registry_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "scope_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "snapshot_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "spec_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "spec_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "started_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "surface_path_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 15,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_extraction_runs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface_path_id TEXT NOT NULL, scope_json TEXT NOT NULL, spec_json TEXT NOT NULL, spec_digest TEXT NOT NULL, snapshot_digest TEXT, catalog_digest TEXT, registry_digest TEXT, status TEXT NOT NULL, coverage_json TEXT NOT NULL DEFAULT '{}', outcome_summary_json TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
+    },
+    "narrative_extraction_task_edges": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "edge_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'depends_on'",
+          "primaryKey": 0
+        },
+        "from_task_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "run_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "to_task_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_extraction_task_edges ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, from_task_id TEXT NOT NULL, to_task_id TEXT NOT NULL, edge_kind TEXT NOT NULL DEFAULT 'depends_on', created_at TEXT NOT NULL )"
+    },
+    "narrative_extraction_tasks": {
+      "kind": "table",
+      "columns": {
+        "attempt_count": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "completed_at": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "error_message": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "heartbeat_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "input_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "lease_expires_at": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "lease_owner": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "output_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "priority": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "started_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 15,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_extraction_tasks ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_kind TEXT NOT NULL, status TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT, priority INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
+    },
+    "narrative_proposal_applications": {
+      "kind": "table",
+      "columns": {
+        "applied_entity_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "applied_entity_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "commit_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "proposal_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_proposal_applications ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, applied_entity_kind TEXT NOT NULL, applied_entity_id TEXT NOT NULL, created_at TEXT NOT NULL )"
+    },
+    "narrative_proposal_decisions": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_by": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decision": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "decision_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "proposal_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_proposal_decisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, decision TEXT NOT NULL, decision_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
+    },
+    "narrative_proposal_revisions": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_by": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "payload_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "proposal_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision_number": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_proposal_revisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_number INTEGER NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
+    },
+    "narrative_proposal_sets": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "set_kind": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'draft'",
+          "primaryKey": 0
+        },
+        "summary_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_proposal_sets ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, set_kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', summary_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0 )"
+    },
+    "narrative_proposals": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "current_revision_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "proposal_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "proposal_set_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'unreviewed'",
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_proposals ( id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL, proposal_key TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unreviewed', payload_json TEXT NOT NULL, current_revision_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
     "narrative_runtime_policy": {
       "kind": "table",
       "columns": {
@@ -4865,6 +7141,329 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_runtime_policy ( singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1), runtime_mode TEXT NOT NULL DEFAULT 'review-only' CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')), maintenance_enabled INTEGER NOT NULL DEFAULT 0 CHECK (maintenance_enabled IN (0, 1)), generic_import_enabled INTEGER NOT NULL DEFAULT 0 CHECK (generic_import_enabled IN (0, 1)), background_ai_enabled INTEGER NOT NULL DEFAULT 0 CHECK (background_ai_enabled IN (0, 1)), version INTEGER NOT NULL DEFAULT 1 )"
     },
+    "narrative_temporal_constraints": {
+      "kind": "table",
+      "columns": {
+        "authority": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "fingerprint": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_json": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_key": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_ids_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "strictness": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_temporal_constraints ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('absolute-window','relative-offset','interval-relation','duration','symbolic')), authority TEXT NOT NULL CHECK(authority IN ('user-metadata','user-confirmed','explicit-story-text','existing-domain-relation','deterministic-derived','model-inferred','projection-derived')), strictness TEXT NOT NULL CHECK(strictness IN ('hard','soft')), semantic_key TEXT NOT NULL, source_ids_json TEXT NOT NULL DEFAULT '[]', fingerprint TEXT NOT NULL, payload_json TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "narrative_temporal_nodes": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "fingerprint": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_key": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "shape": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'unknown'",
+          "primaryKey": 0
+        },
+        "subject_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "subject_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "timeline_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "timeline_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'primary'",
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_temporal_nodes ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, timeline_kind TEXT NOT NULL DEFAULT 'primary' CHECK(timeline_kind IN ('primary','alternate','embedded-fiction','hypothetical')), timeline_key TEXT, subject_kind TEXT NOT NULL CHECK(subject_kind IN ('scene','event','state-boundary','phase-boundary','named-period')), subject_json TEXT NOT NULL, semantic_key TEXT NOT NULL, shape TEXT NOT NULL DEFAULT 'unknown' CHECK(shape IN ('point','interval','unknown')), fingerprint TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "narrative_temporal_projections": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "calendar_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "constraint_set_digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "projected_value_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "solver_version": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'current'",
+          "primaryKey": 0
+        },
+        "target_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_result_version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 11,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_temporal_projections ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, target_kind TEXT NOT NULL CHECK(target_kind IN ('scene-time','event-time','scene-story-order')), target_id TEXT NOT NULL, constraint_set_digest TEXT NOT NULL, solver_version TEXT NOT NULL, calendar_digest TEXT, projected_value_digest TEXT NOT NULL, target_result_version INTEGER NOT NULL, application_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','invalidated','undone')), version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
     "plot_thread_branches": {
       "kind": "table",
       "columns": {
@@ -4876,7 +7475,7 @@
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 6,
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -4910,6 +7509,13 @@
           "default": null,
           "primaryKey": 0
         },
+        "semantic_key": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "to_thread_id": {
           "ordinal": 3,
           "declaredType": "TEXT",
@@ -4918,10 +7524,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 7,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -4968,13 +7581,13 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE plot_thread_branches ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, to_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, at_node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('branch','merge')), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE plot_thread_branches ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, from_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, to_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, at_node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('branch','merge')), semantic_key TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "plot_thread_scene_links": {
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 6,
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -5008,6 +7621,13 @@
           "default": null,
           "primaryKey": 0
         },
+        "semantic_key": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "sort_order": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -5023,10 +7643,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 7,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -5053,7 +7680,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE plot_thread_scene_links ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, phase_type TEXT NOT NULL CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')), note TEXT, sort_order TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE plot_thread_scene_links ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE, node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, phase_type TEXT NOT NULL CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')), note TEXT, sort_order TEXT, semantic_key TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "plot_threads": {
       "kind": "table",
@@ -5066,7 +7693,7 @@
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 8,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -5122,10 +7749,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 9,
+          "ordinal": 10,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         }
       },
@@ -5162,7 +7796,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE plot_threads ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL DEFAULT '', color TEXT, description TEXT, sort_order TEXT NOT NULL DEFAULT 'a0', -- 束ねレイアウトの生存スパン明示指定 (NULL=最初/最後のマーカーから導出)。 -- シーン削除で ON DELETE SET NULL → override 解除 (スレッド自体は残る)。 start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, end_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE plot_threads ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL DEFAULT '', color TEXT, description TEXT, sort_order TEXT NOT NULL DEFAULT 'a0', -- 束ねレイアウトの生存スパン明示指定 (NULL=最初/最後のマーカーから導出)。 -- シーン削除で ON DELETE SET NULL → override 解除 (スレッド自体は残る)。 start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, end_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
     "post_effect_annotation_relations": {
       "kind": "table",
@@ -5619,14 +8253,14 @@
       "kind": "table",
       "columns": {
         "age_reckoning": {
-          "ordinal": 14,
+          "ordinal": 15,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "'full'",
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 11,
+          "ordinal": 12,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
@@ -5647,7 +8281,7 @@
           "primaryKey": 0
         },
         "leap_rule": {
-          "ordinal": 13,
+          "ordinal": 14,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "'{\"kind\":\"none\"}'",
@@ -5703,10 +8337,17 @@
           "primaryKey": 0
         },
         "updated_at": {
-          "ordinal": 12,
+          "ordinal": 13,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 11,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
           "primaryKey": 0
         },
         "weekday_names": {
@@ -5737,7 +8378,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE project_calendar ( project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, days_per_year INTEGER NOT NULL DEFAULT 360, season_boundaries TEXT NOT NULL DEFAULT '[]', start_year INTEGER NOT NULL DEFAULT 0, months TEXT NOT NULL DEFAULT '[]', weekday_names TEXT NOT NULL DEFAULT '[]', weekday_start_index INTEGER NOT NULL DEFAULT 0, eras TEXT NOT NULL DEFAULT '[]', reform TEXT NOT NULL DEFAULT 'null', timezone TEXT NOT NULL DEFAULT 'null', lunar_tz_minutes INTEGER NOT NULL DEFAULT 480, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , leap_rule TEXT NOT NULL DEFAULT '{\"kind\":\"none\"}', age_reckoning TEXT NOT NULL DEFAULT 'full')"
+      "createSql": "CREATE TABLE project_calendar ( project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, days_per_year INTEGER NOT NULL DEFAULT 360, season_boundaries TEXT NOT NULL DEFAULT '[]', start_year INTEGER NOT NULL DEFAULT 0, months TEXT NOT NULL DEFAULT '[]', weekday_names TEXT NOT NULL DEFAULT '[]', weekday_start_index INTEGER NOT NULL DEFAULT 0, eras TEXT NOT NULL DEFAULT '[]', reform TEXT NOT NULL DEFAULT 'null', timezone TEXT NOT NULL DEFAULT 'null', lunar_tz_minutes INTEGER NOT NULL DEFAULT 480, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , leap_rule TEXT NOT NULL DEFAULT '{\"kind\":\"none\"}', age_reckoning TEXT NOT NULL DEFAULT 'full')"
     },
     "project_settings": {
       "kind": "table",
@@ -8445,6 +11086,22 @@
       ],
       "createSql": "CREATE INDEX idx_codex_detail_defs ON codex_detail_definitions(project_id, type_slug, sort_order)"
     },
+    "idx_codex_detail_semantic_bindings_project_facet": {
+      "table": "codex_detail_semantic_bindings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "facet_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_codex_detail_semantic_bindings_project_facet ON codex_detail_semantic_bindings(project_id, facet_key)"
+    },
     "idx_codex_detail_values_def": {
       "table": "codex_detail_values",
       "unique": false,
@@ -8608,6 +11265,18 @@
         }
       ],
       "createSql": "CREATE INDEX idx_codex_relations_project ON codex_relations(project_id)"
+    },
+    "idx_codex_relations_semantic_key": {
+      "table": "codex_relations",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_codex_relations_semantic_key ON codex_relations(semantic_key)"
     },
     "idx_codex_relations_to": {
       "table": "codex_relations",
@@ -8865,6 +11534,66 @@
       ],
       "createSql": "CREATE INDEX idx_fs_codex_codex ON foreshadow_codex_links(codex_entry_id)"
     },
+    "idx_fs_payoff_fid": {
+      "table": "foreshadow_payoffs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "foreshadow_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_fid ON foreshadow_payoffs(foreshadow_id)"
+    },
+    "idx_fs_payoff_link_payoff": {
+      "table": "foreshadow_setup_payoff_links",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "payoff_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_link_payoff ON foreshadow_setup_payoff_links(payoff_id)"
+    },
+    "idx_fs_payoff_link_setup": {
+      "table": "foreshadow_setup_payoff_links",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "setup_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_link_setup ON foreshadow_setup_payoff_links(setup_id)"
+    },
+    "idx_fs_payoff_scene": {
+      "table": "foreshadow_payoffs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scene_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_scene ON foreshadow_payoffs(scene_id)"
+    },
+    "idx_fs_payoff_semantic_key": {
+      "table": "foreshadow_payoffs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_payoff_semantic_key ON foreshadow_payoffs(semantic_key)"
+    },
     "idx_fs_setup_fid": {
       "table": "foreshadow_setups",
       "unique": false,
@@ -8901,6 +11630,18 @@
       ],
       "createSql": "CREATE INDEX idx_fs_setup_scene ON foreshadow_setups(scene_id)"
     },
+    "idx_fs_setup_semantic_key": {
+      "table": "foreshadow_setups",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_fs_setup_semantic_key ON foreshadow_setups(semantic_key)"
+    },
     "idx_generation_logs_project_trace": {
       "table": "generation_logs",
       "unique": false,
@@ -8929,6 +11670,18 @@
       ],
       "createSql": "CREATE INDEX idx_generation_logs_scene ON generation_logs(scene_node_id)"
     },
+    "idx_generic_extraction_schemas_digest": {
+      "table": "generic_extraction_schemas",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "digest"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_generic_extraction_schemas_digest ON generic_extraction_schemas(digest)"
+    },
     "idx_idempotency_requests_project_created": {
       "table": "idempotency_requests",
       "unique": false,
@@ -8956,6 +11709,154 @@
         }
       ],
       "createSql": "CREATE INDEX idx_impact_baselines_project ON impact_review_baselines(project_id)"
+    },
+    "idx_import_capture_entries_capture": {
+      "table": "import_capture_entries",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "capture_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "capture_status"
+        },
+        {
+          "ordinal": 2,
+          "column": "relative_path"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_capture_entries_capture ON import_capture_entries(capture_id, capture_status, relative_path)"
+    },
+    "idx_import_captures_state": {
+      "table": "import_captures",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "state"
+        },
+        {
+          "ordinal": 1,
+          "column": "updated_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_captures_state ON import_captures(state, updated_at)"
+    },
+    "idx_import_commits_session": {
+      "table": "import_commits",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "created_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_commits_session ON import_commits(session_id, created_at)"
+    },
+    "idx_import_decoded_resources_capture": {
+      "table": "import_decoded_resources",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "capture_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "resource_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_decoded_resources_capture ON import_decoded_resources(capture_id, resource_key)"
+    },
+    "idx_import_evidence_bindings_session": {
+      "table": "import_evidence_bindings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_scene_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_evidence_bindings_session ON import_evidence_bindings(session_id, target_scene_id)"
+    },
+    "idx_import_sessions_state": {
+      "table": "import_sessions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "state"
+        },
+        {
+          "ordinal": 1,
+          "column": "updated_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_sessions_state ON import_sessions(state, updated_at)"
+    },
+    "idx_import_source_mappings_source": {
+      "table": "import_source_mappings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "source_set_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "source_object_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_source_mappings_source ON import_source_mappings(source_set_id, source_object_key)"
+    },
+    "idx_import_source_mappings_target": {
+      "table": "import_source_mappings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "target_kind"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_source_mappings_target ON import_source_mappings(target_kind, target_id)"
+    },
+    "idx_import_source_packages_session": {
+      "table": "import_source_packages",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "created_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_import_source_packages_session ON import_source_packages(session_id, created_at)"
     },
     "idx_labels_project": {
       "table": "labels",
@@ -9333,6 +12234,34 @@
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
     },
+    "idx_narrative_temporal_constraints_project": {
+      "table": "narrative_temporal_constraints",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "kind"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_temporal_constraints_project ON narrative_temporal_constraints(project_id, kind)"
+    },
+    "idx_narrative_temporal_nodes_project": {
+      "table": "narrative_temporal_nodes",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_temporal_nodes_project ON narrative_temporal_nodes(project_id)"
+    },
     "idx_pea_parent": {
       "table": "post_effect_annotations",
       "unique": false,
@@ -9497,6 +12426,18 @@
       ],
       "createSql": "CREATE INDEX idx_plot_thread_branches_project ON plot_thread_branches(project_id)"
     },
+    "idx_plot_thread_branches_semantic_key": {
+      "table": "plot_thread_branches",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_plot_thread_branches_semantic_key ON plot_thread_branches(semantic_key)"
+    },
     "idx_plot_thread_branches_to": {
       "table": "plot_thread_branches",
       "unique": false,
@@ -9520,6 +12461,18 @@
         }
       ],
       "createSql": "CREATE INDEX idx_plot_thread_links_node ON plot_thread_scene_links(node_id)"
+    },
+    "idx_plot_thread_links_semantic_key": {
+      "table": "plot_thread_scene_links",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_plot_thread_links_semantic_key ON plot_thread_scene_links(semantic_key)"
     },
     "idx_plot_thread_links_thread": {
       "table": "plot_thread_scene_links",
@@ -10216,6 +13169,138 @@
         }
       ],
       "createSql": "CREATE UNIQUE INDEX uq_chat_pin_sticky ON chat_session_pinned_codex(session_id, sticky_id) WHERE sticky_id IS NOT NULL"
+    },
+    "uq_codex_detail_defs_project_id": {
+      "table": "codex_detail_definitions",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_codex_detail_defs_project_id ON codex_detail_definitions(project_id, id)"
+    },
+    "uq_codex_detail_semantic_binding_definition_facet": {
+      "table": "codex_detail_semantic_bindings",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "definition_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "facet_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_codex_detail_semantic_binding_definition_facet ON codex_detail_semantic_bindings(definition_id, facet_key)"
+    },
+    "uq_fs_payoff_semantic_key": {
+      "table": "foreshadow_payoffs",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_fs_payoff_semantic_key ON foreshadow_payoffs(semantic_key)"
+    },
+    "uq_fs_setup_semantic_key": {
+      "table": "foreshadow_setups",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_fs_setup_semantic_key ON foreshadow_setups(semantic_key)"
+    },
+    "uq_narrative_temporal_constraints_semantic_key": {
+      "table": "narrative_temporal_constraints",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_narrative_temporal_constraints_semantic_key ON narrative_temporal_constraints(project_id, semantic_key)"
+    },
+    "uq_narrative_temporal_nodes_semantic_key": {
+      "table": "narrative_temporal_nodes",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_narrative_temporal_nodes_semantic_key ON narrative_temporal_nodes(project_id, semantic_key)"
+    },
+    "uq_narrative_temporal_projections_target": {
+      "table": "narrative_temporal_projections",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "target_id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_narrative_temporal_projections_target ON narrative_temporal_projections(project_id, target_kind, target_id)"
+    },
+    "uq_plot_thread_branches_semantic_key": {
+      "table": "plot_thread_branches",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_plot_thread_branches_semantic_key ON plot_thread_branches(semantic_key)"
+    },
+    "uq_plot_thread_links_semantic_key": {
+      "table": "plot_thread_scene_links",
+      "unique": true,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "semantic_key"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX uq_plot_thread_links_semantic_key ON plot_thread_scene_links(semantic_key)"
     },
     "uq_scene_chunks_scene_index": {
       "table": "scene_chunks",

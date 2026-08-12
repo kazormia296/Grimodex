@@ -1,9 +1,10 @@
 use rusqlite::{params, Connection, ErrorCode};
 use std::time::Duration;
 
+use super::codex_relation_keys::build_codex_relation_semantic_key;
 use super::Database;
 
-enum ConvergedV2Finalize {
+enum ConvergedPreviousFinalize {
     Finalized,
     Busy,
     NeedsFullMigration,
@@ -41,11 +42,13 @@ impl Database {
         );
         if !force_full {
             if current == SCHEMA_VERSION {
-                // Additive tables introduced after a marker must still be present
-                // before the healthy read-only fast path returns.
-                if !Self::has_editor_stickies_table(&conn)?
-                    || !grimodex_core::workspace_schema::has_v4_checkpoint_invariants(&conn)?
-                {
+                // A current marker is not sufficient when an interrupted or
+                // prerelease migration left required physical objects absent.
+                // The checkpoint is read-only, so a healthy workspace retains
+                // the non-blocking open path.
+                if !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                    &conn,
+                )? {
                     // Fall through to the idempotent DDL below.
                 } else {
                     // Crash recovery is an open-time operational invariant, not a
@@ -58,26 +61,26 @@ impl Database {
             }
 
             if current == grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
-                && grimodex_core::workspace_schema::is_converged_v2_workspace_schema(&conn)?
+                && grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    &conn,
+                )?
             {
-                // Version 3 introduced the read-only open fast path, not new
-                // DDL. A v2 database that already satisfies every post-v2
-                // invariant must not replay the full idempotent migration just
-                // to write the marker. Finalization rechecks the invariant
-                // under a zero-wait write reservation so an older v2 process
-                // cannot add unrepaired data between the probe and the stamp.
-                // If another writer is active, retain v2 and let a later open
-                // retry instead of blocking input-ready.
+                // The immediately previous marker may already carry every
+                // current physical invariant after a prerelease/interrupted
+                // marker update. Avoid replaying the full migration merely to
+                // advance the marker. Finalization rechecks the invariant under
+                // a zero-wait write reservation so an older process cannot
+                // mutate the schema between the probe and stamp.
                 let recovery_required = Self::has_interrupted_post_effect_runs(&conn)?;
-                match Self::try_finalize_converged_v2_without_wait(&conn, SCHEMA_VERSION)? {
-                    ConvergedV2Finalize::Finalized => return Ok(()),
-                    ConvergedV2Finalize::Busy if !recovery_required => return Ok(()),
-                    ConvergedV2Finalize::Busy => {
+                match Self::try_finalize_previous_schema_without_wait(&conn, SCHEMA_VERSION)? {
+                    ConvergedPreviousFinalize::Finalized => return Ok(()),
+                    ConvergedPreviousFinalize::Busy if !recovery_required => return Ok(()),
+                    ConvergedPreviousFinalize::Busy => {
                         anyhow::bail!(
                             "workspace crash recovery is blocked by another SQLite writer; retry after it finishes"
                         )
                     }
-                    ConvergedV2Finalize::NeedsFullMigration => {}
+                    ConvergedPreviousFinalize::NeedsFullMigration => {}
                 }
             }
         }
@@ -255,7 +258,9 @@ impl Database {
                 field_config      TEXT,
                 sort_order        REAL NOT NULL DEFAULT 0.0,
                 include_in_context INTEGER NOT NULL DEFAULT 0,
+                version           INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(project_id, type_slug, name),
                 -- Composite FK: (project_id, type_slug) must reference a row in codex_types.
                 FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
@@ -263,12 +268,43 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
                 ON codex_detail_definitions(project_id, type_slug, sort_order);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_codex_detail_defs_project_id
+                ON codex_detail_definitions(project_id, id);
+
+            CREATE TABLE IF NOT EXISTS codex_detail_semantic_bindings (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                definition_id     TEXT NOT NULL,
+                facet_key         TEXT NOT NULL,
+                projection_kind   TEXT NOT NULL
+                                    CHECK(projection_kind IN ('scalar-text', 'summary-text', 'enum', 'entity-reference')),
+                temporal_policy   TEXT NOT NULL
+                                    CHECK(temporal_policy IN ('base-only', 'phase-on-durable-change', 'base-and-phase', 'derived', 'manual-only')),
+                source            TEXT NOT NULL
+                                    CHECK(source IN ('preset', 'user', 'reviewed-ai')),
+                confirmed         INTEGER NOT NULL DEFAULT 0
+                                    CHECK(confirmed IN (0, 1)),
+                version           INTEGER NOT NULL DEFAULT 0
+                                    CHECK(version >= 0),
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id, definition_id)
+                  REFERENCES codex_detail_definitions(project_id, id)
+                  ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_detail_semantic_bindings_project_facet
+                ON codex_detail_semantic_bindings(project_id, facet_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_codex_detail_semantic_binding_definition_facet
+                ON codex_detail_semantic_bindings(definition_id, facet_key);
 
             CREATE TABLE IF NOT EXISTS codex_detail_values (
                 id            TEXT PRIMARY KEY,
                 entry_id      TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
                 value         TEXT,
+                version       INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(entry_id, definition_id)
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_values_entry
@@ -1076,6 +1112,8 @@ impl Database {
                 abandoned        INTEGER NOT NULL DEFAULT 0,
                 secret           INTEGER NOT NULL DEFAULT 1,
                 load_bearing     TEXT,
+                mechanism        TEXT,
+                version          INTEGER NOT NULL DEFAULT 0,
                 codex_link_dirty_at INTEGER,
                 created_at       INTEGER NOT NULL,
                 updated_at       INTEGER NOT NULL
@@ -1092,6 +1130,7 @@ impl Database {
                 from_pos           INTEGER NOT NULL,
                 to_pos             INTEGER NOT NULL,
                 kind               TEXT NOT NULL,
+                role               TEXT NOT NULL DEFAULT 'unspecified',
                 strength           TEXT,
                 ai_strength        TEXT,
                 ai_reasoning       TEXT,
@@ -1099,6 +1138,8 @@ impl Database {
                 ai_rationale       TEXT,
                 last_evaluated_at  INTEGER,
                 is_orphan          INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key       TEXT NOT NULL DEFAULT '',
                 created_at         INTEGER NOT NULL,
                 updated_at         INTEGER NOT NULL
             );
@@ -1263,6 +1304,11 @@ impl Database {
                 to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 relation_type       TEXT NOT NULL DEFAULT 'custom',
                 label               TEXT,
+                directionality      TEXT NOT NULL DEFAULT 'directed'
+                    CHECK (directionality IN ('directed', 'symmetric')),
+                inverse_label       TEXT,
+                semantic_key        TEXT NOT NULL DEFAULT '',
+                version             INTEGER NOT NULL DEFAULT 1,
                 depth_hint          INTEGER,
                 source_map_edge_id  TEXT,
                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1273,9 +1319,12 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_codex_relations_from
                 ON codex_relations(from_codex_id);
             CREATE INDEX IF NOT EXISTS idx_codex_relations_to
-                ON codex_relations(to_codex_id);",
+                ON codex_relations(to_codex_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
+                ON codex_relations(semantic_key);",
         )?;
         Self::migrate_codex_relations_source_map_edge_id(&conn)?;
+        Self::migrate_codex_relations_v7(&conn)?;
 
         // Beat-level POV override cache for Matrix ★ display.
         conn.execute_batch(
@@ -1878,6 +1927,7 @@ impl Database {
                 -- シーン削除で ON DELETE SET NULL → override 解除 (スレッド自体は残る)。
                 start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 end_node_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                version       INTEGER NOT NULL DEFAULT 0,
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -1911,13 +1961,18 @@ impl Database {
                               CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')),
                 note        TEXT,
                 sort_order  TEXT,
+                semantic_key TEXT NOT NULL DEFAULT '',
+                version     INTEGER NOT NULL DEFAULT 0,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_thread
                 ON plot_thread_scene_links(thread_id);
             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_node
-                ON plot_thread_scene_links(node_id);",
+                ON plot_thread_scene_links(node_id);"
+            // semantic_key index is created only after SCHEMA 11
+            // add_column_if_missing, so schema-2 → current upgrades do not
+            // CREATE INDEX against a pre-OCC table that still lacks the column.
         )?;
 
         // プロットスレッドの分岐 / 合流エッジ。特定シーン(at_node_id)で from→to の
@@ -1933,6 +1988,8 @@ impl Database {
                 at_node_id      TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
                 kind            TEXT NOT NULL
                                   CHECK(kind IN ('branch','merge')),
+                semantic_key    TEXT NOT NULL DEFAULT '',
+                version         INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -2060,6 +2117,7 @@ impl Database {
                 reform            TEXT NOT NULL DEFAULT 'null',
                 timezone          TEXT NOT NULL DEFAULT 'null',
                 lunar_tz_minutes  INTEGER NOT NULL DEFAULT 480,
+                version           INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
@@ -2132,6 +2190,14 @@ impl Database {
             "lunar_tz_minutes",
             "INTEGER NOT NULL DEFAULT 480",
         )?;
+        // Temporal extraction snapshots and Calendar Editor writes use this
+        // generation token for compare-and-swap and stale-artifact detection.
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。
         // src/db/schema.ts の eventRelations とミラー。event 削除で CASCADE。
@@ -2185,6 +2251,586 @@ impl Database {
         // SCHEMA 4: Native-owned Narrative runtime policy (Release Gate B Foundation).
         // Must exist before the marker advances so renderer cannot own authority.
         crate::narrative_runtime_policy::ensure_narrative_runtime_policy_row(&conn)?;
+        // Narrative Extraction persistence (Run / Proposal / Apply).
+        // Mirrors src/db/schema.ts and the ensure_test_schema shape in
+        // narrative_extraction/repository.rs, plus Apply／Provenance tables.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                snapshot_digest TEXT,
+                catalog_digest TEXT,
+                registry_digest TEXT,
+                status TEXT NOT NULL,
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                outcome_summary_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_tasks (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_json TEXT NOT NULL DEFAULT '{}',
+                output_json TEXT,
+                priority INTEGER NOT NULL DEFAULT 0,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_task_edges (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                from_task_id TEXT NOT NULL,
+                to_task_id TEXT NOT NULL,
+                edge_kind TEXT NOT NULL DEFAULT 'depends_on',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_attempts (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                error_message TEXT,
+                output_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_artifacts (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_id TEXT,
+                attempt_id TEXT,
+                artifact_kind TEXT NOT NULL,
+                payload_storage TEXT NOT NULL DEFAULT 'inline-json',
+                payload_json TEXT,
+                payload_ref TEXT,
+                payload_digest TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_sets (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                set_kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposals (
+                id TEXT PRIMARY KEY,
+                proposal_set_id TEXT NOT NULL,
+                proposal_key TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unreviewed',
+                payload_json TEXT NOT NULL,
+                current_revision_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_revisions (
+                id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL,
+                revision_number INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                created_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (
+                id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                decision_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                created_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_apply_commits (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id TEXT,
+                proposal_set_id TEXT,
+                request_id TEXT NOT NULL,
+                plan_digest TEXT NOT NULL,
+                status TEXT NOT NULL,
+                receipt_json TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS narrative_apply_operations (
+                id TEXT PRIMARY KEY,
+                commit_id TEXT NOT NULL,
+                operation_index INTEGER NOT NULL,
+                operation_kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                result_entity_kind TEXT,
+                result_entity_id TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_proposal_applications (
+                id TEXT PRIMARY KEY,
+                commit_id TEXT NOT NULL,
+                proposal_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                applied_entity_kind TEXT NOT NULL,
+                applied_entity_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_commit_journals (
+                id TEXT PRIMARY KEY,
+                commit_id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                before_json TEXT,
+                after_json TEXT,
+                created_at TEXT NOT NULL
+            );",
+        )?;
+
+        // Temporal Constraint Graph persistence (SCHEMA_VERSION 10): Nodes /
+        // Constraints / Projections. Mirrors src/db/schema.ts. Kind-specific
+        // shapes are polymorphic JSON blobs (subject_json / payload_json), not
+        // exploded into columns, matching the TS domain model in
+        // src/features/narrative-extraction/temporal/{nodes,constraints}.ts.
+        // The STN solver and Review UI are out of scope for this slice; these
+        // tables are pure domain persistence + atomic commit/undo.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_temporal_nodes (
+                id            TEXT PRIMARY KEY,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                timeline_kind TEXT NOT NULL DEFAULT 'primary'
+                                CHECK(timeline_kind IN ('primary','alternate','embedded-fiction','hypothetical')),
+                timeline_key  TEXT,
+                subject_kind  TEXT NOT NULL
+                                CHECK(subject_kind IN ('scene','event','state-boundary','phase-boundary','named-period')),
+                subject_json  TEXT NOT NULL,
+                semantic_key  TEXT NOT NULL,
+                shape         TEXT NOT NULL DEFAULT 'unknown'
+                                CHECK(shape IN ('point','interval','unknown')),
+                fingerprint   TEXT NOT NULL,
+                version       INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_temporal_nodes_semantic_key
+                ON narrative_temporal_nodes(project_id, semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_temporal_nodes_project
+                ON narrative_temporal_nodes(project_id);
+
+            CREATE TABLE IF NOT EXISTS narrative_temporal_constraints (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                kind              TEXT NOT NULL
+                                    CHECK(kind IN ('absolute-window','relative-offset','interval-relation','duration','symbolic')),
+                authority         TEXT NOT NULL
+                                    CHECK(authority IN ('user-metadata','user-confirmed','explicit-story-text','existing-domain-relation','deterministic-derived','model-inferred','projection-derived')),
+                strictness        TEXT NOT NULL CHECK(strictness IN ('hard','soft')),
+                semantic_key      TEXT NOT NULL,
+                source_ids_json   TEXT NOT NULL DEFAULT '[]',
+                fingerprint       TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                version           INTEGER NOT NULL DEFAULT 0,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_temporal_constraints_semantic_key
+                ON narrative_temporal_constraints(project_id, semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_temporal_constraints_project
+                ON narrative_temporal_constraints(project_id, kind);
+
+            CREATE TABLE IF NOT EXISTS narrative_temporal_projections (
+                id                      TEXT PRIMARY KEY,
+                project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                target_kind             TEXT NOT NULL CHECK(target_kind IN ('scene-time','event-time','scene-story-order')),
+                target_id               TEXT NOT NULL,
+                constraint_set_digest   TEXT NOT NULL,
+                solver_version          TEXT NOT NULL,
+                calendar_digest         TEXT,
+                projected_value_digest  TEXT NOT NULL,
+                target_result_version   INTEGER NOT NULL,
+                application_id          TEXT NOT NULL,
+                status                  TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','invalidated','undone')),
+                version                 INTEGER NOT NULL DEFAULT 0,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_temporal_projections_target
+                ON narrative_temporal_projections(project_id, target_kind, target_id);",
+        )?;
+
+        // SCHEMA_VERSION 11: Plot Thread / Marker / Branch OCC + semantic keys.
+        Self::add_column_if_missing(
+            &conn,
+            "plot_threads",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_scene_links",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_scene_links",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_branches",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_thread_branches",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        // Backfill semantic keys. Duplicate groups get `#dup:{id}` suffix so we
+        // never delete legacy rows while keeping keys unique for new writers.
+        conn.execute_batch(
+            "UPDATE plot_thread_scene_links
+                SET semantic_key = thread_id || '|' || node_id || '|' || phase_type
+              WHERE semantic_key = '' OR semantic_key IS NULL;
+             UPDATE plot_thread_scene_links
+                SET semantic_key = semantic_key || '#dup:' || id
+              WHERE id IN (
+                SELECT id FROM plot_thread_scene_links a
+                 WHERE EXISTS (
+                   SELECT 1 FROM plot_thread_scene_links b
+                    WHERE b.semantic_key = a.semantic_key
+                      AND b.rowid < a.rowid
+                 )
+              );
+             UPDATE plot_thread_branches
+                SET semantic_key = from_thread_id || '|' || to_thread_id || '|' || at_node_id || '|' || kind
+              WHERE semantic_key = '' OR semantic_key IS NULL;
+             UPDATE plot_thread_branches
+                SET semantic_key = semantic_key || '#dup:' || id
+              WHERE id IN (
+                SELECT id FROM plot_thread_branches a
+                 WHERE EXISTS (
+                   SELECT 1 FROM plot_thread_branches b
+                    WHERE b.semantic_key = a.semantic_key
+                      AND b.rowid < a.rowid
+                 )
+              );
+             CREATE INDEX IF NOT EXISTS idx_plot_thread_links_semantic_key
+                ON plot_thread_scene_links(semantic_key);
+             CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_semantic_key
+                ON plot_thread_branches(semantic_key);
+             CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_thread_links_semantic_key
+                ON plot_thread_scene_links(semantic_key);
+             CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_thread_branches_semantic_key
+                ON plot_thread_branches(semantic_key);",
+        )?;
+
+        // SCHEMA_VERSION 12: Foreshadow root OCC and multi-payoff persistence.
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadows",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(&conn, "foreshadows", "mechanism", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadow_setups",
+            "role",
+            "TEXT NOT NULL DEFAULT 'unspecified'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadow_setups",
+            "evidence_anchor_id",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "foreshadow_setups",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS foreshadow_payoffs (
+                id                 TEXT PRIMARY KEY,
+                foreshadow_id      TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                scene_id           TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                from_pos           INTEGER,
+                to_pos             INTEGER,
+                role               TEXT NOT NULL DEFAULT 'unspecified',
+                confirmed          INTEGER NOT NULL DEFAULT 0,
+                is_primary         INTEGER NOT NULL DEFAULT 0,
+                attribution        TEXT NOT NULL DEFAULT 'human',
+                ai_rationale       TEXT,
+                is_orphan          INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key       TEXT NOT NULL DEFAULT '',
+                created_at         INTEGER NOT NULL,
+                updated_at         INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS foreshadow_setup_payoff_links (
+                foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                setup_id      TEXT NOT NULL REFERENCES foreshadow_setups(id) ON DELETE CASCADE,
+                payoff_id     TEXT NOT NULL REFERENCES foreshadow_payoffs(id) ON DELETE CASCADE,
+                bridge_kind   TEXT NOT NULL DEFAULT 'unspecified',
+                explanation   TEXT,
+                created_at    INTEGER NOT NULL,
+                PRIMARY KEY (foreshadow_id, setup_id, payoff_id)
+            );
+
+            UPDATE foreshadow_setups
+               SET role = 'unspecified'
+             WHERE role IS NULL OR role = '';
+            UPDATE foreshadow_setups
+               SET semantic_key = foreshadow_id || '|' || scene_id || '|' || from_pos || '|' || to_pos
+             WHERE semantic_key IS NULL OR semantic_key = '';
+            UPDATE foreshadow_setups
+               SET semantic_key = semantic_key || '#dup:' || id
+             WHERE id IN (
+                SELECT id FROM foreshadow_setups a
+                 WHERE EXISTS (
+                    SELECT 1 FROM foreshadow_setups b
+                     WHERE b.semantic_key = a.semantic_key
+                       AND b.rowid < a.rowid
+                 )
+             );
+
+            INSERT INTO foreshadow_payoffs (
+                id, foreshadow_id, scene_id, from_pos, to_pos, role, confirmed,
+                is_primary, attribution, ai_rationale, is_orphan, evidence_anchor_id,
+                semantic_key, created_at, updated_at
+            )
+            SELECT
+                'legacy-payoff:' || id,
+                id,
+                payoff_scene_id,
+                payoff_from_pos,
+                payoff_to_pos,
+                'unspecified',
+                payoff_confirmed,
+                1,
+                'human',
+                NULL,
+                0,
+                NULL,
+                id || '|' || payoff_scene_id || '|' || COALESCE(payoff_from_pos, '') || '|' || COALESCE(payoff_to_pos, ''),
+                created_at,
+                updated_at
+              FROM foreshadows root
+             WHERE payoff_scene_id IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM foreshadow_payoffs payoff
+                    WHERE payoff.id = 'legacy-payoff:' || root.id
+               );
+            UPDATE foreshadow_payoffs
+               SET semantic_key = foreshadow_id || '|' || scene_id || '|' || COALESCE(from_pos, '') || '|' || COALESCE(to_pos, '')
+             WHERE semantic_key IS NULL OR semantic_key = '';
+            UPDATE foreshadow_payoffs
+               SET semantic_key = semantic_key || '#dup:' || id
+             WHERE id IN (
+                SELECT id FROM foreshadow_payoffs a
+                 WHERE EXISTS (
+                    SELECT 1 FROM foreshadow_payoffs b
+                     WHERE b.semantic_key = a.semantic_key
+                       AND b.rowid < a.rowid
+                 )
+             );
+
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_semantic_key
+                ON foreshadow_setups(semantic_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_fs_setup_semantic_key
+                ON foreshadow_setups(semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_fid
+                ON foreshadow_payoffs(foreshadow_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_scene
+                ON foreshadow_payoffs(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_semantic_key
+                ON foreshadow_payoffs(semantic_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_fs_payoff_semantic_key
+                ON foreshadow_payoffs(semantic_key);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_link_setup
+                ON foreshadow_setup_payoff_links(setup_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_payoff_link_payoff
+                ON foreshadow_setup_payoff_links(payoff_id);",
+        )?;
+
+        // SCHEMA_VERSION 13: Import Session persistence and native import commit
+        // receipts. Scan staging remains independent until import orchestration
+        // is wired through this durable session boundary.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS import_sessions (
+                id                         TEXT PRIMARY KEY,
+                state                      TEXT NOT NULL,
+                adapter_id                 TEXT,
+                adapter_version            TEXT,
+                target_json                TEXT NOT NULL,
+                source_package_digest      TEXT,
+                source_package_ref         TEXT,
+                extraction_run_ids_json    TEXT NOT NULL DEFAULT '[]',
+                proposal_set_ids_json      TEXT NOT NULL DEFAULT '[]',
+                error_message              TEXT,
+                version                    INTEGER NOT NULL DEFAULT 0,
+                created_at                 TEXT NOT NULL,
+                updated_at                 TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_source_packages (
+                id                 TEXT PRIMARY KEY,
+                session_id         TEXT NOT NULL REFERENCES import_sessions(id) ON DELETE CASCADE,
+                digest             TEXT NOT NULL,
+                adapter_id         TEXT NOT NULL,
+                adapter_version    TEXT NOT NULL,
+                package_json       TEXT NOT NULL,
+                created_at         TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_source_mappings (
+                id                      TEXT PRIMARY KEY,
+                source_set_id           TEXT NOT NULL,
+                source_object_key       TEXT NOT NULL,
+                source_object_kind      TEXT NOT NULL,
+                target_kind             TEXT NOT NULL,
+                target_id               TEXT NOT NULL,
+                source_record_digest    TEXT NOT NULL,
+                target_state_digest     TEXT NOT NULL,
+                adapter_id              TEXT NOT NULL,
+                adapter_version         TEXT NOT NULL,
+                first_import_session_id TEXT NOT NULL,
+                last_import_session_id  TEXT NOT NULL,
+                status                  TEXT NOT NULL DEFAULT 'active',
+                version                 INTEGER NOT NULL DEFAULT 0,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_source_baselines (
+                mapping_id              TEXT PRIMARY KEY REFERENCES import_source_mappings(id) ON DELETE CASCADE,
+                source_digest           TEXT NOT NULL,
+                target_digest           TEXT NOT NULL,
+                normalized_body_digest  TEXT,
+                target_version          INTEGER,
+                adapter_version         TEXT NOT NULL,
+                normalizer_version      TEXT NOT NULL,
+                committed_at            TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_commits (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL,
+                request_id      TEXT NOT NULL,
+                plan_digest     TEXT NOT NULL,
+                project_id      TEXT,
+                status          TEXT NOT NULL,
+                receipt_json    TEXT,
+                error_message   TEXT,
+                created_at      TEXT NOT NULL,
+                UNIQUE(request_id)
+            );
+            CREATE TABLE IF NOT EXISTS import_evidence_bindings (
+                id                        TEXT PRIMARY KEY,
+                session_id                TEXT NOT NULL,
+                evidence_anchor_id        TEXT NOT NULL,
+                source_document_key       TEXT NOT NULL,
+                target_scene_id           TEXT NOT NULL,
+                source_document_digest    TEXT NOT NULL,
+                committed_storage_digest  TEXT NOT NULL,
+                projection_status         TEXT NOT NULL,
+                committed_at              TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_sessions_state
+                ON import_sessions(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_import_source_packages_session
+                ON import_source_packages(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_import_source_mappings_source
+                ON import_source_mappings(source_set_id, source_object_key);
+            CREATE INDEX IF NOT EXISTS idx_import_source_mappings_target
+                ON import_source_mappings(target_kind, target_id);
+            CREATE INDEX IF NOT EXISTS idx_import_commits_session
+                ON import_commits(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_import_evidence_bindings_session
+                ON import_evidence_bindings(session_id, target_scene_id);",
+        )?;
+
+        // SCHEMA_VERSION 14: durable import capture inventory. Native filesystem
+        // selection remains outside this migration; these tables only preserve
+        // portable inventory, digest, and decoding metadata.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS import_captures (
+                id            TEXT PRIMARY KEY,
+                state         TEXT NOT NULL,
+                source_kind   TEXT NOT NULL,
+                sealed_digest TEXT,
+                budget_json   TEXT NOT NULL,
+                version       INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_capture_entries (
+                id                  TEXT PRIMARY KEY,
+                capture_id          TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE,
+                resource_key        TEXT NOT NULL,
+                parent_resource_key TEXT,
+                relative_path       TEXT NOT NULL,
+                kind                TEXT NOT NULL,
+                byte_length         INTEGER NOT NULL,
+                extension           TEXT,
+                capture_status      TEXT NOT NULL,
+                raw_digest          TEXT,
+                blob_ref            TEXT,
+                created_at          TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_capture_blobs (
+                digest      TEXT PRIMARY KEY,
+                byte_length INTEGER NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_decoded_resources (
+                id              TEXT PRIMARY KEY,
+                capture_id      TEXT NOT NULL REFERENCES import_captures(id) ON DELETE CASCADE,
+                resource_key    TEXT NOT NULL,
+                decoder_id      TEXT NOT NULL,
+                decoder_version TEXT NOT NULL,
+                kind            TEXT NOT NULL,
+                digest          TEXT NOT NULL,
+                decoded_json    TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS generic_extraction_schemas (
+                id          TEXT NOT NULL,
+                revision    INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                description TEXT,
+                digest      TEXT NOT NULL,
+                schema_json TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                UNIQUE(id, revision)
+            );
+            CREATE INDEX IF NOT EXISTS idx_import_captures_state
+                ON import_captures(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_import_capture_entries_capture
+                ON import_capture_entries(capture_id, capture_status, relative_path);
+            CREATE INDEX IF NOT EXISTS idx_import_decoded_resources_capture
+                ON import_decoded_resources(capture_id, resource_key);
+            CREATE INDEX IF NOT EXISTS idx_generic_extraction_schemas_digest
+                ON generic_extraction_schemas(digest);",
+        )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -2218,17 +2864,6 @@ impl Database {
         Ok(())
     }
 
-    fn has_editor_stickies_table(conn: &Connection) -> anyhow::Result<bool> {
-        Ok(conn.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM sqlite_master
-                 WHERE type = 'table' AND name = 'editor_stickies'
-            )",
-            [],
-            |row| row.get(0),
-        )?)
-    }
-
     fn has_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<bool> {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM post_effect_runs WHERE status = 'running' LIMIT 1)",
@@ -2242,13 +2877,13 @@ impl Database {
     /// revision without ever waiting for another SQLite writer.
     ///
     /// The compatibility probe is repeated after `BEGIN IMMEDIATE`; otherwise
-    /// an older v2 process could commit unrepaired data between the initial
-    /// read probe and the v3 stamp. SQLITE_BUSY/LOCKED leaves both data and the
-    /// previous marker untouched. All other failures remain fatal.
-    fn try_finalize_converged_v2_without_wait(
+    /// an older process could mutate the schema between the initial read probe
+    /// and marker stamp. SQLITE_BUSY/LOCKED leaves both data and the previous
+    /// marker untouched. All other failures remain fatal.
+    fn try_finalize_previous_schema_without_wait(
         conn: &Connection,
         schema_version: i32,
-    ) -> anyhow::Result<ConvergedV2Finalize> {
+    ) -> anyhow::Result<ConvergedPreviousFinalize> {
         let original_timeout_ms: i64 =
             conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
         anyhow::ensure!(
@@ -2260,14 +2895,14 @@ impl Database {
         let finalize_result = match conn.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {
                 let transaction_result = (|| {
-                    if !grimodex_core::workspace_schema::is_converged_v2_workspace_schema(conn)? {
+                    if !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(conn)? {
                         conn.execute_batch("ROLLBACK")?;
-                        return Ok(ConvergedV2Finalize::NeedsFullMigration);
+                        return Ok(ConvergedPreviousFinalize::NeedsFullMigration);
                     }
                     Self::recover_interrupted_post_effect_runs(conn)?;
                     conn.pragma_update(None, "user_version", schema_version)?;
                     grimodex_core::commit_or_rollback(conn)?;
-                    Ok(ConvergedV2Finalize::Finalized)
+                    Ok(ConvergedPreviousFinalize::Finalized)
                 })();
                 if transaction_result.is_err() && !conn.is_autocommit() {
                     let _ = conn.execute_batch("ROLLBACK");
@@ -2280,7 +2915,7 @@ impl Database {
                     Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
                 ) =>
             {
-                Ok(ConvergedV2Finalize::Busy)
+                Ok(ConvergedPreviousFinalize::Busy)
             }
             Err(error) => Err(error.into()),
         };
@@ -2352,6 +2987,48 @@ impl Database {
             "codex_entry_phases",
             "version",
             "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        // SCHEMA_VERSION 8: Detail Definition / Detail Value OCC columns.
+        // ALTER TABLE cannot use non-constant defaults (datetime('now')), so
+        // timestamps use a constant sentinel and are backfilled immediately.
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_definitions",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_definitions",
+            "updated_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_values",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_values",
+            "created_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_detail_values",
+            "updated_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        conn.execute_batch(
+            "UPDATE codex_detail_definitions
+                SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, datetime('now'))
+              WHERE updated_at = '';
+             UPDATE codex_detail_values
+                SET created_at = COALESCE(NULLIF(created_at, ''), datetime('now')),
+                    updated_at = COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), datetime('now'))
+              WHERE created_at = '' OR updated_at = '';",
         )?;
         Ok(())
     }
@@ -3565,6 +4242,27 @@ impl Database {
         }
 
         conn.pragma_update(None, "foreign_keys", false)?;
+        // Ensure v7 columns exist before rebuild so SELECT can always project them
+        // whether the legacy table already had SCHEMA 7 columns or not.
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "directionality",
+            "TEXT NOT NULL DEFAULT 'directed'",
+        )?;
+        Self::add_column_if_missing(conn, "codex_relations", "inverse_label", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "version",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
         conn.execute_batch(
             "BEGIN;
             CREATE TABLE codex_relations_new (
@@ -3574,6 +4272,11 @@ impl Database {
                 to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 relation_type       TEXT NOT NULL DEFAULT 'custom',
                 label               TEXT,
+                directionality      TEXT NOT NULL DEFAULT 'directed'
+                    CHECK (directionality IN ('directed', 'symmetric')),
+                inverse_label       TEXT,
+                semantic_key        TEXT NOT NULL DEFAULT '',
+                version             INTEGER NOT NULL DEFAULT 1,
                 depth_hint          INTEGER,
                 source_map_edge_id  TEXT,
                 created_at          TEXT NOT NULL,
@@ -3581,8 +4284,10 @@ impl Database {
             );
             INSERT INTO codex_relations_new
                 (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                 directionality, inverse_label, semantic_key, version,
                  depth_hint, source_map_edge_id, created_at, updated_at)
             SELECT id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                   directionality, inverse_label, semantic_key, version,
                    depth_hint, source_map_edge_id, created_at, updated_at
             FROM codex_relations;
             DROP TABLE codex_relations;
@@ -3593,6 +4298,8 @@ impl Database {
                 ON codex_relations(from_codex_id);
             CREATE INDEX IF NOT EXISTS idx_codex_relations_to
                 ON codex_relations(to_codex_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
+                ON codex_relations(semantic_key);
             COMMIT;",
         )?;
         conn.pragma_update(None, "foreign_keys", true)?;
@@ -3614,6 +4321,84 @@ impl Database {
                 fk_errors.join("; ")
             );
         }
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 7: directionality / inverse_label / semantic_key / version.
+    /// Existing rows stay directed; semantic_key is backfilled without deleting
+    /// legacy duplicates. Index is non-unique on purpose.
+    pub(super) fn migrate_codex_relations_v7(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'codex_relations'",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_exists == 0 {
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "directionality",
+            "TEXT NOT NULL DEFAULT 'directed'",
+        )?;
+        Self::add_column_if_missing(conn, "codex_relations", "inverse_label", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "semantic_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "codex_relations",
+            "version",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+
+        let mut select = conn.prepare(
+            "SELECT id, project_id, from_codex_id, to_codex_id, relation_type, label, inverse_label, directionality
+               FROM codex_relations
+              WHERE semantic_key = '' OR semantic_key IS NULL",
+        )?;
+        let rows = select
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(select);
+
+        let mut update =
+            conn.prepare("UPDATE codex_relations SET semantic_key = ?1 WHERE id = ?2")?;
+        for (id, project_id, from_id, to_id, relation_type, label, inverse_label, directionality) in
+            rows
+        {
+            let key = build_codex_relation_semantic_key(
+                &project_id,
+                &from_id,
+                &to_id,
+                &relation_type,
+                &directionality,
+                label.as_deref().unwrap_or(""),
+                inverse_label.as_deref(),
+            );
+            update.execute(rusqlite::params![key, id])?;
+        }
+
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
+                ON codex_relations(semantic_key);",
+        )?;
         Ok(())
     }
 
@@ -3827,17 +4612,84 @@ mod tests {
     }
 
     #[test]
+    fn converged_previous_schema_migrate_does_not_wait_for_writer() {
+        let path = temp_database_path("converged-previous-version-lock");
+        let db = Database::new(&path).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            Ok(())
+        })
+        .expect("mark database as the previous schema version");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .busy_timeout(Duration::from_millis(50))
+            .expect("set competing busy timeout");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let started = Instant::now();
+        db.migrate()
+            .expect("converged previous schema must use the non-blocking fast path");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "converged previous schema waited behind an unrelated writer"
+        );
+        let version_while_locked: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read version after failed migration");
+        assert_eq!(
+            version_while_locked,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
+        let restored_timeout_ms: i64 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read restored busy timeout");
+        assert_eq!(restored_timeout_ms, 5_000);
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        db.migrate()
+            .expect("retry marker update after lock release");
+        let migrated_version: i32 = db
+            .with_conn(|conn| {
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("read migrated version");
+        assert_eq!(migrated_version, grimodex_core::SCHEMA_VERSION);
+
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
     fn converged_previous_schema_migrate_repairs_missing_editor_stickies() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.execute_batch(
-                "DROP TABLE editor_stickies;
-                 PRAGMA user_version = 2;",
+            conn.execute_batch("DROP TABLE editor_stickies;")?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
             )?;
             Ok(())
         })
-        .expect("simulate converged v2 workspace missing sticky table");
+        .expect("simulate previous workspace missing sticky table");
 
         db.migrate()
             .expect("one migration must recreate editor stickies");
@@ -3864,7 +4716,11 @@ mod tests {
             Database::new(std::path::Path::new(":memory:")).expect("open crash recovery fixture");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             conn.execute(
                 "INSERT INTO post_effect_runs
                     (id, project_id, effect_type, scope_type, model, prompt_version, status)
@@ -3874,7 +4730,7 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("create interrupted v2 run");
+        .expect("create interrupted previous-schema run");
 
         db.migrate()
             .expect("recover interrupted run before marker finalization");
@@ -3927,17 +4783,80 @@ mod tests {
     }
 
     #[test]
+    fn converged_previous_schema_reports_blocked_recovery_without_waiting() {
+        let path = temp_database_path("blocked-previous-crash-recovery");
+        let db = Database::new(&path).expect("open crash recovery fixture");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, model, prompt_version, status)
+                 VALUES ('interrupted-run', 'default-project', 'review', 'project',
+                         'model', 'v1', 'running')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("create interrupted previous-schema run");
+
+        let locker = Connection::open(&path).expect("open competing connection");
+        locker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold write reservation");
+
+        let started = Instant::now();
+        let error = db
+            .migrate()
+            .expect_err("blocked recovery must remain retryable");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "blocked recovery waited for SQLite's normal busy timeout"
+        );
+        assert!(
+            error.to_string().contains("crash recovery is blocked"),
+            "unexpected blocked recovery error: {error:#}"
+        );
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let status: String = conn.query_row(
+                "SELECT status FROM post_effect_runs WHERE id = 'interrupted-run'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,);
+            assert_eq!(status, "running");
+            Ok(())
+        })
+        .expect("blocked recovery must not partially mutate state");
+
+        locker.execute_batch("ROLLBACK").expect("release writer");
+        drop(locker);
+        drop(db);
+        std::fs::remove_dir_all(path.parent().expect("test directory"))
+            .expect("remove migration test directory");
+    }
+
+    #[test]
     fn incomplete_previous_schema_still_runs_full_migration() {
         let path = temp_database_path("incomplete-previous-version-lock");
         let db = Database::new(&path).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
             conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")?;
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             conn.busy_timeout(Duration::from_millis(50))?;
             Ok(())
         })
-        .expect("create incomplete schema version 2");
+        .expect("create incomplete previous schema");
 
         let locker = Connection::open(&path).expect("open competing connection");
         locker
@@ -3949,7 +4868,7 @@ mod tests {
 
         let error = db
             .migrate()
-            .expect_err("incomplete version 2 must retain the full migration");
+            .expect_err("incomplete previous schema must retain the full migration");
         assert!(
             error.to_string().contains("database is locked"),
             "expected SQLITE_BUSY from the migration write, got {error:#}"
@@ -3960,7 +4879,10 @@ mod tests {
                     .map_err(Into::into)
             })
             .expect("read version after blocked full migration");
-        assert_eq!(version_while_locked, 2);
+        assert_eq!(
+            version_while_locked,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
 
         locker.execute_batch("ROLLBACK").expect("release writer");
         db.migrate().expect("repair incomplete schema after retry");
@@ -3998,7 +4920,11 @@ mod tests {
                     SELECT * FROM ai_audit_events_valid;
                  DROP TABLE ai_audit_events_valid;",
             )?;
-            conn.pragma_update(None, "user_version", 2)?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             Ok(())
         })
         .expect("replace audit ledger with malformed same-name table");
@@ -4018,7 +4944,10 @@ mod tests {
                     .map_err(Into::into)
             })
             .expect("read retained schema version");
-        assert_eq!(retained_version, 2);
+        assert_eq!(
+            retained_version,
+            grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+        );
     }
 
     #[test]
@@ -4445,6 +5374,89 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(version, 0, "legacy phase version should default to zero");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_backfills_occ_columns_on_legacy_codex_details() {
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            // Minimal pre-v8 tables: only the columns that existed before OCC.
+            // Do not stub projects/codex_entries — migrate() creates the full
+            // tables via CREATE TABLE IF NOT EXISTS.
+            conn.execute_batch(
+                "CREATE TABLE codex_detail_definitions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    type_slug TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    field_type TEXT NOT NULL DEFAULT 'text',
+                    field_config TEXT,
+                    sort_order REAL NOT NULL DEFAULT 0.0,
+                    include_in_context INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 CREATE TABLE codex_detail_values (
+                    id TEXT PRIMARY KEY,
+                    entry_id TEXT NOT NULL,
+                    definition_id TEXT NOT NULL,
+                    value TEXT
+                 );
+                 INSERT INTO codex_detail_definitions
+                   (id, project_id, type_slug, name)
+                   VALUES ('d1', 'p1', 'character', '年齢');
+                 INSERT INTO codex_detail_values (id, entry_id, definition_id, value)
+                   VALUES ('v1', 'e1', 'd1', '17');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        db.migrate().unwrap();
+
+        db.with_conn(|conn| {
+            let def_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(codex_detail_definitions)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                def_cols.iter().any(|c| c == "version"),
+                "definition version column should be backfilled"
+            );
+            assert!(
+                def_cols.iter().any(|c| c == "updated_at"),
+                "definition updated_at column should be backfilled"
+            );
+            let value_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(codex_detail_values)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                value_cols.iter().any(|c| c == "version"),
+                "value version column should be backfilled"
+            );
+            assert!(
+                value_cols.iter().any(|c| c == "created_at"),
+                "value created_at column should be backfilled"
+            );
+            assert!(
+                value_cols.iter().any(|c| c == "updated_at"),
+                "value updated_at column should be backfilled"
+            );
+            let def_version: i64 = conn.query_row(
+                "SELECT version FROM codex_detail_definitions WHERE id = 'd1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let value_version: i64 = conn.query_row(
+                "SELECT version FROM codex_detail_values WHERE id = 'v1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(def_version, 0);
+            assert_eq!(value_version, 0);
             Ok(())
         })
         .unwrap();
@@ -5245,5 +6257,73 @@ mod tests {
             Ok(())
         })
         .expect("verify metadata repair");
+    }
+
+    #[test]
+    fn migrate_codex_relations_v7_backfills_directed_semantic_keys_without_deleting_duplicates() {
+        let conn = Connection::open_in_memory().expect("open fixture db");
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             CREATE TABLE codex_entries (id TEXT PRIMARY KEY);
+             INSERT INTO projects (id) VALUES ('p1');
+             INSERT INTO codex_entries (id) VALUES ('a'), ('b');
+             CREATE TABLE codex_relations (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                from_codex_id TEXT NOT NULL,
+                to_codex_id TEXT NOT NULL,
+                relation_type TEXT NOT NULL DEFAULT 'custom',
+                label TEXT,
+                depth_hint INTEGER,
+                source_map_edge_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO codex_relations
+                (id, project_id, from_codex_id, to_codex_id, relation_type, label)
+             VALUES
+                ('r1', 'p1', 'a', 'b', 'friend', '友人'),
+                ('r2', 'p1', 'a', 'b', 'friend', '友人');",
+        )
+        .expect("create legacy relations fixture");
+
+        Database::migrate_codex_relations_v7(&conn).expect("migrate v7 columns");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM codex_relations", [], |row| row.get(0))
+            .expect("count relations");
+        assert_eq!(count, 2, "legacy duplicates must be retained");
+
+        let keys: Vec<String> = conn
+            .prepare("SELECT semantic_key FROM codex_relations ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], keys[1]);
+        assert!(keys[0].starts_with("d\t"), "legacy rows stay directed");
+        assert!(keys[0].contains("友人"));
+
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'index' AND name = 'idx_codex_relations_semantic_key'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index probe");
+        assert_eq!(index_exists, 1);
+
+        let unique: i64 = conn
+            .query_row(
+                "SELECT \"unique\" FROM pragma_index_list('codex_relations')
+                  WHERE name = 'idx_codex_relations_semantic_key'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unique probe");
+        assert_eq!(unique, 0, "semantic_key index must remain non-unique");
     }
 }

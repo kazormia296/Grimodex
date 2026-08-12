@@ -312,13 +312,20 @@ export const codexDetailDefinitions = sqliteTable(
     fieldConfig: text("field_config"), // JSON
     sortOrder: real("sort_order").notNull().default(0.0),
     includeInContext: integer("include_in_context").notNull().default(0),
+    // OCC version. Added in SCHEMA_VERSION 8 via migrate.rs add_column_if_missing.
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_detail_defs_project_type_name").on(
       table.projectId,
       table.typeSlug,
       table.name,
+    ),
+    uniqueIndex("uq_codex_detail_defs_project_id").on(
+      table.projectId,
+      table.id,
     ),
     index("idx_codex_detail_defs").on(
       table.projectId,
@@ -335,6 +342,57 @@ export const codexDetailDefinitions = sqliteTable(
   ],
 );
 
+export const codexDetailSemanticBindings = sqliteTable(
+  "codex_detail_semantic_bindings",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    definitionId: text("definition_id").notNull(),
+    facetKey: text("facet_key").notNull(),
+    projectionKind: text("projection_kind", {
+      enum: ["scalar-text", "summary-text", "enum", "entity-reference"],
+    }).notNull(),
+    temporalPolicy: text("temporal_policy", {
+      enum: [
+        "base-only",
+        "phase-on-durable-change",
+        "base-and-phase",
+        "derived",
+        "manual-only",
+      ],
+    }).notNull(),
+    source: text("source", {
+      enum: ["preset", "user", "reviewed-ai"],
+    }).notNull(),
+    confirmed: integer("confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.definitionId],
+      foreignColumns: [
+        codexDetailDefinitions.projectId,
+        codexDetailDefinitions.id,
+      ],
+      name: "codex_detail_semantic_bindings_definition_fkey",
+    }).onDelete("cascade"),
+    uniqueIndex("uq_codex_detail_semantic_binding_definition_facet").on(
+      table.definitionId,
+      table.facetKey,
+    ),
+    index("idx_codex_detail_semantic_bindings_project_facet").on(
+      table.projectId,
+      table.facetKey,
+    ),
+  ],
+);
+
 export const codexDetailValues = sqliteTable(
   "codex_detail_values",
   {
@@ -346,6 +404,11 @@ export const codexDetailValues = sqliteTable(
       .notNull()
       .references(() => codexDetailDefinitions.id, { onDelete: "cascade" }),
     value: text("value"),
+    // OCC version. Added in SCHEMA_VERSION 8 via migrate.rs add_column_if_missing.
+    // New inserts start at 1; updates require baseVersion and CAS-bump.
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_detail_values_entry_def").on(
@@ -1287,6 +1350,12 @@ export const codexRelations = sqliteTable(
       .references(() => codexEntries.id, { onDelete: "cascade" }),
     relationType: text("relation_type").notNull().default("custom"),
     label: text("label"),
+    // CHECK(directionality IN ('directed','symmetric')) は SQL 側。
+    directionality: text("directionality").notNull().default("directed"),
+    inverseLabel: text("inverse_label"),
+    // migrate が既存行を directed semantic key で backfill する。初期 default は空文字。
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(1),
     depthHint: integer("depth_hint"),
     sourceMapEdgeId: text("source_map_edge_id"),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -1296,6 +1365,8 @@ export const codexRelations = sqliteTable(
     index("idx_codex_relations_project").on(table.projectId),
     index("idx_codex_relations_from").on(table.fromCodexId),
     index("idx_codex_relations_to").on(table.toCodexId),
+    // non-unique: 既存 duplicate を壊さない。unique 化は後続 PR。
+    index("idx_codex_relations_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -1323,6 +1394,8 @@ export const plotThreads = sqliteTable(
     }),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    // OCC generation. SCHEMA_VERSION 11.
+    version: integer("version").notNull().default(0),
   },
   (table) => [index("idx_plot_threads_project").on(table.projectId)],
 );
@@ -1342,12 +1415,17 @@ export const plotThreadSceneLinks = sqliteTable(
     phaseType: text("phase_type").notNull(),
     note: text("note"),
     sortOrder: text("sort_order"),
+    // OCC + semantic identity. SCHEMA_VERSION 11.
+    // semantic_key = thread_id|node_id|phase_type (dup suffix allowed for legacy)
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_plot_thread_links_thread").on(table.threadId),
     index("idx_plot_thread_links_node").on(table.nodeId),
+    index("idx_plot_thread_links_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -1386,6 +1464,10 @@ export const plotThreadBranches = sqliteTable(
       .references(() => treeNodes.id, { onDelete: "cascade" }),
     // 'branch' | 'merge'
     kind: text("kind").notNull(),
+    // OCC + semantic identity. SCHEMA_VERSION 11.
+    // semantic_key = from|to|at_node|kind
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
@@ -1393,6 +1475,7 @@ export const plotThreadBranches = sqliteTable(
     index("idx_plot_thread_branches_project").on(table.projectId),
     index("idx_plot_thread_branches_from").on(table.fromThreadId),
     index("idx_plot_thread_branches_to").on(table.toThreadId),
+    index("idx_plot_thread_branches_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -1554,6 +1637,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   timezone: text("timezone").notNull().default("null"),
   // 旧暦の節気判定 UTC オフセット分。480=中国農暦(既定) / 540=日本。節気のみ再ビン。
   lunarTzMinutes: integer("lunar_tz_minutes").notNull().default(480),
+  // Calendar snapshot / editor OCC generation. Successful writes increment it.
+  version: integer("version").notNull().default(0),
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
@@ -1717,6 +1802,8 @@ export const foreshadows = sqliteTable(
 
     // Phase 6: load_bearing 軸（critical / supporting / optional / null）
     loadBearing: text("load_bearing"),
+    mechanism: text("mechanism"),
+    version: integer("version").notNull().default(0),
 
     // impact-review: リンク先 Codex が変更された時刻。setup の lastEvaluatedAt より
     // 新しければ「Codex 変更により再評価が必要」として stale 判定する（null=未変更）。
@@ -1748,6 +1835,7 @@ export const foreshadowSetups = sqliteTable(
 
     // Metadata
     kind: text("kind").notNull(), // 'designated_existing' | 'inserted_new' | 'rewritten'
+    role: text("role").notNull().default("unspecified"),
     strength: text("strength"), // 'subtle' | 'moderate' | 'overt' | null
     aiStrength: text("ai_strength"),
     aiReasoning: text("ai_reasoning"),
@@ -1758,6 +1846,8 @@ export const foreshadowSetups = sqliteTable(
     isOrphan: integer("is_orphan", { mode: "boolean" })
       .notNull()
       .default(false),
+    evidenceAnchorId: text("evidence_anchor_id"),
+    semanticKey: text("semantic_key").notNull().default(""),
 
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
@@ -1766,6 +1856,68 @@ export const foreshadowSetups = sqliteTable(
     index("idx_fs_setup_fid").on(t.foreshadowId),
     index("idx_fs_setup_scene").on(t.sceneId),
     index("idx_fs_setup_orphan").on(t.isOrphan),
+    index("idx_fs_setup_semantic_key").on(t.semanticKey),
+    uniqueIndex("uq_fs_setup_semantic_key").on(t.semanticKey),
+  ],
+);
+
+export const foreshadowPayoffs = sqliteTable(
+  "foreshadow_payoffs",
+  {
+    id: text("id").primaryKey(),
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    fromPos: integer("from_pos"),
+    toPos: integer("to_pos"),
+    role: text("role").notNull().default("unspecified"),
+    confirmed: integer("confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    isPrimary: integer("is_primary", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    attribution: text("attribution").notNull().default("human"),
+    aiRationale: text("ai_rationale"),
+    isOrphan: integer("is_orphan", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    evidenceAnchorId: text("evidence_anchor_id"),
+    semanticKey: text("semantic_key").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    index("idx_fs_payoff_fid").on(t.foreshadowId),
+    index("idx_fs_payoff_scene").on(t.sceneId),
+    index("idx_fs_payoff_semantic_key").on(t.semanticKey),
+    uniqueIndex("uq_fs_payoff_semantic_key").on(t.semanticKey),
+  ],
+);
+
+export const foreshadowSetupPayoffLinks = sqliteTable(
+  "foreshadow_setup_payoff_links",
+  {
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    setupId: text("setup_id")
+      .notNull()
+      .references(() => foreshadowSetups.id, { onDelete: "cascade" }),
+    payoffId: text("payoff_id")
+      .notNull()
+      .references(() => foreshadowPayoffs.id, { onDelete: "cascade" }),
+    bridgeKind: text("bridge_kind").notNull().default("unspecified"),
+    explanation: text("explanation"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.foreshadowId, t.setupId, t.payoffId] }),
+    index("idx_fs_payoff_link_setup").on(t.setupId),
+    index("idx_fs_payoff_link_payoff").on(t.payoffId),
   ],
 );
 
@@ -2032,6 +2184,555 @@ export const sceneLensData = sqliteTable(
   (table) => [
     index("idx_lens_run_target").on(table.runId, table.targetId),
     index("idx_lens_target_type").on(table.targetId, table.lensType),
+  ],
+);
+
+// =========================================================================
+// Narrative Extraction: Run / Task / Proposal / Apply persistence.
+// Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 6). Column shapes
+// match grimodex-db ensure_test_schema plus Apply／Provenance tables.
+// =========================================================================
+export const narrativeExtractionRuns = sqliteTable(
+  "narrative_extraction_runs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    surfacePathId: text("surface_path_id").notNull(),
+    scopeJson: text("scope_json").notNull(),
+    specJson: text("spec_json").notNull(),
+    specDigest: text("spec_digest").notNull(),
+    snapshotDigest: text("snapshot_digest"),
+    catalogDigest: text("catalog_digest"),
+    registryDigest: text("registry_digest"),
+    status: text("status").notNull(),
+    coverageJson: text("coverage_json").notNull().default("{}"),
+    outcomeSummaryJson: text("outcome_summary_json"),
+    createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    version: integer("version").notNull().default(0),
+  },
+);
+
+export const narrativeExtractionTasks = sqliteTable(
+  "narrative_extraction_tasks",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    taskKind: text("task_kind").notNull(),
+    status: text("status").notNull(),
+    inputJson: text("input_json").notNull().default("{}"),
+    outputJson: text("output_json"),
+    priority: integer("priority").notNull().default(0),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    heartbeatAt: text("heartbeat_at"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    version: integer("version").notNull().default(0),
+  },
+);
+
+export const narrativeExtractionTaskEdges = sqliteTable(
+  "narrative_extraction_task_edges",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    fromTaskId: text("from_task_id").notNull(),
+    toTaskId: text("to_task_id").notNull(),
+    edgeKind: text("edge_kind").notNull().default("depends_on"),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+export const narrativeExtractionAttempts = sqliteTable(
+  "narrative_extraction_attempts",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    status: text("status").notNull(),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
+    errorMessage: text("error_message"),
+    outputJson: text("output_json"),
+  },
+);
+
+export const narrativeExtractionArtifacts = sqliteTable(
+  "narrative_extraction_artifacts",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    taskId: text("task_id"),
+    attemptId: text("attempt_id"),
+    artifactKind: text("artifact_kind").notNull(),
+    payloadStorage: text("payload_storage").notNull().default("inline-json"),
+    payloadJson: text("payload_json"),
+    payloadRef: text("payload_ref"),
+    payloadDigest: text("payload_digest"),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+export const narrativeProposalSets = sqliteTable("narrative_proposal_sets", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  setKind: text("set_kind").notNull(),
+  status: text("status").notNull().default("draft"),
+  summaryJson: text("summary_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  version: integer("version").notNull().default(0),
+});
+
+export const narrativeProposals = sqliteTable("narrative_proposals", {
+  id: text("id").primaryKey(),
+  proposalSetId: text("proposal_set_id").notNull(),
+  proposalKey: text("proposal_key").notNull(),
+  kind: text("kind").notNull(),
+  status: text("status").notNull().default("unreviewed"),
+  payloadJson: text("payload_json").notNull(),
+  currentRevisionId: text("current_revision_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const narrativeProposalRevisions = sqliteTable(
+  "narrative_proposal_revisions",
+  {
+    id: text("id").primaryKey(),
+    proposalId: text("proposal_id").notNull(),
+    revisionNumber: integer("revision_number").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    createdAt: text("created_at").notNull(),
+    createdBy: text("created_by").notNull(),
+  },
+);
+
+export const narrativeProposalDecisions = sqliteTable(
+  "narrative_proposal_decisions",
+  {
+    id: text("id").primaryKey(),
+    proposalId: text("proposal_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    decision: text("decision").notNull(),
+    decisionJson: text("decision_json").notNull().default("{}"),
+    createdAt: text("created_at").notNull(),
+    createdBy: text("created_by").notNull(),
+  },
+);
+
+export const narrativeApplyCommits = sqliteTable("narrative_apply_commits", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  runId: text("run_id"),
+  proposalSetId: text("proposal_set_id"),
+  requestId: text("request_id").notNull(),
+  planDigest: text("plan_digest").notNull(),
+  status: text("status").notNull(),
+  receiptJson: text("receipt_json"),
+  errorMessage: text("error_message"),
+  createdAt: text("created_at").notNull(),
+  completedAt: text("completed_at"),
+  version: integer("version").notNull().default(0),
+});
+
+export const narrativeApplyOperations = sqliteTable(
+  "narrative_apply_operations",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    operationIndex: integer("operation_index").notNull(),
+    operationKind: text("operation_kind").notNull(),
+    payloadJson: text("payload_json").notNull().default("{}"),
+    resultEntityKind: text("result_entity_kind"),
+    resultEntityId: text("result_entity_id"),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+export const narrativeProposalApplications = sqliteTable(
+  "narrative_proposal_applications",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    proposalId: text("proposal_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    appliedEntityKind: text("applied_entity_kind").notNull(),
+    appliedEntityId: text("applied_entity_id").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+export const narrativeCommitJournals = sqliteTable(
+  "narrative_commit_journals",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+// =========================================================================
+// Import Sessions: durable adapter packages, source identity, and commits.
+// Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 13).
+// =========================================================================
+export const importSessions = sqliteTable(
+  "import_sessions",
+  {
+    id: text("id").primaryKey(),
+    state: text("state").notNull(),
+    adapterId: text("adapter_id"),
+    adapterVersion: text("adapter_version"),
+    targetJson: text("target_json").notNull(),
+    sourcePackageDigest: text("source_package_digest"),
+    sourcePackageRef: text("source_package_ref"),
+    extractionRunIdsJson: text("extraction_run_ids_json").notNull().default("[]"),
+    proposalSetIdsJson: text("proposal_set_ids_json").notNull().default("[]"),
+    errorMessage: text("error_message"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [index("idx_import_sessions_state").on(table.state, table.updatedAt)],
+);
+
+export const importSourcePackages = sqliteTable(
+  "import_source_packages",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => importSessions.id, { onDelete: "cascade" }),
+    digest: text("digest").notNull(),
+    adapterId: text("adapter_id").notNull(),
+    adapterVersion: text("adapter_version").notNull(),
+    packageJson: text("package_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [index("idx_import_source_packages_session").on(table.sessionId, table.createdAt)],
+);
+
+export const importSourceMappings = sqliteTable(
+  "import_source_mappings",
+  {
+    id: text("id").primaryKey(),
+    sourceSetId: text("source_set_id").notNull(),
+    sourceObjectKey: text("source_object_key").notNull(),
+    sourceObjectKind: text("source_object_kind").notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetId: text("target_id").notNull(),
+    sourceRecordDigest: text("source_record_digest").notNull(),
+    targetStateDigest: text("target_state_digest").notNull(),
+    adapterId: text("adapter_id").notNull(),
+    adapterVersion: text("adapter_version").notNull(),
+    firstImportSessionId: text("first_import_session_id").notNull(),
+    lastImportSessionId: text("last_import_session_id").notNull(),
+    status: text("status").notNull().default("active"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_source_mappings_source").on(
+      table.sourceSetId,
+      table.sourceObjectKey,
+    ),
+    index("idx_import_source_mappings_target").on(table.targetKind, table.targetId),
+  ],
+);
+
+export const importSourceBaselines = sqliteTable("import_source_baselines", {
+  mappingId: text("mapping_id")
+    .primaryKey()
+    .references(() => importSourceMappings.id, { onDelete: "cascade" }),
+  sourceDigest: text("source_digest").notNull(),
+  targetDigest: text("target_digest").notNull(),
+  normalizedBodyDigest: text("normalized_body_digest"),
+  targetVersion: integer("target_version"),
+  adapterVersion: text("adapter_version").notNull(),
+  normalizerVersion: text("normalizer_version").notNull(),
+  committedAt: text("committed_at").notNull().$defaultFn(nowInstantString),
+});
+
+export const importCommits = sqliteTable(
+  "import_commits",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    requestId: text("request_id").notNull(),
+    planDigest: text("plan_digest").notNull(),
+    projectId: text("project_id"),
+    status: text("status").notNull(),
+    receiptJson: text("receipt_json"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_import_commits_1").on(table.requestId),
+    index("idx_import_commits_session").on(table.sessionId, table.createdAt),
+  ],
+);
+
+export const importEvidenceBindings = sqliteTable(
+  "import_evidence_bindings",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    evidenceAnchorId: text("evidence_anchor_id").notNull(),
+    sourceDocumentKey: text("source_document_key").notNull(),
+    targetSceneId: text("target_scene_id").notNull(),
+    sourceDocumentDigest: text("source_document_digest").notNull(),
+    committedStorageDigest: text("committed_storage_digest").notNull(),
+    projectionStatus: text("projection_status").notNull(),
+    committedAt: text("committed_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_evidence_bindings_session").on(
+      table.sessionId,
+      table.targetSceneId,
+    ),
+  ],
+);
+
+// =========================================================================
+// Import Captures: portable native inventory, digest registry, and decoder
+// outputs. Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 14).
+// =========================================================================
+export const importCaptures = sqliteTable(
+  "import_captures",
+  {
+    id: text("id").primaryKey(),
+    state: text("state").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sealedDigest: text("sealed_digest"),
+    budgetJson: text("budget_json").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [index("idx_import_captures_state").on(table.state, table.updatedAt)],
+);
+
+export const importCaptureEntries = sqliteTable(
+  "import_capture_entries",
+  {
+    id: text("id").primaryKey(),
+    captureId: text("capture_id")
+      .notNull()
+      .references(() => importCaptures.id, { onDelete: "cascade" }),
+    resourceKey: text("resource_key").notNull(),
+    parentResourceKey: text("parent_resource_key"),
+    relativePath: text("relative_path").notNull(),
+    kind: text("kind").notNull(),
+    byteLength: integer("byte_length").notNull(),
+    extension: text("extension"),
+    captureStatus: text("capture_status").notNull(),
+    rawDigest: text("raw_digest"),
+    blobRef: text("blob_ref"),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_capture_entries_capture").on(
+      table.captureId,
+      table.captureStatus,
+      table.relativePath,
+    ),
+  ],
+);
+
+export const importCaptureBlobs = sqliteTable("import_capture_blobs", {
+  digest: text("digest").primaryKey(),
+  byteLength: integer("byte_length").notNull(),
+  createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+});
+
+export const importDecodedResources = sqliteTable(
+  "import_decoded_resources",
+  {
+    id: text("id").primaryKey(),
+    captureId: text("capture_id")
+      .notNull()
+      .references(() => importCaptures.id, { onDelete: "cascade" }),
+    resourceKey: text("resource_key").notNull(),
+    decoderId: text("decoder_id").notNull(),
+    decoderVersion: text("decoder_version").notNull(),
+    kind: text("kind").notNull(),
+    digest: text("digest").notNull(),
+    decodedJson: text("decoded_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_decoded_resources_capture").on(
+      table.captureId,
+      table.resourceKey,
+    ),
+  ],
+);
+
+export const genericExtractionSchemas = sqliteTable(
+  "generic_extraction_schemas",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    digest: text("digest").notNull(),
+    schemaJson: text("schema_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_generic_extraction_schemas_1").on(
+      table.id,
+      table.revision,
+    ),
+    index("idx_generic_extraction_schemas_digest").on(table.digest),
+  ],
+);
+
+/** Temporal Constraint Graph nodes (SCHEMA_VERSION 10). */
+export const narrativeTemporalNodes = sqliteTable(
+  "narrative_temporal_nodes",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    timelineKind: text("timeline_kind", {
+      enum: ["primary", "alternate", "embedded-fiction", "hypothetical"],
+    })
+      .notNull()
+      .default("primary"),
+    timelineKey: text("timeline_key"),
+    subjectKind: text("subject_kind", {
+      enum: [
+        "scene",
+        "event",
+        "state-boundary",
+        "phase-boundary",
+        "named-period",
+      ],
+    }).notNull(),
+    subjectJson: text("subject_json").notNull(),
+    semanticKey: text("semantic_key").notNull(),
+    shape: text("shape", {
+      enum: ["point", "interval", "unknown"],
+    })
+      .notNull()
+      .default("unknown"),
+    fingerprint: text("fingerprint").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_nodes_semantic_key").on(
+      table.projectId,
+      table.semanticKey,
+    ),
+    index("idx_narrative_temporal_nodes_project").on(table.projectId),
+  ],
+);
+
+export const narrativeTemporalConstraints = sqliteTable(
+  "narrative_temporal_constraints",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: text("kind", {
+      enum: [
+        "absolute-window",
+        "relative-offset",
+        "interval-relation",
+        "duration",
+        "symbolic",
+      ],
+    }).notNull(),
+    authority: text("authority", {
+      enum: [
+        "user-metadata",
+        "user-confirmed",
+        "explicit-story-text",
+        "existing-domain-relation",
+        "deterministic-derived",
+        "model-inferred",
+        "projection-derived",
+      ],
+    }).notNull(),
+    strictness: text("strictness", {
+      enum: ["hard", "soft"],
+    }).notNull(),
+    semanticKey: text("semantic_key").notNull(),
+    sourceIdsJson: text("source_ids_json").notNull().default("[]"),
+    fingerprint: text("fingerprint").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_constraints_semantic_key").on(
+      table.projectId,
+      table.semanticKey,
+    ),
+    index("idx_narrative_temporal_constraints_project").on(
+      table.projectId,
+      table.kind,
+    ),
+  ],
+);
+
+export const narrativeTemporalProjections = sqliteTable(
+  "narrative_temporal_projections",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    targetKind: text("target_kind", {
+      enum: ["scene-time", "event-time", "scene-story-order"],
+    }).notNull(),
+    targetId: text("target_id").notNull(),
+    constraintSetDigest: text("constraint_set_digest").notNull(),
+    solverVersion: text("solver_version").notNull(),
+    calendarDigest: text("calendar_digest"),
+    projectedValueDigest: text("projected_value_digest").notNull(),
+    targetResultVersion: integer("target_result_version").notNull(),
+    applicationId: text("application_id").notNull(),
+    status: text("status", {
+      enum: ["current", "invalidated", "undone"],
+    })
+      .notNull()
+      .default("current"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_projections_target").on(
+      table.projectId,
+      table.targetKind,
+      table.targetId,
+    ),
   ],
 );
 
@@ -2425,6 +3126,10 @@ export type NewCodexTag = typeof codexTags.$inferInsert;
 export type CodexDetailDefinition = typeof codexDetailDefinitions.$inferSelect;
 export type NewCodexDetailDefinition =
   typeof codexDetailDefinitions.$inferInsert;
+export type CodexDetailSemanticBinding =
+  typeof codexDetailSemanticBindings.$inferSelect;
+export type NewCodexDetailSemanticBinding =
+  typeof codexDetailSemanticBindings.$inferInsert;
 export type CodexDetailValue = typeof codexDetailValues.$inferSelect;
 export type NewCodexDetailValue = typeof codexDetailValues.$inferInsert;
 export type CodexContextMode = "always" | "mentioned" | "suppress" | "hidden";
@@ -2481,6 +3186,12 @@ export type Foreshadow = typeof foreshadows.$inferSelect;
 export type NewForeshadow = typeof foreshadows.$inferInsert;
 export type ForeshadowSetup = typeof foreshadowSetups.$inferSelect;
 export type NewForeshadowSetup = typeof foreshadowSetups.$inferInsert;
+export type ForeshadowPayoff = typeof foreshadowPayoffs.$inferSelect;
+export type NewForeshadowPayoff = typeof foreshadowPayoffs.$inferInsert;
+export type ForeshadowSetupPayoffLink =
+  typeof foreshadowSetupPayoffLinks.$inferSelect;
+export type NewForeshadowSetupPayoffLink =
+  typeof foreshadowSetupPayoffLinks.$inferInsert;
 export type ForeshadowCodexLink = typeof foreshadowCodexLinks.$inferSelect;
 export type NewForeshadowCodexLink = typeof foreshadowCodexLinks.$inferInsert;
 
@@ -2506,6 +3217,53 @@ export type NewPostEffectAnnotationRelation =
   typeof postEffectAnnotationRelations.$inferInsert;
 export type SceneLensData = typeof sceneLensData.$inferSelect;
 export type NewSceneLensData = typeof sceneLensData.$inferInsert;
+
+export type NarrativeExtractionRun =
+  typeof narrativeExtractionRuns.$inferSelect;
+export type NewNarrativeExtractionRun =
+  typeof narrativeExtractionRuns.$inferInsert;
+export type NarrativeExtractionTask =
+  typeof narrativeExtractionTasks.$inferSelect;
+export type NewNarrativeExtractionTask =
+  typeof narrativeExtractionTasks.$inferInsert;
+export type NarrativeExtractionTaskEdge =
+  typeof narrativeExtractionTaskEdges.$inferSelect;
+export type NewNarrativeExtractionTaskEdge =
+  typeof narrativeExtractionTaskEdges.$inferInsert;
+export type NarrativeExtractionAttempt =
+  typeof narrativeExtractionAttempts.$inferSelect;
+export type NewNarrativeExtractionAttempt =
+  typeof narrativeExtractionAttempts.$inferInsert;
+export type NarrativeExtractionArtifact =
+  typeof narrativeExtractionArtifacts.$inferSelect;
+export type NewNarrativeExtractionArtifact =
+  typeof narrativeExtractionArtifacts.$inferInsert;
+export type NarrativeProposalSet = typeof narrativeProposalSets.$inferSelect;
+export type NewNarrativeProposalSet = typeof narrativeProposalSets.$inferInsert;
+export type NarrativeProposal = typeof narrativeProposals.$inferSelect;
+export type NewNarrativeProposal = typeof narrativeProposals.$inferInsert;
+export type NarrativeProposalRevision =
+  typeof narrativeProposalRevisions.$inferSelect;
+export type NewNarrativeProposalRevision =
+  typeof narrativeProposalRevisions.$inferInsert;
+export type NarrativeProposalDecision =
+  typeof narrativeProposalDecisions.$inferSelect;
+export type NewNarrativeProposalDecision =
+  typeof narrativeProposalDecisions.$inferInsert;
+export type NarrativeApplyCommit = typeof narrativeApplyCommits.$inferSelect;
+export type NewNarrativeApplyCommit = typeof narrativeApplyCommits.$inferInsert;
+export type NarrativeApplyOperation =
+  typeof narrativeApplyOperations.$inferSelect;
+export type NewNarrativeApplyOperation =
+  typeof narrativeApplyOperations.$inferInsert;
+export type NarrativeProposalApplication =
+  typeof narrativeProposalApplications.$inferSelect;
+export type NewNarrativeProposalApplication =
+  typeof narrativeProposalApplications.$inferInsert;
+export type NarrativeCommitJournal =
+  typeof narrativeCommitJournals.$inferSelect;
+export type NewNarrativeCommitJournal =
+  typeof narrativeCommitJournals.$inferInsert;
 
 export type SceneChunk = typeof sceneChunks.$inferSelect;
 export type NewSceneChunk = typeof sceneChunks.$inferInsert;

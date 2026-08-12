@@ -765,6 +765,7 @@ export interface PanelWindowDelegate {
     opts: { width?: unknown; height?: unknown; title?: unknown },
   ): void;
   focusByLabel(label: string): boolean;
+  existsByLabel(label: string): boolean;
 }
 
 /**
@@ -929,5 +930,11 @@ export function registerShellBridgeHandlers(
       throw new Error(unimplementedError("panelWindow.focusByLabel"));
     }
     return panelWindows.focusByLabel(requireStringArg(label, "label"));
+  });
+  handleWithEnvelope(IPC.panelExists, (_event, label) => {
+    if (!panelWindows) {
+      throw new Error(unimplementedError("panelWindow.existsByLabel"));
+    }
+    return panelWindows.existsByLabel(requireStringArg(label, "label"));
   });
 }

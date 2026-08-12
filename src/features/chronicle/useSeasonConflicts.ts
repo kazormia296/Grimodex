@@ -25,6 +25,7 @@ import {
 } from "./api";
 import { sceneIdFromEventId } from "./sceneEventAdapter";
 import { chronicleScopeKey, type ChronicleScope } from "./chronicleScope";
+import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 
 const CONFLICT_RECHECK_DEBOUNCE_MS = 200;
 const EMPTY_SEASON_CONFLICTS: SeasonConflict[] = [];
@@ -132,7 +133,19 @@ export function useSeasonConflicts({
   const [calendarSnapshot, setCalendarSnapshot] = useState<{
     scopeKey: string | null;
     calendar: ChronicleCalendar | null;
-  }>({ scopeKey: null, calendar: null });
+    version: number | null;
+    loaded: boolean;
+  }>({ scopeKey: null, calendar: null, version: null, loaded: false });
+  const calendarWriteTokenRef = useRef<{
+    scopeKey: string | null;
+    version: number | null;
+    loaded: boolean;
+  }>({ scopeKey: null, version: null, loaded: false });
+  const calendarPublicationGenerationRef = useRef(0);
+  const [calendarSaveState, setCalendarSaveState] = useState<{
+    scopeKey: string | null;
+    error: Error | null;
+  }>({ scopeKey: null, error: null });
   const [conflictSnapshot, setConflictSnapshot] = useState<{
     scopeKey: string | null;
     conflicts: SeasonConflict[];
@@ -147,7 +160,6 @@ export function useSeasonConflicts({
     status: "idle" | "loading" | "ready" | "error";
     error: Error | null;
   }>({ scopeKey: null, status: "idle", error: null });
-  const [calVersion, setCalVersion] = useState(0);
   const [contentRevision, setContentRevision] = useState(0);
   const [checkRevision, setCheckRevision] = useState(0);
 
@@ -187,25 +199,46 @@ export function useSeasonConflicts({
   const checkInputs = stableRef.current.inputs;
 
   useEffect(() => {
+    const requestGeneration = ++calendarPublicationGenerationRef.current;
     if (!enabled || !scopeKey || !scopeProjectId) return;
     const requestScopeKey = scopeKey;
     let cancelled = false;
     getProjectCalendar(scopeProjectId)
       .then((row) => {
-        if (cancelled || activeScopeKeyRef.current !== requestScopeKey) {
+        if (
+          cancelled ||
+          activeScopeKeyRef.current !== requestScopeKey ||
+          calendarPublicationGenerationRef.current !== requestGeneration
+        ) {
           return;
         }
         if (!row) {
-          setCalendarSnapshot({
+          const next = {
             scopeKey: requestScopeKey,
             calendar: null,
-          });
+            version: null,
+            loaded: true,
+          } as const;
+          calendarWriteTokenRef.current = {
+            scopeKey: requestScopeKey,
+            version: null,
+            loaded: true,
+          };
+          setCalendarSnapshot(next);
           return;
         }
-        setCalendarSnapshot({
+        const next = {
           scopeKey: requestScopeKey,
           calendar: calendarFromRow(row),
-        });
+          version: row.version,
+          loaded: true,
+        } as const;
+        calendarWriteTokenRef.current = {
+          scopeKey: requestScopeKey,
+          version: row.version,
+          loaded: true,
+        };
+        setCalendarSnapshot(next);
       })
       // Preserve the same-scope last-good calendar. Clearing it here would
       // cascade into clearing otherwise valid conflict markers.
@@ -213,7 +246,7 @@ export function useSeasonConflicts({
     return () => {
       cancelled = true;
     };
-  }, [calVersion, enabled, scopeKey, scopeProjectId]);
+  }, [enabled, scopeKey, scopeProjectId]);
 
   const monitoredSceneIds = useMemo(() => {
     const ids = new Set(checkInputs.links.map((link) => link.sceneId));
@@ -399,23 +432,102 @@ export function useSeasonConflicts({
     async (cal: ChronicleCalendar) => {
       if (!scopeProjectId || !scopeKey) return;
       const requestScopeKey = scopeKey;
-      await upsertProjectCalendar({
-        projectId: scopeProjectId,
-        daysPerYear: cal.daysPerYear,
-        seasonBoundaries: JSON.stringify(cal.seasonBoundaries),
-        startYear: cal.startYear ?? 0,
-        months: JSON.stringify(cal.months ?? []),
-        weekdayNames: JSON.stringify(cal.weekdayNames ?? []),
-        weekdayStartIndex: cal.weekdayStartIndex ?? 0,
-        leapRule: JSON.stringify(cal.leap ?? { kind: "none" }),
-        ageReckoning: cal.ageReckoning ?? "full",
-        eras: JSON.stringify(cal.eras ?? []),
-        reform: JSON.stringify(cal.reform ?? null),
-        timezone: JSON.stringify(cal.timezone ?? null),
-        lunarTzMinutes: cal.lunarTzMinutes ?? 480,
-      });
-      if (activeScopeKeyRef.current === requestScopeKey) {
-        setCalVersion((v) => v + 1);
+      const requestGeneration = ++calendarPublicationGenerationRef.current;
+      try {
+        let token = calendarWriteTokenRef.current;
+        if (token.scopeKey !== requestScopeKey || !token.loaded) {
+          const latest = await getProjectCalendar(scopeProjectId);
+          if (
+            activeScopeKeyRef.current !== requestScopeKey ||
+            calendarPublicationGenerationRef.current !== requestGeneration
+          ) {
+            return;
+          }
+          token = {
+            scopeKey: requestScopeKey,
+            version: latest?.version ?? null,
+            loaded: true,
+          };
+          calendarWriteTokenRef.current = token;
+          setCalendarSnapshot({
+            scopeKey: requestScopeKey,
+            calendar: latest ? calendarFromRow(latest) : null,
+            version: token.version,
+            loaded: true,
+          });
+        }
+        const persisted = await upsertProjectCalendar(
+          {
+            projectId: scopeProjectId,
+            daysPerYear: cal.daysPerYear,
+            seasonBoundaries: JSON.stringify(cal.seasonBoundaries),
+            startYear: cal.startYear ?? 0,
+            months: JSON.stringify(cal.months ?? []),
+            weekdayNames: JSON.stringify(cal.weekdayNames ?? []),
+            weekdayStartIndex: cal.weekdayStartIndex ?? 0,
+            leapRule: JSON.stringify(cal.leap ?? { kind: "none" }),
+            ageReckoning: cal.ageReckoning ?? "full",
+            eras: JSON.stringify(cal.eras ?? []),
+            reform: JSON.stringify(cal.reform ?? null),
+            timezone: JSON.stringify(cal.timezone ?? null),
+            lunarTzMinutes: cal.lunarTzMinutes ?? 480,
+          },
+          { baseVersion: token.version },
+        );
+        if (
+          activeScopeKeyRef.current !== requestScopeKey ||
+          calendarPublicationGenerationRef.current !== requestGeneration
+        ) {
+          return;
+        }
+        calendarWriteTokenRef.current = {
+          scopeKey: requestScopeKey,
+          version: persisted.version,
+          loaded: true,
+        };
+        setCalendarSnapshot({
+          scopeKey: requestScopeKey,
+          calendar: calendarFromRow(persisted),
+          version: persisted.version,
+          loaded: true,
+        });
+        setCalendarSaveState({ scopeKey: requestScopeKey, error: null });
+      } catch (error) {
+        if (
+          activeScopeKeyRef.current !== requestScopeKey ||
+          calendarPublicationGenerationRef.current !== requestGeneration
+        ) {
+          return;
+        }
+        const normalized =
+          error instanceof Error ? error : new Error(String(error));
+        setCalendarSaveState({ scopeKey: requestScopeKey, error: normalized });
+        if (error instanceof ProjectCalendarVersionConflictError) {
+          try {
+            const latest = await getProjectCalendar(scopeProjectId);
+            if (
+              activeScopeKeyRef.current !== requestScopeKey ||
+              calendarPublicationGenerationRef.current !== requestGeneration
+            ) {
+              return;
+            }
+            calendarWriteTokenRef.current = {
+              scopeKey: requestScopeKey,
+              version: latest?.version ?? null,
+              loaded: true,
+            };
+            setCalendarSnapshot({
+              scopeKey: requestScopeKey,
+              calendar: latest ? calendarFromRow(latest) : null,
+              version: latest?.version ?? null,
+              loaded: true,
+            });
+          } catch {
+            // Preserve and publish the original OCC conflict. A later normal
+            // calendar load can retry without masking why this save failed.
+          }
+        }
+        throw normalized;
       }
     },
     [scopeKey, scopeProjectId],
@@ -442,6 +554,10 @@ export function useSeasonConflicts({
     scopeKey !== null && conflictLoadState.scopeKey === scopeKey
       ? conflictLoadState
       : { scopeKey, status: "idle" as const, error: null };
+  const calendarSaveError =
+    scopeKey !== null && calendarSaveState.scopeKey === scopeKey
+      ? calendarSaveState.error
+      : null;
   const retryConflicts = useCallback(() => {
     if (enabled && scopeKey) setCheckRevision((revision) => revision + 1);
   }, [enabled, scopeKey]);
@@ -455,6 +571,7 @@ export function useSeasonConflicts({
     ageConflictIds,
     ensureDefaultCalendar,
     saveCalendar,
+    calendarSaveError,
     conflictStatus: enabled ? currentLoadState.status : "disabled",
     conflictLoadError: currentLoadState.error,
     retryConflicts,

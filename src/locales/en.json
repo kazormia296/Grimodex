@@ -484,6 +484,17 @@
       "folder-too-large": "The manuscript files in this folder are too large in total (maximum {{maxMiB}} MiB)",
       "path-too-deep": "The folder hierarchy is too deep (maximum {{maxDepth}} levels)"
     },
+    "generic": {
+      "wizardTitle": "Generic import (preview)",
+      "runPreview": "Run preview",
+      "resourceTreeHint": "Captured files and inferred roles (preview).",
+      "noResources": "No resources",
+      "rolePickerHint": "Review semantic roles for each resource (preview).",
+      "disposition": "Disposition",
+      "summaryHint": "Generic import assembly summary (preview).",
+      "skipped": "Skipped",
+      "decoderPickerHint": "Decoders are auto-selected from extension and magic bytes (preview)."
+    },
     "scan": {
       "description": "Load a private Scan editor seed (JSON) into a new project using staged apply. Existing projects are unchanged.",
       "tooLarge": "The Scan seed is too large (maximum 32 MB).",
@@ -1499,7 +1510,29 @@
         "codex_judgment": "Proper-noun candidate judgment",
         "codex_yomi": "Reading estimation",
         "plot_thread_extract": "Plot thread extraction",
-        "chronicle_extract": "Chronicle event extraction"
+        "chronicle_extract": "Chronicle event extraction",
+        "narrative_observation_extract": "Narrative observation extract",
+        "narrative_event_synthesize": "Narrative event synthesize",
+        "narrative_entity_resolve": "Narrative entity resolve",
+        "narrative_relation_synthesize": "Narrative relation synthesize",
+        "narrative_state_synthesize": "Narrative state synthesize",
+        "narrative_phase_synthesize": "Narrative phase synthesize",
+        "narrative_detail_compose": "Narrative detail compose",
+        "narrative_temporal_attach": "Narrative temporal attach",
+        "narrative_temporal_synthesize": "Narrative temporal synthesize",
+        "narrative_structured_repair": "Narrative structured repair",
+        "narrative_plot_thread_synthesize": "Narrative plot thread synthesize",
+        "narrative_plot_development_classify": "Narrative plot development classify",
+        "narrative_plot_marker_assign": "Narrative plot marker assign",
+        "narrative_plot_relation_synthesize": "Narrative plot relation synthesize",
+        "narrative_foreshadow_signal_synthesize": "Foreshadow setup signal synthesize",
+        "narrative_setup_payoff_link": "Setup/payoff link",
+        "narrative_foreshadow_global_reconcile": "Foreshadow global reconcile",
+        "narrative_foreshadow_quality_evaluate": "Foreshadow quality evaluate",
+        "generic_import_role_classify": "Generic import role classify",
+        "generic_import_document_partition": "Generic import document partition",
+        "generic_import_custom_extract": "Generic import custom extract",
+        "generic_import_record_reconcile": "Generic import record reconcile"
       }
     }
   },
@@ -2427,7 +2460,8 @@
       "fieldTypeText": "Text",
       "fieldTypeDropdown": "Dropdown",
       "fieldTypeCodexReference": "Codex Reference",
-      "manageFieldsTitle": "Manage fields: {{type}}"
+      "manageFieldsTitle": "Manage fields: {{type}}",
+      "editConflict": "Couldn't save: this detail was updated in another window. Reload the latest version and edit again."
     },
     "relation": {
       "title": "Hierarchy (parent/child)",
@@ -5720,6 +5754,24 @@
       },
       "failed": "Extraction failed",
       "none": "No sub-plots could be extracted."
+    },
+    "reviewExtract": {
+      "button": "Extraction preview",
+      "title": "Plot thread proposal review",
+      "hint": "Review AI-proposed plot thread candidates (preview feature).",
+      "empty": "No proposals awaiting review yet.",
+      "markerCount": "{{n}} marker(s)",
+      "blocked": "Needs review",
+      "binding": {
+        "createNew": "Create new",
+        "bindExisting": "Bind to existing thread",
+        "unresolved": "Multiple candidates, unresolved"
+      },
+      "prominence": {
+        "primary": "Primary",
+        "supporting": "Supporting",
+        "minor": "Minor"
+      }
     },
     "structure": {
       "title": "Structure",

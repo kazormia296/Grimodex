@@ -24,6 +24,7 @@ import { useTreeStore } from "../treeStore";
 import { validateAiTreePlan, type ValidationError } from "./validate";
 import { assignNodePlacements, type NodePlacement } from "./placement";
 import type { AiTreePlan, ApplyContext, ApplyResult, CreateOp } from "./types";
+import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 
 export class AiTreePlanError extends Error {
   constructor(public readonly errors: ValidationError[]) {
@@ -154,6 +155,13 @@ export function buildUndoStatements(
 }
 
 export async function applyAiTreePlan(
+  plan: AiTreePlan,
+  ctx: ApplyContext,
+): Promise<ApplyResult> {
+  return runTreeTopologyMutation(() => applyAiTreePlanWithAuthority(plan, ctx));
+}
+
+async function applyAiTreePlanWithAuthority(
   plan: AiTreePlan,
   ctx: ApplyContext,
 ): Promise<ApplyResult> {
@@ -297,8 +305,8 @@ export async function applyAiTreePlan(
         plan.kind === "scaffold"
           ? i18next.t("aiTree.historyScaffold")
           : i18next.t("aiTree.historyReorganize"),
-      undo: runUndoBatch,
-      redo: runForwardBatch,
+      undo: () => runTreeTopologyMutation(runUndoBatch),
+      redo: () => runTreeTopologyMutation(runForwardBatch),
     });
   }
 

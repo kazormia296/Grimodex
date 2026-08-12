@@ -167,6 +167,8 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       phaseType: "turn" as const,
       note: null,
       sortOrder: null,
+      semanticKey: "",
+      version: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-02T00:00:00.000Z",
     };
@@ -183,6 +185,8 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       toThreadId: "t2",
       atNodeId: "s2",
       kind: "branch" as const,
+      semanticKey: "",
+      version: 0,
       createdAt: "2026-01-03T00:00:00.000Z",
       updatedAt: "2026-01-03T00:00:00.000Z",
     };
@@ -279,6 +283,7 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       sortOrder: "a0",
       startNodeId: null,
       endNodeId: null,
+      version: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-02T00:00:00.000Z",
     };
@@ -289,6 +294,7 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       phaseType: "turn" as const,
       note: "marker",
       sortOrder: "a0",
+      version: 0,
       createdAt: "2026-01-01T01:00:00.000Z",
       updatedAt: "2026-01-02T01:00:00.000Z",
     };
@@ -299,6 +305,8 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       toThreadId: "pt1",
       atNodeId: "scene-1",
       kind: "branch" as const,
+      semanticKey: "",
+      version: 0,
       createdAt: "2026-01-01T02:00:00.000Z",
       updatedAt: "2026-01-02T02:00:00.000Z",
     };
@@ -363,6 +371,8 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
           phaseType: "turn",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-02T00:00:00.000Z",
         },

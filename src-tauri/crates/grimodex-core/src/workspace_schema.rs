@@ -1,16 +1,26 @@
 //! Read-only compatibility probes shared by desktop workspace open and MCP.
 //!
-//! Schema version 2 was already released when the live-comment metadata repair
-//! and the complete AI audit ledger were added. Consequently, version 2 alone
-//! cannot prove that a workspace has converged to the schema represented by
-//! version 3. This module checks only those post-v2 invariants; it deliberately
-//! avoids exact whole-schema comparison because legitimate upgraded databases
-//! can differ from a freshly-created database in column order and normalized
-//! DDL while remaining compatible.
+//! # Gate B2 schema renumbering (append-only)
+//!
+//! - **v3** — physical invariants (ai_audit, stickies, live-comment repair, …)
+//! - **v4** — `narrative_runtime_policy` singleton (Gate B Foundation)
+//! - **v5** — `codex_detail_semantic_bindings`
+//! - **v6** — project_calendar OCC `version` column
+//! - **v7** — Narrative Extraction persistence tables
+//! - **v8** — Codex relation directionality / semantic_key / version
+//! - **v9** — Detail Definition / Detail Value OCC columns
+//! - **v10** — Temporal Constraint Graph tables (Nodes / Constraints / Projections)
+//!
+//!
+//! These probes deliberately avoid exact whole-schema comparison because
+//! legitimate upgraded databases can differ from a freshly-created database in
+//! column order and normalized DDL while remaining compatible.
 
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::{PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION, SCHEMA_VERSION};
+use crate::{
+    PREVIOUS_COMPATIBLE_SCHEMA_VERSION, PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION, SCHEMA_VERSION,
+};
 
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
@@ -77,17 +87,25 @@ pub fn is_converged_v2_workspace_schema(conn: &Connection) -> anyhow::Result<boo
     has_v3_physical_invariants(conn)
 }
 
-/// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Schema PRs must update this function (or the helpers it
-/// calls) when they introduce new tables / indexes that the open fast path must
-/// prove before skipping shadow migration.
-pub fn has_current_schema_checkpoint_invariants(
-    conn: &Connection,
-) -> anyhow::Result<bool> {
-    if !has_v3_physical_invariants(conn)? {
+/// Whether a workspace carrying the immediately previous marker already
+/// satisfies every current physical invariant and can therefore retain write
+/// access while the desktop has not yet advanced the marker.
+///
+/// This function never mutates the connection. A `false` result asks the
+/// caller to run the full idempotent migration; query failures remain errors so
+/// corruption is not mistaken for an old-but-repairable schema.
+pub fn is_previous_workspace_schema_write_compatible(conn: &Connection) -> anyhow::Result<bool> {
+    // Fail closed after the next schema bump. The compatibility predicate must
+    // always be reviewed together with the new physical checkpoint.
+    if SCHEMA_VERSION != PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION {
         return Ok(false);
     }
-    has_v4_checkpoint_invariants(conn)
+    let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if user_version != PREVIOUS_COMPATIBLE_SCHEMA_VERSION {
+        return Ok(false);
+    }
+
+    has_current_schema_checkpoint_invariants(conn)
 }
 
 /// Compatibility wrapper used by older call sites／tests that still name the
@@ -196,6 +214,9 @@ pub fn has_v3_physical_invariants(conn: &Connection) -> anyhow::Result<bool> {
 }
 
 /// SCHEMA 4 checkpoint: Native-owned Narrative runtime policy singleton.
+///
+/// Does **not** chain to v3 inside itself; callers that need the full stack
+/// must invoke [`has_v3_physical_invariants`] (or a later checkpoint that does).
 pub fn has_v4_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     if !table_exists(conn, "narrative_runtime_policy")? {
         return Ok(false);
@@ -229,6 +250,363 @@ pub fn has_v4_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
         |row| row.get(0),
     )?;
     Ok(singleton == 1)
+}
+
+/// SCHEMA 5 checkpoint: durable Detail semantic bindings on top of every v4
+/// (runtime policy) invariant.
+pub fn has_v5_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v4_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_detail_semantic_bindings")? {
+        return Ok(false);
+    }
+
+    let columns = table_columns(conn, "codex_detail_semantic_bindings")?;
+    let expected = [
+        ("id", "TEXT", false, None, 1),
+        ("project_id", "TEXT", true, None, 0),
+        ("definition_id", "TEXT", true, None, 0),
+        ("facet_key", "TEXT", true, None, 0),
+        ("projection_kind", "TEXT", true, None, 0),
+        ("temporal_policy", "TEXT", true, None, 0),
+        ("source", "TEXT", true, None, 0),
+        ("confirmed", "INTEGER", true, Some("0"), 0),
+        ("version", "INTEGER", true, Some("0"), 0),
+        ("created_at", "TEXT", true, Some("datetime('now')"), 0),
+        ("updated_at", "TEXT", true, Some("datetime('now')"), 0),
+    ];
+    if columns.len() != expected.len()
+        || columns.iter().zip(expected).any(|(actual, expected)| {
+            actual.name != expected.0
+                || actual.declared_type != expected.1
+                || actual.not_null != expected.2
+                || actual.default.as_deref() != expected.3
+                || actual.primary_key != expected.4
+        })
+    {
+        return Ok(false);
+    }
+
+    for (name, unique, expected_columns) in [
+        (
+            "uq_codex_detail_semantic_binding_definition_facet",
+            true,
+            &["definition_id", "facet_key"][..],
+        ),
+        (
+            "idx_codex_detail_semantic_bindings_project_facet",
+            false,
+            &["project_id", "facet_key"][..],
+        ),
+    ] {
+        let properties = conn
+            .query_row(
+                "SELECT \"unique\", partial
+                   FROM pragma_index_list('codex_detail_semantic_bindings')
+                  WHERE name = ?1",
+                [name],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .optional()?;
+        if properties != Some((unique, false)) || index_columns(conn, name)? != expected_columns {
+            return Ok(false);
+        }
+    }
+
+    let owner_index = conn
+        .query_row(
+            "SELECT \"unique\", partial
+               FROM pragma_index_list('codex_detail_definitions')
+              WHERE name = 'uq_codex_detail_defs_project_id'",
+            [],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()?;
+    if owner_index != Some((true, false))
+        || index_columns(conn, "uq_codex_detail_defs_project_id")? != ["project_id", "id"]
+    {
+        return Ok(false);
+    }
+
+    let create_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'table' AND name = 'codex_detail_semantic_bindings'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )?
+        .unwrap_or_default();
+    let compact = compact_sql(&create_sql);
+    for required in [
+        "check(projection_kindin('scalar-text','summary-text','enum','entity-reference'))",
+        "check(temporal_policyin('base-only','phase-on-durable-change','base-and-phase','derived','manual-only'))",
+        "check(sourcein('preset','user','reviewed-ai'))",
+        "check(confirmedin(0,1))",
+        "check(version>=0)",
+        "project_idtextnotnullreferencesprojects(id)ondeletecascade",
+        "foreignkey(project_id,definition_id)referencescodex_detail_definitions(project_id,id)ondeletecascade",
+    ] {
+        if !compact.contains(required) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+/// SCHEMA 6 checkpoint: Calendar OCC token on top of every v5 invariant.
+pub fn has_v6_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v5_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "project_calendar")? {
+        return Ok(false);
+    }
+
+    let columns = table_columns(conn, "project_calendar")?;
+    Ok(columns.iter().any(|column| {
+        column.name == "version"
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("0")
+            && column.primary_key == 0
+    }))
+}
+
+
+/// SCHEMA 7 checkpoint: Narrative Extraction persistence on top of every v6
+/// invariant.
+pub fn has_v7_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v6_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    Ok(table_exists(conn, "narrative_extraction_runs")?
+        && table_exists(conn, "narrative_proposals")?
+        && table_exists(conn, "narrative_apply_commits")?)
+}
+
+/// SCHEMA 8 checkpoint: Codex relation directionality / semantic_key / version.
+pub fn has_v8_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v7_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_relations")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "codex_relations")?;
+    let has_directionality = columns.iter().any(|column| {
+        column.name == "directionality"
+            && column.declared_type == "TEXT"
+            && column.not_null
+    });
+    let has_inverse_label = columns.iter().any(|column| column.name == "inverse_label");
+    let has_semantic_key = columns.iter().any(|column| {
+        column.name == "semantic_key" && column.declared_type == "TEXT" && column.not_null
+    });
+    let has_version = columns.iter().any(|column| {
+        column.name == "version"
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("1")
+    });
+    Ok(has_directionality && has_inverse_label && has_semantic_key && has_version)
+}
+
+/// SCHEMA 9 checkpoint: Detail Definition / Detail Value OCC columns on top of
+/// every v8 invariant.
+pub fn has_v9_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v8_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "codex_detail_definitions")?
+        || !table_exists(conn, "codex_detail_values")?
+    {
+        return Ok(false);
+    }
+    let definitions = table_columns(conn, "codex_detail_definitions")?;
+    let values = table_columns(conn, "codex_detail_values")?;
+    Ok(
+        has_occ_integer_column(&definitions, "version")
+            && has_timestamp_text_column(&definitions, "updated_at")
+            && has_occ_integer_column(&values, "version")
+            && has_timestamp_text_column(&values, "created_at")
+            && has_timestamp_text_column(&values, "updated_at"),
+    )
+}
+
+/// SCHEMA 10 checkpoint: Temporal Constraint Graph persistence tables on top
+/// of every v9 invariant.
+pub fn has_v10_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v9_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    for table in [
+        "narrative_temporal_nodes",
+        "narrative_temporal_constraints",
+        "narrative_temporal_projections",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+    let nodes = table_columns(conn, "narrative_temporal_nodes")?;
+    let constraints = table_columns(conn, "narrative_temporal_constraints")?;
+    let projections = table_columns(conn, "narrative_temporal_projections")?;
+    Ok(
+        has_occ_integer_column(&nodes, "version")
+            && has_timestamp_text_column(&nodes, "created_at")
+            && has_timestamp_text_column(&nodes, "updated_at")
+            && has_occ_integer_column(&constraints, "version")
+            && has_timestamp_text_column(&constraints, "created_at")
+            && has_timestamp_text_column(&constraints, "updated_at")
+            && has_occ_integer_column(&projections, "version")
+            && has_timestamp_text_column(&projections, "created_at")
+            && has_timestamp_text_column(&projections, "updated_at"),
+    )
+}
+
+/// SCHEMA 11 checkpoint: Plot Thread OCC on top of every v10 invariant.
+pub fn has_v11_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v10_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    let threads = table_columns(conn, "plot_threads")?;
+    let links = table_columns(conn, "plot_thread_scene_links")?;
+    let branches = table_columns(conn, "plot_thread_branches")?;
+    Ok(
+        has_occ_integer_column(&threads, "version")
+            && has_occ_integer_column(&links, "version")
+            && has_text_column(&links, "semantic_key")
+            && has_occ_integer_column(&branches, "version")
+            && has_text_column(&branches, "semantic_key"),
+    )
+}
+
+/// SCHEMA 12 checkpoint: Foreshadow Setup/Payoff aggregate tables with root OCC
+/// on top of every v11 invariant.
+pub fn has_v12_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v11_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    for table in [
+        "foreshadows",
+        "foreshadow_setups",
+        "foreshadow_payoffs",
+        "foreshadow_setup_payoff_links",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let foreshadows = table_columns(conn, "foreshadows")?;
+    let setups = table_columns(conn, "foreshadow_setups")?;
+    let payoffs = table_columns(conn, "foreshadow_payoffs")?;
+    let links = table_columns(conn, "foreshadow_setup_payoff_links")?;
+
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == declared_type)
+    };
+
+    Ok(
+        has_occ_integer_column(&foreshadows, "version")
+            && has_column(&foreshadows, "mechanism", "TEXT")
+            && has_text_column(&setups, "role")
+            && has_text_column(&setups, "semantic_key")
+            && [
+                "id",
+                "foreshadow_id",
+                "scene_id",
+                "from_pos",
+                "to_pos",
+                "role",
+                "confirmed",
+                "is_primary",
+                "attribution",
+                "ai_rationale",
+                "is_orphan",
+                "evidence_anchor_id",
+                "semantic_key",
+                "created_at",
+                "updated_at",
+            ]
+            .iter()
+            .all(|name| payoffs.iter().any(|column| column.name == *name))
+            && [
+                "foreshadow_id",
+                "setup_id",
+                "payoff_id",
+                "bridge_kind",
+                "explanation",
+                "created_at",
+            ]
+            .iter()
+            .all(|name| links.iter().any(|column| column.name == *name)),
+    )
+}
+
+/// SCHEMA 13 checkpoint: Import Session persistence on top of every v12
+/// invariant.
+pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v12_checkpoint_invariants(conn)? {
+        return Ok(false);
+    }
+    if !table_exists(conn, "import_sessions")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "import_sessions")?;
+    Ok([
+        "id",
+        "state",
+        "target_json",
+        "extraction_run_ids_json",
+        "proposal_set_ids_json",
+        "version",
+        "created_at",
+        "updated_at",
+    ]
+    .iter()
+    .all(|name| columns.iter().any(|column| column.name == *name)))
+}
+
+/// Whether the live DB satisfies every checkpoint invariant for the *current*
+/// [`SCHEMA_VERSION`]. Version 14 adds Generic Import capture/seal tables on
+/// top of every v13 invariant.
+pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
+    Ok(
+        SCHEMA_VERSION == 14
+            && has_v3_physical_invariants(conn)?
+            && has_v13_checkpoint_invariants(conn)?
+            && table_exists(conn, "import_captures")?,
+    )
+}
+
+
+
+fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name
+            && column.declared_type == "INTEGER"
+            && column.not_null
+            && column.default.as_deref() == Some("0")
+    })
+}
+
+fn has_timestamp_text_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name
+            && column.declared_type == "TEXT"
+            && column.not_null
+    })
+}
+
+fn has_text_column(columns: &[ColumnShape], name: &str) -> bool {
+    columns.iter().any(|column| {
+        column.name == name && column.declared_type == "TEXT" && column.not_null
+    })
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
@@ -353,6 +731,19 @@ mod tests {
         let conn = converged_v2_connection();
         assert!(!is_converged_v2_workspace_schema(&conn).expect("inspect fixture"));
         assert!(has_v3_physical_invariants(&conn).expect("v3 physical still holds"));
+    }
+
+    #[test]
+    fn recognizes_the_historical_v3_checkpoint_but_does_not_skip_v4() {
+        let conn = converged_v2_connection();
+        assert!(has_v3_checkpoint_invariants(&conn).expect("inspect v3 fixture"));
+        // Current is v7; previous-marker write compat needs full current invariants.
+        assert!(!is_previous_workspace_schema_write_compatible(&conn)
+            .expect("inspect current compatibility"));
+
+        conn.execute_batch("DROP INDEX idx_ai_audit_scope_timestamp")
+            .expect("remove required index");
+        assert!(!has_v3_checkpoint_invariants(&conn).expect("inspect partial fixture"));
     }
 
     #[test]

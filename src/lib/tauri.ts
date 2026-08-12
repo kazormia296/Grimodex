@@ -197,6 +197,7 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["events_semantic_search", AI_IPC_TIMEOUT_MS],
   ["chat_message_search", AI_IPC_TIMEOUT_MS],
   ["segment_bunsetsu", AI_IPC_TIMEOUT_MS],
+  ["extract_codex_entity_seeds", AI_IPC_TIMEOUT_MS],
   ["vivliostyle_detect", AI_IPC_TIMEOUT_MS],
 ]);
 

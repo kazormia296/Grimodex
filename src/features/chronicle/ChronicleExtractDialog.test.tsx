@@ -14,8 +14,10 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("./api", () => apiMocks);
 
 const extractionMocks = vi.hoisted(() => ({
-  proposeEvents: vi.fn(),
-  importExtractedEvents: vi.fn(),
+  USE_NARRATIVE_EXTRACTION_RUN: true,
+  startChronicleExtraction: vi.fn(),
+  applyChronicleExtractionReview: vi.fn(),
+  restoreChronicleExtractionReview: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("./extractEventsApi", () => extractionMocks);
 
@@ -26,6 +28,8 @@ vi.mock("@/features/editor/editorSaveRegistry", () => editorMocks);
 
 const treeApiMocks = vi.hoisted(() => ({
   loadSceneContents: vi.fn(),
+  listNodes: vi.fn(),
+  loadProjectNarrativeSourceRows: vi.fn(),
 }));
 vi.mock("@/features/tree/api", () => treeApiMocks);
 
@@ -37,6 +41,12 @@ vi.mock("sonner", () => ({ toast: toastMocks }));
 
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import type { ChronicleScope } from "./chronicleScope";
+import {
+  resetChronicleExtractionStoreForTests,
+  useChronicleExtractionStore,
+  buildProposalSafetyFlags,
+  type ChronicleReviewProposal,
+} from "./chronicleExtractionStore";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -95,18 +105,88 @@ function publishScope(scope: ChronicleScope): void {
   });
 }
 
+function seedProjection(
+  overrides: Partial<ChronicleReviewProposal> = {},
+): void {
+  const proposal: ChronicleReviewProposal = {
+    proposalId: "proposal-1",
+    revisionId: "rev-1",
+    proposalKey: "key-1",
+    status: "approved",
+    applicability: "applicable",
+    displayTitle: "抽出候補",
+    payload: {
+      eventId: "event-1",
+      title: "抽出候補",
+      note: null,
+      actuality: "actual",
+      significance: "major",
+      evidenceAnchorIds: ["anchor-1"],
+      evidenceDocumentRefs: ["doc-1"],
+      disclosure: { secret: false, revealDocumentRef: "doc-1" },
+      unresolvedMetadata: {
+        participantSurfaces: [],
+        locationSurface: null,
+        temporalExpressions: [],
+      },
+    },
+    match: { status: "none" },
+    evidence: [
+      {
+        anchorId: "anchor-1",
+        quote: "本文",
+        documentRef: "doc-1",
+        sceneId: "scene-a",
+        method: "exact",
+      },
+    ],
+    safety: buildProposalSafetyFlags({
+      match: { status: "none" },
+      actuality: "actual",
+      evidenceMethods: ["exact"],
+    }),
+    probableDuplicateChoice: null,
+    ...overrides,
+  };
+  useChronicleExtractionStore.getState().setProjection({
+    runId: "run-1",
+    projectId: SCOPE_A.projectId,
+    workspacePath: SCOPE_A.workspacePath,
+    openRevision: SCOPE_A.openRevision,
+    proposalSetId: "proposal-set-1",
+    status: "completed",
+    coverage: {
+      mode: "complete",
+      windowCount: 1,
+      completedWindows: 1,
+      gaps: [],
+    },
+    taskCounts: {
+      queued: 0,
+      running: 0,
+      completed: 1,
+      failed: 0,
+      cancelled: 0,
+    },
+    proposals: [proposal],
+  });
+}
+
 async function analyze(): Promise<void> {
   fireEvent.change(screen.getByRole("combobox"), {
     target: { value: "folder-a" },
   });
   fireEvent.click(screen.getByRole("button", { name: "解析" }));
-  await waitFor(() => expect(extractionMocks.proposeEvents).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(extractionMocks.startChronicleExtraction).toHaveBeenCalled(),
+  );
 }
 
-describe("ChronicleExtractDialog scope authority", () => {
+describe("ChronicleExtractDialog run-path cutover", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetMutationAuthorityForTests();
+    resetChronicleExtractionStoreForTests();
     publishScope(SCOPE_A);
     useTreeStore.setState({
       activeSceneId: "",
@@ -132,13 +212,12 @@ describe("ChronicleExtractDialog scope authority", () => {
         ],
       ]),
     );
-    extractionMocks.proposeEvents.mockResolvedValue([
-      {
-        title: "抽出候補",
-        evidenceSceneIds: ["scene-a"],
-      },
-    ]);
-    extractionMocks.importExtractedEvents.mockResolvedValue(1);
+    extractionMocks.startChronicleExtraction.mockImplementation(async () => {
+      seedProjection();
+      return { runId: "run-1" };
+    });
+    extractionMocks.applyChronicleExtractionReview.mockResolvedValue(1);
+    extractionMocks.restoreChronicleExtractionReview.mockResolvedValue(null);
   });
 
   it("分析時に固定したProjectへ取り込み、現在Projectを取り直さない", async () => {
@@ -157,9 +236,12 @@ describe("ChronicleExtractDialog scope authority", () => {
     fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
 
     await waitFor(() =>
-      expect(extractionMocks.importExtractedEvents).toHaveBeenCalledWith(
-        "project-a",
-        [{ title: "抽出候補", evidenceSceneIds: ["scene-a"] }],
+      expect(
+        extractionMocks.applyChronicleExtractionReview,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-a",
+        }),
       ),
     );
     expect(toastMocks.success).toHaveBeenCalled();
@@ -183,17 +265,17 @@ describe("ChronicleExtractDialog scope authority", () => {
     fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-    expect(extractionMocks.importExtractedEvents).not.toHaveBeenCalled();
+    expect(
+      extractionMocks.applyChronicleExtractionReview,
+    ).not.toHaveBeenCalled();
     expect(toastMocks.success).not.toHaveBeenCalled();
   });
 
   it("LLM待機中にscopeが変わると候補を破棄してDialogを閉じる", async () => {
-    let resolveProposal!: (
-      value: Array<{ title: string; evidenceSceneIds: string[] }>,
-    ) => void;
-    extractionMocks.proposeEvents.mockReturnValueOnce(
+    let resolveStart!: (value: { runId: string }) => void;
+    extractionMocks.startChronicleExtraction.mockReturnValueOnce(
       new Promise((resolve) => {
-        resolveProposal = resolve;
+        resolveStart = resolve;
       }),
     );
     const onOpenChange = vi.fn();
@@ -217,13 +299,16 @@ describe("ChronicleExtractDialog scope authority", () => {
       />,
     );
     await act(async () => {
-      resolveProposal([{ title: "古い候補", evidenceSceneIds: ["scene-a"] }]);
+      seedProjection();
+      resolveStart({ runId: "run-stale" });
       await Promise.resolve();
     });
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-    expect(screen.queryByText("古い候補")).toBeNull();
-    expect(extractionMocks.importExtractedEvents).not.toHaveBeenCalled();
+    expect(screen.queryByText("抽出候補")).toBeNull();
+    expect(
+      extractionMocks.applyChronicleExtractionReview,
+    ).not.toHaveBeenCalled();
   });
 
   it("非アクティブ化するとPortal上のDialogも閉じる", async () => {
@@ -247,5 +332,40 @@ describe("ChronicleExtractDialog scope authority", () => {
     );
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("再オープン時に同scopeの投影を保持し、legacy propose を呼ばない", async () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    await analyze();
+    expect(await screen.findByText("抽出候補")).toBeTruthy();
+
+    rerender(
+      <ChronicleExtractDialog
+        open={false}
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={onOpenChange}
+      />,
+    );
+    rerender(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    expect(await screen.findByText("抽出候補")).toBeTruthy();
+    expect(extractionMocks.restoreChronicleExtractionReview).toHaveBeenCalled();
   });
 });

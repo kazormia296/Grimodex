@@ -1044,18 +1044,20 @@ describe("projectSnapshotApi", () => {
       [PROJECT_ID, "e1", "e2"],
     );
     await run(
-      "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries, created_at, updated_at) VALUES (?,?,?,?,?)",
-      [PROJECT_ID, 400, "[]", now, now],
+      "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries, version, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+      [PROJECT_ID, 400, "[]", 7, now, "2000-01-01T00:00:00.000Z"],
     );
 
     const snap = await createProjectSnapshot({ name: "chronicle-checkpoint" });
 
     // Data loss after snapshot: deleting events cascades scene_events /
-    // event_participants / event_relations; calendar wiped on its own.
+    // event_participants / event_relations. The live Calendar continues to a
+    // later OCC generation before the old body snapshot is restored.
     await run("DELETE FROM events WHERE project_id = ?", [PROJECT_ID]);
-    await run("DELETE FROM project_calendar WHERE project_id = ?", [
-      PROJECT_ID,
-    ]);
+    await run(
+      "UPDATE project_calendar SET days_per_year = ?, version = ? WHERE project_id = ?",
+      [999, 12, PROJECT_ID],
+    );
     expect(
       (
         await all<{ id: string }>(
@@ -1097,11 +1099,68 @@ describe("projectSnapshotApi", () => {
     );
     expect(parts.rows).toEqual([{ event_id: "e1", codex_entry_id: "cx-1" }]);
 
-    const cal = await all<{ days_per_year: number }>(
-      "SELECT days_per_year FROM project_calendar WHERE project_id = ?",
+    const cal = await all<{
+      days_per_year: number;
+      version: number;
+      updated_at: string;
+    }>(
+      "SELECT days_per_year, version, updated_at FROM project_calendar WHERE project_id = ?",
       [PROJECT_ID],
     );
     expect(cal.rows[0]?.days_per_year).toBe(400);
+    expect(cal.rows[0]?.version).toBe(13);
+    expect(cal.rows[0]?.updated_at).not.toBe("2000-01-01T00:00:00.000Z");
+
+    // Neither the snapshot generation nor the live generation observed just
+    // before restore may become valid again after the restore operation.
+    await run(
+      "UPDATE project_calendar SET days_per_year = 401, version = version + 1 WHERE project_id = ? AND version = ?",
+      [PROJECT_ID, 7],
+    );
+    await run(
+      "UPDATE project_calendar SET days_per_year = 402, version = version + 1 WHERE project_id = ? AND version = ?",
+      [PROJECT_ID, 12],
+    );
+    const afterStaleWrites = await all<{
+      days_per_year: number;
+      version: number;
+    }>(
+      "SELECT days_per_year, version FROM project_calendar WHERE project_id = ?",
+      [PROJECT_ID],
+    );
+    expect(afterStaleWrites.rows).toEqual([
+      { days_per_year: 400, version: 13 },
+    ]);
+
+    const calendarAux = await all<{ payload_json: string }>(
+      "SELECT payload_json FROM project_snapshot_aux WHERE snapshot_id = ? AND scope = 'project_calendar'",
+      [snap.id],
+    );
+    const malformedCalendarPayload = JSON.parse(
+      calendarAux.rows[0]!.payload_json,
+    ) as { rows: Array<Record<string, unknown>> };
+    for (const malformedVersion of [null, "7"]) {
+      malformedCalendarPayload.rows[0]!.version = malformedVersion;
+      await run(
+        "UPDATE project_snapshot_aux SET payload_json = ? WHERE snapshot_id = ? AND scope = 'project_calendar'",
+        [JSON.stringify(malformedCalendarPayload), snap.id],
+      );
+      await expect(
+        restoreProjectSnapshot(snap.id, "chronicle-checkpoint", {
+          scopes: new Set(["body", "codex"]),
+        }),
+      ).rejects.toThrow(/snapshot project_calendar version|snapshot version/);
+    }
+    const afterMalformedRestore = await all<{
+      days_per_year: number;
+      version: number;
+    }>(
+      "SELECT days_per_year, version FROM project_calendar WHERE project_id = ?",
+      [PROJECT_ID],
+    );
+    expect(afterMalformedRestore.rows).toEqual([
+      { days_per_year: 400, version: 13 },
+    ]);
 
     // Cleanup (child-first) so other tests / re-runs start fresh.
     for (const t of [

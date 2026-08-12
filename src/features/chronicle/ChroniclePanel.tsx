@@ -2145,7 +2145,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         disabled={!chronicleInteractive}
         onNew={handleAdd}
         onExtract={() => setExtractOpen(true)}
-        onSaveCalendar={(c) => void saveCalendar(c)}
+        onSaveCalendar={saveCalendar}
         onToggleLock={toggleLock}
         onGotoConflict={handleGotoConflict}
         onToggleEdges={() => setShowEdges((s) => !s)}

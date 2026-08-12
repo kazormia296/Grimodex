@@ -16,6 +16,11 @@ import {
   upsertValue,
   updateDefinition,
 } from "../detailApi";
+import {
+  DetailDefinitionVersionConflictError,
+  DetailValueVersionConflictError,
+} from "../detailOcc";
+import { PhaseVersionConflictError } from "../phaseOcc";
 import { CodexContentEditor } from "./CodexContentEditor";
 import { PinEntryDialog } from "./PinEntryDialog";
 import { ManageFieldsDialog } from "./ManageFieldsDialog";
@@ -26,14 +31,45 @@ interface TextFieldProps {
   definition: CodexDetailDefinition;
   initialValue: string;
   entryId: string;
+  loadedVersion: number | null;
+  onVersionChange: (version: number) => void;
 }
 
-function TextField({ definition, initialValue, entryId }: TextFieldProps) {
+function TextField({
+  definition,
+  initialValue,
+  entryId,
+  loadedVersion,
+  onVersionChange,
+}: TextFieldProps) {
+  const { t } = useTranslation();
   const [currentValue, setCurrentValue] = useState(initialValue);
+  const loadedVersionRef = useRef(loadedVersion);
+
+  useEffect(() => {
+    loadedVersionRef.current = loadedVersion;
+  }, [loadedVersion]);
 
   const saveFn = useCallback(async () => {
-    await upsertValue(entryId, definition.id, currentValue);
-  }, [entryId, definition.id, currentValue]);
+    try {
+      const saved = await upsertValue(
+        entryId,
+        definition.id,
+        currentValue,
+        loadedVersionRef.current === null
+          ? undefined
+          : { baseVersion: loadedVersionRef.current },
+      );
+      loadedVersionRef.current = saved.version;
+      onVersionChange(saved.version);
+    } catch (error) {
+      if (error instanceof DetailValueVersionConflictError) {
+        toast.error(t("codex.detail.editConflict"));
+      } else {
+        throw error;
+      }
+    }
+  }, [entryId, definition.id, currentValue, onVersionChange, t]);
 
   const { schedule } = useAutoSave(saveFn, 2000);
 
@@ -55,15 +91,24 @@ interface DropdownFieldProps {
   definition: CodexDetailDefinition;
   initialValue: string;
   entryId: string;
+  loadedVersion: number | null;
+  onVersionChange: (version: number) => void;
 }
 
 function DropdownField({
   definition,
   initialValue,
   entryId,
+  loadedVersion,
+  onVersionChange,
 }: DropdownFieldProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState(initialValue);
+  const loadedVersionRef = useRef(loadedVersion);
+
+  useEffect(() => {
+    loadedVersionRef.current = loadedVersion;
+  }, [loadedVersion]);
 
   let options: string[];
   try {
@@ -77,7 +122,24 @@ function DropdownField({
 
   const handleChange = async (newValue: string) => {
     setValue(newValue);
-    await upsertValue(entryId, definition.id, newValue);
+    try {
+      const saved = await upsertValue(
+        entryId,
+        definition.id,
+        newValue,
+        loadedVersionRef.current === null
+          ? undefined
+          : { baseVersion: loadedVersionRef.current },
+      );
+      loadedVersionRef.current = saved.version;
+      onVersionChange(saved.version);
+    } catch (error) {
+      if (error instanceof DetailValueVersionConflictError) {
+        toast.error(t("codex.detail.editConflict"));
+      } else {
+        throw error;
+      }
+    }
   };
 
   return (
@@ -104,6 +166,8 @@ interface ReferenceFieldProps {
   initialValue: string;
   entryId: string;
   projectId: string;
+  loadedVersion: number | null;
+  onVersionChange: (version: number) => void;
 }
 
 function ReferenceField({
@@ -111,12 +175,19 @@ function ReferenceField({
   initialValue,
   entryId,
   projectId,
+  loadedVersion,
+  onVersionChange,
 }: ReferenceFieldProps) {
   const { t } = useTranslation();
   const [refId, setRefId] = useState(initialValue);
   const [resolvedName, setResolvedName] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const anchorRef = useRef<HTMLDivElement>(null);
+  const loadedVersionRef = useRef(loadedVersion);
+
+  useEffect(() => {
+    loadedVersionRef.current = loadedVersion;
+  }, [loadedVersion]);
 
   // 保存されているのは entry ID。表示用に名前を解決する。
   // 未解決時は上書きしない（選択直後の楽観表示を消さないため。
@@ -135,6 +206,27 @@ function ReferenceField({
     };
   }, [refId, projectId]);
 
+  const persist = async (nextId: string) => {
+    try {
+      const saved = await upsertValue(
+        entryId,
+        definition.id,
+        nextId,
+        loadedVersionRef.current === null
+          ? undefined
+          : { baseVersion: loadedVersionRef.current },
+      );
+      loadedVersionRef.current = saved.version;
+      onVersionChange(saved.version);
+    } catch (error) {
+      if (error instanceof DetailValueVersionConflictError) {
+        toast.error(t("codex.detail.editConflict"));
+      } else {
+        throw error;
+      }
+    }
+  };
+
   const handleSelect = async (selected: CodexEntry) => {
     // パレットの FTS5 検索は project スコープを持たないため、ここで弾く
     if (selected.projectId !== projectId) {
@@ -144,13 +236,13 @@ function ReferenceField({
     setRefId(selected.id);
     setResolvedName(selected.name);
     setPickerOpen(false);
-    await upsertValue(entryId, definition.id, selected.id);
+    await persist(selected.id);
   };
 
   const handleClear = async () => {
     setRefId("");
     setResolvedName(null);
-    await upsertValue(entryId, definition.id, "");
+    await persist("");
   };
 
   return (
@@ -198,13 +290,15 @@ interface DetailFieldRowProps {
   entryId: string;
   definition: CodexDetailDefinition;
   currentValue: string;
+  loadedVersion: number | null;
+  onVersionChange: (definitionId: string, version: number) => void;
   onToggleContext: (def: CodexDetailDefinition) => Promise<void>;
   /** フェーズプレビュー中の解決値（undefined = このフィールドに上書きなし） */
   previewValue?: string | null;
   /** プレビューモードか（previewValue undefined でも read-only 表示にする） */
   previewMode: boolean;
   /** アクティブフェーズ（非プレビュー時のみ。上書き編集の対象） */
-  activePhase: { id: string; label: string } | null;
+  activePhase: { id: string; label: string; version: number } | null;
   /** activePhase におけるこのフィールドの上書き値（undefined = 上書きなし） */
   overrideValue?: string | null;
   /** 以前の applicable Phase から継承した解決値（undefined = Base を継承） */
@@ -226,6 +320,8 @@ function DetailFieldRow({
   entryId,
   definition,
   currentValue,
+  loadedVersion,
+  onVersionChange,
   onToggleContext,
   previewValue,
   previewMode,
@@ -386,6 +482,10 @@ function DetailFieldRow({
               definition={definition}
               initialValue={currentValue}
               entryId={entryId}
+              loadedVersion={loadedVersion}
+              onVersionChange={(version) =>
+                onVersionChange(definition.id, version)
+              }
             />
           )}
           {definition.fieldType === "dropdown" && (
@@ -393,6 +493,10 @@ function DetailFieldRow({
               definition={definition}
               initialValue={currentValue}
               entryId={entryId}
+              loadedVersion={loadedVersion}
+              onVersionChange={(version) =>
+                onVersionChange(definition.id, version)
+              }
             />
           )}
           {definition.fieldType === "codex_reference" && (
@@ -401,6 +505,10 @@ function DetailFieldRow({
               initialValue={currentValue}
               entryId={entryId}
               projectId={definition.projectId}
+              loadedVersion={loadedVersion}
+              onVersionChange={(version) =>
+                onVersionChange(definition.id, version)
+              }
             />
           )}
         </>
@@ -412,7 +520,7 @@ function DetailFieldRow({
 interface DetailsSectionProps {
   entry: CodexEntry;
   /** アクティブフェーズ（DetailsTab から。上書き編集の対象） */
-  activePhase?: { id: string; label: string } | null;
+  activePhase?: { id: string; label: string; version: number } | null;
   /** フェーズプレビュー中の解決済み detail 値（null = プレビューでない） */
   previewDetailValues?: ReadonlyMap<string, string | null> | null;
   /** アクティブ時点の Phase-owned 解決値（Base 値は含めない） */
@@ -428,6 +536,9 @@ export function DetailsSection({
   const { t } = useTranslation();
   const [definitions, setDefinitions] = useState<CodexDetailDefinition[]>([]);
   const [valuesMap, setValuesMap] = useState<Map<string, string>>(new Map());
+  const [valueVersions, setValueVersions] = useState<Map<string, number>>(
+    new Map(),
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [isManageOpen, setIsManageOpen] = useState(false);
   const projectGenre = useProjectStore(
@@ -457,10 +568,13 @@ export function DetailsSection({
     ]);
     setDefinitions(defs);
     const map = new Map<string, string>();
+    const versions = new Map<string, number>();
     vals.forEach((v: DetailValueWithDefinition) => {
       map.set(v.value.definitionId, v.value.value ?? "");
+      versions.set(v.value.definitionId, v.value.version);
     });
     setValuesMap(map);
+    setValueVersions(versions);
     setIsLoading(false);
   }, [entry.id, entry.projectId, entry.type]);
 
@@ -470,12 +584,56 @@ export function DetailsSection({
 
   const handleToggleContext = async (def: CodexDetailDefinition) => {
     const newVal = def.includeInContext === 1 ? 0 : 1;
-    await updateDefinition(def.id, { includeInContext: newVal });
-    setDefinitions((prev) =>
-      prev.map((d) =>
-        d.id === def.id ? { ...d, includeInContext: newVal } : d,
-      ),
-    );
+    try {
+      const updated = await updateDefinition(
+        def.id,
+        { includeInContext: newVal },
+        { baseVersion: def.version },
+      );
+      if (!updated) return;
+      setDefinitions((prev) =>
+        prev.map((d) => (d.id === def.id ? updated : d)),
+      );
+    } catch (error) {
+      if (error instanceof DetailDefinitionVersionConflictError) {
+        toast.error(t("codex.detail.editConflict"));
+      } else {
+        throw error;
+      }
+    }
+  };
+
+  const handleUpsertOverride = async (
+    definitionId: string,
+    value: string | null,
+  ) => {
+    if (!activePhase) return;
+    try {
+      await upsertDetailOverride(activePhase.id, definitionId, value, {
+        baseVersion: activePhase.version,
+      });
+    } catch (error) {
+      if (error instanceof PhaseVersionConflictError) {
+        toast.error(t("phase.editConflict"));
+      } else {
+        throw error;
+      }
+    }
+  };
+
+  const handleDeleteOverride = async (definitionId: string) => {
+    if (!activePhase) return;
+    try {
+      await deleteDetailOverride(activePhase.id, definitionId, {
+        baseVersion: activePhase.version,
+      });
+    } catch (error) {
+      if (error instanceof PhaseVersionConflictError) {
+        toast.error(t("phase.editConflict"));
+      } else {
+        throw error;
+      }
+    }
   };
 
   return (
@@ -529,6 +687,14 @@ export function DetailsSection({
               entryId={entry.id}
               definition={def}
               currentValue={valuesMap.get(def.id) ?? ""}
+              loadedVersion={valueVersions.get(def.id) ?? null}
+              onVersionChange={(definitionId, version) => {
+                setValueVersions((prev) => {
+                  const next = new Map(prev);
+                  next.set(definitionId, version);
+                  return next;
+                });
+              }}
               onToggleContext={handleToggleContext}
               previewMode={previewMode}
               previewValue={
@@ -547,12 +713,10 @@ export function DetailsSection({
                   : undefined
               }
               onUpsertOverride={(definitionId, value) => {
-                if (!activePhase) return;
-                void upsertDetailOverride(activePhase.id, definitionId, value);
+                void handleUpsertOverride(definitionId, value);
               }}
               onDeleteOverride={(definitionId) => {
-                if (!activePhase) return;
-                void deleteDetailOverride(activePhase.id, definitionId);
+                void handleDeleteOverride(definitionId);
               }}
             />
           ))}

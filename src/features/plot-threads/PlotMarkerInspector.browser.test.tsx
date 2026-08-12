@@ -42,6 +42,7 @@ const thread: PlotThreadRow = {
   sortOrder: "a0",
   startNodeId: null,
   endNodeId: null,
+  version: 0,
   createdAt: "",
   updatedAt: "",
 };
@@ -52,6 +53,8 @@ const link: PlotThreadLinkRow = {
   phaseType: "introduce",
   note: null,
   sortOrder: null,
+  semanticKey: "",
+  version: 0,
   createdAt: "",
   updatedAt: "",
 };

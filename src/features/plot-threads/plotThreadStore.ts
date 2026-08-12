@@ -1322,6 +1322,8 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
         id: `pending:${index}`,
         projectId: authority.projectId,
         ...branch,
+        semanticKey: `${branch.fromThreadId}|${branch.toThreadId}|${branch.atNodeId}|${branch.kind}`,
+        version: 0,
         createdAt: "",
         updatedAt: "",
       })),

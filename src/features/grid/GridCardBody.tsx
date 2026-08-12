@@ -480,6 +480,7 @@ function BeatListItem({
 
   useQuiescentDraftParticipant({
     id: draftController.identity,
+    scope: { kind: "tree-node", entityId: sceneId },
     enabled: editing,
     isDirty: () => editingRef.current && draftController.dirty,
     flush: commit,

@@ -17,6 +17,7 @@ import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { EventVersionConflictError } from "./eventOcc";
+import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 
 /**
  * Timelapse record for a chronicle (作中年表) mutation. Uses the SAME `event`
@@ -574,6 +575,8 @@ export interface CalendarRow {
   timezone: string;
   /** 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。 */
   lunarTzMinutes: number;
+  /** Calendar aggregate OCC generation. */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -603,79 +606,80 @@ export async function getProjectCalendar(
     reform: s(r.reform, "null"),
     timezone: s(r.timezone, "null"),
     lunarTzMinutes: Number(r.lunarTzMinutes ?? r.lunar_tz_minutes ?? 480),
+    version: Number(r.version ?? 0),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
 }
 
-export async function upsertProjectCalendar(data: {
-  projectId: string;
-  daysPerYear: number;
-  seasonBoundaries: string;
-  startYear?: number;
-  months?: string;
-  weekdayNames?: string;
-  weekdayStartIndex?: number;
-  leapRule?: string;
-  ageReckoning?: string;
-  eras?: string;
-  reform?: string;
-  timezone?: string;
-  lunarTzMinutes?: number;
-}): Promise<void> {
+export async function upsertProjectCalendar(
+  data: {
+    projectId: string;
+    daysPerYear: number;
+    seasonBoundaries: string;
+    startYear?: number;
+    months?: string;
+    weekdayNames?: string;
+    weekdayStartIndex?: number;
+    leapRule?: string;
+    ageReckoning?: string;
+    eras?: string;
+    reform?: string;
+    timezone?: string;
+    lunarTzMinutes?: number;
+  },
+  options: { baseVersion: number | null },
+): Promise<CalendarRow> {
   const now = new Date().toISOString();
-  const startYear = data.startYear ?? 0;
-  const months = data.months ?? "[]";
-  const weekdayNames = data.weekdayNames ?? "[]";
-  const weekdayStartIndex = data.weekdayStartIndex ?? 0;
-  const leapRule = data.leapRule ?? '{"kind":"none"}';
-  const ageReckoning = data.ageReckoning ?? "full";
-  const eras = data.eras ?? "[]";
-  const reform = data.reform ?? "null";
-  const timezone = data.timezone ?? "null";
-  const lunarTzMinutes = data.lunarTzMinutes ?? 480;
-  await db
-    .insert(projectCalendar)
-    .values({
-      projectId: data.projectId,
-      daysPerYear: data.daysPerYear,
-      seasonBoundaries: data.seasonBoundaries,
-      startYear,
-      months,
-      weekdayNames,
-      weekdayStartIndex,
-      leapRule,
-      ageReckoning,
-      eras,
-      reform,
-      timezone,
-      lunarTzMinutes,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: projectCalendar.projectId,
-      set: {
+  const persisted = await invoke<CalendarRow | null>(
+    "project_calendar_upsert",
+    {
+      payload: {
+        projectId: data.projectId,
         daysPerYear: data.daysPerYear,
         seasonBoundaries: data.seasonBoundaries,
-        startYear,
-        months,
-        weekdayNames,
-        weekdayStartIndex,
-        leapRule,
-        ageReckoning,
-        eras,
-        reform,
-        timezone,
-        lunarTzMinutes,
+        startYear: data.startYear ?? 0,
+        months: data.months ?? "[]",
+        weekdayNames: data.weekdayNames ?? "[]",
+        weekdayStartIndex: data.weekdayStartIndex ?? 0,
+        leapRule: data.leapRule ?? '{"kind":"none"}',
+        ageReckoning: data.ageReckoning ?? "full",
+        eras: data.eras ?? "[]",
+        reform: data.reform ?? "null",
+        timezone: data.timezone ?? "null",
+        lunarTzMinutes: data.lunarTzMinutes ?? 480,
+        baseVersion: options.baseVersion,
         updatedAt: now,
       },
-    });
+    },
+  );
+  if (!persisted) {
+    throw new ProjectCalendarVersionConflictError(data.projectId);
+  }
   bumpChronicleRevision();
   recordEvent(data.projectId, "calendar.update", null, {
     projectId: data.projectId,
     daysPerYear: data.daysPerYear,
+    version: persisted.version,
   });
+  return {
+    projectId: persisted.projectId,
+    daysPerYear: Number(persisted.daysPerYear),
+    seasonBoundaries: persisted.seasonBoundaries,
+    startYear: Number(persisted.startYear),
+    months: persisted.months,
+    weekdayNames: persisted.weekdayNames,
+    weekdayStartIndex: Number(persisted.weekdayStartIndex),
+    leapRule: persisted.leapRule,
+    ageReckoning: persisted.ageReckoning,
+    eras: persisted.eras,
+    reform: persisted.reform,
+    timezone: persisted.timezone,
+    lunarTzMinutes: Number(persisted.lunarTzMinutes),
+    version: Number(persisted.version),
+    createdAt: persisted.createdAt,
+    updatedAt: persisted.updatedAt,
+  };
 }
 
 // ───────── event_relations（因果エッジ） ─────────
