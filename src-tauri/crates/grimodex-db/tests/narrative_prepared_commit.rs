@@ -93,6 +93,21 @@ fn envelope(run_id: &str) -> Value {
     })
 }
 
+fn retraction_envelope(run_id: &str, target_application_id: &str) -> Value {
+    let mut envelope = envelope(run_id);
+    envelope["taskId"] = Value::String("task-retract".to_string());
+    envelope["changeKind"] = Value::String("retract".to_string());
+    envelope["targetProjectionRef"] = Value::String(target_application_id.to_string());
+    envelope
+}
+
+fn retraction_event_payload() -> Value {
+    let mut payload = event_payload();
+    payload["eventId"] = Value::String("event-retraction-1".to_string());
+    payload["title"] = Value::String("Retraction".to_string());
+    payload
+}
+
 fn seed_one_approved(db: &Database) -> (String, String, String, String) {
     let run_id = "run-prepared";
     let set_id = "set-prepared";
@@ -336,6 +351,36 @@ fn build_locked_prepare(
     }
 }
 
+fn build_retraction_prepare(
+    run_id: &str,
+    set_id: &str,
+    proposal_id: &str,
+    revision_id: &str,
+) -> PrepareCommitPayload {
+    PrepareCommitPayload {
+        project_id: "project-1".to_string(),
+        run_id: run_id.to_string(),
+        proposal_set_id: set_id.to_string(),
+        request_id: "req-retraction-1".to_string(),
+        plan_digest: "client-ignored".to_string(),
+        session_id: "sess-retraction".to_string(),
+        surface: Some("narrative-extraction".to_string()),
+        operations: vec![CommitOperation {
+            kind: "chronicle.event.create".to_string(),
+            payload: retraction_event_payload(),
+            proposal_id: proposal_id.to_string(),
+            revision_id: revision_id.to_string(),
+        }],
+        applications: vec![CommitApplicationRef {
+            proposal_id: proposal_id.to_string(),
+            revision_id: revision_id.to_string(),
+        }],
+        expected_tail_ordinal: Some("a0".to_string()),
+        entity_bindings: vec![],
+        expected_calendar_version: None,
+    }
+}
+
 #[test]
 fn review_only_blocks_prepare() {
     let db = migrated_db();
@@ -378,6 +423,71 @@ fn prepare_seals_prepared_commit_row() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn revision_envelope_and_source_basis_contract_rows_are_immutable() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, _set_id, _proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+
+    let envelope_error = db.with_conn(|conn| {
+        let error = conn
+            .execute(
+                "UPDATE narrative_proposal_revisions
+                    SET reconciliation_envelope_json = '{}'
+                  WHERE id = ?1",
+                rusqlite::params![revision_id],
+            )
+            .expect_err("revision envelope JSON must be immutable");
+        Ok(error.to_string())
+    })?;
+    assert!(envelope_error.contains("NEX_REVISION_ENVELOPE_IMMUTABLE"));
+
+    let digest_error = db.with_conn(|conn| {
+        let error = conn
+            .execute(
+                "UPDATE narrative_proposal_revisions
+                    SET reconciliation_envelope_digest = 'sha256:tampered'
+                  WHERE id = ?1",
+                rusqlite::params![revision_id],
+            )
+            .expect_err("revision envelope digest must be immutable");
+        Ok(error.to_string())
+    })?;
+    assert!(digest_error.contains("NEX_REVISION_ENVELOPE_IMMUTABLE"));
+
+    let source_delete_error = db.with_conn(|conn| {
+        let error = conn
+            .execute(
+                "DELETE FROM narrative_revision_source_basis WHERE revision_id = ?1",
+                rusqlite::params![revision_id],
+            )
+            .expect_err("source basis rows must be immutable");
+        Ok(error.to_string())
+    })?;
+    assert!(source_delete_error.contains("NEX_REVISION_SOURCE_BASIS_IMMUTABLE"));
+
+    db.execute(
+        "INSERT INTO narrative_revision_source_basis
+            (revision_id, ordinal, source_kind, source_key, revision_token)
+         VALUES (?1, 1, 'snapshot-document', ?2, 'revision-1')",
+        &[
+            Value::String(revision_id.clone()),
+            Value::String(format!("snapshot:{run_id}:extra")),
+        ],
+        "test",
+    )
+    .expect("extra source row is observable before prepare");
+    let prepare_error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(&run_id, "set-prepared", "prop-prepared", &revision_id),
+    )
+    .expect_err("extra source basis row must fail the prepare contract");
+    assert!(prepare_error
+        .to_string()
+        .contains("NEX_SOURCE_BASIS_STORAGE_MISMATCH"));
+    Ok(())
 }
 
 #[test]
@@ -616,6 +726,171 @@ fn locked_field_invalidates_ai_apply_without_partial_mutation() -> anyhow::Resul
         )?)
     })?;
     assert_eq!(name, "AI changed");
+    Ok(())
+}
+
+#[test]
+fn semantic_retraction_appends_compensation_and_preserves_prior_history() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+    let first_prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+    )?;
+    apply_prepared(&db, &first_prepared)?;
+    let target_application_id: String = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM narrative_proposal_applications WHERE commit_id = ?1",
+            rusqlite::params![first_prepared["preparedCommitId"].as_str().unwrap()],
+            |row| row.get(0),
+        )?)
+    })?;
+
+    let run_id_2 = "run-retract";
+    let set_id_2 = "set-retract";
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some(run_id_2.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: "spec-retract".to_string(),
+            snapshot_digest: Some("revision-1".to_string()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some("task-retract".to_string()),
+                task_kind: "chronicle.plan-proposals".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )?;
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: run_id_2.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(set_id_2.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("prop-retract".to_string()),
+                proposal_key: "key-retract".to_string(),
+                kind: "chronicle.event.create".to_string(),
+                payload_json: retraction_event_payload(),
+                reconciliation_envelope: Some(retraction_envelope(
+                    run_id_2,
+                    &target_application_id,
+                )),
+            }],
+        },
+    )?;
+    let proposal_id_2 = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .expect("retraction proposal id")
+        .to_string();
+    let revision_id_2 = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("retraction revision id")
+        .to_string();
+    narrative_extraction::narrative_extraction_append_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: run_id_2.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id_2.clone(),
+            revision_id: revision_id_2.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("reviewer".to_string()),
+        },
+    )?;
+
+    let second_prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_retraction_prepare(run_id_2, set_id_2, &proposal_id_2, &revision_id_2),
+    )?;
+    let second_applied =
+        apply_prepared_with_identity(&db, &second_prepared, "req-retraction-1", "sess-retraction")?;
+    assert_eq!(second_applied["status"], "applied");
+
+    db.with_conn(|conn| {
+        let (prior_kind, prior_target, compensation_kind, compensation_target): (
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT prior.application_kind, prior.compensates_application_id,
+                    compensation.application_kind, compensation.compensates_application_id
+               FROM narrative_proposal_applications prior
+               JOIN narrative_proposal_applications compensation
+                 ON compensation.commit_id = ?1
+              WHERE prior.id = ?2",
+            rusqlite::params![
+                second_prepared["preparedCommitId"].as_str().unwrap(),
+                target_application_id,
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(prior_kind, "normal");
+        assert_eq!(prior_target, None);
+        assert_eq!(compensation_kind, "compensation");
+        assert_eq!(
+            compensation_target.as_deref(),
+            Some(target_application_id.as_str())
+        );
+        Ok(())
+    })?;
+
+    let prior_revision_id: String = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT revision_id FROM narrative_proposal_applications WHERE id = ?1",
+            rusqlite::params![target_application_id],
+            |row| row.get(0),
+        )?)
+    })?;
+    let immutable_revision_error = db.with_conn(|conn| {
+        let error = conn
+            .execute(
+                "UPDATE narrative_proposal_revisions
+                    SET payload_json = '{}'
+                  WHERE id = ?1",
+                rusqlite::params![prior_revision_id],
+            )
+            .expect_err("applied revision must be immutable");
+        Ok(error.to_string())
+    })?;
+    assert!(immutable_revision_error.contains("NEX_IMMUTABLE_APPLIED_REVISION"));
+
+    let immutable_decision_error = db.with_conn(|conn| {
+        let error = conn
+            .execute(
+                "UPDATE narrative_proposal_decisions
+                    SET decision = 'rejected'
+                  WHERE proposal_id = ?1 AND revision_id = ?2",
+                rusqlite::params![proposal_id, revision_id],
+            )
+            .expect_err("applied decision must be immutable");
+        Ok(error.to_string())
+    })?;
+    assert!(immutable_decision_error.contains("NEX_IMMUTABLE_APPLIED_DECISION"));
+
+    let immutable_application_error = db.with_conn(|conn| {
+        let error = conn
+            .execute(
+                "DELETE FROM narrative_proposal_applications WHERE id = ?1",
+                rusqlite::params![target_application_id],
+            )
+            .expect_err("application must be immutable");
+        Ok(error.to_string())
+    })?;
+    assert!(immutable_application_error.contains("NEX_IMMUTABLE_APPLICATION"));
     Ok(())
 }
 

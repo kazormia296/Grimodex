@@ -39,7 +39,8 @@ pub use models::{
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
     ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
-    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    ReconciliationEnvelopeInheritance, RunRefPayload, SaveProposalSetPayload,
+    UndoCommitPayload,
 };
 pub use commit::digest_plan;
 pub use temporal_operations::TemporalScenePatchPayload;

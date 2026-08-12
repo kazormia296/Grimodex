@@ -4,6 +4,7 @@ const createRunMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
 const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
+const buildNativeReconciliationEnvelopeMock = vi.hoisted(() => vi.fn());
 const appendDecisionMock = vi.hoisted(() => vi.fn());
 const appendRevisionMock = vi.hoisted(() => vi.fn());
 const reviseAndDecideMock = vi.hoisted(() => vi.fn());
@@ -22,6 +23,7 @@ vi.mock("@/application/narrative-extraction/runRepository", () => ({
 }));
 vi.mock("@/application/narrative-extraction/proposalRepository", () => ({
   saveProposalSet: saveProposalSetMock,
+  buildNativeReconciliationEnvelope: buildNativeReconciliationEnvelopeMock,
   appendDecision: appendDecisionMock,
   appendRevision: appendRevisionMock,
   reviseAndDecide: reviseAndDecideMock,
@@ -195,6 +197,7 @@ describe("startCodexStructureExtraction product safety", () => {
     getRunMock.mockReset();
     cancelRunMock.mockReset();
     saveProposalSetMock.mockReset();
+    buildNativeReconciliationEnvelopeMock.mockReset();
     claimTaskMock.mockReset();
     finishTaskMock.mockReset();
     failTaskMock.mockReset();
@@ -205,8 +208,47 @@ describe("startCodexStructureExtraction product safety", () => {
     buildSnapshotMock.mockReset();
     runPrepassMock.mockReset();
     buildSnapshotMock.mockResolvedValue({
-      ok: false,
-      diagnostics: [{ code: "SNAPSHOT_SKIPPED_IN_TEST" }],
+      ok: true,
+      snapshot: {
+        digest:
+          "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+      diagnostics: [],
+    });
+    buildNativeReconciliationEnvelopeMock.mockResolvedValue({
+      schemaVersion: 1,
+      proposalSchemaId: "test.proposal",
+      proposalSchemaVersion: 1,
+      sourceBasis: [
+        {
+          sourceKey: "snapshot:native-run-1",
+          sourceKind: "snapshot-document",
+          sourceRevisionToken:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      ],
+      readSet: [
+        {
+          sourceKey: "snapshot:native-run-1",
+          kind: "snapshot-document",
+          revisionToken:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      ],
+      evidenceSet: [
+        {
+          evidenceRef: "test-evidence",
+          method: "exact",
+          quoteDigest:
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      ],
+      reconciler: {
+        id: "test.reconciler",
+        version: 1,
+      },
+      readSetDigest:
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     });
     stubNativePersistHappyPath();
   });
@@ -388,6 +430,56 @@ describe("startCodexStructureExtraction product safety", () => {
       finishPayload.artifacts[0]?.payloadJson?.phaseProposals,
     ).toHaveLength(1);
     expect(projection.catalog?.types[0]?.slug).toBe("character");
+  });
+
+  it("fails closed when Native persistence has no snapshot revision token", async () => {
+    buildSnapshotMock.mockResolvedValue({
+      ok: true,
+      snapshot: {},
+      diagnostics: [],
+    });
+
+    await expect(
+      startCodexStructureExtraction({
+        projectId: "p1",
+        folderId: "f1",
+        sceneIds: ["s1"],
+        authority: {
+          projectId: "p1",
+          currentProjectId: () => "p1",
+          workspacePath: "/w",
+          workspaceOpenRevision: 1,
+        },
+        workspacePath: "/w",
+        openRevision: 1,
+        useAi: false,
+        typeCatalog: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+            coarseClassHints: ["person"],
+            expectedVersion: 1,
+          },
+        ],
+        heuristicSeeds: [
+          {
+            surface: "ライカ",
+            typeRef: "T0001",
+            evidence: [
+              {
+                anchorId: "a1",
+                quote: "ライカ",
+                documentRef: "D000001",
+                method: "exact",
+              },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow("without a snapshot revision digest");
+    expect(createRunMock).not.toHaveBeenCalled();
   });
 
   it("derives relation proposals from vocabulary co-mentions in shared quotes", async () => {

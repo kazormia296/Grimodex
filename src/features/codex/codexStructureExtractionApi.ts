@@ -68,6 +68,7 @@ import {
   type ReviewBundleProposal,
 } from "@/application/narrative-extraction/nativeApi";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
+import { digestStableJson } from "@/features/narrative-extraction/source/digest";
 import { parseAliases } from "./codexMatcher";
 import { BUILTIN_CODEX_TYPES } from "./api";
 import {
@@ -686,6 +687,34 @@ function digestStableString(value: string): Sha256Digest {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
   }
   return `sha256:${hash.toString(16).padStart(64, "0")}` as Sha256Digest;
+}
+
+async function nativeEvidenceSet(
+  evidence: readonly CodexReviewEvidenceQuote[],
+  proposalSchemaId: string,
+) {
+  if (
+    evidence.length === 0 ||
+    evidence.some(
+      (row) =>
+        row.blocked ||
+        row.method === "unknown" ||
+        !row.anchorId.trim() ||
+        !row.documentRef.trim() ||
+        !row.quote.trim(),
+    )
+  ) {
+    throw new Error(
+      `Cannot persist ${proposalSchemaId} without resolved proposal evidence`,
+    );
+  }
+  return Promise.all(
+    evidence.map(async (row) => ({
+      evidenceRef: row.anchorId,
+      documentRef: row.documentRef,
+      quoteDigest: await digestStableJson(row.quote),
+    })),
+  );
 }
 
 function mergeRanges(ranges: readonly CanonicalRange[]): CanonicalRange {
@@ -1404,6 +1433,9 @@ export async function startCodexStructureExtraction(
   let coverageDocumentCount = request.sceneIds.length;
   let coverageWindowCount = Math.max(1, request.sceneIds.length);
   let snapshotDigest: string | null = null;
+  const skipNativePersist = Boolean(
+    (request as { skipNativePersist?: boolean }).skipNativePersist,
+  );
 
   if (!seeds) {
     const snapshotResult = await buildProjectNarrativeSnapshot({
@@ -1494,6 +1526,27 @@ export async function startCodexStructureExtraction(
         relationEvidenceBySurface.set(seed.surface, [...seed.evidence]);
       }
     }
+  }
+
+  // Injected seeds are a test seam, but a production persistence attempt still
+  // needs an immutable source revision token. Build the source snapshot here
+  // rather than deriving a placeholder token from the run id.
+  if (!skipNativePersist && !snapshotDigest) {
+    const snapshotResult = await buildProjectNarrativeSnapshot({
+      projectId: request.projectId,
+      folderId: request.folderId,
+      language: request.language ?? "ja",
+      sceneIds: request.sceneIds,
+      authority: request.authority,
+    });
+    if (!snapshotResult.ok) {
+      throw new Error(
+        `Snapshot build failed: ${snapshotResult.diagnostics
+          .map((diagnostic) => diagnostic.code)
+          .join(", ")}`,
+      );
+    }
+    snapshotDigest = snapshotResult.snapshot.digest;
   }
 
   // Optional AI path reserved for later wiring (runEntityResolutionTask).
@@ -1785,7 +1838,13 @@ export async function startCodexStructureExtraction(
     completed: hypotheses.length + relationProposals.length,
   };
 
-  if (!(request as { skipNativePersist?: boolean }).skipNativePersist) {
+  if (!skipNativePersist) {
+    const sourceRevisionToken = snapshotDigest;
+    if (!sourceRevisionToken) {
+      throw new Error(
+        "Cannot persist Codex structure proposals without a snapshot revision digest",
+      );
+    }
     const createdRun = await createRun({
       projectId: request.projectId,
       surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
@@ -1799,7 +1858,7 @@ export async function startCodexStructureExtraction(
         taskChain: [CODEX_STRUCTURE_TASK_KIND],
       },
       specDigest: digestStableString("codex.structure.extract.v1"),
-      snapshotDigest,
+      snapshotDigest: sourceRevisionToken,
       coverageJson: {
         mode: "complete",
         documentCount: coverageDocumentCount,
@@ -1827,12 +1886,18 @@ export async function startCodexStructureExtraction(
       if (!claim.claimed || !claim.task) {
         throw new Error(`Failed to claim task ${CODEX_STRUCTURE_TASK_KIND}`);
       }
-
-      const reconciliationEnvelope =
-        await buildNativeReconciliationEnvelope({
+      const claimedTask = claim.task;
+      const buildEnvelope = async (
+        proposalSchemaId: string,
+        evidence: readonly CodexReviewEvidenceQuote[],
+      ) =>
+        buildNativeReconciliationEnvelope({
           runId,
-          taskId: claim.task.taskId,
-          sourceRevisionToken: snapshotDigest ?? `run:${runId}`,
+          taskId: claimedTask.taskId,
+          sourceRevisionToken,
+          proposalSchemaId,
+          reconcilerId: "grimodex.codex-structure-extraction",
+          evidenceSet: await nativeEvidenceSet(evidence, proposalSchemaId),
         });
 
       const saved = await saveProposalSet({
@@ -1857,43 +1922,63 @@ export async function startCodexStructureExtraction(
           ),
         },
         proposals: [
-          ...proposals.map((proposal) => ({
-            proposalId: proposal.proposalId,
-            proposalKey: proposal.proposalKey,
-            kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
-            reconciliationEnvelope,
-            payloadJson: buildCodexReviewRevisionEnvelope({
-              reviewPayload: proposal.proposal.payload,
-            }) as unknown as Record<string, unknown>,
-          })),
-          ...relationProposals.map((proposal) => ({
-            proposalId: proposal.proposalId,
-            proposalKey: proposal.proposalKey,
-            kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
-            reconciliationEnvelope,
-            // Domain payload only — dependencies live in summaryJson.
-            payloadJson: buildCodexReviewRevisionEnvelope({
-              reviewPayload: proposal.proposal.payload,
-            }) as unknown as Record<string, unknown>,
-          })),
-          ...phaseDetailDrafts.baseDetailProposals.map((proposal) => ({
-            proposalId: proposal.proposalId,
-            proposalKey: proposal.proposalKey,
-            kind: CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
-            reconciliationEnvelope,
-            payloadJson: buildCodexReviewRevisionEnvelope({
-              reviewPayload: proposal.proposal.payload,
-            }) as unknown as Record<string, unknown>,
-          })),
-          ...phaseDetailDrafts.phaseProposals.map((proposal) => ({
-            proposalId: proposal.proposalId,
-            proposalKey: proposal.proposalKey,
-            kind: CODEX_PHASE_BIND_PROPOSAL_KIND,
-            reconciliationEnvelope,
-            payloadJson: buildCodexReviewRevisionEnvelope({
-              reviewPayload: proposal.proposal.payload,
-            }) as unknown as Record<string, unknown>,
-          })),
+          ...(await Promise.all(
+            proposals.map(async (proposal) => ({
+              proposalId: proposal.proposalId,
+              proposalKey: proposal.proposalKey,
+              kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+              reconciliationEnvelope: await buildEnvelope(
+                "narrative.codex-entity.bind",
+                proposal.evidence,
+              ),
+              payloadJson: buildCodexReviewRevisionEnvelope({
+                reviewPayload: proposal.proposal.payload,
+              }) as unknown as Record<string, unknown>,
+            })),
+          )),
+          ...(await Promise.all(
+            relationProposals.map(async (proposal) => ({
+              proposalId: proposal.proposalId,
+              proposalKey: proposal.proposalKey,
+              kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+              reconciliationEnvelope: await buildEnvelope(
+                "narrative.codex-relation.create",
+                proposal.evidence,
+              ),
+              // Domain payload only — dependencies live in summaryJson.
+              payloadJson: buildCodexReviewRevisionEnvelope({
+                reviewPayload: proposal.proposal.payload,
+              }) as unknown as Record<string, unknown>,
+            })),
+          )),
+          ...(await Promise.all(
+            phaseDetailDrafts.baseDetailProposals.map(async (proposal) => ({
+              proposalId: proposal.proposalId,
+              proposalKey: proposal.proposalKey,
+              kind: CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+              reconciliationEnvelope: await buildEnvelope(
+                "narrative.codex-base-detail.set",
+                proposal.evidence,
+              ),
+              payloadJson: buildCodexReviewRevisionEnvelope({
+                reviewPayload: proposal.proposal.payload,
+              }) as unknown as Record<string, unknown>,
+            })),
+          )),
+          ...(await Promise.all(
+            phaseDetailDrafts.phaseProposals.map(async (proposal) => ({
+              proposalId: proposal.proposalId,
+              proposalKey: proposal.proposalKey,
+              kind: CODEX_PHASE_BIND_PROPOSAL_KIND,
+              reconciliationEnvelope: await buildEnvelope(
+                "narrative.codex-phase.bind",
+                proposal.evidence,
+              ),
+              payloadJson: buildCodexReviewRevisionEnvelope({
+                reviewPayload: proposal.proposal.payload,
+              }) as unknown as Record<string, unknown>,
+            })),
+          )),
         ],
       });
       proposalSetId = saved.proposalSetId;
@@ -1916,6 +2001,7 @@ export async function startCodexStructureExtraction(
           ...proposal,
           proposalId: seed.proposalId,
           revisionId: seed.revisionId,
+          reconciliationEnvelopeDigest: seed.reconciliationEnvelopeDigest,
           status: seed.status ?? proposal.status,
         };
       });
@@ -1935,6 +2021,7 @@ export async function startCodexStructureExtraction(
           ...proposal,
           proposalId: seed.proposalId,
           revisionId: seed.revisionId,
+          reconciliationEnvelopeDigest: seed.reconciliationEnvelopeDigest,
           status: seed.status ?? proposal.status,
         };
       });
@@ -1955,6 +2042,7 @@ export async function startCodexStructureExtraction(
             ...proposal,
             proposalId: seed.proposalId,
             revisionId: seed.revisionId,
+            reconciliationEnvelopeDigest: seed.reconciliationEnvelopeDigest,
             status: seed.status ?? proposal.status,
           };
         },
@@ -1975,6 +2063,7 @@ export async function startCodexStructureExtraction(
           ...proposal,
           proposalId: seed.proposalId,
           revisionId: seed.revisionId,
+          reconciliationEnvelopeDigest: seed.reconciliationEnvelopeDigest,
           status: seed.status ?? proposal.status,
         };
       });
@@ -2005,8 +2094,8 @@ export async function startCodexStructureExtraction(
       await narrativeExtractionFinishTask({
         runId,
         projectId: request.projectId,
-        taskId: claim.task.taskId,
-        attemptId: claim.task.attemptId,
+        taskId: claimedTask.taskId,
+        attemptId: claimedTask.attemptId,
         leaseOwner: CODEX_STRUCTURE_LEASE_OWNER,
         outputJson: {
           proposalSetId: saved.proposalSetId,
@@ -2046,8 +2135,8 @@ export async function startCodexStructureExtraction(
           );
           rememberInlineJsonArtifact({
             runId,
-            taskId: claim.task.taskId,
-            attemptId: claim.task.attemptId,
+            taskId: claimedTask.taskId,
+            attemptId: claimedTask.attemptId,
             draft: reviewDraft,
           });
           return [reviewDraft.artifactInput];
@@ -2585,6 +2674,7 @@ function rebuildEntityFromNative(args: {
   return {
     proposalId: args.native.proposalId,
     revisionId: args.native.currentRevisionId,
+    reconciliationEnvelopeDigest: args.native.reconciliationEnvelopeDigest,
     proposalKey: args.native.proposalKey,
     status: args.native.status,
     applicability,
@@ -2657,6 +2747,7 @@ function rebuildRelationFromNative(args: {
   return {
     proposalId: args.native.proposalId,
     revisionId: args.native.currentRevisionId,
+    reconciliationEnvelopeDigest: args.native.reconciliationEnvelopeDigest,
     proposalKey: args.native.proposalKey,
     status: args.native.status,
     applicability: satisfied ? "already-satisfied" : "applicable",
@@ -2721,6 +2812,7 @@ function rebuildBaseDetailFromNative(args: {
     ...args.metadata,
     proposalId: args.native.proposalId,
     revisionId: args.native.currentRevisionId,
+    reconciliationEnvelopeDigest: args.native.reconciliationEnvelopeDigest,
     proposalKey: args.native.proposalKey,
     status: args.native.status,
     proposal: {
@@ -2748,6 +2840,7 @@ function rebuildPhaseFromNative(args: {
     ...args.metadata,
     proposalId: args.native.proposalId,
     revisionId: args.native.currentRevisionId,
+    reconciliationEnvelopeDigest: args.native.reconciliationEnvelopeDigest,
     proposalKey: args.native.proposalKey,
     status: args.native.status,
     proposal: {
@@ -3616,6 +3709,12 @@ export async function decideCodexStructureProposal(args: {
                   : (proposal as CodexRelationReviewProposal).proposal.payload,
               compiledOperation,
             }) as unknown as Readonly<Record<string, unknown>>,
+            inheritReconciliationEnvelope: proposal.reconciliationEnvelopeDigest
+              ? {
+                  parentRevisionId: revisionId,
+                  expectedEnvelopeDigest: proposal.reconciliationEnvelopeDigest,
+                }
+              : undefined,
             decision,
             createdBy: "codex-structure-extract-dialog",
           });
@@ -3802,6 +3901,12 @@ export async function reviseCodexStructureProposal(args: {
         payloadJson: buildCodexReviewRevisionEnvelope({
           reviewPayload: nextPayload,
         }) as unknown as Readonly<Record<string, unknown>>,
+        inheritReconciliationEnvelope: current.reconciliationEnvelopeDigest
+          ? {
+              parentRevisionId: current.revisionId,
+              expectedEnvelopeDigest: current.reconciliationEnvelopeDigest,
+            }
+          : undefined,
         createdBy: "codex-structure-extract-dialog",
       });
     } catch (error) {
@@ -3918,6 +4023,12 @@ export async function resolveCodexStructureBinding(args: {
         payloadJson: buildCodexReviewRevisionEnvelope({
           reviewPayload: nextPayload,
         }) as unknown as Readonly<Record<string, unknown>>,
+        inheritReconciliationEnvelope: current.reconciliationEnvelopeDigest
+          ? {
+              parentRevisionId: current.revisionId,
+              expectedEnvelopeDigest: current.reconciliationEnvelopeDigest,
+            }
+          : undefined,
         createdBy: CODEX_STRUCTURE_LEASE_OWNER,
       });
     } catch (error) {
@@ -3983,6 +4094,12 @@ export async function reviseCodexStructureRelation(args: {
         payloadJson: buildCodexReviewRevisionEnvelope({
           reviewPayload: nextPayload,
         }) as unknown as Readonly<Record<string, unknown>>,
+        inheritReconciliationEnvelope: current.reconciliationEnvelopeDigest
+          ? {
+              parentRevisionId: current.revisionId,
+              expectedEnvelopeDigest: current.reconciliationEnvelopeDigest,
+            }
+          : undefined,
         createdBy: CODEX_STRUCTURE_LEASE_OWNER,
       });
     } catch (error) {
@@ -4039,6 +4156,12 @@ export async function swapCodexStructureRelationEndpoints(args: {
         payloadJson: buildCodexReviewRevisionEnvelope({
           reviewPayload: nextPayload,
         }) as unknown as Readonly<Record<string, unknown>>,
+        inheritReconciliationEnvelope: current.reconciliationEnvelopeDigest
+          ? {
+              parentRevisionId: current.revisionId,
+              expectedEnvelopeDigest: current.reconciliationEnvelopeDigest,
+            }
+          : undefined,
         createdBy: CODEX_STRUCTURE_LEASE_OWNER,
       });
     } catch (error) {

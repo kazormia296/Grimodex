@@ -1011,6 +1011,7 @@ fn envelope_revise_and_decide_prepare_apply_succeeds() {
                 "run-env-apply",
                 "run-env-apply-task",
             )),
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("revise and decide");
@@ -1085,6 +1086,7 @@ fn envelope_revision_rejects_operation_payload_mismatch() {
                 "run-env-mismatch",
                 "run-env-mismatch-task",
             )),
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("revise and decide");
@@ -1325,6 +1327,7 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
             expected_current_revision_id: revision_id.clone(),
             created_by: Some("test".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect_err("revision after apply");
@@ -1347,6 +1350,7 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
             decision_json: None,
             created_by: Some("test".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect_err("revise_and_decide after apply");
@@ -1502,6 +1506,7 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
             expected_current_revision_id: pairs[0].1.clone(),
             created_by: Some("test".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect_err("revision after apply");

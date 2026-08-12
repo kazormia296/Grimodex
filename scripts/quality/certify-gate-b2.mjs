@@ -31,6 +31,7 @@ import {
   buildDecisionDocument,
   buildHeavyCertificationEnv,
   loadFreezeDocument,
+  loadGateB2AttemptHistory,
   persistHeavyReport,
   prepareWorktreeDependencies,
   readHeavyLiveReport,
@@ -549,6 +550,38 @@ function suiteFromCapture({
   };
 }
 
+async function recordCertificationSuiteAttempt({
+  allocation,
+  candidate,
+  result,
+}) {
+  if (!allocation) return result;
+  const normalized = { ...result, attempt: allocation.attempt };
+  await writeGateB2AttemptRecord({
+    attemptDir: allocation.attemptDir,
+    record: {
+      schemaVersion: 1,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      suiteId: normalized.suiteId,
+      bucket: normalized.bucket,
+      attempt: normalized.attempt,
+      startedAt: normalized.startedAt,
+      completedAt: normalized.completedAt,
+      exitCode: normalized.exitCode,
+      environmentDigest: normalized.environmentDigest,
+      commandDigest: normalized.commandDigest,
+      stdoutDigest: normalized.stdoutDigest,
+      stderrDigest: normalized.stderrDigest,
+      artifactDigests: normalized.artifactDigests,
+      result: normalized.result,
+      message: normalized.message,
+    },
+  });
+  return normalized;
+}
+
 async function pathExists(target) {
   try {
     await access(target);
@@ -822,6 +855,7 @@ export function decideVerdict({
   candidate,
   decisionPolicy,
   preflightOnly,
+  attemptHistory = [],
 }) {
   const reasons = [];
   if (preflightOnly) {
@@ -849,6 +883,17 @@ export function decideVerdict({
   const deferred = required.filter((suite) => suite.result === "deferred");
   const nonNormativeAttempts = required.filter(
     (suite) => Number.isInteger(suite.attempt) && suite.attempt > 1,
+  );
+  const priorRequired = attemptHistory.filter((suite) =>
+    ["requiredLight", "requiredHeavy", "requiredJourneys"].includes(
+      suite.bucket,
+    ),
+  );
+  const priorNonNormativeAttempts = priorRequired.filter(
+    (suite) => Number.isInteger(suite.attempt) && suite.attempt > 1,
+  );
+  const priorNonSuccess = priorRequired.filter(
+    (suite) => !["passed", "informational"].includes(suite.result),
   );
   const skippedLike = required.filter((suite) =>
     ["skipped", "deferred"].includes(suite.result),
@@ -882,6 +927,23 @@ export function decideVerdict({
         .map((suite) => `${suite.suiteId} Attempt ${suite.attempt}`)
         .join(", ")}`,
     );
+    return { verdict: "BLOCK", reasons };
+  }
+  if (priorNonNormativeAttempts.length > 0 || priorNonSuccess.length > 0) {
+    if (priorNonNormativeAttempts.length > 0) {
+      reasons.push(
+        `candidate has non-normative historical retries: ${priorNonNormativeAttempts
+          .map((suite) => `${suite.suiteId} Attempt ${suite.attempt}`)
+          .join(", ")}`,
+      );
+    }
+    if (priorNonSuccess.length > 0) {
+      reasons.push(
+        `candidate has historical required-suite failures: ${priorNonSuccess
+          .map((suite) => `${suite.suiteId} Attempt ${suite.attempt}=${suite.result}`)
+          .join(", ")}`,
+      );
+    }
     return { verdict: "BLOCK", reasons };
   }
   if (hold.length > 0) {
@@ -969,6 +1031,7 @@ async function runLightSuites({
   environment,
   repoRoot,
   artifactDir,
+  ledgerRoot,
 }) {
   const suites = [];
   let previousFailure = null;
@@ -984,6 +1047,15 @@ async function runLightSuites({
       );
       continue;
     }
+    const allocation = ledgerRoot && !args.dryRun
+      ? await allocateGateB2Attempt({
+          ledgerRoot,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+          suiteId: entry.id,
+        })
+      : null;
     if (entry.kind === "external-evidence" || entry.id === "full-ci") {
       const result = await evaluateFullCiEvidence({
         artifactDir,
@@ -993,8 +1065,13 @@ async function runLightSuites({
         repoRoot,
         fullCiContract: manifest.fullCi ?? null,
       });
-      suites.push(result);
-      if (result.result !== "passed") previousFailure = entry.id;
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result,
+      });
+      suites.push(recorded);
+      if (recorded.result !== "passed") previousFailure = entry.id;
       continue;
     }
     if (args.dryRun) {
@@ -1048,8 +1125,13 @@ async function runLightSuites({
           : (captured.error ?? `exit ${captured.exitCode}`),
       command,
     };
-    suites.push(suiteResult);
-    if (suiteResult.result !== "passed") previousFailure = entry.id;
+    const recorded = await recordCertificationSuiteAttempt({
+      allocation,
+      candidate,
+      result: suiteResult,
+    });
+    suites.push(recorded);
+    if (recorded.result !== "passed") previousFailure = entry.id;
   }
   return suites;
 }
@@ -1170,6 +1252,7 @@ async function runHeavySuites({
   freeze,
   certificationRunId,
   artifactDir,
+  ledgerRoot,
   env = process.env,
 }) {
   const suites = [];
@@ -1185,6 +1268,15 @@ async function runHeavySuites({
       );
       continue;
     }
+    const allocation = dryRun
+      ? null
+      : await allocateGateB2Attempt({
+          ledgerRoot,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+          suiteId: entry.id,
+        });
     if (entry.status === "blocked" || entry.id.startsWith("blocked-")) {
       const blocked = blockedSuite({
         suiteId: entry.id,
@@ -1196,7 +1288,12 @@ async function runHeavySuites({
             : entry.reason) ||
           `Heavy suite ${entry.id} is blocked until requiredAction is satisfied.`,
       });
-      suites.push(blocked);
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result: blocked,
+      });
+      suites.push(recorded);
       if (bucket === "requiredHeavy") previousFailure = entry.id;
       continue;
     }
@@ -1208,7 +1305,12 @@ async function runHeavySuites({
         environmentDigest: environment.digest,
         message: `Missing required credentials/resources: ${missing.join(", ")}. Credential shortage is BLOCK, not passed/skipped.`,
       });
-      suites.push(blocked);
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result: blocked,
+      });
+      suites.push(recorded);
       if (bucket === "requiredHeavy") previousFailure = entry.id;
       continue;
     }
@@ -1228,7 +1330,12 @@ async function runHeavySuites({
             ? ` Required action: ${resolved.requiredAction}`
             : ""),
       });
-      suites.push(blocked);
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result: blocked,
+      });
+      suites.push(recorded);
       if (bucket === "requiredHeavy") previousFailure = entry.id;
       continue;
     }
@@ -1253,10 +1360,7 @@ async function runHeavySuites({
         : [stripCredentialPlaceholders(resolved.commandString)];
     const commandDigest = sha256Text(JSON.stringify(commandForDigest));
     const runId = randomUUID();
-    const { attempt, attemptDir } = await allocateGateB2Attempt({
-      artifactDir,
-      suiteId: entry.id,
-    });
+    const { attempt, attemptDir } = allocation;
     const outputPath = path.join(attemptDir, "report.json");
 
     const heavyEnv = buildHeavyCertificationEnv({
@@ -1393,11 +1497,13 @@ async function runHeavySuites({
       attemptDir,
       record: {
         schemaVersion: 1,
+        contractVersion: GATE_B2_CONTRACT_VERSION,
         candidateCommitSha: candidate.commitSha,
         candidateTreeSha: candidate.treeSha,
         freezeId: freeze?.freezeId ?? null,
         certificationRunId: certificationRunId ?? null,
         suiteId: entry.id,
+        bucket,
         attempt,
         runId,
         commandDigest,
@@ -1589,6 +1695,27 @@ export async function certifyGateB2({
     await mkdir(path.join(artifactDir, "heavy"), { recursive: true });
     await mkdir(path.join(artifactDir, "journeys"), { recursive: true });
     await mkdir(path.join(artifactDir, "environment"), { recursive: true });
+    const attemptLedgerRoot =
+      args.attemptLedgerRoot ?? path.join(repoRoot, ".artifacts/gate-b2-ledger");
+    const suiteBuckets = Object.fromEntries([
+      ...manifest.requiredLight.map((entry) => [entry.id, "requiredLight"]),
+      ...manifest.requiredHeavy.map((entry) => [entry.id, "requiredHeavy"]),
+      ...manifest.requiredManualJourneys.map((entry) => [
+        entry.id,
+        "requiredJourneys",
+      ]),
+      ...manifest.informational.map((entry) => [entry.id, "informational"]),
+      ...manifest.releaseAdjacent.map((entry) => [entry.id, "releaseAdjacent"]),
+    ]);
+    const attemptHistory = candidate.frozen
+      ? await loadGateB2AttemptHistory({
+          ledgerRoot: attemptLedgerRoot,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+          suiteBuckets,
+        })
+      : [];
 
     const suites = [];
     const retries = [];
@@ -1616,6 +1743,7 @@ export async function certifyGateB2({
           environment,
           repoRoot: executionRoot,
           artifactDir,
+          ledgerRoot: attemptLedgerRoot,
         })),
       );
     } else {
@@ -1645,6 +1773,7 @@ export async function certifyGateB2({
           freeze,
           certificationRunId,
           artifactDir,
+          ledgerRoot: attemptLedgerRoot,
           env: certEnv,
         })),
       );
@@ -1662,15 +1791,29 @@ export async function certifyGateB2({
 
     if (args.runJourneys) {
       for (const entry of manifest.requiredManualJourneys) {
+        const allocation = args.dryRun
+          ? null
+          : await allocateGateB2Attempt({
+              ledgerRoot: attemptLedgerRoot,
+              candidateCommitSha: candidate.commitSha,
+              candidateTreeSha: candidate.treeSha,
+              contractVersion: GATE_B2_CONTRACT_VERSION,
+              suiteId: entry.id,
+            });
+        const result = await evaluateJourneyEvidence({
+          journeyEntry: entry,
+          artifactDir,
+          journeyEvidenceDir: args.journeyEvidenceDir,
+          candidate,
+          repoRoot: executionRoot,
+          environment,
+          certEnv,
+        });
         suites.push(
-          await evaluateJourneyEvidence({
-            journeyEntry: entry,
-            artifactDir,
-            journeyEvidenceDir: args.journeyEvidenceDir,
+          await recordCertificationSuiteAttempt({
+            allocation,
             candidate,
-            repoRoot: executionRoot,
-            environment,
-            certEnv,
+            result,
           }),
         );
       }
@@ -1701,6 +1844,7 @@ export async function certifyGateB2({
           freeze,
           certificationRunId,
           artifactDir,
+          ledgerRoot: attemptLedgerRoot,
           env: certEnv,
         })),
       );
@@ -1747,6 +1891,7 @@ export async function certifyGateB2({
             freeze,
             certificationRunId,
             artifactDir,
+            ledgerRoot: attemptLedgerRoot,
             env: certEnv,
           })),
         );
@@ -1804,6 +1949,7 @@ export async function certifyGateB2({
       candidate,
       decisionPolicy: manifest.decisionPolicy ?? {},
       preflightOnly,
+      attemptHistory,
     });
 
     if (needsExecution && boundVia !== "dry-run-unbound") {
@@ -1878,6 +2024,7 @@ export async function certifyGateB2({
       verdict: report.verdict,
       reasons: report.verdictReasons,
       suites,
+      attemptHistory,
       reportDigest,
       digests,
     });

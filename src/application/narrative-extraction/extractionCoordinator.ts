@@ -874,6 +874,14 @@ export async function runChronicleExtractionCoordinator(
             | ProposalPlanArtifactPayload
             | undefined) ?? null;
         const proposals = proposalPayload?.proposals ?? [];
+        const evidencePayload =
+          await loadInlineJsonArtifact<ResolvedEvidenceArtifactPayload>(
+            runId,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+          );
+        if (!evidencePayload) {
+          throw new Error("Missing resolved evidence for proposal persistence");
+        }
         const saved = await saveChronicleProposalSet({
           runId,
           projectId: request.projectId,
@@ -883,6 +891,15 @@ export async function runChronicleExtractionCoordinator(
             proposalCount: proposals.length,
             surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
           },
+          evidenceById: new Map(
+            evidencePayload.anchors.map((anchor) => [
+              anchor.id,
+              {
+                documentRef: anchor.documentRef,
+                quoteDigest: anchor.quoteDigest,
+              },
+            ]),
+          ),
           proposals: proposals.map((proposal, index) => ({
             proposalKey: `${proposal.eventId}:${index}`,
             payload: proposal,

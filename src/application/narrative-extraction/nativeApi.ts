@@ -177,6 +177,8 @@ export interface ReviewBundleProposalApplication {
   readonly appliedEntityKind: string;
   readonly appliedEntityId: string;
   readonly createdAt: string;
+  readonly applicationKind: "normal" | "compensation";
+  readonly compensatesApplicationId: string | null;
 }
 
 export interface ReviewBundleProposal {
@@ -196,6 +198,12 @@ export interface ReviewBundleProposal {
   readonly application?: ReviewBundleProposalApplication | null;
 }
 
+/** Explicit CAS mode for carrying an existing envelope to a new revision. */
+export interface ReconciliationEnvelopeInheritance {
+  readonly parentRevisionId: string;
+  readonly expectedEnvelopeDigest: string;
+}
+
 export interface GetRunReviewBundleResult {
   readonly runId: string;
   readonly projectId: string;
@@ -211,6 +219,8 @@ export interface AppendRevisionPayload {
   readonly payloadJson: Readonly<Record<string, unknown>>;
   /** Optional V1 contract; omitted revisions are explicitly legacy-unbound. */
   readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
+  /** Optional explicit CAS inheritance; omission never inherits implicitly. */
+  readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */
   readonly expectedCurrentRevisionId: string;
   readonly createdBy?: string;
@@ -247,6 +257,8 @@ export interface ReviseAndDecidePayload {
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
   readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
+  /** Optional explicit CAS inheritance; omission never inherits implicitly. */
+  readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */
   readonly expectedCurrentRevisionId: string;
   readonly decision: NarrativeProposalDecision;

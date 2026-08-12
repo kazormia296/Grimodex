@@ -1137,6 +1137,7 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
             expected_current_revision_id: rev1.clone(),
             created_by: Some("test".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("append rev2");
@@ -1278,6 +1279,7 @@ fn revise_and_decide_approves_atomically_with_new_revision() {
             decision_json: Some(json!({ "source": "test" })),
             created_by: Some("reviewer".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("revise and decide");
@@ -1337,6 +1339,7 @@ fn revise_and_decide_rolls_back_revision_on_invalid_decision() {
             decision_json: None,
             created_by: Some("reviewer".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect_err("invalid decision must fail");
@@ -1389,6 +1392,7 @@ fn revise_and_decide_rejects_stale_expected_current_revision() {
             expected_current_revision_id: rev1.clone(),
             created_by: Some("test".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("append rev2");
@@ -1407,6 +1411,7 @@ fn revise_and_decide_rejects_stale_expected_current_revision() {
             decision_json: None,
             created_by: Some("stale-window".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect_err("stale expected revision must conflict");
@@ -1936,6 +1941,7 @@ fn relation_dependencies_in_summary_json_survive_append_revision() {
             }),
             created_by: Some("reviewer".to_string()),
             reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("append revision");

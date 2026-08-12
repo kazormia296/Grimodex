@@ -128,6 +128,13 @@ pub struct ProposalSeed {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReconciliationEnvelopeInheritance {
+    pub parent_revision_id: String,
+    pub expected_envelope_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppendRevisionPayload {
     pub run_id: String,
     pub project_id: String,
@@ -135,6 +142,10 @@ pub struct AppendRevisionPayload {
     pub payload_json: Value,
     #[serde(default)]
     pub reconciliation_envelope: Option<Value>,
+    /// Explicit CAS mode for carrying the current envelope to a new revision.
+    /// Omission means the new revision is intentionally legacy-unbound.
+    #[serde(default)]
+    pub inherit_reconciliation_envelope: Option<ReconciliationEnvelopeInheritance>,
     /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
     pub expected_current_revision_id: String,
     #[serde(default)]
@@ -164,6 +175,10 @@ pub struct ReviseAndDecidePayload {
     pub payload_json: Value,
     #[serde(default)]
     pub reconciliation_envelope: Option<Value>,
+    /// Explicit CAS mode for carrying the current envelope to a new revision.
+    /// Omission means the new revision is intentionally legacy-unbound.
+    #[serde(default)]
+    pub inherit_reconciliation_envelope: Option<ReconciliationEnvelopeInheritance>,
     /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
     pub expected_current_revision_id: String,
     pub decision: String,

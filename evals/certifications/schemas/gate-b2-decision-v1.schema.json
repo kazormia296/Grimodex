@@ -33,7 +33,7 @@
       "type": ["string", "null"],
       "pattern": "^[0-9a-f]{40}$"
     },
-      "schemaVersionProduct": { "type": "integer", "const": 19 },
+      "schemaVersionProduct": { "type": "integer", "const": 20 },
     "freezeId": { "type": ["string", "null"], "minLength": 1 },
     "certificationRunId": { "type": ["string", "null"], "minLength": 1 },
     "verdict": {
@@ -106,6 +106,24 @@
           "attempt": { "type": "integer", "minimum": 1 },
           "result": { "type": "string" },
           "normative": { "type": "boolean" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "attemptHistory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["suiteId", "bucket", "attempt", "result"],
+        "properties": {
+          "suiteId": { "type": "string", "minLength": 1 },
+          "bucket": {
+            "type": "string",
+            "enum": ["requiredLight", "requiredHeavy", "requiredJourneys", "informational", "releaseAdjacent"]
+          },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "result": { "type": "string" },
           "message": { "type": "string" }
         }
       }

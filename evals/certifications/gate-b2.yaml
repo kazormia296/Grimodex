@@ -10,7 +10,7 @@ candidate:
   commitSha: null
   treeSha: null
   baseMasterSha: null
-  schemaVersion: 19
+  schemaVersion: 20
   # Freeze 時に scripts/quality/certify-gate-b2.mjs --preflight が埋める／検証する digest
   writerRegistryDigest: null
   aiPathRegistryDigest: null

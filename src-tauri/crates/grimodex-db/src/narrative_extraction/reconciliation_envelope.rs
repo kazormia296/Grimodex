@@ -115,6 +115,10 @@ pub(crate) fn validate_reconciliation_envelope(
     );
 
     let source_basis_values = required_array(object, "sourceBasis")?;
+    anyhow::ensure!(
+        !source_basis_values.is_empty(),
+        "NEX_ENVELOPE_SOURCE_BASIS_EMPTY: sourceBasis must contain at least one source"
+    );
     let mut source_keys = HashSet::new();
     let mut source_basis = Vec::with_capacity(source_basis_values.len());
     for (ordinal, value) in source_basis_values.iter().enumerate() {
@@ -139,7 +143,12 @@ pub(crate) fn validate_reconciliation_envelope(
     }
 
     let read_set_values = required_array(object, "readSet")?;
+    anyhow::ensure!(
+        !read_set_values.is_empty(),
+        "NEX_ENVELOPE_READ_SET_EMPTY: readSet must contain at least one input"
+    );
     let mut read_refs = HashSet::new();
+    let mut read_kinds = BTreeMap::new();
     for (index, value) in read_set_values.iter().enumerate() {
         let entry = value.as_object().ok_or_else(|| {
             anyhow!("NEX_ENVELOPE_READ_SET_INVALID: entry {index} is not an object")
@@ -157,6 +166,7 @@ pub(crate) fn validate_reconciliation_envelope(
             ),
             "NEX_ENVELOPE_READ_SET_KIND_INVALID: unsupported read-set kind '{kind}'"
         );
+        read_kinds.insert(input_ref.to_owned(), kind.to_owned());
     }
 
     for source in &source_basis {
@@ -164,6 +174,16 @@ pub(crate) fn validate_reconciliation_envelope(
             read_refs.contains(source.source_key.as_str()),
             "NEX_ENVELOPE_SOURCE_BASIS_NOT_READ: sourceKey '{}' is absent from readSet",
             source.source_key
+        );
+        let expected_kind = read_set_kind_for_source_kind(&source.source_kind)?;
+        anyhow::ensure!(
+            read_kinds
+                .get(&source.source_key)
+                .map(String::as_str)
+                == Some(expected_kind),
+            "NEX_ENVELOPE_SOURCE_BASIS_KIND_MISMATCH: sourceKey '{}' requires read-set kind '{}'",
+            source.source_key,
+            expected_kind
         );
     }
 
@@ -242,6 +262,18 @@ fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> anyhow::R
         "NEX_ENVELOPE_FIELD_INVALID: {field} must not be empty"
     );
     Ok(value)
+}
+
+fn read_set_kind_for_source_kind(source_kind: &str) -> anyhow::Result<&'static str> {
+    match source_kind {
+        "snapshot-document" | "scene-body" => Ok("snapshot-document"),
+        "projection" | "domain-projection" => Ok("projection"),
+        "evidence" | "evidence-anchor" | "narrative-artifact" | "import-capture" => Ok("evidence"),
+        "signal" => Ok("signal"),
+        other => Err(anyhow!(
+            "NEX_ENVELOPE_SOURCE_KIND_INVALID: unsupported source kind '{other}'"
+        )),
+    }
 }
 
 fn optional_string<'a>(

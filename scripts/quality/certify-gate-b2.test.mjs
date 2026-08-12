@@ -465,6 +465,44 @@ test("decideVerdict never promotes a non-normative Attempt 2 success to PASS", (
   assert.match(result.reasons.join("\n"), /Attempt 2|non-normative|normative/i);
 });
 
+test("decideVerdict never forgets a prior failed candidate attempt", () => {
+  const result = decideVerdict({
+    suites: [
+      {
+        suiteId: "heavy-agent-tool-loop",
+        bucket: "requiredHeavy",
+        attempt: 2,
+        result: "passed",
+      },
+    ],
+    attemptHistory: [
+      {
+        suiteId: "heavy-agent-tool-loop",
+        bucket: "requiredHeavy",
+        attempt: 1,
+        result: "failed",
+      },
+    ],
+    candidate: {
+      frozen: true,
+      dirty: false,
+      commitSha: "a".repeat(40),
+      treeSha: "b".repeat(40),
+    },
+    decisionPolicy: {
+      requireCandidateFreeze: true,
+      blockedIsPass: false,
+      deferredIsPass: false,
+      skippedIsPass: false,
+      retryOverwritePass: false,
+    },
+    preflightOnly: false,
+  });
+
+  assert.equal(result.verdict, "BLOCK");
+  assert.match(result.reasons.join("\n"), /historical|required-suite|Attempt 2/i);
+});
+
 test("tallyBucket counts suite results without inventing passes", () => {
   const summary = tallyBucket(
     [
@@ -810,7 +848,7 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId", a
       commitSha: "b".repeat(40),
       treeSha: "c".repeat(40),
       baseMasterSha: "d".repeat(40),
-      schemaVersion: 19,
+      schemaVersion: 20,
       writerRegistryDigest: digest,
       aiPathRegistryDigest: digest,
       qualityManifestDigest: digest,

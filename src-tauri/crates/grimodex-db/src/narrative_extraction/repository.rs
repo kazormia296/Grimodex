@@ -1,6 +1,7 @@
 //! SQL persistence for narrative extraction runs, tasks, and proposals.
 
 use chrono::Utc;
+use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -601,7 +602,8 @@ pub fn get_run_review_bundle(
                 let application = conn
                     .query_row(
                         "SELECT commit_id, revision_id, applied_entity_kind,
-                                applied_entity_id, created_at
+                                applied_entity_id, created_at, application_kind,
+                                compensates_application_id
                            FROM narrative_proposal_applications
                           WHERE proposal_id = ?1
                           ORDER BY created_at DESC, id DESC
@@ -614,6 +616,8 @@ pub fn get_run_review_bundle(
                                 "appliedEntityKind": row.get::<_, String>(2)?,
                                 "appliedEntityId": row.get::<_, String>(3)?,
                                 "createdAt": row.get::<_, String>(4)?,
+                                "applicationKind": row.get::<_, String>(5)?,
+                                "compensatesApplicationId": row.get::<_, Option<String>>(6)?,
                             }))
                         },
                     )
@@ -812,14 +816,22 @@ fn append_revision_on_conn(
         .unwrap_or_else(|| "user".to_string());
 
     ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
-    let (proposal_set_id, current_revision_id, current_origin_kind, current_envelope_json): (
+    let (
+        proposal_set_id,
+        current_revision_id,
+        current_origin_kind,
+        current_envelope_json,
+        current_envelope_digest,
+    ): (
         String,
         String,
         String,
         Option<String>,
+        Option<String>,
     ) = conn.query_row(
         "SELECT p.proposal_set_id, p.current_revision_id,
-                r.origin_kind, r.reconciliation_envelope_json
+                r.origin_kind, r.reconciliation_envelope_json,
+                r.reconciliation_envelope_digest
            FROM narrative_proposals p
            INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
            LEFT JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
@@ -827,7 +839,13 @@ fn append_revision_on_conn(
             AND s.run_id = ?2
             AND s.project_id = ?3",
         params![payload.proposal_id, payload.run_id, payload.project_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        )),
     )?;
     let _ = proposal_set_id;
     anyhow::ensure!(
@@ -837,12 +855,32 @@ fn append_revision_on_conn(
         current_revision_id
     );
 
-    let inherited_envelope =
-        if payload.reconciliation_envelope.is_none() && current_origin_kind == ORIGIN_ENVELOPED {
-        current_envelope_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()?
+    anyhow::ensure!(
+        !(payload.reconciliation_envelope.is_some()
+            && payload.inherit_reconciliation_envelope.is_some()),
+        "NEX_REVISION_ENVELOPE_MODE_CONFLICT: supply an envelope or explicit inheritance, not both"
+    );
+    let inherited_envelope = if let Some(inherit) =
+        payload.inherit_reconciliation_envelope.as_ref()
+    {
+        anyhow::ensure!(
+            inherit.parent_revision_id == current_revision_id,
+            "NEX_REVISION_ENVELOPE_PARENT_CONFLICT: inherit parent revision does not match current revision"
+        );
+        anyhow::ensure!(
+            current_origin_kind == ORIGIN_ENVELOPED,
+            "NEX_REVISION_ENVELOPE_INHERIT_UNAVAILABLE: current revision is not enveloped"
+        );
+        anyhow::ensure!(
+            current_envelope_digest.as_deref() == Some(inherit.expected_envelope_digest.as_str()),
+            "NEX_REVISION_ENVELOPE_INHERIT_CONFLICT: current envelope digest does not match expected digest"
+        );
+        Some(
+            current_envelope_json
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("NEX_REVISION_ENVELOPE_INHERIT_MISSING: current envelope JSON is missing"))
+                .and_then(|json| serde_json::from_str(json).context("NEX_REVISION_ENVELOPE_INHERIT_INVALID: current envelope JSON is invalid"))?,
+        )
     } else {
         None
     };
@@ -1048,6 +1086,9 @@ pub fn revise_and_decide(db: &Database, payload: ReviseAndDecidePayload) -> anyh
                 expected_current_revision_id: payload.expected_current_revision_id.clone(),
                 created_by: payload.created_by.clone(),
                 reconciliation_envelope: payload.reconciliation_envelope.clone(),
+                inherit_reconciliation_envelope: payload
+                    .inherit_reconciliation_envelope
+                    .clone(),
             };
             let revision = append_revision_on_conn(conn, &revision_payload)?;
             let revision_id = revision["revisionId"]
@@ -1409,7 +1450,10 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             revision_id TEXT NOT NULL,
             applied_entity_kind TEXT NOT NULL,
             applied_entity_id TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            application_kind TEXT NOT NULL DEFAULT 'normal'
+                CHECK(application_kind IN ('normal','compensation')),
+            compensates_application_id TEXT
         );
         CREATE TABLE IF NOT EXISTS narrative_commit_journals (
             id TEXT PRIMARY KEY,
@@ -1419,6 +1463,56 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             after_json TEXT,
             created_at TEXT NOT NULL
         );",
+    )?;
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_update
+            BEFORE UPDATE ON narrative_proposal_revisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_revision_envelope_immutable_update
+            BEFORE UPDATE ON narrative_proposal_revisions
+            WHEN OLD.origin_kind IS NOT NEW.origin_kind
+              OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+              OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+            BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_update
+            BEFORE UPDATE ON narrative_revision_source_basis
+            BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_delete
+            BEFORE DELETE ON narrative_revision_source_basis
+            BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_delete
+            BEFORE DELETE ON narrative_proposal_revisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_update
+            BEFORE UPDATE ON narrative_proposal_decisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications
+                 WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_delete
+            BEFORE DELETE ON narrative_proposal_decisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications
+                 WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_update
+            BEFORE UPDATE ON narrative_proposal_applications
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_delete
+            BEFORE DELETE ON narrative_proposal_applications
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_application_kind_guard
+            BEFORE INSERT ON narrative_proposal_applications
+            WHEN NEW.application_kind NOT IN ('normal','compensation')
+            BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID'); END;",
     )?;
     Ok(())
 }

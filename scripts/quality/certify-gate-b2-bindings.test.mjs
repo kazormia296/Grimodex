@@ -17,6 +17,7 @@ import {
   checkoutIdentityArtifactName,
   fetchCheckoutIdentityArtifact,
   listRunArtifacts,
+  loadGateB2AttemptHistory,
   prepareWorktreeDependencies,
   sanitizeCertificationEnv,
   stripCredentialPlaceholders,
@@ -25,6 +26,7 @@ import {
   validateChronicleProductionReport,
   validateWebAiConsentReport,
   verifyFullCiWithGithub,
+  writeGateB2AttemptRecord,
 } from "./certify-gate-b2-bindings.mjs";
 
 const repoRoot = path.resolve(
@@ -167,23 +169,64 @@ test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
   assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
 });
 
-test("Gate B2 attempt ledger allocates append-only attempts per candidate suite", async () => {
+test("Gate B2 attempt ledger is candidate-global across artifact directories", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-attempts-"));
   try {
     const first = await allocateGateB2Attempt({
-      artifactDir: temp,
+      ledgerRoot: path.join(temp, "ledger"),
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
       suiteId: "heavy-narrative-chronicle-production",
     });
+    await writeGateB2AttemptRecord({
+      attemptDir: first.attemptDir,
+      record: {
+        schemaVersion: 1,
+        contractVersion: GATE_B2_CONTRACT_VERSION,
+        candidateCommitSha: candidate.commitSha,
+        candidateTreeSha: candidate.treeSha,
+        suiteId: "heavy-narrative-chronicle-production",
+        bucket: "requiredHeavy",
+        attempt: 1,
+        result: "failed",
+        message: "negative test failure",
+      },
+    });
     const second = await allocateGateB2Attempt({
-      artifactDir: temp,
+      ledgerRoot: path.join(temp, "ledger"),
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
       suiteId: "heavy-narrative-chronicle-production",
     });
 
     assert.equal(first.attempt, 1);
     assert.equal(second.attempt, 2);
     assert.notEqual(first.attemptDir, second.attemptDir);
-    assert.match(first.attemptDir, /attempts\/heavy-narrative-chronicle-production\/attempt-1$/);
-    assert.match(second.attemptDir, /attempts\/heavy-narrative-chronicle-production\/attempt-2$/);
+    assert.match(first.attemptDir, /candidates\/[^/]+\/attempts\/heavy-narrative-chronicle-production\/attempt-1$/);
+    assert.match(second.attemptDir, /candidates\/[^/]+\/attempts\/heavy-narrative-chronicle-production\/attempt-2$/);
+    const history = await loadGateB2AttemptHistory({
+      ledgerRoot: path.join(temp, "ledger"),
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
+    });
+    assert.deepEqual(
+      history.map(({ suiteId, attempt, result }) => ({ suiteId, attempt, result })),
+      [
+        {
+          suiteId: "heavy-narrative-chronicle-production",
+          attempt: 1,
+          result: "failed",
+        },
+        {
+          suiteId: "heavy-narrative-chronicle-production",
+          attempt: 2,
+          result: "blocked",
+        },
+      ],
+    );
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

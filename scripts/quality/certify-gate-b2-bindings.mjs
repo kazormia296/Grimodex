@@ -308,15 +308,70 @@ function safeAttemptPathSegment(value) {
   return segment;
 }
 
+function requireCandidateIdentity(value, field) {
+  if (!new RegExp(`^[0-9a-f]{40}$`).test(String(value ?? ""))) {
+    throw new Error(`invalid Gate B2 ${field} for attempt ledger`);
+  }
+  return String(value);
+}
+
+export function gateB2AttemptLedgerKey({
+  candidateCommitSha,
+  candidateTreeSha,
+  contractVersion,
+}) {
+  const commitSha = requireCandidateIdentity(
+    candidateCommitSha,
+    "candidate commit SHA",
+  );
+  const treeSha = requireCandidateIdentity(
+    candidateTreeSha,
+    "candidate tree SHA",
+  );
+  if (!Number.isSafeInteger(contractVersion) || contractVersion < 1) {
+    throw new Error("invalid Gate B2 contract version for attempt ledger");
+  }
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        candidateCommitSha: commitSha,
+        candidateTreeSha: treeSha,
+        contractVersion,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
 /**
  * Reserve the next append-only attempt directory for one candidate/suite.
  * A non-recursive mkdir makes the reservation unique across processes; a
  * crashed process still consumes its directory and cannot be overwritten by a
  * later retry.
  */
-export async function allocateGateB2Attempt({ artifactDir, suiteId }) {
+export async function allocateGateB2Attempt({
+  ledgerRoot,
+  candidateCommitSha,
+  candidateTreeSha,
+  contractVersion = GATE_B2_CONTRACT_VERSION,
+  suiteId,
+}) {
+  if (!ledgerRoot) {
+    throw new Error("Gate B2 attempt ledger root is required");
+  }
   const suiteSegment = safeAttemptPathSegment(suiteId);
-  const attemptsRoot = path.join(artifactDir, "attempts", suiteSegment);
+  const candidateKey = gateB2AttemptLedgerKey({
+    candidateCommitSha,
+    candidateTreeSha,
+    contractVersion,
+  });
+  const attemptsRoot = path.join(
+    ledgerRoot,
+    "candidates",
+    candidateKey,
+    "attempts",
+    suiteSegment,
+  );
   await mkdir(attemptsRoot, { recursive: true });
   for (let attempt = 1; ; attempt += 1) {
     const attemptDir = path.join(attemptsRoot, `attempt-${attempt}`);
@@ -327,6 +382,83 @@ export async function allocateGateB2Attempt({ artifactDir, suiteId }) {
       if (error?.code !== "EEXIST") throw error;
     }
   }
+}
+
+export async function loadGateB2AttemptHistory({
+  ledgerRoot,
+  candidateCommitSha,
+  candidateTreeSha,
+  contractVersion = GATE_B2_CONTRACT_VERSION,
+  suiteBuckets = {},
+}) {
+  if (!ledgerRoot) return [];
+  const candidateKey = gateB2AttemptLedgerKey({
+    candidateCommitSha,
+    candidateTreeSha,
+    contractVersion,
+  });
+  const attemptsRoot = path.join(
+    ledgerRoot,
+    "candidates",
+    candidateKey,
+    "attempts",
+  );
+  let suiteEntries;
+  try {
+    suiteEntries = await readdir(attemptsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const history = [];
+  for (const suiteEntry of suiteEntries) {
+    if (!suiteEntry.isDirectory()) continue;
+    const suiteDir = path.join(attemptsRoot, suiteEntry.name);
+    const attemptEntries = await readdir(suiteDir, { withFileTypes: true });
+    for (const attemptEntry of attemptEntries) {
+      if (!attemptEntry.isDirectory() || !/^attempt-[1-9][0-9]*$/.test(attemptEntry.name)) {
+        continue;
+      }
+      const attempt = Number(attemptEntry.name.slice("attempt-".length));
+      const recordPath = path.join(suiteDir, attemptEntry.name, "attempt.json");
+      let record;
+      try {
+        record = JSON.parse(await readFile(recordPath, "utf8"));
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          history.push({
+            schemaVersion: 1,
+            contractVersion,
+            candidateCommitSha,
+            candidateTreeSha,
+            suiteId: suiteEntry.name,
+            bucket: suiteBuckets[suiteEntry.name] ?? "requiredHeavy",
+            attempt,
+            result: "blocked",
+            message: "attempt reservation has no completed record",
+          });
+          continue;
+        }
+        throw error;
+      }
+      if (
+        record.candidateCommitSha !== candidateCommitSha ||
+        record.candidateTreeSha !== candidateTreeSha ||
+        record.contractVersion !== contractVersion ||
+        safeAttemptPathSegment(record.suiteId) !== suiteEntry.name ||
+        !Number.isInteger(record.attempt) ||
+        record.attempt < 1
+      ) {
+        throw new Error(`invalid Gate B2 attempt record: ${recordPath}`);
+      }
+      history.push(record);
+    }
+  }
+  history.sort((left, right) => {
+    if (left.suiteId !== right.suiteId) return left.suiteId.localeCompare(right.suiteId);
+    return left.attempt - right.attempt;
+  });
+  return history;
 }
 
 export async function writeGateB2AttemptRecord({ attemptDir, record }) {
@@ -1006,6 +1138,7 @@ export function buildDecisionDocument({
   verdict,
   reasons,
   suites,
+  attemptHistory = [],
   reportDigest,
   digests,
 }) {
@@ -1059,6 +1192,15 @@ export function buildDecisionDocument({
         attempt: s.attempt,
         result: s.result,
         normative: s.attempt === 1,
+        message: s.message,
+      })),
+    attemptHistory: [...attemptHistory]
+      .filter((s) => s && s.suiteId && Number.isInteger(s.attempt))
+      .map((s) => ({
+        suiteId: s.suiteId,
+        bucket: s.bucket,
+        attempt: s.attempt,
+        result: s.result,
         message: s.message,
       })),
     generatedAt: new Date().toISOString(),

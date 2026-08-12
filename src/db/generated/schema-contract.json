@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 19,
+  "schemaVersion": 20,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6962,6 +6962,13 @@
     "narrative_proposal_applications": {
       "kind": "table",
       "columns": {
+        "application_kind": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'normal'",
+          "primaryKey": 0
+        },
         "applied_entity_id": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -6980,6 +6987,13 @@
           "ordinal": 1,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "compensates_application_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -7014,7 +7028,7 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_proposal_applications ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, applied_entity_kind TEXT NOT NULL, applied_entity_id TEXT NOT NULL, created_at TEXT NOT NULL )"
+      "createSql": "CREATE TABLE narrative_proposal_applications ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, applied_entity_kind TEXT NOT NULL, applied_entity_id TEXT NOT NULL, created_at TEXT NOT NULL , application_kind TEXT NOT NULL DEFAULT 'normal' CHECK(application_kind IN ('normal','compensation')), compensates_application_id TEXT)"
     },
     "narrative_proposal_decisions": {
       "kind": "table",
@@ -13683,6 +13697,16 @@
     "delete_cv_on_codex_entry_delete": "CREATE TRIGGER delete_cv_on_codex_entry_delete AFTER DELETE ON codex_entries BEGIN DELETE FROM content_versions WHERE entity_type = 'codex_entry' AND entity_id = old.id AND id NOT IN (SELECT version_id FROM project_snapshot_entries) AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL); END",
     "delete_cv_on_snippet_delete": "CREATE TRIGGER delete_cv_on_snippet_delete AFTER DELETE ON snippets BEGIN DELETE FROM content_versions WHERE entity_type = 'snippet' AND entity_id = old.id AND id NOT IN (SELECT version_id FROM project_snapshot_entries) AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL); END",
     "delete_cv_on_tree_node_delete": "CREATE TRIGGER delete_cv_on_tree_node_delete AFTER DELETE ON tree_nodes BEGIN DELETE FROM content_versions WHERE entity_type IN ('scene', 'note') AND entity_id = old.id AND id NOT IN (SELECT version_id FROM project_snapshot_entries) AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL); END",
+    "narrative_application_immutable_delete": "CREATE TRIGGER narrative_application_immutable_delete BEFORE DELETE ON narrative_proposal_applications BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END",
+    "narrative_application_immutable_update": "CREATE TRIGGER narrative_application_immutable_update BEFORE UPDATE ON narrative_proposal_applications BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END",
+    "narrative_application_kind_guard": "CREATE TRIGGER narrative_application_kind_guard BEFORE INSERT ON narrative_proposal_applications WHEN NEW.application_kind NOT IN ('normal','compensation') BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID'); END",
+    "narrative_decision_immutable_after_apply_delete": "CREATE TRIGGER narrative_decision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
+    "narrative_decision_immutable_after_apply_update": "CREATE TRIGGER narrative_decision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
+    "narrative_revision_envelope_immutable_update": "CREATE TRIGGER narrative_revision_envelope_immutable_update BEFORE UPDATE ON narrative_proposal_revisions WHEN OLD.origin_kind IS NOT NEW.origin_kind OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END",
+    "narrative_revision_immutable_after_apply_delete": "CREATE TRIGGER narrative_revision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
+    "narrative_revision_immutable_after_apply_update": "CREATE TRIGGER narrative_revision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
+    "narrative_source_basis_immutable_delete": "CREATE TRIGGER narrative_source_basis_immutable_delete BEFORE DELETE ON narrative_revision_source_basis BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
+    "narrative_source_basis_immutable_update": "CREATE TRIGGER narrative_source_basis_immutable_update BEFORE UPDATE ON narrative_revision_source_basis BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
     "post_effect_annotations_fts_ad": "CREATE TRIGGER post_effect_annotations_fts_ad AFTER DELETE ON post_effect_annotations BEGIN INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content) VALUES ('delete', old.rowid, old.content); END",
     "post_effect_annotations_fts_ai": "CREATE TRIGGER post_effect_annotations_fts_ai AFTER INSERT ON post_effect_annotations BEGIN INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content); END",
     "post_effect_annotations_fts_au": "CREATE TRIGGER post_effect_annotations_fts_au AFTER UPDATE ON post_effect_annotations WHEN old.content IS NOT new.content BEGIN INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content) VALUES ('delete', old.rowid, old.content); INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content); END",

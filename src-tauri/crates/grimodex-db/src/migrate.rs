@@ -2983,7 +2983,96 @@ impl Database {
                 PRIMARY KEY(project_id, entity_kind, entity_id, field_path)
             );
             CREATE INDEX IF NOT EXISTS idx_narrative_field_authority_entity
-                ON narrative_field_authority(project_id, entity_kind, entity_id);",
+            ON narrative_field_authority(project_id, entity_kind, entity_id);",
+        )?;
+
+        // SCHEMA_VERSION 20: Semantic retraction is a new immutable
+        // Application, never an UPDATE/DELETE of the compensated history.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_applications",
+            "application_kind",
+            "TEXT NOT NULL DEFAULT 'normal' CHECK(application_kind IN ('normal','compensation'))",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_applications",
+            "compensates_application_id",
+            "TEXT",
+        )?;
+        conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_update
+                BEFORE UPDATE ON narrative_proposal_revisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE revision_id = OLD.id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_revision_envelope_immutable_update
+                BEFORE UPDATE ON narrative_proposal_revisions
+                WHEN OLD.origin_kind IS NOT NEW.origin_kind
+                  OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+                  OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_update
+                BEFORE UPDATE ON narrative_revision_source_basis
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_delete
+                BEFORE DELETE ON narrative_revision_source_basis
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_delete
+                BEFORE DELETE ON narrative_proposal_revisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE revision_id = OLD.id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_update
+                BEFORE UPDATE ON narrative_proposal_decisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE proposal_id = OLD.proposal_id
+                       AND revision_id = OLD.revision_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_delete
+                BEFORE DELETE ON narrative_proposal_decisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE proposal_id = OLD.proposal_id
+                       AND revision_id = OLD.revision_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_update
+                BEFORE UPDATE ON narrative_proposal_applications
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_delete
+                BEFORE DELETE ON narrative_proposal_applications
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_kind_guard
+                BEFORE INSERT ON narrative_proposal_applications
+                WHEN NEW.application_kind NOT IN ('normal','compensation')
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID');
+                END;",
         )?;
 
         // SCHEMA_VERSION 16: a generation token identifies one physical
@@ -6515,9 +6604,9 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("simulate schema 15 workspace");
+        .expect("simulate schema 16 workspace");
 
-        db.migrate().expect("migrate schema 15 to 16");
+        db.migrate().expect("migrate schema 16 to current");
         db.with_conn(|conn| {
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let token: String = conn.query_row(
@@ -6534,5 +6623,40 @@ mod tests {
             Ok(())
         })
         .expect("verify schema 16 scene-event migration");
+    }
+
+    #[test]
+    fn previous_marker_probe_is_bound_to_marker_16_and_current_physical_schema() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            assert!(grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                conn
+            )?);
+
+            conn.pragma_update(None, "user_version", 15)?;
+            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                conn
+            )?);
+
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            conn.execute_batch(
+                "DROP TRIGGER narrative_revision_envelope_immutable_update",
+            )?;
+            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                conn
+            )?);
+            Ok(())
+        })
+        .expect("probe previous marker compatibility");
     }
 }

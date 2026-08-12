@@ -2471,6 +2471,10 @@ export const narrativeProposalApplications = sqliteTable(
     appliedEntityKind: text("applied_entity_kind").notNull(),
     appliedEntityId: text("applied_entity_id").notNull(),
     createdAt: text("created_at").notNull(),
+    // SCHEMA_VERSION 20: semantic retractions append compensating applications;
+    // the compensated application remains immutable history.
+    applicationKind: text("application_kind").notNull().default("normal"),
+    compensatesApplicationId: text("compensates_application_id"),
   },
 );
 

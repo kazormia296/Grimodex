@@ -179,6 +179,7 @@ pub fn narrative_extraction_prepare_commit(
                 &payload.run_id,
                 &applications,
             )?;
+            validate_retraction_targets(conn, &payload.project_id, &applications)?;
             sealed_plan["sourceContract"] = serde_json::to_value(&source_contract)?;
             let prepared_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
             let policy_version = load_narrative_runtime_policy(conn).version;
@@ -449,6 +450,80 @@ fn ensure_source_basis_storage_matches(
     Ok(())
 }
 
+fn validate_retraction_targets(
+    conn: &Connection,
+    project_id: &str,
+    applications: &[(String, String)],
+) -> anyhow::Result<()> {
+    for (proposal_id, revision_id) in applications {
+        let (change_kind, target) = load_retraction_metadata(conn, proposal_id, revision_id)?;
+        if change_kind != "retract" {
+            continue;
+        }
+        let target = target.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_TARGET_REQUIRED: retract revision '{revision_id}' has no target application"
+            )
+        })?;
+        let target_row: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT c.project_id, a.revision_id, a.application_kind
+                   FROM narrative_proposal_applications a
+                   INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
+                  WHERE a.id = ?1",
+                params![target],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((target_project_id, target_revision_id, target_kind)) = target_row else {
+            anyhow::bail!(
+                "NEX_RETRACTION_TARGET_MISSING: target application '{target}' is not applied"
+            );
+        };
+        anyhow::ensure!(
+            target_project_id == project_id,
+            "NEX_RETRACTION_TARGET_PROJECT_MISMATCH: target application belongs to another project"
+        );
+        anyhow::ensure!(
+            target_kind == "normal",
+            "NEX_RETRACTION_TARGET_INVALID: compensation must target a normal application"
+        );
+        anyhow::ensure!(
+            target_revision_id != revision_id.as_str(),
+            "NEX_RETRACTION_TARGET_INVALID: a revision cannot compensate itself"
+        );
+    }
+    Ok(())
+}
+
+fn load_retraction_metadata(
+    conn: &Connection,
+    proposal_id: &str,
+    revision_id: &str,
+) -> anyhow::Result<(String, Option<String>)> {
+    let envelope_json: String = conn.query_row(
+        "SELECT reconciliation_envelope_json
+           FROM narrative_proposal_revisions
+          WHERE id = ?1 AND proposal_id = ?2",
+        params![revision_id, proposal_id],
+        |row| row.get(0),
+    )?;
+    let envelope: Value = serde_json::from_str(&envelope_json)?;
+    let object = envelope.as_object().ok_or_else(|| {
+        anyhow::anyhow!("NEX_RETRACTION_ENVELOPE_INVALID: envelope is not an object")
+    })?;
+    let change_kind = object
+        .get("changeKind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("NEX_RETRACTION_ENVELOPE_INVALID: changeKind is missing"))?
+        .to_string();
+    let target = object
+        .get("targetProjectionRef")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok((change_kind, target))
+}
+
 fn source_kind_for_read_set(kind: &str) -> anyhow::Result<&'static str> {
     match kind {
         "snapshot-document" => Ok("snapshot-document"),
@@ -564,6 +639,7 @@ pub fn narrative_extraction_apply_commit(
                 &applications,
                 &sealed_plan.operations,
             )?;
+            validate_retraction_targets(conn, &sealed_plan.project_id, &applications)?;
             let current_authority_digest =
                 digest_authority_rows(conn, &sealed_plan.proposal_set_id, &applications)?;
             anyhow::ensure!(
@@ -1111,11 +1187,22 @@ pub fn narrative_extraction_apply_commit(
                     .and_then(Value::as_str)
                     .unwrap_or("event");
                 let application_id = Uuid::new_v4().to_string();
+                let (application_kind, compensates_application_id) =
+                    load_retraction_metadata(conn, &application.proposal_id, &application.revision_id)?;
+                let (application_kind, compensates_application_id) = if application_kind == "retract" {
+                    (
+                        "compensation",
+                        compensates_application_id,
+                    )
+                } else {
+                    ("normal", None)
+                };
                 conn.execute(
                     "INSERT INTO narrative_proposal_applications
                         (id, commit_id, proposal_id, revision_id,
-                         applied_entity_kind, applied_entity_id, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                         applied_entity_kind, applied_entity_id, created_at,
+                         application_kind, compensates_application_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         application_id,
                         commit_id,
@@ -1124,6 +1211,8 @@ pub fn narrative_extraction_apply_commit(
                         entity_kind,
                         entity_id,
                         now,
+                        application_kind,
+                        compensates_application_id,
                     ],
                 )?;
                 let source_basis = load_source_basis_rows(conn, &application.revision_id)?;
@@ -1232,7 +1321,8 @@ pub fn narrative_extraction_apply_commit(
                 || message.contains("NEX_REVISION_ENVELOPE_CHANGED")
                 || message.contains("NEX_REVISION_ENVELOPE_MISSING")
                 || message.contains("NEX_PREPARED_POLICY_CHANGED")
-                || message.contains("NEX_FIELD_AUTHORITY");
+                || message.contains("NEX_FIELD_AUTHORITY")
+                || message.contains("NEX_RETRACTION");
             // Precondition failures must not poison a sealed Prepared Commit —
             // the caller can correct session/version and retry apply.
             let precondition = message.contains("NEX_COMMIT_SESSION_MISMATCH")
