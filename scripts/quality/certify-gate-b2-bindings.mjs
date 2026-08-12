@@ -6,13 +6,13 @@ import { spawn } from "node:child_process";
 import {
   mkdtemp,
   readFile,
+  readdir,
   rm,
   access,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
-import { unzipSync } from "fflate";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
@@ -397,44 +397,89 @@ export function validateFullCiEvidence(raw, candidate, contract) {
   return { ok: true, result: "passed", message: "full-ci evidence accepted" };
 }
 
-async function defaultDownloadArtifactZip({ slug, artifactId, repoRoot }) {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "gate-b2-artifact-"));
-  const zipPath = path.join(tempDir, "artifact.zip");
-  try {
-    await runCommand(
+export function checkoutIdentityArtifactName(runId, runAttempt) {
+  return `checkout-identity-${runId}-${runAttempt}`;
+}
+
+export function buildGhRunDownloadArgs({ runId, slug, artifactName, dir }) {
+  return [
+    "run",
+    "download",
+    String(runId),
+    "--repo",
+    slug,
+    "--name",
+    artifactName,
+    "--dir",
+    dir,
+  ];
+}
+
+export async function listRunArtifacts({
+  slug,
+  runId,
+  repoRoot,
+  runGh = runCommand,
+}) {
+  const artifacts = [];
+  let page = 1;
+  for (;;) {
+    const listJson = await runGh(
       "gh",
       [
         "api",
-        `repos/${slug}/actions/artifacts/${artifactId}/zip`,
-        "--output",
-        zipPath,
+        `repos/${slug}/actions/runs/${runId}/artifacts?per_page=100&page=${page}`,
       ],
       repoRoot,
     );
-    return await readFile(zipPath);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    const batch = JSON.parse(listJson).artifacts ?? [];
+    artifacts.push(...batch);
+    if (batch.length < 100) break;
+    page += 1;
+    if (page > 50) {
+      throw new Error("artifact listing exceeded pagination safety limit");
+    }
   }
+  return artifacts;
+}
+
+async function findCheckoutIdentityJsonFiles(rootDir) {
+  const matches = [];
+  async function walk(current) {
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.isFile() && entry.name === "checkout-identity.json") {
+        matches.push(fullPath);
+      }
+    }
+  }
+  await walk(rootDir);
+  return matches;
 }
 
 /**
  * Download and parse the CI checkout-identity GitHub Actions artifact.
+ * Uses `gh run download` (supported) rather than unsupported `gh api --output`.
  */
 export async function fetchCheckoutIdentityArtifact({
   repoRoot,
   runId,
   runAttempt,
   slug: slugOverride,
-  downloadArtifactZip = defaultDownloadArtifactZip,
+  runGh = runCommand,
+  downloadCheckoutIdentity = null,
 }) {
   const slug = slugOverride ?? (await resolveGithubRepoSlug(repoRoot));
-  const artifactName = `checkout-identity-${runId}-${runAttempt}`;
-  const listJson = await runCommand(
-    "gh",
-    ["api", `repos/${slug}/actions/runs/${runId}/artifacts`],
+  const artifactName = checkoutIdentityArtifactName(runId, runAttempt);
+  const artifacts = await listRunArtifacts({
+    slug,
+    runId,
     repoRoot,
-  );
-  const artifacts = JSON.parse(listJson).artifacts ?? [];
+    runGh,
+  });
   const matching = artifacts.filter((entry) => entry.name === artifactName);
   if (matching.length === 0) {
     throw new Error(`no checkout-identity artifact named ${artifactName}`);
@@ -445,29 +490,57 @@ export async function fetchCheckoutIdentityArtifact({
     );
   }
   const artifact = matching[0];
-  const zipBytes = await downloadArtifactZip({
-    slug,
-    artifactId: artifact.id,
-    repoRoot,
-  });
-  const artifactDigest = `sha256:${createHash("sha256").update(zipBytes).digest("hex")}`;
-  const entries = unzipSync(zipBytes);
-  const jsonPath = Object.keys(entries).find((entryPath) =>
-    entryPath.endsWith("checkout-identity.json"),
-  );
-  if (!jsonPath) {
-    throw new Error("checkout-identity.json not found in artifact zip");
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "gate-b2-artifact-"));
+  try {
+    if (downloadCheckoutIdentity) {
+      await downloadCheckoutIdentity({
+        slug,
+        runId,
+        artifactName,
+        artifactId: artifact.id,
+        dir: tempDir,
+        repoRoot,
+      });
+    } else {
+      const args = buildGhRunDownloadArgs({
+        runId,
+        slug,
+        artifactName,
+        dir: tempDir,
+      });
+      if (args.includes("--output")) {
+        throw new Error("internal error: unsupported gh flag --output");
+      }
+      await runGh("gh", args, repoRoot);
+    }
+
+    const jsonFiles = await findCheckoutIdentityJsonFiles(tempDir);
+    if (jsonFiles.length === 0) {
+      throw new Error("checkout-identity.json not found in downloaded artifact");
+    }
+    if (jsonFiles.length > 1) {
+      throw new Error(
+        `expected exactly one checkout-identity.json, found ${jsonFiles.length}`,
+      );
+    }
+    const jsonBytes = await readFile(jsonFiles[0]);
+    const identity = JSON.parse(jsonBytes.toString("utf8"));
+    if (!identity.commitSha || !identity.treeSha) {
+      throw new Error("checkout-identity.json missing commitSha or treeSha");
+    }
+    const artifactDigest = `sha256:${createHash("sha256")
+      .update(jsonBytes)
+      .digest("hex")}`;
+    return {
+      artifactId: artifact.id,
+      artifactName: artifact.name,
+      artifactDigest,
+      identity,
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
   }
-  const identity = JSON.parse(Buffer.from(entries[jsonPath]).toString("utf8"));
-  if (!identity.commitSha || !identity.treeSha) {
-    throw new Error("checkout-identity.json missing commitSha or treeSha");
-  }
-  return {
-    artifactId: artifact.id,
-    artifactName: artifact.name,
-    artifactDigest,
-    identity,
-  };
 }
 
 async function resolveGithubRepoSlug(repoRoot) {

@@ -11,7 +11,11 @@ import {
   assertDigestsMatchFreeze,
   assertFreezeActive,
   buildDecisionDocument,
+  buildGhRunDownloadArgs,
   buildHeavyCertificationEnv,
+  checkoutIdentityArtifactName,
+  fetchCheckoutIdentityArtifact,
+  listRunArtifacts,
   prepareWorktreeDependencies,
   sanitizeCertificationEnv,
   stripCredentialPlaceholders,
@@ -302,6 +306,167 @@ test("verifyFullCiWithGithub rejects evidence checkout fields that disagree with
   });
   assert.equal(result.ok, false);
   assert.match(result.message, /evidence checkoutCommitSha/);
+});
+
+test("gh run download args use supported flags only and pin run/artifact name", () => {
+  const args = buildGhRunDownloadArgs({
+    runId: "999",
+    slug: "owner/repo",
+    artifactName: checkoutIdentityArtifactName("999", 1),
+    dir: "/tmp/out",
+  });
+  assert.deepEqual(args.slice(0, 3), ["run", "download", "999"]);
+  assert.equal(args.includes("--output"), false);
+  assert.equal(args.includes("api"), false);
+  assert.ok(args.includes("--repo"));
+  assert.ok(args.includes("owner/repo"));
+  assert.ok(args.includes("--name"));
+  assert.ok(args.includes("checkout-identity-999-1"));
+  assert.ok(args.includes("--dir"));
+  assert.ok(args.includes("/tmp/out"));
+});
+
+test("fetchCheckoutIdentityArtifact downloads via gh run download and validates identity", async () => {
+  const calls = [];
+  const identity = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+  };
+  const result = await fetchCheckoutIdentityArtifact({
+    repoRoot,
+    runId: "999",
+    runAttempt: 1,
+    slug: "owner/repo",
+    runGh: async (command, args, _cwd) => {
+      calls.push({ command, args: [...args] });
+      assert.equal(command, "gh");
+      assert.equal(args.includes("--output"), false);
+      if (args[0] === "api" && String(args[1]).includes("/artifacts")) {
+        return JSON.stringify({
+          artifacts: [
+            {
+              id: 42,
+              name: "checkout-identity-999-1",
+            },
+          ],
+        });
+      }
+      if (args[0] === "run" && args[1] === "download") {
+        const dirIndex = args.indexOf("--dir");
+        const dir = args[dirIndex + 1];
+        await writeFile(
+          path.join(dir, "checkout-identity.json"),
+          `${JSON.stringify(identity)}\n`,
+          "utf8",
+        );
+        return "";
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    },
+  });
+  assert.equal(result.artifactId, 42);
+  assert.equal(result.identity.commitSha, candidate.commitSha);
+  assert.equal(result.identity.treeSha, candidate.treeSha);
+  assert.match(result.artifactDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.args[0] === "run" &&
+        entry.args[1] === "download" &&
+        entry.args.includes("checkout-identity-999-1"),
+    ),
+  );
+});
+
+test("fetchCheckoutIdentityArtifact fails on missing, duplicate, or mismatched identity", async () => {
+  await assert.rejects(
+    () =>
+      fetchCheckoutIdentityArtifact({
+        repoRoot,
+        runId: "1",
+        runAttempt: 1,
+        slug: "owner/repo",
+        runGh: async () => JSON.stringify({ artifacts: [] }),
+      }),
+    /no checkout-identity artifact/,
+  );
+
+  await assert.rejects(
+    () =>
+      fetchCheckoutIdentityArtifact({
+        repoRoot,
+        runId: "1",
+        runAttempt: 1,
+        slug: "owner/repo",
+        runGh: async () =>
+          JSON.stringify({
+            artifacts: [
+              { id: 1, name: "checkout-identity-1-1" },
+              { id: 2, name: "checkout-identity-1-1" },
+            ],
+          }),
+      }),
+    /exactly one checkout-identity artifact/,
+  );
+
+  const badTree = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+    fetchRun: async () => githubRunPayload(),
+    fetchCheckoutIdentity: async () =>
+      fetchCheckoutIdentityArtifact({
+        repoRoot,
+        runId: "999",
+        runAttempt: 1,
+        slug: "owner/repo",
+        runGh: async (command, args) => {
+          if (args[0] === "api") {
+            return JSON.stringify({
+              artifacts: [{ id: 7, name: "checkout-identity-999-1" }],
+            });
+          }
+          const dir = args[args.indexOf("--dir") + 1];
+          await writeFile(
+            path.join(dir, "checkout-identity.json"),
+            JSON.stringify({
+              commitSha: candidate.commitSha,
+              treeSha: "c".repeat(40),
+            }),
+            "utf8",
+          );
+          return "";
+        },
+      }),
+    fullCiContract: fullCiContractWithCheckout,
+  });
+  assert.equal(badTree.ok, false);
+  assert.match(badTree.message, /checkout-identity treeSha/);
+});
+
+test("listRunArtifacts paginates with per_page=100", async () => {
+  const pages = [];
+  const artifacts = await listRunArtifacts({
+    slug: "owner/repo",
+    runId: "55",
+    repoRoot,
+    runGh: async (_command, args) => {
+      pages.push(String(args[1]));
+      const page = Number(new URLSearchParams(String(args[1]).split("?")[1]).get("page"));
+      if (page === 1) {
+        return JSON.stringify({
+          artifacts: Array.from({ length: 100 }, (_, index) => ({
+            id: index + 1,
+            name: `artifact-${index + 1}`,
+          })),
+        });
+      }
+      return JSON.stringify({
+        artifacts: [{ id: 101, name: "checkout-identity-55-1" }],
+      });
+    },
+  });
+  assert.equal(artifacts.length, 101);
+  assert.ok(pages[0].includes("per_page=100"));
+  assert.ok(pages[0].includes("page=1"));
+  assert.ok(pages[1].includes("page=2"));
 });
 
 test("journey evidence requires candidate binding and assertions", () => {
