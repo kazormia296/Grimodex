@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractVersion": 8,
   "gateId": "gate-b2",
-  "freezeId": "ca63faa6-53b4-4e22-8f8a-ca94dd8a6b7d",
-  "candidateCommitSha": "8bb729f5b950a1285535d56ba5eb596cef83f35e",
-  "candidateTreeSha": "c9abd181eab26b9b12a95920effd5db3d6b63bbe",
+  "freezeId": "808442f0-bc70-4317-bc33-6c3e82838313",
+  "candidateCommitSha": "9019baa6cba66bcb236e2ac7f4f8d852c2a12f69",
+  "candidateTreeSha": "b0610a9e70108078d1c122e6abdd0cfb3a8fe7d3",
   "attemptAuthority": {
     "provider": "github-actions",
     "configDigest": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4",
@@ -15,10 +15,10 @@
     "runAttempt": null
   },
   "productSchemaVersion": 20,
-  "frozenAt": "2026-08-12T21:13:03.737Z",
+  "frozenAt": "2026-08-12T20:42:43.533Z",
   "candidate": {
-    "commitSha": "8bb729f5b950a1285535d56ba5eb596cef83f35e",
-    "treeSha": "c9abd181eab26b9b12a95920effd5db3d6b63bbe",
+    "commitSha": "9019baa6cba66bcb236e2ac7f4f8d852c2a12f69",
+    "treeSha": "b0610a9e70108078d1c122e6abdd0cfb3a8fe7d3",
     "baseMasterSha": "e0d0b5c16c2dde71f0af81caed59d59900583e5b",
     "schemaVersion": 20,
     "attemptAuthority": {
@@ -40,7 +40,7 @@
     "certifyBootstrapDigest": "sha256:36fc0d3aac0f1c2c635c9588da6baa1567db6a1482ab1612c671a20721b8d602",
     "certifyRunnerDigest": "sha256:6692f96e9c26da99ad558126b778ed4655753ba9fd2d74dbd6e5f9a86db6f716",
     "certifyBindingsDigest": "sha256:b2aa9575f1a468a97190e04ab16434683755a869709e4db98803328cf345c079",
-    "qualityEvaluationRuntimeDigest": "sha256:ed3f422b786e352faf0171427449311702e3b3523599bc7d6283c0f404e12a63",
+    "qualityEvaluationRuntimeDigest": "sha256:fd6bc4b5f7e4e182ceaddbf94f35f59ee16c3bd6fab5c66fd7bf28b3d96a2906",
     "adrValidatorDigest": "sha256:9e1ce0779c349499f9f4b85ff69f8831a815fca70f2db81a633efe73f535da4a",
     "reportSchemaDigest": "sha256:5be4e79548c3a41b540770c2346df504a8d3c733e86a05f15c1642a27864d635",
     "decisionSchemaDigest": "sha256:964268123ae4947fbb191e3c3f5df8f6057ee5554d498e6513a0cb97c8460d5f",
@@ -69,5 +69,8 @@
     "engineeringHarnessChangeRequiresCertificationRerun": true,
     "liveModelQualificationChangeRequiresGateRerun": false,
     "liveProviderModelQualificationRequired": false
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "8bb729f5b950a1285535d56ba5eb596cef83f35e",
+  "supersededAt": "2026-08-12T21:13:03.735Z"
 }
