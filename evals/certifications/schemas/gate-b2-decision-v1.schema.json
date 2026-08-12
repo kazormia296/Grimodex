@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/certifications/schemas/gate-b2-decision-v1.schema.json",
+  "title": "Gate B2 Decision Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateId",
+    "candidateCommitSha",
+    "candidateTreeSha",
+    "baseMasterSha",
+    "verdict",
+    "reasons",
+    "suiteSummaries",
+    "digests",
+    "generatedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "gateId": { "const": "gate-b2" },
+    "candidateCommitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidateTreeSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "baseMasterSha": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "schemaVersionProduct": { "type": "integer", "const": 16 },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "HOLD", "BLOCK", "INCOMPLETE"]
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "suiteSummaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requiredLight", "requiredHeavy", "requiredJourneys"],
+      "properties": {
+        "requiredLight": { "$ref": "#/$defs/counts" },
+        "requiredHeavy": { "$ref": "#/$defs/counts" },
+        "requiredJourneys": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "writerRegistryDigest",
+        "aiPathRegistryDigest",
+        "qualityManifestDigest",
+        "narrativeEvalManifestDigest",
+        "reportDigest"
+      ],
+      "properties": {
+        "writerRegistryDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "aiPathRegistryDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "qualityManifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "narrativeEvalManifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "adrChecklistDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "classificationDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reportDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "heavyAttempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["suiteId", "attempt", "result", "normative"],
+        "properties": {
+          "suiteId": { "type": "string" },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "result": { "type": "string" },
+          "normative": { "type": "boolean" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "generatedAt": { "type": "string" },
+    "notes": { "type": "string" }
+  },
+  "$defs": {
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "blocked", "hold", "notRun"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "integer", "minimum": 0 },
+        "hold": { "type": "integer", "minimum": 0 },
+        "notRun": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

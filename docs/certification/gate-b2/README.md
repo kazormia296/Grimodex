@@ -75,3 +75,19 @@ pnpm certify:gate-b2 -- \
 ## Stack
 
 `#518`（`codex/fix-gate-b2-review`）の後段に certification PR を積む。
+
+## C4 — Candidate freeze and Decision artifact
+
+```bash
+# Working tree が clean なときだけ freeze できる
+pnpm certify:gate-b2:freeze -- --candidate HEAD --write-results
+
+# Freeze 後に Light / Heavy / Journey を同一 tree へ実行し decision を更新
+pnpm certify:gate-b2 -- \
+  --run-light --run-heavy --run-journeys \
+  --candidate <frozen-sha> \
+  --report .artifacts/gate-b2/<frozen-sha>/report.json
+```
+
+Digest と Decision のみを `evals/certifications/results/gate-b2-<sha>.json` に残す。
+生ログ全体はリポジトリへ入れない。
