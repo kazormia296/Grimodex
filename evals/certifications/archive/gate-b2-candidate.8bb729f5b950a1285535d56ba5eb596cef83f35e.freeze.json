@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractVersion": 8,
   "gateId": "gate-b2",
-  "freezeId": "7485c219-9b14-4893-b919-8814e3736e3d",
-  "candidateCommitSha": "813a10e0062841adf9b7dc0b67c2686a8163b497",
-  "candidateTreeSha": "1ff038c96d7ec807031e6e1b6a525943f7556878",
+  "freezeId": "ca63faa6-53b4-4e22-8f8a-ca94dd8a6b7d",
+  "candidateCommitSha": "8bb729f5b950a1285535d56ba5eb596cef83f35e",
+  "candidateTreeSha": "c9abd181eab26b9b12a95920effd5db3d6b63bbe",
   "attemptAuthority": {
     "provider": "github-actions",
     "configDigest": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4",
@@ -15,10 +15,10 @@
     "runAttempt": null
   },
   "productSchemaVersion": 20,
-  "frozenAt": "2026-08-12T21:51:09.337Z",
+  "frozenAt": "2026-08-12T21:13:03.737Z",
   "candidate": {
-    "commitSha": "813a10e0062841adf9b7dc0b67c2686a8163b497",
-    "treeSha": "1ff038c96d7ec807031e6e1b6a525943f7556878",
+    "commitSha": "8bb729f5b950a1285535d56ba5eb596cef83f35e",
+    "treeSha": "c9abd181eab26b9b12a95920effd5db3d6b63bbe",
     "baseMasterSha": "e0d0b5c16c2dde71f0af81caed59d59900583e5b",
     "schemaVersion": 20,
     "attemptAuthority": {
@@ -38,8 +38,8 @@
     "classificationDigest": "sha256:f1a98cf1470eb6cf57e464b49f635f7084f7ab3aa0071deaff3b27a3bbe8dc08",
     "certificationManifestDigest": "sha256:6d9e8942ed91d40dc6f9ed959909e15e62deebe0b70a6cae0089c5c5670dd77b",
     "certifyBootstrapDigest": "sha256:36fc0d3aac0f1c2c635c9588da6baa1567db6a1482ab1612c671a20721b8d602",
-    "certifyRunnerDigest": "sha256:5dd5e5f597b5661444933c0bd2766e95b65271fbc794e0ee491bc95e9ea6d76e",
-    "certifyBindingsDigest": "sha256:7384e5a8ec298f9110918860ead7ba5b07258fe3cc174ede4393ee31a710dd49",
+    "certifyRunnerDigest": "sha256:6692f96e9c26da99ad558126b778ed4655753ba9fd2d74dbd6e5f9a86db6f716",
+    "certifyBindingsDigest": "sha256:b2aa9575f1a468a97190e04ab16434683755a869709e4db98803328cf345c079",
     "qualityEvaluationRuntimeDigest": "sha256:ed3f422b786e352faf0171427449311702e3b3523599bc7d6283c0f404e12a63",
     "adrValidatorDigest": "sha256:9e1ce0779c349499f9f4b85ff69f8831a815fca70f2db81a633efe73f535da4a",
     "reportSchemaDigest": "sha256:5be4e79548c3a41b540770c2346df504a8d3c733e86a05f15c1642a27864d635",
@@ -69,5 +69,8 @@
     "engineeringHarnessChangeRequiresCertificationRerun": true,
     "liveModelQualificationChangeRequiresGateRerun": false,
     "liveProviderModelQualificationRequired": false
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "813a10e0062841adf9b7dc0b67c2686a8163b497",
+  "supersededAt": "2026-08-12T21:51:09.336Z"
 }
