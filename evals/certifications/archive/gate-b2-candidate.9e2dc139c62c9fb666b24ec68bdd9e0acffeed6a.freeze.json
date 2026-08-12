@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "contractVersion": 4,
   "gateId": "gate-b2",
-  "frozenAt": "2026-08-12T06:54:51.632Z",
+  "frozenAt": "2026-08-12T06:40:20.892Z",
   "candidate": {
-    "commitSha": "0fdb566c15400dc905292c54e1ae0048c4bad2a2",
-    "treeSha": "0d7c5ba7499bdbdcd3ecf0c101c46b5ecbcde507",
+    "commitSha": "9e2dc139c62c9fb666b24ec68bdd9e0acffeed6a",
+    "treeSha": "6589f51f1b4db70cf1ca569cfe8b570627e685d4",
     "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
     "schemaVersion": 16,
     "writerRegistryDigest": "sha256:871fd854776e67c86e78d056c06f198166afc263a5d0ae63fb98a22c0071c4b5",
@@ -16,7 +16,7 @@
     "classificationDigest": "sha256:448efce03469ca66c8ee57500298b7cde742871ed5eed1c55d9410ca212f4188",
     "certificationManifestDigest": "sha256:361dec8f29abd059d9c1265ee191f8d088225b988328b872228dfe1d22782830",
     "certifyRunnerDigest": "sha256:f5f529d51225a263040c4d06007d926f1811e4a061e204c3a93e782f7621ec8c",
-    "certifyBindingsDigest": "sha256:9d5541c92441a02435b5e449eea6b9f7b7aa0142851ad699af8505a61e5a7288",
+    "certifyBindingsDigest": "sha256:5c63779fa594127245c11d89cb9738a708759f2325c2f568d9c0fe183325e64e",
     "adrValidatorDigest": "sha256:9e1ce0779c349499f9f4b85ff69f8831a815fca70f2db81a633efe73f535da4a",
     "reportSchemaDigest": "sha256:86f946bd7aed0cfd3efd98ea820b1f59766d4b780a91fe2e745b740e0f68b063",
     "decisionSchemaDigest": "sha256:e9168bfbd12359394aca46e4062b5df729bdeb356f99938e5e9e9ba17fe96d38",
@@ -40,5 +40,8 @@
     ],
     "docsTypoOnlyRerunHeavy": false,
     "evaluationCodeChangeRequiresHeavyRerun": true
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "0fdb566c15400dc905292c54e1ae0048c4bad2a2",
+  "supersededAt": "2026-08-12T06:54:51.632Z"
 }
