@@ -1839,7 +1839,20 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   it("renderer aggregate writes は typed payload を native へ明示写像する", async () => {
     const authorshipReplaceLane = vi.fn().mockResolvedValue(undefined);
     const entityTagsSet = vi.fn().mockResolvedValue(undefined);
-    const codexRenameUndo = vi.fn().mockResolvedValue(undefined);
+    const codexRenameUndoResult = {
+      versions: [
+        {
+          kind: "node-title",
+          refId: "scene-1",
+          detailDefinitionId: null,
+          baseVersion: 0,
+          version: 1,
+        },
+      ],
+    };
+    const codexRenameUndo = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(codexRenameUndoResult));
     const scanStagingProjectCreate = vi.fn().mockResolvedValue(undefined);
     const projectDelete = vi.fn().mockResolvedValue(undefined);
     const treePlanUndo = vi.fn().mockResolvedValue(undefined);
@@ -1963,7 +1976,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     for (const [command, args, method] of calls) {
       await expect(
         dispatchInvoke(command, args, { backend, shell: noShell }),
-      ).resolves.toEqual({ ok: true, value: null });
+      ).resolves.toEqual({
+        ok: true,
+        value: command === "codex_rename_undo" ? codexRenameUndoResult : null,
+      });
       expect(method).toHaveBeenCalledExactlyOnceWith(args.payload);
     }
   });
