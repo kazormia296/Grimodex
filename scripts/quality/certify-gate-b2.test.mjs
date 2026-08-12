@@ -129,6 +129,7 @@ test("package script and report schema exist for certify:gate-b2", async () => {
     ),
   );
   assert.equal(schema.title, "Gate B2 Certification Report");
+  assert.ok(schema.required.includes("contractVersion"));
   assert.equal(schema.properties.contractVersion.const, 5);
   assert.deepEqual(schema.properties.verdict.enum, [
     "PASS",
@@ -748,7 +749,7 @@ test("full-ci evidence rejects bare passed:true and incomplete binding", async (
   }
 });
 
-test("report schema accepts SuiteResult.runId from an executed heavy", async () => {
+test("report schema requires contractVersion 5 and accepts SuiteResult.runId", async () => {
   const { validateJsonAgainstSchema, sha256Text } =
     await import("./certify-gate-b2-bindings.mjs");
   const schema = JSON.parse(
@@ -861,6 +862,22 @@ test("report schema accepts SuiteResult.runId from an executed heavy", async () 
   };
   const validated = validateJsonAgainstSchema(report, schema);
   assert.equal(validated.ok, true, JSON.stringify(validated.errors, null, 2));
+
+  const missingContractVersion = structuredClone(report);
+  delete missingContractVersion.contractVersion;
+  const missingValidation = validateJsonAgainstSchema(
+    missingContractVersion,
+    schema,
+  );
+  assert.equal(missingValidation.ok, false);
+  assert.match(JSON.stringify(missingValidation.errors), /contractVersion/);
+
+  const wrongVersionValidation = validateJsonAgainstSchema(
+    { ...report, contractVersion: 4 },
+    schema,
+  );
+  assert.equal(wrongVersionValidation.ok, false);
+  assert.match(JSON.stringify(wrongVersionValidation.errors), /contractVersion/);
   assert.equal(typeof sha256Text, "function");
 });
 
