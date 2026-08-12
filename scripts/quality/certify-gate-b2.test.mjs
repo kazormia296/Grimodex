@@ -32,6 +32,10 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   assert.equal(raw.decisionPolicy.deferredIsPass, false);
   assert.equal(raw.decisionPolicy.credentialShortageIsPass, false);
   assert.equal(raw.decisionPolicy.retryOverwritePass, false);
+  assert.deepEqual(raw.requiredLight[0], {
+    id: "adr-static-certification",
+    command: ["pnpm", "test:narrative:gate-b2-adr"],
+  });
 
   const requiredHeavy = raw.requiredHeavy.map((entry) => entry.id);
   assert.deepEqual(requiredHeavy, [
@@ -62,7 +66,15 @@ test("package script and report schema exist for certify:gate-b2", async () => {
     packageJson.scripts["certify:gate-b2"],
     "node scripts/quality/certify-gate-b2.mjs",
   );
+  assert.equal(
+    packageJson.scripts["test:narrative:gate-b2-adr"],
+    "node scripts/quality/validate-gate-b2-adr.mjs",
+  );
   assert.match(packageJson.scripts["test:quality"], /certify-gate-b2\.test\.mjs/);
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /validate-gate-b2-adr\.test\.mjs/,
+  );
 
   const schema = JSON.parse(
     await readFile(
@@ -80,6 +92,14 @@ test("package script and report schema exist for certify:gate-b2", async () => {
     "BLOCK",
     "INCOMPLETE",
   ]);
+  assert.equal(
+    schema.properties.candidate.properties.adrChecklistDigest.pattern,
+    "^sha256:[0-9a-f]{64}$",
+  );
+  assert.equal(
+    schema.properties.candidate.properties.classificationDigest.pattern,
+    "^sha256:[0-9a-f]{64}$",
+  );
 });
 
 test("parseCertifyArgs defaults to preflight and rejects unknown flags", () => {
@@ -195,6 +215,8 @@ test("preflight loads manifest digests and writes report without claiming PASS",
     assert.match(report.manifestDigest, /^sha256:[0-9a-f]{64}$/);
     assert.match(report.candidate.writerRegistryDigest, /^sha256:[0-9a-f]{64}$/);
     assert.match(report.candidate.aiPathRegistryDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(report.candidate.adrChecklistDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(report.candidate.classificationDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(report.summary.requiredHeavy.total, 6);
     assert.equal(report.summary.requiredHeavy.notRun, 6);
 

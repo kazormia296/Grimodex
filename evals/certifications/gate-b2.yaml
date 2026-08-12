@@ -15,6 +15,8 @@ candidate:
   aiPathRegistryDigest: null
   qualityManifestDigest: null
   narrativeEvalManifestDigest: null
+  adrChecklistDigest: null
+  classificationDigest: null
 
 inputs:
   writerRegistry: policies/narrative/protected-writers.json
@@ -22,11 +24,14 @@ inputs:
   qualityManifest: evals/quality-manifest.yaml
   narrativeEvalManifest: evals/narrative/manifest.yaml
   adrDecision: docs/adr/004-narrative-reconciliation-boundary.md
-  adrChecklist: docs/adr/004-narrative-reconciliation-boundary-checklist.md
+  adrChecklist: policies/narrative/gate-b2-adr-checklist.json
+  adrChecklistDocument: docs/adr/004-narrative-reconciliation-boundary-checklist.md
   classification: policies/narrative/gate-b2-classification.json
 
 # Light / Heavy / Journey の ID は runner が減らさない。欠落は BLOCK。
 requiredLight:
+  - id: adr-static-certification
+    command: [pnpm, test:narrative:gate-b2-adr]
   - id: narrative-writer-release
     command: [pnpm, test:narrative:release]
   - id: native-writer-ownership
