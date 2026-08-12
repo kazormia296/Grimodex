@@ -5,6 +5,8 @@ import {
   isMaterialSetupSignal,
   meetsNewForeshadowMinimum,
 } from "./foreshadowGates";
+import { evaluateForeshadowInvariant } from "./foreshadowInvariant";
+import { evaluateForeshadowStrategy } from "./foreshadowStrategy";
 
 describe("foreshadowGates", () => {
   it("rejects person recurrence as mere repetition", () => {
@@ -80,6 +82,38 @@ describe("foreshadowGates", () => {
       admit: false,
       reason: "reading-order-setup-before-payoff",
     });
+  });
+
+  it("keeps structural order separate from semantic oddity", () => {
+    const input = {
+      materiality: "major" as const,
+      setupKind: "object-plant" as const,
+      payoffKind: "object-return" as const,
+      isDecorative: true,
+      setupReadingOrder: 1,
+      payoffReadingOrder: 4,
+    };
+    expect(
+      evaluateForeshadowInvariant({
+        setupKind: input.setupKind,
+        payoffKind: input.payoffKind,
+        setupReadingOrder: input.setupReadingOrder,
+        payoffReadingOrder: input.payoffReadingOrder,
+      }),
+    ).toEqual({ kind: "valid" });
+    expect(evaluateForeshadowStrategy(input)).toEqual({
+      kind: "reject",
+      reason: "decorative",
+    });
+  });
+
+  it("rejects setup/payoff from different projects in the invariant layer", () => {
+    expect(
+      evaluateForeshadowInvariant({
+        setupProjectId: "project-a",
+        payoffProjectId: "project-b",
+      }),
+    ).toEqual({ kind: "blocked", reason: "cross-project-setup-payoff" });
   });
 
   it("treats minor atmospheric motif as non-material setup", () => {
