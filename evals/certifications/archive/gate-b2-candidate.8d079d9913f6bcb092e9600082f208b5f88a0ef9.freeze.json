@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractVersion": 6,
   "gateId": "gate-b2",
-  "freezeId": "f5aa3f98-6765-44ff-b5a4-e585a18f92a9",
-  "candidateCommitSha": "7b8e340e841f592824323dc402af72fb21f0bef9",
-  "candidateTreeSha": "abf419e4ad7d6013e14a1da0efa32b002db35b3f",
+  "freezeId": "070d04bb-0d9a-4de2-8ca7-829860b8d477",
+  "candidateCommitSha": "8d079d9913f6bcb092e9600082f208b5f88a0ef9",
+  "candidateTreeSha": "66ebe9d842b73f3a35d8806141af103ffc4d041b",
   "attemptLedgerId": "grimodex-gate-b2-attempt-ledger-v1",
   "attemptLedgerConfigDigest": "sha256:ce082226e3055f8b8eec29ae501a27ef743133f21299a0af2e308bf4c7fdffeb",
   "attemptLedgerDigest": null,
@@ -16,10 +16,10 @@
   "controllerReceiptDigest": null,
   "attemptLedgerAttestation": "fixed-controller-config-v1",
   "productSchemaVersion": 20,
-  "frozenAt": "2026-08-12T14:42:20.773Z",
+  "frozenAt": "2026-08-12T14:40:42.522Z",
   "candidate": {
-    "commitSha": "7b8e340e841f592824323dc402af72fb21f0bef9",
-    "treeSha": "abf419e4ad7d6013e14a1da0efa32b002db35b3f",
+    "commitSha": "8d079d9913f6bcb092e9600082f208b5f88a0ef9",
+    "treeSha": "66ebe9d842b73f3a35d8806141af103ffc4d041b",
     "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
     "schemaVersion": 20,
     "attemptLedgerId": "grimodex-gate-b2-attempt-ledger-v1",
@@ -70,5 +70,8 @@
     ],
     "docsTypoOnlyRerunHeavy": false,
     "evaluationCodeChangeRequiresHeavyRerun": true
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "7b8e340e841f592824323dc402af72fb21f0bef9",
+  "supersededAt": "2026-08-12T14:42:20.772Z"
 }
