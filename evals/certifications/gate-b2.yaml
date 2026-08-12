@@ -35,7 +35,7 @@ candidate:
   webConsentBrowserRunnerDigest: null
   webConsentBrowserConfigDigest: null
   attemptLedgerSourceDigest: null
-  attemptLedgerConfigDigest: sha256:ce082226e3055f8b8eec29ae501a27ef743133f21299a0af2e308bf4c7fdffeb
+  attemptLedgerConfigDigest: sha256:441c5abdf692af6631787a4d4aa31d01f0c0f23a8097df4a6bcdabc36fc8793d
   attemptLedgerId: grimodex-gate-b2-attempt-ledger-v1
   attemptLedgerDigest: null
   attemptLedgerInstanceId: null
@@ -43,6 +43,9 @@ candidate:
   attemptHistoryDigest: null
   attemptLedgerRecordCount: 0
   attemptLedgerMaxSequence: 0
+  controllerPublicKeyId: grimodex-gate-b2-controller-ed25519-v1
+  controllerPublicKeyFingerprint: sha256:13ac3183cc67fd5cbd4435c61572cc55c72e0cad8acc11adb410e846fffc3170
+  controllerSignature: null
   controllerReceiptDigest: null
   attemptLedgerAttestation: fixed-controller-config-v1
 

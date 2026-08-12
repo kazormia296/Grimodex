@@ -29,6 +29,8 @@ import {
   HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
   assertFreezeActive,
+  assertFreezeLedgerBound,
+  assertGateB2LedgerSnapshotMatchesFreeze,
   assertWorkingTreeClean,
   allocateGateB2Attempt,
   bindExecutionRoot,
@@ -263,6 +265,15 @@ export function validateGateB2Manifest(raw) {
       "candidate.attemptLedgerConfigDigest must match the fixed controller configuration",
     );
   }
+  if (
+    raw.candidate?.controllerPublicKeyId !== ledger.controllerPublicKeyId ||
+    raw.candidate?.controllerPublicKeyFingerprint !==
+      ledger.controllerPublicKeyFingerprint
+  ) {
+    errors.push(
+      "candidate controller public key trust anchor must match the fixed controller configuration",
+    );
+  }
   for (const key of [
     "requiredLight",
     "requiredHeavy",
@@ -414,6 +425,24 @@ export function validateGateB2Manifest(raw) {
     }
   }
   return errors;
+}
+
+export function buildGateB2SuiteBuckets(manifest) {
+  const entries = [
+    ...(manifest.requiredLight ?? []).map((entry) => [entry.id, "requiredLight"]),
+    ...(manifest.requiredHeavy ?? []).map((entry) => [entry.id, "requiredHeavy"]),
+    ...(manifest.requiredManualJourneys ?? []).map((entry) => [entry.id, "requiredJourneys"]),
+    ...(manifest.informational ?? []).map((entry) => [entry.id, "informational"]),
+    ...(manifest.releaseAdjacent ?? []).map((entry) => [entry.id, "releaseAdjacent"]),
+  ];
+  const result = Object.create(null);
+  for (const [suiteId, bucket] of entries) {
+    if (result[suiteId] && result[suiteId] !== bucket) {
+      throw new Error(`Gate B2 suite appears in multiple manifest buckets: ${suiteId}`);
+    }
+    result[suiteId] = bucket;
+  }
+  return result;
 }
 
 export function parseQualityHeavyIndex(qualityManifest) {
@@ -630,6 +659,9 @@ async function recordCertificationSuiteAttempt({
       attemptLedgerId: ledger.attemptLedgerId,
       attemptLedgerConfigDigest: ledger.attemptLedgerConfigDigest,
       attemptLedgerInstanceId: ledger.attemptLedgerInstanceId,
+      controllerPublicKeyId: ledger.controllerPublicKeyId,
+      controllerPublicKeyFingerprint: ledger.controllerPublicKeyFingerprint,
+      controllerSignature: ledger.controllerSignature,
       controllerReceiptDigest: ledger.controllerReceiptDigest,
       attemptLedgerAttestation: ledger.attemptLedgerAttestation,
       candidateCommitSha: candidate.commitSha,
@@ -1156,6 +1188,8 @@ async function runLightSuites({
   repoRoot,
   artifactDir,
   ledgerRoot,
+  suiteBuckets,
+  onAllocation = () => {},
 }) {
   if (!args.dryRun && !ledgerRoot) {
     return manifest.requiredLight.map((entry) =>
@@ -1190,8 +1224,11 @@ async function runLightSuites({
             candidateTreeSha: candidate.treeSha,
             contractVersion: GATE_B2_CONTRACT_VERSION,
             suiteId: entry.id,
+            bucket: "requiredLight",
+            suiteBuckets,
           })
         : null;
+    if (allocation) onAllocation(allocation);
     if (entry.kind === "external-evidence" || entry.id === "full-ci") {
       const result = await evaluateFullCiEvidence({
         artifactDir,
@@ -1389,6 +1426,8 @@ async function runHeavySuites({
   certificationRunId,
   artifactDir,
   ledgerRoot,
+  suiteBuckets,
+  onAllocation = () => {},
   env = process.env,
 }) {
   if (!dryRun && !ledgerRoot) {
@@ -1498,7 +1537,10 @@ async function runHeavySuites({
       candidateTreeSha: candidate.treeSha,
       contractVersion: GATE_B2_CONTRACT_VERSION,
       suiteId: entry.id,
+      bucket,
+      suiteBuckets,
     });
+    onAllocation(allocation);
 
     const commandForDigest =
       resolved.kind === "argv"
@@ -1664,6 +1706,11 @@ async function runHeavySuites({
           allocation.ledgerIdentity.attemptLedgerConfigDigest,
         attemptLedgerInstanceId:
           allocation.ledgerIdentity.attemptLedgerInstanceId,
+        controllerPublicKeyId:
+          allocation.ledgerIdentity.controllerPublicKeyId,
+        controllerPublicKeyFingerprint:
+          allocation.ledgerIdentity.controllerPublicKeyFingerprint,
+        controllerSignature: allocation.ledgerIdentity.controllerSignature,
         controllerReceiptDigest: allocation.ledgerIdentity.controllerReceiptDigest,
         attemptLedgerAttestation:
           allocation.ledgerIdentity.attemptLedgerAttestation,
@@ -1721,6 +1768,7 @@ export async function certifyGateB2({
   let executionRoot = repoRoot;
   let cleanup = async () => {};
   let boundVia = "unbound";
+  let freezeLedgerError = null;
 
   try {
     const { raw: manifestProbe } = await loadGateB2Manifest(repoRoot);
@@ -1730,6 +1778,13 @@ export async function certifyGateB2({
         throw new Error(
           `Freeze contractVersion ${freeze.contractVersion} != ${GATE_B2_CONTRACT_VERSION}`,
         );
+      }
+      if (!args.dryRun) {
+        try {
+          assertFreezeLedgerBound(freeze);
+        } catch (error) {
+          freezeLedgerError = error;
+        }
       }
     }
     if (needsExecution) {
@@ -1871,47 +1926,37 @@ export async function certifyGateB2({
       repoRoot,
       configuredRoot: args.attemptLedgerRoot,
     });
-    const suiteBuckets = Object.fromEntries([
-      ...manifest.requiredLight.map((entry) => [entry.id, "requiredLight"]),
-      ...manifest.requiredHeavy.map((entry) => [entry.id, "requiredHeavy"]),
-      ...manifest.requiredManualJourneys.map((entry) => [
-        entry.id,
-        "requiredJourneys",
-      ]),
-      ...manifest.informational.map((entry) => [entry.id, "informational"]),
-      ...manifest.releaseAdjacent.map((entry) => [entry.id, "releaseAdjacent"]),
-    ]);
+    const suiteBuckets = buildGateB2SuiteBuckets(manifest);
+    const allocatedAttempts = [];
+    const onAllocation = (allocation) => allocatedAttempts.push(allocation);
     let attemptLedgerSnapshot = null;
-    let attemptLedgerError = null;
+    let attemptLedgerError = freezeLedgerError;
     if (candidate.frozen && !args.dryRun) {
-      try {
-        attemptLedgerSnapshot = await loadGateB2AttemptLedgerSnapshot({
-          ledgerRoot: configuredAttemptLedgerRoot,
-          candidateCommitSha: candidate.commitSha,
-          candidateTreeSha: candidate.treeSha,
-          contractVersion: GATE_B2_CONTRACT_VERSION,
-          suiteBuckets,
-        });
-        const frozenLedger = freeze?.candidate ?? freeze ?? {};
-        if (
-          frozenLedger.attemptLedgerInstanceId &&
-          frozenLedger.attemptLedgerInstanceId !==
-            attemptLedgerSnapshot.attemptLedgerInstanceId
-        ) {
-          throw new Error(
-            "controller-provisioned Gate B2 ledger instance does not match freeze",
+      if (!attemptLedgerError) {
+        try {
+          attemptLedgerSnapshot = await loadGateB2AttemptLedgerSnapshot({
+            ledgerRoot: configuredAttemptLedgerRoot,
+            candidateCommitSha: candidate.commitSha,
+            candidateTreeSha: candidate.treeSha,
+            contractVersion: GATE_B2_CONTRACT_VERSION,
+            suiteBuckets,
+          });
+          assertGateB2LedgerSnapshotMatchesFreeze(
+            attemptLedgerSnapshot,
+            freeze,
           );
+        } catch (error) {
+          attemptLedgerError = error;
+          attemptLedgerSnapshot = null;
         }
-      } catch (error) {
-        attemptLedgerError = error;
-        attemptLedgerSnapshot = null;
       }
     }
     if (attemptLedgerSnapshot) {
       Object.assign(candidate, attemptLedgerSnapshot);
     }
     const attemptLedgerRoot =
-      attemptLedgerError || (needsExecution && !args.dryRun && !candidate.frozen)
+      attemptLedgerError ||
+      (needsExecution && !args.dryRun && !candidate.frozen)
         ? null
         : configuredAttemptLedgerRoot;
     let attemptHistory = attemptLedgerSnapshot
@@ -1950,6 +1995,8 @@ export async function certifyGateB2({
           repoRoot: executionRoot,
           artifactDir,
           ledgerRoot: attemptLedgerRoot,
+          suiteBuckets,
+          onAllocation,
         })),
       );
     } else {
@@ -1980,6 +2027,8 @@ export async function certifyGateB2({
           certificationRunId,
           artifactDir,
           ledgerRoot: attemptLedgerRoot,
+          suiteBuckets,
+          onAllocation,
           env: certEnv,
         })),
       );
@@ -2018,7 +2067,10 @@ export async function certifyGateB2({
                 candidateTreeSha: candidate.treeSha,
                 contractVersion: GATE_B2_CONTRACT_VERSION,
                 suiteId: entry.id,
+                bucket: "requiredJourneys",
+                suiteBuckets,
               });
+          if (allocation) onAllocation(allocation);
           const result = await runJourneySuite({
             journeyEntry: entry,
             candidate,
@@ -2067,6 +2119,8 @@ export async function certifyGateB2({
           certificationRunId,
           artifactDir,
           ledgerRoot: attemptLedgerRoot,
+          suiteBuckets,
+          onAllocation,
           env: certEnv,
         })),
       );
@@ -2114,6 +2168,8 @@ export async function certifyGateB2({
             certificationRunId,
             artifactDir,
             ledgerRoot: attemptLedgerRoot,
+            suiteBuckets,
+            onAllocation,
             env: certEnv,
           })),
         );
@@ -2157,6 +2213,19 @@ export async function certifyGateB2({
         });
         Object.assign(candidate, finalLedgerSnapshot);
         attemptHistory = finalLedgerSnapshot.history;
+        for (const allocation of allocatedAttempts) {
+          const row = finalLedgerSnapshot.history.find(
+            (entry) =>
+              entry.sequence === allocation.sequence &&
+              entry.attempt === allocation.attempt &&
+              entry.suiteId === allocation.suiteId,
+          );
+          if (!row || row.recordDigest !== allocation.reservationDigest) {
+            blockedReasons.push(
+              `allocated Gate B2 attempt is missing from final controller ledger: ${allocation.attemptDir}`,
+            );
+          }
+        }
       } catch (error) {
         blockedReasons.push(`final attempt ledger snapshot invalid: ${error.message}`);
       }

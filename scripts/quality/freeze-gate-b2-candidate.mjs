@@ -28,6 +28,7 @@ import {
 import {
   collectInputDigests,
   loadGateB2Manifest,
+  buildGateB2SuiteBuckets,
   parseCertifyArgs,
   resolveCandidateIdentity,
 } from "./certify-gate-b2.mjs";
@@ -146,6 +147,7 @@ export async function freezeGateB2Candidate({
       candidateCommitSha: identity.commitSha,
       candidateTreeSha: identity.treeSha,
       contractVersion: GATE_B2_CONTRACT_VERSION,
+      suiteBuckets: buildGateB2SuiteBuckets(manifest),
     });
     attemptLedger = { ...attemptLedger, ...snapshot };
   }
@@ -227,6 +229,11 @@ export async function freezeGateB2Candidate({
     "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
     "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
     "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
+    ...(attemptLedger.attemptLedgerInstanceId
+      ? []
+      : [
+          "Controller ledger is not provisioned; this freeze is preflight-only and must be replaced before normative execution.",
+        ]),
   ];
   const provisionalDecision = {
     schemaVersion: 1,
@@ -237,9 +244,7 @@ export async function freezeGateB2Candidate({
     candidateTreeSha: identity.treeSha,
     baseMasterSha: identity.baseMasterSha,
     ...attemptLedger,
-    attemptLedgerDigest:
-      attemptLedger.attemptLedgerDigest ??
-      attemptLedger.attemptLedgerConfigDigest,
+    attemptLedgerDigest: attemptLedger.attemptLedgerDigest,
     schemaVersionProduct: productSchemaVersion,
     verdict: "INCOMPLETE",
     reasons: provisionalReasons,

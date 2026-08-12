@@ -72,6 +72,10 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
         attemptLedgerRecordCount:
           result.freeze.candidate.attemptLedgerRecordCount,
         attemptLedgerMaxSequence: result.freeze.candidate.attemptLedgerMaxSequence,
+        controllerPublicKeyId: result.freeze.candidate.controllerPublicKeyId,
+        controllerPublicKeyFingerprint:
+          result.freeze.candidate.controllerPublicKeyFingerprint,
+        controllerSignature: result.freeze.candidate.controllerSignature,
         controllerReceiptDigest: result.freeze.candidate.controllerReceiptDigest,
         attemptLedgerAttestation: result.freeze.candidate.attemptLedgerAttestation,
       },

@@ -23,6 +23,7 @@ import {
   canonicalizeGateB2LedgerValue,
   getGateB2AttemptLedgerConfig,
   getGateB2AttemptLedgerIdentity,
+  verifyGateB2AttemptLedgerMetadata,
 } from "./gate-b2-controller-config.mjs";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
@@ -129,16 +130,101 @@ export function assertFreezeActive(freeze) {
       expectedLedger.attemptLedgerConfigDigest ||
     freeze.attemptLedgerAttestation !==
       expectedLedger.attemptLedgerAttestation ||
+    freeze.controllerPublicKeyId !== expectedLedger.controllerPublicKeyId ||
+    freeze.controllerPublicKeyFingerprint !==
+      expectedLedger.controllerPublicKeyFingerprint ||
     identity.attemptLedgerId !== expectedLedger.attemptLedgerId ||
     (identity.attemptLedgerConfigDigest ?? identity.attemptLedgerDigest) !==
       expectedLedger.attemptLedgerConfigDigest ||
     identity.attemptLedgerAttestation !==
-      expectedLedger.attemptLedgerAttestation
+      expectedLedger.attemptLedgerAttestation ||
+    identity.controllerPublicKeyId !== expectedLedger.controllerPublicKeyId ||
+    identity.controllerPublicKeyFingerprint !==
+      expectedLedger.controllerPublicKeyFingerprint
   ) {
     throw new Error(
       "Gate B2 freeze is not bound to the fixed controller attempt ledger; create a new freeze",
     );
   }
+}
+
+const GATE_B2_FREEZE_LEDGER_STATE_FIELDS = [
+  "attemptLedgerDigest",
+  "attemptLedgerInstanceId",
+  "attemptLedgerHeadDigest",
+  "attemptHistoryDigest",
+  "controllerPublicKeyId",
+  "controllerPublicKeyFingerprint",
+  "controllerReceiptDigest",
+  "controllerSignature",
+];
+
+/**
+ * A freeze without a controller-provisioned state is preflight metadata only.
+ * Normative execution must be re-frozen after the fixed ledger is mounted so a
+ * later mount replacement or tail truncation cannot become a new genesis.
+ */
+export function assertFreezeLedgerBound(freeze) {
+  const top = freeze ?? {};
+  const candidate = freeze?.candidate ?? {};
+  const missing = GATE_B2_FREEZE_LEDGER_STATE_FIELDS.filter(
+    (field) =>
+      typeof candidate[field] !== "string" || candidate[field].length === 0,
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `Gate B2 freeze is provisional; re-freeze with a provisioned controller ledger before normative execution (missing ${missing.join(", ")})`,
+    );
+  }
+  for (const field of [
+    ...GATE_B2_FREEZE_LEDGER_STATE_FIELDS,
+    "attemptLedgerId",
+    "attemptLedgerConfigDigest",
+    "controllerPublicKeyId",
+    "controllerPublicKeyFingerprint",
+    "attemptLedgerAttestation",
+  ]) {
+    if (top[field] !== candidate[field]) {
+      throw new Error(`Gate B2 freeze top-level ledger field ${field} disagrees with candidate`);
+    }
+  }
+  if (
+    !Number.isSafeInteger(candidate.attemptLedgerRecordCount) ||
+    candidate.attemptLedgerRecordCount < 0 ||
+    !Number.isSafeInteger(candidate.attemptLedgerMaxSequence) ||
+    candidate.attemptLedgerMaxSequence < 0
+  ) {
+    throw new Error("Gate B2 freeze has invalid controller ledger counters");
+  }
+  return true;
+}
+
+/** Compare the mounted controller snapshot to the immutable pre-run freeze. */
+export function assertGateB2LedgerSnapshotMatchesFreeze(snapshot, freeze) {
+  assertFreezeLedgerBound(freeze);
+  const expected = freeze.candidate;
+  const fields = [
+    ...GATE_B2_FREEZE_LEDGER_STATE_FIELDS,
+    "attemptLedgerId",
+    "attemptLedgerConfigDigest",
+    "controllerPublicKeyId",
+    "controllerPublicKeyFingerprint",
+    "attemptLedgerAttestation",
+    "attemptLedgerRecordCount",
+    "attemptLedgerMaxSequence",
+  ];
+  const errors = fields
+    .filter((field) => snapshot?.[field] !== expected[field])
+    .map(
+      (field) =>
+        `${field}: freeze=${expected[field] ?? "missing"} current=${snapshot?.[field] ?? "missing"}`,
+    );
+  if (errors.length > 0) {
+    throw new Error(
+      `controller-provisioned Gate B2 ledger state does not match freeze; re-freeze before execution: ${errors.join("; ")}`,
+    );
+  }
+  return true;
 }
 
 function runGit(args, cwd) {
@@ -358,22 +444,44 @@ const ATTEMPT_RESULT_VALUES = new Set([
   "deferred",
   "informational",
 ]);
+const ATTEMPT_BUCKET_VALUES = new Set([
+  "requiredLight",
+  "requiredHeavy",
+  "requiredJourneys",
+  "informational",
+  "releaseAdjacent",
+]);
+const GATE_B2_LEDGER_LOCK_NAME = ".gate-b2-global-sequencer.lock";
+const GATE_B2_LEDGER_LOCK_RETRY_MS = 5;
+const GATE_B2_LEDGER_LOCK_ATTEMPTS = 2_000;
 
 function canonicalLedgerDigest(value) {
   return sha256Text(canonicalizeGateB2LedgerValue(value));
 }
 
-function gateB2LedgerGenesisDigest({ configDigest, instanceId, receiptDigest }) {
+function gateB2LedgerGenesisDigest({
+  configDigest,
+  instanceId,
+  receiptDigest,
+  publicKeyId,
+  controllerSignature,
+}) {
   return canonicalLedgerDigest({
     type: "gate-b2-ledger-genesis",
     configDigest,
     instanceId,
     receiptDigest,
+    publicKeyId,
+    controllerSignature,
   });
 }
 
-function attemptRecordDigest(record) {
-  const { recordDigest: _recordDigest, ...recordBody } = record;
+function attemptRecordContentDigest(record) {
+  const {
+    recordDigest: _recordDigest,
+    contentDigest: _contentDigest,
+    ...recordBody
+  } = record;
   return canonicalLedgerDigest({
     previousRecordDigest: record.previousRecordDigest,
     record: recordBody,
@@ -395,6 +503,54 @@ function sortLedgerRecords(left, right) {
     return left.suiteId.localeCompare(right.suiteId);
   }
   return left.attempt - right.attempt;
+}
+
+function buildSuiteBucketIndex(suiteBuckets) {
+  const index = new Map();
+  for (const [suiteId, bucket] of Object.entries(suiteBuckets ?? {})) {
+    if (!ATTEMPT_BUCKET_VALUES.has(bucket)) {
+      throw new Error(`invalid Gate B2 suite bucket for ${suiteId}`);
+    }
+    const segment = safeAttemptPathSegment(suiteId);
+    const existing = index.get(segment);
+    if (existing && (existing.suiteId !== suiteId || existing.bucket !== bucket)) {
+      throw new Error(`ambiguous Gate B2 suite path segment: ${segment}`);
+    }
+    index.set(segment, { suiteId, bucket });
+  }
+  return index;
+}
+
+function requireKnownSuiteBucket({ suiteId, bucket, suiteBuckets }) {
+  if (!ATTEMPT_BUCKET_VALUES.has(bucket)) {
+    throw new Error(`invalid Gate B2 attempt bucket: ${bucket}`);
+  }
+  const index = buildSuiteBucketIndex(suiteBuckets);
+  const expected = index.get(safeAttemptPathSegment(suiteId));
+  if (!expected || expected.suiteId !== suiteId || expected.bucket !== bucket) {
+    throw new Error(`Gate B2 suite is not present in the certification manifest: ${suiteId}`);
+  }
+  return expected;
+}
+
+async function withGateB2LedgerLock(ledgerRoot, callback) {
+  const lockPath = path.join(ledgerRoot, GATE_B2_LEDGER_LOCK_NAME);
+  for (let attempt = 0; attempt < GATE_B2_LEDGER_LOCK_ATTEMPTS; attempt += 1) {
+    try {
+      await mkdir(lockPath);
+      try {
+        return await callback();
+      } finally {
+        await rm(lockPath, { recursive: true, force: false });
+      }
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      await new Promise((resolve) => setTimeout(resolve, GATE_B2_LEDGER_LOCK_RETRY_MS));
+    }
+  }
+  throw new Error(
+    `Gate B2 global ledger sequencer lock is unavailable: ${lockPath}`,
+  );
 }
 
 async function assertRealDirectory(target, label) {
@@ -460,6 +616,7 @@ async function readProvisionedLedgerRoot(ledgerRoot) {
     metadata?.schemaVersion !== GATE_B2_ATTEMPT_LEDGER_SCHEMA_VERSION ||
     metadata?.ledgerId !== config.ledgerId ||
     metadata?.controllerId !== config.controllerId ||
+    metadata?.publicKeyId !== config.controllerPublicKeyId ||
     requiredStrings.some(
       (field) => typeof metadata?.[field] !== "string" || !metadata[field],
     ) ||
@@ -467,20 +624,25 @@ async function readProvisionedLedgerRoot(ledgerRoot) {
   ) {
     throw new Error("Gate B2 attempt ledger metadata does not match controller config");
   }
-  const { controllerReceiptDigest, ...metadataBody } = metadata;
-  if (canonicalLedgerDigest(metadataBody) !== controllerReceiptDigest) {
-    throw new Error("Gate B2 attempt ledger controller receipt digest mismatch");
+  let verifiedMetadata;
+  try {
+    verifiedMetadata = verifyGateB2AttemptLedgerMetadata(metadata);
+  } catch (error) {
+    throw new Error(`invalid Gate B2 controller receipt: ${error.message}`);
   }
   return {
     root,
     metadataPath,
     config,
-    metadata,
+    metadata: verifiedMetadata,
     identity: {
       attemptLedgerId: config.ledgerId,
       attemptLedgerConfigDigest: config.attemptLedgerConfigDigest,
-      attemptLedgerInstanceId: metadata.ledgerInstanceId,
-      controllerReceiptDigest,
+      attemptLedgerInstanceId: verifiedMetadata.ledgerInstanceId,
+      controllerPublicKeyId: verifiedMetadata.publicKeyId,
+      controllerPublicKeyFingerprint: config.controllerPublicKeyFingerprint,
+      controllerSignature: verifiedMetadata.controllerSignature,
+      controllerReceiptDigest: verifiedMetadata.controllerReceiptDigest,
       attemptLedgerAttestation: config.attestation,
     },
   };
@@ -525,9 +687,10 @@ export function gateB2AttemptLedgerKey({
 
 /**
  * Reserve the next append-only attempt directory for one candidate/suite.
- * A non-recursive mkdir makes the reservation unique across processes; a
- * crashed process still consumes its directory and cannot be overwritten by a
- * later retry.
+ * The fixed-root sequencer lock serializes snapshot -> sequence -> reservation
+ * across processes and suites. The reservation digest is the immutable chain
+ * node, so a later record can complete a reservation without changing the
+ * sequence head that another process already linked to.
  */
 export async function allocateGateB2Attempt({
   ledgerRoot,
@@ -535,67 +698,83 @@ export async function allocateGateB2Attempt({
   candidateTreeSha,
   contractVersion = GATE_B2_CONTRACT_VERSION,
   suiteId,
+  bucket,
+  suiteBuckets = {},
 }) {
   const provisioned = await readProvisionedLedgerRoot(ledgerRoot);
-  const suiteSegment = safeAttemptPathSegment(suiteId);
-  const candidateKey = gateB2AttemptLedgerKey({
-    candidateCommitSha,
-    candidateTreeSha,
-    contractVersion,
+  const expectedSuite = requireKnownSuiteBucket({
+    suiteId,
+    bucket,
+    suiteBuckets,
   });
-  const attemptsRoot = path.join(
-    provisioned.root,
-    "candidates",
-    candidateKey,
-    "attempts",
-    suiteSegment,
-  );
-  const existingSnapshot = await loadGateB2AttemptLedgerSnapshot({
-    ledgerRoot: provisioned.root,
-    candidateCommitSha,
-    candidateTreeSha,
-    contractVersion,
-  });
-  await mkdir(attemptsRoot, { recursive: true });
-  for (let attempt = 1; ; attempt += 1) {
-    const attemptDir = path.join(attemptsRoot, `attempt-${attempt}`);
-    try {
-      await mkdir(attemptDir);
-      const sequence = existingSnapshot.attemptLedgerMaxSequence + 1;
-      const reservation = {
-        schemaVersion: 1,
-        contractVersion,
-        ...provisioned.identity,
-        candidateCommitSha,
-        candidateTreeSha,
-        suiteId,
-        attempt,
-        sequence,
-        previousRecordDigest: existingSnapshot.attemptLedgerHeadDigest,
-        reservedAt: new Date().toISOString(),
-      };
-      await writeFile(
-        path.join(attemptDir, "reservation.json"),
-        `${JSON.stringify(
-          { ...reservation, reservationDigest: reservationDigest(reservation) },
-          null,
-          2,
-        )}\n`,
-        { encoding: "utf8", flag: "wx" },
-      );
-      return {
-        attempt,
-        attemptDir,
-        sequence,
-        previousRecordDigest: existingSnapshot.attemptLedgerHeadDigest,
-        ledgerSnapshot: existingSnapshot,
-        ledgerIdentity: provisioned.identity,
-      };
-    } catch (error) {
-      if (error?.code === "EEXIST") continue;
-      throw error;
+  return withGateB2LedgerLock(provisioned.root, async () => {
+    const lockedProvisioned = await readProvisionedLedgerRoot(provisioned.root);
+    const suiteSegment = safeAttemptPathSegment(expectedSuite.suiteId);
+    const candidateKey = gateB2AttemptLedgerKey({
+      candidateCommitSha,
+      candidateTreeSha,
+      contractVersion,
+    });
+    const attemptsRoot = path.join(
+      lockedProvisioned.root,
+      "candidates",
+      candidateKey,
+      "attempts",
+      suiteSegment,
+    );
+    const existingSnapshot = await loadGateB2AttemptLedgerSnapshotInternal({
+      ledgerRoot: lockedProvisioned.root,
+      candidateCommitSha,
+      candidateTreeSha,
+      contractVersion,
+      suiteBuckets,
+    });
+    await mkdir(attemptsRoot, { recursive: true });
+    for (let attempt = 1; ; attempt += 1) {
+      const attemptDir = path.join(attemptsRoot, `attempt-${attempt}`);
+      try {
+        await mkdir(attemptDir);
+        const sequence = existingSnapshot.attemptLedgerMaxSequence + 1;
+        const reservation = {
+          schemaVersion: 1,
+          contractVersion,
+          ...lockedProvisioned.identity,
+          candidateCommitSha,
+          candidateTreeSha,
+          suiteId: expectedSuite.suiteId,
+          bucket: expectedSuite.bucket,
+          attempt,
+          sequence,
+          previousRecordDigest: existingSnapshot.attemptLedgerHeadDigest,
+          reservedAt: new Date().toISOString(),
+        };
+        const reservationNodeDigest = reservationDigest(reservation);
+        await writeFile(
+          path.join(attemptDir, "reservation.json"),
+          `${JSON.stringify(
+            { ...reservation, reservationDigest: reservationNodeDigest },
+            null,
+            2,
+          )}\n`,
+          { encoding: "utf8", flag: "wx" },
+        );
+        return {
+          attempt,
+          suiteId: expectedSuite.suiteId,
+          bucket: expectedSuite.bucket,
+          attemptDir,
+          sequence,
+          previousRecordDigest: existingSnapshot.attemptLedgerHeadDigest,
+          reservationDigest: reservationNodeDigest,
+          ledgerSnapshot: existingSnapshot,
+          ledgerIdentity: lockedProvisioned.identity,
+        };
+      } catch (error) {
+        if (error?.code === "EEXIST") continue;
+        throw error;
+      }
     }
-  }
+  });
 }
 
 async function loadGateB2AttemptLedgerSnapshotInternal({
@@ -607,10 +786,13 @@ async function loadGateB2AttemptLedgerSnapshotInternal({
 }) {
   const provisioned = await readProvisionedLedgerRoot(ledgerRoot);
   const ledger = provisioned.identity;
+  const suiteIndex = buildSuiteBucketIndex(suiteBuckets);
   const genesisDigest = gateB2LedgerGenesisDigest({
     configDigest: ledger.attemptLedgerConfigDigest,
     instanceId: ledger.attemptLedgerInstanceId,
     receiptDigest: ledger.controllerReceiptDigest,
+    publicKeyId: ledger.controllerPublicKeyId,
+    controllerSignature: ledger.controllerSignature,
   });
   const candidateKey = gateB2AttemptLedgerKey({
     candidateCommitSha,
@@ -638,6 +820,8 @@ async function loadGateB2AttemptLedgerSnapshotInternal({
           configDigest: ledger.attemptLedgerConfigDigest,
           instanceId: ledger.attemptLedgerInstanceId,
           controllerReceiptDigest: ledger.controllerReceiptDigest,
+          publicKeyId: ledger.controllerPublicKeyId,
+          controllerSignature: ledger.controllerSignature,
           headDigest: genesisDigest,
           historyDigest: canonicalLedgerDigest([]),
           recordCount: 0,
@@ -653,7 +837,15 @@ async function loadGateB2AttemptLedgerSnapshotInternal({
     if (suiteEntry.isSymbolicLink()) {
       throw new Error(`invalid Gate B2 attempt ledger symlink: ${suiteEntry.name}`);
     }
-    if (!suiteEntry.isDirectory()) continue;
+    if (!suiteEntry.isDirectory()) {
+      throw new Error(`invalid Gate B2 attempt ledger entry: ${suiteEntry.name}`);
+    }
+    const expectedSuite = suiteIndex.get(suiteEntry.name);
+    if (!expectedSuite) {
+      throw new Error(
+        `Gate B2 attempt ledger suite is not present in the certification manifest: ${suiteEntry.name}`,
+      );
+    }
     const suiteDir = path.join(attemptsRoot, suiteEntry.name);
     const attemptEntries = await readdir(suiteDir, { withFileTypes: true });
     for (const attemptEntry of attemptEntries) {
@@ -679,12 +871,17 @@ async function loadGateB2AttemptLedgerSnapshotInternal({
           ledger.attemptLedgerConfigDigest ||
         reservation.attemptLedgerInstanceId !==
           ledger.attemptLedgerInstanceId ||
+        reservation.controllerPublicKeyId !== ledger.controllerPublicKeyId ||
+        reservation.controllerPublicKeyFingerprint !==
+          ledger.controllerPublicKeyFingerprint ||
+        reservation.controllerSignature !== ledger.controllerSignature ||
         reservation.controllerReceiptDigest !== ledger.controllerReceiptDigest ||
         reservation.attemptLedgerAttestation !== ledger.attemptLedgerAttestation ||
         reservation.candidateCommitSha !== candidateCommitSha ||
         reservation.candidateTreeSha !== candidateTreeSha ||
         reservation.contractVersion !== contractVersion ||
-        safeAttemptPathSegment(reservation.suiteId) !== suiteEntry.name ||
+        reservation.suiteId !== expectedSuite.suiteId ||
+        reservation.bucket !== expectedSuite.bucket ||
         reservation.attempt !== attempt ||
         !Number.isInteger(reservation.sequence) ||
         reservation.sequence < 1 ||
@@ -704,8 +901,8 @@ async function loadGateB2AttemptLedgerSnapshotInternal({
             ...ledger,
             candidateCommitSha,
             candidateTreeSha,
-            suiteId: suiteEntry.name,
-            bucket: suiteBuckets[suiteEntry.name] ?? "requiredHeavy",
+            suiteId: expectedSuite.suiteId,
+            bucket: expectedSuite.bucket,
             attempt,
             sequence: reservation.sequence,
             previousRecordDigest: reservation.previousRecordDigest,
@@ -724,16 +921,21 @@ async function loadGateB2AttemptLedgerSnapshotInternal({
         record.attemptLedgerId !== ledger.attemptLedgerId ||
         record.attemptLedgerConfigDigest !== ledger.attemptLedgerConfigDigest ||
         record.attemptLedgerInstanceId !== ledger.attemptLedgerInstanceId ||
+        record.controllerPublicKeyId !== ledger.controllerPublicKeyId ||
+        record.controllerPublicKeyFingerprint !==
+          ledger.controllerPublicKeyFingerprint ||
+        record.controllerSignature !== ledger.controllerSignature ||
         record.controllerReceiptDigest !== ledger.controllerReceiptDigest ||
         record.attemptLedgerAttestation !== ledger.attemptLedgerAttestation ||
-        safeAttemptPathSegment(record.suiteId) !== suiteEntry.name ||
+        record.suiteId !== expectedSuite.suiteId ||
+        record.bucket !== expectedSuite.bucket ||
         !Number.isInteger(record.attempt) ||
         record.attempt !== attempt ||
         record.sequence !== reservation.sequence ||
         record.previousRecordDigest !== reservation.previousRecordDigest ||
         !ATTEMPT_RESULT_VALUES.has(record.result) ||
-        record.recordDigest !== attemptRecordDigest(record) ||
-        record.recordDigest === reservation.reservationDigest
+        record.recordDigest !== reservation.reservationDigest ||
+        record.contentDigest !== attemptRecordContentDigest(record)
       ) {
         throw new Error(`invalid Gate B2 attempt record: ${recordPath}`);
       }
@@ -774,6 +976,8 @@ async function loadGateB2AttemptLedgerSnapshotInternal({
     configDigest: ledger.attemptLedgerConfigDigest,
     instanceId: ledger.attemptLedgerInstanceId,
     controllerReceiptDigest: ledger.controllerReceiptDigest,
+    publicKeyId: ledger.controllerPublicKeyId,
+    controllerSignature: ledger.controllerSignature,
     headDigest: previousDigest,
     historyDigest,
     recordCount: chain.length,
@@ -812,19 +1016,29 @@ export async function writeGateB2AttemptRecord({ attemptDir, record }) {
     throw new Error(`Gate B2 attempt reservation missing: ${reservationPath}`);
   }
   if (
+    record.suiteId !== reservation.suiteId ||
+    record.bucket !== reservation.bucket ||
     record.attempt !== reservation.attempt ||
     record.sequence !== reservation.sequence ||
     record.previousRecordDigest !== reservation.previousRecordDigest
   ) {
     throw new Error("Gate B2 attempt record does not match its reservation");
   }
+  if (
+    record.recordDigest &&
+    record.recordDigest !== reservation.reservationDigest
+  ) {
+    throw new Error("Gate B2 attempt record chain digest mismatch");
+  }
+  const contentDigest = attemptRecordContentDigest(record);
+  if (record.contentDigest && record.contentDigest !== contentDigest) {
+    throw new Error("Gate B2 attempt record content digest mismatch");
+  }
   const enriched = {
     ...record,
-    recordDigest: attemptRecordDigest(record),
+    recordDigest: reservation.reservationDigest,
+    contentDigest,
   };
-  if (record.recordDigest && record.recordDigest !== enriched.recordDigest) {
-    throw new Error("Gate B2 attempt record digest mismatch");
-  }
   const recordPath = path.join(attemptDir, "attempt.json");
   await writeFile(recordPath, `${JSON.stringify(enriched, null, 2)}\n`, {
     encoding: "utf8",
@@ -912,8 +1126,7 @@ export function buildHeavyCertificationEnv({
     GATE_B2_ATTEMPT_LEDGER_ID: ledger.attemptLedgerId,
     GATE_B2_ATTEMPT_LEDGER_CONFIG_DIGEST:
       ledger.attemptLedgerConfigDigest,
-    GATE_B2_ATTEMPT_LEDGER_DIGEST:
-      ledger.attemptLedgerDigest ?? ledger.attemptLedgerConfigDigest,
+    GATE_B2_ATTEMPT_LEDGER_DIGEST: ledger.attemptLedgerDigest ?? "",
     GATE_B2_ATTEMPT_LEDGER_INSTANCE_ID: ledger.attemptLedgerInstanceId ?? "",
     GATE_B2_ATTEMPT_LEDGER_HEAD_DIGEST: ledger.attemptLedgerHeadDigest ?? "",
     GATE_B2_ATTEMPT_HISTORY_DIGEST: ledger.attemptHistoryDigest ?? "",
@@ -966,8 +1179,7 @@ export function buildJourneyCertificationEnv({
     GATE_B2_ATTEMPT_LEDGER_ID: ledger.attemptLedgerId,
     GATE_B2_ATTEMPT_LEDGER_CONFIG_DIGEST:
       ledger.attemptLedgerConfigDigest,
-    GATE_B2_ATTEMPT_LEDGER_DIGEST:
-      ledger.attemptLedgerDigest ?? ledger.attemptLedgerConfigDigest,
+    GATE_B2_ATTEMPT_LEDGER_DIGEST: ledger.attemptLedgerDigest ?? "",
     GATE_B2_ATTEMPT_LEDGER_INSTANCE_ID: ledger.attemptLedgerInstanceId ?? "",
     GATE_B2_ATTEMPT_LEDGER_HEAD_DIGEST: ledger.attemptLedgerHeadDigest ?? "",
     GATE_B2_ATTEMPT_HISTORY_DIGEST: ledger.attemptHistoryDigest ?? "",
@@ -1682,7 +1894,7 @@ export function buildDecisionDocument({
       candidate.attemptLedgerConfigDigest ??
       fixedLedger.attemptLedgerConfigDigest,
     attemptLedgerDigest:
-      candidate.attemptLedgerDigest ?? fixedLedger.attemptLedgerConfigDigest,
+      candidate.attemptLedgerDigest ?? fixedLedger.attemptLedgerDigest,
     attemptLedgerInstanceId:
       candidate.attemptLedgerInstanceId ?? fixedLedger.attemptLedgerInstanceId,
     attemptLedgerHeadDigest:
@@ -1693,6 +1905,13 @@ export function buildDecisionDocument({
       candidate.attemptLedgerRecordCount ?? fixedLedger.attemptLedgerRecordCount,
     attemptLedgerMaxSequence:
       candidate.attemptLedgerMaxSequence ?? fixedLedger.attemptLedgerMaxSequence,
+    controllerPublicKeyId:
+      candidate.controllerPublicKeyId ?? fixedLedger.controllerPublicKeyId,
+    controllerPublicKeyFingerprint:
+      candidate.controllerPublicKeyFingerprint ??
+      fixedLedger.controllerPublicKeyFingerprint,
+    controllerSignature:
+      candidate.controllerSignature ?? fixedLedger.controllerSignature,
     controllerReceiptDigest:
       candidate.controllerReceiptDigest ?? fixedLedger.controllerReceiptDigest,
     attemptLedgerAttestation:

@@ -20,6 +20,9 @@
     "attemptHistoryDigest",
     "attemptLedgerRecordCount",
     "attemptLedgerMaxSequence",
+    "controllerPublicKeyId",
+    "controllerPublicKeyFingerprint",
+    "controllerSignature",
     "controllerReceiptDigest",
     "attemptLedgerAttestation",
     "verdict",
@@ -52,7 +55,7 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "attemptLedgerDigest": {
-      "type": "string",
+      "type": ["string", "null"],
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "attemptLedgerInstanceId": {
@@ -74,6 +77,18 @@
     "attemptLedgerMaxSequence": {
       "type": "integer",
       "minimum": 0
+    },
+    "controllerPublicKeyId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "controllerPublicKeyFingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "controllerSignature": {
+      "type": ["string", "null"],
+      "minLength": 1
     },
     "controllerReceiptDigest": {
       "type": ["string", "null"],
