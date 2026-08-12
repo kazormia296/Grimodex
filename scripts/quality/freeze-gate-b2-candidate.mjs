@@ -229,7 +229,12 @@ export async function freezeGateB2Candidate({
       requiredJourneys: emptySuiteCounts(requiredJourneyCount),
     },
     digests: {
-      ...digests,
+      writerRegistryDigest: digests.writerRegistryDigest,
+      aiPathRegistryDigest: digests.aiPathRegistryDigest,
+      qualityManifestDigest: digests.qualityManifestDigest,
+      narrativeEvalManifestDigest: digests.narrativeEvalManifestDigest,
+      adrChecklistDigest: digests.adrChecklistDigest ?? null,
+      classificationDigest: digests.classificationDigest ?? null,
       reportDigest: null,
     },
     heavyAttempts: [],
