@@ -73,6 +73,10 @@ test("dedicated workflow takes candidate and successful Full CI run IDs", async 
   assert.match(workflowText, /--run-light/);
   assert.match(workflowText, /--run-heavy/);
   assert.match(workflowText, /--run-journeys/);
+  const checkout = workflow.jobs.certify.steps.find((step) =>
+    String(step.uses ?? "").startsWith("actions/checkout@"),
+  );
+  assert.equal(checkout?.with?.ref, "${{ inputs.candidate_sha }}");
   assert.match(workflowText, /credential-free Gate B2 engineering suites/);
   assert.doesNotMatch(workflowText, /\$\{\{\s*secrets\./);
   assert.doesNotMatch(workflowText, /OPENROUTER_API_KEY/);
