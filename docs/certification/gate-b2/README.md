@@ -128,6 +128,11 @@ Formal required Light／Heavy／Journey entry に `requiresEnv` を追加する�
 `decisionPolicy.credentialShortageIsPass` は `false` のままであり、資格情報不足を
 skipやPASSへ読み替えたのではなく、外部モデルsuiteを必須契約から分離した。
 
+Full CIでfailed-only rerunを使った場合、GitHubは成功済みjobを新しいrun attemptへ
+持ち越す一方、そのjobが生成したcheckout identity artifactは生成元attempt名のまま保持する。
+Gateは現在のFull CI attempt以下で最新のidentity artifactを選び、Candidate commit/treeと
+artifact digestを再検証する。未来attempt、期限切れ、同一attemptの重複artifactは受理しない。
+
 ## Verdict
 
 | Verdict      | 意味                                                                              |

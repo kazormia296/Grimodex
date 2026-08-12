@@ -20,6 +20,7 @@ import {
   listRunArtifacts,
   prepareWorktreeDependencies,
   sanitizeCertificationEnv,
+  selectCheckoutIdentityArtifact,
   stripCredentialPlaceholders,
   validateChronicleProductionReport,
   validateFullCiEvidence,
@@ -96,6 +97,7 @@ function checkoutIdentity(overrides = {}) {
   return {
     artifactId: 12345,
     artifactName: "checkout-identity-88-1",
+    artifactRunAttempt: 1,
     artifactDigest: `sha256:${"e".repeat(64)}`,
     identity: {
       commitSha: candidate.commitSha,
@@ -299,8 +301,65 @@ test("Full CI checkout artifact remains candidate-bound", async () => {
   });
   assert.equal(verified.ok, true, verified.message);
   assert.equal(verified.checkoutArtifactId, 12345);
+  assert.equal(verified.checkoutArtifactRunAttempt, 1);
   assert.equal(verified.checkoutCommitSha, candidate.commitSha);
   assert.equal(verified.checkoutTreeSha, candidate.treeSha);
+});
+
+test("checkout identity selection follows failed-only rerun semantics", () => {
+  const artifacts = [
+    { id: 1, name: "checkout-identity-88-1" },
+    { id: 2, name: "checkout-identity-88-2" },
+    { id: 3, name: "checkout-identity-88-3" },
+    { id: 4, name: "checkout-identity-99-2" },
+  ];
+
+  const exact = selectCheckoutIdentityArtifact({
+    artifacts,
+    runId: "88",
+    runAttempt: 2,
+  });
+  assert.equal(exact.artifact.id, 2);
+  assert.equal(exact.artifactRunAttempt, 2);
+
+  const carriedForward = selectCheckoutIdentityArtifact({
+    artifacts: artifacts.filter((artifact) => artifact.id !== 2),
+    runId: "88",
+    runAttempt: 2,
+  });
+  assert.equal(carriedForward.artifact.id, 1);
+  assert.equal(carriedForward.artifactRunAttempt, 1);
+
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [{ id: 3, name: "checkout-identity-88-3" }],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /at or before attempt 2/i,
+  );
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [
+          { id: 1, name: "checkout-identity-88-1" },
+          { id: 2, name: "checkout-identity-88-1" },
+        ],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /exactly one.*attempt 1/i,
+  );
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [{ id: 1, name: "checkout-identity-88-1", expired: true }],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /unexpired/i,
+  );
 });
 
 test("checkout artifact download is exact and paginated", async () => {
@@ -318,7 +377,7 @@ test("checkout artifact download is exact and paginated", async () => {
   const downloaded = await fetchCheckoutIdentityArtifact({
     repoRoot,
     runId: "88",
-    runAttempt: 1,
+    runAttempt: 2,
     slug: "owner/repo",
     runGh: async (_command, ghArgs) => {
       calls.push([...ghArgs]);
@@ -340,6 +399,7 @@ test("checkout artifact download is exact and paginated", async () => {
     },
   });
   assert.equal(downloaded.artifactId, 42);
+  assert.equal(downloaded.artifactRunAttempt, 1);
   assert.match(downloaded.artifactDigest, /^sha256:[0-9a-f]{64}$/);
   assert.ok(calls.some((call) => call[0] === "run"));
 

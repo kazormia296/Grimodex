@@ -693,6 +693,9 @@ async function evaluateFullCiEvidence({
   if (validation.checkoutArtifactId != null) {
     message = `${message}; checkout artifact id=${validation.checkoutArtifactId}`;
   }
+  if (validation.checkoutArtifactRunAttempt != null) {
+    message = `${message}; checkout artifact source attempt=${validation.checkoutArtifactRunAttempt}`;
+  }
   if (validation.checkoutCommitSha) {
     message = `${message}; checkout commit=${validation.checkoutCommitSha}`;
   }

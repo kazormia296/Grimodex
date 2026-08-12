@@ -579,6 +579,52 @@ export function checkoutIdentityArtifactName(runId, runAttempt) {
   return `checkout-identity-${runId}-${runAttempt}`;
 }
 
+export function selectCheckoutIdentityArtifact({
+  artifacts,
+  runId,
+  runAttempt,
+}) {
+  const currentAttempt = Number(runAttempt);
+  if (!Number.isSafeInteger(currentAttempt) || currentAttempt < 1) {
+    throw new Error(`invalid checkout-identity run attempt ${runAttempt}`);
+  }
+
+  const prefix = `checkout-identity-${runId}-`;
+  const eligible = artifacts.flatMap((artifact) => {
+    const name = String(artifact?.name ?? "");
+    if (!name.startsWith(prefix) || artifact?.expired === true) return [];
+    const suffix = name.slice(prefix.length);
+    if (!/^[1-9][0-9]*$/.test(suffix)) return [];
+    const artifactRunAttempt = Number(suffix);
+    if (
+      !Number.isSafeInteger(artifactRunAttempt) ||
+      artifactRunAttempt > currentAttempt
+    ) {
+      return [];
+    }
+    return [{ artifact, artifactRunAttempt }];
+  });
+
+  if (eligible.length === 0) {
+    throw new Error(
+      `no unexpired checkout-identity artifact for run ${runId} at or before attempt ${currentAttempt}`,
+    );
+  }
+
+  const latestAttempt = Math.max(
+    ...eligible.map((entry) => entry.artifactRunAttempt),
+  );
+  const latest = eligible.filter(
+    (entry) => entry.artifactRunAttempt === latestAttempt,
+  );
+  if (latest.length !== 1) {
+    throw new Error(
+      `expected exactly one checkout-identity artifact for run ${runId} attempt ${latestAttempt}, found ${latest.length}`,
+    );
+  }
+  return latest[0];
+}
+
 export function buildGhRunDownloadArgs({ runId, slug, artifactName, dir }) {
   return [
     "run",
@@ -651,23 +697,19 @@ export async function fetchCheckoutIdentityArtifact({
   downloadCheckoutIdentity = null,
 }) {
   const slug = slugOverride ?? (await resolveGithubRepoSlug(repoRoot));
-  const artifactName = checkoutIdentityArtifactName(runId, runAttempt);
   const artifacts = await listRunArtifacts({
     slug,
     runId,
     repoRoot,
     runGh,
   });
-  const matching = artifacts.filter((entry) => entry.name === artifactName);
-  if (matching.length === 0) {
-    throw new Error(`no checkout-identity artifact named ${artifactName}`);
-  }
-  if (matching.length > 1) {
-    throw new Error(
-      `expected exactly one checkout-identity artifact named ${artifactName}, found ${matching.length}`,
-    );
-  }
-  const artifact = matching[0];
+  const selected = selectCheckoutIdentityArtifact({
+    artifacts,
+    runId,
+    runAttempt,
+  });
+  const { artifact, artifactRunAttempt } = selected;
+  const artifactName = artifact.name;
 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "gate-b2-artifact-"));
   try {
@@ -715,6 +757,7 @@ export async function fetchCheckoutIdentityArtifact({
     return {
       artifactId: artifact.id,
       artifactName: artifact.name,
+      artifactRunAttempt,
       artifactDigest,
       identity,
     };
@@ -923,6 +966,7 @@ export async function verifyFullCiWithGithub(
         result: "passed",
         message: "full-ci github evidence verified",
         checkoutArtifactId: checkout.artifactId,
+        checkoutArtifactRunAttempt: checkout.artifactRunAttempt,
         checkoutArtifactDigest: checkout.artifactDigest,
         checkoutCommitSha: artifactCommit,
         checkoutTreeSha: artifactTree,
