@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractVersion": 8,
   "gateId": "gate-b2",
-  "freezeId": "5062b80e-2804-41ac-8603-ee8681e3239b",
-  "candidateCommitSha": "bf3f7cf63137078ef2339bf1336a2a06b9912251",
-  "candidateTreeSha": "30a4ffc5feb912f4a1b3960f71fa0f4dd7117f6b",
+  "freezeId": "f272d8d9-bf07-4f4e-ab4c-771a5512dfe0",
+  "candidateCommitSha": "e0d1aa337850fd8387d35dd3042e523823d7eb47",
+  "candidateTreeSha": "392f0186d538dbc8226ba15d862cbb6dd855ff7e",
   "attemptAuthority": {
     "provider": "github-actions",
     "configDigest": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4",
@@ -15,10 +15,10 @@
     "runAttempt": null
   },
   "productSchemaVersion": 20,
-  "frozenAt": "2026-08-12T19:33:59.064Z",
+  "frozenAt": "2026-08-12T19:26:26.340Z",
   "candidate": {
-    "commitSha": "bf3f7cf63137078ef2339bf1336a2a06b9912251",
-    "treeSha": "30a4ffc5feb912f4a1b3960f71fa0f4dd7117f6b",
+    "commitSha": "e0d1aa337850fd8387d35dd3042e523823d7eb47",
+    "treeSha": "392f0186d538dbc8226ba15d862cbb6dd855ff7e",
     "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
     "schemaVersion": 20,
     "attemptAuthority": {
@@ -50,7 +50,7 @@
     "webConsentBrowserRunnerDigest": "sha256:5b80938d7c88bada059ad07f602d2508f9f5774ae2f0ebdae3b4035c0aabe565",
     "webConsentBrowserConfigDigest": "sha256:ef5d137a4085ba12d97671a51e28ad791ec3b12dc53fbc81d3ecd9b40cccd764",
     "attemptAuthoritySourceDigest": "sha256:98a41ad9351a0bcdd165b9f3f55a806fdf23185c0b61c6bddbe82ad2a2292ed8",
-    "attemptWorkflowDigest": "sha256:4c9f3c460053a9403696309fa88798cee32a2b28cb8e5957ed9532ce67fa34f8",
+    "attemptWorkflowDigest": "sha256:8aa89198ad1e0e0330f33a2ae41c6f05586f756dc58506fd5547912d82d064ab",
     "fullCiEvidenceWriterDigest": "sha256:5394beb9a67670cc8c6e78bf5bd999680539816c28d9f092bb213daac88e5bc4"
   },
   "freezeRules": {
@@ -69,5 +69,8 @@
     "engineeringHarnessChangeRequiresCertificationRerun": true,
     "liveModelQualificationChangeRequiresGateRerun": false,
     "liveProviderModelQualificationRequired": false
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "bf3f7cf63137078ef2339bf1336a2a06b9912251",
+  "supersededAt": "2026-08-12T19:33:59.063Z"
 }
