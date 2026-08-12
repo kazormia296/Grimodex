@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "contractVersion": 3,
+  "contractVersion": 2,
   "gateId": "gate-b2",
-  "frozenAt": "2026-08-12T06:18:07.441Z",
+  "frozenAt": "2026-08-12T05:50:04.601Z",
   "candidate": {
-    "commitSha": "ebcd2afe87caefd8d94aace9ebaa105d991a43f1",
-    "treeSha": "59d0cec34a5eba995d75439c765e0fc32532f510",
+    "commitSha": "61894f630752f09a11fb2e6b153417b932dfb101",
+    "treeSha": "dc1213404dea5cdf6270f1eb2c7ef89db65a7739",
     "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
     "schemaVersion": 16,
     "writerRegistryDigest": "sha256:871fd854776e67c86e78d056c06f198166afc263a5d0ae63fb98a22c0071c4b5",
@@ -14,11 +14,11 @@
     "narrativeEvalManifestDigest": "sha256:ffb66b17712dddf947b716ddfa8af7177d461feb4835068f005b4e3629bfefec",
     "adrChecklistDigest": "sha256:bfa099c3db346408b057b62fa1faa8440e6a7ee23f50a62b11ac378af2828740",
     "classificationDigest": "sha256:448efce03469ca66c8ee57500298b7cde742871ed5eed1c55d9410ca212f4188",
-    "certificationManifestDigest": "sha256:692bafb9e0e1973a76c8e0838ebb6873fd36aef577103fe8140b5e3f8d88256f",
-    "certifyRunnerDigest": "sha256:6d12cd83ddbec00ea217748d84f8c83528535ff24c880c24f213a643a5ce700e",
-    "certifyBindingsDigest": "sha256:c99c22d3a92a9d4f24c5edae1238938e359cc026f24c278295b22f1c183ce199",
+    "certificationManifestDigest": "sha256:d7cd16bcd614b363f5eaa41c07337ba701954ecfc132179baf919dcd8e7c8988",
+    "certifyRunnerDigest": "sha256:30dc851c87b6be749fd3746e33162a43a7dfa82c4c392684474d6c57a4b35205",
+    "certifyBindingsDigest": "sha256:56fee5225dfb330b43dd6bc54d1eb5f152ef1b06d3e569c6c89ca068d5db6d45",
     "adrValidatorDigest": "sha256:9e1ce0779c349499f9f4b85ff69f8831a815fca70f2db81a633efe73f535da4a",
-    "reportSchemaDigest": "sha256:b0191981360486214b79001ca592ad121657deb99d5a9b16d5fb676a6ad49c69",
+    "reportSchemaDigest": "sha256:995b26d365ec68270073409b22b4e11f7b1024bc232f905dfc611c6538d21d56",
     "decisionSchemaDigest": "sha256:e9168bfbd12359394aca46e4062b5df729bdeb356f99938e5e9e9ba17fe96d38",
     "journeySchemaDigest": "sha256:bdfdbc5ea76ee0c4cdb5b8c19c8ab501884536c0cba7b91b133e1f4ed8294407",
     "chronicleAdapterDigest": "sha256:f302e6c648bb3499b20bdab30b5df0be10f394432689401def67ccf09b76b80a",
@@ -40,5 +40,8 @@
     ],
     "docsTypoOnlyRerunHeavy": false,
     "evaluationCodeChangeRequiresHeavyRerun": true
-  }
+  },
+  "status": "superseded",
+  "supersededBy": "ebcd2afe87caefd8d94aace9ebaa105d991a43f1",
+  "supersededAt": "2026-08-12T06:18:07.440Z"
 }
