@@ -25,7 +25,7 @@ Strategy が Native Writer に残っていたら merge しない。
 - [ ] Source／Evidence 削除 → Domain への FK cascade がない
 - [ ] Locked／user-authored **projection／field** の override は Decision／actor context 由来（caller metadata 不可）
 - [ ] stale／needs-reconciliation な Projection の自動コンテキスト投入・自動 Apply 抑止または注記
-- [ ] Reconciler 公開型が SQL／DB Operation／Writer command に依存しない
+- [x] Reconciler 公開型が SQL／DB Operation／Writer command に依存しない
 
 ## Slice テンプレート
 
@@ -67,9 +67,9 @@ Strategy が Native Writer に残っていたら merge しない。
 
 ### Import／Maintenance（#501 前）
 
-- [ ] Invariant: Capture vs Apply の Runtime guard、sealed plan、参照整合、source-basis OCC
-- [ ] Core: EvidenceFreshness のみ（fresh／stale／source-missing 等）
-- [ ] Reconciler: SemanticAssessment（unchanged／revision／retraction／conflict）— 非権威的
-- [ ] 禁止: 親 stale → 子 retract／Proposal 削除／Domain 自動削除／Evidence→Domain cascade
-- [ ] Change Feed は `needs-reconciliation` まで
+- [x] Invariant: Capture vs Apply の Runtime guard、sealed plan、参照整合、source-basis OCC
+- [x] Core: EvidenceFreshness のみ（fresh／stale／source-missing 等）
+- [x] Reconciler: SemanticAssessment（unchanged／revision／retraction／conflict）— 非権威的
+- [x] 禁止: 親 stale → 子 retract／Proposal 削除／Domain 自動削除／Evidence→Domain cascade（contract: propagation は `needs-reconciliation` のみ）
+- [x] Change Feed は `needs-reconciliation` まで（contract-level）
 - [ ] stale Projection の自動コンテキスト投入抑止

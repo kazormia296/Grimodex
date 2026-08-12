@@ -209,10 +209,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_registry_includes_deferred_domain_and_active_fixtures() {
+    fn bundled_registry_includes_active_domain_and_active_fixtures() {
         let registry = bundled_protected_writer_registry();
         let foreshadow = registry.get("foreshadows").expect("foreshadows");
-        assert_eq!(foreshadow.enforcement, WriterEnforcement::Deferred);
+        assert_eq!(foreshadow.enforcement, WriterEnforcement::Active);
+        let events = registry.get("events").expect("events");
+        assert_eq!(events.enforcement, WriterEnforcement::Active);
         let fixture = registry
             .get("narrative_protected_fixture")
             .expect("fixture");

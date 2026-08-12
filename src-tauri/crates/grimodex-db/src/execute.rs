@@ -1215,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_domain_tables_remain_mutable_until_cutover() {
+    fn active_domain_tables_reject_renderer_mutations_after_gate_b2_cutover() {
         let db = test_db();
         db.migrate().expect("migrate");
         db.execute(
@@ -1225,12 +1225,19 @@ mod tests {
             "run",
         )
         .expect("seed project");
-        db.execute_renderer(
-            "INSERT INTO events (id, project_id, title, created_at, updated_at)
-             VALUES ('e1', 'p1', 'Event', datetime('now'), datetime('now'))",
-            &[],
-            "run",
-        )
-        .expect("deferred events table still writable from renderer");
+        let insert_error = db
+            .execute_renderer(
+                "INSERT INTO events (id, project_id, title, created_at, updated_at)
+                 VALUES ('e1', 'p1', 'Event', datetime('now'), datetime('now'))",
+                &[],
+                "run",
+            )
+            .expect_err("renderer cannot mutate active domain events table");
+        assert!(
+            insert_error
+                .to_string()
+                .contains("PROTECTED_WRITER_SQL: denied mutation of protected narrative table"),
+            "unexpected error: {insert_error}"
+        );
     }
 }
