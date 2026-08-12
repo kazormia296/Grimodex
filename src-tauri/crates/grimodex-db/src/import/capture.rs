@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::Database;
+use crate::{require_generic_import_capture_allowed, Database};
 
 use super::inventory::{reject_symlink_kind, validate_relative_path};
 
@@ -51,6 +51,7 @@ pub fn create_capture(db: &Database, input: CreateCaptureInput) -> anyhow::Resul
     db.with_conn(|conn| {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Value> {
+            require_generic_import_capture_allowed(conn)?;
             conn.execute(
                 "INSERT INTO import_captures (
                     id, state, source_kind, budget_json, version, created_at, updated_at
@@ -141,6 +142,7 @@ pub fn update_selection(
 ) -> anyhow::Result<Value> {
     let now = now();
     db.with_conn(|conn| {
+        require_generic_import_capture_allowed(conn)?;
         let state: String = conn.query_row(
             "SELECT state FROM import_captures WHERE id = ?1",
             [&input.capture_id],
@@ -196,6 +198,7 @@ pub fn seal_capture(db: &Database, capture_id: String) -> anyhow::Result<Value> 
     db.with_conn(|conn| {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Value> {
+            require_generic_import_capture_allowed(conn)?;
             let state: String = conn.query_row(
                 "SELECT state FROM import_captures WHERE id = ?1",
                 [&capture_id],

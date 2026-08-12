@@ -14,6 +14,7 @@ use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
     verify_task_lease, with_immediate_transaction,
 };
+use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
 pub(crate) fn ensure_proposal_not_applied(conn: &Connection, proposal_id: &str) -> anyhow::Result<()> {
@@ -129,6 +130,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -301,6 +303,7 @@ pub fn list_resumable_runs(
 pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &run_id, &project_id)?;
             let updated = conn.execute(
                 "UPDATE narrative_extraction_runs
@@ -337,6 +340,7 @@ pub fn claim_task(
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
             let claimed = claim_next_task(conn, &payload)?;
             Ok(match claimed {
                 Some(task) => json!({
@@ -359,6 +363,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             verify_task_lease(conn, &payload.task_id, &payload.run_id, &payload.lease_owner)?;
 
@@ -417,6 +422,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             verify_task_lease(conn, &payload.task_id, &payload.run_id, &payload.lease_owner)?;
 
@@ -626,6 +632,7 @@ pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyh
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
 
             conn.execute(
@@ -700,7 +707,10 @@ fn insert_proposal_seed(
 
 pub fn append_revision(db: &Database, payload: AppendRevisionPayload) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| append_revision_on_conn(conn, &payload))
+        with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
+            append_revision_on_conn(conn, &payload)
+        })
     })
 }
 
@@ -791,7 +801,10 @@ fn append_revision_on_conn(
 
 pub fn append_decision(db: &Database, payload: AppendDecisionPayload) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| append_decision_on_conn(conn, &payload))
+        with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
+            append_decision_on_conn(conn, &payload)
+        })
     })
 }
 
@@ -895,6 +908,7 @@ pub fn revise_and_decide(
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            require_narrative_extraction_allowed(conn)?;
             let revision_payload = AppendRevisionPayload {
                 run_id: payload.run_id.clone(),
                 project_id: payload.project_id.clone(),

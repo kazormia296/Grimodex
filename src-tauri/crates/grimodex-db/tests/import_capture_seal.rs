@@ -3,11 +3,27 @@ use grimodex_db::import::{
     UpdateCaptureSelectionInput,
 };
 use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
+    SetNarrativeRuntimePolicyInput,
+};
 use serde_json::json;
 
 fn migrated_db() -> Database {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
     db.migrate().expect("migrate database");
+    let before = load_narrative_runtime_policy_from_db(&db).expect("load runtime policy");
+    set_narrative_runtime_policy(
+        &db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "review-only".to_string(),
+            maintenance_enabled: false,
+            generic_import_enabled: true,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("enable generic import capture");
     db
 }
 

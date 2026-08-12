@@ -38,6 +38,9 @@ use crate::agent_writes::{
     delete_event_cascade,
 };
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+use crate::narrative_runtime_policy::{
+    require_narrative_redo_allowed, require_narrative_undo_allowed,
+};
 use crate::Database;
 
 const STATUS_APPLIED: &str = "applied";
@@ -75,6 +78,10 @@ fn mutate_commit(
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
+            match direction {
+                UndoDirection::Undo => require_narrative_undo_allowed(conn)?,
+                UndoDirection::Redo => require_narrative_redo_allowed(conn)?,
+            }
             let commit = resolve_commit(conn, payload)?;
             let journal_after = load_journal_after(conn, &commit.commit_id)?;
             let entities = journal_entities(&journal_after)?;
