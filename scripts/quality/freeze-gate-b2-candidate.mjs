@@ -8,7 +8,7 @@
  * new candidate.
  */
 
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -17,7 +17,6 @@ import {
   loadGateB2Manifest,
   parseCertifyArgs,
   resolveCandidateIdentity,
-  sha256Text,
 } from "./certify-gate-b2.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(
@@ -142,8 +141,6 @@ export async function freezeGateB2Candidate({
     },
     digests: {
       ...digests,
-      adrChecklistDigest,
-      classificationDigest,
       reportDigest: null,
     },
     heavyAttempts: [],
