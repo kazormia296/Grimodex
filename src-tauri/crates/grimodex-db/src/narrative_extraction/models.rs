@@ -122,6 +122,15 @@ pub struct ProposalSeed {
     pub proposal_key: String,
     pub kind: String,
     pub payload_json: Value,
+    #[serde(default)]
+    pub reconciliation_envelope: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationEnvelopeInheritance {
+    pub parent_revision_id: String,
+    pub expected_envelope_digest: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -131,6 +140,12 @@ pub struct AppendRevisionPayload {
     pub project_id: String,
     pub proposal_id: String,
     pub payload_json: Value,
+    #[serde(default)]
+    pub reconciliation_envelope: Option<Value>,
+    /// Explicit CAS mode for carrying the current envelope to a new revision.
+    /// Omission means the new revision is intentionally legacy-unbound.
+    #[serde(default)]
+    pub inherit_reconciliation_envelope: Option<ReconciliationEnvelopeInheritance>,
     /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
     pub expected_current_revision_id: String,
     #[serde(default)]
@@ -158,6 +173,12 @@ pub struct ReviseAndDecidePayload {
     pub project_id: String,
     pub proposal_id: String,
     pub payload_json: Value,
+    #[serde(default)]
+    pub reconciliation_envelope: Option<Value>,
+    /// Explicit CAS mode for carrying the current envelope to a new revision.
+    /// Omission means the new revision is intentionally legacy-unbound.
+    #[serde(default)]
+    pub inherit_reconciliation_envelope: Option<ReconciliationEnvelopeInheritance>,
     /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
     pub expected_current_revision_id: String,
     pub decision: String,
@@ -267,6 +288,17 @@ pub struct UndoCommitPayload {
     pub commit_id: Option<String>,
     #[serde(default)]
     pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanFieldLockPayload {
+    pub project_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub field_path: String,
+    pub expected_version: i64,
+    pub locked: bool,
 }
 
 pub(crate) fn default_object_json() -> Value {

@@ -43,6 +43,8 @@ export interface RenameSourceText {
   kind: RenameSourceKind;
   /** Primary id the apply layer writes to (sceneId / entryId / relationId). */
   refId: string;
+  /** OCC version captured with the preview read; Native CASes the apply. */
+  baseVersion: number;
   /** Human-facing label for the preview (scene title / entry name / field name). */
   refLabel: string;
   /** For `codex-detail`: the detail definition id whose value holds the text. */

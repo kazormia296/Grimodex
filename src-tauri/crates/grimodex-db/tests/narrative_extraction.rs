@@ -25,7 +25,7 @@ fn create_run_with_task(db: &Database, run_id: &str, task_id: &str) {
             scope_json: json!({}),
             spec_json: json!({ "domain": "chronicle" }),
             spec_digest: format!("spec-{run_id}"),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
@@ -97,6 +97,33 @@ fn migrated_db() -> Database {
     db
 }
 
+fn test_envelope(run_id: &str, task_id: &str) -> Value {
+    let source_key = format!("snapshot:{run_id}");
+    let read_set = json!([{
+        "inputRef": source_key,
+        "kind": "snapshot-document",
+        "revisionToken": "revision-1"
+    }]);
+    json!({
+        "schemaVersion": 1,
+        "runId": run_id,
+        "taskId": task_id,
+        "reconcilerId": "test.reconciler",
+        "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "narrative.test",
+        "proposalSchemaVersion": "1",
+        "sourceBasis": [{
+            "sourceKind": "snapshot-document",
+            "sourceKey": source_key,
+            "revisionToken": "revision-1"
+        }],
+        "evidenceSet": [],
+        "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
+        "changeKind": "add"
+    })
+}
+
 fn insert_scene(db: &Database, scene_id: &str, version: i64) {
     db.execute(
         "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order, version)
@@ -151,11 +178,16 @@ fn seed_approved_proposals(
             scope_json: json!({}),
             spec_json: json!({ "domain": "chronicle" }),
             spec_digest: "spec".to_string(),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -168,6 +200,7 @@ fn seed_approved_proposals(
             proposal_key: format!("{run_id}-key-{index}"),
             kind: "chronicle.event.create@1".to_string(),
             payload_json: payload.clone(),
+            reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
         })
         .collect();
 
@@ -188,7 +221,7 @@ fn seed_approved_proposals(
     for proposal in saved["proposals"].as_array().expect("proposals") {
         let proposal_id = proposal["proposalId"].as_str().unwrap().to_string();
         let revision_id = proposal["revisionId"].as_str().unwrap().to_string();
-        narrative_extraction::narrative_extraction_append_decision(
+        narrative_extraction::narrative_extraction_append_human_decision(
             db,
             AppendDecisionPayload {
                 run_id: run_id.to_string(),
@@ -1054,11 +1087,16 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
             scope_json: json!({}),
             spec_json: json!({ "domain": "chronicle" }),
             spec_digest: "spec-occ".to_string(),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -1076,6 +1114,10 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
                 proposal_key: "key-occ".to_string(),
                 kind: "chronicle.event.create@1".to_string(),
                 payload_json: json!({ "title": "Rev1" }),
+                reconciliation_envelope: Some(test_envelope(
+                    run_id,
+                    &format!("{run_id}-task"),
+                )),
             }],
         },
     )
@@ -1098,6 +1140,8 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
             payload_json: json!({ "title": "Rev2" }),
             expected_current_revision_id: rev1.clone(),
             created_by: Some("test".to_string()),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("append rev2");
@@ -1166,11 +1210,16 @@ fn seed_single_proposal(
             scope_json: json!({}),
             spec_json: json!({ "domain": "chronicle" }),
             spec_digest: format!("spec-{run_id}"),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -1188,6 +1237,10 @@ fn seed_single_proposal(
                 proposal_key: format!("{proposal_id}-key"),
                 kind: "chronicle.event.create@1".to_string(),
                 payload_json: json!({ "title": "Rev1" }),
+                reconciliation_envelope: Some(test_envelope(
+                    run_id,
+                    &format!("{run_id}-task"),
+                )),
             }],
         },
     )
@@ -1229,6 +1282,8 @@ fn revise_and_decide_approves_atomically_with_new_revision() {
             decision: "approved".to_string(),
             decision_json: Some(json!({ "source": "test" })),
             created_by: Some("reviewer".to_string()),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("revise and decide");
@@ -1287,6 +1342,8 @@ fn revise_and_decide_rolls_back_revision_on_invalid_decision() {
             decision: "totally-bogus".to_string(),
             decision_json: None,
             created_by: Some("reviewer".to_string()),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect_err("invalid decision must fail");
@@ -1338,6 +1395,8 @@ fn revise_and_decide_rejects_stale_expected_current_revision() {
             payload_json: json!({ "title": "Rev2" }),
             expected_current_revision_id: rev1.clone(),
             created_by: Some("test".to_string()),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("append rev2");
@@ -1355,6 +1414,8 @@ fn revise_and_decide_rejects_stale_expected_current_revision() {
             decision: "approved".to_string(),
             decision_json: None,
             created_by: Some("stale-window".to_string()),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect_err("stale expected revision must conflict");
@@ -1454,6 +1515,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
                 proposal_key: "ev-1:0".to_string(),
                 kind: "chronicle.event.create@1".to_string(),
                 payload_json: json!({ "eventId": "ev-1", "title": "Native title" }),
+                reconciliation_envelope: None,
             }],
         },
     )
@@ -1590,6 +1652,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
                 proposal_key: "key-unapproved".to_string(),
                 kind: "chronicle.event.create@1".to_string(),
                 payload_json: unapproved_payload.clone(),
+                reconciliation_envelope: None,
             }],
         },
     )
@@ -1815,12 +1878,14 @@ fn relation_dependencies_in_summary_json_survive_append_revision() {
                     proposal_key: "entity-a".to_string(),
                     kind: "codex.entity.bind@1".to_string(),
                     payload_json: json!({ "narrativeEntityId": "ne-a", "canonicalName": "ライカ" }),
+                    reconciliation_envelope: None,
                 },
                 ProposalSeed {
                     proposal_id: Some(entity_b.to_string()),
                     proposal_key: "entity-b".to_string(),
                     kind: "codex.entity.bind@1".to_string(),
                     payload_json: json!({ "narrativeEntityId": "ne-b", "canonicalName": "ベルカ" }),
+                    reconciliation_envelope: None,
                 },
                 ProposalSeed {
                     proposal_id: Some(relation_id.to_string()),
@@ -1837,6 +1902,7 @@ fn relation_dependencies_in_summary_json_survive_append_revision() {
                         },
                         "validity": "current"
                     }),
+                    reconciliation_envelope: None,
                 },
             ],
         },
@@ -1878,6 +1944,8 @@ fn relation_dependencies_in_summary_json_survive_append_revision() {
                 "semanticKey": "friend:a:b"
             }),
             created_by: Some("reviewer".to_string()),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: None,
         },
     )
     .expect("append revision");
@@ -1934,6 +2002,7 @@ fn client_proposal_ids_collide_across_runs_when_reused() {
                 proposal_key: "entity-1".to_string(),
                 kind: "codex.entity.bind@1".to_string(),
                 payload_json: json!({ "canonicalName": "ライカ" }),
+                reconciliation_envelope: None,
             }],
         },
     )
@@ -1953,6 +2022,7 @@ fn client_proposal_ids_collide_across_runs_when_reused() {
                 proposal_key: "entity-1".to_string(),
                 kind: "codex.entity.bind@1".to_string(),
                 payload_json: json!({ "canonicalName": "ライカ" }),
+                reconciliation_envelope: None,
             }],
         },
     )
@@ -1986,6 +2056,7 @@ fn distinct_client_proposal_ids_persist_across_consecutive_runs() {
                 proposal_key: "entity-1".to_string(),
                 kind: "codex.entity.bind@1".to_string(),
                 payload_json: json!({ "canonicalName": "ライカ" }),
+                reconciliation_envelope: None,
             }],
         },
     )
@@ -2005,6 +2076,7 @@ fn distinct_client_proposal_ids_persist_across_consecutive_runs() {
                 proposal_key: "entity-1".to_string(),
                 kind: "codex.entity.bind@1".to_string(),
                 payload_json: json!({ "canonicalName": "ライカ" }),
+                reconciliation_envelope: None,
             }],
         },
     )
@@ -2058,6 +2130,7 @@ fn seed_deferred_proposal_with_decision(
                 proposal_key: format!("{proposal_id}-key"),
                 kind: "chronicle.event.create@1".to_string(),
                 payload_json: json!({ "title": "Deferred proposal" }),
+                reconciliation_envelope: None,
             }],
         },
     )

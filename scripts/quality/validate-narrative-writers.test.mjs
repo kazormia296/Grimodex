@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 
 import { validateNarrativeWriters } from "./validate-narrative-writers.mjs";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
 
 function writeActiveFixtureRegistry(root) {
   const policiesDir = path.join(root, "policies/narrative");
@@ -78,6 +81,24 @@ describe("validate-narrative-writers", () => {
     });
     assert.equal(result.violations.length, 1);
     assert.equal(result.violations[0].table, "narrative_protected_fixture");
+  });
+
+  it("fails when a Native narrative authority table is absent from the registry", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "narrative-writers-"));
+    const registryPath = writeActiveFixtureRegistry(root);
+    mkdirSync(path.join(root, "src/db"), { recursive: true });
+    writeFileSync(
+      path.join(root, "src/db/schema.ts"),
+      'export const narrativeFieldAuthority = sqliteTable("narrative_field_authority", {});\n',
+    );
+
+    const result = validateNarrativeWriters({
+      repoRoot: root,
+      registryPath,
+    });
+    assert.deepEqual(result.registryCoverageViolations, [
+      "narrative_field_authority",
+    ]);
   });
 
   it("fails when tx.update mutates an active protected table", () => {

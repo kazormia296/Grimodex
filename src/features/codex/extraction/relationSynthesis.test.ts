@@ -3,6 +3,8 @@ import {
   evaluateRelationDomainGate,
   normalizeRelationSynthesis,
 } from "./relationSynthesis";
+import { evaluateRelationInvariant } from "./relationInvariant";
+import { evaluateRelationStrategy } from "./relationStrategy";
 import type { CodexRelationHypothesis } from "@/features/narrative-extraction/ir/inferences/codexRelationHypothesis";
 
 function hypothesis(
@@ -92,6 +94,28 @@ describe("evaluateRelationDomainGate", () => {
         hypothesis({ epistemic: { polarity: "negated" } }),
       ).kind,
     ).toBe("report-only");
+  });
+
+  it("keeps structural validity separate from narrative strategy", () => {
+    const oddButWellFormed = hypothesis({
+      epistemic: { polarity: "negated", commitment: "speculation" },
+    });
+    expect(evaluateRelationInvariant(oddButWellFormed)).toEqual({
+      kind: "valid",
+    });
+    expect(evaluateRelationStrategy(oddButWellFormed)).toEqual({
+      kind: "report-only",
+      reason: "non-affirmed-polarity",
+    });
+  });
+
+  it("rejects cross-project endpoints in the invariant layer", () => {
+    expect(
+      evaluateRelationInvariant(hypothesis(), {
+        subjectProjectId: "project-a",
+        objectProjectId: "project-b",
+      }),
+    ).toEqual({ kind: "blocked", reason: "cross-project-endpoint" });
   });
 });
 

@@ -1,8 +1,8 @@
 /**
- * Billed OpenRouter full-pipeline Chronicle certification eval.
+ * Billed OpenRouter full-pipeline Chronicle live evaluation.
  *
- * Attempt 1 is normative. NARRATIVE_EVAL_ATTEMPT=2 is diagnostic-only and
- * cannot independently change the Gate B2 verdict to PASS.
+ * Gate B2 bindings remain supported for archived evidence, while current live
+ * provider/model qualification uses the separate QUALITY_EVALUATION_* binding.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -62,26 +62,40 @@ function reasoningEffort(): "minimal" | "low" | "medium" | "high" {
 }
 
 function attemptNumber(): 1 | 2 {
-  const raw = process.env.NARRATIVE_EVAL_ATTEMPT ?? "1";
+  const raw =
+    process.env.GATE_B2_ATTEMPT ?? process.env.NARRATIVE_EVAL_ATTEMPT ?? "1";
   if (raw !== "1" && raw !== "2") {
     throw new Error("NARRATIVE_EVAL_ATTEMPT must be 1 or 2");
   }
   return Number(raw) as 1 | 2;
 }
 
-function gateB2BindingFromEnv() {
+function evaluationBindingFromEnv() {
   return {
-    candidateCommitSha: process.env.GATE_B2_CANDIDATE_COMMIT_SHA,
-    candidateTreeSha: process.env.GATE_B2_CANDIDATE_TREE_SHA,
-    suiteId: process.env.GATE_B2_SUITE_ID,
-    runId: process.env.GATE_B2_RUN_ID,
-    commandDigest: process.env.GATE_B2_COMMAND_DIGEST,
-    outputPath: process.env.GATE_B2_OUTPUT_PATH,
+    candidateCommitSha:
+      process.env.QUALITY_EVALUATION_CANDIDATE_COMMIT_SHA ??
+      process.env.GATE_B2_CANDIDATE_COMMIT_SHA,
+    candidateTreeSha:
+      process.env.QUALITY_EVALUATION_CANDIDATE_TREE_SHA ??
+      process.env.GATE_B2_CANDIDATE_TREE_SHA,
+    suiteId:
+      process.env.QUALITY_EVALUATION_SUITE_ID ?? process.env.GATE_B2_SUITE_ID,
+    runId: process.env.QUALITY_EVALUATION_RUN_ID ?? process.env.GATE_B2_RUN_ID,
+    commandDigest:
+      process.env.QUALITY_EVALUATION_COMMAND_DIGEST ??
+      process.env.GATE_B2_COMMAND_DIGEST,
+    freezeId: process.env.GATE_B2_FREEZE_ID,
+    certificationRunId: process.env.GATE_B2_CERTIFICATION_RUN_ID,
+    outputPath:
+      process.env.QUALITY_EVALUATION_OUTPUT_PATH ??
+      process.env.GATE_B2_OUTPUT_PATH,
+    localQualification: Boolean(process.env.QUALITY_EVALUATION_RUN_ID),
+    artifactRoot: process.env.QUALITY_EVALUATION_ARTIFACT_ROOT,
   };
 }
 
-async function writeGateB2Report(report: Record<string, unknown>) {
-  const binding = gateB2BindingFromEnv();
+async function writeBoundReport(report: Record<string, unknown>) {
+  const binding = evaluationBindingFromEnv();
   const reportJson = `${JSON.stringify(report, null, 2)}\n`;
   if (binding.outputPath) {
     await mkdir(path.dirname(binding.outputPath), { recursive: true });
@@ -123,7 +137,7 @@ async function loadCases(): Promise<NarrativeEvalCaseV1[]> {
   return selected.slice(0, limit);
 }
 
-describeLive("Chronicle production OpenRouter live certification", () => {
+describeLive("Chronicle production OpenRouter live qualification", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -133,7 +147,7 @@ describeLive("Chronicle production OpenRouter live certification", () => {
     async () => {
       const cases = await loadCases();
       const attempt = attemptNumber();
-      const gateB2 = gateB2BindingFromEnv();
+      const binding = evaluationBindingFromEnv();
       const fullCertificationRun =
         !process.env.NARRATIVE_EVAL_CASE_ID &&
         !process.env.NARRATIVE_EVAL_LIMIT;
@@ -142,17 +156,14 @@ describeLive("Chronicle production OpenRouter live certification", () => {
       const effort = reasoningEffort();
       const startedAt = new Date().toISOString();
       const runId =
-        gateB2.runId ??
+        binding.runId ??
         `chronicle-production-attempt-${attempt}-${startedAt.replace(
           /[:.]/g,
           "-",
         )}`;
-      const artifactRoot = path.join(
-        repoRoot,
-        ".artifacts",
-        "narrative-eval",
-        runId,
-      );
+      const artifactRoot = binding.artifactRoot
+        ? path.join(binding.artifactRoot, runId)
+        : path.join(repoRoot, ".artifacts", "narrative-eval", runId);
       await mkdir(artifactRoot, { recursive: true });
 
       const caseReports = [];
@@ -252,20 +263,25 @@ describeLive("Chronicle production OpenRouter live certification", () => {
         mode: "chronicle-production-live" as const,
         attempt,
         diagnosticOnly,
-        retryPolicy:
-          "Attempt 1 is normative; Attempt 2 is diagnostic-only and cannot independently flip the overall verdict to PASS.",
+        retryPolicy: binding.localQualification
+          ? "Live qualification records each invocation as a new immutable local run."
+          : "Attempt 1 is normative; Attempt 2 is diagnostic-only and cannot independently flip the overall verdict to PASS.",
         startedAt,
         completedAt,
         finishedAt: completedAt,
-        ...(gateB2.candidateCommitSha
-          ? { candidateCommitSha: gateB2.candidateCommitSha }
+        ...(binding.candidateCommitSha
+          ? { candidateCommitSha: binding.candidateCommitSha }
           : {}),
-        ...(gateB2.candidateTreeSha
-          ? { candidateTreeSha: gateB2.candidateTreeSha }
+        ...(binding.candidateTreeSha
+          ? { candidateTreeSha: binding.candidateTreeSha }
           : {}),
-        ...(gateB2.suiteId ? { suiteId: gateB2.suiteId } : {}),
-        ...(gateB2.commandDigest
-          ? { commandDigest: gateB2.commandDigest }
+        ...(binding.suiteId ? { suiteId: binding.suiteId } : {}),
+        ...(binding.commandDigest
+          ? { commandDigest: binding.commandDigest }
+          : {}),
+        ...(binding.freezeId ? { freezeId: binding.freezeId } : {}),
+        ...(binding.certificationRunId
+          ? { certificationRunId: binding.certificationRunId }
           : {}),
         model: { provider: "openrouter", requestedModel: model, effort },
         caseCount: caseReports.length,
@@ -278,26 +294,37 @@ describeLive("Chronicle production OpenRouter live certification", () => {
         },
         cases: caseReports,
       };
-      const reportJson = await writeGateB2Report(report);
+      const reportJson = await writeBoundReport(report);
       await writeFile(
         path.join(artifactRoot, "report.json"),
         reportJson,
         "utf8",
       );
-      // Stable path for Gate B2 certification runner binding.
-      const stableRoot = path.join(
-        repoRoot,
-        ".artifacts",
-        "narrative-eval",
-        "chronicle-production-live",
-      );
-      await mkdir(stableRoot, { recursive: true });
-      await writeFile(path.join(stableRoot, "report.json"), reportJson, "utf8");
+      // Archived Gate B2 evidence still uses the legacy stable path. Local
+      // qualification keeps its detailed source report in an ephemeral root.
+      const stableRoot = binding.localQualification
+        ? null
+        : path.join(
+            repoRoot,
+            ".artifacts",
+            "narrative-eval",
+            "chronicle-production-live",
+          );
+      if (stableRoot) {
+        await mkdir(stableRoot, { recursive: true });
+        await writeFile(
+          path.join(stableRoot, "report.json"),
+          reportJson,
+          "utf8",
+        );
+      }
 
       console.info(
         JSON.stringify({
           artifactRoot,
-          stableReport: path.join(stableRoot, "report.json"),
+          ...(stableRoot
+            ? { stableReport: path.join(stableRoot, "report.json") }
+            : {}),
           certificationEligible,
           summary: report.summary,
         }),

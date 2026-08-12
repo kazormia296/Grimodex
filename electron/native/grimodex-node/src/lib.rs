@@ -1907,12 +1907,14 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn codex_rename_undo(&self, payload: serde_json::Value) -> Result<()> {
+    pub async fn codex_rename_undo(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: CodexRenameUndoPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                domain_writes::undo_codex_rename(db, payload)
+                Ok(serde_json::to_string(&domain_writes::undo_codex_rename(
+                    db, payload,
+                )?)?)
             })
         })
         .await
@@ -4594,6 +4596,22 @@ impl Backend {
         .await
     }
 
+    /// Human review has a separate Native endpoint so an AI/automation
+    /// caller cannot turn `createdBy` into a human authority grant.
+    #[napi]
+    pub async fn narrative_extraction_append_human_decision(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_append_human_decision,
+        )
+        .await
+    }
+
     #[napi]
     pub async fn narrative_extraction_revise_and_decide(
         &self,
@@ -4604,6 +4622,34 @@ impl Backend {
             "payload",
             payload,
             narrative_extraction::narrative_extraction_revise_and_decide,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_revise_and_decide_as_human(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_revise_and_decide_as_human,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_set_human_field_lock(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_set_human_field_lock,
         )
         .await
     }

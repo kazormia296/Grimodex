@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -12,38 +13,55 @@ use super::chronicle_operations::{
     ChronicleEventCreateContext,
 };
 use super::codex_operations::{
-    apply_codex_entry_create, apply_codex_entry_patch, apply_codex_entity_bind_existing,
+    apply_codex_entity_bind_existing, apply_codex_entry_create, apply_codex_entry_patch,
     apply_codex_relation_create_in_tx, ensure_entry_id_available, ensure_entry_version,
-    ensure_operation_kind, is_chronicle_op, parse_entry_create_payload, parse_entry_patch_payload,
-    parse_entity_bind_existing_payload, parse_relation_create_payload, CodexEntityBinding,
-    CommitMap, ForeshadowBinding, OP_KIND_ENTITY_BIND_EXISTING, OP_KIND_ENTRY_CREATE,
-    OP_KIND_ENTRY_PATCH, OP_KIND_EVENT_CREATE, OP_KIND_RELATION_CREATE, PlotThreadBinding,
+    ensure_operation_kind, is_chronicle_op, parse_entity_bind_existing_payload,
+    parse_entry_create_payload, parse_entry_patch_payload, parse_relation_create_payload,
+    CodexEntityBinding, CommitMap, ForeshadowBinding, PlotThreadBinding,
+    OP_KIND_ENTITY_BIND_EXISTING, OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH, OP_KIND_EVENT_CREATE,
+    OP_KIND_RELATION_CREATE,
 };
 use super::detail_operations::{
     apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
 };
+use super::field_authority::{
+    load_decision_authority, record_operation_field_authority,
+    validate_operation_field_authority,
+};
 use super::foreshadow_operations::{
     apply_create as apply_foreshadow_create, apply_patch as apply_foreshadow_patch,
-    ensure_id_available as ensure_foreshadow_id_available, ensure_version as ensure_foreshadow_version,
-    parse_create as parse_foreshadow_create, parse_patch as parse_foreshadow_patch,
-    OP_KIND_FORESHADOW_AGGREGATE_CREATE, OP_KIND_FORESHADOW_AGGREGATE_PATCH,
+    ensure_id_available as ensure_foreshadow_id_available,
+    ensure_version as ensure_foreshadow_version, parse_create as parse_foreshadow_create,
+    parse_patch as parse_foreshadow_patch, OP_KIND_FORESHADOW_AGGREGATE_CREATE,
+    OP_KIND_FORESHADOW_AGGREGATE_PATCH,
+};
+use super::models::{
+    ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
+    GetCommitStatusPayload, PrepareCommitPayload,
 };
 use super::phase_operations::{
     apply_phase_create_in_tx, apply_phase_patch_in_tx, parse_phase_create_payload,
     parse_phase_patch_payload, OP_KIND_PHASE_CREATE, OP_KIND_PHASE_PATCH,
 };
 use super::plot_thread_operations::{
-    apply_plot_branch_create_in_tx, apply_plot_marker_create_in_tx,
-    apply_plot_thread_create_in_tx, apply_plot_thread_patch_in_tx,
-    ensure_branch_id_available, ensure_marker_id_available, ensure_thread_id_available,
-    ensure_thread_version, parse_plot_branch_create_payload, parse_plot_marker_create_payload,
-    parse_plot_thread_create_payload, parse_plot_thread_patch_payload, OP_KIND_PLOT_BRANCH_CREATE,
-    OP_KIND_PLOT_MARKER_CREATE, OP_KIND_PLOT_THREAD_CREATE, OP_KIND_PLOT_THREAD_PATCH,
+    apply_plot_branch_create_in_tx, apply_plot_marker_create_in_tx, apply_plot_thread_create_in_tx,
+    apply_plot_thread_patch_in_tx, ensure_branch_id_available, ensure_marker_id_available,
+    ensure_thread_id_available, ensure_thread_version, parse_plot_branch_create_payload,
+    parse_plot_marker_create_payload, parse_plot_thread_create_payload,
+    parse_plot_thread_patch_payload, OP_KIND_PLOT_BRANCH_CREATE, OP_KIND_PLOT_MARKER_CREATE,
+    OP_KIND_PLOT_THREAD_CREATE, OP_KIND_PLOT_THREAD_PATCH,
 };
+use super::reconciliation_envelope::{
+    load_read_set_rows, load_source_basis_rows, validate_reconciliation_envelope, SourceBasisRow,
+    ORIGIN_ENVELOPED,
+};
+use super::repository::{ensure_proposal_not_applied, ensure_run_project};
 use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
+use super::source_revision::resolve_source_revision;
+use super::task_leases::with_immediate_transaction;
 use super::temporal_constraints::{
     apply_constraint_create_in_tx, parse_constraint_create_payload, OP_KIND_CONSTRAINT_CREATE,
 };
@@ -60,12 +78,6 @@ use super::temporal_operations::{
 use super::temporal_projections::{
     apply_projection_record_in_tx, parse_projection_record_payload, OP_KIND_PROJECTION_RECORD,
 };
-use super::models::{
-    ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
-    GetCommitStatusPayload, PrepareCommitPayload,
-};
-use super::repository::{ensure_proposal_not_applied, ensure_run_project};
-use super::task_leases::with_immediate_transaction;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::narrative_runtime_policy::{
     load_narrative_runtime_policy, require_narrative_apply_allowed,
@@ -78,6 +90,7 @@ const STATUS_APPLIED: &str = "applied";
 const STATUS_UNDONE: &str = "undone";
 const STATUS_REDONE: &str = "redone";
 const STATUS_FAILED: &str = "failed";
+const STATUS_INVALIDATED: &str = "invalidated";
 
 struct CommitPlanValidationContext<'a> {
     expected_calendar_version: Option<i64>,
@@ -88,6 +101,14 @@ struct CommitPlanValidationContext<'a> {
     applications: &'a [CommitApplicationRef],
     expected_tail_ordinal: Option<&'a str>,
     entity_bindings: &'a [EntityBindingSeed],
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SealedSourceContract {
+    revision_envelope_digest: String,
+    aggregate_source_basis_digest: String,
+    aggregate_read_set_digest: String,
 }
 
 pub fn narrative_extraction_prepare_commit(
@@ -145,33 +166,34 @@ pub fn narrative_extraction_prepare_commit(
                 &payload.proposal_set_id,
                 &applications,
             )?;
+            let validation_commit_map = build_validation_commit_map(
+                &payload.entity_bindings,
+                &payload.operations,
+            )?;
+            validate_operation_field_authority(
+                conn,
+                &payload.project_id,
+                &applications,
+                &payload.operations,
+                &validation_commit_map,
+            )?;
             let authority_digest =
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
+            let source_contract = build_source_contract(
+                conn,
+                &payload.project_id,
+                &payload.run_id,
+                &applications,
+            )?;
+            validate_retraction_targets(
+                conn,
+                &payload.project_id,
+                &applications,
+                &payload.operations,
+            )?;
+            sealed_plan["sourceContract"] = serde_json::to_value(&source_contract)?;
             let prepared_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
             let policy_version = load_narrative_runtime_policy(conn).version;
-            for operation in &payload.operations {
-                let fragment = json!({
-                    "kind": operation.kind,
-                    "payload": operation.payload,
-                });
-                let updated = conn.execute(
-                    "UPDATE narrative_proposal_revisions
-                        SET plan_fragment_json = ?1,
-                            plan_fragment_digest = ?2
-                      WHERE id = ?3 AND proposal_id = ?4",
-                    params![
-                        fragment.to_string(),
-                        digest_plan(&fragment),
-                        operation.revision_id,
-                        operation.proposal_id,
-                    ],
-                )?;
-                anyhow::ensure!(
-                    updated == 1,
-                    "proposal revision '{}' disappeared while preparing commit",
-                    operation.revision_id
-                );
-            }
             let prepared_commit_id = Uuid::new_v4().to_string();
             conn.execute(
                 "INSERT INTO narrative_apply_commits
@@ -210,6 +232,24 @@ pub fn narrative_extraction_prepare_commit(
 }
 
 fn sealed_plan_json(payload: &PrepareCommitPayload) -> anyhow::Result<Value> {
+    let plan_fragments: Vec<Value> = payload
+        .operations
+        .iter()
+        .map(|operation| {
+            let fragment = json!({
+                "proposalId": operation.proposal_id,
+                "revisionId": operation.revision_id,
+                "kind": operation.kind,
+                "payload": operation.payload,
+            });
+            json!({
+                "proposalId": operation.proposal_id,
+                "revisionId": operation.revision_id,
+                "fragment": fragment,
+                "fragmentDigest": digest_plan(&fragment),
+            })
+        })
+        .collect();
     Ok(json!({
         "requestId": payload.request_id,
         "sessionId": payload.session_id,
@@ -222,6 +262,7 @@ fn sealed_plan_json(payload: &PrepareCommitPayload) -> anyhow::Result<Value> {
         "runId": payload.run_id,
         "proposalSetId": payload.proposal_set_id,
         "surface": payload.surface,
+        "planFragments": plan_fragments,
     }))
 }
 
@@ -235,6 +276,58 @@ fn application_pairs(applications: &[CommitApplicationRef]) -> Vec<(String, Stri
             )
         })
         .collect()
+}
+
+fn build_validation_commit_map(
+    seeds: &[EntityBindingSeed],
+    operations: &[CommitOperation],
+) -> anyhow::Result<CommitMap> {
+    let mut commit_map = CommitMap::new();
+    for seed in seeds {
+        commit_map.insert_binding(CodexEntityBinding {
+            narrative_entity_id: seed.narrative_entity_id.clone(),
+            codex_entry_id: seed.codex_entry_id.clone(),
+            source: if seed.source.is_empty() {
+                "existing".to_string()
+            } else {
+                seed.source.clone()
+            },
+        })?;
+    }
+    for operation in operations {
+        match operation.kind.as_str() {
+            OP_KIND_ENTRY_CREATE => {
+                let value = parse_entry_create_payload(&operation.payload)?;
+                if let Some(narrative_entity_id) = value.narrative_entity_id {
+                    commit_map.insert_binding(CodexEntityBinding {
+                        narrative_entity_id,
+                        codex_entry_id: value.entry_id,
+                        source: "created".to_string(),
+                    })?;
+                }
+            }
+            OP_KIND_ENTRY_PATCH => {
+                let value = parse_entry_patch_payload(&operation.payload)?;
+                if let Some(narrative_entity_id) = value.narrative_entity_id {
+                    commit_map.insert_binding(CodexEntityBinding {
+                        narrative_entity_id,
+                        codex_entry_id: value.entry_id,
+                        source: "existing".to_string(),
+                    })?;
+                }
+            }
+            OP_KIND_ENTITY_BIND_EXISTING => {
+                let value = parse_entity_bind_existing_payload(&operation.payload)?;
+                commit_map.insert_binding(CodexEntityBinding {
+                    narrative_entity_id: value.narrative_entity_id,
+                    codex_entry_id: value.entry_id,
+                    source: "existing".to_string(),
+                })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(commit_map)
 }
 
 fn digest_authority_rows(
@@ -253,10 +346,15 @@ fn digest_authority_rows(
             params![proposal_id, revision_id],
             |row| row.get(0),
         )?;
+        let authority = load_decision_authority(conn, proposal_id, revision_id)?;
         rows.push(json!({
             "proposalId": proposal_id,
             "revisionId": revision_id,
             "decision": decision,
+            "actorKind": authority.actor_kind,
+            "actorId": authority.actor_id,
+            "authorityScope": authority.authority_scope,
+            "overrideFieldPaths": authority.override_field_paths,
         }));
     }
     rows.sort_by(|left, right| {
@@ -274,6 +372,407 @@ fn digest_authority_rows(
     Ok(digest_plan(&Value::Array(rows)))
 }
 
+fn build_source_contract(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    applications: &[(String, String)],
+) -> anyhow::Result<SealedSourceContract> {
+    let mut revision_rows = Vec::with_capacity(applications.len());
+    let mut source_rows = Vec::new();
+    let mut read_rows = Vec::new();
+
+    for (proposal_id, revision_id) in applications {
+        let (origin_kind, stored_digest, stored_json): (String, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT origin_kind, reconciliation_envelope_digest,
+                        reconciliation_envelope_json
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1 AND proposal_id = ?2",
+                params![revision_id, proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        anyhow::ensure!(
+            origin_kind == ORIGIN_ENVELOPED,
+            "NEX_REVISION_LEGACY_UNBOUND: proposal '{proposal_id}' revision '{revision_id}' is not envelope-bound"
+        );
+        let stored_digest = stored_digest.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_REVISION_ENVELOPE_MISSING: proposal '{proposal_id}' revision '{revision_id}' has no envelope digest"
+            )
+        })?;
+        let stored_json = stored_json.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_REVISION_ENVELOPE_MISSING: proposal '{proposal_id}' revision '{revision_id}' has no envelope JSON"
+            )
+        })?;
+        let envelope: Value = serde_json::from_str(&stored_json)?;
+        let validated =
+            validate_reconciliation_envelope(conn, project_id, run_id, Some(&envelope))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("NEX_REVISION_ENVELOPE_MISSING: envelope was empty")
+                })?;
+        anyhow::ensure!(
+            validated.digest == stored_digest && validated.canonical_json == stored_json,
+            "NEX_REVISION_ENVELOPE_CHANGED: persisted envelope canonical bytes do not match its digest"
+        );
+
+        let persisted_source_basis = load_source_basis_rows(conn, revision_id)?;
+        ensure_source_basis_storage_matches(&validated.source_basis, &persisted_source_basis)?;
+        revision_rows.push(json!({
+            "proposalId": proposal_id,
+            "revisionId": revision_id,
+            "envelopeDigest": stored_digest,
+        }));
+
+        for source in &persisted_source_basis {
+            let current = resolve_source_revision(
+                conn,
+                project_id,
+                run_id,
+                &source.source_kind,
+                &source.source_key,
+            )?;
+            anyhow::ensure!(
+                current.revision_token == source.revision_token,
+                "NEX_SOURCE_BASIS_STALE: source '{}' expected '{}' but found '{}'",
+                source.source_key,
+                source.revision_token,
+                current.revision_token
+            );
+            source_rows.push(json!({
+                "proposalId": proposal_id,
+                "revisionId": revision_id,
+                "ordinal": source.ordinal,
+                "sourceKind": source.source_kind,
+                "sourceKey": source.source_key,
+                "revisionToken": source.revision_token,
+            }));
+        }
+
+        let read_set = envelope
+            .get("readSet")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("NEX_READ_SET_DRIFT: persisted readSet is missing"))?;
+        for entry in read_set {
+            let object = entry.as_object().ok_or_else(|| {
+                anyhow::anyhow!("NEX_READ_SET_DRIFT: persisted readSet entry is not an object")
+            })?;
+            let input_ref = object
+                .get("inputRef")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("NEX_READ_SET_DRIFT: inputRef is missing"))?;
+            let kind = object
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("NEX_READ_SET_DRIFT: read-set kind is missing"))?;
+            let source_kind = object
+                .get("sourceKind")
+                .and_then(Value::as_str)
+                .map(Ok)
+                .unwrap_or_else(|| source_kind_for_read_set(kind))?;
+            let current =
+                resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
+            if let Some(expected) = object.get("revisionToken").and_then(Value::as_str) {
+                anyhow::ensure!(
+                    current.revision_token == expected,
+                    "NEX_READ_SET_STALE: input '{}' expected '{}' but found '{}'",
+                    input_ref,
+                    expected,
+                    current.revision_token
+                );
+            }
+            read_rows.push(json!({
+                "proposalId": proposal_id,
+                "revisionId": revision_id,
+                "inputRef": input_ref,
+                "kind": kind,
+                "revisionToken": current.revision_token,
+            }));
+        }
+    }
+
+    sort_contract_rows(&mut revision_rows, &["proposalId", "revisionId"]);
+    sort_contract_rows(&mut source_rows, &["proposalId", "revisionId", "ordinal"]);
+    sort_contract_rows(
+        &mut read_rows,
+        &["proposalId", "revisionId", "inputRef", "kind"],
+    );
+    Ok(SealedSourceContract {
+        revision_envelope_digest: digest_contract_value(&Value::Array(revision_rows)),
+        aggregate_source_basis_digest: digest_contract_value(&Value::Array(source_rows)),
+        aggregate_read_set_digest: digest_contract_value(&Value::Array(read_rows)),
+    })
+}
+
+fn ensure_source_basis_storage_matches(
+    envelope_rows: &[SourceBasisRow],
+    persisted_rows: &[SourceBasisRow],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        envelope_rows.len() == persisted_rows.len(),
+        "NEX_SOURCE_BASIS_STORAGE_MISMATCH: normalized source-basis row count differs"
+    );
+    for (envelope, persisted) in envelope_rows.iter().zip(persisted_rows) {
+        anyhow::ensure!(
+            envelope.ordinal == persisted.ordinal
+                && envelope.source_kind == persisted.source_kind
+                && envelope.source_key == persisted.source_key
+                && envelope.revision_token == persisted.revision_token
+                && envelope.observed_at == persisted.observed_at,
+            "NEX_SOURCE_BASIS_STORAGE_MISMATCH: normalized source-basis row differs from envelope"
+        );
+    }
+    Ok(())
+}
+
+fn validate_retraction_targets(
+    conn: &Connection,
+    project_id: &str,
+    applications: &[(String, String)],
+    operations: &[CommitOperation],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        applications.len() == operations.len(),
+        "NEX_RETRACTION_APPLICATIONS_MISMATCH: operation/application counts differ"
+    );
+    for ((proposal_id, revision_id), operation) in applications.iter().zip(operations) {
+        let (change_kind, target) = load_retraction_metadata(conn, proposal_id, revision_id)?;
+        if change_kind != "retract" {
+            continue;
+        }
+        let target = target.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_TARGET_REQUIRED: retract revision '{revision_id}' has no target application"
+            )
+        })?;
+        let target_row: Option<(String, String, String, String, String)> = conn
+            .query_row(
+                "SELECT c.project_id, a.revision_id, a.application_kind,
+                        a.applied_entity_kind, a.applied_entity_id
+                   FROM narrative_proposal_applications a
+                   INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
+                  WHERE a.id = ?1",
+                params![target],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            target_project_id,
+            target_revision_id,
+            target_kind,
+            target_entity_kind,
+            target_entity_id,
+        )) = target_row
+        else {
+            anyhow::bail!(
+                "NEX_RETRACTION_TARGET_MISSING: target application '{target}' is not applied"
+            );
+        };
+        anyhow::ensure!(
+            target_project_id == project_id,
+            "NEX_RETRACTION_TARGET_PROJECT_MISMATCH: target application belongs to another project"
+        );
+        anyhow::ensure!(
+            target_kind == "normal",
+            "NEX_RETRACTION_TARGET_INVALID: compensation must target a normal application"
+        );
+        anyhow::ensure!(
+            target_revision_id != revision_id.as_str(),
+            "NEX_RETRACTION_TARGET_INVALID: a revision cannot compensate itself"
+        );
+        let already_compensated: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_proposal_applications
+              WHERE application_kind = 'compensation'
+                AND compensates_application_id = ?1",
+            params![target],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            already_compensated == 0,
+            "NEX_RETRACTION_TARGET_ALREADY_COMPENSATED: target application '{target}' already has a compensation"
+        );
+        anyhow::ensure!(
+            !target_entity_id.is_empty(),
+            "NEX_RETRACTION_TARGET_INVALID: target application '{target}' has no entity id"
+        );
+        validate_compensation_operation(operation, &target_entity_kind, &target_entity_id)?;
+    }
+    Ok(())
+}
+
+fn compensation_strategy(operation_kind: &str) -> anyhow::Result<(&'static str, &'static str)> {
+    let strategy = match operation_kind {
+        OP_KIND_EVENT_CREATE => ("event", "chronicle.event.retract"),
+        OP_KIND_ENTRY_CREATE | OP_KIND_ENTRY_PATCH | OP_KIND_ENTITY_BIND_EXISTING => {
+            ("codex_entry", "codex.entry.retract")
+        }
+        OP_KIND_RELATION_CREATE => ("codex_relation", "codex.relation.retract"),
+        OP_KIND_DETAIL_VALUE_SET => ("codex_detail_value", "codex.detail-value.retract"),
+        OP_KIND_PHASE_CREATE | OP_KIND_PHASE_PATCH => ("codex_phase", "codex.phase.retract"),
+        OP_KIND_SEMANTIC_BINDING_UPSERT => (
+            "codex_semantic_binding",
+            "codex.semantic-binding.retract",
+        ),
+        OP_KIND_NODE_ENSURE => ("temporal_node", "temporal.node.retract"),
+        OP_KIND_CONSTRAINT_CREATE => ("temporal_constraint", "temporal.constraint.retract"),
+        OP_KIND_SCENE_METADATA_PATCH => (
+            "temporal_scene_chronicle",
+            "temporal.scene-metadata.retract",
+        ),
+        OP_KIND_EVENT_METADATA_PATCH => (
+            "temporal_event_chronicle",
+            "temporal.event-metadata.retract",
+        ),
+        OP_KIND_STORY_ORDER_MATERIALIZE => (
+            "temporal_scene_story_order",
+            "temporal.story-order.retract",
+        ),
+        OP_KIND_PROJECTION_RECORD => ("temporal_projection", "temporal.projection.retract"),
+        OP_KIND_PLOT_THREAD_CREATE | OP_KIND_PLOT_THREAD_PATCH => {
+            ("plot_thread", "plot.thread.retract")
+        }
+        OP_KIND_PLOT_MARKER_CREATE => ("plot_thread_marker", "plot.marker.retract"),
+        OP_KIND_PLOT_BRANCH_CREATE => ("plot_thread_branch", "plot.branch.retract"),
+        OP_KIND_FORESHADOW_AGGREGATE_CREATE | OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
+            ("foreshadow", "foreshadow.retract")
+        }
+        other => anyhow::bail!(
+            "NEX_RETRACTION_OPERATION_UNSUPPORTED: operation '{other}' cannot be a compensation"
+        ),
+    };
+    Ok(strategy)
+}
+
+fn validate_compensation_operation(
+    operation: &CommitOperation,
+    target_entity_kind: &str,
+    target_entity_id: &str,
+) -> anyhow::Result<()> {
+    let (expected_entity_kind, expected_strategy) = compensation_strategy(&operation.kind)?;
+    anyhow::ensure!(
+        target_entity_kind == expected_entity_kind,
+        "NEX_RETRACTION_OPERATION_MISMATCH: operation '{}' cannot compensate entity kind '{}' (expected '{}')",
+        operation.kind,
+        target_entity_kind,
+        expected_entity_kind
+    );
+    let compensation = operation
+        .payload
+        .as_object()
+        .and_then(|payload| payload.get("compensation"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_COMPENSATION_MISSING: operation '{}' must declare a compensation strategy and targetEntityId",
+                operation.kind
+            )
+        })?;
+    let strategy = compensation
+        .get("strategy")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_COMPENSATION_INVALID: operation '{}' compensation strategy is missing",
+                operation.kind
+            )
+        })?;
+    let declared_target = compensation
+        .get("targetEntityId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_RETRACTION_COMPENSATION_INVALID: operation '{}' compensation targetEntityId is missing",
+                operation.kind
+            )
+        })?;
+    anyhow::ensure!(
+        strategy == expected_strategy,
+        "NEX_RETRACTION_COMPENSATION_STRATEGY_MISMATCH: operation '{}' requires strategy '{}', got '{}'",
+        operation.kind,
+        expected_strategy,
+        strategy
+    );
+    anyhow::ensure!(
+        declared_target == target_entity_id,
+        "NEX_RETRACTION_COMPENSATION_TARGET_MISMATCH: operation '{}' targets '{}' but compensates '{}'",
+        operation.kind,
+        declared_target,
+        target_entity_id
+    );
+    Ok(())
+}
+
+fn load_retraction_metadata(
+    conn: &Connection,
+    proposal_id: &str,
+    revision_id: &str,
+) -> anyhow::Result<(String, Option<String>)> {
+    let envelope_json: String = conn.query_row(
+        "SELECT reconciliation_envelope_json
+           FROM narrative_proposal_revisions
+          WHERE id = ?1 AND proposal_id = ?2",
+        params![revision_id, proposal_id],
+        |row| row.get(0),
+    )?;
+    let envelope: Value = serde_json::from_str(&envelope_json)?;
+    let object = envelope.as_object().ok_or_else(|| {
+        anyhow::anyhow!("NEX_RETRACTION_ENVELOPE_INVALID: envelope is not an object")
+    })?;
+    let change_kind = object
+        .get("changeKind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("NEX_RETRACTION_ENVELOPE_INVALID: changeKind is missing"))?
+        .to_string();
+    let target = object
+        .get("targetProjectionRef")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok((change_kind, target))
+}
+
+fn source_kind_for_read_set(kind: &str) -> anyhow::Result<&'static str> {
+    match kind {
+        "snapshot-document" => Ok("snapshot-document"),
+        "projection" => Ok("domain-projection"),
+        "evidence" => Ok("evidence-anchor"),
+        "signal" => anyhow::bail!(
+            "NEX_SOURCE_KIND_UNSUPPORTED: signal read-set entries have no registered resolver"
+        ),
+        other => anyhow::bail!(
+            "NEX_SOURCE_KIND_UNSUPPORTED: read-set kind '{other}' has no registered resolver"
+        ),
+    }
+}
+
+fn sort_contract_rows(rows: &mut [Value], fields: &[&str]) {
+    rows.sort_by(|left, right| {
+        fields
+            .iter()
+            .map(|field| left.get(*field).map(Value::to_string).unwrap_or_default())
+            .cmp(
+                fields
+                    .iter()
+                    .map(|field| right.get(*field).map(Value::to_string).unwrap_or_default()),
+            )
+    });
+}
+
+fn digest_contract_value(value: &Value) -> String {
+    format!("sha256:{}", digest_plan(value))
+}
+
 pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
@@ -284,11 +783,8 @@ pub fn narrative_extraction_apply_commit(
     let apply_result = db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
-            let existing = load_commit_by_id(
-                conn,
-                &payload.project_id,
-                &payload.prepared_commit_id,
-            )?
+            let existing =
+                load_commit_by_id(conn, &payload.project_id, &payload.prepared_commit_id)?
             .ok_or_else(|| anyhow::anyhow!("prepared commit not found"))?;
             anyhow::ensure!(
                 existing.request_id == payload.request_id,
@@ -320,12 +816,21 @@ pub fn narrative_extraction_apply_commit(
                     "NEX_COMMIT_SESSION_MISMATCH: session does not match prepared commit"
                 );
             }
-            let sealed_plan: PrepareCommitPayload = serde_json::from_str(
-                existing
+            let sealed_plan_raw = existing
                     .prepared_plan_json
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("prepared commit has no sealed plan"))?,
-            )?;
+                .ok_or_else(|| anyhow::anyhow!("prepared commit has no sealed plan"))?;
+            let sealed_plan_value: Value = serde_json::from_str(sealed_plan_raw)?;
+            let sealed_source_contract: SealedSourceContract = sealed_plan_value
+                .get("sourceContract")
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_SOURCE_CONTRACT_MISSING: prepared commit has no sealed source contract"
+                    )
+                })
+                .and_then(|value| serde_json::from_value(value).map_err(Into::into))?;
+            let sealed_plan: PrepareCommitPayload = serde_json::from_value(sealed_plan_value)?;
             require_narrative_apply_allowed(conn)?;
             validate_commit_plan(
                 conn,
@@ -346,11 +851,54 @@ pub fn narrative_extraction_apply_commit(
                 &sealed_plan.proposal_set_id,
                 &applications,
             )?;
+            let validation_commit_map = build_validation_commit_map(
+                &sealed_plan.entity_bindings,
+                &sealed_plan.operations,
+            )?;
+            validate_operation_field_authority(
+                conn,
+                &sealed_plan.project_id,
+                &applications,
+                &sealed_plan.operations,
+                &validation_commit_map,
+            )?;
+            validate_retraction_targets(
+                conn,
+                &sealed_plan.project_id,
+                &applications,
+                &sealed_plan.operations,
+            )?;
             let current_authority_digest =
                 digest_authority_rows(conn, &sealed_plan.proposal_set_id, &applications)?;
             anyhow::ensure!(
                 existing.authority_digest.as_deref() == Some(current_authority_digest.as_str()),
                 "NEX_COMMIT_AUTHORITY_CHANGED: prepared authority digest no longer matches"
+            );
+            let current_policy_version = load_narrative_runtime_policy(conn).version;
+            anyhow::ensure!(
+                existing.prepared_policy_version == Some(current_policy_version),
+                "NEX_PREPARED_POLICY_CHANGED: prepared policy version no longer matches"
+            );
+            let current_source_contract = build_source_contract(
+                conn,
+                &sealed_plan.project_id,
+                &sealed_plan.run_id,
+                &applications,
+            )?;
+            anyhow::ensure!(
+                current_source_contract.revision_envelope_digest
+                    == sealed_source_contract.revision_envelope_digest,
+                "NEX_REVISION_ENVELOPE_CHANGED: prepared revision envelope digest no longer matches"
+            );
+            anyhow::ensure!(
+                current_source_contract.aggregate_source_basis_digest
+                    == sealed_source_contract.aggregate_source_basis_digest,
+                "NEX_SOURCE_BASIS_CHANGED: prepared source-basis digest no longer matches"
+            );
+            anyhow::ensure!(
+                current_source_contract.aggregate_read_set_digest
+                    == sealed_source_contract.aggregate_read_set_digest,
+                "NEX_READ_SET_DRIFT: prepared read-set digest no longer matches"
             );
             let commit_id = existing.commit_id.clone();
             // Keep the existing execution loop operating on the sealed plan only.
@@ -375,10 +923,7 @@ pub fn narrative_extraction_apply_commit(
                 .filter(|op| is_chronicle_op(&op.kind))
                 .count();
             let ordinals = if chronicle_count > 0 {
-                generate_append_ordinals(
-                    payload.expected_tail_ordinal.as_deref(),
-                    chronicle_count,
-                )?
+                generate_append_ordinals(payload.expected_tail_ordinal.as_deref(), chronicle_count)?
             } else {
                 Vec::new()
             };
@@ -389,8 +934,10 @@ pub fn narrative_extraction_apply_commit(
 
             for (index, op) in payload.operations.iter().enumerate() {
                 ensure_operation_kind(&op.kind)?;
-                let (entity_kind, entity_id, version, snapshot, before_snapshot, op_kind) =
-                    match op.kind.as_str() {
+                let (entity_kind, entity_id, version, snapshot, before_snapshot, op_kind) = match op
+                    .kind
+                    .as_str()
+                {
                         OP_KIND_EVENT_CREATE => {
                             let event_payload = parse_event_create_payload(&op.payload)?;
                             let ordinal = &ordinals[ordinal_index];
@@ -566,8 +1113,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_SEMANTIC_BINDING_UPSERT => {
-                            let binding_payload =
-                                parse_semantic_binding_upsert_payload(&op.payload)?;
+                        let binding_payload = parse_semantic_binding_upsert_payload(&op.payload)?;
                             let result = apply_semantic_binding_upsert_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -605,8 +1151,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_CONSTRAINT_CREATE => {
-                            let constraint_payload =
-                                parse_constraint_create_payload(&op.payload)?;
+                        let constraint_payload = parse_constraint_create_payload(&op.payload)?;
                             let result = apply_constraint_create_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -623,8 +1168,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_SCENE_METADATA_PATCH => {
-                            let scene_payload =
-                                parse_scene_metadata_patch_payload(&op.payload)?;
+                        let scene_payload = parse_scene_metadata_patch_payload(&op.payload)?;
                             let result = apply_scene_metadata_patch_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -641,8 +1185,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_EVENT_METADATA_PATCH => {
-                            let event_payload =
-                                parse_event_metadata_patch_payload(&op.payload)?;
+                        let event_payload = parse_event_metadata_patch_payload(&op.payload)?;
                             let result = apply_event_metadata_patch_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -677,8 +1220,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_PROJECTION_RECORD => {
-                            let projection_payload =
-                                parse_projection_record_payload(&op.payload)?;
+                        let projection_payload = parse_projection_record_payload(&op.payload)?;
                             let result = apply_projection_record_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -696,8 +1238,7 @@ pub fn narrative_extraction_apply_commit(
                         }
 
                         OP_KIND_PLOT_THREAD_CREATE => {
-                            let thread_payload =
-                                parse_plot_thread_create_payload(&op.payload)?;
+                        let thread_payload = parse_plot_thread_create_payload(&op.payload)?;
                             let result = apply_plot_thread_create_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -719,8 +1260,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_PLOT_THREAD_PATCH => {
-                            let thread_payload =
-                                parse_plot_thread_patch_payload(&op.payload)?;
+                        let thread_payload = parse_plot_thread_patch_payload(&op.payload)?;
                             let result = apply_plot_thread_patch_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -742,8 +1282,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_PLOT_MARKER_CREATE => {
-                            let marker_payload =
-                                parse_plot_marker_create_payload(&op.payload)?;
+                        let marker_payload = parse_plot_marker_create_payload(&op.payload)?;
                             let result = apply_plot_marker_create_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -761,8 +1300,7 @@ pub fn narrative_extraction_apply_commit(
                             )
                         }
                         OP_KIND_PLOT_BRANCH_CREATE => {
-                            let branch_payload =
-                                parse_plot_branch_create_payload(&op.payload)?;
+                        let branch_payload = parse_plot_branch_create_payload(&op.payload)?;
                             let result = apply_plot_branch_create_in_tx(
                                 conn,
                                 &payload.project_id,
@@ -781,21 +1319,47 @@ pub fn narrative_extraction_apply_commit(
                         }
                         OP_KIND_FORESHADOW_AGGREGATE_CREATE => {
                             let foreshadow_payload = parse_foreshadow_create(&op.payload)?;
-                            let result = apply_foreshadow_create(conn, &payload.project_id, &foreshadow_payload, &now)?;
+                        let result = apply_foreshadow_create(
+                            conn,
+                            &payload.project_id,
+                            &foreshadow_payload,
+                            &now,
+                        )?;
                             commit_map.insert_foreshadow_binding(ForeshadowBinding {
                                 hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
-                                foreshadow_id: result.entity_id.clone(), source: "created".to_string(),
+                            foreshadow_id: result.entity_id.clone(),
+                            source: "created".to_string(),
                             });
-                            ("foreshadow", result.entity_id, result.version, result.after_snapshot, result.before_snapshot, result.op_kind)
+                        (
+                            "foreshadow",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
                         }
                         OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
                             let foreshadow_payload = parse_foreshadow_patch(&op.payload)?;
-                            let result = apply_foreshadow_patch(conn, &payload.project_id, &foreshadow_payload, &now)?;
+                        let result = apply_foreshadow_patch(
+                            conn,
+                            &payload.project_id,
+                            &foreshadow_payload,
+                            &now,
+                        )?;
                             commit_map.insert_foreshadow_binding(ForeshadowBinding {
                                 hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
-                                foreshadow_id: result.entity_id.clone(), source: "existing".to_string(),
+                            foreshadow_id: result.entity_id.clone(),
+                            source: "existing".to_string(),
                             });
-                            ("foreshadow", result.entity_id, result.version, result.after_snapshot, result.before_snapshot, result.op_kind)
+                        (
+                            "foreshadow",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
                         }
                         other => anyhow::bail!("unsupported commit operation kind: {other}"),
                     };
@@ -845,29 +1409,79 @@ pub fn narrative_extraction_apply_commit(
                 let entity_id = created_row
                     .get("entityId")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("application[{index}] missing entityId")
-                    })?;
+                    .ok_or_else(|| anyhow::anyhow!("application[{index}] missing entityId"))?;
                 let entity_kind = created_row
                     .get("entityKind")
                     .and_then(Value::as_str)
                     .unwrap_or("event");
+                let application_id = Uuid::new_v4().to_string();
+                let (application_kind, compensates_application_id) =
+                    load_retraction_metadata(conn, &application.proposal_id, &application.revision_id)?;
+                let (application_kind, compensates_application_id) = if application_kind == "retract" {
+                    (
+                        "compensation",
+                        compensates_application_id,
+                    )
+                } else {
+                    ("normal", None)
+                };
                 conn.execute(
                     "INSERT INTO narrative_proposal_applications
                         (id, commit_id, proposal_id, revision_id,
-                         applied_entity_kind, applied_entity_id, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                         applied_entity_kind, applied_entity_id, created_at,
+                         application_kind, compensates_application_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
-                        Uuid::new_v4().to_string(),
+                        application_id,
                         commit_id,
                         application.proposal_id,
                         application.revision_id,
                         entity_kind,
                         entity_id,
                         now,
+                        application_kind,
+                        compensates_application_id,
                     ],
                 )?;
+                let source_basis = load_source_basis_rows(conn, &application.revision_id)?;
+                let envelope_json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions
+                      WHERE id = ?1 AND proposal_id = ?2",
+                    params![application.revision_id, application.proposal_id],
+                    |row| row.get(0),
+                )?;
+                let envelope: Value = serde_json::from_str(&envelope_json)?;
+                let read_set = load_read_set_rows(&envelope)?;
+                conn.execute(
+                    "INSERT INTO narrative_projection_freshness
+                        (application_id, status, reason_json, version, updated_at)
+                     VALUES (?1, 'fresh', NULL, 0, ?2)",
+                    params![application_id, now],
+                )?;
+                for source in source_basis.into_iter().chain(read_set) {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO narrative_projection_dependencies
+                            (application_id, source_kind, source_key,
+                             observed_revision_token, propagation)
+                         VALUES (?1, ?2, ?3, ?4, 'freshness-only')",
+                        params![
+                            application_id,
+                            source.source_kind,
+                            source.source_key,
+                            source.revision_token,
+                        ],
+                    )?;
+                }
             }
+            record_operation_field_authority(
+                conn,
+                &payload.project_id,
+                &application_pairs(&payload.applications),
+                &payload.operations,
+                &now,
+                &commit_map,
+            )?;
 
             let after_json = json!({
                 "entities": after_snapshots,
@@ -940,6 +1554,13 @@ pub fn narrative_extraction_apply_commit(
         Ok(receipt) => Ok(receipt),
         Err(err) => {
             let message = err.to_string();
+            let invalidation = message.contains("NEX_SOURCE_")
+                || message.contains("NEX_READ_SET_DRIFT")
+                || message.contains("NEX_REVISION_ENVELOPE_CHANGED")
+                || message.contains("NEX_REVISION_ENVELOPE_MISSING")
+                || message.contains("NEX_PREPARED_POLICY_CHANGED")
+                || message.contains("NEX_FIELD_AUTHORITY")
+                || message.contains("NEX_RETRACTION");
             // Precondition failures must not poison a sealed Prepared Commit —
             // the caller can correct session/version and retry apply.
             let precondition = message.contains("NEX_COMMIT_SESSION_MISMATCH")
@@ -950,12 +1571,49 @@ pub fn narrative_extraction_apply_commit(
                 || message.contains("prepared commit not found")
                 || message.contains("NARRATIVE_REVIEW_ONLY")
                 || message.contains("NARRATIVE_APPROVAL_REQUIRED");
-            if !precondition {
+            if invalidation {
+                let _ =
+                    persist_terminal_commit_audit(db, &payload, &message, &now, STATUS_INVALIDATED);
+            } else if !precondition {
                 let _ = persist_failed_commit_audit(db, &payload, &message, &now);
             }
             Err(err)
         }
     }
+}
+
+fn persist_terminal_commit_audit(
+    db: &Database,
+    payload: &ApplyCommitPayload,
+    message: &str,
+    now: &str,
+    status: &str,
+) -> anyhow::Result<()> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            conn.execute(
+                "UPDATE narrative_apply_commits
+                    SET status = ?1,
+                        error_message = ?2,
+                        completed_at = ?3,
+                        version = version + 1
+                  WHERE id = ?4
+                    AND project_id = ?5
+                    AND request_id = ?6
+                    AND status = ?7",
+                params![
+                    status,
+                    message,
+                    now,
+                    payload.prepared_commit_id,
+                    payload.project_id,
+                    payload.request_id,
+                    STATUS_PREPARED,
+                ],
+            )?;
+            Ok(())
+        })
+    })
 }
 
 fn persist_failed_commit_audit(
@@ -1031,6 +1689,7 @@ pub(crate) struct CommitRow {
     pub plan_digest: String,
     pub status: String,
     pub prepared_plan_json: Option<String>,
+    pub prepared_policy_version: Option<i64>,
     pub authority_digest: Option<String>,
     pub session_id: Option<String>,
     pub receipt_json: Option<String>,
@@ -1047,7 +1706,7 @@ pub(crate) fn load_commit_by_id(
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
         "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
-                prepared_plan_json, authority_digest, session_id,
+                prepared_plan_json, prepared_policy_version, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
           WHERE id = ?1 AND project_id = ?2",
@@ -1065,7 +1724,7 @@ pub(crate) fn load_commit_by_request(
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
         "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
-                prepared_plan_json, authority_digest, session_id,
+                prepared_plan_json, prepared_policy_version, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
           WHERE project_id = ?1 AND request_id = ?2
@@ -1087,12 +1746,13 @@ fn map_commit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommitRow> {
         status: row.get(4)?,
         receipt_json: row.get(5)?,
         prepared_plan_json: row.get(6)?,
-        authority_digest: row.get(7)?,
-        session_id: row.get(8)?,
-        error_message: row.get(9)?,
-        created_at: row.get(10)?,
-        completed_at: row.get(11)?,
-        version: row.get(12)?,
+        prepared_policy_version: row.get(7)?,
+        authority_digest: row.get(8)?,
+        session_id: row.get(9)?,
+        error_message: row.get(10)?,
+        created_at: row.get(11)?,
+        completed_at: row.get(12)?,
+        version: row.get(13)?,
     })
 }
 
@@ -1126,6 +1786,12 @@ fn replay_or_conflict(existing: CommitRow, plan_digest: &str) -> anyhow::Result<
                 .error_message
                 .unwrap_or_else(|| "previous commit failed".to_string())
         ),
+        STATUS_INVALIDATED => anyhow::bail!(
+            "NEX_COMMIT_INVALIDATED: {}",
+            existing
+                .error_message
+                .unwrap_or_else(|| "prepared commit was invalidated".to_string())
+        ),
         other => anyhow::bail!("unexpected commit status '{other}' for idempotent replay"),
     }
 }
@@ -1134,7 +1800,10 @@ fn validate_commit_plan(
     conn: &Connection,
     ctx: CommitPlanValidationContext<'_>,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(!ctx.operations.is_empty(), "commit requires at least one operation");
+    anyhow::ensure!(
+        !ctx.operations.is_empty(),
+        "commit requires at least one operation"
+    );
     ensure_run_project(conn, ctx.run_id, ctx.project_id)?;
 
     if let Some(expected_calendar_version) = ctx.expected_calendar_version {
@@ -1186,7 +1855,12 @@ fn validate_commit_plan(
             }
             OP_KIND_ENTRY_PATCH => {
                 let payload = parse_entry_patch_payload(&op.payload)?;
-                ensure_entry_version(conn, ctx.project_id, &payload.entry_id, payload.base_version)?;
+                ensure_entry_version(
+                    conn,
+                    ctx.project_id,
+                    &payload.entry_id,
+                    payload.base_version,
+                )?;
             }
             OP_KIND_ENTITY_BIND_EXISTING => {
                 let payload = parse_entity_bind_existing_payload(&op.payload)?;
@@ -1297,7 +1971,12 @@ fn validate_commit_plan(
             }
             OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
                 let payload = parse_foreshadow_patch(&op.payload)?;
-                ensure_foreshadow_version(conn, ctx.project_id, &payload.foreshadow_id, payload.base_version)?;
+                ensure_foreshadow_version(
+                    conn,
+                    ctx.project_id,
+                    &payload.foreshadow_id,
+                    payload.base_version,
+                )?;
             }
             other => anyhow::bail!("unsupported commit operation kind: {other}"),
         }
@@ -1321,8 +2000,11 @@ fn validate_commit_plan(
         ctx.applications.len(),
         ctx.operations.len()
     );
-    for (index, (operation, application)) in
-        ctx.operations.iter().zip(ctx.applications.iter()).enumerate()
+    for (index, (operation, application)) in ctx
+        .operations
+        .iter()
+        .zip(ctx.applications.iter())
+        .enumerate()
     {
         anyhow::ensure!(
             !operation.proposal_id.is_empty(),
@@ -1376,7 +2058,9 @@ fn ensure_proposal_approved_and_bound(
         "NEX_PROPOSAL_NOT_APPROVED: proposal '{proposal_id}' status is '{status}'"
     );
     let revision_id = revision_id.ok_or_else(|| {
-        anyhow::anyhow!("NEX_PROPOSAL_REVISION_MISMATCH: proposal '{proposal_id}' missing revisionId")
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_REVISION_MISMATCH: proposal '{proposal_id}' missing revisionId"
+        )
     })?;
     anyhow::ensure!(
         current_revision_id.as_deref() == Some(revision_id),
@@ -1392,11 +2076,18 @@ fn ensure_proposal_approved_and_bound(
         "NEX_PROPOSAL_KIND_MISMATCH: proposal '{proposal_id}' kind '{proposal_kind}' != operation '{operation_kind}'"
     );
 
-    let revision_payload_raw: String = conn.query_row(
-        "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1 AND proposal_id = ?2",
-        params![revision_id, proposal_id],
-        |row| row.get(0),
-    )?;
+    let (revision_payload_raw, origin_kind, envelope_digest): (String, String, Option<String>) =
+        conn.query_row(
+            "SELECT payload_json, origin_kind, reconciliation_envelope_digest
+               FROM narrative_proposal_revisions
+              WHERE id = ?1 AND proposal_id = ?2",
+            params![revision_id, proposal_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    anyhow::ensure!(
+        origin_kind == ORIGIN_ENVELOPED && envelope_digest.is_some(),
+        "NEX_REVISION_LEGACY_UNBOUND: proposal '{proposal_id}' revision '{revision_id}' requires re-extract/re-review before Apply"
+    );
     let revision_payload: Value = serde_json::from_str(&revision_payload_raw)?;
     let comparable = revision_payload_for_commit_compare(&revision_payload, operation_kind)?;
     let revision_digest = digest_plan(comparable);
@@ -1420,38 +2111,30 @@ fn revision_payload_for_commit_compare<'a>(
     let Some(obj) = revision_payload.as_object() else {
         return Ok(revision_payload);
     };
-    let is_envelope = obj.get("version").and_then(Value::as_u64) == Some(1)
-        && obj.contains_key("reviewPayload");
+    let is_envelope =
+        obj.get("version").and_then(Value::as_u64) == Some(1) && obj.contains_key("reviewPayload");
     if !is_envelope {
         return Ok(revision_payload);
     }
 
     let compiled = obj.get("compiledOperation").ok_or_else(|| {
-        anyhow::anyhow!(
-            "NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope missing compiledOperation"
-        )
+        anyhow::anyhow!("NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope missing compiledOperation")
     })?;
     if compiled.is_null() {
-        anyhow::bail!(
-            "NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope has null compiledOperation"
-        );
+        anyhow::bail!("NEX_PROPOSAL_PAYLOAD_MISMATCH: review envelope has null compiledOperation");
     }
     let compiled_kind = compiled
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.kind missing"
-            )
+            anyhow::anyhow!("NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.kind missing")
         })?;
     anyhow::ensure!(
         compiled_kind == operation_kind,
         "NEX_PROPOSAL_KIND_MISMATCH: compiledOperation.kind '{compiled_kind}' != operation '{operation_kind}'"
     );
     compiled.get("payload").ok_or_else(|| {
-        anyhow::anyhow!(
-            "NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.payload missing"
-        )
+        anyhow::anyhow!("NEX_PROPOSAL_PAYLOAD_MISMATCH: compiledOperation.payload missing")
     })
 }
 
@@ -1464,9 +2147,7 @@ fn proposal_kind_allows_operation(proposal_kind: &str, operation_kind: &str) -> 
         (proposal_kind, operation_kind),
         (
             "codex.entity.bind",
-            "codex.entry.create"
-                | "codex.entry.patch"
-                | "codex.entity.bind-existing"
+            "codex.entry.create" | "codex.entry.patch" | "codex.entity.bind-existing"
         )
     )
 }

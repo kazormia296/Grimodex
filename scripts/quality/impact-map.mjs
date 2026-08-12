@@ -534,14 +534,11 @@ function formatRunContext(comparison, environment) {
 function runCommand(command, args, cwd, { routeStdoutToStderr = false } = {}) {
   return new Promise((resolve) => {
     const started = performance.now();
-    const usesWindowsCommandShell =
-      process.platform === "win32" && command === "pnpm";
-    const executable = usesWindowsCommandShell
-      ? (process.env.ComSpec ?? "cmd.exe")
-      : command;
-    const commandArgs = usesWindowsCommandShell
-      ? ["/d", "/s", "/c", command, ...args]
-      : args;
+    // Invoke the Windows package-manager shim directly; never pass frozen
+    // argv through caller-controlled ComSpec/cmd.exe meta-character parsing.
+    const executable =
+      process.platform === "win32" && command === "pnpm" ? "pnpm.cmd" : command;
+    const commandArgs = args;
     const child = spawn(executable, commandArgs, {
       cwd,
       stdio: routeStdoutToStderr ? ["inherit", "pipe", "inherit"] : "inherit",

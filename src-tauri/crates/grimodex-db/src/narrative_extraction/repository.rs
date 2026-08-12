@@ -1,14 +1,20 @@
 //! SQL persistence for narrative extraction runs, tasks, and proposals.
 
 use chrono::Utc;
+use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
-    AppendDecisionPayload, AppendRevisionPayload, ArtifactInput, CreateRunPayload,
-    CreateTaskSeed, FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload, ProposalSeed,
-    ReviseAndDecidePayload, SaveProposalSetPayload, default_object_json,
+    default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
+    CreateRunPayload, CreateTaskSeed, FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload,
+    ProposalSeed, ReviseAndDecidePayload, SaveProposalSetPayload,
+};
+use super::reconciliation_envelope::{
+    validate_envelope_source_tokens, validate_reconciliation_envelope, SourceBasisRow,
+    ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -17,7 +23,10 @@ use super::task_leases::{
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
-pub(crate) fn ensure_proposal_not_applied(conn: &Connection, proposal_id: &str) -> anyhow::Result<()> {
+pub(crate) fn ensure_proposal_not_applied(
+    conn: &Connection,
+    proposal_id: &str,
+) -> anyhow::Result<()> {
     let applied: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_proposal_applications WHERE proposal_id = ?1",
         params![proposal_id],
@@ -168,16 +177,17 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
     })
 }
 
-fn insert_task_seed(conn: &Connection, run_id: &str, seed: &CreateTaskSeed) -> anyhow::Result<String> {
+fn insert_task_seed(
+    conn: &Connection,
+    run_id: &str,
+    seed: &CreateTaskSeed,
+) -> anyhow::Result<String> {
     let task_id = seed
         .task_id
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let input_json = serde_json::to_string(
-        seed.input_json
-            .as_ref()
-            .unwrap_or(&default_object_json()),
-    )?;
+    let input_json =
+        serde_json::to_string(seed.input_json.as_ref().unwrap_or(&default_object_json()))?;
     let priority = seed.priority.unwrap_or(0);
     conn.execute(
         "INSERT INTO narrative_extraction_tasks
@@ -363,7 +373,12 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
-            verify_task_lease(conn, &payload.task_id, &payload.run_id, &payload.lease_owner)?;
+            verify_task_lease(
+                conn,
+                &payload.task_id,
+                &payload.run_id,
+                &payload.lease_owner,
+            )?;
 
             let updated = conn.execute(
                 "UPDATE narrative_extraction_tasks
@@ -421,7 +436,12 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
-            verify_task_lease(conn, &payload.task_id, &payload.run_id, &payload.lease_owner)?;
+            verify_task_lease(
+                conn,
+                &payload.task_id,
+                &payload.run_id,
+                &payload.lease_owner,
+            )?;
 
             let updated = conn.execute(
                 "UPDATE narrative_extraction_tasks
@@ -549,11 +569,13 @@ pub fn get_run_review_bundle(
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("proposal set missing id"))?;
             let mut proposal_stmt = conn.prepare(
-                "SELECT id, proposal_set_id, proposal_key, kind, status, payload_json,
-                        current_revision_id, created_at, updated_at
-                   FROM narrative_proposals
-                  WHERE proposal_set_id = ?1
-                  ORDER BY created_at ASC, id ASC",
+                "SELECT p.id, p.proposal_set_id, p.proposal_key, p.kind, p.status, p.payload_json,
+                        p.current_revision_id, p.created_at, p.updated_at,
+                        r.origin_kind, r.reconciliation_envelope_digest
+                   FROM narrative_proposals p
+                   LEFT JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
+                  WHERE p.proposal_set_id = ?1
+                  ORDER BY p.created_at ASC, p.id ASC",
             )?;
             let rows: Vec<Value> = proposal_stmt
                 .query_map(params![proposal_set_id], row_to_proposal_value)?
@@ -568,7 +590,8 @@ pub fn get_run_review_bundle(
                 let latest_decision = conn
                     .query_row(
                         "SELECT id, proposal_id, revision_id, decision, decision_json,
-                                created_at, created_by
+                                created_at, created_by, actor_kind, actor_id,
+                                authority_scope, override_field_paths_json
                            FROM narrative_proposal_decisions
                           WHERE proposal_id = ?1
                           ORDER BY created_at DESC, id DESC
@@ -580,7 +603,8 @@ pub fn get_run_review_bundle(
                 let application = conn
                     .query_row(
                         "SELECT commit_id, revision_id, applied_entity_kind,
-                                applied_entity_id, created_at
+                                applied_entity_id, created_at, application_kind,
+                                compensates_application_id
                            FROM narrative_proposal_applications
                           WHERE proposal_id = ?1
                           ORDER BY created_at DESC, id DESC
@@ -593,6 +617,8 @@ pub fn get_run_review_bundle(
                                 "appliedEntityKind": row.get::<_, String>(2)?,
                                 "appliedEntityId": row.get::<_, String>(3)?,
                                 "createdAt": row.get::<_, String>(4)?,
+                                "applicationKind": row.get::<_, String>(5)?,
+                                "compensatesApplicationId": row.get::<_, Option<String>>(6)?,
                             }))
                         },
                     )
@@ -648,7 +674,13 @@ pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyh
 
             let mut saved = Vec::new();
             for proposal in &payload.proposals {
-                saved.push(insert_proposal_seed(conn, &proposal_set_id, proposal)?);
+                saved.push(insert_proposal_seed(
+                    conn,
+                    &proposal_set_id,
+                    &payload.run_id,
+                    &payload.project_id,
+                    proposal,
+                )?);
             }
 
             Ok(json!({
@@ -662,6 +694,8 @@ pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyh
 fn insert_proposal_seed(
     conn: &Connection,
     proposal_set_id: &str,
+    run_id: &str,
+    project_id: &str,
     seed: &ProposalSeed,
 ) -> anyhow::Result<Value> {
     let proposal_id = seed
@@ -671,6 +705,26 @@ fn insert_proposal_seed(
     let payload_json = serde_json::to_string(&seed.payload_json)?;
     let revision_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let validated_envelope = validate_reconciliation_envelope(
+        conn,
+        project_id,
+        run_id,
+        seed.reconciliation_envelope.as_ref(),
+    )?;
+    if let Some(envelope) = seed.reconciliation_envelope.as_ref() {
+        validate_envelope_source_tokens(conn, project_id, run_id, envelope)?;
+    }
+    let origin_kind = if validated_envelope.is_some() {
+        ORIGIN_ENVELOPED
+    } else {
+        ORIGIN_LEGACY_UNBOUND
+    };
+    let envelope_json = validated_envelope
+        .as_ref()
+        .map(|envelope| envelope.canonical_json.clone());
+    let envelope_digest = validated_envelope
+        .as_ref()
+        .map(|envelope| envelope.digest.clone());
 
     conn.execute(
         "INSERT INTO narrative_proposals
@@ -689,17 +743,55 @@ fn insert_proposal_seed(
 
     conn.execute(
         "INSERT INTO narrative_proposal_revisions
-            (id, proposal_id, revision_number, payload_json, created_at, created_by)
-         VALUES (?1, ?2, 1, ?3, ?4, 'system')",
-        params![revision_id, proposal_id, payload_json.clone(), created_at],
+            (id, proposal_id, revision_number, payload_json, origin_kind,
+             reconciliation_envelope_json, reconciliation_envelope_digest,
+             created_at, created_by)
+         VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, 'system')",
+        params![
+            revision_id,
+            proposal_id,
+            payload_json.clone(),
+            origin_kind,
+            envelope_json,
+            envelope_digest,
+            created_at,
+        ],
     )?;
+    if let Some(envelope) = validated_envelope.as_ref() {
+        insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
+    }
 
     Ok(json!({
         "proposalId": proposal_id,
         "proposalKey": seed.proposal_key,
         "revisionId": revision_id,
+        "originKind": origin_kind,
+        "reconciliationEnvelopeDigest": envelope_digest,
         "status": "unreviewed",
     }))
+}
+
+fn insert_source_basis_rows(
+    conn: &Connection,
+    revision_id: &str,
+    rows: &[SourceBasisRow],
+) -> anyhow::Result<()> {
+    for row in rows {
+        conn.execute(
+            "INSERT INTO narrative_revision_source_basis
+                (revision_id, ordinal, source_kind, source_key, revision_token, observed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                revision_id,
+                row.ordinal,
+                row.source_kind,
+                row.source_key,
+                row.revision_token,
+                row.observed_at,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 pub fn append_revision(db: &Database, payload: AppendRevisionPayload) -> anyhow::Result<Value> {
@@ -728,15 +820,36 @@ fn append_revision_on_conn(
         .unwrap_or_else(|| "user".to_string());
 
     ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
-    let (proposal_set_id, current_revision_id): (String, String) = conn.query_row(
-        "SELECT p.proposal_set_id, p.current_revision_id
+    let (
+        proposal_set_id,
+        current_revision_id,
+        current_origin_kind,
+        current_envelope_json,
+        current_envelope_digest,
+    ): (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT p.proposal_set_id, p.current_revision_id,
+                r.origin_kind, r.reconciliation_envelope_json,
+                r.reconciliation_envelope_digest
            FROM narrative_proposals p
            INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+           LEFT JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
           WHERE p.id = ?1
             AND s.run_id = ?2
             AND s.project_id = ?3",
         params![payload.proposal_id, payload.run_id, payload.project_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        )),
     )?;
     let _ = proposal_set_id;
     anyhow::ensure!(
@@ -745,6 +858,60 @@ fn append_revision_on_conn(
         payload.expected_current_revision_id,
         current_revision_id
     );
+
+    anyhow::ensure!(
+        !(payload.reconciliation_envelope.is_some()
+            && payload.inherit_reconciliation_envelope.is_some()),
+        "NEX_REVISION_ENVELOPE_MODE_CONFLICT: supply an envelope or explicit inheritance, not both"
+    );
+    let inherited_envelope = if let Some(inherit) =
+        payload.inherit_reconciliation_envelope.as_ref()
+    {
+        anyhow::ensure!(
+            inherit.parent_revision_id == current_revision_id,
+            "NEX_REVISION_ENVELOPE_PARENT_CONFLICT: inherit parent revision does not match current revision"
+        );
+        anyhow::ensure!(
+            current_origin_kind == ORIGIN_ENVELOPED,
+            "NEX_REVISION_ENVELOPE_INHERIT_UNAVAILABLE: current revision is not enveloped"
+        );
+        anyhow::ensure!(
+            current_envelope_digest.as_deref() == Some(inherit.expected_envelope_digest.as_str()),
+            "NEX_REVISION_ENVELOPE_INHERIT_CONFLICT: current envelope digest does not match expected digest"
+        );
+        Some(
+            current_envelope_json
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("NEX_REVISION_ENVELOPE_INHERIT_MISSING: current envelope JSON is missing"))
+                .and_then(|json| serde_json::from_str(json).context("NEX_REVISION_ENVELOPE_INHERIT_INVALID: current envelope JSON is invalid"))?,
+        )
+    } else {
+        None
+    };
+    let envelope_input = payload
+        .reconciliation_envelope
+        .as_ref()
+        .or(inherited_envelope.as_ref());
+    let validated_envelope = validate_reconciliation_envelope(
+        conn,
+        &payload.project_id,
+        &payload.run_id,
+        envelope_input,
+    )?;
+    if let Some(envelope) = envelope_input {
+        validate_envelope_source_tokens(conn, &payload.project_id, &payload.run_id, envelope)?;
+    }
+    let origin_kind = if validated_envelope.is_some() {
+        ORIGIN_ENVELOPED
+    } else {
+        ORIGIN_LEGACY_UNBOUND
+    };
+    let envelope_json = validated_envelope
+        .as_ref()
+        .map(|envelope| envelope.canonical_json.clone());
+    let envelope_digest = validated_envelope
+        .as_ref()
+        .map(|envelope| envelope.digest.clone());
 
     let next_revision: i64 = conn.query_row(
         "SELECT COALESCE(MAX(revision_number), 0) + 1
@@ -756,17 +923,25 @@ fn append_revision_on_conn(
 
     conn.execute(
         "INSERT INTO narrative_proposal_revisions
-            (id, proposal_id, revision_number, payload_json, created_at, created_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (id, proposal_id, revision_number, payload_json, origin_kind,
+             reconciliation_envelope_json, reconciliation_envelope_digest,
+             created_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             revision_id,
             payload.proposal_id,
             next_revision,
             payload_json,
+            origin_kind,
+            envelope_json,
+            envelope_digest,
             created_at,
             created_by,
         ],
     )?;
+    if let Some(envelope) = validated_envelope.as_ref() {
+        insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
+    }
 
     let updated = conn.execute(
         "UPDATE narrative_proposals
@@ -792,15 +967,44 @@ fn append_revision_on_conn(
         "proposalId": payload.proposal_id,
         "revisionId": revision_id,
         "revisionNumber": next_revision,
+        "originKind": origin_kind,
+        "reconciliationEnvelopeDigest": envelope_digest,
         "status": "unreviewed",
     }))
 }
 
 pub fn append_decision(db: &Database, payload: AppendDecisionPayload) -> anyhow::Result<Value> {
+    append_decision_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Automated {
+            actor_id: "electron:automated-review".to_string(),
+        },
+    )
+}
+
+pub fn append_human_decision(
+    db: &Database,
+    payload: AppendDecisionPayload,
+) -> anyhow::Result<Value> {
+    append_decision_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Human {
+            actor_id: "electron:human-review".to_string(),
+        },
+    )
+}
+
+fn append_decision_with_actor(
+    db: &Database,
+    payload: AppendDecisionPayload,
+    actor: TrustedDecisionActor,
+) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
-            append_decision_on_conn(conn, &payload)
+            append_decision_on_conn(conn, &payload, &actor)
         })
     })
 }
@@ -811,14 +1015,14 @@ pub fn append_decision(db: &Database, payload: AppendDecisionPayload) -> anyhow:
 fn append_decision_on_conn(
     conn: &Connection,
     payload: &AppendDecisionPayload,
+    actor: &TrustedDecisionActor,
 ) -> anyhow::Result<Value> {
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
-    let decision_json = serde_json::to_string(
-        payload
+    let decision_value = payload
             .decision_json
-            .as_ref()
-            .unwrap_or(&default_object_json()),
-    )?;
+        .clone()
+        .unwrap_or_else(default_object_json);
+    let decision_json = serde_json::to_string(&decision_value)?;
     let decision_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let created_by = payload
@@ -858,11 +1062,19 @@ fn append_decision_on_conn(
         "NEX_PROPOSAL_REVISION_MISMATCH: decision revision '{}' is not current",
         payload.revision_id
     );
+    let authority = derive_decision_authority(
+        actor,
+        &payload.project_id,
+        &payload.proposal_id,
+        &payload.revision_id,
+        &decision_value,
+    )?;
 
     conn.execute(
         "INSERT INTO narrative_proposal_decisions
-            (id, proposal_id, revision_id, decision, decision_json, created_at, created_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (id, proposal_id, revision_id, decision, decision_json, created_at, created_by,
+             actor_kind, actor_id, authority_scope, override_field_paths_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             decision_id,
             payload.proposal_id,
@@ -871,6 +1083,10 @@ fn append_decision_on_conn(
             decision_json,
             created_at,
             created_by,
+            authority.actor_kind,
+            authority.actor_id,
+            authority.authority_scope,
+            serde_json::to_string(&authority.override_field_paths)?,
         ],
     )?;
 
@@ -899,9 +1115,33 @@ fn append_decision_on_conn(
 /// Atomically append a revision then a decision that references the new revision.
 /// One `with_immediate_transaction` guards both writes, so an approve can never
 /// leave a fresh revision without its decision (or vice versa).
-pub fn revise_and_decide(
+pub fn revise_and_decide(db: &Database, payload: ReviseAndDecidePayload) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Automated {
+            actor_id: "electron:automated-review".to_string(),
+        },
+    )
+}
+
+pub fn revise_and_decide_as_human(
     db: &Database,
     payload: ReviseAndDecidePayload,
+) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Human {
+            actor_id: "electron:human-review".to_string(),
+        },
+    )
+}
+
+fn revise_and_decide_with_actor(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    actor: TrustedDecisionActor,
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -913,6 +1153,10 @@ pub fn revise_and_decide(
                 payload_json: payload.payload_json.clone(),
                 expected_current_revision_id: payload.expected_current_revision_id.clone(),
                 created_by: payload.created_by.clone(),
+                reconciliation_envelope: payload.reconciliation_envelope.clone(),
+                inherit_reconciliation_envelope: payload
+                    .inherit_reconciliation_envelope
+                    .clone(),
             };
             let revision = append_revision_on_conn(conn, &revision_payload)?;
             let revision_id = revision["revisionId"]
@@ -930,7 +1174,7 @@ pub fn revise_and_decide(
                 decision_json: payload.decision_json.clone(),
                 created_by: payload.created_by.clone(),
             };
-            let decision = append_decision_on_conn(conn, &decision_payload)?;
+            let decision = append_decision_on_conn(conn, &decision_payload, &actor)?;
             let decision_id = decision["decisionId"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("revise_and_decide: missing decisionId"))?
@@ -1056,6 +1300,8 @@ fn row_to_proposal_value(row: &Row<'_>) -> rusqlite::Result<Value> {
         "status": row.get::<_, String>("status")?,
         "payloadJson": parse_json_column(row.get::<_, String>("payload_json")?)?,
         "currentRevisionId": row.get::<_, Option<String>>("current_revision_id")?,
+        "originKind": row.get::<_, Option<String>>("origin_kind")?,
+        "reconciliationEnvelopeDigest": row.get::<_, Option<String>>("reconciliation_envelope_digest")?,
         "createdAt": row.get::<_, String>("created_at")?,
         "updatedAt": row.get::<_, String>("updated_at")?,
     }))
@@ -1070,6 +1316,10 @@ fn row_to_decision_value(row: &Row<'_>) -> rusqlite::Result<Value> {
         "decisionJson": parse_json_column(row.get::<_, String>("decision_json")?)?,
         "createdAt": row.get::<_, String>("created_at")?,
         "createdBy": row.get::<_, String>("created_by")?,
+        "actorKind": row.get::<_, String>("actor_kind")?,
+        "actorId": row.get::<_, String>("actor_id")?,
+        "authorityScope": row.get::<_, String>("authority_scope")?,
+        "overrideFieldPaths": parse_json_column(row.get::<_, String>("override_field_paths_json")?)?,
     }))
 }
 
@@ -1171,9 +1421,53 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             payload_json TEXT NOT NULL,
             plan_fragment_json TEXT,
             plan_fragment_digest TEXT,
+            origin_kind TEXT NOT NULL DEFAULT 'legacy-unbound',
+            reconciliation_envelope_json TEXT,
+            reconciliation_envelope_digest TEXT,
             created_at TEXT NOT NULL,
             created_by TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS narrative_revision_source_basis (
+            revision_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            revision_token TEXT NOT NULL,
+            observed_at TEXT,
+            PRIMARY KEY (revision_id, ordinal),
+            UNIQUE (revision_id, source_key)
+        );
+        CREATE TABLE IF NOT EXISTS narrative_projection_freshness (
+            application_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL
+                CHECK(status IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift')),
+            reason_json TEXT,
+            version INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS narrative_projection_dependencies (
+            application_id TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            observed_revision_token TEXT NOT NULL,
+            propagation TEXT NOT NULL CHECK(propagation = 'freshness-only'),
+            PRIMARY KEY (application_id, source_kind, source_key)
+        );
+        CREATE TABLE IF NOT EXISTS narrative_field_authority (
+            project_id TEXT NOT NULL,
+            entity_kind TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            field_path TEXT NOT NULL,
+            owner_kind TEXT NOT NULL
+                CHECK(owner_kind IN ('human','ai','system','unknown')),
+            explicit_lock INTEGER NOT NULL DEFAULT 0
+                CHECK(explicit_lock IN (0,1)),
+            version INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, entity_kind, entity_id, field_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_narrative_field_authority_entity
+            ON narrative_field_authority(project_id, entity_kind, entity_id);
         CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (
             id TEXT PRIMARY KEY,
             proposal_id TEXT NOT NULL,
@@ -1181,7 +1475,11 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             decision TEXT NOT NULL,
             decision_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
-            created_by TEXT NOT NULL
+            created_by TEXT NOT NULL,
+            actor_kind TEXT NOT NULL DEFAULT 'human',
+            actor_id TEXT NOT NULL DEFAULT 'legacy-review',
+            authority_scope TEXT NOT NULL DEFAULT 'legacy-review',
+            override_field_paths_json TEXT NOT NULL DEFAULT '[]'
         );
         CREATE TABLE IF NOT EXISTS narrative_apply_commits (
             id TEXT PRIMARY KEY,
@@ -1220,8 +1518,20 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             revision_id TEXT NOT NULL,
             applied_entity_kind TEXT NOT NULL,
             applied_entity_id TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            application_kind TEXT NOT NULL DEFAULT 'normal'
+                CHECK(application_kind IN ('normal','compensation')),
+            compensates_application_id TEXT,
+            CHECK (
+                (application_kind = 'normal' AND compensates_application_id IS NULL)
+                OR
+                (application_kind = 'compensation' AND compensates_application_id IS NOT NULL)
+            )
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_compensation_target
+            ON narrative_proposal_applications(compensates_application_id)
+            WHERE application_kind = 'compensation'
+              AND compensates_application_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS narrative_commit_journals (
             id TEXT PRIMARY KEY,
             commit_id TEXT NOT NULL,
@@ -1230,6 +1540,65 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             after_json TEXT,
             created_at TEXT NOT NULL
         );",
+    )?;
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_update
+            BEFORE UPDATE ON narrative_proposal_revisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_revision_envelope_immutable_update
+            BEFORE UPDATE ON narrative_proposal_revisions
+            WHEN OLD.origin_kind IS NOT NEW.origin_kind
+              OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+              OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+            BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_update
+            BEFORE UPDATE ON narrative_revision_source_basis
+            BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_delete
+            BEFORE DELETE ON narrative_revision_source_basis
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications
+                 WHERE revision_id = OLD.revision_id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_delete
+            BEFORE DELETE ON narrative_proposal_revisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_update
+            BEFORE UPDATE ON narrative_proposal_decisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications
+                 WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_delete
+            BEFORE DELETE ON narrative_proposal_decisions
+            WHEN EXISTS(
+                SELECT 1 FROM narrative_proposal_applications
+                 WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id
+            )
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_update
+            BEFORE UPDATE ON narrative_proposal_applications
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_delete
+            BEFORE DELETE ON narrative_proposal_applications
+            BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_application_kind_guard
+            BEFORE INSERT ON narrative_proposal_applications
+            WHEN NEW.application_kind NOT IN ('normal','compensation')
+            BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID'); END;
+        CREATE TRIGGER IF NOT EXISTS narrative_application_compensation_guard
+            BEFORE INSERT ON narrative_proposal_applications
+            WHEN (NEW.application_kind = 'normal' AND NEW.compensates_application_id IS NOT NULL)
+              OR (NEW.application_kind = 'compensation' AND NEW.compensates_application_id IS NULL)
+            BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_COMPENSATION_SHAPE_INVALID'); END;",
     )?;
     Ok(())
 }

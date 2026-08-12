@@ -562,15 +562,19 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 16 adds per-incarnation identity to
-/// `scene_events` on top of every v15 invariant.
+/// [`SCHEMA_VERSION`]. Version 20 adds immutable semantic-retraction metadata
+/// on Applications and protection triggers on applied history.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 16
+    Ok(SCHEMA_VERSION == 20
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
         && has_v15_prepared_commit_columns(conn)?
-        && has_v16_scene_event_incarnation_column(conn)?)
+        && has_v16_scene_event_incarnation_column(conn)?
+        && has_v17_reconciliation_envelope_columns(conn)?
+        && has_v18_projection_freshness_columns(conn)?
+        && has_v19_field_authority_columns(conn)?
+        && has_v20_retraction_columns(conn)?)
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -608,6 +612,136 @@ fn has_v15_prepared_commit_columns(conn: &Connection) -> anyhow::Result<bool> {
         && has_text(&commit_cols, "authority_digest")
         && has_text(&revision_cols, "plan_fragment_json")
         && has_text(&revision_cols, "plan_fragment_digest"))
+}
+
+fn has_v17_reconciliation_envelope_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_proposal_revisions")?
+        || !table_exists(conn, "narrative_revision_source_basis")?
+    {
+        return Ok(false);
+    }
+    let revisions = table_columns(conn, "narrative_proposal_revisions")?;
+    let source_basis = table_columns(conn, "narrative_revision_source_basis")?;
+    let has_text = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "TEXT")
+    };
+    Ok(has_text(&revisions, "origin_kind")
+        && has_text(&revisions, "reconciliation_envelope_json")
+        && has_text(&revisions, "reconciliation_envelope_digest")
+        && has_text(&source_basis, "revision_id")
+        && has_text(&source_basis, "source_kind")
+        && has_text(&source_basis, "source_key")
+        && has_text(&source_basis, "revision_token"))
+}
+
+fn has_v18_projection_freshness_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_projection_freshness")?
+        || !table_exists(conn, "narrative_projection_dependencies")?
+    {
+        return Ok(false);
+    }
+    let freshness = table_columns(conn, "narrative_projection_freshness")?;
+    let dependencies = table_columns(conn, "narrative_projection_dependencies")?;
+    let has_text = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "TEXT")
+    };
+    Ok(has_text(&freshness, "application_id")
+        && has_text(&freshness, "status")
+        && has_text(&freshness, "updated_at")
+        && has_text(&dependencies, "application_id")
+        && has_text(&dependencies, "source_kind")
+        && has_text(&dependencies, "source_key")
+        && has_text(&dependencies, "observed_revision_token")
+        && has_text(&dependencies, "propagation"))
+}
+
+fn has_v19_field_authority_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_field_authority")?
+        || !table_exists(conn, "narrative_proposal_decisions")?
+    {
+        return Ok(false);
+    }
+    let authority = table_columns(conn, "narrative_field_authority")?;
+    let decisions = table_columns(conn, "narrative_proposal_decisions")?;
+    let has_text = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "TEXT")
+    };
+    let has_int = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "INTEGER")
+    };
+    Ok(has_text(&authority, "project_id")
+        && has_text(&authority, "entity_kind")
+        && has_text(&authority, "entity_id")
+        && has_text(&authority, "field_path")
+        && has_text(&authority, "owner_kind")
+        && has_int(&authority, "explicit_lock")
+        && has_int(&authority, "version")
+        && has_text(&authority, "updated_at")
+        && has_text(&decisions, "actor_kind")
+        && has_text(&decisions, "actor_id")
+        && has_text(&decisions, "authority_scope")
+        && has_text(&decisions, "override_field_paths_json"))
+}
+
+fn has_v20_retraction_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_proposal_applications")? {
+        return Ok(false);
+    }
+    let applications = table_columns(conn, "narrative_proposal_applications")?;
+    let has_text = |name: &str| {
+        applications
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "TEXT")
+    };
+    let triggers: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM sqlite_master
+          WHERE type = 'trigger'
+            AND name IN (
+              'narrative_revision_immutable_after_apply_update',
+              'narrative_revision_envelope_immutable_update',
+              'narrative_source_basis_immutable_update',
+              'narrative_source_basis_immutable_delete',
+              'narrative_revision_immutable_after_apply_delete',
+              'narrative_decision_immutable_after_apply_update',
+              'narrative_decision_immutable_after_apply_delete',
+              'narrative_application_immutable_update',
+              'narrative_application_immutable_delete',
+              'narrative_application_kind_guard',
+              'narrative_application_compensation_guard'
+            )",
+        [],
+        |row| row.get(0),
+    )?;
+    let source_delete_trigger: Option<String> = conn
+        .query_row(
+            "SELECT sql
+               FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_source_basis_immutable_delete'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(has_text("application_kind")
+        && has_text("compensates_application_id")
+        && triggers == 11
+        && source_delete_trigger
+            .as_deref()
+            .map(compact_sql)
+            .is_some_and(|sql| {
+                sql.contains(
+                    "whenexists(select1fromnarrative_proposal_applicationswhererevision_id=old.revision_id)",
+                )
+            }))
 }
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

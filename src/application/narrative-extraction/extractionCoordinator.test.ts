@@ -10,6 +10,7 @@ const failMock = vi.hoisted(() => vi.fn());
 const createRunMock = vi.hoisted(() => vi.fn());
 const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
+const buildSnapshotSourceBasisMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./nativeApi", () => ({
   narrativeExtractionClaimTask: claimMock,
@@ -32,6 +33,7 @@ vi.mock("./runRepository", async () => {
 
 vi.mock("./proposalRepository", () => ({
   saveChronicleProposalSet: saveProposalSetMock,
+  buildSnapshotSourceBasis: buildSnapshotSourceBasisMock,
 }));
 
 import {
@@ -78,6 +80,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
       taskIds: [],
     }));
     cancelRunMock.mockResolvedValue({ runId: "run-1", status: "cancelled" });
+    buildSnapshotSourceBasisMock.mockReturnValue([]);
     claimMock.mockImplementation(async (payload: { taskKinds?: string[] }) => {
       taskSeq += 1;
       const taskKind = payload.taskKinds?.[0] ?? "unknown";

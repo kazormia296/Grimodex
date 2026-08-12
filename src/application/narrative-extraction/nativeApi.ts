@@ -5,6 +5,7 @@ import type {
   NarrativeProposalDecision,
   NarrativeProposalStatus,
 } from "@/features/narrative-extraction/runtime/types";
+import type { ReconciliationEnvelopeV1 } from "@/features/narrative-extraction/reconciler/types";
 
 export interface CreateRunTaskSeed {
   readonly taskId?: string;
@@ -104,6 +105,8 @@ export interface ProposalSeed {
   readonly proposalKey: string;
   readonly kind: string;
   readonly payloadJson: object;
+  /** Optional V1 contract; omitted legacy revisions remain reviewable but cannot Apply. */
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
 }
 
 export interface SaveProposalSetPayload {
@@ -120,6 +123,8 @@ export interface SavedProposalSeed {
   readonly proposalKey: string;
   readonly revisionId: string;
   readonly status: NarrativeProposalStatus;
+  readonly originKind?: "enveloped" | "legacy-unbound";
+  readonly reconciliationEnvelopeDigest?: string | null;
 }
 
 export interface SaveProposalSetResult {
@@ -160,6 +165,10 @@ export interface ReviewBundleLatestDecision {
   readonly decisionJson: Readonly<Record<string, unknown>>;
   readonly createdAt: string;
   readonly createdBy: string;
+  readonly actorKind: "human" | "ai" | "system" | "unknown";
+  readonly actorId: string;
+  readonly authorityScope: string;
+  readonly overrideFieldPaths: readonly string[];
 }
 
 export interface ReviewBundleProposalApplication {
@@ -168,6 +177,8 @@ export interface ReviewBundleProposalApplication {
   readonly appliedEntityKind: string;
   readonly appliedEntityId: string;
   readonly createdAt: string;
+  readonly applicationKind: "normal" | "compensation";
+  readonly compensatesApplicationId: string | null;
 }
 
 export interface ReviewBundleProposal {
@@ -180,9 +191,17 @@ export interface ReviewBundleProposal {
   readonly currentRevisionId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly originKind?: "enveloped" | "legacy-unbound";
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly latestDecision: ReviewBundleLatestDecision | null;
   /** Present when Native already applied this proposal (partial Apply / cold-start). */
   readonly application?: ReviewBundleProposalApplication | null;
+}
+
+/** Explicit CAS mode for carrying an existing envelope to a new revision. */
+export interface ReconciliationEnvelopeInheritance {
+  readonly parentRevisionId: string;
+  readonly expectedEnvelopeDigest: string;
 }
 
 export interface GetRunReviewBundleResult {
@@ -198,6 +217,10 @@ export interface AppendRevisionPayload {
   readonly projectId: string;
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
+  /** Optional V1 contract; omitted revisions are explicitly legacy-unbound. */
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
+  /** Optional explicit CAS inheritance; omission never inherits implicitly. */
+  readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */
   readonly expectedCurrentRevisionId: string;
   readonly createdBy?: string;
@@ -233,6 +256,9 @@ export interface ReviseAndDecidePayload {
   readonly projectId: string;
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
+  /** Optional explicit CAS inheritance; omission never inherits implicitly. */
+  readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */
   readonly expectedCurrentRevisionId: string;
   readonly decision: NarrativeProposalDecision;
@@ -247,6 +273,19 @@ export interface ReviseAndDecideResult {
   readonly decisionId: string;
   readonly decision: NarrativeProposalDecision;
   readonly status: NarrativeProposalStatus;
+}
+
+export interface HumanFieldLockPayload {
+  readonly projectId: string;
+  readonly entityKind: string;
+  readonly entityId: string;
+  readonly fieldPath: string;
+  readonly expectedVersion: number;
+  readonly locked: boolean;
+}
+
+export interface HumanFieldLockResult extends HumanFieldLockPayload {
+  readonly version: number;
 }
 
 export interface CommitApplicationRef {
@@ -457,11 +496,40 @@ export async function narrativeExtractionAppendDecision(
   });
 }
 
+/** Human review endpoint; Native fixes the actor class and review scope. */
+export async function narrativeExtractionAppendHumanDecision(
+  payload: AppendDecisionPayload,
+): Promise<AppendDecisionResult> {
+  return invoke<AppendDecisionResult>(
+    "narrative_extraction_append_human_decision",
+    { payload },
+  );
+}
+
 export async function narrativeExtractionReviseAndDecide(
   payload: ReviseAndDecidePayload,
 ): Promise<ReviseAndDecideResult> {
   return invoke<ReviseAndDecideResult>(
     "narrative_extraction_revise_and_decide",
+    { payload },
+  );
+}
+
+/** Atomic human revision + decision endpoint for the review surface. */
+export async function narrativeExtractionReviseAndDecideAsHuman(
+  payload: ReviseAndDecidePayload,
+): Promise<ReviseAndDecideResult> {
+  return invoke<ReviseAndDecideResult>(
+    "narrative_extraction_revise_and_decide_as_human",
+    { payload },
+  );
+}
+
+export async function narrativeExtractionSetHumanFieldLock(
+  payload: HumanFieldLockPayload,
+): Promise<HumanFieldLockResult> {
+  return invoke<HumanFieldLockResult>(
+    "narrative_extraction_set_human_field_lock",
     { payload },
   );
 }

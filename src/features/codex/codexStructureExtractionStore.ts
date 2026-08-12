@@ -94,6 +94,7 @@ export interface CodexReviewProposalApplication {
 export interface CodexEntityReviewProposal {
   readonly proposalId: string;
   readonly revisionId: string | null;
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
   readonly applicability: "applicable" | "blocked";
@@ -115,6 +116,7 @@ export interface CodexEntityReviewProposal {
 export interface CodexRelationReviewProposal {
   readonly proposalId: string;
   readonly revisionId: string | null;
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
   readonly applicability: "applicable" | "blocked" | "already-satisfied";
@@ -145,6 +147,7 @@ export interface CodexStructureCatalogType {
   readonly sourceKey: string;
   readonly slug: string;
   readonly label: string;
+  readonly expectedVersion?: number;
 }
 
 export interface CodexStructureCatalogSnapshot {
@@ -189,6 +192,7 @@ export interface CodexDetailValueDelta {
 export interface CodexBaseDetailReviewProposal {
   readonly proposalId: string;
   readonly revisionId: string | null;
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
   readonly applicability: "applicable" | "blocked";
@@ -207,6 +211,7 @@ export interface CodexBaseDetailReviewProposal {
 export interface CodexPhaseReviewProposal {
   readonly proposalId: string;
   readonly revisionId: string | null;
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
   readonly applicability: "applicable" | "blocked";

@@ -14,7 +14,7 @@ import {
   type PlaceForeshadowSetupProposal,
   type PlaceForeshadowSetupProposalPayload,
 } from "@/features/narrative-extraction/proposals/bindForeshadowThreadProposal";
-import { meetsNewForeshadowMinimum } from "./foreshadowGates";
+import { meetsNewForeshadowMinimum } from "./foreshadowSignals";
 import {
   deriveForeshadowLifecycle,
   deriveForeshadowQuality,

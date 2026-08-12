@@ -40,7 +40,10 @@ import {
   loadInlineJsonArtifact,
   rememberInlineJsonArtifact,
 } from "./artifactRepository";
-import { saveChronicleProposalSet } from "./proposalRepository";
+import {
+  buildSnapshotSourceBasis,
+  saveChronicleProposalSet,
+} from "./proposalRepository";
 import {
   buildProjectNarrativeSnapshot,
   type ProjectSnapshotAdapterServices,
@@ -874,13 +877,48 @@ export async function runChronicleExtractionCoordinator(
             | ProposalPlanArtifactPayload
             | undefined) ?? null;
         const proposals = proposalPayload?.proposals ?? [];
+        const evidencePayload =
+          await loadInlineJsonArtifact<ResolvedEvidenceArtifactPayload>(
+            runId,
+            CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+          );
+        if (!evidencePayload) {
+          throw new Error("Missing resolved evidence for proposal persistence");
+        }
         const saved = await saveChronicleProposalSet({
           runId,
           projectId: request.projectId,
+          taskId: claim.task.taskId,
+          sourceRevisionToken: snapshotResult.snapshot.digest,
+          sourceBasis: buildSnapshotSourceBasis(runId, snapshotResult.snapshot),
           summaryJson: {
             proposalCount: proposals.length,
             surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
           },
+          evidenceById: new Map(
+            evidencePayload.anchors.map((anchor) => [
+              anchor.id,
+              {
+                documentRef: anchor.documentRef,
+                quote: anchor.quote,
+                quoteDigest: anchor.quoteDigest,
+                sourceKey:
+                  snapshotResult.snapshot.documents.find(
+                    (document) => document.ref === anchor.documentRef,
+                  )?.origin.kind === "project-node"
+                    ? `project:scene:${snapshotResult.snapshot.documents.find((document) => document.ref === anchor.documentRef)?.origin.nodeId}`
+                    : undefined,
+                revisionToken: (() => {
+                  const document = snapshotResult.snapshot.documents.find(
+                    (item) => item.ref === anchor.documentRef,
+                  );
+                  return document?.origin.kind === "project-node"
+                    ? `v${document.origin.sourceVersion}@${document.origin.sourceUpdatedAt}`
+                    : undefined;
+                })(),
+              },
+            ]),
+          ),
           proposals: proposals.map((proposal, index) => ({
             proposalKey: `${proposal.eventId}:${index}`,
             payload: proposal,

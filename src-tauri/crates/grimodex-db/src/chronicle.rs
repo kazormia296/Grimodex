@@ -131,6 +131,14 @@ pub fn set_event_participants(
                 params![payload.event_id, codex_entry_id],
             )?;
         }
+        crate::narrative_extraction::record_human_field_write(
+            &transaction,
+            &payload.project_id,
+            "event",
+            &payload.event_id,
+            &["/participants"],
+            &payload.updated_at,
+        )?;
         transaction.commit()?;
         Ok(Some(result_version))
     })
@@ -322,6 +330,14 @@ pub fn upsert_project_calendar(
                 }
             }
 
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "project",
+                &payload.project_id,
+                &["/calendar"],
+                &payload.updated_at,
+            )?;
             calendar_row(conn, &payload.project_id)
         })();
 

@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use super::{
@@ -72,6 +72,8 @@ fn delete_versioned_row(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
+            let project_id = project_for_plot_table(conn, table, &id)?
+                .ok_or_else(|| anyhow::anyhow!("{table} row not found: {id}"))?;
             let delete_sql = format!("DELETE FROM {table} WHERE id = ? AND version = ?");
             Database::execute_with_conn(
                 conn,
@@ -83,6 +85,14 @@ fn delete_versioned_row(
                 "run",
             )?;
             if conn.changes() == 1 {
+                let (entity_kind, field_paths) = plot_entity_authority(table);
+                record_plot_field_authority(
+                    conn,
+                    &project_id,
+                    entity_kind,
+                    &id,
+                    field_paths,
+                )?;
                 return Ok(());
             }
             let select_sql = format!("SELECT version FROM {table} WHERE id = ?");
@@ -122,6 +132,81 @@ fn project_of_conn(conn: &Connection, table: &str, id: &str) -> anyhow::Result<O
         .and_then(|r| r.get("project_id"))
         .and_then(|v| v.as_str())
         .map(str::to_string))
+}
+
+fn project_for_plot_table(
+    conn: &Connection,
+    table: &str,
+    id: &str,
+) -> anyhow::Result<Option<String>> {
+    if table == "plot_thread_scene_links" {
+        return Ok(conn
+            .query_row(
+                "SELECT t.project_id
+                   FROM plot_thread_scene_links l
+                   INNER JOIN plot_threads t ON t.id = l.thread_id
+                  WHERE l.id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?);
+    }
+    project_of_conn(conn, table, id)
+}
+
+fn record_plot_field_authority(
+    conn: &Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    field_paths: &[&str],
+) -> anyhow::Result<()> {
+    crate::narrative_extraction::record_human_field_write(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        field_paths,
+        &chrono::Utc::now().to_rfc3339(),
+    )
+}
+
+fn plot_entity_authority(table: &str) -> (&'static str, &'static [&'static str]) {
+    match table {
+        "plot_threads" => (
+            "plot-thread",
+            &[
+                "/name",
+                "/description",
+                "/color",
+                "/sortOrder",
+                "/startNodeId",
+                "/endNodeId",
+            ],
+        ),
+        "plot_thread_scene_links" => (
+            "plot-marker",
+            &[
+                "/threadId",
+                "/sceneId",
+                "/phaseType",
+                "/note",
+                "/sortOrder",
+                "/semanticKey",
+            ],
+        ),
+        "plot_thread_branches" => (
+            "plot-branch",
+            &[
+                "/fromThreadId",
+                "/toThreadId",
+                "/atSceneId",
+                "/kind",
+                "/semanticKey",
+            ],
+        ),
+        _ => panic!("plot authority requested for unsupported table '{table}'"),
+    }
 }
 
 // ─────────────────────── DTO ───────────────────────
@@ -867,6 +952,20 @@ pub fn create(db: &Database, p: PlotThreadCreatePayload) -> anyhow::Result<Value
             if row.is_null() {
                 anyhow::bail!("plot thread create completed without a persisted row");
             }
+            record_plot_field_authority(
+                conn,
+                &project_id,
+                "plot-thread",
+                &id,
+                &[
+                    "/name",
+                    "/description",
+                    "/color",
+                    "/sortOrder",
+                    "/startNodeId",
+                    "/endNodeId",
+                ],
+            )?;
             Ok((project_id.clone(), row))
         },
         |conn| load_row(conn, "plot_threads", &id),
@@ -927,12 +1026,31 @@ pub fn update(db: &Database, id: String, patch: PlotThreadPatch) -> anyhow::Resu
                 conn.changes() == 1,
                 "PLOT_THREAD_VERSION_MISMATCH: expected base version {base_version}"
             );
-            Ok(one(Database::execute_with_conn(
+            let row = one(Database::execute_with_conn(
                 conn,
                 "SELECT * FROM plot_threads WHERE id = ?",
                 &[Value::String(id.clone())],
                 "get",
-            )?))
+            )?);
+            let project_id = row
+                .get("project_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot thread missing project_id"))?;
+            record_plot_field_authority(
+                conn,
+                project_id,
+                "plot-thread",
+                &id,
+                &[
+                    "/name",
+                    "/description",
+                    "/color",
+                    "/sortOrder",
+                    "/startNodeId",
+                    "/endNodeId",
+                ],
+            )?;
+            Ok(row)
         })();
         match result {
             Ok(value) => {
@@ -1049,6 +1167,20 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
             if row.is_null() {
                 anyhow::bail!("plot thread link create completed without a persisted row");
             }
+            record_plot_field_authority(
+                conn,
+                &project_id,
+                "plot-marker",
+                &id,
+                &[
+                    "/threadId",
+                    "/sceneId",
+                    "/phaseType",
+                    "/note",
+                    "/sortOrder",
+                    "/semanticKey",
+                ],
+            )?;
             Ok((project_id, row))
         },
         |conn| load_row(conn, "plot_thread_scene_links", &id),
@@ -1173,12 +1305,29 @@ pub fn link_update(db: &Database, id: String, patch: PlotThreadLinkPatch) -> any
                 conn.changes() == 1,
                 "PLOT_THREAD_LINK_VERSION_MISMATCH: link changed during update"
             );
-            Ok(one(Database::execute_with_conn(
+            let row = one(Database::execute_with_conn(
                 conn,
                 "SELECT * FROM plot_thread_scene_links WHERE id = ?",
                 &[Value::String(id.clone())],
                 "get",
-            )?))
+            )?);
+            let project_id = project_of_conn(conn, "plot_threads", current_thread_id)?
+                .ok_or_else(|| anyhow::anyhow!("plot thread link project missing"))?;
+            record_plot_field_authority(
+                conn,
+                &project_id,
+                "plot-marker",
+                &id,
+                &[
+                    "/threadId",
+                    "/sceneId",
+                    "/phaseType",
+                    "/note",
+                    "/sortOrder",
+                    "/semanticKey",
+                ],
+            )?;
+            Ok(row)
         })();
 
         match result {
@@ -1309,6 +1458,19 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
             if row.is_null() {
                 anyhow::bail!("plot thread branch create completed without a persisted row");
             }
+            record_plot_field_authority(
+                conn,
+                &project_id,
+                "plot-branch",
+                &id,
+                &[
+                    "/fromThreadId",
+                    "/toThreadId",
+                    "/atSceneId",
+                    "/kind",
+                    "/semanticKey",
+                ],
+            )?;
             Ok((project_id.clone(), row))
         },
         |conn| load_row(conn, "plot_thread_branches", &id),
@@ -1438,12 +1600,26 @@ pub fn branch_update(
                 conn.changes() == 1,
                 "PLOT_THREAD_BRANCH_VERSION_MISMATCH: branch changed during update"
             );
-            Ok(one(Database::execute_with_conn(
+            let row = one(Database::execute_with_conn(
                 conn,
                 "SELECT * FROM plot_thread_branches WHERE id = ?",
                 &[Value::String(id.clone())],
                 "get",
-            )?))
+            )?);
+            record_plot_field_authority(
+                conn,
+                project_id,
+                "plot-branch",
+                &id,
+                &[
+                    "/fromThreadId",
+                    "/toThreadId",
+                    "/atSceneId",
+                    "/kind",
+                    "/semanticKey",
+                ],
+            )?;
+            Ok(row)
         })();
 
         match result {
@@ -2009,6 +2185,40 @@ pub fn move_marker_bundle(
                         anyhow::bail!("plot marker move branch transition has no rows")
                     }
                 }
+            }
+            record_plot_field_authority(
+                conn,
+                &payload.project_id,
+                "plot-marker",
+                &payload.marker_after.id,
+                &[
+                    "/threadId",
+                    "/sceneId",
+                    "/phaseType",
+                    "/note",
+                    "/sortOrder",
+                    "/semanticKey",
+                ],
+            )?;
+            for transition in &payload.branch_transitions {
+                let branch = transition
+                    .after
+                    .as_ref()
+                    .or(transition.before.as_ref())
+                    .ok_or_else(|| anyhow::anyhow!("plot marker move branch transition has no row"))?;
+                record_plot_field_authority(
+                    conn,
+                    &payload.project_id,
+                    "plot-branch",
+                    &branch.id,
+                    &[
+                        "/fromThreadId",
+                        "/toThreadId",
+                        "/atSceneId",
+                        "/kind",
+                        "/semanticKey",
+                    ],
+                )?;
             }
             reject_duplicate_branch_topology(
                 conn,

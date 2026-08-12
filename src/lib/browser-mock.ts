@@ -6564,7 +6564,15 @@ export async function createBrowserMock(
     handleDbExecuteBatch({ statements });
   }
 
-  function handleCodexRenameUndo(args: Record<string, unknown>): void {
+  function handleCodexRenameUndo(args: Record<string, unknown>): {
+    versions: Array<{
+      kind: string;
+      refId: string;
+      detailDefinitionId: string | null;
+      baseVersion: number;
+      version: number;
+    }>;
+  } {
     const payload = args.payload as {
       projectId: string;
       updatedAt: string;
@@ -6572,6 +6580,7 @@ export async function createBrowserMock(
         kind: string;
         refId: string;
         detailDefinitionId: string | null;
+        baseVersion: number;
         value: string;
         charCount: number | null;
         placedBeatPreview: string | null;
@@ -6582,21 +6591,55 @@ export async function createBrowserMock(
       params: SqlValue[];
       method: string;
     }> = [];
+    const aggregateVersions = new Map<
+      string,
+      { initial: number; current: number }
+    >();
+    const persistedVersions: Array<{
+      kind: string;
+      refId: string;
+      detailDefinitionId: string | null;
+      baseVersion: number;
+      version: number;
+    }> = [];
     for (const update of payload.updates) {
+      if (!Number.isSafeInteger(update.baseVersion) || update.baseVersion < 0) {
+        throw new Error(
+          "codex rename baseVersion must be a non-negative integer",
+        );
+      }
+      const aggregateKey =
+        update.kind === "codex-detail"
+          ? `codex-detail:${update.refId}:${update.detailDefinitionId ?? ""}`
+          : update.kind.startsWith("codex-")
+            ? `codex-entry:${update.refId}`
+            : `tree-node:${update.refId}`;
+      const previous = aggregateVersions.get(aggregateKey);
+      if (previous && previous.initial !== update.baseVersion) {
+        throw new Error("CODEX_RENAME_VERSION_MISMATCH");
+      }
+      const expectedVersion = previous?.current ?? update.baseVersion;
+      const nextVersion = expectedVersion + 1;
+      aggregateVersions.set(aggregateKey, {
+        initial: previous?.initial ?? update.baseVersion,
+        current: nextVersion,
+      });
       if (update.kind.startsWith("node-") || update.kind === "scene-body") {
-        if (
-          !queryOne(
-            "SELECT 1 FROM tree_nodes WHERE id = ? AND project_id = ?",
-            [update.refId, payload.projectId],
-          )
-        ) {
+        const row = queryOne(
+          "SELECT version FROM tree_nodes WHERE id = ? AND project_id = ?",
+          [update.refId, payload.projectId],
+        );
+        if (!row) {
           throw new Error("codex rename undo tree target is outside project");
+        }
+        if (Number(row.version) !== expectedVersion) {
+          throw new Error("CODEX_RENAME_VERSION_MISMATCH");
         }
       } else if (update.kind.startsWith("codex-")) {
         const exists =
           update.kind === "codex-detail"
             ? queryOne(
-                `SELECT 1
+                `SELECT value.version AS version
                    FROM codex_detail_values value
                    JOIN codex_entries entry ON entry.id = value.entry_id
                   WHERE value.entry_id = ? AND value.definition_id = ?
@@ -6605,15 +6648,18 @@ export async function createBrowserMock(
               )
             : update.kind === "codex-relation-label"
               ? queryOne(
-                  "SELECT 1 FROM codex_relations WHERE id = ? AND project_id = ?",
+                  "SELECT version FROM codex_relations WHERE id = ? AND project_id = ?",
                   [update.refId, payload.projectId],
                 )
               : queryOne(
-                  "SELECT 1 FROM codex_entries WHERE id = ? AND project_id = ?",
+                  "SELECT version FROM codex_entries WHERE id = ? AND project_id = ?",
                   [update.refId, payload.projectId],
                 );
         if (!exists) {
           throw new Error("codex rename undo target is outside project");
+        }
+        if (Number(exists.version) !== expectedVersion) {
+          throw new Error("CODEX_RENAME_VERSION_MISMATCH");
         }
       }
 
@@ -6622,15 +6668,18 @@ export async function createBrowserMock(
           statements.push({
             sql: `UPDATE tree_nodes
                     SET content = ?, char_count = ?, placed_beat_preview = ?,
-                        version = version + 1, updated_at = ?
-                  WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+                        version = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND node_type = 'scene'
+                    AND version = ?`,
             params: [
               update.value,
               update.charCount,
               update.placedBeatPreview,
+              nextVersion,
               payload.updatedAt,
               update.refId,
               payload.projectId,
+              expectedVersion,
             ],
             method: "run",
           });
@@ -6639,13 +6688,15 @@ export async function createBrowserMock(
         case "node-synopsis": {
           const column = update.kind === "node-title" ? "title" : "synopsis";
           statements.push({
-            sql: `UPDATE tree_nodes SET ${column} = ?, updated_at = ?
-                  WHERE id = ? AND project_id = ?`,
+            sql: `UPDATE tree_nodes SET ${column} = ?, version = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND version = ?`,
             params: [
               update.value,
+              nextVersion,
               payload.updatedAt,
               update.refId,
               payload.projectId,
+              expectedVersion,
             ],
             method: "run",
           });
@@ -6661,13 +6712,15 @@ export async function createBrowserMock(
                 ? "content"
                 : "notes";
           statements.push({
-            sql: `UPDATE codex_entries SET ${column} = ?, updated_at = ?
-                  WHERE id = ? AND project_id = ?`,
+            sql: `UPDATE codex_entries SET ${column} = ?, version = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND version = ?`,
             params: [
               update.value,
+              nextVersion,
               payload.updatedAt,
               update.refId,
               payload.projectId,
+              expectedVersion,
             ],
             method: "run",
           });
@@ -6675,16 +6728,19 @@ export async function createBrowserMock(
         }
         case "codex-detail":
           statements.push({
-            sql: `UPDATE codex_detail_values SET value = ?
-                  WHERE entry_id = ? AND definition_id = ?
+            sql: `UPDATE codex_detail_values SET value = ?, version = ?, updated_at = ?
+                  WHERE entry_id = ? AND definition_id = ? AND version = ?
                     AND EXISTS (
                       SELECT 1 FROM codex_entries
                        WHERE id = ? AND project_id = ?
                     )`,
             params: [
               update.value,
+              nextVersion,
+              payload.updatedAt,
               update.refId,
               update.detailDefinitionId,
+              expectedVersion,
               update.refId,
               payload.projectId,
             ],
@@ -6693,17 +6749,32 @@ export async function createBrowserMock(
           break;
         case "codex-relation-label":
           statements.push({
-            sql: `UPDATE codex_relations SET label = ?
-                  WHERE id = ? AND project_id = ?`,
-            params: [update.value, update.refId, payload.projectId],
+            sql: `UPDATE codex_relations SET label = ?, version = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND version = ?`,
+            params: [
+              update.value,
+              nextVersion,
+              payload.updatedAt,
+              update.refId,
+              payload.projectId,
+              expectedVersion,
+            ],
             method: "run",
           });
           break;
         default:
           throw new Error("unsupported codex rename undo kind");
       }
+      persistedVersions.push({
+        kind: update.kind,
+        refId: update.refId,
+        detailDefinitionId: update.detailDefinitionId,
+        baseVersion: expectedVersion,
+        version: nextVersion,
+      });
     }
     handleDbExecuteBatch({ statements });
+    return { versions: persistedVersions };
   }
 
   function handleScanStagingProjectCreate(args: Record<string, unknown>): void {
@@ -14224,16 +14295,17 @@ export async function createBrowserMock(
         handleEntityTagsSet(args);
         return undefined as T;
       case "codex_rename_undo":
-        handleCodexRenameUndo(args);
-        return undefined as T;
-      case "codex_rename_apply":
-        handleCodexRenameUndo(args);
+        return handleCodexRenameUndo(args) as T;
+      case "codex_rename_apply": {
+        const renameResult = handleCodexRenameUndo(args);
         return {
           entityId: String((args.payload as Record<string, unknown>).entryId),
-          version: 1,
+          version: renameResult.versions.at(-1)?.version ?? 0,
+          versions: renameResult.versions,
           changeEventUid: crypto.randomUUID(),
           undoJournalId: crypto.randomUUID(),
         } as T;
+      }
       case "scan_staging_project_create":
         handleScanStagingProjectCreate(args);
         return undefined as T;

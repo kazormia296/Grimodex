@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 16,
+  "schemaVersion": 20,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6809,9 +6809,166 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_extraction_tasks ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_kind TEXT NOT NULL, status TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT, priority INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
     },
+    "narrative_field_authority": {
+      "kind": "table",
+      "columns": {
+        "entity_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "entity_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "explicit_lock": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "field_path": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 4
+        },
+        "owner_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_field_authority ( project_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, field_path TEXT NOT NULL, owner_kind TEXT NOT NULL CHECK(owner_kind IN ('human','ai','system','unknown')), explicit_lock INTEGER NOT NULL DEFAULT 0 CHECK(explicit_lock IN (0,1)), version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(project_id, entity_kind, entity_id, field_path) )"
+    },
+    "narrative_projection_dependencies": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "observed_revision_token": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "propagation": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "source_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_projection_dependencies ( application_id TEXT NOT NULL, source_kind TEXT NOT NULL, source_key TEXT NOT NULL, observed_revision_token TEXT NOT NULL, propagation TEXT NOT NULL CHECK(propagation = 'freshness-only'), PRIMARY KEY (application_id, source_kind, source_key) )"
+    },
+    "narrative_projection_freshness": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "reason_json": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_projection_freshness ( application_id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift')), reason_json TEXT, version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL )"
+    },
     "narrative_proposal_applications": {
       "kind": "table",
       "columns": {
+        "application_kind": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'normal'",
+          "primaryKey": 0
+        },
         "applied_entity_id": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -6830,6 +6987,13 @@
           "ordinal": 1,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "compensates_application_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -6864,11 +7028,32 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_proposal_applications ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, applied_entity_kind TEXT NOT NULL, applied_entity_id TEXT NOT NULL, created_at TEXT NOT NULL )"
+      "createSql": "CREATE TABLE narrative_proposal_applications ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, applied_entity_kind TEXT NOT NULL, applied_entity_id TEXT NOT NULL, created_at TEXT NOT NULL , application_kind TEXT NOT NULL DEFAULT 'normal' CHECK(application_kind IN ('normal','compensation')), compensates_application_id TEXT)"
     },
     "narrative_proposal_decisions": {
       "kind": "table",
       "columns": {
+        "actor_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'legacy-review'",
+          "primaryKey": 0
+        },
+        "actor_kind": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'human'",
+          "primaryKey": 0
+        },
+        "authority_scope": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'legacy-review'",
+          "primaryKey": 0
+        },
         "created_at": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -6904,6 +7089,13 @@
           "default": null,
           "primaryKey": 1
         },
+        "override_field_paths_json": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
         "proposal_id": {
           "ordinal": 1,
           "declaredType": "TEXT",
@@ -6921,20 +7113,20 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_proposal_decisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, decision TEXT NOT NULL, decision_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
+      "createSql": "CREATE TABLE narrative_proposal_decisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, decision TEXT NOT NULL, decision_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, created_by TEXT NOT NULL , actor_kind TEXT NOT NULL DEFAULT 'human', actor_id TEXT NOT NULL DEFAULT 'legacy-review', authority_scope TEXT NOT NULL DEFAULT 'legacy-review', override_field_paths_json TEXT NOT NULL DEFAULT '[]')"
     },
     "narrative_proposal_revisions": {
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 6,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
         "created_by": {
-          "ordinal": 7,
+          "ordinal": 10,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6946,6 +7138,13 @@
           "notNull": false,
           "default": null,
           "primaryKey": 1
+        },
+        "origin_kind": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'legacy-unbound'",
+          "primaryKey": 0
         },
         "payload_json": {
           "ordinal": 3,
@@ -6975,6 +7174,20 @@
           "default": null,
           "primaryKey": 0
         },
+        "reconciliation_envelope_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reconciliation_envelope_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "revision_number": {
           "ordinal": 2,
           "declaredType": "INTEGER",
@@ -6985,7 +7198,7 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_proposal_revisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_number INTEGER NOT NULL, payload_json TEXT NOT NULL, plan_fragment_json TEXT, plan_fragment_digest TEXT, created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
+      "createSql": "CREATE TABLE narrative_proposal_revisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_number INTEGER NOT NULL, payload_json TEXT NOT NULL, plan_fragment_json TEXT, plan_fragment_digest TEXT, origin_kind TEXT NOT NULL DEFAULT 'legacy-unbound', reconciliation_envelope_json TEXT, reconciliation_envelope_digest TEXT, created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
     },
     "narrative_proposal_sets": {
       "kind": "table",
@@ -7139,6 +7352,63 @@
       "foreignKeys": [],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_proposals ( id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL, proposal_key TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unreviewed', payload_json TEXT NOT NULL, current_revision_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "narrative_revision_source_basis": {
+      "kind": "table",
+      "columns": {
+        "observed_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "ordinal": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "revision_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "revision_token": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "revision_id",
+            "source_key"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_revision_source_basis ( revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL, source_kind TEXT NOT NULL, source_key TEXT NOT NULL, revision_token TEXT NOT NULL, observed_at TEXT, PRIMARY KEY (revision_id, ordinal), UNIQUE (revision_id, source_key) )"
     },
     "narrative_runtime_policy": {
       "kind": "table",
@@ -12290,6 +12560,54 @@
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
     },
+    "idx_narrative_compensation_target": {
+      "table": "narrative_proposal_applications",
+      "unique": true,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "compensates_application_id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX idx_narrative_compensation_target ON narrative_proposal_applications(compensates_application_id) WHERE application_kind = 'compensation' AND compensates_application_id IS NOT NULL"
+    },
+    "idx_narrative_field_authority_entity": {
+      "table": "narrative_field_authority",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "entity_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "entity_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_field_authority_entity ON narrative_field_authority(project_id, entity_kind, entity_id)"
+    },
+    "idx_narrative_projection_dependencies_source": {
+      "table": "narrative_projection_dependencies",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "source_kind"
+        },
+        {
+          "ordinal": 1,
+          "column": "source_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_projection_dependencies_source ON narrative_projection_dependencies(source_kind, source_key)"
+    },
     "idx_narrative_temporal_constraints_project": {
       "table": "narrative_temporal_constraints",
       "unique": false,
@@ -13391,6 +13709,17 @@
     "delete_cv_on_codex_entry_delete": "CREATE TRIGGER delete_cv_on_codex_entry_delete AFTER DELETE ON codex_entries BEGIN DELETE FROM content_versions WHERE entity_type = 'codex_entry' AND entity_id = old.id AND id NOT IN (SELECT version_id FROM project_snapshot_entries) AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL); END",
     "delete_cv_on_snippet_delete": "CREATE TRIGGER delete_cv_on_snippet_delete AFTER DELETE ON snippets BEGIN DELETE FROM content_versions WHERE entity_type = 'snippet' AND entity_id = old.id AND id NOT IN (SELECT version_id FROM project_snapshot_entries) AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL); END",
     "delete_cv_on_tree_node_delete": "CREATE TRIGGER delete_cv_on_tree_node_delete AFTER DELETE ON tree_nodes BEGIN DELETE FROM content_versions WHERE entity_type IN ('scene', 'note') AND entity_id = old.id AND id NOT IN (SELECT version_id FROM project_snapshot_entries) AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL) AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL); END",
+    "narrative_application_compensation_guard": "CREATE TRIGGER narrative_application_compensation_guard BEFORE INSERT ON narrative_proposal_applications WHEN (NEW.application_kind = 'normal' AND NEW.compensates_application_id IS NOT NULL) OR (NEW.application_kind = 'compensation' AND NEW.compensates_application_id IS NULL) BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_COMPENSATION_SHAPE_INVALID'); END",
+    "narrative_application_immutable_delete": "CREATE TRIGGER narrative_application_immutable_delete BEFORE DELETE ON narrative_proposal_applications BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END",
+    "narrative_application_immutable_update": "CREATE TRIGGER narrative_application_immutable_update BEFORE UPDATE ON narrative_proposal_applications BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION'); END",
+    "narrative_application_kind_guard": "CREATE TRIGGER narrative_application_kind_guard BEFORE INSERT ON narrative_proposal_applications WHEN NEW.application_kind NOT IN ('normal','compensation') BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID'); END",
+    "narrative_decision_immutable_after_apply_delete": "CREATE TRIGGER narrative_decision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
+    "narrative_decision_immutable_after_apply_update": "CREATE TRIGGER narrative_decision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
+    "narrative_revision_envelope_immutable_update": "CREATE TRIGGER narrative_revision_envelope_immutable_update BEFORE UPDATE ON narrative_proposal_revisions WHEN OLD.origin_kind IS NOT NEW.origin_kind OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END",
+    "narrative_revision_immutable_after_apply_delete": "CREATE TRIGGER narrative_revision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
+    "narrative_revision_immutable_after_apply_update": "CREATE TRIGGER narrative_revision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
+    "narrative_source_basis_immutable_delete": "CREATE TRIGGER narrative_source_basis_immutable_delete BEFORE DELETE ON narrative_revision_source_basis WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
+    "narrative_source_basis_immutable_update": "CREATE TRIGGER narrative_source_basis_immutable_update BEFORE UPDATE ON narrative_revision_source_basis BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
     "post_effect_annotations_fts_ad": "CREATE TRIGGER post_effect_annotations_fts_ad AFTER DELETE ON post_effect_annotations BEGIN INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content) VALUES ('delete', old.rowid, old.content); END",
     "post_effect_annotations_fts_ai": "CREATE TRIGGER post_effect_annotations_fts_ai AFTER INSERT ON post_effect_annotations BEGIN INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content); END",
     "post_effect_annotations_fts_au": "CREATE TRIGGER post_effect_annotations_fts_au AFTER UPDATE ON post_effect_annotations WHEN old.content IS NOT new.content BEGIN INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content) VALUES ('delete', old.rowid, old.content); INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content); END",

@@ -7,7 +7,7 @@ import type { DocumentRef } from "@/features/narrative-extraction/temporal/nodes
 import {
   isMaterialPayoffSignal,
   isMaterialSetupSignal,
-} from "./foreshadowGates";
+} from "./foreshadowSignals";
 
 export interface ForeshadowSignalIndexEntry {
   readonly signalId: string;
@@ -49,7 +49,7 @@ function stubClusterFromDocument(documentRef: DocumentRef): string {
 
 /**
  * Build deterministic indexes from goal/question/event stubs plus explicit
- * setup/payoff signal inferences. Materiality gates mirror foreshadowGates.
+ * setup/payoff signal inferences. Materiality gates live in foreshadowSignals.
  */
 export function buildForeshadowSignalIndex(
   input: BuildForeshadowSignalIndexInput,

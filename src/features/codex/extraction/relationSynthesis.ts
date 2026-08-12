@@ -1,238 +1,30 @@
-import type {
-  CodexRelationDirectionality,
-  CodexRelationHypothesis,
-  CodexRelationValidity,
-  RelationCommitment,
-  RelationEpistemicContext,
-  RelationNarrativeFrame,
-  RelationPolarity,
-  RelationSupport,
-} from "@/features/narrative-extraction/ir/inferences/codexRelationHypothesis";
-import type { EntityRelationFamily } from "@/features/narrative-extraction/ir/observations/entityRelation";
+import type { CodexRelationHypothesis } from "@/features/narrative-extraction/ir/inferences/codexRelationHypothesis";
+import {
+  evaluateRelationInvariant,
+  type RelationInvariantContext,
+} from "./relationInvariant";
+import {
+  evaluateRelationStrategy,
+  type RelationStrategyDecision,
+} from "./relationStrategy";
+export {
+  normalizeRelationSynthesis,
+  type NormalizeRelationSynthesisOptions,
+} from "./relationSignals";
 
 export type RelationDomainGateDecision =
-  | {
-      readonly kind: "proposal";
-      readonly validity: Extract<CodexRelationValidity, "timeless" | "current">;
-    }
-  | {
-      readonly kind: "report-only";
-      readonly reason: string;
-    }
-  | {
-      readonly kind: "blocked";
-      readonly reason: string;
-    };
+  | Extract<ReturnType<typeof evaluateRelationInvariant>, { kind: "blocked" }>
+  | RelationStrategyDecision;
 
 /**
- * Spec §16: only timeless/current + affirmed story-fact (with resolved ends)
- * become Domain proposals. Historical/rumor/ended stay report-only.
+ * Compose structural invariants and narrative strategy while preserving the
+ * existing public gate API for proposal planners.
  */
 export function evaluateRelationDomainGate(
   hypothesis: CodexRelationHypothesis,
+  context?: RelationInvariantContext,
 ): RelationDomainGateDecision {
-  if (!hypothesis.subjectResolved || !hypothesis.objectResolved) {
-    return { kind: "blocked", reason: "unresolved-endpoint" };
-  }
-  if (
-    hypothesis.payload.subjectEntityId === hypothesis.payload.objectEntityId
-  ) {
-    return { kind: "blocked", reason: "self-relation" };
-  }
-  if (hypothesis.payload.directionality === "ambiguous") {
-    return { kind: "blocked", reason: "ambiguous-directionality" };
-  }
-  if (!hypothesis.payload.forwardLabelSuggestion.trim()) {
-    return { kind: "blocked", reason: "missing-forward-label" };
-  }
-
-  const { epistemic, payload } = hypothesis;
-  if (epistemic.polarity !== "affirmed") {
-    return { kind: "report-only", reason: "non-affirmed-polarity" };
-  }
-  if (epistemic.commitment !== "story-fact") {
-    return { kind: "report-only", reason: "non-story-fact" };
-  }
-  if (
-    epistemic.narrativeFrame !== "primary" &&
-    epistemic.narrativeFrame !== "memory"
-  ) {
-    return { kind: "report-only", reason: "non-primary-frame" };
-  }
-  if (epistemic.support !== "direct" && epistemic.support !== "corroborated") {
-    return { kind: "report-only", reason: "weak-support" };
-  }
-  if (payload.validity !== "timeless" && payload.validity !== "current") {
-    return { kind: "report-only", reason: `validity:${payload.validity}` };
-  }
-
-  return { kind: "proposal", validity: payload.validity };
-}
-
-const FAMILIES = new Set<EntityRelationFamily>([
-  "identity",
-  "kinship",
-  "social",
-  "affiliation",
-  "possessive",
-  "spatial",
-  "part-whole",
-  "comparative",
-  "other",
-]);
-
-const VALIDITIES = new Set<CodexRelationValidity>([
-  "timeless",
-  "current",
-  "historical",
-  "prospective",
-  "ended",
-  "unknown",
-]);
-
-const DIRECTIONALITIES = new Set<CodexRelationDirectionality>([
-  "directed",
-  "symmetric",
-  "ambiguous",
-]);
-
-const POLARITIES = new Set<RelationPolarity>([
-  "affirmed",
-  "negated",
-  "uncertain",
-]);
-
-const COMMITMENTS = new Set<RelationCommitment>([
-  "story-fact",
-  "rumor",
-  "belief",
-  "speculation",
-  "conflicted",
-]);
-
-const SUPPORTS = new Set<RelationSupport>([
-  "direct",
-  "corroborated",
-  "inferred",
-  "weak",
-]);
-
-const FRAMES = new Set<RelationNarrativeFrame>([
-  "primary",
-  "memory",
-  "reported",
-  "hypothetical",
-  "other",
-]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-export interface NormalizeRelationSynthesisOptions {
-  readonly candidateRef: string;
-  readonly allowedObservationRefs: ReadonlySet<string>;
-  readonly resolvedEntityIds: ReadonlySet<string>;
-  readonly createId?: () => string;
-}
-
-/**
- * Normalize Relation Synthesis AI payload into hypotheses.
- * Unknown observation refs / entity ids are rejected.
- */
-export function normalizeRelationSynthesis(
-  raw: unknown,
-  options: NormalizeRelationSynthesisOptions,
-): readonly CodexRelationHypothesis[] {
-  if (!isRecord(raw)) return [];
-  if (asString(raw.candidateRef) !== options.candidateRef) return [];
-  if (!Array.isArray(raw.relations)) return [];
-
-  const createId = options.createId ?? (() => crypto.randomUUID());
-  const hypotheses: CodexRelationHypothesis[] = [];
-
-  for (const row of raw.relations) {
-    if (!isRecord(row)) continue;
-    const observationRefs = Array.isArray(row.observationRefs)
-      ? row.observationRefs
-          .filter((ref): ref is string => typeof ref === "string")
-          .filter((ref) => options.allowedObservationRefs.has(ref))
-      : [];
-    if (observationRefs.length === 0) continue;
-
-    const subjectEntityId = asString(row.subjectEntityId);
-    const objectEntityId = asString(row.objectEntityId);
-    const predicate = asString(row.predicate)?.trim() ?? "";
-    const family = asString(row.family);
-    const validity = asString(row.validity);
-    const directionality = asString(row.directionality);
-    const forwardLabelSuggestion =
-      asString(row.forwardLabelSuggestion)?.trim() ?? "";
-    const inverseRaw = row.inverseLabelSuggestion;
-    const inverseLabelSuggestion =
-      inverseRaw === null ? null : (asString(inverseRaw)?.trim() ?? null);
-    const polarity = asString(row.polarity);
-    const commitment = asString(row.commitment);
-    const support = asString(row.support);
-    const narrativeFrame = asString(row.narrativeFrame);
-
-    if (
-      !subjectEntityId ||
-      !objectEntityId ||
-      !predicate ||
-      !family ||
-      !validity ||
-      !directionality ||
-      !forwardLabelSuggestion ||
-      !polarity ||
-      !commitment ||
-      !support ||
-      !narrativeFrame
-    ) {
-      continue;
-    }
-    if (!FAMILIES.has(family as EntityRelationFamily)) continue;
-    if (!VALIDITIES.has(validity as CodexRelationValidity)) continue;
-    if (!DIRECTIONALITIES.has(directionality as CodexRelationDirectionality)) {
-      continue;
-    }
-    if (!POLARITIES.has(polarity as RelationPolarity)) continue;
-    if (!COMMITMENTS.has(commitment as RelationCommitment)) continue;
-    if (!SUPPORTS.has(support as RelationSupport)) continue;
-    if (!FRAMES.has(narrativeFrame as RelationNarrativeFrame)) continue;
-
-    const subjectResolved = options.resolvedEntityIds.has(subjectEntityId);
-    const objectResolved = options.resolvedEntityIds.has(objectEntityId);
-
-    const epistemic: RelationEpistemicContext = {
-      polarity: polarity as RelationPolarity,
-      commitment: commitment as RelationCommitment,
-      support: support as RelationSupport,
-      narrativeFrame: narrativeFrame as RelationNarrativeFrame,
-    };
-
-    hypotheses.push({
-      hypothesisId: createId(),
-      observationRefs,
-      subjectResolved,
-      objectResolved,
-      payload: {
-        subjectEntityId,
-        objectEntityId,
-        predicate,
-        family: family as EntityRelationFamily,
-        validity: validity as CodexRelationValidity,
-        directionality: directionality as CodexRelationDirectionality,
-        forwardLabelSuggestion,
-        inverseLabelSuggestion,
-      },
-      epistemic,
-    });
-  }
-
-  return hypotheses;
+  const invariant = evaluateRelationInvariant(hypothesis, context);
+  if (invariant.kind === "blocked") return invariant;
+  return evaluateRelationStrategy(hypothesis);
 }

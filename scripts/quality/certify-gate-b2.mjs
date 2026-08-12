@@ -6,42 +6,57 @@
  * - 必須 suite を減らさない
  * - credential 不足を passed / skipped へ変換しない
  * - 最初の失敗を保持する
- * - 再試行履歴を残す（Attempt 2 は diagnostic only）
+ * - 各 suite は Attempt 1 だけを正式結果として記録する
  * - artifact digest を生成する
  */
 
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile, access } from "node:fs/promises";
+import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { performance } from "node:perf_hooks";
 import yaml from "js-yaml";
+import {
+  getGateB2GithubAttemptIdentity,
+  readGateB2GithubAttemptContext,
+} from "./gate-b2-github-attempt.mjs";
 
 import {
   FREEZE_RELATIVE,
+  GATE_B2_ASSURANCE_SCOPE,
   GATE_B2_CONTRACT_VERSION,
   HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
   assertFreezeActive,
   assertWorkingTreeClean,
+  allocateGateB2ArtifactAttempt,
   bindExecutionRoot,
   buildDecisionDocument,
   buildHeavyCertificationEnv,
+  buildJourneyCertificationEnv,
   loadFreezeDocument,
   persistHeavyReport,
   prepareWorktreeDependencies,
-  readHeavyLiveReport,
-  sanitizeCertificationEnv,
-  stripCredentialPlaceholders,
-  validateChronicleProductionReport,
+  writeGateB2AttemptArtifact,
   validateFullCiEvidence,
   validateJsonAgainstSchema,
   validateJourneyEvidence,
-  validateWebAiConsentReport,
   verifyFullCiWithGithub,
 } from "./certify-gate-b2-bindings.mjs";
+import {
+  readHeavyLiveReport,
+  resolveHeavyCommand,
+  runCapturedCommand,
+  runShellStringCommand,
+  sanitizeCertificationEnv,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateWebAiConsentBrowserReport,
+  validateWebAiConsentReport,
+} from "./quality-evaluation-runtime.mjs";
+
+export { runCapturedCommand } from "./quality-evaluation-runtime.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -54,9 +69,11 @@ const REPORT_SCHEMA_RELATIVE =
 const DECISION_SCHEMA_RELATIVE =
   "evals/certifications/schemas/gate-b2-decision-v1.schema.json";
 const JOURNEY_SCHEMA_RELATIVE =
-  "evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json";
+  "evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json";
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
+const GITHUB_ATTEMPT_AUTHORITY_MESSAGE =
+  "Gate B2 execution is authoritative only in the dedicated first-attempt GitHub Actions workflow";
 
 export function sha256Text(text) {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
@@ -203,6 +220,37 @@ export function validateGateB2Manifest(raw) {
     errors.push(`contractVersion must be ${GATE_B2_CONTRACT_VERSION}`);
   }
   if (raw.id !== "gate-b2") errors.push("id must be gate-b2");
+  if (
+    !raw.assuranceScope ||
+    Object.keys(raw.assuranceScope).length !== 4 ||
+    Object.entries(GATE_B2_ASSURANCE_SCOPE).some(
+      ([key, value]) => raw.assuranceScope[key] !== value,
+    )
+  ) {
+    errors.push(
+      "assuranceScope must certify engineering safety while excluding live provider execution/model quality and external credentials",
+    );
+  }
+  if (!raw.candidate || typeof raw.candidate !== "object") {
+    errors.push("candidate contract must be an object");
+  } else if (
+    !Number.isSafeInteger(raw.candidate.schemaVersion) ||
+    raw.candidate.schemaVersion < 1
+  ) {
+    errors.push("candidate.schemaVersion must be a positive integer");
+  }
+  const authority = getGateB2GithubAttemptIdentity();
+  if (
+    raw.candidate?.attemptAuthority?.provider !== authority.provider ||
+    raw.candidate?.attemptAuthority?.configDigest !== authority.configDigest ||
+    raw.candidate?.attemptAuthority?.repository !== authority.repository ||
+    raw.candidate?.attemptAuthority?.workflowPath !== authority.workflowPath ||
+    raw.candidate?.attemptAuthority?.event !== authority.event
+  ) {
+    errors.push(
+      "candidate.attemptAuthority must match the fixed GitHub Actions authority",
+    );
+  }
   for (const key of [
     "requiredLight",
     "requiredHeavy",
@@ -224,6 +272,11 @@ export function validateGateB2Manifest(raw) {
         `requiredLight ${entry.id ?? "<missing>"} cannot set certificationCredit:false`,
       );
     }
+    if (Object.hasOwn(entry ?? {}, "requiresEnv")) {
+      errors.push(
+        `requiredLight ${entry.id ?? "<missing>"} must not require external credentials`,
+      );
+    }
   }
   const heavyIds = new Set();
   for (const entry of raw.requiredHeavy ?? []) {
@@ -234,6 +287,11 @@ export function validateGateB2Manifest(raw) {
     if (entry?.certificationCredit === false) {
       errors.push(
         `requiredHeavy ${entry.id ?? "<missing>"} cannot set certificationCredit:false`,
+      );
+    }
+    if (Object.hasOwn(entry ?? {}, "requiresEnv")) {
+      errors.push(
+        `requiredHeavy ${entry.id ?? "<missing>"} must not require external credentials`,
       );
     }
   }
@@ -278,6 +336,18 @@ export function validateGateB2Manifest(raw) {
         `requiredManualJourneys ${entry.id} requiredAssertions must be a non-empty array`,
       );
     }
+    if (
+      entry.status !== "blocked" &&
+      (!Array.isArray(entry.command) ||
+        entry.command.length < 2 ||
+        entry.command.some(
+          (part) => typeof part !== "string" || part.length === 0,
+        ))
+    ) {
+      errors.push(
+        `requiredManualJourneys ${entry.id} active entry requires a non-empty argv command`,
+      );
+    }
     if (entry.status === "blocked" && !entry.requiredAction) {
       errors.push(
         `requiredManualJourneys ${entry.id} blocked status requires requiredAction`,
@@ -286,6 +356,11 @@ export function validateGateB2Manifest(raw) {
     if (entry.certificationCredit === false) {
       errors.push(
         `requiredManualJourneys ${entry.id} cannot set certificationCredit:false`,
+      );
+    }
+    if (Object.hasOwn(entry ?? {}, "requiresEnv")) {
+      errors.push(
+        `requiredManualJourneys ${entry.id} must not require external credentials`,
       );
     }
     if (entry.status !== "blocked") {
@@ -539,6 +614,38 @@ function suiteFromCapture({
   };
 }
 
+async function recordCertificationSuiteAttempt({
+  allocation,
+  candidate,
+  result,
+}) {
+  if (!allocation) return result;
+  const normalized = { ...result, attempt: allocation.attempt };
+  await writeGateB2AttemptArtifact({
+    attemptDir: allocation.attemptDir,
+    record: {
+      schemaVersion: 1,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      suiteId: normalized.suiteId,
+      bucket: normalized.bucket,
+      attempt: normalized.attempt,
+      startedAt: normalized.startedAt,
+      completedAt: normalized.completedAt,
+      exitCode: normalized.exitCode,
+      environmentDigest: normalized.environmentDigest,
+      commandDigest: normalized.commandDigest,
+      stdoutDigest: normalized.stdoutDigest,
+      stderrDigest: normalized.stderrDigest,
+      artifactDigests: normalized.artifactDigests,
+      result: normalized.result,
+      message: normalized.message,
+    },
+  });
+  return normalized;
+}
+
 async function pathExists(target) {
   try {
     await access(target);
@@ -546,84 +653,6 @@ async function pathExists(target) {
   } catch {
     return false;
   }
-}
-
-function packageScriptExists(packageJson, scriptName) {
-  return Boolean(packageJson?.scripts?.[scriptName]);
-}
-
-function resolvePnpmRunnerCommand(runner) {
-  if (typeof runner !== "string") return null;
-  const match = runner.match(/^pnpm\s+(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  const script = match[1];
-  const rest = match[2] ? match[2].split(/\s+/).filter(Boolean) : [];
-  return { script, command: ["pnpm", script, ...rest] };
-}
-
-export async function runCapturedCommand(
-  command,
-  args,
-  cwd,
-  env = process.env,
-) {
-  const started = performance.now();
-  const startedAt = new Date().toISOString();
-  return new Promise((resolve) => {
-    const usesWindowsCommandShell =
-      process.platform === "win32" && command === "pnpm";
-    const executable = usesWindowsCommandShell
-      ? (process.env.ComSpec ?? "cmd.exe")
-      : command;
-    const commandArgs = usesWindowsCommandShell
-      ? ["/d", "/s", "/c", command, ...args]
-      : args;
-    const child = spawn(executable, commandArgs, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      env,
-    });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat([
-        ...stderr,
-        Buffer.from(String(error.message)),
-      ]);
-      resolve({
-        status: "failed",
-        exitCode: null,
-        error: error.message,
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdout: stdoutBuf,
-        stderr: stderrBuf,
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-    child.on("exit", (exitCode, signal) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat(stderr);
-      resolve({
-        status: exitCode === 0 ? "passed" : "failed",
-        exitCode,
-        ...(signal ? { signal } : {}),
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdout: stdoutBuf,
-        stderr: stderrBuf,
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-  });
 }
 
 async function evaluateFullCiEvidence({
@@ -664,6 +693,9 @@ async function evaluateFullCiEvidence({
   if (validation.checkoutArtifactId != null) {
     message = `${message}; checkout artifact id=${validation.checkoutArtifactId}`;
   }
+  if (validation.checkoutArtifactRunAttempt != null) {
+    message = `${message}; checkout artifact source attempt=${validation.checkoutArtifactRunAttempt}`;
+  }
   if (validation.checkoutCommitSha) {
     message = `${message}; checkout commit=${validation.checkoutCommitSha}`;
   }
@@ -687,16 +719,31 @@ async function evaluateFullCiEvidence({
   };
 }
 
-export async function evaluateJourneyEvidence({
+export function journeyCertificationCommandDigest(journeyEntry) {
+  if (
+    !Array.isArray(journeyEntry?.command) ||
+    journeyEntry.command.length < 2
+  ) {
+    throw new Error(
+      `Journey ${journeyEntry?.id ?? "unknown"} has no fixed certification command.`,
+    );
+  }
+  return sha256Text(JSON.stringify(journeyEntry.command));
+}
+
+export async function runJourneySuite({
   journeyEntry,
-  artifactDir,
-  journeyEvidenceDir,
   candidate,
-  repoRoot,
   environment,
-  certEnv,
+  repoRoot,
+  dryRun,
+  freeze,
+  certificationRunId,
+  allocation,
+  env,
 }) {
   const journeyId = journeyEntry.id;
+  const command = journeyEntry.runner?.command ?? journeyEntry.command;
   if (
     journeyEntry.status === "blocked" ||
     String(journeyId).startsWith("blocked-")
@@ -709,97 +756,145 @@ export async function evaluateJourneyEvidence({
           ? String(journeyEntry.requiredAction).trim()
           : journeyEntry.reason) ||
         `Journey ${journeyId} is blocked until a real runner emits candidate-bound evidence.`,
+      command: command ?? null,
     });
   }
-  const baseDir =
-    journeyEvidenceDir ??
-    (artifactDir ? path.join(artifactDir, "journeys") : null);
-  if (!baseDir) {
+  if (!Array.isArray(command) || command.length < 2) {
     return blockedSuite({
+      suiteId: journeyId,
+      bucket: "requiredJourneys",
+      message: `Journey ${journeyId} has no candidate-bound runner command.`,
+    });
+  }
+
+  if (dryRun) {
+    return notRunSuite({
       suiteId: journeyId,
       bucket: "requiredJourneys",
       message:
-        "Journey evidence directory missing. Provide --journey-evidence-dir or journeys/ under artifact dir.",
+        "dry-run: candidate-bound Journey runner not executed; external evidence paths are ignored",
+      command,
     });
   }
-  const evidencePath = path.join(baseDir, `${journeyId}.json`);
-  await mkdir(baseDir, { recursive: true });
-  await rm(evidencePath, { force: true });
-  const command = journeyEntry.runner?.command;
-  if (!Array.isArray(command) || command.length === 0) {
+  if (!allocation) {
     return blockedSuite({
       suiteId: journeyId,
       bucket: "requiredJourneys",
-      message: `Journey ${journeyId} has no candidate runner command`,
+      message: "Journey attempt allocation missing; runner was not started.",
+      command,
     });
   }
-  const commandDigest = sha256Text(JSON.stringify(command));
+
+  const commandDigest = journeyCertificationCommandDigest(journeyEntry);
+  const outputPath = path.join(allocation.attemptDir, "journey-evidence.json");
+  const runnerArtifactPath = path.join(
+    allocation.attemptDir,
+    "runner-artifact.json",
+  );
+  const journeyEnv = buildJourneyCertificationEnv({
+    candidate,
+    journeyId,
+    outputPath,
+    runnerArtifactPath,
+    commandDigest,
+    environmentDigest: environment.digest,
+    runnerId: journeyEntry.runnerId,
+    runnerVersion: journeyEntry.runnerVersion,
+    freezeId: freeze?.freezeId,
+    certificationRunId,
+    attempt: allocation.attempt,
+    attemptDir: allocation.attemptDir,
+    baseEnv: env,
+  });
+
   const captured = await runCapturedCommand(
     command[0],
     command.slice(1),
     repoRoot,
-    {
-      ...certEnv,
-      GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
-      GATE_B2_CANDIDATE_TREE_SHA: candidate.treeSha,
-      GATE_B2_JOURNEY_ID: journeyId,
-      GATE_B2_RUNNER_ID: journeyEntry.runnerId,
-      GATE_B2_RUNNER_VERSION: String(journeyEntry.runnerVersion),
-      GATE_B2_ENVIRONMENT_DIGEST: environment.digest,
-      GATE_B2_OUTPUT_PATH: evidencePath,
-    },
+    journeyEnv,
   );
-  if (captured.status !== "passed") {
-    return suiteFromCapture({
-      suiteId: journeyId,
-      bucket: "requiredJourneys",
-      command,
-      environment,
-      captured,
-      message: `candidate journey runner exited ${captured.exitCode ?? "without an exit code"}`,
-    });
-  }
-  if (!(await pathExists(evidencePath))) {
-    return suiteFromCapture({
-      suiteId: journeyId,
-      bucket: "requiredJourneys",
-      command,
-      environment,
-      captured: { ...captured, status: "failed", exitCode: 1 },
-      message: `candidate journey runner did not create fresh evidence: ${evidencePath}`,
-    });
-  }
-  const raw = JSON.parse(await readFile(evidencePath, "utf8"));
-  const digest = sha256Text(JSON.stringify(raw));
-  const journeySchema = JSON.parse(
-    await readText(repoRoot, JOURNEY_SCHEMA_RELATIVE),
-  );
-  const schemaValidation = validateJsonAgainstSchema(raw, journeySchema);
-  const validation = schemaValidation.ok
-    ? validateJourneyEvidence(raw, {
-        journeyId,
-        candidate,
-        contract: journeyEntry,
-      })
-    : {
+  const artifactDigests = [];
+  let raw = null;
+  let evidenceDigest = null;
+  let runnerArtifactDigest = null;
+  let validation = {
+    ok: false,
+    result: "failed",
+    message: `candidate journey runner did not create fresh evidence: ${outputPath}`,
+  };
+  if (await pathExists(outputPath)) {
+    try {
+      const evidenceBuffer = await readFile(outputPath);
+      evidenceDigest = sha256Buffer(evidenceBuffer);
+      artifactDigests.push(evidenceDigest);
+      raw = JSON.parse(evidenceBuffer.toString("utf8"));
+    } catch (error) {
+      validation = {
         ok: false,
         result: "failed",
-        message: `journey schema validation failed: ${JSON.stringify(schemaValidation.errors)}`,
+        message: `Journey evidence could not be parsed: ${error.message}`,
       };
+    }
+  }
+  if (await pathExists(runnerArtifactPath)) {
+    const runnerArtifactBuffer = await readFile(runnerArtifactPath);
+    runnerArtifactDigest = sha256Buffer(runnerArtifactBuffer);
+    artifactDigests.push(runnerArtifactDigest);
+  }
+  if (raw) {
+    const journeySchema = JSON.parse(
+      await readFile(path.join(repoRoot, JOURNEY_SCHEMA_RELATIVE), "utf8"),
+    );
+    const schemaValidation = validateJsonAgainstSchema(raw, journeySchema);
+    validation = schemaValidation.ok
+      ? validateJourneyEvidence(raw, {
+          journeyId,
+          candidate,
+          contract: journeyEntry,
+          expected: {
+            freezeId: freeze?.freezeId,
+            certificationRunId,
+            commandDigest,
+            environmentDigest: environment.digest,
+            runnerArtifactDigest,
+          },
+        })
+      : {
+          ok: false,
+          result: "failed",
+          message: `Journey evidence schema validation failed: ${JSON.stringify(schemaValidation.errors)}`,
+        };
+  }
+  let result = "failed";
+  if (captured.status === "passed" && validation.ok) {
+    result = validation.result;
+  }
+  const message =
+    captured.status !== "passed"
+      ? (captured.error ??
+        `candidate journey runner exited ${captured.exitCode ?? "without an exit code"}`)
+      : validation.message;
+  const exitCode =
+    captured.status !== "passed"
+      ? (captured.exitCode ?? 1)
+      : validation.ok
+        ? 0
+        : 1;
   return {
     suiteId: journeyId,
     bucket: "requiredJourneys",
-    attempt: 1,
-    startedAt: raw.startedAt ?? null,
-    completedAt: raw.completedAt ?? new Date().toISOString(),
-    exitCode: validation.result === "passed" ? 0 : 1,
-    environmentDigest: raw.environmentDigest ?? null,
+    attempt: allocation.attempt,
+    startedAt: captured.startedAt,
+    completedAt: captured.completedAt,
+    exitCode,
+    environmentDigest: environment.digest,
     commandDigest,
     stdoutDigest: captured.stdoutDigest,
     stderrDigest: captured.stderrDigest,
-    artifactDigests: [digest],
-    result: validation.result,
-    message: validation.message,
+    artifactDigests,
+    result,
+    message,
+    command,
   };
 }
 
@@ -837,6 +932,9 @@ export function decideVerdict({
   const hold = required.filter((suite) => suite.result === "hold");
   const notRun = required.filter((suite) => suite.result === "not-run");
   const deferred = required.filter((suite) => suite.result === "deferred");
+  const nonNormativeAttempts = required.filter(
+    (suite) => Number.isInteger(suite.attempt) && suite.attempt > 1,
+  );
   const skippedLike = required.filter((suite) =>
     ["skipped", "deferred"].includes(suite.result),
   );
@@ -862,6 +960,14 @@ export function decideVerdict({
       `required suites not run: ${notRun.map((s) => s.suiteId).join(", ")}`,
     );
     return { verdict: "INCOMPLETE", reasons };
+  }
+  if (nonNormativeAttempts.length > 0) {
+    reasons.push(
+      `non-normative retry attempts cannot count as PASS: ${nonNormativeAttempts
+        .map((suite) => `${suite.suiteId} Attempt ${suite.attempt}`)
+        .join(", ")}`,
+    );
+    return { verdict: "BLOCK", reasons };
   }
   if (hold.length > 0) {
     reasons.push(
@@ -948,7 +1054,20 @@ async function runLightSuites({
   environment,
   repoRoot,
   artifactDir,
+  executionAuthorized,
+  env = process.env,
 }) {
+  if (!args.dryRun && !executionAuthorized) {
+    return manifest.requiredLight.map((entry) =>
+      blockedSuite({
+        suiteId: entry.id,
+        bucket: "requiredLight",
+        message: GITHUB_ATTEMPT_AUTHORITY_MESSAGE,
+        command: entry.command ?? null,
+        environmentDigest: environment.digest,
+      }),
+    );
+  }
   const suites = [];
   let previousFailure = null;
   for (const entry of manifest.requiredLight) {
@@ -963,6 +1082,13 @@ async function runLightSuites({
       );
       continue;
     }
+    const allocation = args.dryRun
+      ? null
+      : await allocateGateB2ArtifactAttempt({
+          artifactRoot: artifactDir,
+          suiteId: entry.id,
+          bucket: "requiredLight",
+        });
     if (entry.kind === "external-evidence" || entry.id === "full-ci") {
       const result = await evaluateFullCiEvidence({
         artifactDir,
@@ -972,8 +1098,13 @@ async function runLightSuites({
         repoRoot,
         fullCiContract: manifest.fullCi ?? null,
       });
-      suites.push(result);
-      if (result.result !== "passed") previousFailure = entry.id;
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result,
+      });
+      suites.push(recorded);
+      if (recorded.result !== "passed") previousFailure = entry.id;
       continue;
     }
     if (args.dryRun) {
@@ -1007,7 +1138,7 @@ async function runLightSuites({
       }
     }
     const [bin, ...cmdArgs] = command;
-    const captured = await runCapturedCommand(bin, cmdArgs, repoRoot);
+    const captured = await runCapturedCommand(bin, cmdArgs, repoRoot, env);
     const suiteResult = {
       suiteId: entry.id,
       bucket: "requiredLight",
@@ -1027,113 +1158,15 @@ async function runLightSuites({
           : (captured.error ?? `exit ${captured.exitCode}`),
       command,
     };
-    suites.push(suiteResult);
-    if (suiteResult.result !== "passed") previousFailure = entry.id;
+    const recorded = await recordCertificationSuiteAttempt({
+      allocation,
+      candidate,
+      result: suiteResult,
+    });
+    suites.push(recorded);
+    if (recorded.result !== "passed") previousFailure = entry.id;
   }
   return suites;
-}
-
-async function resolveHeavyCommand({ entry, qualityIndex, packageJson }) {
-  if (entry.qualityManifestId) {
-    const heavy = qualityIndex.heavy.get(entry.qualityManifestId);
-    if (heavy?.command) {
-      return {
-        kind: "shell-string",
-        commandString: heavy.command,
-        available: true,
-      };
-    }
-    const blocked = qualityIndex.blocked.get(entry.qualityManifestId);
-    if (blocked) {
-      return {
-        kind: "blocked",
-        available: false,
-        message: blocked.reason,
-        requiredAction: blocked.requiredAction,
-      };
-    }
-    return {
-      kind: "missing",
-      available: false,
-      message: `qualityManifestId ${entry.qualityManifestId} not found`,
-    };
-  }
-  if (entry.runner) {
-    const resolved = resolvePnpmRunnerCommand(entry.runner);
-    if (!resolved) {
-      return {
-        kind: "missing",
-        available: false,
-        message: `Unsupported runner form: ${entry.runner}`,
-      };
-    }
-    if (!packageScriptExists(packageJson, resolved.script)) {
-      return {
-        kind: "missing",
-        available: false,
-        message: `Runner script not registered in package.json: ${resolved.script}`,
-      };
-    }
-    return {
-      kind: "argv",
-      command: resolved.command,
-      available: true,
-    };
-  }
-  return {
-    kind: "missing",
-    available: false,
-    message: "No qualityManifestId or runner configured",
-  };
-}
-
-async function runShellStringCommand(commandString, cwd, env = process.env) {
-  // Strip VAR=... placeholders so parent-process secrets are inherited.
-  const sanitized = stripCredentialPlaceholders(commandString);
-  const started = performance.now();
-  const startedAt = new Date().toISOString();
-  return new Promise((resolve) => {
-    const child = spawn(sanitized, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: true,
-      env,
-    });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat([
-        ...stderr,
-        Buffer.from(String(error.message)),
-      ]);
-      resolve({
-        status: "failed",
-        exitCode: null,
-        error: error.message,
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-    child.on("exit", (exitCode) => {
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat(stderr);
-      resolve({
-        status: exitCode === 0 ? "passed" : "failed",
-        exitCode,
-        durationMs: Math.round(performance.now() - started),
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdoutDigest: sha256Buffer(stdoutBuf),
-        stderrDigest: sha256Buffer(stderrBuf),
-      });
-    });
-  });
 }
 
 async function runHeavySuites({
@@ -1146,9 +1179,22 @@ async function runHeavySuites({
   dryRun,
   creditInformational = false,
   candidate,
+  freeze,
+  certificationRunId,
   artifactDir,
+  executionAuthorized,
   env = process.env,
 }) {
+  if (!dryRun && !executionAuthorized) {
+    return entries.map((entry) =>
+      blockedSuite({
+        suiteId: entry.id,
+        bucket,
+        message: GITHUB_ATTEMPT_AUTHORITY_MESSAGE,
+        environmentDigest: environment.digest,
+      }),
+    );
+  }
   const suites = [];
   let previousFailure = null;
   for (const entry of entries) {
@@ -1162,6 +1208,7 @@ async function runHeavySuites({
       );
       continue;
     }
+    let allocation = null;
     if (entry.status === "blocked" || entry.id.startsWith("blocked-")) {
       const blocked = blockedSuite({
         suiteId: entry.id,
@@ -1173,7 +1220,12 @@ async function runHeavySuites({
             : entry.reason) ||
           `Heavy suite ${entry.id} is blocked until requiredAction is satisfied.`,
       });
-      suites.push(blocked);
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result: blocked,
+      });
+      suites.push(recorded);
       if (bucket === "requiredHeavy") previousFailure = entry.id;
       continue;
     }
@@ -1185,7 +1237,12 @@ async function runHeavySuites({
         environmentDigest: environment.digest,
         message: `Missing required credentials/resources: ${missing.join(", ")}. Credential shortage is BLOCK, not passed/skipped.`,
       });
-      suites.push(blocked);
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result: blocked,
+      });
+      suites.push(recorded);
       if (bucket === "requiredHeavy") previousFailure = entry.id;
       continue;
     }
@@ -1205,7 +1262,12 @@ async function runHeavySuites({
             ? ` Required action: ${resolved.requiredAction}`
             : ""),
       });
-      suites.push(blocked);
+      const recorded = await recordCertificationSuiteAttempt({
+        allocation,
+        candidate,
+        result: blocked,
+      });
+      suites.push(recorded);
       if (bucket === "requiredHeavy") previousFailure = entry.id;
       continue;
     }
@@ -1224,15 +1286,20 @@ async function runHeavySuites({
       continue;
     }
 
+    allocation = await allocateGateB2ArtifactAttempt({
+      artifactRoot: artifactDir,
+      suiteId: entry.id,
+      bucket,
+    });
+
     const commandForDigest =
       resolved.kind === "argv"
         ? resolved.command
         : [stripCredentialPlaceholders(resolved.commandString)];
     const commandDigest = sha256Text(JSON.stringify(commandForDigest));
     const runId = randomUUID();
-    const outputPath = path.join(artifactDir, "heavy", entry.id, "report.json");
-    await mkdir(path.dirname(outputPath), { recursive: true });
-    await rm(outputPath, { force: true });
+    const { attempt, attemptDir } = allocation;
+    const outputPath = path.join(attemptDir, "report.json");
 
     const heavyEnv = buildHeavyCertificationEnv({
       candidate,
@@ -1240,6 +1307,10 @@ async function runHeavySuites({
       runId,
       outputPath,
       commandDigest,
+      freezeId: freeze?.freezeId,
+      certificationRunId,
+      attempt,
+      attemptDir,
       baseEnv: env,
     });
 
@@ -1279,6 +1350,9 @@ async function runHeavySuites({
       suiteId: entry.id,
       runId,
       commandDigest,
+      freezeId: freeze?.freezeId,
+      certificationRunId,
+      attempt,
     };
     const artifactDigests = [];
 
@@ -1312,13 +1386,32 @@ async function runHeavySuites({
           message = validation.message;
         }
       }
+      if (
+        entry.id === "heavy-web-ai-consent-browser-live" &&
+        result !== "failed"
+      ) {
+        const validation = validateWebAiConsentBrowserReport(
+          liveReport,
+          bindingExpected,
+        );
+        if (!validation.ok && bucket === "requiredHeavy") {
+          result = "failed";
+          message = validation.message;
+        }
+      }
 
       if (liveReport && result !== "failed") {
-        const digest = await persistHeavyReport({
-          report: liveReport,
-          artifactDir,
-          suiteId: entry.id,
-        });
+        let digest;
+        if (await pathExists(outputPath)) {
+          digest = sha256Text(await readFile(outputPath, "utf8"));
+        } else {
+          digest = await persistHeavyReport({
+            report: liveReport,
+            artifactDir,
+            suiteId: entry.id,
+            attemptDir,
+          });
+        }
         artifactDigests.push(digest);
       } else if (
         bucket === "requiredHeavy" &&
@@ -1326,6 +1419,7 @@ async function runHeavySuites({
         [
           "heavy-narrative-chronicle-production",
           "heavy-web-ai-consent-live",
+          "heavy-web-ai-consent-browser-live",
         ].includes(entry.id)
       ) {
         result = "failed";
@@ -1337,7 +1431,7 @@ async function runHeavySuites({
     const suiteResult = {
       suiteId: entry.id,
       bucket,
-      attempt: 1,
+      attempt,
       startedAt: captured.startedAt,
       completedAt: captured.completedAt,
       exitCode: captured.exitCode,
@@ -1351,6 +1445,31 @@ async function runHeavySuites({
       command: commandForDigest,
       runId,
     };
+    await writeGateB2AttemptArtifact({
+      attemptDir,
+      record: {
+        schemaVersion: 1,
+        contractVersion: GATE_B2_CONTRACT_VERSION,
+        candidateCommitSha: candidate.commitSha,
+        candidateTreeSha: candidate.treeSha,
+        freezeId: freeze?.freezeId ?? null,
+        certificationRunId: certificationRunId ?? null,
+        suiteId: entry.id,
+        bucket,
+        attempt,
+        runId,
+        commandDigest,
+        startedAt: captured.startedAt,
+        completedAt: captured.completedAt,
+        exitCode: captured.exitCode,
+        environmentDigest: environment.digest,
+        stdoutDigest: captured.stdoutDigest,
+        stderrDigest: captured.stderrDigest,
+        artifactDigests,
+        result,
+        message,
+      },
+    });
     suites.push(suiteResult);
     if (
       bucket === "requiredHeavy" &&
@@ -1370,6 +1489,7 @@ export async function certifyGateB2({
   boundExecution = false,
 }) {
   const startedAt = new Date().toISOString();
+  const certificationRunId = randomUUID();
   const needsExecution =
     args.runLight ||
     args.runHeavy ||
@@ -1507,12 +1627,28 @@ export async function certifyGateB2({
       commitSha: identity.commitSha,
       treeSha: identity.treeSha,
       baseMasterSha: identity.baseMasterSha,
-      schemaVersion: manifest.candidate?.schemaVersion ?? 16,
+      schemaVersion: manifest.candidate.schemaVersion,
+      freezeId: freeze?.freezeId ?? null,
+      attemptAuthority: getGateB2GithubAttemptIdentity(),
       ...digests,
       frozen,
       dirty: identity.dirty,
       boundVia,
     };
+
+    const authorityContext =
+      needsExecution && !args.dryRun
+        ? readGateB2GithubAttemptContext({
+            candidateCommitSha: candidate.commitSha,
+          })
+        : {
+            ok: true,
+            message: "Gate B2 execution context not required",
+            attemptAuthority: getGateB2GithubAttemptIdentity(),
+          };
+    candidate.attemptAuthority = authorityContext.attemptAuthority;
+    const executionAuthorized =
+      args.dryRun || (candidate.frozen && authorityContext.ok);
 
     const artifactDir =
       args.artifactDir ??
@@ -1526,9 +1662,7 @@ export async function certifyGateB2({
     await mkdir(path.join(artifactDir, "heavy"), { recursive: true });
     await mkdir(path.join(artifactDir, "journeys"), { recursive: true });
     await mkdir(path.join(artifactDir, "environment"), { recursive: true });
-
     const suites = [];
-    const retries = [];
     const blockedReasons = [];
     const certEnv = sanitizeCertificationEnv(process.env);
 
@@ -1536,6 +1670,9 @@ export async function certifyGateB2({
       if (candidate.dirty) blockedReasons.push("working tree dirty");
       if (needsExecution && !candidate.frozen) {
         blockedReasons.push("candidate not freeze-bound");
+      }
+      if (needsExecution && !args.dryRun && !authorityContext.ok) {
+        blockedReasons.push(authorityContext.message);
       }
       for (const [key, value] of Object.entries(digests)) {
         if (!SHA256_RE.test(value)) {
@@ -1553,6 +1690,8 @@ export async function certifyGateB2({
           environment,
           repoRoot: executionRoot,
           artifactDir,
+          executionAuthorized,
+          env: certEnv,
         })),
       );
     } else {
@@ -1579,7 +1718,10 @@ export async function certifyGateB2({
           repoRoot: executionRoot,
           dryRun: args.dryRun,
           candidate,
+          freeze,
+          certificationRunId,
           artifactDir,
+          executionAuthorized,
           env: certEnv,
         })),
       );
@@ -1596,18 +1738,46 @@ export async function certifyGateB2({
     }
 
     if (args.runJourneys) {
-      for (const entry of manifest.requiredManualJourneys) {
+      if (!args.dryRun && !executionAuthorized) {
         suites.push(
-          await evaluateJourneyEvidence({
-            journeyEntry: entry,
-            artifactDir,
-            journeyEvidenceDir: args.journeyEvidenceDir,
-            candidate,
-            repoRoot: executionRoot,
-            environment,
-            certEnv,
-          }),
+          ...manifest.requiredManualJourneys.map((entry) =>
+            blockedSuite({
+              suiteId: entry.id,
+              bucket: "requiredJourneys",
+              message: GITHUB_ATTEMPT_AUTHORITY_MESSAGE,
+              command: entry.command ?? null,
+              environmentDigest: environment.digest,
+            }),
+          ),
         );
+      } else {
+        for (const entry of manifest.requiredManualJourneys) {
+          const allocation = args.dryRun
+            ? null
+            : await allocateGateB2ArtifactAttempt({
+                artifactRoot: artifactDir,
+                suiteId: entry.id,
+                bucket: "requiredJourneys",
+              });
+          const result = await runJourneySuite({
+            journeyEntry: entry,
+            candidate,
+            environment,
+            repoRoot: executionRoot,
+            dryRun: args.dryRun,
+            freeze,
+            certificationRunId,
+            allocation,
+            env: certEnv,
+          });
+          suites.push(
+            await recordCertificationSuiteAttempt({
+              allocation,
+              candidate,
+              result,
+            }),
+          );
+        }
       }
     } else {
       for (const entry of manifest.requiredManualJourneys) {
@@ -1633,7 +1803,10 @@ export async function certifyGateB2({
           dryRun: args.dryRun,
           creditInformational: true,
           candidate,
+          freeze,
+          certificationRunId,
           artifactDir,
+          executionAuthorized,
           env: certEnv,
         })),
       );
@@ -1677,7 +1850,10 @@ export async function certifyGateB2({
             repoRoot: executionRoot,
             dryRun: args.dryRun,
             candidate,
+            freeze,
+            certificationRunId,
             artifactDir,
+            executionAuthorized,
             env: certEnv,
           })),
         );
@@ -1700,7 +1876,6 @@ export async function certifyGateB2({
         blockedReasons.push(`${suite.suiteId}: ${suite.message}`);
       }
     }
-
     const preflightOnly =
       args.preflight &&
       !args.runLight &&
@@ -1727,6 +1902,14 @@ export async function certifyGateB2({
       decisionPolicy: manifest.decisionPolicy ?? {},
       preflightOnly,
     });
+    if (
+      blockedReasons.length > 0 &&
+      decision.verdict === "PASS" &&
+      !preflightOnly
+    ) {
+      decision.verdict = "BLOCK";
+      decision.reasons.push(...blockedReasons);
+    }
 
     if (needsExecution && boundVia !== "dry-run-unbound") {
       try {
@@ -1744,10 +1927,13 @@ export async function certifyGateB2({
       schemaVersion: 1,
       contractVersion: GATE_B2_CONTRACT_VERSION,
       gateId: "gate-b2",
+      assuranceScope: { ...GATE_B2_ASSURANCE_SCOPE },
       manifestDigest,
       generatedAt: new Date().toISOString(),
       startedAt,
       completedAt: new Date().toISOString(),
+      freezeId: freeze?.freezeId ?? null,
+      certificationRunId,
       mode,
       candidate,
       environment,
@@ -1763,7 +1949,6 @@ export async function certifyGateB2({
         releaseAdjacent: tallyBucket(suites, "releaseAdjacent"),
       },
       suites,
-      retries,
       blockedReasons,
       firstFailure: firstFailureOf(suites),
     };
@@ -1793,6 +1978,8 @@ export async function certifyGateB2({
     const decisionPath = path.join(artifactDir, "decision.json");
     const decisionDoc = buildDecisionDocument({
       candidate,
+      freezeId: freeze?.freezeId ?? null,
+      certificationRunId,
       verdict: report.verdict,
       reasons: report.verdictReasons,
       suites,

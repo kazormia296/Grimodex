@@ -9,156 +9,339 @@ import yaml from "js-yaml";
 
 import {
   certificationExitCode,
+  certifyGateB2,
   decideVerdict,
   emptyBucketSummary,
-  evaluateJourneyEvidence,
+  journeyCertificationCommandDigest,
   loadGateB2Manifest,
   parseCertifyArgs,
+  runJourneySuite,
+  sha256Text,
   tallyBucket,
   validateGateB2Manifest,
 } from "./certify-gate-b2.mjs";
-import { validateFullCiEvidence } from "./certify-gate-b2-bindings.mjs";
+import {
+  sanitizeCertificationEnv,
+  validateJsonAgainstSchema,
+} from "./certify-gate-b2-bindings.mjs";
+import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
+import { certificationCommandForJourney } from "./run-gate-b2-journey.mjs";
+import { validateNativeWriterOwnership } from "./validate-native-writer-ownership.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
 );
 
-test("Gate B2 certification manifest is valid and separates release-adjacent suites", async () => {
-  const text = await readFile(
-    path.join(repoRoot, "evals/certifications/gate-b2.yaml"),
+test("Gate B2 v8 is credential-free and uses the dedicated GitHub Actions authority", async () => {
+  const { raw } = await loadGateB2Manifest(repoRoot);
+  assert.deepEqual(validateGateB2Manifest(raw), []);
+  assert.equal(raw.contractVersion, 8);
+  assert.deepEqual(
+    raw.candidate.attemptAuthority,
+    getGateB2GithubAttemptIdentity(),
+  );
+  assert.equal(
+    raw.inputs.attemptWorkflow,
+    ".github/workflows/gate-b2-certification.yml",
+  );
+  assert.equal(raw.fullCi.acceptedEvents.includes("pull_request"), false);
+  assert.equal(raw.requiredManualJourneys.length, 7);
+  assert.deepEqual(
+    raw.requiredHeavy.map((entry) => entry.id),
+    ["heavy-web-ai-consent-browser-live"],
+  );
+  for (const bucket of [
+    raw.requiredLight,
+    raw.requiredHeavy,
+    raw.requiredManualJourneys,
+  ]) {
+    assert.ok(bucket.every((entry) => !Object.hasOwn(entry, "requiresEnv")));
+  }
+  assert.deepEqual(raw.assuranceScope, {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  });
+});
+
+test("certifier and Journey runner bind the same fixed command digest", async () => {
+  const { raw } = await loadGateB2Manifest(repoRoot);
+  for (const entry of raw.requiredManualJourneys) {
+    assert.deepEqual(entry.command, certificationCommandForJourney(entry.id));
+    assert.equal(
+      journeyCertificationCommandDigest(entry),
+      sha256Text(JSON.stringify(certificationCommandForJourney(entry.id))),
+    );
+  }
+});
+
+test("trusted project deletion stays inside native writer ownership", () => {
+  const result = validateNativeWriterOwnership();
+  assert.equal(result.activeCount > 0, true);
+  assert.deepEqual(result.violations, []);
+});
+
+test("dedicated workflow binds a metadata-only freeze envelope to candidate and Full CI", async () => {
+  const workflowText = await readFile(
+    path.join(repoRoot, ".github/workflows/gate-b2-certification.yml"),
     "utf8",
   );
-  const raw = yaml.load(text);
-  assert.deepEqual(validateGateB2Manifest(raw), []);
-  assert.equal(raw.id, "gate-b2");
-  assert.equal(raw.contractVersion, 5);
-  assert.equal(raw.decisionPolicy.blockedIsPass, false);
-  assert.equal(raw.decisionPolicy.deferredIsPass, false);
-  assert.equal(raw.decisionPolicy.credentialShortageIsPass, false);
-  assert.equal(raw.decisionPolicy.retryOverwritePass, false);
-  assert.deepEqual(raw.requiredLight[0], {
-    id: "adr-static-certification",
-    command: ["pnpm", "test:narrative:gate-b2-adr:certifiable"],
-  });
-
-  const requiredHeavy = raw.requiredHeavy.map((entry) => entry.id);
-  assert.deepEqual(requiredHeavy, [
-    "heavy-agent-tool-loop",
-    "heavy-single-shot-surfaces",
-    "heavy-rust-post-effect-live",
-    "heavy-codex-prompt-surfaces",
-    "heavy-narrative-chronicle-production",
-    "heavy-web-ai-consent-browser-live",
-  ]);
-  const browserConsent = raw.requiredHeavy.find(
-    (entry) => entry.id === "heavy-web-ai-consent-browser-live",
+  const workflow = yaml.load(workflowText);
+  const dispatch = workflow.on?.workflow_dispatch;
+  assert.ok(dispatch);
+  assert.equal(dispatch.inputs.candidate_sha.required, true);
+  assert.equal(dispatch.inputs.freeze_sha.required, true);
+  assert.equal(dispatch.inputs.full_ci_run_id.required, true);
+  assert.match(workflowText, /gate-b2-github-attempt\.mjs/);
+  assert.match(workflowText, /--run-light/);
+  assert.match(workflowText, /--run-heavy/);
+  assert.match(workflowText, /--run-journeys/);
+  const checkout = workflow.jobs.certify.steps.find((step) =>
+    String(step.uses ?? "").startsWith("actions/checkout@"),
   );
-  assert.equal(browserConsent.status, "blocked");
-  assert.ok(raw.fullCi?.workflowId);
-  assert.equal(raw.fullCi.workflowPath, ".github/workflows/ci.yml");
-  assert.equal(raw.fullCi.acceptedEvents.includes("pull_request"), false);
-
-  const informational = raw.informational.map((entry) => entry.id);
-  assert.ok(informational.includes("heavy-web-ai-consent-live"));
-  assert.ok(
-    informational.includes("heavy-narrative-chronicle-legacy-baseline"),
+  assert.equal(checkout?.with?.ref, "${{ inputs.freeze_sha }}");
+  const steps = workflow.jobs.certify.steps;
+  const envelopeIndex = steps.findIndex(
+    (step) => step.name === "Verify immutable candidate freeze envelope",
   );
-  const consentEntry = raw.informational.find(
-    (entry) => entry.id === "heavy-web-ai-consent-live",
+  const admissionIndex = steps.findIndex((step) =>
+    String(step.run ?? "").includes("gate-b2-github-attempt.mjs"),
   );
-  assert.equal(consentEntry.certificationCredit, false);
-
-  const journey = raw.requiredManualJourneys[0];
-  assert.equal(typeof journey, "object");
-  assert.equal(journey.id, "prepared-plan-toctou");
-  assert.match(journey.runnerId, /^gate-b2-/);
-  assert.equal(journey.runnerVersion, "1");
-  assert.ok(Array.isArray(journey.requiredAssertions));
-  assert.ok(journey.requiredAssertions.length > 0);
-  assert.equal(journey.status, "blocked");
-  assert.ok(journey.requiredAction);
-
-  const releaseAdjacent = raw.releaseAdjacent.map((entry) => entry.id);
-  assert.ok(releaseAdjacent.includes("heavy-related-scenes"));
-  assert.ok(releaseAdjacent.includes("heavy-impact-gate31"));
-  assert.ok(releaseAdjacent.includes("blocked-impact-gate4-fresh-holdout"));
-  assert.equal(
-    requiredHeavy.includes("heavy-related-scenes"),
-    false,
-    "retrieval Heavy must not be required for Gate B2 Engineering",
+  assert.ok(envelopeIndex > 0);
+  assert.ok(admissionIndex > envelopeIndex);
+  const envelopeCommand = String(steps[envelopeIndex].run);
+  assert.match(envelopeCommand, /GATE_B2_FREEZE_SHA\}\^/);
+  assert.match(envelopeCommand, /git diff --name-status/);
+  assert.match(
+    envelopeCommand,
+    /evals\/certifications\/gate-b2-candidate\.freeze\.json/,
   );
+  assert.match(envelopeCommand, /change_count" -eq 3/);
+  assert.match(envelopeCommand, /provisional Gate B2 result/);
+  assert.match(workflowText, /credential-free Gate B2 engineering suites/);
+  assert.doesNotMatch(workflowText, /\$\{\{\s*secrets\./);
+  assert.doesNotMatch(workflowText, /OPENROUTER_API_KEY/);
+  assert.doesNotMatch(workflowText, /private.?key|ed25519|signature/i);
 });
 
-test("package script and report schema exist for certify:gate-b2", async () => {
-  const packageJson = JSON.parse(
-    await readFile(path.join(repoRoot, "package.json"), "utf8"),
-  );
-  assert.equal(
-    packageJson.scripts["certify:gate-b2"],
-    "node scripts/quality/certify-gate-b2-bootstrap.mjs",
-  );
-  assert.equal(
-    packageJson.scripts["test:narrative:gate-b2-adr"],
-    "node scripts/quality/validate-gate-b2-adr.mjs",
-  );
-  assert.equal(
-    packageJson.scripts["test:narrative:gate-b2-adr:certifiable"],
-    "node scripts/quality/validate-gate-b2-adr.mjs -- --require-certifiable",
-  );
-  assert.match(
-    packageJson.scripts["test:quality"],
-    /certify-gate-b2\.test\.mjs/,
-  );
-  assert.match(
-    packageJson.scripts["test:quality"],
-    /certify-gate-b2-bindings\.test\.mjs/,
-  );
-  assert.match(
-    packageJson.scripts["test:quality"],
-    /validate-gate-b2-adr\.test\.mjs/,
-  );
-
-  const schema = JSON.parse(
-    await readFile(
-      path.join(
-        repoRoot,
-        "evals/certifications/schemas/gate-b2-report-v1.schema.json",
-      ),
+test("freeze envelope workflow guard accepts only the three metadata files", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-envelope-"));
+  const git = (...args) => {
+    const result = spawnSync("git", args, {
+      cwd: temp,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "--quiet");
+    git("config", "user.name", "Gate B2 Test");
+    git("config", "user.email", "gate-b2@example.invalid");
+    await mkdir(path.join(temp, "evals/certifications/archive"), {
+      recursive: true,
+    });
+    await mkdir(path.join(temp, "evals/certifications/results"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(temp, "evals/certifications/gate-b2-candidate.freeze.json"),
+      '{"freezeId":"previous"}\n',
       "utf8",
-    ),
-  );
-  assert.equal(schema.title, "Gate B2 Certification Report");
-  assert.ok(schema.required.includes("contractVersion"));
-  assert.equal(schema.properties.contractVersion.const, 5);
-  assert.deepEqual(schema.properties.verdict.enum, [
-    "PASS",
-    "HOLD",
-    "BLOCK",
-    "INCOMPLETE",
-  ]);
-  assert.equal(
-    schema.properties.candidate.properties.adrChecklistDigest.pattern,
-    "^sha256:[0-9a-f]{64}$",
-  );
-  assert.equal(
-    schema.properties.candidate.properties.classificationDigest.pattern,
-    "^sha256:[0-9a-f]{64}$",
-  );
+    );
+    git("add", ".");
+    git("commit", "--quiet", "-m", "candidate");
+    const candidateSha = git("rev-parse", "HEAD");
+    const candidateTreeSha = git("rev-parse", "HEAD^{tree}");
+    const freezeId = "freeze-envelope-test";
+    await writeFile(
+      path.join(temp, "evals/certifications/gate-b2-candidate.freeze.json"),
+      `${JSON.stringify({
+        freezeId,
+        candidateCommitSha: candidateSha,
+        candidateTreeSha,
+        candidate: { commitSha: candidateSha, treeSha: candidateTreeSha },
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(
+        temp,
+        `evals/certifications/results/gate-b2-${candidateSha}.json`,
+      ),
+      `${JSON.stringify({
+        verdict: "INCOMPLETE",
+        freezeId,
+        candidateCommitSha: candidateSha,
+        candidateTreeSha,
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(
+        temp,
+        `evals/certifications/archive/gate-b2-candidate.${"a".repeat(40)}.freeze.json`,
+      ),
+      '{"status":"superseded"}\n',
+      "utf8",
+    );
+    git("add", ".");
+    git("commit", "--quiet", "-m", "freeze envelope");
+
+    const workflow = yaml.load(
+      await readFile(
+        path.join(repoRoot, ".github/workflows/gate-b2-certification.yml"),
+        "utf8",
+      ),
+    );
+    const command = workflow.jobs.certify.steps.find(
+      (step) => step.name === "Verify immutable candidate freeze envelope",
+    ).run;
+    const runGuard = () =>
+      spawnSync("bash", ["-c", command], {
+        cwd: temp,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GATE_B2_CANDIDATE_SHA: candidateSha,
+          GATE_B2_FREEZE_SHA: git("rev-parse", "HEAD"),
+        },
+      });
+    const accepted = runGuard();
+    assert.equal(accepted.status, 0, accepted.stderr);
+
+    await mkdir(path.join(temp, "scripts/quality"), { recursive: true });
+    await writeFile(
+      path.join(temp, "scripts/quality/unexpected.mjs"),
+      "export {};\n",
+      "utf8",
+    );
+    git("add", ".");
+    git("commit", "--quiet", "--amend", "--no-edit");
+    const rejected = runGuard();
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /Unexpected freeze-envelope change/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
-test("parseCertifyArgs defaults to preflight and rejects unknown flags", () => {
-  assert.deepEqual(parseCertifyArgs([]).preflight, true);
-  assert.equal(parseCertifyArgs(["--run-light"]).runLight, true);
-  assert.equal(parseCertifyArgs(["--run-light"]).preflight, false);
-  assert.throws(() => parseCertifyArgs(["--nope"]), /Unknown argument/);
+test("manifest rejects required-suite opt-outs and unfrozen Journey runners", async () => {
+  const { raw } = await loadGateB2Manifest(repoRoot);
+  raw.requiredHeavy[0].certificationCredit = false;
+  assert.match(
+    validateGateB2Manifest(raw).join("\n"),
+    /requiredHeavy .* cannot set certificationCredit:false/i,
+  );
+
+  const { raw: missingRunner } = await loadGateB2Manifest(repoRoot);
+  delete missingRunner.requiredManualJourneys[0].runner;
+  assert.match(
+    validateGateB2Manifest(missingRunner).join("\n"),
+    /active journey requires runner.command/i,
+  );
+
+  const { raw: unfrozenRunner } = await loadGateB2Manifest(repoRoot);
+  unfrozenRunner.requiredManualJourneys[0].runner = {
+    command: ["node", "scripts/not-frozen.mjs"],
+    sourcePath: "scripts/not-frozen.mjs",
+  };
+  assert.match(
+    validateGateB2Manifest(unfrozenRunner).join("\n"),
+    /runner.sourcePath must be frozen/i,
+  );
+
+  const { raw: unsafePolicy } = await loadGateB2Manifest(repoRoot);
+  unsafePolicy.decisionPolicy.blockedIsPass = true;
+  assert.match(
+    validateGateB2Manifest(unsafePolicy).join("\n"),
+    /blockedIsPass must be false/i,
+  );
+
+  for (const bucket of [
+    "requiredLight",
+    "requiredHeavy",
+    "requiredManualJourneys",
+  ]) {
+    const { raw: credentialed } = await loadGateB2Manifest(repoRoot);
+    credentialed[bucket][0].requiresEnv = ["OPENROUTER_API_KEY"];
+    assert.match(
+      validateGateB2Manifest(credentialed).join("\n"),
+      /must not require external credentials/i,
+    );
+  }
+});
+
+test("credential absence does not block an otherwise complete formal Gate B2 decision", async () => {
+  const { raw } = await loadGateB2Manifest(repoRoot);
+  const suites = [
+    ...raw.requiredLight.map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredLight",
+      attempt: 1,
+      result: "passed",
+    })),
+    ...raw.requiredHeavy.map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredHeavy",
+      attempt: 1,
+      result: "passed",
+    })),
+    ...raw.requiredManualJourneys.map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredJourneys",
+      attempt: 1,
+      result: "passed",
+    })),
+  ];
+  const previousKey = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    assert.equal(
+      decideVerdict({
+        suites,
+        candidate: { frozen: true, dirty: false },
+        decisionPolicy: raw.decisionPolicy,
+        preflightOnly: false,
+      }).verdict,
+      "PASS",
+    );
+  } finally {
+    if (previousKey !== undefined) process.env.OPENROUTER_API_KEY = previousKey;
+  }
+});
+
+test("CLI defaults to preflight and rejects unknown options", () => {
+  assert.deepEqual(parseCertifyArgs([]), {
+    preflight: true,
+    runLight: false,
+    runHeavy: false,
+    runJourneys: false,
+    runInformational: false,
+    runReleaseAdjacent: false,
+    candidate: null,
+    baseMaster: null,
+    report: null,
+    artifactDir: null,
+    format: "markdown",
+    ciEvidence: null,
+    journeyEvidenceDir: null,
+    dryRun: false,
+  });
+  assert.throws(
+    () => parseCertifyArgs(["--unknown-option"]),
+    /unknown argument/i,
+  );
   assert.throws(
     () => parseCertifyArgs(["--preflight", "--run-light"]),
-    /cannot be combined with execution flags/,
+    /cannot be combined/i,
   );
 });
 
-test("only a true preflight INCOMPLETE exits successfully", () => {
+test("only PASS and true preflight INCOMPLETE exit successfully", () => {
+  assert.equal(certificationExitCode({ verdict: "PASS", mode: "full" }), 0);
   assert.equal(
     certificationExitCode({ verdict: "INCOMPLETE", mode: "preflight" }),
     0,
@@ -167,176 +350,232 @@ test("only a true preflight INCOMPLETE exits successfully", () => {
     certificationExitCode({ verdict: "INCOMPLETE", mode: "light" }),
     1,
   );
-  assert.equal(
-    certificationExitCode({ verdict: "INCOMPLETE", mode: "decision" }),
-    1,
-  );
-  assert.equal(certificationExitCode({ verdict: "PASS", mode: "full" }), 0);
   assert.equal(certificationExitCode({ verdict: "BLOCK", mode: "full" }), 1);
 });
 
-test("required suites cannot opt out of certification credit", async () => {
-  const text = await readFile(
-    path.join(repoRoot, "evals/certifications/gate-b2.yaml"),
-    "utf8",
+function requiredSuite(result, attempt = 1) {
+  return {
+    suiteId: "required-a",
+    bucket: "requiredLight",
+    attempt,
+    result,
+  };
+}
+
+test("verdict never promotes blocked, deferred, missing, or Attempt 2 results", () => {
+  const candidate = { frozen: true, dirty: false };
+  const decisionPolicy = { requireCandidateFreeze: true };
+  assert.equal(
+    decideVerdict({
+      suites: [requiredSuite("passed")],
+      candidate,
+      decisionPolicy,
+      preflightOnly: false,
+    }).verdict,
+    "PASS",
   );
-  const raw = yaml.load(text);
-  raw.requiredHeavy[0].certificationCredit = false;
-  assert.match(
-    validateGateB2Manifest(raw).join("\n"),
-    /requiredHeavy .* cannot set certificationCredit:false/,
+  for (const [result, expected] of [
+    ["blocked", "BLOCK"],
+    ["failed", "BLOCK"],
+    ["deferred", "BLOCK"],
+    ["not-run", "INCOMPLETE"],
+    ["hold", "HOLD"],
+  ]) {
+    assert.equal(
+      decideVerdict({
+        suites: [requiredSuite(result)],
+        candidate,
+        decisionPolicy,
+        preflightOnly: false,
+      }).verdict,
+      expected,
+    );
+  }
+  assert.equal(
+    decideVerdict({
+      suites: [requiredSuite("passed", 2)],
+      candidate,
+      decisionPolicy,
+      preflightOnly: false,
+    }).verdict,
+    "BLOCK",
   );
 });
 
-test("an active journey requires a candidate runner frozen by the harness", async () => {
-  const text = await readFile(
-    path.join(repoRoot, "evals/certifications/gate-b2.yaml"),
-    "utf8",
-  );
-  const raw = yaml.load(text);
-  delete raw.requiredManualJourneys[0].status;
-  assert.match(
-    validateGateB2Manifest(raw).join("\n"),
-    /active journey requires runner.command/,
-  );
-  raw.requiredManualJourneys[0].runner = {
-    command: ["pnpm", "test:fake"],
-    sourcePath: "scripts/not-frozen.mjs",
-  };
-  assert.match(
-    validateGateB2Manifest(raw).join("\n"),
-    /runner.sourcePath must be frozen/,
-  );
-  raw.requiredManualJourneys[0].runner = {
-    command: ["node", "scripts/other.mjs"],
-    sourcePath: "scripts/quality/certify-gate-b2.mjs",
-  };
-  assert.match(
-    validateGateB2Manifest(raw).join("\n"),
-    /runner.command must execute runner.sourcePath directly/,
+test("bucket tally never invents passes", () => {
+  assert.deepEqual(emptyBucketSummary(), {
+    total: 0,
+    passed: 0,
+    failed: 0,
+    blocked: 0,
+    hold: 0,
+    notRun: 0,
+    deferred: 0,
+  });
+  assert.deepEqual(
+    tallyBucket(
+      [
+        { bucket: "requiredHeavy", result: "passed" },
+        { bucket: "requiredHeavy", result: "blocked" },
+        { bucket: "requiredHeavy", result: "informational" },
+      ],
+      "requiredHeavy",
+    ),
+    {
+      total: 3,
+      passed: 1,
+      failed: 0,
+      blocked: 1,
+      hold: 0,
+      notRun: 1,
+      deferred: 0,
+    },
   );
 });
 
-test("active journey evidence is freshly emitted by a candidate-bound runner and schema validated", async () => {
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-"));
+test("Journey dry-run does not accept handwritten evidence", async () => {
+  const result = await runJourneySuite({
+    journeyEntry: {
+      id: "journey-a",
+      runnerId: "runner-a",
+      runnerVersion: "1",
+      requiredAssertions: ["assertion-a"],
+      runner: { command: ["node", "runner.mjs"] },
+    },
+    candidate: {
+      commitSha: "a".repeat(40),
+      treeSha: "b".repeat(40),
+    },
+    environment: { digest: `sha256:${"c".repeat(64)}` },
+    repoRoot,
+    dryRun: true,
+    freeze: { freezeId: "freeze-1" },
+    certificationRunId: "cert-1",
+    allocation: null,
+  });
+  assert.equal(result.result, "not-run");
+  assert.match(result.message, /dry-run|not executed/i);
+});
+
+test("Journey runner emits fresh candidate-bound evidence", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-live-"));
   const runnerPath = path.join(temp, "runner.mjs");
-  const evidencePath = path.join(temp, "journeys", "fresh-journey.json");
+  const attemptDir = path.join(temp, "attempt-1");
+  const evidencePath = path.join(attemptDir, "journey-evidence.json");
   const candidate = {
     commitSha: "a".repeat(40),
     treeSha: "b".repeat(40),
   };
   const environment = { digest: `sha256:${"c".repeat(64)}` };
   try {
+    await mkdir(attemptDir, { recursive: true });
     await writeFile(
       runnerPath,
-      `import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-const output = process.env.GATE_B2_OUTPUT_PATH;
-await mkdir(path.dirname(output), { recursive: true });
-await writeFile(output, JSON.stringify({
-  schemaVersion: 1,
-  journeyId: process.env.GATE_B2_JOURNEY_ID,
+      `import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+const artifact = Buffer.from(JSON.stringify({ ok: true }) + "\\n", "utf8");
+const artifactDigest = "sha256:" + createHash("sha256").update(artifact).digest("hex");
+writeFileSync(process.env.GATE_B2_RUNNER_ARTIFACT_PATH, artifact, { flag: "wx" });
+writeFileSync(process.env.GATE_B2_OUTPUT_PATH, JSON.stringify({
+  schemaVersion: 2,
+  journeyId: process.env.GATE_B2_SUITE_ID,
   candidateCommitSha: process.env.GATE_B2_CANDIDATE_COMMIT_SHA,
   candidateTreeSha: process.env.GATE_B2_CANDIDATE_TREE_SHA,
+  freezeId: process.env.GATE_B2_FREEZE_ID,
+  certificationRunId: process.env.GATE_B2_CERTIFICATION_RUN_ID,
   runnerId: process.env.GATE_B2_RUNNER_ID,
   runnerVersion: process.env.GATE_B2_RUNNER_VERSION,
   environmentDigest: process.env.GATE_B2_ENVIRONMENT_DIGEST,
+  commandDigest: process.env.GATE_B2_COMMAND_DIGEST,
+  runnerArtifactDigest: artifactDigest,
   assertions: [{ id: "fresh-assertion", passed: true }],
   result: "passed",
   startedAt: new Date().toISOString(),
-  completedAt: new Date().toISOString()
-}));\n`,
+  completedAt: new Date().toISOString(),
+  artifactDigests: [artifactDigest]
+}) + "\\n", { flag: "wx" });
+`,
       "utf8",
     );
-    await mkdir(path.dirname(evidencePath), { recursive: true });
-    await writeFile(evidencePath, '{"passed":true}', "utf8");
-    const suite = await evaluateJourneyEvidence({
+    const suite = await runJourneySuite({
       journeyEntry: {
         id: "fresh-journey",
         runnerId: "gate-b2-fresh-journey",
         runnerVersion: "1",
         requiredAssertions: ["fresh-assertion"],
-        runner: { command: [process.execPath, runnerPath] },
+        command: [process.execPath, runnerPath],
       },
-      artifactDir: temp,
-      journeyEvidenceDir: path.dirname(evidencePath),
       candidate,
-      repoRoot,
       environment,
-      certEnv: process.env,
+      repoRoot,
+      dryRun: false,
+      freeze: { freezeId: "freeze-1" },
+      certificationRunId: "cert-1",
+      allocation: { attempt: 1, attemptDir },
+      env: process.env,
     });
-    assert.equal(suite.result, "passed");
+    assert.equal(suite.result, "passed", suite.message);
     assert.equal(suite.exitCode, 0);
-    assert.match(suite.commandDigest, /^sha256:[0-9a-f]{64}$/);
-    const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
-    assert.equal(evidence.journeyId, "fresh-journey");
-    assert.equal(evidence.passed, undefined);
+    assert.equal(
+      JSON.parse(await readFile(evidencePath, "utf8")).journeyId,
+      "fresh-journey",
+    );
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
 });
 
-test("active journey runner failures return schema-compatible failed suites", async (t) => {
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-failure-"));
+test("Journey runner failures stay schema-compatible", async (t) => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-fail-"));
   const candidate = {
     commitSha: "a".repeat(40),
     treeSha: "b".repeat(40),
   };
   const environment = { digest: `sha256:${"c".repeat(64)}` };
-  const cases = [
-    {
-      name: "non-zero runner exit",
-      journeyId: "failing-journey",
-      command: [
-        process.execPath,
-        "-e",
-        'process.stderr.write("journey failed"); process.exit(23);',
-      ],
-      exitCode: 23,
-      message: /candidate journey runner exited 23/,
-    },
-    {
-      name: "missing fresh evidence",
-      journeyId: "missing-evidence-journey",
-      command: [process.execPath, "-e", 'process.stdout.write("no evidence");'],
-      exitCode: 1,
-      message: /did not create fresh evidence/,
-    },
-  ];
-
   try {
-    for (const entry of cases) {
-      await t.test(entry.name, async () => {
-        const suite = await evaluateJourneyEvidence({
+    for (const entry of [
+      {
+        id: "non-zero",
+        command: [
+          process.execPath,
+          "-e",
+          'process.stderr.write("failed"); process.exit(23);',
+        ],
+        exitCode: 23,
+        message: /exited 23/i,
+      },
+      {
+        id: "missing-evidence",
+        command: [process.execPath, "-e", 'process.stdout.write("none");'],
+        exitCode: 1,
+        message: /did not create fresh evidence/i,
+      },
+    ]) {
+      await t.test(entry.id, async () => {
+        const attemptDir = path.join(temp, entry.id);
+        await mkdir(attemptDir, { recursive: true });
+        const suite = await runJourneySuite({
           journeyEntry: {
-            id: entry.journeyId,
-            runnerId: `gate-b2-${entry.journeyId}`,
+            id: entry.id,
+            runnerId: `runner-${entry.id}`,
             runnerVersion: "1",
-            requiredAssertions: ["failure-is-recorded"],
-            runner: { command: entry.command },
+            requiredAssertions: ["recorded"],
+            command: entry.command,
           },
-          artifactDir: temp,
-          journeyEvidenceDir: path.join(temp, "journeys"),
           candidate,
-          repoRoot,
           environment,
-          certEnv: process.env,
+          repoRoot,
+          dryRun: false,
+          freeze: { freezeId: "freeze-1" },
+          certificationRunId: "cert-1",
+          allocation: { attempt: 1, attemptDir },
+          env: process.env,
         });
-
-        assert.equal(suite.suiteId, entry.journeyId);
-        assert.equal(suite.bucket, "requiredJourneys");
-        assert.equal(suite.attempt, 1);
-        assert.match(suite.startedAt, /^\d{4}-\d{2}-\d{2}T/);
-        assert.match(suite.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+        assert.equal(suite.result, "failed");
         assert.equal(suite.exitCode, entry.exitCode);
-        assert.equal(suite.environmentDigest, environment.digest);
-        assert.match(suite.commandDigest, /^sha256:[0-9a-f]{64}$/);
+        assert.match(suite.message, entry.message);
         assert.match(suite.stdoutDigest, /^sha256:[0-9a-f]{64}$/);
         assert.match(suite.stderrDigest, /^sha256:[0-9a-f]{64}$/);
-        assert.deepEqual(suite.artifactDigests, []);
-        assert.equal(suite.result, "failed");
-        assert.match(suite.message, entry.message);
-        assert.deepEqual(suite.command, entry.command);
       });
     }
   } finally {
@@ -344,415 +583,144 @@ test("active journey runner failures return schema-compatible failed suites", as
   }
 });
 
-test("direct execution cannot bypass the frozen candidate bootstrap", () => {
-  const result = spawnSync(
-    process.execPath,
-    [
-      path.join(repoRoot, "scripts/quality/certify-gate-b2.mjs"),
-      "--run-light",
-      "--dry-run",
-      "--candidate",
-      "a".repeat(40),
-    ],
-    { cwd: repoRoot, encoding: "utf8" },
-  );
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /must be launched through.*bootstrap/);
-});
-
-test("decideVerdict never promotes blocked/deferred/skipped to PASS", () => {
-  const baseCandidate = {
-    frozen: true,
-    dirty: false,
-    commitSha: "a".repeat(40),
-    treeSha: "b".repeat(40),
-  };
-  const policy = {
-    requireCandidateFreeze: true,
-    blockedIsPass: false,
-    deferredIsPass: false,
-    skippedIsPass: false,
-  };
-
-  const blocked = decideVerdict({
-    suites: [
-      {
-        suiteId: "heavy-web-ai-consent-live",
-        bucket: "requiredHeavy",
-        result: "blocked",
-        message: "runner missing",
-      },
-    ],
-    candidate: baseCandidate,
-    decisionPolicy: policy,
-    preflightOnly: false,
-  });
-  assert.equal(blocked.verdict, "BLOCK");
-
-  const deferred = decideVerdict({
-    suites: [
-      {
-        suiteId: "heavy-agent-tool-loop",
-        bucket: "requiredHeavy",
-        result: "deferred",
-      },
-    ],
-    candidate: baseCandidate,
-    decisionPolicy: policy,
-    preflightOnly: false,
-  });
-  assert.equal(deferred.verdict, "BLOCK");
-
-  const hold = decideVerdict({
-    suites: [
-      {
-        suiteId: "heavy-narrative-chronicle-production",
-        bucket: "requiredHeavy",
-        result: "hold",
-      },
-    ],
-    candidate: baseCandidate,
-    decisionPolicy: policy,
-    preflightOnly: false,
-  });
-  assert.equal(hold.verdict, "HOLD");
-
-  const informational = decideVerdict({
-    suites: [
-      {
-        suiteId: "required-but-non-credit",
-        bucket: "requiredHeavy",
-        result: "informational",
-      },
-    ],
-    candidate: baseCandidate,
-    decisionPolicy: policy,
-    preflightOnly: false,
-  });
-  assert.equal(informational.verdict, "BLOCK");
-});
-
-test("tallyBucket counts suite results without inventing passes", () => {
-  const summary = tallyBucket(
-    [
-      { bucket: "requiredHeavy", result: "blocked" },
-      { bucket: "requiredHeavy", result: "not-run" },
-      { bucket: "requiredLight", result: "passed" },
-    ],
-    "requiredHeavy",
-  );
-  assert.deepEqual(summary, {
-    ...emptyBucketSummary(),
-    total: 2,
-    blocked: 1,
-    notRun: 1,
-  });
-});
-
-test("preflight loads manifest digests and writes report without claiming PASS", async () => {
-  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-cert-"));
+test("preflight writes a schema-valid INCOMPLETE report without a run ID", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-preflight-"));
   try {
-    const reportPath = path.join(temp, "report.json");
-    const { report } = await certifyGateB2({
+    const args = parseCertifyArgs([
+      "--preflight",
+      "--artifact-dir",
+      temp,
+      "--format",
+      "json",
+    ]);
+    const { report, reportPath, decisionPath } = await certifyGateB2({
       repoRoot,
-      args: {
-        preflight: true,
-        runLight: false,
-        runHeavy: false,
-        runJourneys: false,
-        runInformational: false,
-        runReleaseAdjacent: false,
-        candidate: null,
-        baseMaster: null,
-        report: reportPath,
-        artifactDir: path.join(temp, "artifacts"),
-        format: "json",
-        ciEvidence: null,
-        journeyEvidenceDir: null,
-        dryRun: false,
-      },
+      args,
     });
-
-    assert.equal(report.gateId, "gate-b2");
-    assert.equal(report.contractVersion, 5);
-    assert.equal(report.mode, "preflight");
     assert.equal(report.verdict, "INCOMPLETE");
-    assert.match(report.manifestDigest, /^sha256:[0-9a-f]{64}$/);
-    assert.match(
-      report.candidate.writerRegistryDigest,
-      /^sha256:[0-9a-f]{64}$/,
+    assert.equal(report.mode, "preflight");
+    assert.equal(report.candidate.attemptAuthority.runId, null);
+    const savedReport = JSON.parse(await readFile(reportPath, "utf8"));
+    assert.equal(savedReport.verdict, "INCOMPLETE");
+    assert.equal(
+      JSON.parse(await readFile(decisionPath, "utf8")).verdict,
+      "INCOMPLETE",
     );
-    assert.match(
-      report.candidate.aiPathRegistryDigest,
-      /^sha256:[0-9a-f]{64}$/,
-    );
-    assert.match(report.candidate.adrChecklistDigest, /^sha256:[0-9a-f]{64}$/);
-    assert.match(
-      report.candidate.classificationDigest,
-      /^sha256:[0-9a-f]{64}$/,
-    );
-    assert.equal(report.summary.requiredHeavy.total, 6);
-    assert.equal(report.summary.requiredHeavy.notRun, 6);
-    assert.equal(report.summary.informational.total, 2);
 
-    const production = report.suites.find(
-      (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
+    const reportSchema = JSON.parse(
+      await readFile(
+        path.join(
+          repoRoot,
+          "evals/certifications/schemas/gate-b2-report-v1.schema.json",
+        ),
+        "utf8",
+      ),
     );
-    assert.equal(production.result, "not-run");
-
-    const saved = JSON.parse(await readFile(reportPath, "utf8"));
-    assert.equal(saved.verdict, "INCOMPLETE");
-    assert.equal(saved.artifactDigests, undefined);
-    const sidecar = (await readFile(`${reportPath}.sha256`, "utf8")).trim();
-    assert.match(sidecar, /^sha256:[0-9a-f]{64}$/);
-    assert.equal(report.reportDigest, sidecar);
-    const decision = JSON.parse(
-      await readFile(path.join(temp, "artifacts", "decision.json"), "utf8"),
+    const forgedPass = structuredClone(savedReport);
+    forgedPass.verdict = "PASS";
+    forgedPass.freezeId = "freeze-1";
+    forgedPass.candidate.frozen = true;
+    forgedPass.candidate.dirty = false;
+    assert.equal(
+      validateJsonAgainstSchema(forgedPass, reportSchema).ok,
+      false,
+      "PASS must require a GitHub run ID",
     );
-    assert.equal(decision.schemaVersion, 1);
-    assert.ok(decision.suiteSummaries.requiredLight);
-    assert.equal(decision.digests.reportDigest, sidecar);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
 });
 
-test("registered Gate B2 heavy runners resolve in dry-run without becoming passed", async () => {
-  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-heavy-"));
-  const previousKey = process.env.OPENROUTER_API_KEY;
-  process.env.OPENROUTER_API_KEY = "test-key-not-for-network";
+test("registered Heavy suites resolve in dry-run without becoming PASS", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-heavy-dry-"));
   try {
     const { report } = await certifyGateB2({
       repoRoot,
-      args: {
-        preflight: false,
-        runLight: false,
-        runHeavy: true,
-        runJourneys: false,
-        runInformational: true,
-        runReleaseAdjacent: false,
-        candidate: null,
-        baseMaster: null,
-        report: path.join(temp, "report.json"),
-        artifactDir: path.join(temp, "artifacts"),
-        format: "json",
-        ciEvidence: null,
-        journeyEvidenceDir: null,
-        dryRun: true,
-      },
+      args: parseCertifyArgs([
+        "--run-heavy",
+        "--run-informational",
+        "--dry-run",
+        "--artifact-dir",
+        path.join(temp, "artifacts"),
+        "--report",
+        path.join(temp, "report.json"),
+        "--format",
+        "json",
+      ]),
     });
-
-    const consent = report.suites.find(
-      (suite) => suite.suiteId === "heavy-web-ai-consent-live",
-    );
-    const production = report.suites.find(
-      (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
-    );
-    assert.equal(production.result, "not-run");
-    assert.equal(consent.result, "not-run");
-    assert.equal(consent.bucket, "informational");
     const browserConsent = report.suites.find(
       (suite) => suite.suiteId === "heavy-web-ai-consent-browser-live",
     );
-    assert.equal(browserConsent.result, "blocked");
-    assert.match(
-      browserConsent.message,
-      /Playwright|Vitest Browser|IndexedDB/i,
+    const informationalConsent = report.suites.find(
+      (suite) => suite.suiteId === "heavy-web-ai-consent-live",
     );
-    assert.match(
-      production.command.join(" "),
-      /eval:narrative:chronicle:production:live/,
+    assert.equal(browserConsent.result, "not-run");
+    assert.equal(informationalConsent.result, "not-run");
+    assert.match(browserConsent.command.join(" "), /web-ai-consent:browser/);
+    assert.equal(report.summary.requiredHeavy.total, 1);
+    assert.equal(
+      report.suites.some(
+        (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
+      ),
+      false,
     );
-    assert.match(consent.command.join(" "), /eval:web-ai-consent:live/);
-    assert.match(production.message, /dry-run/i);
-    assert.match(consent.message, /dry-run/i);
-    assert.notEqual(production.result, "passed");
-    assert.notEqual(consent.result, "skipped");
-    assert.equal(report.verdict, "BLOCK");
+    assert.equal(report.verdict, "INCOMPLETE");
   } finally {
-    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
-    else process.env.OPENROUTER_API_KEY = previousKey;
     await rm(temp, { recursive: true, force: true });
   }
 });
 
-test("credential shortage for billed heavies is BLOCK not passed/skipped", async (t) => {
-  const status = spawnSync("git", ["status", "--porcelain"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  if (status.stdout.trim().length > 0) {
-    const { raw } = await loadGateB2Manifest(repoRoot);
-    const agent = raw.requiredHeavy.find(
-      (entry) => entry.id === "heavy-agent-tool-loop",
-    );
-    assert.deepEqual(agent.requiresEnv, ["OPENROUTER_API_KEY"]);
-    t.skip("requires clean working tree for worktree-bound certification run");
-    return;
-  }
-
-  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
-  const { freezeGateB2Candidate } =
-    await import("./freeze-gate-b2-candidate.mjs");
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-cred-"));
-  const previousKey = process.env.OPENROUTER_API_KEY;
-  delete process.env.OPENROUTER_API_KEY;
+test("Light dry-run rejects handwritten Full CI evidence", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-ci-dry-"));
   try {
-    const isolatedFreezePath = path.join(temp, "gate-b2-candidate.freeze.json");
-    const { freeze } = await freezeGateB2Candidate({
-      repoRoot,
-      writeResults: false,
-      writeRepoFreeze: false,
-      artifactRoot: path.join(temp, "freeze-artifacts"),
-    });
-    await writeFile(
-      isolatedFreezePath,
-      `${JSON.stringify(freeze, null, 2)}\n`,
-      "utf8",
-    );
+    const evidencePath = path.join(temp, "full-ci.json");
+    await writeFile(evidencePath, JSON.stringify({ passed: true }), "utf8");
     const { report } = await certifyGateB2({
       repoRoot,
-      freezePath: isolatedFreezePath,
-      freezeDocument: freeze,
-      args: {
-        preflight: false,
-        runLight: false,
-        runHeavy: true,
-        runJourneys: false,
-        runInformational: false,
-        runReleaseAdjacent: false,
-        candidate: freeze.candidate.commitSha,
-        baseMaster: null,
-        report: path.join(temp, "report.json"),
-        artifactDir: path.join(temp, "artifacts"),
-        format: "json",
-        ciEvidence: null,
-        journeyEvidenceDir: null,
-        dryRun: false,
-      },
-    });
-    const agent = report.suites.find(
-      (suite) => suite.suiteId === "heavy-agent-tool-loop",
-    );
-    assert.equal(agent.result, "blocked");
-    assert.match(agent.message, /OPENROUTER_API_KEY/);
-    assert.equal(report.verdict, "BLOCK");
-    assert.equal(report.firstFailure.suiteId, "heavy-agent-tool-loop");
-    assert.equal(report.candidate.boundVia, "detached-worktree");
-    assert.equal(report.candidate.commitSha, freeze.candidate.commitSha);
-  } finally {
-    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
-    else process.env.OPENROUTER_API_KEY = previousKey;
-    await rm(temp, { recursive: true, force: true });
-  }
-});
-test("loadGateB2Manifest rejects policy that would pass blocked suites", async () => {
-  const { raw } = await loadGateB2Manifest(repoRoot);
-  raw.decisionPolicy.blockedIsPass = true;
-  assert.match(
-    validateGateB2Manifest(raw).join("\n"),
-    /blockedIsPass must be false/,
-  );
-});
-
-test("full-ci evidence rejects bare passed:true and incomplete binding", async () => {
-  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-ci-"));
-  try {
-    const bare = path.join(temp, "bare-ci.json");
-    await writeFile(bare, JSON.stringify({ passed: true }), "utf8");
-    const { report: bareReport } = await certifyGateB2({
-      repoRoot,
-      args: {
-        preflight: false,
-        runLight: true,
-        runHeavy: false,
-        runJourneys: false,
-        runInformational: false,
-        runReleaseAdjacent: false,
-        candidate: null,
-        baseMaster: null,
-        report: path.join(temp, "bare-report.json"),
-        artifactDir: path.join(temp, "bare-artifacts"),
-        format: "json",
-        ciEvidence: bare,
-        journeyEvidenceDir: null,
-        dryRun: true,
-      },
-    });
-    const bareCi = bareReport.suites.find(
-      (suite) => suite.suiteId === "full-ci",
-    );
-    assert.equal(bareCi.result, "failed");
-    assert.match(bareCi.message, /missing required fields/);
-
-    const evidence = path.join(temp, "full-ci.json");
-    const { raw: manifest } = await loadGateB2Manifest(repoRoot);
-    await writeFile(
-      evidence,
-      JSON.stringify({
-        commitSha: "c".repeat(40),
-        treeSha: "d".repeat(40),
-        workflowId: manifest.fullCi.workflowId,
-        runId: "1",
-        runAttempt: 1,
-        conclusion: "success",
-        requiredJobs: manifest.fullCi.requiredJobs,
-        checkoutCommitSha: "c".repeat(40),
-        checkoutTreeSha: "d".repeat(40),
-      }),
-      "utf8",
-    );
-    const { report } = await certifyGateB2({
-      repoRoot,
-      args: {
-        preflight: false,
-        runLight: true,
-        runHeavy: false,
-        runJourneys: false,
-        runInformational: false,
-        runReleaseAdjacent: false,
-        candidate: null,
-        baseMaster: null,
-        report: path.join(temp, "report.json"),
-        artifactDir: path.join(temp, "artifacts"),
-        format: "json",
-        ciEvidence: evidence,
-        journeyEvidenceDir: null,
-        dryRun: true,
-      },
+      args: parseCertifyArgs([
+        "--run-light",
+        "--dry-run",
+        "--ci-evidence",
+        evidencePath,
+        "--artifact-dir",
+        path.join(temp, "artifacts"),
+        "--report",
+        path.join(temp, "report.json"),
+        "--format",
+        "json",
+      ]),
     });
     const fullCi = report.suites.find((suite) => suite.suiteId === "full-ci");
     assert.equal(fullCi.result, "failed");
-    assert.match(fullCi.message, /commitSha .* != candidate/);
-
-    const structuralOnly = validateFullCiEvidence(
-      {
-        commitSha: "c".repeat(40),
-        treeSha: "d".repeat(40),
-        workflowId: manifest.fullCi.workflowId,
-        runId: "1",
-        runAttempt: 1,
-        conclusion: "success",
-        requiredJobs: manifest.fullCi.requiredJobs,
-        checkoutCommitSha: "c".repeat(40),
-        checkoutTreeSha: "d".repeat(40),
-      },
-      { commitSha: "c".repeat(40), treeSha: "d".repeat(40) },
-      manifest.fullCi,
-    );
-    assert.equal(structuralOnly.ok, true);
+    assert.match(fullCi.message, /missing required fields/i);
+    assert.equal(report.verdict, "BLOCK");
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
 });
 
-test("report schema requires contractVersion 5 and accepts SuiteResult.runId", async () => {
-  const { validateJsonAgainstSchema, sha256Text } =
-    await import("./certify-gate-b2-bindings.mjs");
-  const schema = JSON.parse(
+test("execution cannot bypass the candidate bootstrap", (t) => {
+  const childEnv = sanitizeCertificationEnv({
+    ...process.env,
+    GATE_B2_BOUND_EXECUTION: "1",
+    GATE_B2_FREEZE_PATH: "/tmp/forged-freeze.json",
+  });
+  delete childEnv.NODE_TEST_CONTEXT;
+  const run = spawnSync(
+    process.execPath,
+    ["scripts/quality/certify-gate-b2.mjs", "--run-light", "--dry-run"],
+    { cwd: repoRoot, encoding: "utf8", env: childEnv },
+  );
+  if (run.error?.code === "EPERM") {
+    t.skip("sandbox denied nested process execution");
+    return;
+  }
+  assert.notEqual(run.status, 0);
+  assert.match(`${run.stdout}\n${run.stderr}`, /bootstrap/i);
+});
+
+test("active schemas use the v8 credential-free assurance contract", async () => {
+  const reportSchema = JSON.parse(
     await readFile(
       path.join(
         repoRoot,
@@ -761,258 +729,78 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId", a
       "utf8",
     ),
   );
-  const digest = `sha256:${"a".repeat(64)}`;
-  const report = {
-    schemaVersion: 1,
-    gateId: "gate-b2",
-    contractVersion: 5,
-    manifestDigest: digest,
-    generatedAt: "2026-01-01T00:00:00.000Z",
-    startedAt: "2026-01-01T00:00:00.000Z",
-    completedAt: "2026-01-01T00:00:01.000Z",
-    mode: "heavy",
-    candidate: {
-      commitSha: "b".repeat(40),
-      treeSha: "c".repeat(40),
-      baseMasterSha: "d".repeat(40),
-      schemaVersion: 16,
-      writerRegistryDigest: digest,
-      aiPathRegistryDigest: digest,
-      qualityManifestDigest: digest,
-      narrativeEvalManifestDigest: digest,
-      frozen: true,
-      dirty: false,
-      boundVia: "detached-worktree",
-    },
-    environment: {
-      node: "v20.0.0",
-      platform: "linux",
-      arch: "x64",
-      digest,
-    },
-    verdict: "BLOCK",
-    verdictReasons: ["heavy-web-ai-consent-browser-live blocked"],
-    summary: {
-      requiredLight: {
-        total: 0,
-        passed: 0,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 0,
-        deferred: 0,
-      },
-      requiredHeavy: {
-        total: 1,
-        passed: 1,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 0,
-        deferred: 0,
-      },
-      requiredJourneys: {
-        total: 0,
-        passed: 0,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 0,
-        deferred: 0,
-      },
-      informational: {
-        total: 0,
-        passed: 0,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 0,
-        deferred: 0,
-      },
-      releaseAdjacent: {
-        total: 0,
-        passed: 0,
-        failed: 0,
-        blocked: 0,
-        hold: 0,
-        notRun: 0,
-        deferred: 0,
-      },
-    },
-    suites: [
-      {
-        suiteId: "fake-heavy-success",
-        bucket: "requiredHeavy",
-        attempt: 1,
-        startedAt: "2026-01-01T00:00:00.000Z",
-        completedAt: "2026-01-01T00:00:01.000Z",
-        exitCode: 0,
-        environmentDigest: digest,
-        commandDigest: digest,
-        stdoutDigest: digest,
-        stderrDigest: digest,
-        artifactDigests: [digest],
-        result: "passed",
-        message: "passed",
-        runId: "00000000-0000-4000-8000-000000000001",
-      },
-    ],
-    retries: [],
-    blockedReasons: [],
-  };
-  const validated = validateJsonAgainstSchema(report, schema);
-  assert.equal(validated.ok, true, JSON.stringify(validated.errors, null, 2));
-
-  const missingContractVersion = structuredClone(report);
-  delete missingContractVersion.contractVersion;
-  const missingValidation = validateJsonAgainstSchema(
-    missingContractVersion,
-    schema,
-  );
-  assert.equal(missingValidation.ok, false);
-  assert.match(JSON.stringify(missingValidation.errors), /contractVersion/);
-
-  const wrongVersionValidation = validateJsonAgainstSchema(
-    { ...report, contractVersion: 4 },
-    schema,
-  );
-  assert.equal(wrongVersionValidation.ok, false);
-  assert.match(JSON.stringify(wrongVersionValidation.errors), /contractVersion/);
-  assert.equal(typeof sha256Text, "function");
-});
-
-test("journey evidence rejects handwritten PASS while journeys remain blocked", async () => {
-  const { mkdir } = await import("node:fs/promises");
-  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-"));
-  try {
-    const journeyDir = path.join(temp, "journeys");
-    await mkdir(journeyDir, { recursive: true });
-    await writeFile(
-      path.join(journeyDir, "prepared-plan-toctou.json"),
-      JSON.stringify({
-        schemaVersion: 1,
-        journeyId: "prepared-plan-toctou",
-        candidateCommitSha: "a".repeat(40),
-        candidateTreeSha: "b".repeat(40),
-        runnerId: "gate-b2-prepared-plan-toctou-journey",
-        runnerVersion: "1",
-        environmentDigest: `sha256:${"c".repeat(64)}`,
-        assertions: [
-          { id: "source-changed-after-prepare", passed: true },
-          { id: "apply-rejected-or-revalidated", passed: true },
-        ],
-        result: "passed",
-        startedAt: "x",
-        completedAt: "y",
-      }),
-      "utf8",
-    );
-    const { report } = await certifyGateB2({
-      repoRoot,
-      args: {
-        preflight: false,
-        runLight: false,
-        runHeavy: false,
-        runJourneys: true,
-        runInformational: false,
-        runReleaseAdjacent: false,
-        candidate: null,
-        baseMaster: null,
-        report: path.join(temp, "report.json"),
-        artifactDir: path.join(temp, "artifacts"),
-        format: "json",
-        ciEvidence: null,
-        journeyEvidenceDir: journeyDir,
-        dryRun: true,
-      },
-    });
-    const journey = report.suites.find(
-      (suite) => suite.suiteId === "prepared-plan-toctou",
-    );
-    assert.equal(journey.result, "blocked");
-    assert.match(journey.message, /GATE_B2_OUTPUT_PATH|Implement pnpm/i);
-    assert.equal(report.verdict, "BLOCK");
-  } finally {
-    await rm(temp, { recursive: true, force: true });
-  }
-});
-
-test(
-  "prepareWorktreeDependencies runs ADR format validation in detached worktree",
-  {
-    skip:
-      process.env.GATE_B2_WORKTREE_SMOKE !== "1"
-        ? "set GATE_B2_WORKTREE_SMOKE=1"
-        : false,
-  },
-  async () => {
-    const { spawn } = await import("node:child_process");
-    const { prepareWorktreeDependencies } =
-      await import("./certify-gate-b2-bindings.mjs");
-
-    const headSha = await new Promise((resolve, reject) => {
-      const child = spawn("git", ["rev-parse", "HEAD"], {
-        cwd: repoRoot,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const stdout = [];
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.on("error", reject);
-      child.on("exit", (code) => {
-        if (code !== 0) reject(new Error("git rev-parse HEAD failed"));
-        else resolve(Buffer.concat(stdout).toString("utf8").trim());
-      });
-    });
-
-    const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-smoke-"));
-    const worktreePath = path.join(temp, "tree");
-    try {
-      await new Promise((resolve, reject) => {
-        const child = spawn(
-          "git",
-          ["worktree", "add", "--detach", worktreePath, headSha],
-          { cwd: repoRoot, stdio: "inherit" },
-        );
-        child.on("error", reject);
-        child.on("exit", (code) => {
-          if (code !== 0) reject(new Error("git worktree add failed"));
-          else resolve();
-        });
-      });
-
-      const prepared = await prepareWorktreeDependencies({
+  const decisionSchema = JSON.parse(
+    await readFile(
+      path.join(
         repoRoot,
-        executionRoot: worktreePath,
-      });
-      assert.ok(
-        prepared.mode === "offline-install" ||
-          prepared.mode === "online-install",
-      );
+        "evals/certifications/schemas/gate-b2-decision-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(reportSchema.properties.contractVersion.const, 8);
+  assert.ok(reportSchema.properties.assuranceScope);
+  assert.equal(decisionSchema.properties.contractVersion.const, 8);
+  assert.ok(decisionSchema.properties.assuranceScope);
+  assert.ok(decisionSchema.properties.attemptAuthority);
+  assert.deepEqual(decisionSchema.$defs.attemptAuthority.required, [
+    "provider",
+    "configDigest",
+    "repository",
+    "workflowPath",
+    "event",
+    "runId",
+    "runAttempt",
+  ]);
 
-      const exitCode = await new Promise((resolve) => {
-        const child = spawn(
-          "node",
-          [
-            "scripts/quality/validate-gate-b2-adr.mjs",
-            "--",
-            "--validate-format",
-          ],
-          { cwd: worktreePath, stdio: "inherit" },
-        );
-        child.on("exit", (code) => resolve(code ?? 1));
-      });
-      assert.equal(exitCode, 0);
-    } finally {
-      await new Promise((resolve) => {
-        const child = spawn(
-          "git",
-          ["worktree", "remove", "--force", worktreePath],
-          { cwd: repoRoot, stdio: "inherit" },
-        );
-        child.on("exit", () => resolve());
-      });
-      await rm(temp, { recursive: true, force: true });
-    }
-  },
-);
+  const assurance = {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  };
+  const minimalDecision = {
+    schemaVersion: 1,
+    contractVersion: 8,
+    gateId: "gate-b2",
+    assuranceScope: assurance,
+    candidateCommitSha: "a".repeat(40),
+    candidateTreeSha: "b".repeat(40),
+    baseMasterSha: null,
+    freezeId: null,
+    certificationRunId: null,
+    attemptAuthority: getGateB2GithubAttemptIdentity(),
+    verdict: "INCOMPLETE",
+    reasons: ["not run"],
+    suiteSummaries: {
+      requiredLight: { passed: 0, failed: 0, blocked: 0, hold: 0, notRun: 1 },
+      requiredHeavy: { passed: 0, failed: 0, blocked: 0, hold: 0, notRun: 1 },
+      requiredJourneys: {
+        passed: 0,
+        failed: 0,
+        blocked: 0,
+        hold: 0,
+        notRun: 1,
+      },
+    },
+    digests: {
+      writerRegistryDigest: `sha256:${"a".repeat(64)}`,
+      aiPathRegistryDigest: `sha256:${"a".repeat(64)}`,
+      qualityManifestDigest: `sha256:${"a".repeat(64)}`,
+      narrativeEvalManifestDigest: `sha256:${"a".repeat(64)}`,
+      reportDigest: null,
+    },
+    suiteAttempts: [],
+    generatedAt: new Date().toISOString(),
+  };
+  assert.equal(
+    validateJsonAgainstSchema(minimalDecision, decisionSchema).ok,
+    true,
+  );
+  delete minimalDecision.assuranceScope;
+  assert.equal(
+    validateJsonAgainstSchema(minimalDecision, decisionSchema).ok,
+    false,
+    "assuranceScope is mandatory",
+  );
+});

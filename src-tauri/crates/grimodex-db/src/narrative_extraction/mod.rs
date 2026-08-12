@@ -6,6 +6,7 @@ mod codex_snapshots;
 mod codex_undo;
 mod commit;
 mod detail_operations;
+mod field_authority;
 mod foreshadow_operations;
 mod foreshadow_undo;
 mod models;
@@ -15,6 +16,8 @@ mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
 mod repository;
+mod reconciliation_envelope;
+mod source_revision;
 mod semantic_bindings;
 mod task_leases;
 mod temporal_constraints;
@@ -36,10 +39,15 @@ pub use models::{
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
     ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
-    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    ReconciliationEnvelopeInheritance, RunRefPayload, SaveProposalSetPayload,
+    UndoCommitPayload, HumanFieldLockPayload,
 };
+pub use commit::digest_plan;
 pub use temporal_operations::TemporalScenePatchPayload;
 pub use repository::ensure_test_schema;
+pub(crate) use field_authority::{
+    propagate_source_change_freshness_in_tx, record_human_field_write,
+};
 
 use serde_json::Value;
 
@@ -123,11 +131,28 @@ pub fn narrative_extraction_append_decision(
     repository::append_decision(db, payload)
 }
 
+/// Human review endpoint. The actor class is fixed by this Native entrypoint;
+/// renderer fields can request only exact field paths, never change the actor
+/// or scope that Native records.
+pub fn narrative_extraction_append_human_decision(
+    db: &Database,
+    payload: AppendDecisionPayload,
+) -> anyhow::Result<Value> {
+    repository::append_human_decision(db, payload)
+}
+
 pub fn narrative_extraction_revise_and_decide(
     db: &Database,
     payload: ReviseAndDecidePayload,
 ) -> anyhow::Result<Value> {
     repository::revise_and_decide(db, payload)
+}
+
+pub fn narrative_extraction_revise_and_decide_as_human(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+) -> anyhow::Result<Value> {
+    repository::revise_and_decide_as_human(db, payload)
 }
 
 pub fn narrative_extraction_prepare_commit(
@@ -165,6 +190,20 @@ pub fn narrative_extraction_redo_commit(
     undo::narrative_extraction_redo_commit(db, payload)
 }
 
+/// Human-only CAS for explicit field locks. The Electron endpoint below is
+/// the only production caller; automated Apply has no route to this function.
+pub fn narrative_extraction_set_human_field_lock(
+    db: &Database,
+    payload: HumanFieldLockPayload,
+) -> anyhow::Result<Value> {
+    db.with_conn(|conn| {
+        crate::narrative_runtime_policy::require_narrative_extraction_allowed(conn)?;
+        task_leases::with_immediate_transaction(conn, |conn| {
+            field_authority::set_human_field_lock_in_tx(conn, &payload)
+        })
+    })
+}
+
 pub fn temporal_scene_patch(
     db: &Database,
     payload: TemporalScenePatchPayload,
@@ -181,6 +220,43 @@ pub fn temporal_scene_patch(
         );
         match result {
             Ok(value) => {
+                crate::narrative_extraction::record_human_field_write(
+                    conn,
+                    &payload.project_id,
+                    "scene",
+                    &payload.target_id,
+                    &[
+                        "/storyTimeOrder",
+                        "/storyTimeLabel",
+                        "/startTime",
+                        "/startMinute",
+                        "/startGranularity",
+                        "/endTime",
+                        "/endMinute",
+                        "/endGranularity",
+                        "/precision",
+                    ],
+                    &now,
+                )?;
+                let version = value
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| anyhow::anyhow!("temporal scene patch result has no version"))?;
+                let updated_at = value
+                    .get("updatedAt")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("temporal scene patch result has no updatedAt"))?;
+                let source_key = format!("project:scene:{}", payload.target_id);
+                let source_token = format!("v{version}@{updated_at}");
+                crate::narrative_extraction::propagate_source_change_freshness_in_tx(
+                    conn,
+                    &payload.project_id,
+                    "scene-body",
+                    &source_key,
+                    Some(&source_token),
+                    &now,
+                    "temporal-scene-writer",
+                )?;
                 conn.execute_batch("COMMIT")?;
                 Ok(value)
             }

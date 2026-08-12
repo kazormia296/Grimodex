@@ -2351,8 +2351,21 @@ impl Database {
                 payload_json TEXT NOT NULL,
                 plan_fragment_json TEXT,
                 plan_fragment_digest TEXT,
+                origin_kind TEXT NOT NULL DEFAULT 'legacy-unbound',
+                reconciliation_envelope_json TEXT,
+                reconciliation_envelope_digest TEXT,
                 created_at TEXT NOT NULL,
                 created_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                revision_token TEXT NOT NULL,
+                observed_at TEXT,
+                PRIMARY KEY (revision_id, ordinal),
+                UNIQUE (revision_id, source_key)
             );
             CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (
                 id TEXT PRIMARY KEY,
@@ -2864,6 +2877,218 @@ impl Database {
             "narrative_proposal_revisions",
             "plan_fragment_digest",
             "TEXT",
+        )?;
+
+        // SCHEMA_VERSION 17: Proposal Revision Envelope identity and the
+        // source-basis vector are immutable persistence facts. Existing rows
+        // deliberately default to legacy-unbound and remain reviewable but
+        // cannot be applied until re-extracted/re-reviewed.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "origin_kind",
+            "TEXT NOT NULL DEFAULT 'legacy-unbound'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "reconciliation_envelope_json",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "reconciliation_envelope_digest",
+            "TEXT",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                revision_token TEXT NOT NULL,
+                observed_at TEXT,
+                PRIMARY KEY (revision_id, ordinal),
+                UNIQUE (revision_id, source_key)
+            );",
+        )?;
+
+        // SCHEMA_VERSION 18: Prepared Commit source-basis OCC records the
+        // freshness-only dependency of each immutable Application. These
+        // tables intentionally have no source/domain foreign keys: source
+        // deletion must never cascade into audit history or domain rows.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_projection_freshness (
+                application_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+                    CHECK(status IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift')),
+                reason_json TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_projection_dependencies (
+                application_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                observed_revision_token TEXT NOT NULL,
+                propagation TEXT NOT NULL CHECK(propagation = 'freshness-only'),
+                PRIMARY KEY (application_id, source_kind, source_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_projection_dependencies_source
+                ON narrative_projection_dependencies(source_kind, source_key);",
+        )?;
+
+        // SCHEMA_VERSION 19: Native field authority is an independent
+        // ownership ledger. It has no foreign keys into domain rows so a
+        // deleted source/entity cannot cascade into decision or application
+        // history. Decision actor metadata is stored in dedicated columns;
+        // free-form decision_json is not an authority grant.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "actor_kind",
+            "TEXT NOT NULL DEFAULT 'human'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "actor_id",
+            "TEXT NOT NULL DEFAULT 'legacy-review'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "authority_scope",
+            "TEXT NOT NULL DEFAULT 'legacy-review'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "override_field_paths_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_field_authority (
+                project_id   TEXT NOT NULL,
+                entity_kind  TEXT NOT NULL,
+                entity_id    TEXT NOT NULL,
+                field_path   TEXT NOT NULL,
+                owner_kind   TEXT NOT NULL
+                    CHECK(owner_kind IN ('human','ai','system','unknown')),
+                explicit_lock INTEGER NOT NULL DEFAULT 0
+                    CHECK(explicit_lock IN (0,1)),
+                version      INTEGER NOT NULL DEFAULT 0,
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY(project_id, entity_kind, entity_id, field_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_field_authority_entity
+            ON narrative_field_authority(project_id, entity_kind, entity_id);",
+        )?;
+
+        // SCHEMA_VERSION 20: Semantic retraction is a new immutable
+        // Application, never an UPDATE/DELETE of the compensated history.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_applications",
+            "application_kind",
+            "TEXT NOT NULL DEFAULT 'normal' CHECK(application_kind IN ('normal','compensation'))",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_applications",
+            "compensates_application_id",
+            "TEXT",
+        )?;
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS narrative_source_basis_immutable_delete;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_compensation_target
+                ON narrative_proposal_applications(compensates_application_id)
+                WHERE application_kind = 'compensation'
+                  AND compensates_application_id IS NOT NULL;
+            CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_update
+                BEFORE UPDATE ON narrative_proposal_revisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE revision_id = OLD.id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_revision_envelope_immutable_update
+                BEFORE UPDATE ON narrative_proposal_revisions
+                WHEN OLD.origin_kind IS NOT NEW.origin_kind
+                  OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+                  OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_update
+                BEFORE UPDATE ON narrative_revision_source_basis
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_source_basis_immutable_delete
+                BEFORE DELETE ON narrative_revision_source_basis
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE revision_id = OLD.revision_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_revision_immutable_after_apply_delete
+                BEFORE DELETE ON narrative_proposal_revisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE revision_id = OLD.id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_update
+                BEFORE UPDATE ON narrative_proposal_decisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE proposal_id = OLD.proposal_id
+                       AND revision_id = OLD.revision_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_decision_immutable_after_apply_delete
+                BEFORE DELETE ON narrative_proposal_decisions
+                WHEN EXISTS(
+                    SELECT 1 FROM narrative_proposal_applications
+                     WHERE proposal_id = OLD.proposal_id
+                       AND revision_id = OLD.revision_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_update
+                BEFORE UPDATE ON narrative_proposal_applications
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_immutable_delete
+                BEFORE DELETE ON narrative_proposal_applications
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLICATION');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_kind_guard
+                BEFORE INSERT ON narrative_proposal_applications
+                WHEN NEW.application_kind NOT IN ('normal','compensation')
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID');
+                END;
+            CREATE TRIGGER IF NOT EXISTS narrative_application_compensation_guard
+                BEFORE INSERT ON narrative_proposal_applications
+                WHEN (NEW.application_kind = 'normal' AND NEW.compensates_application_id IS NOT NULL)
+                  OR (NEW.application_kind = 'compensation' AND NEW.compensates_application_id IS NULL)
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_APPLICATION_COMPENSATION_SHAPE_INVALID');
+                END;",
         )?;
 
         // SCHEMA_VERSION 16: a generation token identifies one physical
@@ -6395,9 +6620,9 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("simulate schema 15 workspace");
+        .expect("simulate schema 16 workspace");
 
-        db.migrate().expect("migrate schema 15 to 16");
+        db.migrate().expect("migrate schema 16 to current");
         db.with_conn(|conn| {
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let token: String = conn.query_row(
@@ -6414,5 +6639,40 @@ mod tests {
             Ok(())
         })
         .expect("verify schema 16 scene-event migration");
+    }
+
+    #[test]
+    fn previous_marker_probe_is_bound_to_marker_16_and_current_physical_schema() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            assert!(grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                conn
+            )?);
+
+            conn.pragma_update(None, "user_version", 15)?;
+            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                conn
+            )?);
+
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            conn.execute_batch(
+                "DROP TRIGGER narrative_revision_envelope_immutable_update",
+            )?;
+            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                conn
+            )?);
+            Ok(())
+        })
+        .expect("probe previous marker compatibility");
     }
 }

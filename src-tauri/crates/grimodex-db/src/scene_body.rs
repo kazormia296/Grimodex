@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    foreshadow::{finish_foreshadow_child_write, setup_semantic_key_for_upsert},
+    foreshadow::{
+        finish_foreshadow_child_write, record_manual_foreshadow_fields,
+        setup_semantic_key_for_upsert,
+    },
     Database,
 };
 
@@ -451,6 +454,20 @@ pub fn save_scene_body_bundle(
                         Some(base_version),
                         now_ms,
                     )?);
+                    if changed_roots.contains(&foreshadow_id) {
+                        let project_id: String = conn.query_row(
+                            "SELECT project_id FROM foreshadows WHERE id = ?1",
+                            params![foreshadow_id],
+                            |row| row.get(0),
+                        )?;
+                        record_manual_foreshadow_fields(
+                            conn,
+                            &project_id,
+                            &foreshadow_id,
+                            &["/setups", "/payoffs"],
+                            now_ms,
+                        )?;
+                    }
                 }
 
                 for annotation in &payload.annotation_anchors {
@@ -554,6 +571,34 @@ pub fn save_scene_body_bundle(
                     }
                 }
             }
+
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "scene",
+                &payload.scene_id,
+                &[
+                    "/content",
+                    "/unplacedBeatsDoc",
+                    "/authorshipSpans",
+                    "/foreshadowSetups",
+                    "/foreshadowPayoffs",
+                    "/beatMentions",
+                    "/beatPovOverrides",
+                ],
+                &updated.1,
+            )?;
+            let source_key = format!("project:scene:{}", payload.scene_id);
+            let source_token = format!("v{}@{}", updated.0, updated.1);
+            crate::narrative_extraction::propagate_source_change_freshness_in_tx(
+                conn,
+                &payload.project_id,
+                "scene-body",
+                &source_key,
+                Some(&source_token),
+                &updated.1,
+                "scene-body-writer",
+            )?;
 
             Ok(SaveSceneBodyBundleResult {
                 placed_beat_preview: payload.placed_beat_preview.clone(),

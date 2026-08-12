@@ -3,16 +3,47 @@
  */
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, access } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+  access,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
+import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
+import {
+  readHeavyLiveReport,
+  sanitizeCertificationEnv,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateWebAiConsentBrowserReport,
+  validateWebAiConsentReport,
+} from "./quality-evaluation-runtime.mjs";
+
+export {
+  readHeavyLiveReport,
+  sanitizeCertificationEnv,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateWebAiConsentBrowserReport,
+  validateWebAiConsentReport,
+};
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
-const PLACEHOLDER_ENV_ASSIGN = /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
+export const GATE_B2_CONTRACT_VERSION = 8;
 
-export const GATE_B2_CONTRACT_VERSION = 5;
+export const GATE_B2_ASSURANCE_SCOPE = Object.freeze({
+  engineeringSafety: "certified",
+  liveProviderExecution: "excluded",
+  modelQuality: "excluded",
+  externalCredentialsUsed: false,
+});
 
 export const FREEZE_RELATIVE =
   "evals/certifications/gate-b2-candidate.freeze.json";
@@ -22,18 +53,25 @@ export const HARNESS_DIGEST_PATHS = {
   certifyBootstrapDigest: "scripts/quality/certify-gate-b2-bootstrap.mjs",
   certifyRunnerDigest: "scripts/quality/certify-gate-b2.mjs",
   certifyBindingsDigest: "scripts/quality/certify-gate-b2-bindings.mjs",
+  qualityEvaluationRuntimeDigest:
+    "scripts/quality/quality-evaluation-runtime.mjs",
   adrValidatorDigest: "scripts/quality/validate-gate-b2-adr.mjs",
   reportSchemaDigest:
     "evals/certifications/schemas/gate-b2-report-v1.schema.json",
   decisionSchemaDigest:
     "evals/certifications/schemas/gate-b2-decision-v1.schema.json",
   journeySchemaDigest:
-    "evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json",
-  chronicleAdapterDigest:
-    "src/features/narrative-extraction/eval/productionChronicleAdapter.ts",
-  chronicleScorerDigest:
-    "src/features/narrative-extraction/eval/productionChronicleScoring.ts",
-  webConsentJourneyDigest: "src/features/ai-policy/webAiConsent.live.test.tsx",
+    "evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json",
+  journeyRunnerDigest: "scripts/quality/run-gate-b2-journey.mjs",
+  webConsentBrowserJourneyDigest:
+    "src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx",
+  webConsentBrowserRunnerDigest:
+    "scripts/quality/run-web-ai-consent-browser.mjs",
+  webConsentBrowserConfigDigest: "vitest.gate-b2-web-ai-consent.config.ts",
+  attemptAuthoritySourceDigest: "scripts/quality/gate-b2-github-attempt.mjs",
+  attemptWorkflowDigest: ".github/workflows/gate-b2-certification.yml",
+  fullCiEvidenceWriterDigest:
+    "scripts/quality/write-gate-b2-full-ci-evidence.mjs",
 };
 
 const INPUT_DIGEST_KEYS = [
@@ -47,11 +85,6 @@ const INPUT_DIGEST_KEYS = [
 
 export function sha256Text(text) {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
-}
-
-/** Remove `VAR=...` placeholder assignments so parent env credentials are used. */
-export function stripCredentialPlaceholders(commandString) {
-  return String(commandString).replace(PLACEHOLDER_ENV_ASSIGN, "");
 }
 
 export async function pathExists(target) {
@@ -85,6 +118,73 @@ export function assertFreezeActive(freeze) {
       "Gate B2 candidate freeze is superseded; create a new freeze before certification",
     );
   }
+  const identity = freeze.candidate ?? {};
+  if (
+    typeof freeze.freezeId !== "string" ||
+    freeze.freezeId.length === 0 ||
+    freeze.candidateCommitSha !== identity.commitSha ||
+    freeze.candidateTreeSha !== identity.treeSha ||
+    freeze.productSchemaVersion !== identity.schemaVersion
+  ) {
+    throw new Error(
+      "Gate B2 freeze is missing the immutable certification epoch identity; create a new freeze",
+    );
+  }
+  const expectedAuthority = getGateB2GithubAttemptIdentity();
+  const authorityMatches = (authority) =>
+    authority?.provider === expectedAuthority.provider &&
+    authority?.configDigest === expectedAuthority.configDigest &&
+    authority?.repository === expectedAuthority.repository &&
+    authority?.workflowPath === expectedAuthority.workflowPath &&
+    authority?.event === expectedAuthority.event;
+  if (
+    !authorityMatches(freeze.attemptAuthority) ||
+    !authorityMatches(identity.attemptAuthority)
+  ) {
+    throw new Error(
+      "Gate B2 freeze is not bound to the fixed GitHub Actions attempt authority; create a new freeze",
+    );
+  }
+}
+
+function safeArtifactPathSegment(value) {
+  return String(value).replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+/**
+ * Create a per-suite staging directory inside the current GitHub Actions
+ * artifact. It carries no cross-run authority.
+ */
+export async function allocateGateB2ArtifactAttempt({
+  artifactRoot,
+  suiteId,
+  bucket,
+}) {
+  if (!artifactRoot) {
+    throw new Error("Gate B2 artifact root is required");
+  }
+  const attemptDir = path.join(
+    artifactRoot,
+    "attempts",
+    safeArtifactPathSegment(bucket),
+    safeArtifactPathSegment(suiteId),
+    "attempt-1",
+  );
+  await mkdir(attemptDir, { recursive: true });
+  return { attempt: 1, suiteId, bucket, attemptDir };
+}
+
+export async function writeGateB2AttemptArtifact({ attemptDir, record }) {
+  const recordBody = { ...record };
+  delete recordBody.contentDigest;
+  const contentDigest = sha256Text(JSON.stringify(recordBody));
+  const enriched = { ...recordBody, contentDigest };
+  const recordPath = path.join(attemptDir, "attempt.json");
+  await writeFile(recordPath, `${JSON.stringify(enriched, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+  });
+  return { recordPath, contentDigest };
 }
 
 function runGit(args, cwd) {
@@ -248,6 +348,38 @@ export async function bindExecutionRoot({
   };
 }
 
+/**
+ * Bind freeze input reads to the candidate tree itself. Freeze metadata lives
+ * outside the candidate, but its digests must never come from the current
+ * checkout when --candidate points at another commit.
+ */
+export async function bindCandidateDigestRoot({ repoRoot, candidateSha }) {
+  if (!candidateSha || !COMMIT_RE.test(candidateSha)) {
+    throw new Error("candidate SHA required for candidate digest binding");
+  }
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-freeze-wt-"));
+  const worktreePath = path.join(temp, "tree");
+  try {
+    await runGit(
+      ["worktree", "add", "--detach", worktreePath, candidateSha],
+      repoRoot,
+    );
+  } catch (error) {
+    await rm(temp, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    executionRoot: worktreePath,
+    cleanup: async () => {
+      try {
+        await runGit(["worktree", "remove", "--force", worktreePath], repoRoot);
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
 export function assertDigestsMatchFreeze(
   currentDigests,
   freezeCandidate,
@@ -289,14 +421,18 @@ export function assertDigestsMatchFreeze(
   return errors;
 }
 
-export function sanitizeCertificationEnv(baseEnv = process.env) {
-  const env = { ...baseEnv };
-  // Full certification must not use partial/diagnostic overrides.
-  delete env.NARRATIVE_EVAL_LIMIT;
-  delete env.NARRATIVE_EVAL_CASE_ID;
-  delete env.NARRATIVE_EVAL_ATTEMPT;
-  // Preserve GATE_B2_* binding vars for heavy suite runners.
-  return env;
+function gateB2AttemptAuthorityEnv(candidate) {
+  const authority =
+    candidate.attemptAuthority ?? getGateB2GithubAttemptIdentity();
+  return {
+    GATE_B2_ATTEMPT_AUTHORITY_PROVIDER: authority.provider,
+    GATE_B2_ATTEMPT_AUTHORITY_CONFIG_DIGEST: authority.configDigest,
+    GATE_B2_GITHUB_REPOSITORY: authority.repository,
+    GATE_B2_GITHUB_WORKFLOW_PATH: authority.workflowPath,
+    GATE_B2_GITHUB_RUN_ID: authority.runId ?? "",
+    GATE_B2_GITHUB_RUN_ATTEMPT:
+      authority.runAttempt == null ? "" : String(authority.runAttempt),
+  };
 }
 
 export function buildHeavyCertificationEnv({
@@ -305,10 +441,15 @@ export function buildHeavyCertificationEnv({
   runId,
   outputPath,
   commandDigest,
+  freezeId,
+  certificationRunId,
+  attempt,
+  attemptDir,
   baseEnv = process.env,
 }) {
-  return {
+  const env = {
     ...sanitizeCertificationEnv(baseEnv),
+    ...gateB2AttemptAuthorityEnv(candidate),
     GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
     GATE_B2_CANDIDATE_TREE_SHA: candidate.treeSha,
     GATE_B2_SUITE_ID: suiteId,
@@ -316,6 +457,48 @@ export function buildHeavyCertificationEnv({
     GATE_B2_OUTPUT_PATH: outputPath,
     GATE_B2_COMMAND_DIGEST: commandDigest,
   };
+  if (freezeId) env.GATE_B2_FREEZE_ID = freezeId;
+  if (certificationRunId) {
+    env.GATE_B2_CERTIFICATION_RUN_ID = certificationRunId;
+  }
+  if (Number.isInteger(attempt)) env.GATE_B2_ATTEMPT = String(attempt);
+  if (attemptDir) env.GATE_B2_ATTEMPT_DIR = attemptDir;
+  return env;
+}
+
+export function buildJourneyCertificationEnv({
+  candidate,
+  journeyId,
+  outputPath,
+  runnerArtifactPath,
+  commandDigest,
+  environmentDigest,
+  runnerId,
+  runnerVersion,
+  freezeId,
+  certificationRunId,
+  attempt,
+  attemptDir,
+  baseEnv = process.env,
+}) {
+  const env = {
+    ...sanitizeCertificationEnv(baseEnv),
+    ...gateB2AttemptAuthorityEnv(candidate),
+    GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
+    GATE_B2_CANDIDATE_TREE_SHA: candidate.treeSha,
+    GATE_B2_SUITE_ID: journeyId,
+    GATE_B2_OUTPUT_PATH: outputPath,
+    GATE_B2_RUNNER_ARTIFACT_PATH: runnerArtifactPath,
+    GATE_B2_COMMAND_DIGEST: commandDigest,
+    GATE_B2_ENVIRONMENT_DIGEST: environmentDigest,
+    GATE_B2_RUNNER_ID: runnerId,
+    GATE_B2_RUNNER_VERSION: String(runnerVersion),
+    GATE_B2_FREEZE_ID: freezeId,
+    GATE_B2_CERTIFICATION_RUN_ID: certificationRunId,
+    GATE_B2_ATTEMPT: String(attempt),
+  };
+  if (attemptDir) env.GATE_B2_ATTEMPT_DIR = attemptDir;
+  return env;
 }
 
 const FULL_CI_REQUIRED = [
@@ -396,6 +579,52 @@ export function checkoutIdentityArtifactName(runId, runAttempt) {
   return `checkout-identity-${runId}-${runAttempt}`;
 }
 
+export function selectCheckoutIdentityArtifact({
+  artifacts,
+  runId,
+  runAttempt,
+}) {
+  const currentAttempt = Number(runAttempt);
+  if (!Number.isSafeInteger(currentAttempt) || currentAttempt < 1) {
+    throw new Error(`invalid checkout-identity run attempt ${runAttempt}`);
+  }
+
+  const prefix = `checkout-identity-${runId}-`;
+  const eligible = artifacts.flatMap((artifact) => {
+    const name = String(artifact?.name ?? "");
+    if (!name.startsWith(prefix) || artifact?.expired === true) return [];
+    const suffix = name.slice(prefix.length);
+    if (!/^[1-9][0-9]*$/.test(suffix)) return [];
+    const artifactRunAttempt = Number(suffix);
+    if (
+      !Number.isSafeInteger(artifactRunAttempt) ||
+      artifactRunAttempt > currentAttempt
+    ) {
+      return [];
+    }
+    return [{ artifact, artifactRunAttempt }];
+  });
+
+  if (eligible.length === 0) {
+    throw new Error(
+      `no unexpired checkout-identity artifact for run ${runId} at or before attempt ${currentAttempt}`,
+    );
+  }
+
+  const latestAttempt = Math.max(
+    ...eligible.map((entry) => entry.artifactRunAttempt),
+  );
+  const latest = eligible.filter(
+    (entry) => entry.artifactRunAttempt === latestAttempt,
+  );
+  if (latest.length !== 1) {
+    throw new Error(
+      `expected exactly one checkout-identity artifact for run ${runId} attempt ${latestAttempt}, found ${latest.length}`,
+    );
+  }
+  return latest[0];
+}
+
 export function buildGhRunDownloadArgs({ runId, slug, artifactName, dir }) {
   return [
     "run",
@@ -468,23 +697,19 @@ export async function fetchCheckoutIdentityArtifact({
   downloadCheckoutIdentity = null,
 }) {
   const slug = slugOverride ?? (await resolveGithubRepoSlug(repoRoot));
-  const artifactName = checkoutIdentityArtifactName(runId, runAttempt);
   const artifacts = await listRunArtifacts({
     slug,
     runId,
     repoRoot,
     runGh,
   });
-  const matching = artifacts.filter((entry) => entry.name === artifactName);
-  if (matching.length === 0) {
-    throw new Error(`no checkout-identity artifact named ${artifactName}`);
-  }
-  if (matching.length > 1) {
-    throw new Error(
-      `expected exactly one checkout-identity artifact named ${artifactName}, found ${matching.length}`,
-    );
-  }
-  const artifact = matching[0];
+  const selected = selectCheckoutIdentityArtifact({
+    artifacts,
+    runId,
+    runAttempt,
+  });
+  const { artifact, artifactRunAttempt } = selected;
+  const artifactName = artifact.name;
 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "gate-b2-artifact-"));
   try {
@@ -532,6 +757,7 @@ export async function fetchCheckoutIdentityArtifact({
     return {
       artifactId: artifact.id,
       artifactName: artifact.name,
+      artifactRunAttempt,
       artifactDigest,
       identity,
     };
@@ -740,6 +966,7 @@ export async function verifyFullCiWithGithub(
         result: "passed",
         message: "full-ci github evidence verified",
         checkoutArtifactId: checkout.artifactId,
+        checkoutArtifactRunAttempt: checkout.artifactRunAttempt,
         checkoutArtifactDigest: checkout.artifactDigest,
         checkoutCommitSha: artifactCommit,
         checkoutTreeSha: artifactTree,
@@ -765,22 +992,39 @@ const JOURNEY_REQUIRED = [
   "journeyId",
   "candidateCommitSha",
   "candidateTreeSha",
+  "freezeId",
+  "certificationRunId",
   "runnerId",
   "runnerVersion",
   "environmentDigest",
+  "commandDigest",
+  "runnerArtifactDigest",
   "assertions",
   "result",
   "startedAt",
   "completedAt",
+  "artifactDigests",
 ];
 
 export function validateJourneyEvidence(
   raw,
-  { journeyId, candidate, contract },
+  { journeyId, candidate, contract, expected = {} },
 ) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey evidence must be an object",
+    };
+  }
   const missing = JOURNEY_REQUIRED.filter((key) => {
     if (key === "assertions") {
       return !Array.isArray(raw.assertions) || raw.assertions.length === 0;
+    }
+    if (key === "artifactDigests") {
+      return (
+        !Array.isArray(raw.artifactDigests) || raw.artifactDigests.length === 0
+      );
     }
     return raw[key] === undefined || raw[key] === null || raw[key] === "";
   });
@@ -791,18 +1035,18 @@ export function validateJourneyEvidence(
       message: `journey evidence missing required fields: ${missing.join(", ")}`,
     };
   }
-  if (raw.schemaVersion !== 1) {
+  if (raw.schemaVersion !== 2) {
     return {
       ok: false,
       result: "failed",
-      message: "journey schemaVersion must be 1",
+      message: "journey schemaVersion must be 2",
     };
   }
   if (raw.journeyId !== journeyId) {
     return {
       ok: false,
       result: "failed",
-      message: `journeyId ${raw.journeyId} != filename/manifest ${journeyId}`,
+      message: `journeyId ${raw.journeyId} != manifest ${journeyId}`,
     };
   }
   if (raw.candidateCommitSha !== candidate.commitSha) {
@@ -826,15 +1070,93 @@ export function validateJourneyEvidence(
       message: "journey environmentDigest must be sha256:...",
     };
   }
+  for (const [key, label] of [
+    ["commandDigest", "commandDigest"],
+    ["runnerArtifactDigest", "runnerArtifactDigest"],
+  ]) {
+    if (!SHA256_RE.test(String(raw[key]))) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `journey ${label} must be sha256:...`,
+      };
+    }
+  }
+  if (!raw.artifactDigests.every((digest) => SHA256_RE.test(String(digest)))) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey artifactDigests must contain sha256:... values",
+    };
+  }
+  if (!raw.artifactDigests.includes(raw.runnerArtifactDigest)) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey artifactDigests must include runnerArtifactDigest",
+    };
+  }
+
+  if (expected.freezeId !== undefined && raw.freezeId !== expected.freezeId) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey freezeId mismatch",
+    };
+  }
+  if (
+    expected.certificationRunId !== undefined &&
+    raw.certificationRunId !== expected.certificationRunId
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey certificationRunId mismatch",
+    };
+  }
+  if (
+    expected.commandDigest !== undefined &&
+    raw.commandDigest !== expected.commandDigest
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey commandDigest mismatch",
+    };
+  }
+  if (
+    expected.runnerArtifactDigest !== undefined &&
+    raw.runnerArtifactDigest !== expected.runnerArtifactDigest
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey runnerArtifactDigest mismatch",
+    };
+  }
+  if (
+    expected.environmentDigest !== undefined &&
+    raw.environmentDigest !== expected.environmentDigest
+  ) {
+    return {
+      ok: false,
+      result: "failed",
+      message: "journey environmentDigest mismatch",
+    };
+  }
+
   if (
     !raw.assertions.every(
-      (a) => a && typeof a.id === "string" && a.passed === true,
+      (assertion) =>
+        assertion &&
+        typeof assertion.id === "string" &&
+        typeof assertion.passed === "boolean",
     )
   ) {
     return {
       ok: false,
       result: "failed",
-      message: "journey assertions must all have id and passed:true",
+      message: "journey assertions must all have id and boolean passed",
     };
   }
 
@@ -883,6 +1205,14 @@ export function validateJourneyEvidence(
 
   const result = String(raw.result).toLowerCase();
   if (result === "passed") {
+    if (!raw.assertions.every((assertion) => assertion.passed === true)) {
+      return {
+        ok: false,
+        result: "failed",
+        message:
+          "passed Journey evidence must have passed:true for every assertion",
+      };
+    }
     return { ok: true, result: "passed", message: "journey evidence accepted" };
   }
   if (result === "hold") {
@@ -900,12 +1230,18 @@ export function validateJourneyEvidence(
 
 export function buildDecisionDocument({
   candidate,
+  freezeId = null,
+  certificationRunId = null,
   verdict,
   reasons,
   suites,
   reportDigest,
   digests,
 }) {
+  const attemptAuthority = {
+    ...getGateB2GithubAttemptIdentity(),
+    ...(candidate.attemptAuthority ?? {}),
+  };
   const tally = (bucket) => {
     const rows = suites.filter((s) => s.bucket === bucket);
     const counts = {
@@ -926,11 +1262,16 @@ export function buildDecisionDocument({
   };
   return {
     schemaVersion: 1,
+    contractVersion: GATE_B2_CONTRACT_VERSION,
     gateId: "gate-b2",
+    assuranceScope: { ...GATE_B2_ASSURANCE_SCOPE },
     candidateCommitSha: candidate.commitSha,
     candidateTreeSha: candidate.treeSha,
     baseMasterSha: candidate.baseMasterSha,
-    schemaVersionProduct: 16,
+    freezeId,
+    certificationRunId,
+    attemptAuthority,
+    schemaVersionProduct: candidate.schemaVersion,
     verdict,
     reasons,
     suiteSummaries: {
@@ -947,140 +1288,17 @@ export function buildDecisionDocument({
       classificationDigest: digests.classificationDigest ?? null,
       reportDigest,
     },
-    heavyAttempts: suites
-      .filter((s) => s.bucket === "requiredHeavy" && s.attempt)
+    suiteAttempts: suites
+      .filter((s) => s && s.suiteId && Number.isInteger(s.attempt))
       .map((s) => ({
         suiteId: s.suiteId,
+        bucket: s.bucket,
         attempt: s.attempt,
         result: s.result,
-        normative: s.attempt === 1,
         message: s.message,
       })),
     generatedAt: new Date().toISOString(),
   };
-}
-
-function validateHeavyReportBinding(report, candidate, expected) {
-  const commitSha = expected?.commitSha ?? candidate?.commitSha;
-  const treeSha = expected?.treeSha ?? candidate?.treeSha;
-  if (!report.candidateCommitSha || report.candidateCommitSha !== commitSha) {
-    return {
-      ok: false,
-      message: `report candidateCommitSha mismatch (expected ${commitSha})`,
-    };
-  }
-  if (!report.candidateTreeSha || report.candidateTreeSha !== treeSha) {
-    return {
-      ok: false,
-      message: `report candidateTreeSha mismatch (expected ${treeSha})`,
-    };
-  }
-  if (!expected?.suiteId || report.suiteId !== expected.suiteId) {
-    return {
-      ok: false,
-      message: "report suiteId mismatch or missing",
-    };
-  }
-  if (!expected?.runId || report.runId !== expected.runId) {
-    return {
-      ok: false,
-      message: "report runId mismatch or missing",
-    };
-  }
-  if (
-    !expected?.commandDigest ||
-    report.commandDigest !== expected.commandDigest
-  ) {
-    return {
-      ok: false,
-      message: "report commandDigest mismatch or missing",
-    };
-  }
-  const completedAt = report.completedAt ?? report.finishedAt;
-  if (!report.startedAt || !completedAt) {
-    return {
-      ok: false,
-      message: "report startedAt/completedAt required",
-    };
-  }
-  return { ok: true };
-}
-
-export async function readHeavyLiveReport(artifactDir, suiteId, options = {}) {
-  const { outputPath, allowedPaths = [], env = process.env } = options;
-  const candidates = [];
-  const primary = outputPath ?? env.GATE_B2_OUTPUT_PATH;
-  if (primary) candidates.push(primary);
-  candidates.push(path.join(artifactDir, "heavy", suiteId, "report.json"));
-  for (const allowed of allowedPaths) {
-    if (allowed) candidates.push(allowed);
-  }
-
-  for (const candidatePath of candidates) {
-    if (await pathExists(candidatePath)) {
-      return JSON.parse(await readFile(candidatePath, "utf8"));
-    }
-  }
-  return null;
-}
-
-export function validateChronicleProductionReport(report, candidate, expected) {
-  if (!report) {
-    return {
-      ok: false,
-      message: "chronicle production report missing under heavy artifacts",
-    };
-  }
-  const binding = validateHeavyReportBinding(report, candidate, expected);
-  if (!binding.ok) return binding;
-  if (report.diagnosticOnly === true || report.attempt === 2) {
-    return {
-      ok: false,
-      message: "diagnostic-only / attempt 2 cannot pass certification Heavy",
-    };
-  }
-  if (report.attempt !== 1) {
-    return { ok: false, message: `expected attempt 1, got ${report.attempt}` };
-  }
-  if (report.caseCount !== 14) {
-    return {
-      ok: false,
-      message: `expected caseCount 14, got ${report.caseCount}`,
-    };
-  }
-  if (report.certificationEligible !== true) {
-    return {
-      ok: false,
-      message: "certificationEligible must be true",
-    };
-  }
-  return { ok: true, message: "chronicle production report accepted" };
-}
-
-export function validateWebAiConsentReport(report, expected) {
-  if (!report) {
-    return { ok: false, message: "web AI consent report missing" };
-  }
-  const binding = validateHeavyReportBinding(
-    report,
-    {
-      commitSha: expected?.commitSha,
-      treeSha: expected?.treeSha,
-    },
-    expected,
-  );
-  if (!binding.ok) return binding;
-  if (report.certificationEligible !== true) {
-    return { ok: false, message: "consent certificationEligible must be true" };
-  }
-  const teardown = report.teardown ?? {};
-  if (teardown.serverClosed !== true || teardown.localStorageCleared !== true) {
-    return {
-      ok: false,
-      message: "consent teardown flags must be observed true after teardown",
-    };
-  }
-  return { ok: true, message: "consent report accepted" };
 }
 
 async function resolvePnpmStoreDir(repoRoot, baseEnv = process.env) {
@@ -1165,11 +1383,18 @@ export function validateJsonAgainstSchema(document, schema) {
   };
 }
 
-export async function persistHeavyReport({ report, artifactDir, suiteId }) {
-  const reportPath = path.join(artifactDir, "heavy", suiteId, "report.json");
+export async function persistHeavyReport({
+  report,
+  artifactDir,
+  suiteId,
+  attemptDir = null,
+}) {
+  const reportPath =
+    attemptDir != null
+      ? path.join(attemptDir, "report.json")
+      : path.join(artifactDir, "heavy", suiteId, "report.json");
   const content = `${JSON.stringify(report, null, 2)}\n`;
-  const { mkdir, writeFile } = await import("node:fs/promises");
   await mkdir(path.dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, content, "utf8");
+  await writeFile(reportPath, content, { encoding: "utf8", flag: "wx" });
   return sha256Text(content);
 }

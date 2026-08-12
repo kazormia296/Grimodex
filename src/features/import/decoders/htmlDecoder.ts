@@ -1,3 +1,8 @@
+import {
+  defaultTreeAdapter,
+  parseFragment,
+  type DefaultTreeAdapterMap,
+} from "parse5";
 import { importDiagnostic } from "../core/importDiagnostics";
 import type {
   DecodedImportResource,
@@ -14,23 +19,44 @@ const DESCRIPTOR = {
   extensions: ["html", "htm"] as const,
 } as const;
 
+type HtmlNode = DefaultTreeAdapterMap["node"];
+
+const SKIPPED_ELEMENTS = new Set(["script", "style", "template"]);
+const PARAGRAPH_ELEMENTS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6"]);
+
+function appendHtmlText(node: HtmlNode, chunks: string[]): void {
+  if (defaultTreeAdapter.isTextNode(node)) {
+    chunks.push(defaultTreeAdapter.getTextNodeContent(node));
+    return;
+  }
+
+  if (!defaultTreeAdapter.isElementNode(node)) return;
+
+  const tagName = defaultTreeAdapter.getTagName(node).toLowerCase();
+  if (SKIPPED_ELEMENTS.has(tagName)) return;
+
+  if (tagName === "br") {
+    chunks.push("\n");
+    return;
+  }
+
+  for (const child of defaultTreeAdapter.getChildNodes(node)) {
+    appendHtmlText(child, chunks);
+  }
+
+  if (PARAGRAPH_ELEMENTS.has(tagName)) chunks.push("\n\n");
+}
+
 function stripHtmlToText(html: string): string {
-  let text = html;
-  text = text.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ");
-  text = text.replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ");
-  text = text.replace(/<!--[\s\S]*?-->/gu, " ");
-  text = text.replace(/<br\s*\/?>/giu, "\n");
-  text = text.replace(/<\/p>/giu, "\n\n");
-  text = text.replace(/<\/h[1-6]>/giu, "\n\n");
-  text = text.replace(/<[^>]+>/gu, " ");
-  text = text
-    .replace(/&nbsp;/giu, " ")
-    .replace(/&amp;/giu, "&")
-    .replace(/&lt;/giu, "<")
-    .replace(/&gt;/giu, ">")
-    .replace(/&quot;/giu, '"')
-    .replace(/&#39;/giu, "'");
-  return text
+  const fragment = parseFragment(html);
+  const chunks: string[] = [];
+  for (const child of defaultTreeAdapter.getChildNodes(fragment)) {
+    appendHtmlText(child, chunks);
+  }
+
+  return chunks
+    .join("")
+    .replace(/\u00a0/gu, " ")
     .replace(/[ \t]+\n/gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();

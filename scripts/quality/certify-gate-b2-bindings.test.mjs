@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,39 +8,53 @@ import { fileURLToPath } from "node:url";
 import {
   GATE_B2_CONTRACT_VERSION,
   HARNESS_DIGEST_PATHS,
+  allocateGateB2ArtifactAttempt,
   assertDigestsMatchFreeze,
   assertFreezeActive,
-  buildDecisionDocument,
   buildGhRunDownloadArgs,
+  buildDecisionDocument,
   buildHeavyCertificationEnv,
+  buildJourneyCertificationEnv,
   checkoutIdentityArtifactName,
   fetchCheckoutIdentityArtifact,
   listRunArtifacts,
   prepareWorktreeDependencies,
   sanitizeCertificationEnv,
+  selectCheckoutIdentityArtifact,
   stripCredentialPlaceholders,
+  validateChronicleProductionReport,
   validateFullCiEvidence,
   validateJourneyEvidence,
-  validateChronicleProductionReport,
+  validateJsonAgainstSchema,
+  validateWebAiConsentBrowserReport,
   validateWebAiConsentReport,
   verifyFullCiWithGithub,
+  writeGateB2AttemptArtifact,
 } from "./certify-gate-b2-bindings.mjs";
+import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
 );
-
+const digest = `sha256:${"d".repeat(64)}`;
 const candidate = {
   commitSha: "a".repeat(40),
   treeSha: "b".repeat(40),
+  baseMasterSha: "c".repeat(40),
+  schemaVersion: 20,
+  attemptAuthority: {
+    ...getGateB2GithubAttemptIdentity(),
+    runId: "9001",
+    runAttempt: 1,
+  },
 };
 
 const fullCiContract = {
-  workflowId: 12345678,
+  workflowId: 123,
   workflowPath: ".github/workflows/ci.yml",
-  acceptedEvents: ["push", "pull_request"],
-  requiredJobs: ["Frontend", "Rust"],
+  acceptedEvents: ["push", "workflow_dispatch"],
+  requiredJobs: ["Quality", "Frontend"],
 };
 
 const fullCiContractWithCheckout = {
@@ -48,25 +62,12 @@ const fullCiContractWithCheckout = {
   requireCheckoutIdentityArtifact: true,
 };
 
-function makeCheckoutIdentity(overrides = {}) {
-  return {
-    artifactId: 12345,
-    artifactName: "checkout-identity-999-1",
-    artifactDigest: `sha256:${"e".repeat(64)}`,
-    identity: {
-      commitSha: candidate.commitSha,
-      treeSha: candidate.treeSha,
-      ...overrides,
-    },
-  };
-}
-
 function fullCiEvidence(overrides = {}) {
   return {
     commitSha: candidate.commitSha,
     treeSha: candidate.treeSha,
-    workflowId: String(fullCiContract.workflowId),
-    runId: "999",
+    workflowId: fullCiContract.workflowId,
+    runId: "88",
     runAttempt: 1,
     conclusion: "success",
     requiredJobs: [...fullCiContract.requiredJobs],
@@ -86,637 +87,578 @@ function githubRunPayload(overrides = {}) {
       ...overrides.run,
     },
     jobs: overrides.jobs ?? [
+      { name: "Quality", conclusion: "success" },
       { name: "Frontend", conclusion: "success" },
-      { name: "Rust", conclusion: "success" },
     ],
   };
 }
 
-const heavyExpected = {
-  commitSha: candidate.commitSha,
-  treeSha: candidate.treeSha,
-  suiteId: "heavy-narrative-chronicle-production",
-  runId: "run-1",
-  commandDigest: `sha256:${"d".repeat(64)}`,
-};
-
-function validHeavyReport(overrides = {}) {
+function checkoutIdentity(overrides = {}) {
   return {
-    candidateCommitSha: candidate.commitSha,
-    candidateTreeSha: candidate.treeSha,
-    suiteId: heavyExpected.suiteId,
-    runId: heavyExpected.runId,
-    commandDigest: heavyExpected.commandDigest,
-    startedAt: "2026-01-01T00:00:00.000Z",
-    completedAt: "2026-01-01T00:10:00.000Z",
-    attempt: 1,
-    caseCount: 14,
-    certificationEligible: true,
-    ...overrides,
+    artifactId: 12345,
+    artifactName: "checkout-identity-88-1",
+    artifactRunAttempt: 1,
+    artifactDigest: `sha256:${"e".repeat(64)}`,
+    identity: {
+      commitSha: candidate.commitSha,
+      treeSha: candidate.treeSha,
+      ...overrides,
+    },
   };
 }
 
-test("stripCredentialPlaceholders removes VAR=... assignments", () => {
-  const cleaned = stripCredentialPlaceholders(
-    "OPENROUTER_API_KEY=... EMBED_NODE_MODULES=... pnpm test:node --run x.ts",
-  );
-  assert.equal(cleaned, "pnpm test:node --run x.ts");
-  assert.doesNotMatch(cleaned, /OPENROUTER_API_KEY=/);
-});
-
-test("sanitizeCertificationEnv strips narrative overrides but keeps GATE_B2 vars", () => {
-  const env = sanitizeCertificationEnv({
+test("certification environments bind candidate and GitHub run metadata", () => {
+  const baseEnv = sanitizeCertificationEnv({
+    KEEP_ME: "yes",
     NARRATIVE_EVAL_LIMIT: "1",
-    NARRATIVE_EVAL_CASE_ID: "x",
-    NARRATIVE_EVAL_ATTEMPT: "2",
-    GATE_B2_RUN_ID: "run-1",
-    GATE_B2_OUTPUT_PATH: "/tmp/report.json",
+    GATE_B2_BOUND_EXECUTION: "1",
+    GATE_B2_FREEZE_PATH: "/tmp/trusted-freeze.json",
+    OPENROUTER_API_KEY: "must-not-reach-gate",
+    OPEN_ROUTER_API_KEY: "legacy-alias-must-not-reach-gate",
+    ANTHROPIC_AUTH_TOKEN: "other-provider-must-not-reach-gate",
   });
-  assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
-  assert.equal(env.NARRATIVE_EVAL_CASE_ID, undefined);
-  assert.equal(env.NARRATIVE_EVAL_ATTEMPT, undefined);
-  assert.equal(env.GATE_B2_RUN_ID, "run-1");
-  assert.equal(env.GATE_B2_OUTPUT_PATH, "/tmp/report.json");
-});
+  assert.equal(baseEnv.KEEP_ME, "yes");
+  assert.equal(baseEnv.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(baseEnv.GATE_B2_BOUND_EXECUTION, undefined);
+  assert.equal(baseEnv.GATE_B2_FREEZE_PATH, undefined);
+  assert.equal(baseEnv.OPENROUTER_API_KEY, undefined);
+  assert.equal(baseEnv.OPEN_ROUTER_API_KEY, undefined);
+  assert.equal(baseEnv.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(
+    stripCredentialPlaceholders(
+      "OPENROUTER_API_KEY=... EMBED_NODE_MODULES=... pnpm test:node --run x.ts",
+    ),
+    "pnpm test:node --run x.ts",
+  );
 
-test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
-  const env = buildHeavyCertificationEnv({
+  const heavy = buildHeavyCertificationEnv({
     candidate,
-    suiteId: "heavy-web-ai-consent-live",
-    runId: "run-42",
-    outputPath: "/tmp/consent-report.json",
-    commandDigest: heavyExpected.commandDigest,
-    baseEnv: { HOME: "/home/tester" },
+    suiteId: "heavy-a",
+    runId: "suite-run",
+    outputPath: "/tmp/heavy.json",
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    attemptDir: "/tmp/attempt-1",
+    baseEnv,
   });
-  assert.equal(env.GATE_B2_CANDIDATE_COMMIT_SHA, candidate.commitSha);
-  assert.equal(env.GATE_B2_CANDIDATE_TREE_SHA, candidate.treeSha);
-  assert.equal(env.GATE_B2_SUITE_ID, "heavy-web-ai-consent-live");
-  assert.equal(env.GATE_B2_RUN_ID, "run-42");
-  assert.equal(env.GATE_B2_OUTPUT_PATH, "/tmp/consent-report.json");
-  assert.equal(env.GATE_B2_COMMAND_DIGEST, heavyExpected.commandDigest);
-  assert.equal(env.HOME, "/home/tester");
-  assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(heavy.GATE_B2_CANDIDATE_COMMIT_SHA, candidate.commitSha);
+  assert.equal(heavy.GATE_B2_GITHUB_RUN_ID, "9001");
+  assert.equal(heavy.GATE_B2_GITHUB_RUN_ATTEMPT, "1");
+  assert.equal(heavy.GATE_B2_ATTEMPT, "1");
+
+  const journey = buildJourneyCertificationEnv({
+    candidate,
+    journeyId: "journey-a",
+    outputPath: "/tmp/journey.json",
+    runnerArtifactPath: "/tmp/runner.json",
+    commandDigest: digest,
+    environmentDigest: digest,
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    attemptDir: "/tmp/attempt-1",
+    baseEnv,
+  });
+  assert.equal(journey.GATE_B2_SUITE_ID, "journey-a");
+  assert.equal(journey.GATE_B2_GITHUB_RUN_ID, "9001");
 });
 
-test("full-ci evidence rejects bare passed:true without structured fields", () => {
+test("suite Attempt 1 artifacts are staged once inside the workflow artifact", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-attempt-"));
+  try {
+    const allocation = await allocateGateB2ArtifactAttempt({
+      artifactRoot: temp,
+      suiteId: "heavy-a",
+      bucket: "requiredHeavy",
+    });
+    assert.equal(allocation.attempt, 1);
+    assert.match(allocation.attemptDir, /requiredHeavy\/heavy-a\/attempt-1$/);
+    const written = await writeGateB2AttemptArtifact({
+      attemptDir: allocation.attemptDir,
+      record: {
+        schemaVersion: 1,
+        candidateCommitSha: candidate.commitSha,
+        candidateTreeSha: candidate.treeSha,
+        suiteId: "heavy-a",
+        bucket: "requiredHeavy",
+        attempt: 1,
+        result: "passed",
+      },
+    });
+    const saved = JSON.parse(await readFile(written.recordPath, "utf8"));
+    assert.match(saved.contentDigest, /^sha256:[0-9a-f]{64}$/);
+    await assert.rejects(
+      () =>
+        writeGateB2AttemptArtifact({
+          attemptDir: allocation.attemptDir,
+          record: saved,
+        }),
+      /EEXIST/,
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Full CI evidence is candidate-bound and GitHub-verified", async () => {
+  const evidence = fullCiEvidence({ requiredJobs: ["Frontend", "Quality"] });
+  assert.equal(
+    validateFullCiEvidence(evidence, candidate, fullCiContract).ok,
+    true,
+  );
+  assert.equal(
+    validateFullCiEvidence(
+      { ...evidence, requiredJobs: ["Frontend"] },
+      candidate,
+      fullCiContract,
+    ).ok,
+    false,
+  );
+  const verified = await verifyFullCiWithGithub(evidence, candidate, {
+    fullCiContract,
+    fetchRun: async () => githubRunPayload(),
+  });
+  assert.equal(verified.ok, true, verified.message);
+});
+
+test("Full CI verification rejects incomplete evidence and GitHub drift", async () => {
   const bare = validateFullCiEvidence({ passed: true }, candidate);
   assert.equal(bare.ok, false);
-  assert.match(bare.message, /missing required fields/);
+  assert.match(bare.message, /missing required fields/i);
 
-  const ok = validateFullCiEvidence(fullCiEvidence(), candidate);
-  assert.equal(ok.ok, true);
-});
-
-test("validateFullCiEvidence rejects requiredJobs that shrink contract set", () => {
-  const shrunk = validateFullCiEvidence(
-    fullCiEvidence({ requiredJobs: ["Frontend"] }),
-    candidate,
-    fullCiContract,
-  );
-  assert.equal(shrunk.ok, false);
-  assert.match(shrunk.message, /requiredJobs must match contract/);
-
-  const ok = validateFullCiEvidence(
-    fullCiEvidence(),
-    candidate,
-    fullCiContract,
-  );
-  assert.equal(ok.ok, true);
-});
-
-test("validateFullCiEvidence does not require checkout fields when artifact verification is enabled", () => {
-  const withoutCheckout = validateFullCiEvidence(
-    fullCiEvidence(),
-    candidate,
-    fullCiContractWithCheckout,
-  );
-  assert.equal(withoutCheckout.ok, true);
-
-  const withCheckout = validateFullCiEvidence(
-    fullCiEvidence({
-      checkoutCommitSha: candidate.commitSha,
-      checkoutTreeSha: candidate.treeSha,
-    }),
-    candidate,
-    fullCiContractWithCheckout,
-  );
-  assert.equal(withCheckout.ok, true);
-});
-
-test("verifyFullCiWithGithub accepts injected github payload with contract", async () => {
-  const raw = fullCiEvidence();
-  const fetchRun = async () => githubRunPayload();
-  const ok = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun,
-    fullCiContract,
-  });
-  assert.equal(ok.ok, true);
-
-  const badJobs = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () =>
+  for (const [name, payload, pattern] of [
+    [
+      "candidate",
+      githubRunPayload({ run: { head_sha: "f".repeat(40) } }),
+      /head_sha/i,
+    ],
+    ["attempt", githubRunPayload({ run: { run_attempt: 2 } }), /run_attempt/i],
+    [
+      "workflow",
+      githubRunPayload({ run: { workflow_id: 999 } }),
+      /workflow_id/i,
+    ],
+    [
+      "path",
       githubRunPayload({
-        jobs: [{ name: "Frontend", conclusion: "success" }],
+        run: { path: ".github/workflows/release.yml" },
       }),
-    fullCiContract,
-  });
-  assert.equal(badJobs.ok, false);
-  assert.match(badJobs.message, /missing required job Rust/);
-});
+      /workflow path/i,
+    ],
+    [
+      "event",
+      githubRunPayload({ run: { event: "pull_request" } }),
+      /acceptedEvents/i,
+    ],
+    [
+      "jobs",
+      githubRunPayload({
+        jobs: [{ name: "Quality", conclusion: "success" }],
+      }),
+      /missing required job Frontend/i,
+    ],
+  ]) {
+    const result = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+      fullCiContract,
+      fetchRun: async () => payload,
+    });
+    assert.equal(result.ok, false, name);
+    assert.match(result.message, pattern, name);
+  }
 
-test("verifyFullCiWithGithub rejects workflow, path, and event mismatches", async () => {
-  const raw = fullCiEvidence();
-  const fetchRun = async () => githubRunPayload();
-
-  const badWorkflow = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () => githubRunPayload({ run: { workflow_id: 99999999 } }),
-    fullCiContract,
-  });
-  assert.equal(badWorkflow.ok, false);
-  assert.match(badWorkflow.message, /workflow_id/);
-
-  const badPath = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () =>
-      githubRunPayload({ run: { path: ".github/workflows/release.yml" } }),
-    fullCiContract,
-  });
-  assert.equal(badPath.ok, false);
-  assert.match(badPath.message, /workflow path/);
-
-  const badEvent = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () =>
-      githubRunPayload({ run: { event: "workflow_dispatch" } }),
-    fullCiContract,
-  });
-  assert.equal(badEvent.ok, false);
-  assert.match(badEvent.message, /acceptedEvents/);
-});
-
-test("verifyFullCiWithGithub rejects evidence that shrinks contract requiredJobs", async () => {
-  const raw = fullCiEvidence({ requiredJobs: ["Frontend"] });
-  const result = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () => githubRunPayload(),
-    fullCiContract,
-  });
-  assert.equal(result.ok, false);
-  assert.match(result.message, /requiredJobs must match contract/);
-});
-
-test("verifyFullCiWithGithub fails when fetchRun throws", async () => {
-  const raw = fullCiEvidence({ requiredJobs: ["Frontend"] });
-  const failed = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () => {
-      throw new Error("gh unavailable");
+  const unavailable = await verifyFullCiWithGithub(
+    fullCiEvidence(),
+    candidate,
+    {
+      fullCiContract,
+      fetchRun: async () => {
+        throw new Error("gh unavailable");
+      },
     },
-  });
-  assert.equal(failed.ok, false);
-  assert.match(failed.message, /gh unavailable/);
-});
-
-test("verifyFullCiWithGithub rejects checkout identity mismatch from artifact", async () => {
-  const raw = fullCiEvidence();
-  const fetchRun = async () => githubRunPayload();
-  const fetchCheckoutIdentity = async () =>
-    makeCheckoutIdentity({ treeSha: "c".repeat(40) });
-
-  const badTree = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun,
-    fetchCheckoutIdentity,
-    fullCiContract: fullCiContractWithCheckout,
-  });
-  assert.equal(badTree.ok, false);
-  assert.match(badTree.message, /checkout-identity treeSha/);
-
-  const ok = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun,
-    fetchCheckoutIdentity: async () => makeCheckoutIdentity(),
-    fullCiContract: fullCiContractWithCheckout,
-  });
-  assert.equal(ok.ok, true);
-  assert.equal(ok.checkoutArtifactId, 12345);
-  assert.equal(ok.checkoutArtifactDigest, `sha256:${"e".repeat(64)}`);
-  assert.equal(ok.checkoutCommitSha, candidate.commitSha);
-  assert.equal(ok.checkoutTreeSha, candidate.treeSha);
-});
-
-test("verifyFullCiWithGithub rejects evidence checkout fields that disagree with artifact", async () => {
-  const raw = fullCiEvidence({
-    checkoutCommitSha: "f".repeat(40),
-    checkoutTreeSha: candidate.treeSha,
-  });
-  const result = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () => githubRunPayload(),
-    fetchCheckoutIdentity: async () => makeCheckoutIdentity(),
-    fullCiContract: fullCiContractWithCheckout,
-  });
-  assert.equal(result.ok, false);
-  assert.match(result.message, /evidence checkoutCommitSha/);
-});
-
-test("gh run download args use supported flags only and pin run/artifact name", () => {
-  const args = buildGhRunDownloadArgs({
-    runId: "999",
-    slug: "owner/repo",
-    artifactName: checkoutIdentityArtifactName("999", 1),
-    dir: "/tmp/out",
-  });
-  assert.deepEqual(args.slice(0, 3), ["run", "download", "999"]);
-  assert.equal(args.includes("--output"), false);
-  assert.equal(args.includes("api"), false);
-  assert.ok(args.includes("--repo"));
-  assert.ok(args.includes("owner/repo"));
-  assert.ok(args.includes("--name"));
-  assert.ok(args.includes("checkout-identity-999-1"));
-  assert.ok(args.includes("--dir"));
-  assert.ok(args.includes("/tmp/out"));
-});
-
-test("fetchCheckoutIdentityArtifact downloads via gh run download and validates identity", async () => {
-  const calls = [];
-  const identity = {
-    commitSha: candidate.commitSha,
-    treeSha: candidate.treeSha,
-  };
-  const result = await fetchCheckoutIdentityArtifact({
-    repoRoot,
-    runId: "999",
-    runAttempt: 1,
-    slug: "owner/repo",
-    runGh: async (command, args, _cwd) => {
-      calls.push({ command, args: [...args] });
-      assert.equal(command, "gh");
-      assert.equal(args.includes("--output"), false);
-      if (args[0] === "api" && String(args[1]).includes("/artifacts")) {
-        return JSON.stringify({
-          artifacts: [
-            {
-              id: 42,
-              name: "checkout-identity-999-1",
-            },
-          ],
-        });
-      }
-      if (args[0] === "run" && args[1] === "download") {
-        const dirIndex = args.indexOf("--dir");
-        const dir = args[dirIndex + 1];
-        await writeFile(
-          path.join(dir, "checkout-identity.json"),
-          `${JSON.stringify(identity)}\n`,
-          "utf8",
-        );
-        return "";
-      }
-      throw new Error(`unexpected gh args: ${args.join(" ")}`);
-    },
-  });
-  assert.equal(result.artifactId, 42);
-  assert.equal(result.identity.commitSha, candidate.commitSha);
-  assert.equal(result.identity.treeSha, candidate.treeSha);
-  assert.match(result.artifactDigest, /^sha256:[0-9a-f]{64}$/);
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.args[0] === "run" &&
-        entry.args[1] === "download" &&
-        entry.args.includes("checkout-identity-999-1"),
-    ),
   );
+  assert.equal(unavailable.ok, false);
+  assert.match(unavailable.message, /gh unavailable/i);
 });
 
-test("fetchCheckoutIdentityArtifact fails on missing, duplicate, or mismatched identity", async () => {
-  await assert.rejects(
-    () =>
-      fetchCheckoutIdentityArtifact({
-        repoRoot,
-        runId: "1",
-        runAttempt: 1,
-        slug: "owner/repo",
-        runGh: async () => JSON.stringify({ artifacts: [] }),
-      }),
-    /no checkout-identity artifact/,
-  );
-
-  await assert.rejects(
-    () =>
-      fetchCheckoutIdentityArtifact({
-        repoRoot,
-        runId: "1",
-        runAttempt: 1,
-        slug: "owner/repo",
-        runGh: async () =>
-          JSON.stringify({
-            artifacts: [
-              { id: 1, name: "checkout-identity-1-1" },
-              { id: 2, name: "checkout-identity-1-1" },
-            ],
-          }),
-      }),
-    /exactly one checkout-identity artifact/,
-  );
-
-  const badTree = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+test("Full CI checkout artifact remains candidate-bound", async () => {
+  const mismatched = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+    fullCiContract: fullCiContractWithCheckout,
     fetchRun: async () => githubRunPayload(),
     fetchCheckoutIdentity: async () =>
-      fetchCheckoutIdentityArtifact({
-        repoRoot,
-        runId: "999",
-        runAttempt: 1,
-        slug: "owner/repo",
-        runGh: async (command, args) => {
-          if (args[0] === "api") {
-            return JSON.stringify({
-              artifacts: [{ id: 7, name: "checkout-identity-999-1" }],
-            });
-          }
-          const dir = args[args.indexOf("--dir") + 1];
-          await writeFile(
-            path.join(dir, "checkout-identity.json"),
-            JSON.stringify({
-              commitSha: candidate.commitSha,
-              treeSha: "c".repeat(40),
-            }),
-            "utf8",
-          );
-          return "";
-        },
-      }),
-    fullCiContract: fullCiContractWithCheckout,
+      checkoutIdentity({ treeSha: "f".repeat(40) }),
   });
-  assert.equal(badTree.ok, false);
-  assert.match(badTree.message, /checkout-identity treeSha/);
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.message, /checkout-identity treeSha/i);
+
+  const verified = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+    fullCiContract: fullCiContractWithCheckout,
+    fetchRun: async () => githubRunPayload(),
+    fetchCheckoutIdentity: async () => checkoutIdentity(),
+  });
+  assert.equal(verified.ok, true, verified.message);
+  assert.equal(verified.checkoutArtifactId, 12345);
+  assert.equal(verified.checkoutArtifactRunAttempt, 1);
+  assert.equal(verified.checkoutCommitSha, candidate.commitSha);
+  assert.equal(verified.checkoutTreeSha, candidate.treeSha);
 });
 
-test("listRunArtifacts paginates with per_page=100", async () => {
+test("checkout identity selection follows failed-only rerun semantics", () => {
+  const artifacts = [
+    { id: 1, name: "checkout-identity-88-1" },
+    { id: 2, name: "checkout-identity-88-2" },
+    { id: 3, name: "checkout-identity-88-3" },
+    { id: 4, name: "checkout-identity-99-2" },
+  ];
+
+  const exact = selectCheckoutIdentityArtifact({
+    artifacts,
+    runId: "88",
+    runAttempt: 2,
+  });
+  assert.equal(exact.artifact.id, 2);
+  assert.equal(exact.artifactRunAttempt, 2);
+
+  const carriedForward = selectCheckoutIdentityArtifact({
+    artifacts: artifacts.filter((artifact) => artifact.id !== 2),
+    runId: "88",
+    runAttempt: 2,
+  });
+  assert.equal(carriedForward.artifact.id, 1);
+  assert.equal(carriedForward.artifactRunAttempt, 1);
+
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [{ id: 3, name: "checkout-identity-88-3" }],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /at or before attempt 2/i,
+  );
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [
+          { id: 1, name: "checkout-identity-88-1" },
+          { id: 2, name: "checkout-identity-88-1" },
+        ],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /exactly one.*attempt 1/i,
+  );
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [{ id: 1, name: "checkout-identity-88-1", expired: true }],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /unexpired/i,
+  );
+});
+
+test("checkout artifact download is exact and paginated", async () => {
+  const args = buildGhRunDownloadArgs({
+    runId: "88",
+    slug: "owner/repo",
+    artifactName: checkoutIdentityArtifactName("88", 1),
+    dir: "/tmp/out",
+  });
+  assert.deepEqual(args.slice(0, 3), ["run", "download", "88"]);
+  assert.equal(args.includes("--output"), false);
+  assert.ok(args.includes("checkout-identity-88-1"));
+
+  const calls = [];
+  const downloaded = await fetchCheckoutIdentityArtifact({
+    repoRoot,
+    runId: "88",
+    runAttempt: 2,
+    slug: "owner/repo",
+    runGh: async (_command, ghArgs) => {
+      calls.push([...ghArgs]);
+      if (ghArgs[0] === "api") {
+        return JSON.stringify({
+          artifacts: [{ id: 42, name: "checkout-identity-88-1" }],
+        });
+      }
+      const dir = ghArgs[ghArgs.indexOf("--dir") + 1];
+      await writeFile(
+        path.join(dir, "checkout-identity.json"),
+        `${JSON.stringify({
+          commitSha: candidate.commitSha,
+          treeSha: candidate.treeSha,
+        })}\n`,
+        "utf8",
+      );
+      return "";
+    },
+  });
+  assert.equal(downloaded.artifactId, 42);
+  assert.equal(downloaded.artifactRunAttempt, 1);
+  assert.match(downloaded.artifactDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.ok(calls.some((call) => call[0] === "run"));
+
   const pages = [];
   const artifacts = await listRunArtifacts({
     slug: "owner/repo",
-    runId: "55",
+    runId: "88",
     repoRoot,
-    runGh: async (_command, args) => {
-      pages.push(String(args[1]));
-      const page = Number(
-        new URLSearchParams(String(args[1]).split("?")[1]).get("page"),
-      );
-      if (page === 1) {
-        return JSON.stringify({
-          artifacts: Array.from({ length: 100 }, (_, index) => ({
-            id: index + 1,
-            name: `artifact-${index + 1}`,
-          })),
-        });
-      }
+    runGh: async (_command, ghArgs) => {
+      const query = String(ghArgs[1]);
+      pages.push(query);
+      const page = Number(new URLSearchParams(query.split("?")[1]).get("page"));
       return JSON.stringify({
-        artifacts: [{ id: 101, name: "checkout-identity-55-1" }],
+        artifacts:
+          page === 1
+            ? Array.from({ length: 100 }, (_, index) => ({
+                id: index + 1,
+                name: `artifact-${index + 1}`,
+              }))
+            : [{ id: 101, name: "checkout-identity-88-1" }],
       });
     },
   });
   assert.equal(artifacts.length, 101);
   assert.ok(pages[0].includes("per_page=100"));
-  assert.ok(pages[0].includes("page=1"));
   assert.ok(pages[1].includes("page=2"));
 });
 
-test("journey evidence requires candidate binding and assertions", () => {
-  const forged = validateJourneyEvidence(
-    { result: "passed", passed: true },
-    { journeyId: "prepared-plan-toctou", candidate },
-  );
-  assert.equal(forged.ok, false);
-
-  const ok = validateJourneyEvidence(
-    {
-      schemaVersion: 1,
-      journeyId: "prepared-plan-toctou",
-      candidateCommitSha: candidate.commitSha,
-      candidateTreeSha: candidate.treeSha,
-      runnerId: "manual",
-      runnerVersion: "1",
-      environmentDigest: `sha256:${"c".repeat(64)}`,
-      assertions: [{ id: "source-changed", passed: true }],
-      result: "passed",
-      startedAt: "2026-01-01T00:00:00.000Z",
-      completedAt: "2026-01-01T00:01:00.000Z",
-    },
-    { journeyId: "prepared-plan-toctou", candidate },
-  );
-  assert.equal(ok.ok, true);
-});
-
-test("journey contract mismatch rejects forged runner metadata", () => {
-  const contract = {
-    runnerId: "gate-b2-journey-runner",
-    runnerVersion: "2",
-    requiredAssertions: ["source-changed", "plan-bound"],
+test("Journey and Heavy evidence must bind the frozen candidate", () => {
+  const journeyContract = {
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    requiredAssertions: ["assertion-a"],
   };
-  const mismatch = validateJourneyEvidence(
-    {
-      schemaVersion: 1,
-      journeyId: "prepared-plan-toctou",
-      candidateCommitSha: candidate.commitSha,
-      candidateTreeSha: candidate.treeSha,
-      runnerId: "manual",
-      runnerVersion: "1",
-      environmentDigest: `sha256:${"c".repeat(64)}`,
-      assertions: [{ id: "source-changed", passed: true }],
-      result: "passed",
-      startedAt: "2026-01-01T00:00:00.000Z",
-      completedAt: "2026-01-01T00:01:00.000Z",
-    },
-    { journeyId: "prepared-plan-toctou", candidate, contract },
-  );
-  assert.equal(mismatch.ok, false);
-  assert.match(mismatch.message, /runnerId/);
-
-  const ok = validateJourneyEvidence(
-    {
-      schemaVersion: 1,
-      journeyId: "prepared-plan-toctou",
-      candidateCommitSha: candidate.commitSha,
-      candidateTreeSha: candidate.treeSha,
-      runnerId: contract.runnerId,
-      runnerVersion: contract.runnerVersion,
-      environmentDigest: `sha256:${"c".repeat(64)}`,
-      assertions: contract.requiredAssertions.map((id) => ({
-        id,
-        passed: true,
-      })),
-      result: "passed",
-      startedAt: "2026-01-01T00:00:00.000Z",
-      completedAt: "2026-01-01T00:01:00.000Z",
-    },
-    { journeyId: "prepared-plan-toctou", candidate, contract },
-  );
-  assert.equal(ok.ok, true);
-});
-
-test("chronicle report must bind candidate metadata and remain 14/14 eligible", () => {
+  const journey = {
+    schemaVersion: 2,
+    journeyId: "journey-a",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    environmentDigest: digest,
+    commandDigest: digest,
+    runnerArtifactDigest: digest,
+    assertions: [{ id: "assertion-a", passed: true }],
+    result: "passed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    artifactDigests: [digest],
+  };
   assert.equal(
-    validateChronicleProductionReport(
-      {
-        attempt: 1,
-        caseCount: 14,
-        certificationEligible: false,
-      },
+    validateJourneyEvidence(journey, {
+      journeyId: "journey-a",
       candidate,
-      heavyExpected,
+      contract: journeyContract,
+      expected: {
+        freezeId: "freeze-1",
+        certificationRunId: "cert-1",
+        environmentDigest: digest,
+        commandDigest: digest,
+        runnerArtifactDigest: digest,
+      },
+    }).ok,
+    true,
+  );
+  assert.equal(
+    validateJourneyEvidence(
+      { ...journey, candidateTreeSha: "f".repeat(40) },
+      { journeyId: "journey-a", candidate, contract: journeyContract },
     ).ok,
     false,
   );
+
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+  };
+  const chronicle = {
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    suiteId: expected.suiteId,
+    runId: expected.runId,
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    caseCount: 14,
+    certificationEligible: true,
+  };
   assert.equal(
-    validateChronicleProductionReport(
-      validHeavyReport(),
-      candidate,
-      heavyExpected,
-    ).ok,
+    validateChronicleProductionReport(chronicle, candidate, expected).ok,
     true,
   );
   assert.equal(
     validateChronicleProductionReport(
-      validHeavyReport({ candidateCommitSha: "c".repeat(40) }),
+      { ...chronicle, attempt: 2 },
       candidate,
-      heavyExpected,
+      expected,
     ).ok,
     false,
   );
-});
 
-test("consent report requires observed teardown flags and binding metadata", () => {
-  const consentExpected = {
-    ...heavyExpected,
-    suiteId: "heavy-web-ai-consent-live",
+  const browser = {
+    ...chronicle,
+    suiteId: "heavy-web-ai-consent-browser-live",
+    mode: "web-ai-consent-browser-live",
+    browser: {
+      realBrowser: true,
+      provider: "@vitest/browser-playwright",
+      engine: "chromium",
+    },
+    requestCountBeforeConsent: 0,
+    requestCountAfterRefuse: 0,
+    requestCountAfterApprove: 1,
+    requestCountAfterDestinationChangeRefuse: 1,
+    providerRequestCount: 1,
+    assertions: [
+      "refusal-before-provider-is-zero-http",
+      "approval-dispatches-provider-http",
+      "destination-change-requires-fresh-consent",
+      "indexeddb-and-localstorage-are-cleared",
+      "browser-mock-is-closed-before-evidence",
+    ],
+    teardown: {
+      serverClosed: true,
+      evidenceServerClosed: true,
+      localStorageCleared: true,
+      indexedDbCleared: true,
+      consentBrokerDeclined: true,
+      browserMockClosed: true,
+    },
   };
   assert.equal(
-    validateWebAiConsentReport(
-      {
-        certificationEligible: true,
-        teardown: { serverClosed: false, localStorageCleared: true },
-      },
-      consentExpected,
-    ).ok,
-    false,
-  );
-  assert.equal(
-    validateWebAiConsentReport(
-      {
-        ...validHeavyReport({ suiteId: consentExpected.suiteId }),
-        teardown: { serverClosed: true, localStorageCleared: true },
-      },
-      consentExpected,
-    ).ok,
+    validateWebAiConsentBrowserReport(browser, {
+      ...expected,
+      suiteId: browser.suiteId,
+    }).ok,
     true,
-  );
-  assert.equal(
-    validateWebAiConsentReport(
-      {
-        ...validHeavyReport({
-          suiteId: consentExpected.suiteId,
-          runId: "wrong",
-        }),
-        teardown: { serverClosed: true, localStorageCleared: true },
-      },
-      consentExpected,
-    ).ok,
-    false,
   );
 });
 
-test("decision document includes suiteSummaries and digests", () => {
-  const doc = buildDecisionDocument({
+test("Decision contains only current suite attempts and GitHub authority", async () => {
+  const digests = {
+    writerRegistryDigest: digest,
+    aiPathRegistryDigest: digest,
+    qualityManifestDigest: digest,
+    narrativeEvalManifestDigest: digest,
+    adrChecklistDigest: digest,
+    classificationDigest: digest,
+  };
+  const suites = [
+    {
+      suiteId: "light-a",
+      bucket: "requiredLight",
+      attempt: 1,
+      result: "passed",
+      message: "passed",
+    },
+  ];
+  const decision = buildDecisionDocument({
+    candidate,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    verdict: "PASS",
+    reasons: ["passed"],
+    suites,
+    reportDigest: digest,
+    digests,
+  });
+  assert.deepEqual(decision.suiteAttempts, [
+    {
+      suiteId: "light-a",
+      bucket: "requiredLight",
+      attempt: 1,
+      result: "passed",
+      message: "passed",
+    },
+  ]);
+  assert.equal(decision.attemptAuthority.runId, "9001");
+  assert.equal(decision.contractVersion, 8);
+  assert.deepEqual(decision.assuranceScope, {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  });
+
+  const schema = JSON.parse(
+    await readFile(
+      path.join(
+        repoRoot,
+        "evals/certifications/schemas/gate-b2-decision-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(validateJsonAgainstSchema(decision, schema).ok, true);
+  const unbound = {
+    ...decision,
+    attemptAuthority: getGateB2GithubAttemptIdentity(),
+  };
+  assert.equal(validateJsonAgainstSchema(unbound, schema).ok, false);
+});
+
+test("freeze and harness digests are fixed to contract v8 authority", () => {
+  const harness = Object.fromEntries(
+    Object.keys(HARNESS_DIGEST_PATHS).map((key) => [key, digest]),
+  );
+  assert.deepEqual(assertDigestsMatchFreeze(harness, harness), []);
+  assert.match(
+    assertDigestsMatchFreeze(
+      { ...harness, attemptWorkflowDigest: `sha256:${"e".repeat(64)}` },
+      harness,
+    ).join("\n"),
+    /attemptWorkflowDigest/,
+  );
+
+  const authority = getGateB2GithubAttemptIdentity();
+  const freeze = {
+    contractVersion: GATE_B2_CONTRACT_VERSION,
+    gateId: "gate-b2",
+    status: "active",
+    freezeId: "freeze-1",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    productSchemaVersion: 20,
+    attemptAuthority: authority,
     candidate: {
       commitSha: candidate.commitSha,
       treeSha: candidate.treeSha,
-      baseMasterSha: "c".repeat(40),
+      schemaVersion: 20,
+      attemptAuthority: authority,
     },
-    verdict: "INCOMPLETE",
-    reasons: ["x"],
-    suites: [
-      { bucket: "requiredLight", result: "not-run", attempt: 1, suiteId: "a" },
-      { bucket: "requiredHeavy", result: "blocked", attempt: 1, suiteId: "b" },
-    ],
-    reportDigest: `sha256:${"d".repeat(64)}`,
-    digests: {
-      writerRegistryDigest: `sha256:${"e".repeat(64)}`,
-      aiPathRegistryDigest: `sha256:${"f".repeat(64)}`,
-      qualityManifestDigest: `sha256:${"1".repeat(64)}`,
-      narrativeEvalManifestDigest: `sha256:${"2".repeat(64)}`,
-      adrChecklistDigest: `sha256:${"3".repeat(64)}`,
-      classificationDigest: `sha256:${"4".repeat(64)}`,
-    },
-  });
-  assert.equal(doc.suiteSummaries.requiredLight.notRun, 1);
-  assert.equal(doc.suiteSummaries.requiredHeavy.blocked, 1);
-  assert.match(doc.digests.reportDigest, /^sha256:/);
-});
-
-test("assertDigestsMatchFreeze detects input and harness drift", () => {
-  const digest = `sha256:${"a".repeat(64)}`;
-  const freezeCandidate = {
-    writerRegistryDigest: digest,
-    certificationManifestDigest: digest,
-    certifyRunnerDigest: digest,
-    certifyBindingsDigest: digest,
-    adrValidatorDigest: digest,
-    reportSchemaDigest: digest,
-    decisionSchemaDigest: digest,
-    journeySchemaDigest: digest,
-    chronicleAdapterDigest: digest,
-    chronicleScorerDigest: digest,
-    webConsentJourneyDigest: digest,
   };
-  const drift = assertDigestsMatchFreeze(
-    {
-      writerRegistryDigest: `sha256:${"b".repeat(64)}`,
-      certificationManifestDigest: digest,
-    },
-    freezeCandidate,
-  );
-  assert.ok(drift.some((error) => error.startsWith("writerRegistryDigest:")));
-
-  const harnessDrift = assertDigestsMatchFreeze(
-    {
-      writerRegistryDigest: digest,
-      certificationManifestDigest: `sha256:${"c".repeat(64)}`,
-      certifyRunnerDigest: digest,
-      certifyBindingsDigest: digest,
-      adrValidatorDigest: digest,
-      reportSchemaDigest: digest,
-      decisionSchemaDigest: digest,
-      journeySchemaDigest: digest,
-      chronicleAdapterDigest: digest,
-      chronicleScorerDigest: digest,
-      webConsentJourneyDigest: digest,
-    },
-    freezeCandidate,
-  );
-  assert.ok(
-    harnessDrift.some((error) =>
-      error.startsWith("certificationManifestDigest:"),
-    ),
+  assert.doesNotThrow(() => assertFreezeActive(freeze));
+  assert.throws(
+    () =>
+      assertFreezeActive({
+        ...freeze,
+        candidate: {
+          ...freeze.candidate,
+          attemptAuthority: { ...authority, repository: "other/repo" },
+        },
+      }),
+    /GitHub Actions attempt authority/i,
   );
 });
 
-test("assertDigestsMatchFreeze errors on missing harness digests and contractVersion", () => {
-  const digest = `sha256:${"a".repeat(64)}`;
-  const missingHarness = assertDigestsMatchFreeze(
-    { writerRegistryDigest: digest },
-    { writerRegistryDigest: digest },
-    { contractVersion: GATE_B2_CONTRACT_VERSION - 1 },
-  );
-  assert.ok(
-    missingHarness.some((error) => error.startsWith("contractVersion:")),
-  );
-  assert.ok(
-    missingHarness.some((error) =>
-      error.startsWith("certificationManifestDigest: missing in freeze"),
-    ),
-  );
-  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 11);
-  assert.equal(
-    HARNESS_DIGEST_PATHS.certifyBootstrapDigest,
-    "scripts/quality/certify-gate-b2-bootstrap.mjs",
-  );
-});
-
-test("assertFreezeActive rejects superseded freeze", () => {
+test("freeze validation fails closed for supersession and missing harness digests", () => {
   assert.throws(
     () =>
       assertFreezeActive({
@@ -725,17 +667,112 @@ test("assertFreezeActive rejects superseded freeze", () => {
       }),
     /superseded/i,
   );
+
+  const failures = assertDigestsMatchFreeze(
+    { writerRegistryDigest: digest },
+    { writerRegistryDigest: digest },
+    { contractVersion: GATE_B2_CONTRACT_VERSION - 1 },
+  );
+  assert.ok(failures.some((error) => error.startsWith("contractVersion:")));
+  assert.ok(
+    failures.some((error) =>
+      error.startsWith("certificationManifestDigest: missing in freeze"),
+    ),
+  );
+  assert.equal(
+    HARNESS_DIGEST_PATHS.attemptWorkflowDigest,
+    ".github/workflows/gate-b2-certification.yml",
+  );
 });
 
-test("prepareWorktreeDependencies rejects lockfile mismatch", async () => {
+test("Journey and consent validation reject forged metadata", () => {
+  const journeyContract = {
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    requiredAssertions: ["assertion-a"],
+  };
+  const baseJourney = {
+    schemaVersion: 2,
+    journeyId: "journey-a",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    environmentDigest: digest,
+    commandDigest: digest,
+    runnerArtifactDigest: digest,
+    assertions: [{ id: "assertion-a", passed: true }],
+    result: "passed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    artifactDigests: [digest],
+  };
+  const forgedJourney = validateJourneyEvidence(
+    { ...baseJourney, runnerId: "forged-runner" },
+    {
+      journeyId: "journey-a",
+      candidate,
+      contract: journeyContract,
+      expected: {
+        freezeId: "freeze-1",
+        certificationRunId: "cert-1",
+        environmentDigest: digest,
+        commandDigest: digest,
+        runnerArtifactDigest: digest,
+      },
+    },
+  );
+  assert.equal(forgedJourney.ok, false);
+  assert.match(forgedJourney.message, /runnerId/i);
+
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-web-ai-consent-live",
+    runId: "run-1",
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+  };
+  const consent = {
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    suiteId: expected.suiteId,
+    runId: expected.runId,
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    certificationEligible: true,
+    teardown: { serverClosed: true, localStorageCleared: true },
+  };
+  assert.equal(validateWebAiConsentReport(consent, expected).ok, true);
+  assert.equal(
+    validateWebAiConsentReport(
+      {
+        ...consent,
+        teardown: { ...consent.teardown, serverClosed: false },
+      },
+      expected,
+    ).ok,
+    false,
+  );
+});
+
+test("detached worktree dependency preparation rejects lockfile drift", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-deps-"));
-  const repoRoot = path.join(temp, "repo");
+  const sourceRoot = path.join(temp, "source");
   const executionRoot = path.join(temp, "execution");
-  await mkdir(repoRoot, { recursive: true });
+  await mkdir(sourceRoot, { recursive: true });
   await mkdir(executionRoot, { recursive: true });
   try {
     await writeFile(
-      path.join(repoRoot, "pnpm-lock.yaml"),
+      path.join(sourceRoot, "pnpm-lock.yaml"),
       "lockfileVersion: 9\n",
       "utf8",
     );
@@ -745,98 +782,21 @@ test("prepareWorktreeDependencies rejects lockfile mismatch", async () => {
       "utf8",
     );
     await assert.rejects(
-      () => prepareWorktreeDependencies({ repoRoot, executionRoot }),
-      /pnpm-lock.yaml digest mismatch/,
+      () =>
+        prepareWorktreeDependencies({
+          repoRoot: sourceRoot,
+          executionRoot,
+        }),
+      /pnpm-lock.yaml digest mismatch/i,
+    );
+    assert.deepEqual(
+      await prepareWorktreeDependencies({
+        repoRoot: sourceRoot,
+        executionRoot: sourceRoot,
+      }),
+      { mode: "in-place" },
     );
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
 });
-
-test("prepareWorktreeDependencies returns in-place for same root", async () => {
-  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-same-"));
-  try {
-    const result = await prepareWorktreeDependencies({
-      repoRoot: temp,
-      executionRoot: temp,
-    });
-    assert.deepEqual(result, { mode: "in-place" });
-  } finally {
-    await rm(temp, { recursive: true, force: true });
-  }
-});
-
-test(
-  "prepareWorktreeDependencies installs workspace deps under executionRoot in detached worktree",
-  {
-    skip:
-      process.env.GATE_B2_WORKTREE_INSTALL_SMOKE === "0"
-        ? "set GATE_B2_WORKTREE_INSTALL_SMOKE=1 or unset to enable"
-        : false,
-  },
-  async () => {
-    const { spawn } = await import("node:child_process");
-    const { realpathSync } = await import("node:fs");
-
-    const headSha = await new Promise((resolve, reject) => {
-      const child = spawn("git", ["rev-parse", "HEAD"], {
-        cwd: repoRoot,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const stdout = [];
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.on("error", reject);
-      child.on("exit", (code) => {
-        if (code !== 0) reject(new Error("git rev-parse HEAD failed"));
-        else resolve(Buffer.concat(stdout).toString("utf8").trim());
-      });
-    });
-
-    const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-install-"));
-    const worktreePath = path.join(temp, "tree");
-    try {
-      await new Promise((resolve, reject) => {
-        const child = spawn(
-          "git",
-          ["worktree", "add", "--detach", worktreePath, headSha],
-          { cwd: repoRoot, stdio: "inherit" },
-        );
-        child.on("error", reject);
-        child.on("exit", (code) => {
-          if (code !== 0) reject(new Error("git worktree add failed"));
-          else resolve();
-        });
-      });
-
-      const prepared = await prepareWorktreeDependencies({
-        repoRoot,
-        executionRoot: worktreePath,
-      });
-      assert.ok(
-        prepared.mode === "offline-install" ||
-          prepared.mode === "online-install",
-      );
-      assert.match(prepared.lockfileDigest, /^sha256:/);
-
-      const resolved = realpathSync(
-        path.join(worktreePath, "node_modules", "@grimodex", "scan-core"),
-      );
-      const resolvedRoot = realpathSync(worktreePath);
-      assert.ok(
-        resolved.startsWith(`${resolvedRoot}${path.sep}`) ||
-          resolved === resolvedRoot,
-        `scan-core resolved outside executionRoot: ${resolved}`,
-      );
-    } finally {
-      await new Promise((resolve) => {
-        const child = spawn(
-          "git",
-          ["worktree", "remove", "--force", worktreePath],
-          { cwd: repoRoot, stdio: "inherit" },
-        );
-        child.on("exit", () => resolve());
-      });
-      await rm(temp, { recursive: true, force: true });
-    }
-  },
-);

@@ -1,6 +1,6 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
+    CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
     UndoCommitPayload,
 };
 use grimodex_db::{
@@ -30,6 +30,24 @@ fn migrated_db() -> Database {
     )
     .expect("insert project");
     db
+}
+
+fn test_envelope(run_id: &str, task_id: &str) -> Value {
+    let source_key = format!("snapshot:{run_id}");
+    let read_set = json!([{
+        "inputRef": source_key,
+        "kind": "snapshot-document",
+        "revisionToken": "revision-1"
+    }]);
+    json!({
+        "schemaVersion": 1, "runId": run_id, "taskId": task_id,
+        "reconcilerId": "test.reconciler", "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "narrative.test", "proposalSchemaVersion": "1",
+        "sourceBasis": [{"sourceKind":"snapshot-document","sourceKey":source_key,"revisionToken":"revision-1"}],
+        "evidenceSet": [], "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
+        "changeKind": "add"
+    })
 }
 
 fn seed_scene(db: &Database, scene_id: &str, title: &str) {
@@ -71,11 +89,16 @@ fn seed_approved_proposals(
             scope_json: json!({}),
             spec_json: json!({ "domain": "foreshadow" }),
             spec_digest: "spec".to_string(),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -88,6 +111,7 @@ fn seed_approved_proposals(
             proposal_key: format!("{run_id}-key-{index}"),
             kind: (*kind).to_string(),
             payload_json: payload.clone(),
+            reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
         })
         .collect();
 
@@ -108,7 +132,7 @@ fn seed_approved_proposals(
     for proposal in saved["proposals"].as_array().expect("proposals") {
         let proposal_id = proposal["proposalId"].as_str().unwrap().to_string();
         let revision_id = proposal["revisionId"].as_str().unwrap().to_string();
-        narrative_extraction::narrative_extraction_append_decision(
+        narrative_extraction::narrative_extraction_append_human_decision(
             db,
             AppendDecisionPayload {
                 run_id: run_id.to_string(),

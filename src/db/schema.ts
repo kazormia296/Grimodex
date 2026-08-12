@@ -2317,9 +2317,96 @@ export const narrativeProposalRevisions = sqliteTable(
     // SCHEMA_VERSION 15: sealed plan fragment for Prepared Commit.
     planFragmentJson: text("plan_fragment_json"),
     planFragmentDigest: text("plan_fragment_digest"),
+    // SCHEMA_VERSION 17: immutable Proposal Revision Envelope binding.
+    originKind: text("origin_kind").notNull().default("legacy-unbound"),
+    reconciliationEnvelopeJson: text("reconciliation_envelope_json"),
+    reconciliationEnvelopeDigest: text("reconciliation_envelope_digest"),
     createdAt: text("created_at").notNull(),
     createdBy: text("created_by").notNull(),
   },
+);
+
+export const narrativeRevisionSourceBasis = sqliteTable(
+  "narrative_revision_source_basis",
+  {
+    revisionId: text("revision_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceKey: text("source_key").notNull(),
+    revisionToken: text("revision_token").notNull(),
+    observedAt: text("observed_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.revisionId, table.ordinal] }),
+    uniqueIndex("uq_narrative_revision_source_basis_key").on(
+      table.revisionId,
+      table.sourceKey,
+    ),
+  ],
+);
+
+// SCHEMA_VERSION 19: Native-owned field authority rows. These are logical
+// ownership records, not foreign-key projections of domain entities.
+export const narrativeFieldAuthority = sqliteTable(
+  "narrative_field_authority",
+  {
+    projectId: text("project_id").notNull(),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    fieldPath: text("field_path").notNull(),
+    ownerKind: text("owner_kind").notNull(),
+    explicitLock: integer("explicit_lock").notNull().default(0),
+    version: integer("version").notNull().default(0),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.projectId,
+        table.entityKind,
+        table.entityId,
+        table.fieldPath,
+      ],
+    }),
+    index("idx_narrative_field_authority_entity").on(
+      table.projectId,
+      table.entityKind,
+      table.entityId,
+    ),
+  ],
+);
+
+// SCHEMA_VERSION 18: Application source dependencies are freshness-only
+// records; they deliberately do not reference source/domain rows by FK.
+export const narrativeProjectionFreshness = sqliteTable(
+  "narrative_projection_freshness",
+  {
+    applicationId: text("application_id").primaryKey(),
+    status: text("status").notNull(),
+    reasonJson: text("reason_json"),
+    version: integer("version").notNull().default(0),
+    updatedAt: text("updated_at").notNull(),
+  },
+);
+
+export const narrativeProjectionDependencies = sqliteTable(
+  "narrative_projection_dependencies",
+  {
+    applicationId: text("application_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceKey: text("source_key").notNull(),
+    observedRevisionToken: text("observed_revision_token").notNull(),
+    propagation: text("propagation").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.applicationId, table.sourceKind, table.sourceKey],
+    }),
+    index("idx_narrative_projection_dependencies_source").on(
+      table.sourceKind,
+      table.sourceKey,
+    ),
+  ],
 );
 
 export const narrativeProposalDecisions = sqliteTable(
@@ -2332,6 +2419,12 @@ export const narrativeProposalDecisions = sqliteTable(
     decisionJson: text("decision_json").notNull().default("{}"),
     createdAt: text("created_at").notNull(),
     createdBy: text("created_by").notNull(),
+    actorKind: text("actor_kind").notNull().default("human"),
+    actorId: text("actor_id").notNull().default("legacy-review"),
+    authorityScope: text("authority_scope").notNull().default("legacy-review"),
+    overrideFieldPathsJson: text("override_field_paths_json")
+      .notNull()
+      .default("[]"),
   },
 );
 
@@ -2383,6 +2476,10 @@ export const narrativeProposalApplications = sqliteTable(
     appliedEntityKind: text("applied_entity_kind").notNull(),
     appliedEntityId: text("applied_entity_id").notNull(),
     createdAt: text("created_at").notNull(),
+    // SCHEMA_VERSION 20: semantic retractions append compensating applications;
+    // the compensated application remains immutable history.
+    applicationKind: text("application_kind").notNull().default("normal"),
+    compensatesApplicationId: text("compensates_application_id"),
   },
 );
 

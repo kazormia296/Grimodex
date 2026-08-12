@@ -204,6 +204,107 @@ fn write_result(entity_id: String, version: i64, change_event_uid: String) -> Va
     })
 }
 
+fn record_manual_mutation_fields(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    operation: &str,
+    entity_id: &str,
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    // `surface` is the trusted route selector for this legacy command. AI/MCP
+    // callers may reuse the mutation implementation, but they must not become
+    // human owners merely by writing a renderer-controlled field.
+    if payload.surface.as_deref() != Some("manual") {
+        return Ok(());
+    }
+    match operation {
+        "relation.create" | "relation.delete" => crate::narrative_extraction::record_human_field_write(
+            conn,
+            &payload.project_id,
+            "codex-relation",
+            entity_id,
+            &[
+                "/fromCodexId",
+                "/toCodexId",
+                "/relationType",
+                "/directionality",
+                "/forwardLabel",
+                "/inverseLabel",
+                "/semanticKey",
+            ],
+            updated_at,
+        ),
+        "phase.create" | "phase.update" | "phase.aggregate" | "phase.delete" => {
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "codex-phase",
+                entity_id,
+                &[
+                    "/label",
+                    "/anchorNodeId",
+                    "/summaryOverride",
+                    "/contentOverride",
+                    "/contextModeOverride",
+                    "/detailOverrides",
+                ],
+                updated_at,
+            )
+        }
+        "detail.definition.create" | "detail.definition.update" | "detail.definition.delete" => {
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "codex-detail-definition",
+                entity_id,
+                &[
+                    "/typeSlug",
+                    "/name",
+                    "/fieldType",
+                    "/fieldConfig",
+                    "/sortOrder",
+                    "/includeInContext",
+                ],
+                updated_at,
+            )?;
+            if let Some(binding) = payload.fields.get("semanticBinding").and_then(Value::as_object)
+            {
+                if let Some(binding_id) = binding.get("id").and_then(Value::as_str) {
+                    crate::narrative_extraction::record_human_field_write(
+                        conn,
+                        &payload.project_id,
+                        "codex-detail-semantic-binding",
+                        binding_id,
+                        &[
+                            "/definitionId",
+                            "/facetKey",
+                            "/projectionKind",
+                            "/temporalPolicy",
+                            "/source",
+                            "/confirmed",
+                        ],
+                        updated_at,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        "detail.value.upsert" => {
+            let definition_id = required_string(&payload.fields, "definitionId")?;
+            let path = format!("/details/{definition_id}");
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "codex-entry",
+                &required_string(&payload.fields, "entryId")?,
+                &[path.as_str()],
+                updated_at,
+            )
+        }
+        other => anyhow::bail!("unsupported manual Codex authority operation '{other}'"),
+    }
+}
+
 fn run_mutation<F>(
     db: &Database,
     payload: AgentCodexMutationPayload,
@@ -223,12 +324,14 @@ where
     );
     let event_uid = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now().to_rfc3339();
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Value> {
             let (entity_id, version) = mutate(conn, &payload, &event_uid)?;
+            record_manual_mutation_fields(conn, &payload, operation, &entity_id, &now)?;
             append_change_events_in_tx(
                 conn,
                 &payload.project_id,

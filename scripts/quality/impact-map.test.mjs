@@ -23,6 +23,26 @@ test("the AI routing light suite executes browser transport contracts", () => {
   assert.match(commandText, /test:cloudflare-editor-deploy/);
 });
 
+test("Windows command runners invoke pnpm shims directly", async () => {
+  const [impactSource, evaluationRuntimeSource, certifySource] =
+    await Promise.all([
+      readFile(new URL("./impact-map.mjs", import.meta.url), "utf8"),
+      readFile(
+        new URL("./quality-evaluation-runtime.mjs", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("./certify-gate-b2.mjs", import.meta.url), "utf8"),
+    ]);
+  assert.match(impactSource, /pnpm\.cmd/);
+  assert.match(evaluationRuntimeSource, /pnpm\.cmd/);
+  assert.doesNotMatch(impactSource, /process\.env\.ComSpec/);
+  assert.doesNotMatch(evaluationRuntimeSource, /process\.env\.ComSpec/);
+  assert.doesNotMatch(certifySource, /process\.env\.ComSpec/);
+  assert.doesNotMatch(impactSource, /\["\/d", "\/s", "\/c"/);
+  assert.doesNotMatch(evaluationRuntimeSource, /\["\/d", "\/s", "\/c"/);
+  assert.doesNotMatch(certifySource, /\["\/d", "\/s", "\/c"/);
+});
+
 test("the Narrative Extraction suite executes the deterministic Human Gold gate", () => {
   const commandText = JSON.stringify(
     LIGHT_SUITE_DEFINITIONS["narrative-extraction"].commands,

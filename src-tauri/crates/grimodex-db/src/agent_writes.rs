@@ -141,6 +141,107 @@ struct AgentWriteResult {
     undo_journal_id: String,
 }
 
+const EVENT_AUTHORITY_FIELDS: &[&str] = &[
+    "/title",
+    "/note",
+    "/detail",
+    "/ordinal",
+    "/primaryCodexId",
+    "/locationCodexId",
+    "/startTime",
+    "/endTime",
+    "/startMinute",
+    "/endMinute",
+    "/startGranularity",
+    "/endGranularity",
+    "/precision",
+    "/kind",
+    "/secret",
+    "/revealSceneId",
+    "/participants",
+    "/sceneIds",
+    "/relations",
+];
+
+fn record_manual_event_fields(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+    surface: Option<&str>,
+    fields: &[&str],
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    if surface != Some("manual") {
+        return Ok(());
+    }
+    crate::narrative_extraction::record_human_field_write(
+        conn,
+        project_id,
+        "event",
+        event_id,
+        fields,
+        updated_at,
+    )
+}
+
+const CODEX_ENTRY_AUTHORITY_FIELDS: &[&str] = &[
+    "/type",
+    "/name",
+    "/summary",
+    "/content",
+    "/aliases",
+    "/excludedAliases",
+    "/readings",
+    "/tagsCache",
+    "/parentId",
+    "/contextMode",
+    "/icon",
+    "/childrenBudget",
+    "/notes",
+];
+
+fn record_manual_codex_entry_fields(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+    surface: Option<&str>,
+    fields: &[&str],
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    if surface != Some("manual") {
+        return Ok(());
+    }
+    crate::narrative_extraction::record_human_field_write(
+        conn,
+        project_id,
+        "codex-entry",
+        entry_id,
+        fields,
+        updated_at,
+    )
+}
+
+fn manual_update_fields(payload: &AgentCodexUpdatePayload) -> Vec<&'static str> {
+    [
+        payload.type_slug.as_ref().map(|_| "/type"),
+        payload.name.as_ref().map(|_| "/name"),
+        payload.summary.as_ref().map(|_| "/summary"),
+        payload.content.as_ref().map(|_| "/content"),
+        payload.aliases.as_ref().map(|_| "/aliases"),
+        payload.excluded_aliases.as_ref().map(|_| "/excludedAliases"),
+        payload.readings.as_ref().map(|_| "/readings"),
+        payload.tags_cache.as_ref().map(|_| "/tagsCache"),
+        payload.parent_id.as_ref().map(|_| "/parentId"),
+        payload.context_mode.as_ref().map(|_| "/contextMode"),
+        payload.icon.as_ref().map(|_| "/icon"),
+        payload.children_budget.as_ref().map(|_| "/childrenBudget"),
+        payload.notes.as_ref().map(|_| "/notes"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 fn idempotency_hash<T: Serialize>(domain: &str, payload: &T) -> anyhow::Result<String> {
     let mut canonical = serde_json::to_value((domain, payload))?;
     canonicalize_json_value(&mut canonical);
@@ -1124,6 +1225,14 @@ pub fn agent_codex_create_impl(
                     write_change_event: true,
                 },
             )?;
+            record_manual_codex_entry_fields(
+                conn,
+                &payload.project_id,
+                &created.entity_id,
+                surface.as_deref(),
+                CODEX_ENTRY_AUTHORITY_FIELDS,
+                &now,
+            )?;
             Ok(AgentWriteResult {
                 entity_id: created.entity_id,
                 version: created.version,
@@ -1159,6 +1268,7 @@ pub fn agent_codex_update_impl(
         conn.execute_batch("BEGIN IMMEDIATE")?;
 
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let manual_fields = manual_update_fields(&payload);
             let patched = apply_codex_entry_patch_in_tx(
                 conn,
                 CodexEntryPatchTxInput {
@@ -1194,6 +1304,14 @@ pub fn agent_codex_update_impl(
                     write_change_event: true,
                     aliases_and_empty_summary_only: false,
                 },
+            )?;
+            record_manual_codex_entry_fields(
+                conn,
+                &payload.project_id,
+                &patched.entity_id,
+                payload.surface.as_deref(),
+                &manual_fields,
+                &now,
             )?;
             Ok(AgentWriteResult {
                 entity_id: patched.entity_id,
@@ -1287,6 +1405,15 @@ pub fn agent_codex_delete_impl(
                     payload: json!({}).to_string(),
                     timestamp,
                 }],
+            )?;
+
+            record_manual_codex_entry_fields(
+                conn,
+                &payload.project_id,
+                &payload.entry_id,
+                payload.surface.as_deref(),
+                CODEX_ENTRY_AUTHORITY_FIELDS,
+                &chrono::Utc::now().to_rfc3339(),
             )?;
 
             Ok(AgentWriteResult {
@@ -4192,6 +4319,15 @@ pub fn agent_event_create_impl(
                 },
             )?;
 
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &created.entity_id,
+                payload.surface.as_deref(),
+                EVENT_AUTHORITY_FIELDS,
+                &now,
+            )?;
+
             Ok(AgentWriteResult {
                 entity_id: created.entity_id,
                 version: created.version,
@@ -4546,6 +4682,15 @@ pub fn agent_event_update_impl(
                 }],
             )?;
 
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+                EVENT_AUTHORITY_FIELDS,
+                &now,
+            )?;
+
             Ok(AgentWriteResult {
                 entity_id: payload.event_id.clone(),
                 version: result_version,
@@ -4573,6 +4718,7 @@ pub fn agent_event_delete_impl(
 ) -> anyhow::Result<Value> {
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
@@ -4659,6 +4805,15 @@ pub fn agent_event_delete_impl(
                     .to_string(),
                     timestamp,
                 }],
+            )?;
+
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+                EVENT_AUTHORITY_FIELDS,
+                &now,
             )?;
 
             Ok(AgentWriteResult {
@@ -4798,6 +4953,15 @@ pub fn agent_event_set_participants_impl(
                 }],
             )?;
 
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+                &["/participants"],
+                &now,
+            )?;
+
             Ok(AgentWriteResult {
                 entity_id: payload.event_id.clone(),
                 version: result_version,
@@ -4830,6 +4994,7 @@ pub fn agent_scene_event_mutate_impl(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
@@ -4991,6 +5156,15 @@ pub fn agent_scene_event_mutate_impl(
                 }],
             )?;
 
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+                &["/sceneIds"],
+                &now,
+            )?;
+
             Ok(AgentWriteResult {
                 entity_id: payload.event_id.clone(),
                 version: event_version,
@@ -5041,6 +5215,7 @@ pub fn agent_scene_event_link_batch_impl(
     let request_hash = scene_event_link_batch_request_hash(&payload)?;
     let undo_id = payload.request_id.clone();
     let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
@@ -5173,6 +5348,15 @@ pub fn agent_scene_event_link_batch_impl(
                 }],
             )?;
 
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+                &["/sceneIds"],
+                &now,
+            )?;
+
             Ok(AgentWriteResult {
                 entity_id: payload.event_id.clone(),
                 version: event_version,
@@ -5205,6 +5389,7 @@ pub fn agent_event_relation_mutate_impl(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
@@ -5343,6 +5528,23 @@ pub fn agent_event_relation_mutate_impl(
                     .to_string(),
                     timestamp,
                 }],
+            )?;
+
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &payload.cause_event_id,
+                payload.surface.as_deref(),
+                &["/relations"],
+                &now,
+            )?;
+            record_manual_event_fields(
+                conn,
+                &payload.project_id,
+                &payload.effect_event_id,
+                payload.surface.as_deref(),
+                &["/relations"],
+                &now,
             )?;
 
             Ok(AgentWriteResult {

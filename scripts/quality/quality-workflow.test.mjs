@@ -53,9 +53,17 @@ test("package scripts expose one canonical quality workflow", async () => {
     packageJson.scripts["certify:gate-b2:freeze"],
     "node scripts/quality/freeze-gate-b2-candidate.mjs",
   );
+  assert.equal(
+    packageJson.scripts["qualify:ai-live"],
+    "node scripts/quality/run-live-model-qualification.mjs",
+  );
   assert.match(
     packageJson.scripts["test:quality"],
     /certify-gate-b2\.test\.mjs/,
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /run-live-model-qualification\.test\.mjs/,
   );
 });
 test("CI runs the diff gate with full history and selected light suites", async () => {

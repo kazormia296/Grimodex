@@ -37,6 +37,7 @@ export default defineConfig({
     setupFiles: ["./src/test-setup-browser.ts"],
     include: ["src/**/*.browser.test.{ts,tsx}"],
     exclude: [
+      "src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx",
       "src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx",
       "src/features/editor/zen/ZenBlurResearchRunner.browser.test.tsx",
       "src/features/editor/zen/ZenShaderResearchRunner.browser.test.tsx",

@@ -25,20 +25,29 @@ const context = {
   reconcilerVersion: "0.1.0",
 };
 
-const sourceBasis = {
-  revisions: [{ sourceKey: "doc/ch1", revisionToken: "rev-3" }],
-};
+const sourceBasis = [
+  {
+    sourceKind: "snapshot-document",
+    sourceKey: "doc/ch1",
+    revisionToken: "rev-3",
+  },
+];
 
 const evidenceReadSet = {
   evidenceSet: [{ evidenceRef: "ev-1", documentRef: "doc/ch1" }],
   readSet: [
-    { inputRef: "doc/ch1", kind: "snapshot-document" as const },
-    { inputRef: "proj-1", kind: "projection" as const },
+    {
+      inputRef: "doc/ch1",
+      kind: "snapshot-document" as const,
+      revisionToken: "snapshot-revision-1",
+    },
+    {
+      inputRef: "proj-1",
+      kind: "projection" as const,
+      revisionToken: "projection-revision-1",
+    },
   ],
-  readSetDigest: {
-    algorithm: "sha256" as const,
-    digest: "sha256:abc" as const,
-  },
+  readSetDigest: "sha256:abc" as const,
 };
 
 describe("NarrativeReconciler contract", () => {
@@ -74,7 +83,10 @@ describe("NarrativeReconciler contract", () => {
   it("builds draft envelopes with source basis, read-set digest, and evidence/read separation", () => {
     const draft = buildProposalDraftEnvelope({
       context,
-      schema: { schemaId: "narrative.proposal", schemaVersion: "1" },
+      schema: {
+        proposalSchemaId: "narrative.proposal",
+        proposalSchemaVersion: "1",
+      },
       proposalKey: "codex.entity:hero",
       kind: "codex.bind-entity@1",
       sourceBasis,
@@ -92,7 +104,11 @@ describe("NarrativeReconciler contract", () => {
       draftId: "draft-1",
       reconcilerId: "maintenance.generic",
       reconcilerVersion: "0.1.0",
-      schemaId: "narrative.proposal",
+      proposalSchemaId: "narrative.proposal",
+      proposalSchemaVersion: "1",
+      schemaVersion: 1,
+      runId: "run-1",
+      taskId: "task-1",
       sourceBasis,
       readSetDigest: evidenceReadSet.readSetDigest,
       propagation: "needs-reconciliation",
@@ -130,7 +146,10 @@ describe("NarrativeReconciler contract", () => {
     const envelope: NarrativeProposalDraftEnvelope = buildProposalDraftEnvelope(
       {
         context,
-        schema: { schemaId: "narrative.proposal", schemaVersion: "1" },
+        schema: {
+          proposalSchemaId: "narrative.proposal",
+          proposalSchemaVersion: "1",
+        },
         proposalKey: "k",
         kind: "test@1",
         sourceBasis,
@@ -172,7 +191,10 @@ describe("NarrativeReconciler contract", () => {
           drafts: [
             buildProposalDraftEnvelope({
               context: input.context,
-              schema: { schemaId: "narrative.proposal", schemaVersion: "1" },
+              schema: {
+                proposalSchemaId: "narrative.proposal",
+                proposalSchemaVersion: "1",
+              },
               proposalKey: stale[0]!,
               kind: "maintenance.reconcile@1",
               sourceBasis: input.projections[0]!.sourceBasis,

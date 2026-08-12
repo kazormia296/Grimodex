@@ -4,9 +4,12 @@ const createRunMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
 const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
+const buildNativeReconciliationEnvelopeMock = vi.hoisted(() => vi.fn());
+const buildSnapshotSourceBasisMock = vi.hoisted(() => vi.fn());
 const appendDecisionMock = vi.hoisted(() => vi.fn());
+const appendHumanDecisionMock = vi.hoisted(() => vi.fn());
 const appendRevisionMock = vi.hoisted(() => vi.fn());
-const reviseAndDecideMock = vi.hoisted(() => vi.fn());
+const reviseAndDecideAsHumanMock = vi.hoisted(() => vi.fn());
 const prepareApplyMock = vi.hoisted(() => vi.fn());
 const claimTaskMock = vi.hoisted(() => vi.fn());
 const finishTaskMock = vi.hoisted(() => vi.fn());
@@ -22,9 +25,12 @@ vi.mock("@/application/narrative-extraction/runRepository", () => ({
 }));
 vi.mock("@/application/narrative-extraction/proposalRepository", () => ({
   saveProposalSet: saveProposalSetMock,
+  buildNativeReconciliationEnvelope: buildNativeReconciliationEnvelopeMock,
+  buildSnapshotSourceBasis: buildSnapshotSourceBasisMock,
   appendDecision: appendDecisionMock,
+  appendHumanDecision: appendHumanDecisionMock,
   appendRevision: appendRevisionMock,
-  reviseAndDecide: reviseAndDecideMock,
+  reviseAndDecideAsHuman: reviseAndDecideAsHumanMock,
 }));
 vi.mock(
   "@/application/narrative-extraction/nativeApi",
@@ -175,6 +181,20 @@ describe("buildCodexStructureCatalogs", () => {
     expect(catalogs.typeCatalog[0]?.ref).toBe("T0001");
     expect(catalogs.typeCatalog[0]?.slug).toBe("character");
   });
+
+  it("uses project-backed custom types in the catalog version vector", () => {
+    const catalogs = buildCodexStructureCatalogs({
+      projectTypes: [
+        { slug: "character", label: "Character" },
+        { slug: "faction", label: "Faction" },
+      ],
+    });
+    expect(catalogs.typeCatalog.map((type) => type.sourceKey)).toEqual([
+      "character",
+      "faction",
+    ]);
+    expect(catalogs.typeCatalog[1]?.expectedVersion).toBe(1);
+  });
 });
 
 describe("buildRelationCoMentionQuote", () => {
@@ -195,18 +215,62 @@ describe("startCodexStructureExtraction product safety", () => {
     getRunMock.mockReset();
     cancelRunMock.mockReset();
     saveProposalSetMock.mockReset();
+    buildNativeReconciliationEnvelopeMock.mockReset();
+    buildSnapshotSourceBasisMock.mockReset();
     claimTaskMock.mockReset();
     finishTaskMock.mockReset();
     failTaskMock.mockReset();
     prepareApplyMock.mockReset();
     appendDecisionMock.mockReset();
+    appendHumanDecisionMock.mockReset();
     appendRevisionMock.mockReset();
-    reviseAndDecideMock.mockReset();
+    reviseAndDecideAsHumanMock.mockReset();
     buildSnapshotMock.mockReset();
     runPrepassMock.mockReset();
+    buildSnapshotSourceBasisMock.mockReturnValue([]);
     buildSnapshotMock.mockResolvedValue({
-      ok: false,
-      diagnostics: [{ code: "SNAPSHOT_SKIPPED_IN_TEST" }],
+      ok: true,
+      snapshot: {
+        digest:
+          "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        documents: [],
+      },
+      diagnostics: [],
+    });
+    buildNativeReconciliationEnvelopeMock.mockResolvedValue({
+      schemaVersion: 1,
+      proposalSchemaId: "test.proposal",
+      proposalSchemaVersion: 1,
+      sourceBasis: [
+        {
+          sourceKey: "snapshot:native-run-1",
+          sourceKind: "snapshot-document",
+          sourceRevisionToken:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      ],
+      readSet: [
+        {
+          sourceKey: "snapshot:native-run-1",
+          kind: "snapshot-document",
+          revisionToken:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      ],
+      evidenceSet: [
+        {
+          evidenceRef: "test-evidence",
+          method: "exact",
+          quoteDigest:
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      ],
+      reconciler: {
+        id: "test.reconciler",
+        version: 1,
+      },
+      readSetDigest:
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     });
     stubNativePersistHappyPath();
   });
@@ -341,6 +405,14 @@ describe("startCodexStructureExtraction product safety", () => {
           temporalEligibility: "timeless",
           quote: "ライカは旅人だ",
         },
+        {
+          entityId: "ne-1",
+          facetKey: "status.current",
+          value: { kind: "text", text: "未知" },
+          temporalEligibility: "timeless",
+          unbound: true,
+          quote: "ライカの状態は未知だ",
+        },
       ],
       heuristicSeeds: [
         {
@@ -364,12 +436,24 @@ describe("startCodexStructureExtraction product safety", () => {
     expect(projection.proposalSetId).toBe("native-ps-1");
     expect(projection.proposals[0]?.revisionId).toBe("native-rev-1");
     expect(projection.baseDetailProposals[0]?.revisionId).toBe("native-rev-2");
-    expect(projection.phaseProposals[0]?.revisionId).toBe("native-rev-3");
+    expect(projection.baseDetailProposals[0]).toMatchObject({
+      applicability: "blocked",
+      evidence: [],
+    });
+    expect(projection.baseDetailProposals[1]).toMatchObject({
+      applicability: "blocked",
+      evidence: [],
+    });
+    expect(projection.baseDetailProposals[0]?.evidence).not.toContainEqual(
+      expect.objectContaining({ documentRef: expect.stringMatching(/^[BU]/) }),
+    );
+    expect(projection.phaseProposals[0]?.revisionId).toBe("native-rev-4");
     const savedPayload = saveProposalSetMock.mock.calls[0]?.[0] as {
       proposals: readonly { kind: string }[];
     };
     expect(savedPayload.proposals.map((proposal) => proposal.kind)).toEqual([
       CODEX_ENTITY_BIND_PROPOSAL_KIND,
+      CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
       CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
       CODEX_PHASE_BIND_PROPOSAL_KIND,
     ]);
@@ -383,11 +467,61 @@ describe("startCodexStructureExtraction product safety", () => {
     };
     expect(
       finishPayload.artifacts[0]?.payloadJson?.baseDetailProposals,
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(
       finishPayload.artifacts[0]?.payloadJson?.phaseProposals,
     ).toHaveLength(1);
     expect(projection.catalog?.types[0]?.slug).toBe("character");
+  });
+
+  it("fails closed when Native persistence has no snapshot revision token", async () => {
+    buildSnapshotMock.mockResolvedValue({
+      ok: true,
+      snapshot: {},
+      diagnostics: [],
+    });
+
+    await expect(
+      startCodexStructureExtraction({
+        projectId: "p1",
+        folderId: "f1",
+        sceneIds: ["s1"],
+        authority: {
+          projectId: "p1",
+          currentProjectId: () => "p1",
+          workspacePath: "/w",
+          workspaceOpenRevision: 1,
+        },
+        workspacePath: "/w",
+        openRevision: 1,
+        useAi: false,
+        typeCatalog: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+            coarseClassHints: ["person"],
+            expectedVersion: 1,
+          },
+        ],
+        heuristicSeeds: [
+          {
+            surface: "ライカ",
+            typeRef: "T0001",
+            evidence: [
+              {
+                anchorId: "a1",
+                quote: "ライカ",
+                documentRef: "D000001",
+                method: "exact",
+              },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow("without a snapshot revision digest");
+    expect(createRunMock).not.toHaveBeenCalled();
   });
 
   it("derives relation proposals from vocabulary co-mentions in shared quotes", async () => {
@@ -853,9 +987,10 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
   beforeEach(() => {
     resetCodexStructureExtractionStoreForTests();
     appendDecisionMock.mockReset();
+    appendHumanDecisionMock.mockReset();
     appendRevisionMock.mockReset();
-    reviseAndDecideMock.mockReset();
-    reviseAndDecideMock.mockResolvedValue({
+    reviseAndDecideAsHumanMock.mockReset();
+    reviseAndDecideAsHumanMock.mockResolvedValue({
       proposalId: "safe",
       revisionId: "rev-2",
       revisionNumber: 2,
@@ -956,7 +1091,7 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
     // Approve is a single atomic revision + decision transaction now.
     expect(appendRevisionMock).not.toHaveBeenCalled();
     expect(appendDecisionMock).not.toHaveBeenCalled();
-    expect(reviseAndDecideMock).toHaveBeenCalledWith(
+    expect(reviseAndDecideAsHumanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         proposalId: "safe",
         decision: "approved",
@@ -979,6 +1114,7 @@ describe("reviseCodexStructureProposal concurrency", () => {
     resetCodexStructureExtractionStoreForTests();
     resetCodexStructureExtractionApiCachesForTests();
     appendRevisionMock.mockReset();
+    appendHumanDecisionMock.mockReset();
   });
 
   function seedEditableEntity() {
@@ -1232,7 +1368,7 @@ describe("reviseCodexStructureProposal concurrency", () => {
     seedEditableEntity();
     const order: string[] = [];
     let releaseDecision: (() => void) | undefined;
-    appendDecisionMock.mockImplementationOnce(
+    appendHumanDecisionMock.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
           order.push("decision-start");

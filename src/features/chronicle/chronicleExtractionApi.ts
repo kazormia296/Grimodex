@@ -13,7 +13,7 @@ import {
   listResumableRuns,
 } from "@/application/narrative-extraction/runRepository";
 import {
-  appendDecision,
+  appendHumanDecision,
   appendRevision,
 } from "@/application/narrative-extraction/proposalRepository";
 import {
@@ -150,6 +150,7 @@ function buildReviewProposalFromPlanned(args: {
   readonly planned: PlannedProposalArtifactRow;
   readonly proposalId: string;
   readonly revisionId: string;
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly proposalKey: string;
   readonly status: NarrativeProposalStatus;
   readonly payload: CreateChronicleEventProposalPayloadV1;
@@ -176,6 +177,7 @@ function buildReviewProposalFromPlanned(args: {
   return {
     proposalId: args.proposalId,
     revisionId: args.revisionId,
+    reconciliationEnvelopeDigest: args.reconciliationEnvelopeDigest,
     proposalKey: args.proposalKey,
     status: args.status,
     applicability: "applicable",
@@ -196,6 +198,7 @@ type SavedReviewSeed = {
   readonly proposalKey: string;
   readonly revisionId: string;
   readonly status?: NarrativeProposalStatus;
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly payload?: CreateChronicleEventProposalPayloadV1;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
 };
@@ -223,6 +226,7 @@ function savedSeedsFromBundle(
         proposalId: proposal.proposalId,
         proposalKey: proposal.proposalKey,
         revisionId: proposal.currentRevisionId,
+        reconciliationEnvelopeDigest: proposal.reconciliationEnvelopeDigest,
         status: proposal.status,
         payload,
         probableDuplicateChoice: probableDuplicateChoiceFromDecisionJson(
@@ -241,6 +245,7 @@ function savedSeedsFromCoordinator(
     proposalKey: proposal.proposalKey,
     revisionId: proposal.revisionId,
     status: proposal.status,
+    reconciliationEnvelopeDigest: proposal.reconciliationEnvelopeDigest,
   }));
 }
 
@@ -288,6 +293,7 @@ export function buildChronicleExtractionReviewProjection(args: {
         planned,
         proposalId: seed.proposalId,
         revisionId: seed.revisionId,
+        reconciliationEnvelopeDigest: seed.reconciliationEnvelopeDigest,
         proposalKey: seed.proposalKey,
         status: seed.status ?? "unreviewed",
         payload,
@@ -757,7 +763,7 @@ export async function recordChronicleProposalDecision(args: {
   readonly decision: "approved" | "rejected" | "deferred" | "held";
   readonly decisionJson?: Readonly<Record<string, unknown>>;
 }): Promise<void> {
-  await appendDecision({
+  await appendHumanDecision({
     runId: args.runId,
     projectId: args.projectId,
     proposalId: args.proposalId,
@@ -778,6 +784,10 @@ export async function recordChronicleProposalRevision(args: {
   readonly proposalId: string;
   readonly expectedCurrentRevisionId: string;
   readonly payload: CreateChronicleEventProposalPayloadV1;
+  readonly inheritReconciliationEnvelope?: {
+    readonly parentRevisionId: string;
+    readonly expectedEnvelopeDigest: string;
+  };
 }): Promise<string> {
   const result = await appendRevision({
     runId: args.runId,
@@ -785,6 +795,7 @@ export async function recordChronicleProposalRevision(args: {
     proposalId: args.proposalId,
     expectedCurrentRevisionId: args.expectedCurrentRevisionId,
     payloadJson: args.payload as unknown as Readonly<Record<string, unknown>>,
+    inheritReconciliationEnvelope: args.inheritReconciliationEnvelope,
     createdBy: "chronicle-extract-dialog",
   });
   return result.revisionId;
@@ -909,6 +920,12 @@ export async function reviseChronicleProposal(args: {
     proposalId: args.proposalId,
     expectedCurrentRevisionId: current.revisionId,
     payload: nextPayload,
+    inheritReconciliationEnvelope: current.reconciliationEnvelopeDigest
+      ? {
+          parentRevisionId: current.revisionId,
+          expectedEnvelopeDigest: current.reconciliationEnvelopeDigest,
+        }
+      : undefined,
   });
   useChronicleExtractionStore
     .getState()

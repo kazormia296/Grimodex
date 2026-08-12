@@ -11,7 +11,10 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
 const REGISTRY_PATH = path.join(
   REPO_ROOT,
   "policies/narrative/protected-writers.json",
@@ -37,6 +40,8 @@ const ALLOWED_PATH_FRAGMENTS = [
   "/execute.rs",
   // Checkpoint unit tests seed the policy singleton in-process.
   "workspace_schema.rs",
+  // Runtime performance fixtures seed multiple protected aggregates directly.
+  "runtime_performance_seed.rs",
 ];
 
 /**
@@ -52,9 +57,23 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/execute.rs",
   ],
   "narrative.authority": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
+  ],
+  "narrative.revision-envelope": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+  ],
+  "narrative.freshness": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
+  ],
+  "narrative.field-authority": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
   ],
   "chronicle.event": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
@@ -90,6 +109,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/sample_seed.rs",
     "src-tauri/crates/grimodex-db/src/scene_body.rs",
+    "src-tauri/crates/grimodex-db/src/codex_writes.rs",
     "src-tauri/crates/grimodex-core/src/change_events.rs",
     "src-tauri/crates/grimodex-core/src/undo_journal.rs",
   ],
@@ -118,6 +138,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/scene_body.rs",
     "src-tauri/crates/grimodex-db/src/chronicle.rs",
     "src-tauri/crates/grimodex-db/src/chronicle_bulk.rs",
+    "src-tauri/crates/grimodex-db/src/foreshadow.rs",
     "src-tauri/crates/grimodex-db/src/map_writes.rs",
     "src-tauri/crates/grimodex-db/src/backup_restore.rs",
     "src-tauri/crates/grimodex-db/src/sample_seed.rs",
@@ -160,7 +181,9 @@ const DML_RE =
 function shouldSkip(filePath) {
   const normalized = filePath.replaceAll("\\", "/");
   if (!normalized.endsWith(".rs")) return true;
-  return ALLOWED_PATH_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+  return ALLOWED_PATH_FRAGMENTS.some((fragment) =>
+    normalized.includes(fragment),
+  );
 }
 
 function collectRustFiles(rootDir) {
@@ -189,7 +212,8 @@ function isAllowedForWriter(relativePath, writer) {
   const normalized = relativePath.replaceAll("\\", "/");
   return allowed.some(
     (modulePath) =>
-      normalized === modulePath || normalized.endsWith(`/${path.basename(modulePath)}`),
+      normalized === modulePath ||
+      normalized.endsWith(`/${path.basename(modulePath)}`),
   );
 }
 
@@ -199,7 +223,9 @@ export function validateNativeWriterOwnership({
 } = {}) {
   const registry = JSON.parse(readFileSync(registryPath, "utf8"));
   const active = registry.filter((entry) => entry.enforcement === "active");
-  const tableToWriter = new Map(active.map((entry) => [entry.table, entry.writer]));
+  const tableToWriter = new Map(
+    active.map((entry) => [entry.table, entry.writer]),
+  );
   const files = SCAN_ROOTS.flatMap((root) => collectRustFiles(root));
   const violations = [];
 
@@ -249,6 +275,9 @@ function main() {
   );
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  pathToFileURL(process.argv[1]).href === import.meta.url
+) {
   main();
 }

@@ -1661,7 +1661,7 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     expect(forced.proposals[0]?.displayTitle).toBe("灰の目");
   });
 
-  it("fails closed when an unapplied proposal lacks Evidence entries", async () => {
+  it("keeps an unapplied proposal reviewable but blocked when Evidence is missing", async () => {
     const entity = sampleEntityProposal("prop-no-ev");
     getRunMock.mockResolvedValue({
       run: {
@@ -1741,14 +1741,21 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
       ],
     });
 
-    await expect(
-      getCodexStructureExtractionReview("run-no-ev", {
-        projectId: "project-cold",
-        workspacePath: "/ws",
-        openRevision: 1,
-        folderId: "folder-cold",
-      }),
-    ).rejects.toThrow(/missing evidence for proposal prop-no-ev/);
+    const restored = await getCodexStructureExtractionReview("run-no-ev", {
+      projectId: "project-cold",
+      workspacePath: "/ws",
+      openRevision: 1,
+      folderId: "folder-cold",
+    });
+    expect(restored.proposals).toHaveLength(1);
+    expect(restored.proposals[0]).toMatchObject({
+      proposalId: "prop-no-ev",
+      applicability: "blocked",
+      status: "unreviewed",
+      blockedReason: expect.stringContaining("根拠が未解決"),
+      evidence: [],
+    });
+    expect(restored.approvedCount).toBe(0);
   });
 
   it("rejects folder mismatch before hydrate", async () => {

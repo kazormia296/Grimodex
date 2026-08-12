@@ -65,13 +65,12 @@
     {
       "id": "codex-relation-domain-gate-unsplit",
       "domain": "codex",
-      "classification": "mixed",
-      "implementation": "src/features/codex/extraction/relationSynthesis.ts",
-      "symbol": "evaluateRelationDomainGate",
+      "classification": "strategy",
+      "implementation": "src/features/codex/extraction/relationStrategy.ts",
+      "symbol": "evaluateRelationStrategy",
       "tests": [
         "src/features/codex/extraction/relationSynthesis.test.ts"
-      ],
-      "reason": "self-relation/endpoint/directionality の structural branch と polarity/commitment/support の semantic branch が未分割"
+      ]
     },
     {
       "id": "phase-aggregate-writer-invariants",
@@ -197,13 +196,12 @@
     {
       "id": "foreshadow-admission-gate-unsplit",
       "domain": "foreshadow",
-      "classification": "mixed",
-      "implementation": "src/features/foreshadow/extraction/foreshadowGates.ts",
-      "symbol": "evaluateForeshadowGate",
+      "classification": "strategy",
+      "implementation": "src/features/foreshadow/extraction/foreshadowStrategy.ts",
+      "symbol": "evaluateForeshadowStrategy",
       "tests": [
         "src/features/foreshadow/extraction/foreshadowGates.test.ts"
-      ],
-      "reason": "reading-order の structural branch と materiality/callback 等の semantic branch が未分割"
+      ]
     }
   ]
 }

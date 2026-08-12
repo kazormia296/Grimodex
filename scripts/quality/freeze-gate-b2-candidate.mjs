@@ -4,21 +4,24 @@
  *
  *   pnpm certify:gate-b2:freeze -- --candidate HEAD
  *
- * Does not claim PASS. After freeze, production/prompt/writer changes require a
- * new candidate.
+ * Does not claim PASS. Engineering production, authority, persistence, and
+ * certification-harness changes require a new candidate.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   FREEZE_RELATIVE,
+  GATE_B2_ASSURANCE_SCOPE,
   GATE_B2_CONTRACT_VERSION,
-  buildDecisionDocument,
+  bindCandidateDigestRoot,
   pathExists,
   validateJsonAgainstSchema,
 } from "./certify-gate-b2-bindings.mjs";
+import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
 import {
   collectInputDigests,
   loadGateB2Manifest,
@@ -61,6 +64,16 @@ function provisionalSuites(manifest) {
   ];
 }
 
+function emptySuiteCounts(notRun) {
+  return {
+    passed: 0,
+    failed: 0,
+    blocked: 0,
+    hold: 0,
+    notRun,
+  };
+}
+
 async function archiveSupersededFreeze({ repoRoot, oldFreeze, newCommitSha }) {
   const archiveDir = path.join(repoRoot, "evals/certifications/archive");
   await mkdir(archiveDir, { recursive: true });
@@ -91,8 +104,6 @@ export async function freezeGateB2Candidate({
   artifactRoot = null,
   resultsDir = null,
 } = {}) {
-  const { raw: manifest, digest: manifestDigest } =
-    await loadGateB2Manifest(repoRoot);
   const identity = await resolveCandidateIdentity({
     candidate: candidate ?? undefined,
     baseMaster: baseMaster ?? undefined,
@@ -103,17 +114,40 @@ export async function freezeGateB2Candidate({
       "Refusing to freeze a dirty working tree. Commit or stash first.",
     );
   }
-  const digests = await collectInputDigests(manifest, repoRoot, {
-    manifestDigest,
+  const digestRoot = await bindCandidateDigestRoot({
+    repoRoot,
+    candidateSha: identity.commitSha,
   });
+  let manifest;
+  let manifestDigest;
+  let digests;
+  try {
+    const loaded = await loadGateB2Manifest(digestRoot.executionRoot);
+    manifest = loaded.raw;
+    manifestDigest = loaded.digest;
+    digests = await collectInputDigests(manifest, digestRoot.executionRoot, {
+      manifestDigest,
+    });
+  } finally {
+    await digestRoot.cleanup();
+  }
+  const freezeId = randomUUID();
+  const attemptAuthority = getGateB2GithubAttemptIdentity();
+  const productSchemaVersion = manifest.candidate.schemaVersion;
+  const requiredLightCount = Array.isArray(manifest.requiredLight)
+    ? manifest.requiredLight.length
+    : 0;
+  const requiredHeavyCount = Array.isArray(manifest.requiredHeavy)
+    ? manifest.requiredHeavy.length
+    : 0;
+  const requiredJourneyCount = Array.isArray(manifest.requiredManualJourneys)
+    ? manifest.requiredManualJourneys.length
+    : 0;
   const repoFreezePath = path.join(repoRoot, FREEZE_RELATIVE);
   let archivedPath = null;
   if (writeRepoFreeze && (await pathExists(repoFreezePath))) {
     const oldFreeze = JSON.parse(await readFile(repoFreezePath, "utf8"));
-    if (
-      oldFreeze?.candidate?.commitSha &&
-      oldFreeze.candidate.commitSha !== identity.commitSha
-    ) {
+    if (oldFreeze?.candidate?.commitSha && oldFreeze.freezeId !== freezeId) {
       archivedPath = await archiveSupersededFreeze({
         repoRoot,
         oldFreeze,
@@ -126,29 +160,36 @@ export async function freezeGateB2Candidate({
     schemaVersion: 1,
     contractVersion: GATE_B2_CONTRACT_VERSION,
     gateId: "gate-b2",
+    freezeId,
+    candidateCommitSha: identity.commitSha,
+    candidateTreeSha: identity.treeSha,
+    attemptAuthority,
+    productSchemaVersion,
     frozenAt: new Date().toISOString(),
     candidate: {
       commitSha: identity.commitSha,
       treeSha: identity.treeSha,
       baseMasterSha: identity.baseMasterSha,
-      schemaVersion: 16,
+      schemaVersion: productSchemaVersion,
+      attemptAuthority,
       ...digests,
     },
     freezeRules: {
       invalidateOn: [
-        "production code",
-        "prompt",
-        "response schema",
-        "parser",
-        "Human Gold",
+        "Engineering production code",
         "writer registry",
         "runtime policy",
         "migration",
         "browser mock",
-        "test harness semantics",
+        "Gate B2 runner",
+        "Journey runner",
+        "Chromium consent runner",
+        "Gate B2 Report or Decision schema",
       ],
       docsTypoOnlyRerunHeavy: false,
-      evaluationCodeChangeRequiresHeavyRerun: true,
+      engineeringHarnessChangeRequiresCertificationRerun: true,
+      liveModelQualificationChangeRequiresGateRerun: false,
+      liveProviderModelQualificationRequired: false,
     },
   };
 
@@ -168,25 +209,41 @@ export async function freezeGateB2Candidate({
   }
 
   const provisionalReasons = [
-    "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
-    "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
-    "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
+    "Candidate frozen; required credential-free Engineering evidence is not yet attached.",
+    "Live provider/model qualification is explicitly outside Gate B2 scope.",
   ];
   const provisionalDecision = {
-    ...buildDecisionDocument({
-      candidate: {
-        commitSha: identity.commitSha,
-        treeSha: identity.treeSha,
-        baseMasterSha: identity.baseMasterSha,
-      },
-      verdict: "INCOMPLETE",
-      reasons: provisionalReasons,
-      suites: provisionalSuites(manifest),
+    schemaVersion: 1,
+    contractVersion: GATE_B2_CONTRACT_VERSION,
+    gateId: "gate-b2",
+    assuranceScope: { ...GATE_B2_ASSURANCE_SCOPE },
+    freezeId,
+    certificationRunId: null,
+    candidateCommitSha: identity.commitSha,
+    candidateTreeSha: identity.treeSha,
+    baseMasterSha: identity.baseMasterSha,
+    attemptAuthority,
+    schemaVersionProduct: productSchemaVersion,
+    verdict: "INCOMPLETE",
+    reasons: provisionalReasons,
+    suiteSummaries: {
+      requiredLight: emptySuiteCounts(requiredLightCount),
+      requiredHeavy: emptySuiteCounts(requiredHeavyCount),
+      requiredJourneys: emptySuiteCounts(requiredJourneyCount),
+    },
+    digests: {
+      writerRegistryDigest: digests.writerRegistryDigest,
+      aiPathRegistryDigest: digests.aiPathRegistryDigest,
+      qualityManifestDigest: digests.qualityManifestDigest,
+      narrativeEvalManifestDigest: digests.narrativeEvalManifestDigest,
+      adrChecklistDigest: digests.adrChecklistDigest ?? null,
+      classificationDigest: digests.classificationDigest ?? null,
       reportDigest: null,
-      digests,
-    }),
+    },
+    suiteAttempts: [],
+    generatedAt: new Date().toISOString(),
     notes:
-      "Provisional freeze decision only. Replace after --run-light/--run-heavy/--run-journeys against this candidate.",
+      "Provisional freeze decision only. The dedicated Gate B2 workflow produces the formal Decision for this candidate.",
   };
   const decisionSchema = JSON.parse(
     await readFile(

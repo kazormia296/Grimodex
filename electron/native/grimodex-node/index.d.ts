@@ -104,7 +104,7 @@ export declare class Backend {
    */
   authorshipReplaceLane(payload: any): Promise<void>
   entityTagsSet(payload: any): Promise<void>
-  codexRenameUndo(payload: any): Promise<void>
+  codexRenameUndo(payload: any): Promise<string>
   codexRenameApply(payload: any): Promise<string>
   scanStagingProjectCreate(payload: any): Promise<void>
   projectDelete(payload: any): Promise<void>
@@ -601,7 +601,10 @@ export declare class Backend {
   narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>
   narrativeExtractionAppendRevision(payload: any): Promise<string>
   narrativeExtractionAppendDecision(payload: any): Promise<string>
+  narrativeExtractionAppendHumanDecision(payload: any): Promise<string>
   narrativeExtractionReviseAndDecide(payload: any): Promise<string>
+  narrativeExtractionReviseAndDecideAsHuman(payload: any): Promise<string>
+  narrativeExtractionSetHumanFieldLock(payload: any): Promise<string>
   narrativeExtractionPrepareCommit(payload: any): Promise<string>
   narrativeExtractionApplyCommit(payload: any): Promise<string>
   narrativeExtractionGetCommitStatus(payload: any): Promise<string>
