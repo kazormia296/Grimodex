@@ -1,8 +1,11 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, ProposalSeed, SaveProposalSetPayload,
+    CreateRunPayload, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
 };
-use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
+    SetNarrativeRuntimePolicyInput, Database,
+};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
@@ -99,13 +102,28 @@ fn seed_approved_proposals(
     pairs
 }
 
-fn build_apply(
+fn enable_manual_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("set manual-apply");
+}
+
+fn build_prepare(
     request_id: &str,
     plan_digest: &str,
     proposal_set_id: &str,
     run_id: &str,
     ops: Vec<(String, String, String, Value)>,
-) -> ApplyCommitPayload {
+) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
         .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
@@ -122,7 +140,7 @@ fn build_apply(
             revision_id: revision_id.clone(),
         })
         .collect();
-    ApplyCommitPayload {
+    PrepareCommitPayload {
         project_id: "project-1".to_string(),
         run_id: run_id.to_string(),
         proposal_set_id: proposal_set_id.to_string(),
@@ -136,6 +154,29 @@ fn build_apply(
         entity_bindings: vec![],
         expected_calendar_version: None,
     }
+}
+
+fn prepare_and_apply(
+    db: &Database,
+    prepare: PrepareCommitPayload,
+) -> Value {
+    enable_manual_apply(db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect("prepare");
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("preparedCommitId")
+                .to_string(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply")
 }
 
 fn zip_ops(
@@ -208,17 +249,16 @@ fn foreshadow_aggregate_create_is_atomic() {
     )];
     let pairs = seed_approved_proposals(&db, "run-fs-1", "set-fs-1", &items);
 
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-fs-1",
             "digest-fs-1",
             "set-fs-1",
             "run-fs-1",
             zip_ops(&pairs, &items),
         ),
-    )
-    .expect("apply");
+    );
 
     assert_eq!(applied["status"], "applied");
     assert_eq!(
@@ -252,17 +292,29 @@ fn payoff_failure_rolls_back_foreshadow_root() {
     let items = [("foreshadow.aggregate.create", create)];
     let pairs = seed_approved_proposals(&db, "run-fs-2", "set-fs-2", &items);
 
-    let err = narrative_extraction::narrative_extraction_apply_commit(
-        &db,
-        build_apply(
+    let err = {
+        enable_manual_apply(&db);
+        let prepare = build_prepare(
             "req-fs-2",
             "digest-fs-2",
             "set-fs-2",
             "run-fs-2",
             zip_ops(&pairs, &items),
-        ),
-    )
-    .expect_err("missing payoff scene should fail");
+        );
+        let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare)
+            .expect("prepare");
+        narrative_extraction::narrative_extraction_apply_commit(
+            &db,
+            ApplyCommitPayload {
+                project_id: "project-1".to_string(),
+                prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+                request_id: "req-fs-2".to_string(),
+                session_id: "sess-foreshadow".to_string(),
+                expected_version: prepared["version"].as_i64(),
+            },
+        )
+        .expect_err("missing payoff scene should fail")
+    };
     assert!(err.to_string().contains("scene 'missing-scene'"));
     db.with_conn(|conn| {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM foreshadows", [], |r| r.get(0))?;
@@ -283,7 +335,7 @@ fn foreshadow_request_replay_does_not_duplicate() {
         aggregate_create("fs-replay", "foreshadow-thread:replay"),
     )];
     let pairs = seed_approved_proposals(&db, "run-fs-3", "set-fs-3", &items);
-    let payload = build_apply(
+    let payload = build_prepare(
         "req-fs-3",
         "digest-fs-3",
         "set-fs-3",
@@ -291,10 +343,8 @@ fn foreshadow_request_replay_does_not_duplicate() {
         zip_ops(&pairs, &items),
     );
 
-    let first =
-        narrative_extraction::narrative_extraction_apply_commit(&db, payload.clone()).expect("first");
-    let second =
-        narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("replay");
+    let first = prepare_and_apply(&db, payload.clone());
+    let second = prepare_and_apply(&db, payload);
     assert_eq!(first["commitId"], second["commitId"]);
     assert_eq!(second["idempotentReplay"], true);
     db.with_conn(|conn| {
@@ -316,17 +366,16 @@ fn foreshadow_patch_adds_setup_and_bumps_version() {
         aggregate_create("fs-existing", "foreshadow-thread:existing"),
     )];
     let create_pairs = seed_approved_proposals(&db, "run-fs-4a", "set-fs-4a", &create_items);
-    narrative_extraction::narrative_extraction_apply_commit(
+    let _created = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-fs-4-create",
             "digest-fs-4-create",
             "set-fs-4a",
             "run-fs-4a",
             zip_ops(&create_pairs, &create_items),
         ),
-    )
-    .expect("create");
+    );
 
     let patch_payload = json!({
         "foreshadowId": "fs-existing",
@@ -352,17 +401,16 @@ fn foreshadow_patch_adds_setup_and_bumps_version() {
     let patch_items = [("foreshadow.aggregate.patch", patch_payload)];
     let patch_pairs = seed_approved_proposals(&db, "run-fs-4b", "set-fs-4b", &patch_items);
 
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-fs-4-patch",
             "digest-fs-4-patch",
             "set-fs-4b",
             "run-fs-4b",
             zip_ops(&patch_pairs, &patch_items),
         ),
-    )
-    .expect("patch");
+    );
     assert_eq!(applied["created"][0]["version"], 1);
     db.with_conn(|conn| {
         let version: i64 = conn.query_row(

@@ -2313,6 +2313,9 @@ export const narrativeProposalRevisions = sqliteTable(
     proposalId: text("proposal_id").notNull(),
     revisionNumber: integer("revision_number").notNull(),
     payloadJson: text("payload_json").notNull(),
+    // SCHEMA_VERSION 15: sealed plan fragment for Prepared Commit.
+    planFragmentJson: text("plan_fragment_json"),
+    planFragmentDigest: text("plan_fragment_digest"),
     createdAt: text("created_at").notNull(),
     createdBy: text("created_by").notNull(),
   },
@@ -2343,6 +2346,12 @@ export const narrativeApplyCommits = sqliteTable("narrative_apply_commits", {
   status: text("status").notNull(),
   receiptJson: text("receipt_json"),
   errorMessage: text("error_message"),
+  // SCHEMA_VERSION 15: immutable Prepared Commit seal.
+  preparedPlanJson: text("prepared_plan_json"),
+  preparedPolicyVersion: integer("prepared_policy_version"),
+  preparedAt: text("prepared_at"),
+  authorityDigest: text("authority_digest"),
+  sessionId: text("session_id"),
   createdAt: text("created_at").notNull(),
   completedAt: text("completed_at"),
   version: integer("version").notNull().default(0),
@@ -2404,14 +2413,18 @@ export const importSessions = sqliteTable(
     targetJson: text("target_json").notNull(),
     sourcePackageDigest: text("source_package_digest"),
     sourcePackageRef: text("source_package_ref"),
-    extractionRunIdsJson: text("extraction_run_ids_json").notNull().default("[]"),
+    extractionRunIdsJson: text("extraction_run_ids_json")
+      .notNull()
+      .default("[]"),
     proposalSetIdsJson: text("proposal_set_ids_json").notNull().default("[]"),
     errorMessage: text("error_message"),
     version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
-  (table) => [index("idx_import_sessions_state").on(table.state, table.updatedAt)],
+  (table) => [
+    index("idx_import_sessions_state").on(table.state, table.updatedAt),
+  ],
 );
 
 export const importSourcePackages = sqliteTable(
@@ -2427,7 +2440,12 @@ export const importSourcePackages = sqliteTable(
     packageJson: text("package_json").notNull(),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
-  (table) => [index("idx_import_source_packages_session").on(table.sessionId, table.createdAt)],
+  (table) => [
+    index("idx_import_source_packages_session").on(
+      table.sessionId,
+      table.createdAt,
+    ),
+  ],
 );
 
 export const importSourceMappings = sqliteTable(
@@ -2455,7 +2473,10 @@ export const importSourceMappings = sqliteTable(
       table.sourceSetId,
       table.sourceObjectKey,
     ),
-    index("idx_import_source_mappings_target").on(table.targetKind, table.targetId),
+    index("idx_import_source_mappings_target").on(
+      table.targetKind,
+      table.targetId,
+    ),
   ],
 );
 
@@ -2528,7 +2549,9 @@ export const importCaptures = sqliteTable(
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
-  (table) => [index("idx_import_captures_state").on(table.state, table.updatedAt)],
+  (table) => [
+    index("idx_import_captures_state").on(table.state, table.updatedAt),
+  ],
 );
 
 export const importCaptureEntries = sqliteTable(

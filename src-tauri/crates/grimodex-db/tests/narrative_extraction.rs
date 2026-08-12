@@ -5,7 +5,10 @@ use grimodex_db::narrative_extraction::{
     FinishTaskPayload, GetCommitStatusPayload, ListResumableRunsPayload, PrepareCommitPayload,
     ProposalSeed, ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
-use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
+    SetNarrativeRuntimePolicyInput, Database,
+};
 use serde_json::{json, Value};
 
 fn rfc3339_millis(dt: chrono::DateTime<Utc>) -> String {
@@ -203,13 +206,51 @@ fn seed_approved_proposals(
     pairs
 }
 
-fn build_apply_payload(
+fn enable_manual_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("set manual-apply");
+}
+
+fn prepare_and_apply(db: &Database, prepare: PrepareCommitPayload) -> Value {
+    enable_manual_apply(db);
+    let prepared =
+        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+            .expect("prepare");
+    let prepared_commit_id = prepared["preparedCommitId"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let version = prepared["version"].as_i64();
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id.clone(),
+            prepared_commit_id,
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: version,
+        },
+    )
+    .expect("apply")
+}
+
+fn build_prepare(
     request_id: &str,
     plan_digest: &str,
     proposal_set_id: &str,
     run_id: &str,
     ops: Vec<(String, String, Value)>,
-) -> ApplyCommitPayload {
+) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
         .map(|(proposal_id, revision_id, payload)| CommitOperation {
@@ -226,7 +267,7 @@ fn build_apply_payload(
             revision_id: revision_id.clone(),
         })
         .collect();
-    ApplyCommitPayload {
+    PrepareCommitPayload {
         project_id: "project-1".to_string(),
         run_id: run_id.to_string(),
         proposal_set_id: proposal_set_id.to_string(),
@@ -670,30 +711,9 @@ fn apply_commit_creates_three_events_atomically() {
         ),
     ];
     let payload =
-        build_apply_payload("req-atomic-1", "digest-atomic-1", "set-1", "run-commit-1", ops);
+        build_prepare("req-atomic-1", "digest-atomic-1", "set-1", "run-commit-1", ops);
 
-    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
-        &db,
-        PrepareCommitPayload {
-            project_id: payload.project_id.clone(),
-            run_id: payload.run_id.clone(),
-            proposal_set_id: payload.proposal_set_id.clone(),
-            request_id: payload.request_id.clone(),
-            plan_digest: payload.plan_digest.clone(),
-            session_id: payload.session_id.clone(),
-            surface: payload.surface.clone(),
-            operations: payload.operations.clone(),
-            applications: payload.applications.clone(),
-            expected_tail_ordinal: None,
-            entity_bindings: vec![],
-            expected_calendar_version: None,
-        },
-    )
-    .expect("prepare");
-    assert_eq!(prepared["ok"], true);
-
-    let applied =
-        narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("apply");
+    let applied = prepare_and_apply(&db, payload);
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 3);
 
@@ -751,9 +771,10 @@ fn apply_commit_rolls_back_all_on_failure() {
         ),
     ];
     let payload =
-        build_apply_payload("req-fail-1", "digest-fail-1", "set-2", "run-commit-2", ops);
-    let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
-        .expect_err("should fail");
+        build_prepare("req-fail-1", "digest-fail-1", "set-2", "run-commit-2", ops);
+    enable_manual_apply(&db);
+    let err = narrative_extraction::narrative_extraction_prepare_commit(&db, payload)
+        .expect_err("prepare should fail");
     assert!(err.to_string().contains("NEX_SCENE_VERSION_MISMATCH"));
 
     let event_count: i64 = db
@@ -773,20 +794,9 @@ fn apply_commit_rolls_back_all_on_failure() {
         })
         .unwrap();
     assert_eq!(
-        commit_count, 1,
-        "failed apply must leave an audit commit row outside the rolled-back domain TX"
+        commit_count, 0,
+        "failed prepare must not create an apply audit row"
     );
-
-    let status: String = db
-        .with_conn(|conn| {
-            Ok(conn.query_row(
-                "SELECT status FROM narrative_apply_commits WHERE request_id = 'req-fail-1'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
-    assert_eq!(status, "failed");
 }
 
 #[test]
@@ -801,11 +811,9 @@ fn apply_commit_is_idempotent_for_same_request_and_digest() {
         payloads[0].clone(),
     )];
     let payload =
-        build_apply_payload("req-idem-1", "digest-idem-1", "set-3", "run-commit-3", ops);
-    let first =
-        narrative_extraction::narrative_extraction_apply_commit(&db, payload.clone()).expect("first");
-    let second =
-        narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("replay");
+        build_prepare("req-idem-1", "digest-idem-1", "set-3", "run-commit-3", ops);
+    let first = prepare_and_apply(&db, payload.clone());
+    let second = prepare_and_apply(&db, payload);
     assert_eq!(first["commitId"], second["commitId"]);
     assert_eq!(second["idempotentReplay"], true);
 
@@ -821,19 +829,43 @@ fn apply_commit_is_idempotent_for_same_request_and_digest() {
 fn apply_commit_rejects_same_request_with_different_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let payloads = [event_create_payload("event-only-2", "Only", "scene-1", 0)];
-    let pairs = seed_approved_proposals(&db, "run-commit-4", "set-4", &payloads);
-    let ops = vec![(
-        pairs[0].0.clone(),
-        pairs[0].1.clone(),
-        payloads[0].clone(),
+    let first_payloads = [event_create_payload("event-only-2", "Only", "scene-1", 0)];
+    let first_pairs =
+        seed_approved_proposals(&db, "run-commit-4a", "set-4a", &first_payloads);
+    let first_ops = vec![(
+        first_pairs[0].0.clone(),
+        first_pairs[0].1.clone(),
+        first_payloads[0].clone(),
     )];
-    let first =
-        build_apply_payload("req-conflict-1", "digest-a", "set-4", "run-commit-4", ops.clone());
-    narrative_extraction::narrative_extraction_apply_commit(&db, first).expect("first");
+    prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-conflict-1",
+            "digest-a",
+            "set-4a",
+            "run-commit-4a",
+            first_ops,
+        ),
+    );
 
-    let second = build_apply_payload("req-conflict-1", "digest-b", "set-4", "run-commit-4", ops);
-    let err = narrative_extraction::narrative_extraction_apply_commit(&db, second)
+    // Same requestId but a different sealed plan must conflict on Native digest.
+    let second_payloads = [event_create_payload("event-only-3", "Other", "scene-1", 0)];
+    let second_pairs =
+        seed_approved_proposals(&db, "run-commit-4b", "set-4b", &second_payloads);
+    let second_ops = vec![(
+        second_pairs[0].0.clone(),
+        second_pairs[0].1.clone(),
+        second_payloads[0].clone(),
+    )];
+    let second = build_prepare(
+        "req-conflict-1",
+        "digest-b",
+        "set-4b",
+        "run-commit-4b",
+        second_ops,
+    );
+    enable_manual_apply(&db);
+    let err = narrative_extraction::narrative_extraction_prepare_commit(&db, second)
         .expect_err("conflict");
     assert!(err.to_string().contains("NEX_COMMIT_IDEMPOTENCY_CONFLICT"));
 }
@@ -860,9 +892,8 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
         ),
     ];
     let payload =
-        build_apply_payload("req-undo-1", "digest-undo-1", "set-5", "run-commit-5", ops);
-    let applied =
-        narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("apply");
+        build_prepare("req-undo-1", "digest-undo-1", "set-5", "run-commit-5", ops);
+    let applied = prepare_and_apply(&db, payload);
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     let undone = narrative_extraction::narrative_extraction_undo_commit(
@@ -948,9 +979,8 @@ fn undo_redo_cycles_without_event_edited_false_positive() {
         ),
     ];
     let payload =
-        build_apply_payload("req-cycle-1", "digest-cycle-1", "set-6", "run-commit-6", ops);
-    let applied =
-        narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("apply");
+        build_prepare("req-cycle-1", "digest-cycle-1", "set-6", "run-commit-6", ops);
+    let applied = prepare_and_apply(&db, payload);
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
     let undo_payload = UndoCommitPayload {
         project_id: "project-1".to_string(),
@@ -1506,7 +1536,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
     let payloads = [event_create_payload("event-x", "X", "scene-1", 0)];
     let pairs = seed_approved_proposals(&db, "run-failopen", "set-failopen", &payloads);
 
-    let mut payload = build_apply_payload(
+    let payload = build_prepare(
         "req-failopen-1",
         "digest-failopen-1",
         "set-failopen",
@@ -1517,8 +1547,10 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
             payloads[0].clone(),
         )],
     );
+    let mut payload = payload;
     payload.applications.clear();
-    let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
+    enable_manual_apply(&db);
+    let err = narrative_extraction::narrative_extraction_prepare_commit(&db, payload)
         .expect_err("empty applications must fail closed");
     assert!(
         err.to_string()
@@ -1566,7 +1598,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
         .as_str()
         .unwrap()
         .to_string();
-    let payload = build_apply_payload(
+    let payload = build_prepare(
         "req-unapproved",
         "digest-unapproved",
         "set-unapproved",
@@ -1577,7 +1609,8 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
             unapproved_payload,
         )],
     );
-    let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
+    enable_manual_apply(&db);
+    let err = narrative_extraction::narrative_extraction_prepare_commit(&db, payload)
         .expect_err("unapproved must fail");
     assert!(
         err.to_string().contains("NEX_PROPOSAL_NOT_APPROVED"),
@@ -1598,14 +1631,15 @@ fn apply_commit_rejects_revision_payload_mismatch() {
         // Title diverges from approved revision → digest mismatch.
         event_create_payload("event-m", "Different", "scene-1", 0),
     )];
-    let payload = build_apply_payload(
+    let payload = build_prepare(
         "req-rev-mismatch",
         "digest-rev-mismatch",
         "set-rev-mismatch",
         "run-rev-mismatch",
         ops,
     );
-    let err = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
+    enable_manual_apply(&db);
+    let err = narrative_extraction::narrative_extraction_prepare_commit(&db, payload)
         .expect_err("title mismatch must fail");
     assert!(
         err.to_string()
@@ -1651,7 +1685,7 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
         "set-applied",
         &applied_payloads,
     );
-    let payload = build_apply_payload(
+    let payload = build_prepare(
         "req-applied",
         "digest-applied",
         "set-applied",
@@ -1662,7 +1696,7 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
             applied_payloads[0].clone(),
         )],
     );
-    narrative_extraction::narrative_extraction_apply_commit(&db, payload).expect("apply");
+    prepare_and_apply(&db, payload);
     db.execute(
         "UPDATE narrative_extraction_runs SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
         &[Value::String("run-applied".to_string())],

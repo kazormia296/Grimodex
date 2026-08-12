@@ -98,8 +98,8 @@ fn raw_apply_without_db_decision_is_rejected() {
     )
     .expect("set");
     db.with_conn(|conn| {
-        let err = require_manual_apply_authority_in_tx(conn, "ps", "rev")
-            .expect_err("approval tables missing");
+        let err = require_manual_apply_authority_in_tx(conn, "ps", "prop", "rev")
+            .expect_err("proposal missing");
         assert!(err.to_string().contains(NARRATIVE_APPROVAL_REQUIRED));
         Ok(())
     })

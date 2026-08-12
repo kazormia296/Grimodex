@@ -213,21 +213,11 @@ pub struct PrepareCommitPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyCommitPayload {
     pub project_id: String,
-    pub run_id: String,
-    pub proposal_set_id: String,
+    pub prepared_commit_id: String,
     pub request_id: String,
-    pub plan_digest: String,
     pub session_id: String,
     #[serde(default)]
-    pub surface: Option<String>,
-    pub operations: Vec<CommitOperation>,
-    pub applications: Vec<CommitApplicationRef>,
-    #[serde(default)]
-    pub expected_tail_ordinal: Option<String>,
-    #[serde(default)]
-    pub entity_bindings: Vec<EntityBindingSeed>,
-    #[serde(default)]
-    pub expected_calendar_version: Option<i64>,
+    pub expected_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

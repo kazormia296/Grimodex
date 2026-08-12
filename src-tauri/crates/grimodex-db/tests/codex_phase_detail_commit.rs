@@ -1,8 +1,12 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, EntityBindingSeed, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
+    CreateRunPayload, EntityBindingSeed, PrepareCommitPayload, ProposalSeed,
+    SaveProposalSetPayload, UndoCommitPayload,
 };
-use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+    SetNarrativeRuntimePolicyInput,
+};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
@@ -115,14 +119,29 @@ fn entry_create(entry_id: &str, name: &str, narrative_entity_id: &str) -> Value 
     })
 }
 
-fn build_apply(
+fn enable_manual_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("set manual-apply");
+}
+
+fn build_prepare(
     request_id: &str,
     plan_digest: &str,
     proposal_set_id: &str,
     run_id: &str,
     ops: Vec<(String, String, String, Value)>,
     entity_bindings: Vec<EntityBindingSeed>,
-) -> ApplyCommitPayload {
+) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
         .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
@@ -139,7 +158,7 @@ fn build_apply(
             revision_id: revision_id.clone(),
         })
         .collect();
-    ApplyCommitPayload {
+    PrepareCommitPayload {
         project_id: "project-1".to_string(),
         run_id: run_id.to_string(),
         proposal_set_id: proposal_set_id.to_string(),
@@ -153,6 +172,48 @@ fn build_apply(
         entity_bindings,
         expected_calendar_version: None,
     }
+}
+
+fn prepare_and_apply(
+    db: &Database,
+    prepare: PrepareCommitPayload,
+) -> Value {
+    enable_manual_apply(db);
+    let prepared =
+        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+            .expect("prepare");
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("preparedCommitId")
+                .to_string(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply")
+}
+
+fn prepare_then_apply(db: &Database, prepare: PrepareCommitPayload) -> anyhow::Result<Value> {
+    enable_manual_apply(db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())?;
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id,
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing preparedCommitId"))?
+                .to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
 }
 
 #[test]
@@ -220,11 +281,10 @@ fn entity_base_detail_and_phase_atomic_commit() {
             }),
         ),
     ];
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply("req-pd-1", "digest-pd-1", "set-pd-1", "run-pd-1", ops, vec![]),
-    )
-    .expect("apply");
+        build_prepare("req-pd-1", "digest-pd-1", "set-pd-1", "run-pd-1", ops, vec![]),
+    );
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 3);
 
@@ -319,9 +379,9 @@ fn phase_failure_rolls_back_entry_and_detail() {
             }),
         ),
     ];
-    let err = narrative_extraction::narrative_extraction_apply_commit(
+    let err = prepare_then_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-pd-fail",
             "digest-pd-fail",
             "set-pd-2",
@@ -426,9 +486,9 @@ fn patch_and_create_phase_same_commit() {
             }),
         ),
     ];
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-pd-3",
             "digest-pd-3",
             "set-pd-3",
@@ -436,8 +496,7 @@ fn patch_and_create_phase_same_commit() {
             ops,
             vec![],
         ),
-    )
-    .expect("apply");
+    );
     assert_eq!(applied["status"], "applied");
 
     db.with_conn(|conn| {
@@ -522,11 +581,10 @@ fn undo_restores_phase_detail_commit() {
             }),
         ),
     ];
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply("req-pd-4", "digest-pd-4", "set-pd-4", "run-pd-4", ops, vec![]),
-    )
-    .expect("apply");
+        build_prepare("req-pd-4", "digest-pd-4", "set-pd-4", "run-pd-4", ops, vec![]),
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     let undone = narrative_extraction::narrative_extraction_undo_commit(
@@ -594,11 +652,10 @@ fn sticky_blocks_phase_undo() {
             }),
         ),
     ];
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply("req-pd-5", "digest-pd-5", "set-pd-5", "run-pd-5", ops, vec![]),
-    )
-    .expect("apply");
+        build_prepare("req-pd-5", "digest-pd-5", "set-pd-5", "run-pd-5", ops, vec![]),
+    );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
     db.execute(

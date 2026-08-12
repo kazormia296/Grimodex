@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 14,
+  "schemaVersion": 15,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6099,15 +6099,22 @@
     "narrative_apply_commits": {
       "kind": "table",
       "columns": {
+        "authority_digest": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "completed_at": {
-          "ordinal": 10,
+          "ordinal": 15,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 9,
+          "ordinal": 14,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6131,6 +6138,27 @@
           "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "prepared_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "prepared_plan_json": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "prepared_policy_version": {
+          "ordinal": 10,
+          "declaredType": "INTEGER",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -6169,6 +6197,13 @@
           "default": null,
           "primaryKey": 0
         },
+        "session_id": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "status": {
           "ordinal": 6,
           "declaredType": "TEXT",
@@ -6177,7 +6212,7 @@
           "primaryKey": 0
         },
         "version": {
-          "ordinal": 11,
+          "ordinal": 16,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": "0",
@@ -6197,7 +6232,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_apply_commits ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT, proposal_set_id TEXT, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, created_at TEXT NOT NULL, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
+      "createSql": "CREATE TABLE narrative_apply_commits ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT, proposal_set_id TEXT, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, prepared_plan_json TEXT, prepared_policy_version INTEGER, prepared_at TEXT, authority_digest TEXT, session_id TEXT, created_at TEXT NOT NULL, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
     },
     "narrative_apply_operations": {
       "kind": "table",
@@ -6892,14 +6927,14 @@
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 4,
+          "ordinal": 6,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
         "created_by": {
-          "ordinal": 5,
+          "ordinal": 7,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6916,6 +6951,20 @@
           "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "plan_fragment_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "plan_fragment_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -6936,7 +6985,7 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_proposal_revisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_number INTEGER NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
+      "createSql": "CREATE TABLE narrative_proposal_revisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_number INTEGER NOT NULL, payload_json TEXT NOT NULL, plan_fragment_json TEXT, plan_fragment_digest TEXT, created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
     },
     "narrative_proposal_sets": {
       "kind": "table",

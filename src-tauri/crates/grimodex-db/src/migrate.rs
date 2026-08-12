@@ -2348,6 +2348,8 @@ impl Database {
                 proposal_id TEXT NOT NULL,
                 revision_number INTEGER NOT NULL,
                 payload_json TEXT NOT NULL,
+                plan_fragment_json TEXT,
+                plan_fragment_digest TEXT,
                 created_at TEXT NOT NULL,
                 created_by TEXT NOT NULL
             );
@@ -2370,6 +2372,11 @@ impl Database {
                 status TEXT NOT NULL,
                 receipt_json TEXT,
                 error_message TEXT,
+                prepared_plan_json TEXT,
+                prepared_policy_version INTEGER,
+                prepared_at TEXT,
+                authority_digest TEXT,
+                session_id TEXT,
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
                 version INTEGER NOT NULL DEFAULT 0
@@ -2830,6 +2837,42 @@ impl Database {
                 ON import_decoded_resources(capture_id, resource_key);
             CREATE INDEX IF NOT EXISTS idx_generic_extraction_schemas_digest
                 ON generic_extraction_schemas(digest);",
+        )?;
+
+        // SCHEMA_VERSION 15: Prepared Commit seal columns + revision plan fragments.
+        // Fresh CREATE TABLE above already includes these; add_column covers
+        // upgrades from SCHEMA 14 workspaces.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_apply_commits",
+            "prepared_plan_json",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_apply_commits",
+            "prepared_policy_version",
+            "INTEGER",
+        )?;
+        Self::add_column_if_missing(&conn, "narrative_apply_commits", "prepared_at", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_apply_commits",
+            "authority_digest",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(&conn, "narrative_apply_commits", "session_id", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "plan_fragment_json",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "plan_fragment_digest",
+            "TEXT",
         )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.

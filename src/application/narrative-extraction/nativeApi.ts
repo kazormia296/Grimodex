@@ -279,15 +279,26 @@ export interface PrepareCommitPayload {
   readonly applications: readonly CommitApplicationRef[];
   readonly expectedTailOrdinal?: string | null;
   readonly entityBindings?: readonly EntityBindingSeed[];
+  readonly expectedCalendarVersion?: number;
 }
 
-export type ApplyCommitPayload = PrepareCommitPayload;
+export interface ApplyCommitPayload {
+  readonly projectId: string;
+  readonly preparedCommitId: string;
+  readonly requestId: string;
+  readonly sessionId: string;
+  readonly expectedVersion?: number | null;
+}
 
 export interface PrepareCommitResult {
   readonly ok: boolean;
+  readonly preparedCommitId: string;
   readonly requestId: string;
   readonly planDigest: string;
+  readonly authorityDigest?: string;
   readonly operationCount: number;
+  readonly status?: string;
+  readonly version?: number;
 }
 
 export interface ApplyCommitResult {

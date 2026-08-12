@@ -16,7 +16,10 @@ vi.mock("./commitCoordinator", () => ({
   computePlanDigest: vi.fn(async () => "digest-fixed"),
 }));
 
-import { prepareAndApplyCodexCommit } from "./codexCommitCoordinator";
+import {
+  applyCodexCommit,
+  prepareAndApplyCodexCommit,
+} from "./codexCommitCoordinator";
 
 const baseInput = {
   projectId: "p1",
@@ -88,6 +91,7 @@ describe("prepareAndApplyCodexCommit status-first retry", () => {
     });
     prepareMock.mockResolvedValue({
       ok: true,
+      preparedCommitId: "prepared-2",
       requestId: "req-1",
       planDigest: "digest-fixed",
       operationCount: 1,
@@ -103,7 +107,91 @@ describe("prepareAndApplyCodexCommit status-first retry", () => {
 
     expect(prepareMock).toHaveBeenCalledTimes(1);
     expect(applyMock).toHaveBeenCalledTimes(1);
+    expect(prepareMock).toHaveBeenCalledWith({
+      projectId: "p1",
+      runId: "run-1",
+      proposalSetId: "set-1",
+      requestId: "req-1",
+      planDigest: "digest-fixed",
+      sessionId: "sess-1",
+      surface: undefined,
+      operations: [
+        {
+          kind: "codex.entry.create",
+          payload: baseInput.operations[0].operation.payload,
+          proposalId: "prop-1",
+          revisionId: "rev-1",
+        },
+      ],
+      applications: [{ proposalId: "prop-1", revisionId: "rev-1" }],
+      expectedTailOrdinal: null,
+      entityBindings: [],
+    });
+    expect(applyMock).toHaveBeenCalledWith({
+      projectId: "p1",
+      preparedCommitId: "prepared-2",
+      requestId: "req-1",
+      sessionId: "sess-1",
+      expectedVersion: undefined,
+    });
     expect(result.applied.commitId).toBe("commit-2");
+  });
+
+  it("applies an existing prepared commit without preparing again", async () => {
+    statusMock.mockResolvedValueOnce({
+      found: true,
+      commitId: "prepared-existing",
+      requestId: "req-1",
+      planDigest: "digest-fixed",
+      status: "prepared",
+      version: 0,
+    });
+    applyMock.mockResolvedValue({
+      commitId: "prepared-existing",
+      requestId: "req-1",
+      planDigest: "digest-fixed",
+      status: "applied",
+    });
+    statusMock.mockResolvedValueOnce({
+      found: true,
+      commitId: "prepared-existing",
+      requestId: "req-1",
+      planDigest: "digest-fixed",
+      status: "applied",
+    });
+
+    await prepareAndApplyCodexCommit(baseInput);
+
+    expect(prepareMock).not.toHaveBeenCalled();
+    expect(applyMock).toHaveBeenCalledWith({
+      projectId: "p1",
+      preparedCommitId: "prepared-existing",
+      requestId: "req-1",
+      sessionId: "sess-1",
+      expectedVersion: 0,
+    });
+  });
+
+  it("accepts the prepare result when applying a Codex commit", async () => {
+    applyMock.mockResolvedValue({
+      commitId: "commit-3",
+      requestId: "req-1",
+      planDigest: "digest-fixed",
+      status: "applied",
+    });
+
+    await applyCodexCommit(baseInput, {
+      preparedCommitId: "prepared-3",
+      version: 2,
+    });
+
+    expect(applyMock).toHaveBeenCalledWith({
+      projectId: "p1",
+      preparedCommitId: "prepared-3",
+      requestId: "req-1",
+      sessionId: "sess-1",
+      expectedVersion: 2,
+    });
   });
 
   it("rejects when prior commit failed for the same requestId", async () => {

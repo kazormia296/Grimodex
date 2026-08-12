@@ -23,6 +23,7 @@ import type {
   CommitOperation,
   EntityBindingSeed,
   GetCommitStatusResult,
+  PrepareCommitPayload,
   PrepareCommitResult,
   UndoCommitPayload,
 } from "./nativeApi";
@@ -186,10 +187,10 @@ function buildCommitMap(input: CommitCodexOperationsInput): CommitMap {
   return commitMap;
 }
 
-function toCommitWire(
+function toPrepareWire(
   input: CommitCodexOperationsInput,
   planDigest: string,
-): ApplyCommitPayload {
+): PrepareCommitPayload {
   const operations: CommitOperation[] = input.operations.map((item) => ({
     kind: item.operation.kind,
     payload: item.operation.payload as unknown as Record<string, unknown>,
@@ -215,6 +216,19 @@ function toCommitWire(
     entityBindings: toEntityBindingSeeds(commitMap).filter(
       (seed) => seed.source === "existing",
     ),
+  };
+}
+
+function toApplyWire(
+  input: CommitCodexOperationsInput,
+  prepared: Pick<PrepareCommitResult, "preparedCommitId" | "version">,
+): ApplyCommitPayload {
+  return {
+    projectId: input.projectId,
+    preparedCommitId: prepared.preparedCommitId,
+    requestId: input.requestId,
+    sessionId: input.sessionId,
+    expectedVersion: prepared.version,
   };
 }
 
@@ -266,17 +280,16 @@ export async function prepareCodexCommit(
 ): Promise<PrepareCommitResult & { planDigest: string; commitMap: CommitMap }> {
   const { planDigest, commitMap } = await resolvePlanDigest(input);
   const prepared = await narrativeExtractionPrepareCommit(
-    toCommitWire(input, planDigest),
+    toPrepareWire(input, planDigest),
   );
-  return { ...prepared, planDigest, commitMap };
+  return { ...prepared, planDigest: prepared.planDigest, commitMap };
 }
 
 export async function applyCodexCommit(
   input: CommitCodexOperationsInput,
-  planDigest?: string,
+  prepared: Pick<PrepareCommitResult, "preparedCommitId" | "version">,
 ): Promise<ApplyCommitResult> {
-  const digest = planDigest ?? (await resolvePlanDigest(input)).planDigest;
-  return narrativeExtractionApplyCommit(toCommitWire(input, digest));
+  return narrativeExtractionApplyCommit(toApplyWire(input, prepared));
 }
 
 /**
@@ -315,12 +328,36 @@ export async function prepareAndApplyCodexCommit(
       return {
         prepared: {
           ok: true,
+          preparedCommitId: existing.commitId ?? "",
           requestId: input.requestId,
           planDigest,
           operationCount: input.operations.length,
         },
         applied,
         status: existing,
+        commitMap,
+      };
+    }
+    if (commitStatus === "prepared") {
+      const applied = await applyCodexCommit(input, {
+        preparedCommitId: existing.commitId ?? "",
+        version: existing.version,
+      });
+      return {
+        prepared: {
+          ok: true,
+          preparedCommitId: existing.commitId ?? "",
+          requestId: input.requestId,
+          planDigest: existing.planDigest ?? planDigest,
+          operationCount: input.operations.length,
+          status: "prepared",
+          version: existing.version,
+        },
+        applied,
+        status: await narrativeExtractionGetCommitStatus({
+          projectId: input.projectId,
+          requestId: input.requestId,
+        }),
         commitMap,
       };
     }
@@ -338,11 +375,9 @@ export async function prepareAndApplyCodexCommit(
   }
 
   const prepared = await narrativeExtractionPrepareCommit(
-    toCommitWire(input, planDigest),
+    toPrepareWire(input, planDigest),
   );
-  const applied = await narrativeExtractionApplyCommit(
-    toCommitWire(input, planDigest),
-  );
+  const applied = await applyCodexCommit(input, prepared);
   const status = await narrativeExtractionGetCommitStatus({
     projectId: input.projectId,
     requestId: input.requestId,

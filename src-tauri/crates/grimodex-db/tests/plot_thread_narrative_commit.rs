@@ -1,8 +1,11 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, ProposalSeed, SaveProposalSetPayload,
+    CreateRunPayload, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
 };
-use grimodex_db::Database;
+use grimodex_db::{
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
+    SetNarrativeRuntimePolicyInput, Database,
+};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
@@ -99,13 +102,28 @@ fn seed_approved_proposals(
     pairs
 }
 
-fn build_apply(
+fn enable_manual_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )
+    .expect("set manual-apply");
+}
+
+fn build_prepare(
     request_id: &str,
     plan_digest: &str,
     proposal_set_id: &str,
     run_id: &str,
     ops: Vec<(String, String, String, Value)>,
-) -> ApplyCommitPayload {
+) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
         .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
@@ -122,7 +140,7 @@ fn build_apply(
             revision_id: revision_id.clone(),
         })
         .collect();
-    ApplyCommitPayload {
+    PrepareCommitPayload {
         project_id: "project-1".to_string(),
         run_id: run_id.to_string(),
         proposal_set_id: proposal_set_id.to_string(),
@@ -136,6 +154,30 @@ fn build_apply(
         entity_bindings: vec![],
         expected_calendar_version: None,
     }
+}
+
+fn prepare_and_apply(
+    db: &Database,
+    prepare: PrepareCommitPayload,
+) -> Value {
+    enable_manual_apply(db);
+    let prepared =
+        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+            .expect("prepare");
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("preparedCommitId")
+                .to_string(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply")
 }
 
 fn zip_ops(
@@ -205,17 +247,16 @@ fn plot_thread_and_markers_atomic_commit() {
     ];
     let pairs = seed_approved_proposals(&db, "run-plot-1", "set-plot-1", &items);
 
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-plot-1",
             "digest-plot-1",
             "set-plot-1",
             "run-plot-1",
             zip_ops(&pairs, &items),
         ),
-    )
-    .expect("apply");
+    );
 
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 3);
@@ -265,17 +306,29 @@ fn plot_marker_failure_rolls_back_entire_commit() {
     ];
     let pairs = seed_approved_proposals(&db, "run-plot-2", "set-plot-2", &items);
 
-    let err = narrative_extraction::narrative_extraction_apply_commit(
-        &db,
-        build_apply(
+    let err = {
+        enable_manual_apply(&db);
+        let prepare = build_prepare(
             "req-plot-2",
             "digest-plot-2",
             "set-plot-2",
             "run-plot-2",
             zip_ops(&pairs, &items),
-        ),
-    )
-    .expect_err("bad phase should fail");
+        );
+        let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare)
+            .expect("prepare");
+        narrative_extraction::narrative_extraction_apply_commit(
+            &db,
+            ApplyCommitPayload {
+                project_id: "project-1".to_string(),
+                prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+                request_id: "req-plot-2".to_string(),
+                session_id: "sess-plot".to_string(),
+                expected_version: prepared["version"].as_i64(),
+            },
+        )
+        .expect_err("bad phase should fail")
+    };
 
     assert!(err.to_string().contains("invalid phase_type"));
 
@@ -307,7 +360,7 @@ fn plot_request_id_replay_does_not_duplicate() {
         ),
     ];
     let pairs = seed_approved_proposals(&db, "run-plot-3", "set-plot-3", &items);
-    let payload = build_apply(
+    let payload = build_prepare(
         "req-plot-3",
         "digest-plot-3",
         "set-plot-3",
@@ -315,10 +368,8 @@ fn plot_request_id_replay_does_not_duplicate() {
         zip_ops(&pairs, &items),
     );
 
-    let first = narrative_extraction::narrative_extraction_apply_commit(&db, payload.clone())
-        .expect("first apply");
-    let second = narrative_extraction::narrative_extraction_apply_commit(&db, payload)
-        .expect("replay");
+    let first = prepare_and_apply(&db, payload.clone());
+    let second = prepare_and_apply(&db, payload);
 
     assert_eq!(first["commitId"], second["commitId"]);
     assert_eq!(second["idempotentReplay"], true);
@@ -380,17 +431,16 @@ fn plot_two_threads_merge_branch_at_same_scene() {
     ];
     let pairs = seed_approved_proposals(&db, "run-plot-4", "set-plot-4", &items);
 
-    let applied = narrative_extraction::narrative_extraction_apply_commit(
+    let applied = prepare_and_apply(
         &db,
-        build_apply(
+        build_prepare(
             "req-plot-4",
             "digest-plot-4",
             "set-plot-4",
             "run-plot-4",
             zip_ops(&pairs, &items),
         ),
-    )
-    .expect("apply merge branch");
+    );
 
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["created"].as_array().unwrap().len(), 5);

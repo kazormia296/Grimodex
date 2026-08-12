@@ -740,8 +740,8 @@ export async function applyChronicleExtractionCommit(input: {
     operations,
   };
 
-  await prepareChronicleCommit(commitInput);
-  const applied = await applyChronicleCommit(commitInput);
+  const prepared = await prepareChronicleCommit(commitInput);
+  const applied = await applyChronicleCommit(commitInput, prepared);
   return applied.created?.length ?? operations.length;
 }
 
