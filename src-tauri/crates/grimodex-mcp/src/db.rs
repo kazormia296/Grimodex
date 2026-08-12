@@ -6,7 +6,7 @@ use grimodex_core::chronicle_time::{
     validate_canonical_chronicle_date_range, validate_chronicle_date_range, ChronicleDateRange,
     ChronicleTimestamp,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -1544,13 +1544,14 @@ pub struct OpenForeshadowSummary {
     pub intent: String,
     pub load_bearing: Option<String>,
     pub setup_count: i64,
+    pub version: i64,
     /// 派生ラベル (seeded / needs_strengthening / critical_weak / planned 等)。
     /// チャット executor は出力から落とすが、宣言済みツール契約 (toolDefinitions の説明) と
     /// 伏線整理ユースケースに合わせ MCP では返す (意図的な差分・docs に明記)。
     pub derived_label: String,
 }
 
-/// (id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at) for a foreshadow row.
+/// (id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at, version) for a foreshadow row.
 type OpenForeshadowRow = (
     String,
     String,
@@ -1558,6 +1559,7 @@ type OpenForeshadowRow = (
     Option<String>,
     bool,
     bool,
+    i64,
     i64,
 );
 
@@ -1568,7 +1570,7 @@ pub fn list_open_foreshadows(
     project_id: &str,
 ) -> Result<Vec<OpenForeshadowSummary>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at
+        "SELECT id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at, version
          FROM foreshadows
          WHERE project_id = ?1 AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
     )?;
@@ -1582,6 +1584,7 @@ pub fn list_open_foreshadows(
                 row.get::<_, i64>(4)? != 0,
                 row.get::<_, i64>(5)? != 0,
                 row.get(6)?,
+                row.get(7)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1637,7 +1640,16 @@ pub fn list_open_foreshadows(
     let mut summaries: Vec<(OpenForeshadowSummary, i32, i64)> = rows
         .into_iter()
         .map(
-            |(id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at)| {
+            |(
+                id,
+                title,
+                intent,
+                load_bearing,
+                payoff_confirmed,
+                abandoned,
+                updated_at,
+                version,
+            )| {
                 let setup_count = count_map.get(&id).copied().unwrap_or(0);
                 let label_input = ForeshadowLabelInput {
                     payoff_confirmed,
@@ -1656,6 +1668,7 @@ pub fn list_open_foreshadows(
                     intent: intent.unwrap_or_default(),
                     load_bearing,
                     setup_count,
+                    version,
                     derived_label: derived.to_string(),
                 };
                 (summary, priority, updated_at)
@@ -1697,6 +1710,7 @@ pub struct ForeshadowDetail {
     pub load_bearing: Option<String>,
     pub payoff_confirmed: bool,
     pub abandoned: bool,
+    pub version: i64,
     pub payoff_scene: Option<ForeshadowPayoffScene>,
     pub setups: Vec<ForeshadowSetupDetail>,
 }
@@ -1708,7 +1722,7 @@ pub fn get_foreshadow_detail(
     foreshadow_id: &str,
 ) -> Result<Option<ForeshadowDetail>> {
     let row = conn.query_row(
-        "SELECT id, title, intent, notes, load_bearing, payoff_confirmed, abandoned, payoff_scene_id
+        "SELECT id, title, intent, notes, load_bearing, payoff_confirmed, abandoned, payoff_scene_id, version
          FROM foreshadows WHERE id = ?1 AND project_id = ?2",
         params![foreshadow_id, project_id],
         |row| {
@@ -1721,16 +1735,26 @@ pub fn get_foreshadow_detail(
                 row.get::<_, i64>(5)? != 0,
                 row.get::<_, i64>(6)? != 0,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, i64>(8)?,
             ))
         },
     );
 
-    let (id, title, intent, notes, load_bearing, payoff_confirmed, abandoned, payoff_scene_id) =
-        match row {
-            Ok(v) => v,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
+    let (
+        id,
+        title,
+        intent,
+        notes,
+        load_bearing,
+        payoff_confirmed,
+        abandoned,
+        payoff_scene_id,
+        version,
+    ) = match row {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
 
     // The payoff FK and setup scene_ids are resolved against tree_nodes; both
     // must stay project-scoped so an anomalous cross-project FK (manual DB edit
@@ -1782,6 +1806,7 @@ pub fn get_foreshadow_detail(
         load_bearing,
         payoff_confirmed,
         abandoned,
+        version,
         payoff_scene,
         setups,
     }))
@@ -2487,9 +2512,11 @@ pub fn chronicle_create_event(
             )?;
         }
         for scene_id in input.scene_ids {
+            let incarnation_token = uuid::Uuid::new_v4().to_string();
             conn.execute(
-                "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
-                params![scene_id, event_id],
+                "INSERT OR IGNORE INTO scene_events
+                 (scene_id, event_id, incarnation_token) VALUES (?1, ?2, ?3)",
+                params![scene_id, event_id, incarnation_token],
             )?;
         }
 
@@ -3015,31 +3042,56 @@ pub fn chronicle_scene_event(
         let Some(event_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
         };
-        let existed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
-            params![scene_id, event_id],
-            |r| r.get(0),
-        )?;
-        let before = json!({
-            "sceneId": scene_id, "eventId": event_id, "linked": existed > 0,
-        })
-        .to_string();
-
-        if link {
-            conn.execute(
-                "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+        let existing_token = conn
+            .query_row(
+                "SELECT incarnation_token FROM scene_events
+             WHERE scene_id = ?1 AND event_id = ?2",
                 params![scene_id, event_id],
-            )?;
-        } else {
-            conn.execute(
-                "DELETE FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
-                params![scene_id, event_id],
-            )?;
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let mut before = json!({
+            "sceneId": scene_id, "eventId": event_id, "linked": existing_token.is_some(),
+        });
+        if let Some(token) = existing_token.as_deref() {
+            before["incarnationToken"] = json!(token);
         }
-        let after = json!({
+
+        let after_token = if link {
+            if let Some(token) = existing_token.as_ref() {
+                Some(token.clone())
+            } else {
+                let token = uuid::Uuid::new_v4().to_string();
+                let inserted = conn.execute(
+                    "INSERT INTO scene_events
+                     (scene_id, event_id, incarnation_token) VALUES (?1, ?2, ?3)",
+                    params![scene_id, event_id, token],
+                )?;
+                anyhow::ensure!(inserted == 1, "scene-event association was not inserted");
+                Some(token)
+            }
+        } else {
+            if let Some(token) = existing_token.as_ref() {
+                let deleted = conn.execute(
+                    "DELETE FROM scene_events
+                     WHERE scene_id = ?1 AND event_id = ?2 AND incarnation_token = ?3",
+                    params![scene_id, event_id, token],
+                )?;
+                anyhow::ensure!(
+                    deleted == 1,
+                    "scene-event association incarnation changed before unlink"
+                );
+            }
+            None
+        };
+        let mut after = json!({
             "sceneId": scene_id, "eventId": event_id, "linked": link,
-        })
-        .to_string();
+        });
+        if let Some(token) = after_token.as_deref() {
+            after["incarnationToken"] = json!(token);
+        }
+        let before = before.to_string();
+        let after = after.to_string();
         let op_type = if link { "event.stamp" } else { "event.unstamp" };
 
         insert_undo_journal_in_tx(
@@ -3422,6 +3474,9 @@ pub(crate) mod tests {
                 abandoned INTEGER NOT NULL DEFAULT 0,
                 secret INTEGER NOT NULL DEFAULT 1,
                 load_bearing TEXT,
+                mechanism TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                codex_link_dirty_at INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -3475,6 +3530,7 @@ pub(crate) mod tests {
             CREATE TABLE scene_events (
                 scene_id TEXT NOT NULL,
                 event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                incarnation_token TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (scene_id, event_id)
             );
             CREATE TABLE event_relations (
@@ -4561,6 +4617,70 @@ pub(crate) mod tests {
                 end_granularity: "none".to_string(),
                 version: 1,
             }
+        );
+    }
+
+    #[test]
+    fn test_chronicle_scene_event_writers_assign_fresh_incarnation_tokens() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_scene(&conn, "s1", "p1", "Scene", "draft");
+        let scene_ids = ["s1".to_string()];
+        let mut input = chronicle_create_input("linked", None, None, "none", None, None, "none");
+        input.scene_ids = &scene_ids;
+        let created = chronicle_create_event(&conn, input).expect("create linked event");
+        let initial_token: String = conn
+            .query_row(
+                "SELECT incarnation_token FROM scene_events
+                 WHERE scene_id = 's1' AND event_id = ?1",
+                params![created.entity_id],
+                |row| row.get(0),
+            )
+            .expect("initial incarnation token");
+        assert!(!initial_token.is_empty());
+
+        let unlinked = chronicle_scene_event(&conn, "p1", "sess", "s1", &created.entity_id, false)
+            .expect("unlink")
+            .expect("association scope exists");
+        let unlink_before: String = conn
+            .query_row(
+                "SELECT before_json FROM undo_journal WHERE id = ?1",
+                params![unlinked.undo_journal_id],
+                |row| row.get(0),
+            )
+            .expect("unlink snapshot");
+        let unlink_before: serde_json::Value =
+            serde_json::from_str(&unlink_before).expect("parse unlink snapshot");
+        assert_eq!(
+            unlink_before["incarnationToken"].as_str(),
+            Some(initial_token.as_str())
+        );
+
+        let relinked = chronicle_scene_event(&conn, "p1", "sess", "s1", &created.entity_id, true)
+            .expect("relink")
+            .expect("association scope exists");
+        let replacement_token: String = conn
+            .query_row(
+                "SELECT incarnation_token FROM scene_events
+                 WHERE scene_id = 's1' AND event_id = ?1",
+                params![created.entity_id],
+                |row| row.get(0),
+            )
+            .expect("replacement incarnation token");
+        assert!(!replacement_token.is_empty());
+        assert_ne!(replacement_token, initial_token);
+        let relink_after: String = conn
+            .query_row(
+                "SELECT after_json FROM undo_journal WHERE id = ?1",
+                params![relinked.undo_journal_id],
+                |row| row.get(0),
+            )
+            .expect("relink snapshot");
+        let relink_after: serde_json::Value =
+            serde_json::from_str(&relink_after).expect("parse relink snapshot");
+        assert_eq!(
+            relink_after["incarnationToken"].as_str(),
+            Some(replacement_token.as_str())
         );
     }
 

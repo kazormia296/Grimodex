@@ -2096,6 +2096,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS scene_events (
                 scene_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
                 event_id  TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                incarnation_token TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (scene_id, event_id)
             );
             CREATE INDEX IF NOT EXISTS idx_scene_events_event
@@ -2566,12 +2567,7 @@ impl Database {
             "role",
             "TEXT NOT NULL DEFAULT 'unspecified'",
         )?;
-        Self::add_column_if_missing(
-            &conn,
-            "foreshadow_setups",
-            "evidence_anchor_id",
-            "TEXT",
-        )?;
+        Self::add_column_if_missing(&conn, "foreshadow_setups", "evidence_anchor_id", "TEXT")?;
         Self::add_column_if_missing(
             &conn,
             "foreshadow_setups",
@@ -2855,12 +2851,7 @@ impl Database {
             "INTEGER",
         )?;
         Self::add_column_if_missing(&conn, "narrative_apply_commits", "prepared_at", "TEXT")?;
-        Self::add_column_if_missing(
-            &conn,
-            "narrative_apply_commits",
-            "authority_digest",
-            "TEXT",
-        )?;
+        Self::add_column_if_missing(&conn, "narrative_apply_commits", "authority_digest", "TEXT")?;
         Self::add_column_if_missing(&conn, "narrative_apply_commits", "session_id", "TEXT")?;
         Self::add_column_if_missing(
             &conn,
@@ -2873,6 +2864,16 @@ impl Database {
             "narrative_proposal_revisions",
             "plan_fragment_digest",
             "TEXT",
+        )?;
+
+        // SCHEMA_VERSION 16: a generation token identifies one physical
+        // scene-event association incarnation. Legacy rows deliberately use
+        // the empty token so tokenless journals can only match migrated state.
+        Self::add_column_if_missing(
+            &conn,
+            "scene_events",
+            "incarnation_token",
+            "TEXT NOT NULL DEFAULT ''",
         )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
@@ -6368,5 +6369,50 @@ mod tests {
             )
             .expect("unique probe");
         assert_eq!(unique, 0, "semantic_key index must remain non-unique");
+    }
+
+    #[test]
+    fn schema_16_migrates_scene_event_rows_to_the_legacy_incarnation() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('p1', 'Project');
+                 INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content, sort_order)
+                 VALUES ('s1', 'p1', 'scene', 'Scene', '{}', 'a0');
+                 INSERT INTO events
+                    (id, project_id, title, ordinal, created_at, updated_at)
+                 VALUES ('e1', 'p1', 'Event', 'a0', datetime('now'), datetime('now'));
+                 INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+                 VALUES ('s1', 'e1', 'pre-v16-placeholder');
+                 ALTER TABLE scene_events DROP COLUMN incarnation_token;",
+            )?;
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            Ok(())
+        })
+        .expect("simulate schema 15 workspace");
+
+        db.migrate().expect("migrate schema 15 to 16");
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let token: String = conn.query_row(
+                "SELECT incarnation_token FROM scene_events
+                 WHERE scene_id = 's1' AND event_id = 'e1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            assert_eq!(token, "");
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            Ok(())
+        })
+        .expect("verify schema 16 scene-event migration");
     }
 }

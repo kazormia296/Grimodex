@@ -13,6 +13,12 @@ import {
 } from "./detailOcc";
 import { invoke } from "@/lib/tauri";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import type {
+  DetailBindingSource,
+  DetailProjectionKind,
+  DetailTemporalPolicy,
+  StateFacet,
+} from "./details/semanticBindingTypes";
 
 export interface ContextDetail {
   entryId: string;
@@ -134,6 +140,14 @@ export async function createDefinition(data: {
   fieldConfig?: string | null;
   sortOrder?: number;
   includeInContext?: number;
+  semanticBinding?: {
+    id: string;
+    facetKey: StateFacet;
+    projectionKind: DetailProjectionKind;
+    temporalPolicy: DetailTemporalPolicy;
+    source: DetailBindingSource;
+    confirmed: boolean;
+  };
 }): Promise<CodexDetailDefinition> {
   await invoke("agent_codex_mutate", {
     payload: {
@@ -148,6 +162,9 @@ export async function createDefinition(data: {
       fieldConfig: data.fieldConfig ?? null,
       sortOrder: data.sortOrder ?? 0,
       includeInContext: data.includeInContext ?? 0,
+      ...(data.semanticBinding
+        ? { semanticBinding: data.semanticBinding }
+        : {}),
     },
   });
   const rows = await db

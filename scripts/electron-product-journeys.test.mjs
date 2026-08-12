@@ -294,6 +294,17 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /workspace B received workspace A pending editor text/);
   assert.match(source, /clean-external-write-reloaded/);
   assert.match(source, /dirty-external-write-conflict/);
+  assert.match(source, /"tree_node_patch"/);
+  assert.match(source, /baseVersion/);
+  assert.match(source, /changeEvent:\s*\{/);
+  assert.match(source, /eventUid/);
+  assert.match(source, /sessionId:\s*"external-product-journey"/);
+  assert.match(source, /"agent_codex_create"/);
+  assert.doesNotMatch(source, /INSERT INTO codex_entries/);
+  assert.doesNotMatch(source, /UPDATE tree_nodes SET content/);
+  assert.doesNotMatch(source, /INSERT INTO change_events/);
+  assert.doesNotMatch(source, /`prev-\$\{eventUid\}`/);
+  assert.doesNotMatch(source, /`hash-\$\{eventUid\}`/);
   assert.match(source, /undoHistoryInvalidated/);
   assert.match(source, /external-edit-reload/);
   assert.match(source, /chat-late-chunk-isolated/);
@@ -319,6 +330,33 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /project_snapshot_create/);
   assert.match(source, /project_snapshot_restore_context/);
   assert.match(source, /snapshot-native-roundtrip-restored/);
+});
+
+test("native round-trip fixtures route protected narrative seeds through typed writers", async () => {
+  const source = await read(
+    "electron/scripts/product-journey-native-roundtrips.mjs",
+  );
+  const registry = JSON.parse(
+    await read("policies/narrative/protected-writers.json"),
+  );
+  const protectedTables = new Set(
+    registry
+      .filter((entry) => entry.enforcement === "active")
+      .map((entry) => entry.table.toLowerCase()),
+  );
+  const mutationTargets = [
+    ...source.matchAll(
+      /\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_]+)/gi,
+    ),
+  ].map((match) => match[1].toLowerCase());
+
+  assert.match(source, /"agent_event_create"/);
+  assert.match(source, /"tree_node_create"/);
+  assert.deepEqual(
+    mutationTargets.filter((table) => protectedTables.has(table)),
+    [],
+    "product fixtures must not seed active protected tables through generic SQL",
+  );
 });
 
 test("product harness enables only the deterministic main-boundary AI provider", async () => {

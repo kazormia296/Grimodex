@@ -847,12 +847,38 @@ describe("projectSnapshotApi", () => {
       sortOrder: "a1",
     });
     await db.insert(plotThreads).values([
-      { id: "t-a", projectId: PROJECT_ID, name: "A", sortOrder: "a0" },
-      { id: "t-b", projectId: PROJECT_ID, name: "B", sortOrder: "a1" },
+      {
+        id: "t-a",
+        projectId: PROJECT_ID,
+        name: "A",
+        sortOrder: "a0",
+        version: 0,
+      },
+      {
+        id: "t-b",
+        projectId: PROJECT_ID,
+        name: "B",
+        sortOrder: "a1",
+        version: 0,
+      },
     ]);
     await db.insert(plotThreadSceneLinks).values([
-      { id: "m-a", threadId: "t-a", nodeId: "s1", phaseType: "develop" },
-      { id: "m-b", threadId: "t-b", nodeId: "s2", phaseType: "develop" },
+      {
+        id: "m-a",
+        threadId: "t-a",
+        nodeId: "s1",
+        phaseType: "develop",
+        semanticKey: "t-a|s1|develop",
+        version: 0,
+      },
+      {
+        id: "m-b",
+        threadId: "t-b",
+        nodeId: "s2",
+        phaseType: "develop",
+        semanticKey: "t-b|s2|develop",
+        version: 0,
+      },
     ]);
     await db.insert(plotThreadBranches).values({
       id: "br-1",
@@ -861,6 +887,8 @@ describe("projectSnapshotApi", () => {
       toThreadId: "t-b",
       atNodeId: "s1",
       kind: "branch",
+      semanticKey: "t-a|t-b|s1|branch",
+      version: 0,
     });
 
     const snap = await createProjectSnapshot({ name: "plot-checkpoint" });
@@ -950,6 +978,7 @@ describe("projectSnapshotApi", () => {
     await run(`CREATE TABLE IF NOT EXISTS scene_events (
       scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
       event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      incarnation_token TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (scene_id, event_id)
     )`);
     await run(`CREATE TABLE IF NOT EXISTS event_participants (
@@ -1031,10 +1060,10 @@ describe("projectSnapshotApi", () => {
         now,
       ],
     );
-    await run("INSERT INTO scene_events (scene_id, event_id) VALUES (?,?)", [
-      "s1",
-      "e1",
-    ]);
+    await run(
+      "INSERT INTO scene_events (scene_id, event_id, incarnation_token) VALUES (?,?,?)",
+      ["s1", "e1", "captured-scene-event-incarnation"],
+    );
     await run(
       "INSERT INTO event_participants (event_id, codex_entry_id, role) VALUES (?,?,?)",
       ["e1", "cx-1", "protagonist"],
@@ -1079,11 +1108,25 @@ describe("projectSnapshotApi", () => {
     expect(ev.rows.map((r) => r.id)).toEqual(["e1", "e2"]);
     expect(ev.rows.find((r) => r.id === "e1")?.primary_codex_id).toBe("cx-1");
 
-    const links = await all<{ scene_id: string; event_id: string }>(
-      "SELECT scene_id, event_id FROM scene_events WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",
+    const links = await all<{
+      scene_id: string;
+      event_id: string;
+      incarnation_token: string;
+    }>(
+      "SELECT scene_id, event_id, incarnation_token FROM scene_events WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",
       [PROJECT_ID],
     );
-    expect(links.rows).toEqual([{ scene_id: "s1", event_id: "e1" }]);
+    expect(links.rows).toEqual([
+      {
+        scene_id: "s1",
+        event_id: "e1",
+        incarnation_token: expect.any(String),
+      },
+    ]);
+    expect(links.rows[0]?.incarnation_token).not.toBe(
+      "captured-scene-event-incarnation",
+    );
+    expect(links.rows[0]?.incarnation_token).not.toBe("");
 
     const rels = await all<{ cause_event_id: string; effect_event_id: string }>(
       "SELECT cause_event_id, effect_event_id FROM event_relations WHERE project_id = ?",
@@ -1208,6 +1251,7 @@ describe("projectSnapshotApi", () => {
     await run(`CREATE TABLE IF NOT EXISTS scene_events (
       scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
       event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      incarnation_token TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (scene_id, event_id)
     )`);
     await run(`CREATE TABLE IF NOT EXISTS event_participants (

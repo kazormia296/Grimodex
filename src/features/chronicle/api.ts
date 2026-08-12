@@ -22,6 +22,7 @@ import {
   agentUpdateEvent,
   agentDeleteEvent,
   agentLinkSceneEvent,
+  agentLinkSceneEventsBatch,
   agentUnlinkSceneEvent,
   agentAddEventRelation,
   agentRemoveEventRelation,
@@ -453,9 +454,9 @@ export async function linkSceneToEvent(
 /**
  * 1 event へ複数シーンを一括リンク（importExtractedEvents 用）。
  * linkSceneToEvent をシーンごとに呼ぶと検証 SELECT が 2×N 回走る（N+1）ため、
- * event 検証 1 回＋scene 検証を inArray で 1 回に畳み、insert も 1 文にする。
+ * event 検証 1 回＋scene 検証を inArray で 1 回に畳み、native の一括書き込みへ渡す。
  * 挙動は per-scene 呼び出しと同じ（不正 id は黙ってスキップ / 既存リンクは
- * onConflictDoNothing / timelapse 記録はリンクごと）。
+ * no-op）。timelapse には実際に追加された sceneIds を 1 batch event で記録する。
  */
 export async function linkScenesToEvent(
   projectId: string,
@@ -472,14 +473,20 @@ export async function linkScenesToEvent(
     .select({ id: treeNodes.id })
     .from(treeNodes)
     .where(
-      and(inArray(treeNodes.id, sceneIds), eq(treeNodes.projectId, projectId)),
+      and(
+        inArray(treeNodes.id, sceneIds),
+        eq(treeNodes.projectId, projectId),
+        eq(treeNodes.nodeType, "scene"),
+      ),
     );
   const valid = new Set(sceneRows.map((r) => r.id));
   const targets = [...new Set(sceneIds)].filter((id) => valid.has(id));
-  const writeOpts = manualApiWriteOpts(projectId);
-  for (const sceneId of targets) {
-    await agentLinkSceneEvent(sceneId, eventId, writeOpts);
-  }
+  if (targets.length === 0) return;
+  await agentLinkSceneEventsBatch(
+    targets,
+    eventId,
+    manualApiWriteOpts(projectId),
+  );
 }
 
 export async function unlinkSceneFromEvent(

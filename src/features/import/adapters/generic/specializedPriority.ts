@@ -10,7 +10,9 @@ export type SpecializedImportAdapterId =
   (typeof SPECIALIZED_IMPORT_ADAPTER_IDS)[number];
 
 export function isSpecializedImportAdapter(adapterId: string): boolean {
-  return (SPECIALIZED_IMPORT_ADAPTER_IDS as readonly string[]).includes(adapterId);
+  return (SPECIALIZED_IMPORT_ADAPTER_IDS as readonly string[]).includes(
+    adapterId,
+  );
 }
 
 export function resolvePreferredImportAdapterId(input: {

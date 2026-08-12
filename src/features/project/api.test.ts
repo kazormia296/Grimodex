@@ -29,13 +29,11 @@ vi.mock("@/features/ime/workspaceScope", () => ({
 }));
 
 const returningMock = vi.fn().mockResolvedValue([{ id: "p1", language: "en" }]);
-const deleteWhereMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/db/client", () => ({
   db: {
     update: () => ({
       set: () => ({ where: () => ({ returning: returningMock }) }),
     }),
-    delete: () => ({ where: deleteWhereMock }),
   },
 }));
 
@@ -189,7 +187,7 @@ describe("deleteProject", () => {
   beforeEach(() => {
     pendingCompletedTurnPersistence.discard();
     cancelScheduledImeExportsMock.mockClear();
-    deleteWhereMock.mockClear();
+    invokeMock.mockClear();
     removeImeProjectExportWithRetryMock.mockClear();
   });
   afterEach(() => {
@@ -208,7 +206,9 @@ describe("deleteProject", () => {
       2,
       "default-project",
     );
-    expect(deleteWhereMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledWith("project_delete", {
+      payload: { projectId: "default-project" },
+    });
     expect(removeImeProjectExportWithRetryMock).toHaveBeenCalledWith(
       "default-project",
       imeWorkspaceIdentity,
@@ -249,7 +249,7 @@ describe("deleteProject", () => {
       "still waiting to be saved",
     );
     expect(cancelScheduledImeExportsMock).not.toHaveBeenCalled();
-    expect(deleteWhereMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
     expect(removeImeProjectExportWithRetryMock).not.toHaveBeenCalled();
   });
 });

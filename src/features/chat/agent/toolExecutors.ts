@@ -1930,9 +1930,24 @@ async function updateForeshadowTool(
       error: "id is required",
     };
   }
+  const baseVersion = params["baseVersion"];
+  if (
+    typeof baseVersion !== "number" ||
+    !Number.isSafeInteger(baseVersion) ||
+    baseVersion < 0
+  ) {
+    return {
+      name: "update_foreshadow",
+      content: null,
+      summary: "baseVersion is required and must be a non-negative integer",
+      tokensUsed: 0,
+      error: "baseVersion is required and must be a non-negative integer",
+    };
+  }
   try {
     const item = await agentUpdateForeshadow({
       foreshadowId: id,
+      baseVersion,
       title:
         params["title"] !== undefined ? String(params["title"]) : undefined,
       intent:

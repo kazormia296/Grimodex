@@ -20,7 +20,11 @@ export type PackageDigestExcludedField =
 export function packageDigestPayload(
   value: ImportSourcePackageDraft | ImportSourcePackage,
 ): Omit<ImportSourcePackageDraft, PackageDigestExcludedField> {
-  const { createdAt: _createdAt, digest: _digest, ...rest } = value as ImportSourcePackageDraft &
+  const {
+    createdAt: _createdAt,
+    digest: _digest,
+    ...rest
+  } = value as ImportSourcePackageDraft &
     Partial<Pick<ImportSourcePackage, "digest">>;
   return rest;
 }

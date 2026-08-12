@@ -61,9 +61,17 @@ export const textDecoder: ImportDecoder = {
       decoderVersion: DESCRIPTOR.version,
       encoding: input.encoding ?? "utf-8",
       blocks: buildBlocks(input, text),
-      diagnostics: text.length === 0
-        ? [importDiagnostic("warn", "empty-content", "Decoded text is empty", input.relativePath)]
-        : [],
+      diagnostics:
+        text.length === 0
+          ? [
+              importDiagnostic(
+                "warn",
+                "empty-content",
+                "Decoded text is empty",
+                input.relativePath,
+              ),
+            ]
+          : [],
     };
   },
 };

@@ -1,7 +1,5 @@
 import type { ProposalBase } from "./createCodexRelationProposal";
-import type {
-  PhaseDetailWrite,
-} from "@/features/codex/details/semanticBindingTypes";
+import type { PhaseDetailWrite } from "@/features/codex/details/semanticBindingTypes";
 import type { NarrativeEntityId } from "../ir/inferences/codexEntityHypothesis";
 import type { KnowledgePhaseRef } from "@/features/codex/extraction/existingPhaseMatcher";
 
@@ -79,7 +77,9 @@ export interface BindCodexPhaseProposalOptions {
 }
 
 function resolveId(options: BindCodexPhaseProposalOptions | undefined): string {
-  return options?.proposalId ?? (options?.createId ?? (() => crypto.randomUUID()))();
+  return (
+    options?.proposalId ?? (options?.createId ?? (() => crypto.randomUUID()))()
+  );
 }
 
 function assertNoForbiddenOverrides(payload: BindCodexPhasePayload): void {
@@ -109,7 +109,9 @@ export function createNewBindCodexPhaseProposal(
     kind: CODEX_PHASE_BIND_PROPOSAL_KIND,
     target: {
       kind: "new",
-      logicalRef: options?.logicalRef ?? `phase:${payload.narrativeEntityId}:${payload.anchorDocumentRef}`,
+      logicalRef:
+        options?.logicalRef ??
+        `phase:${payload.narrativeEntityId}:${payload.anchorDocumentRef}`,
     },
     payload: full,
     dependencies: options?.dependencies ?? [],

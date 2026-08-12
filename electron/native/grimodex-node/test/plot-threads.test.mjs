@@ -42,6 +42,24 @@ async function listLinks(projectId = PROJECT) {
   return JSON.parse(await backend.plotThreadListLinks(projectId));
 }
 
+async function createScene(id, projectId = PROJECT) {
+  return JSON.parse(
+    await backend.treeNodeCreate({
+      id,
+      projectId,
+      parentId: null,
+      nodeType: "scene",
+      title: id,
+      sortOrder: `test-${id}`,
+      synopsis: null,
+      status: null,
+      sourceUri: null,
+      sourceMtime: null,
+      content: "{}",
+    }),
+  );
+}
+
 test("workspace 未オープンの plotThreadList は 'No workspace is open' で reject する", async () => {
   await assert.rejects(backend.plotThreadList(PROJECT), (err) => {
     assert.match(String(err.message), /No workspace is open/);
@@ -80,23 +98,40 @@ test("plotThreadCreate → list → update roundtrip（生行 snake_case）", as
     await backend.plotThreadUpdate(created.id, {
       name: "改名した糸",
       description: "説明",
+      baseVersion: created.version,
     }),
   );
   assert.equal(updated.name, "改名した糸");
   assert.equal(updated.description, "説明");
 
+  // Explicit JSON null must remain distinct from an omitted PATCH field.
+  const cleared = JSON.parse(
+    await backend.plotThreadUpdate(created.id, {
+      color: null,
+      description: null,
+      baseVersion: updated.version,
+    }),
+  );
+  assert.equal(cleared.color, null);
+  assert.equal(cleared.description, null);
+  assert.equal(cleared.version, updated.version + 1);
+
   // 空 patch は現行行をそのまま返す（updated_at も変えない契約）。
-  const noop = JSON.parse(await backend.plotThreadUpdate(created.id, {}));
+  const noop = JSON.parse(
+    await backend.plotThreadUpdate(created.id, {
+      baseVersion: cleared.version,
+    }),
+  );
   assert.equal(noop.name, "改名した糸");
-  assert.equal(noop.updated_at, updated.updated_at);
+  assert.equal(noop.color, null);
+  assert.equal(noop.description, null);
+  assert.equal(noop.version, cleared.version);
+  assert.equal(noop.updated_at, cleared.updated_at);
 });
 
 test("plotThreadLinkCreate は phase_type を検証し、正常リンクを作る", async () => {
   // 同 project にシーンを 1 つ用意する。
-  await run(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s1', ?, 'scene', 'S1')",
-    [PROJECT],
-  );
+  await createScene("s1");
   const [thread] = await listThreads();
 
   // 不正 phase_type は 'invalid phase_type' で reject（サーバサイド検証）。
@@ -120,25 +155,35 @@ test("plotThreadLinkCreate は phase_type を検証し、正常リンクを作�
       nodeId: "s1",
       phaseType: "introduce",
       note: "伏線",
-      sortOrder: null,
+      sortOrder: "marker-a0",
     }),
   );
   assert.equal(link.thread_id, thread.id);
   assert.equal(link.node_id, "s1");
   assert.equal(link.phase_type, "introduce");
   assert.equal(link.note, "伏線");
+  assert.equal(link.sort_order, "marker-a0");
+
+  const cleared = JSON.parse(
+    await backend.plotThreadLinkUpdate(link.id, {
+      note: null,
+      sortOrder: null,
+      baseVersion: link.version,
+    }),
+  );
+  assert.equal(cleared.note, null);
+  assert.equal(cleared.sort_order, null);
+  assert.equal(cleared.version, link.version + 1);
 
   const links = await listLinks();
   assert.equal(links.length, 1);
-  assert.equal(links[0].id, link.id);
+  assert.equal(links[0].id, cleared.id);
 });
 
 test("XPROJ ガード: 別 project のシーンへのリンクは reject する（Electron でも効く）", async () => {
   // 別 project p2 とそのシーン s2 を用意。
   await run("INSERT INTO projects (id) VALUES ('p2')");
-  await run(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s2', 'p2', 'scene', 'S2')",
-  );
+  await createScene("s2", "p2");
   const [thread] = await listThreads(); // default-project のスレッド
 
   await assert.rejects(
@@ -150,7 +195,7 @@ test("XPROJ ガード: 別 project のシーンへのリンクは reject する�
       sortOrder: null,
     }),
     (err) => {
-      assert.match(String(err.message), /same project/);
+      assert.match(String(err.message), /snapshot project/);
       return true;
     },
   );
@@ -170,7 +215,10 @@ test("XPROJ ガード: link_update の別 project スレッドへの移動も re
   const [link] = await listLinks();
 
   await assert.rejects(
-    backend.plotThreadLinkUpdate(link.id, { threadId: p2thread.id }),
+    backend.plotThreadLinkUpdate(link.id, {
+      threadId: p2thread.id,
+      baseVersion: link.version,
+    }),
     (err) => {
       assert.match(String(err.message), /same project/);
       return true;
@@ -232,7 +280,7 @@ test("plotThreadBranchCreate は native transaction で XPROJ と durable replay
     /same project/,
   );
 
-  await run("DELETE FROM plot_thread_branches WHERE id = ?", [payload.id]);
+  await backend.plotThreadBranchDelete(payload.id, created.version);
   const deletedReplay = JSON.parse(
     await backend.plotThreadBranchCreate(payload),
   );
@@ -248,15 +296,12 @@ test("plotThreadBranchCreate は native transaction で XPROJ と durable replay
     ),
   ).rows;
   assert.deepEqual(rows, []);
-  await backend.plotThreadDelete(from.id);
-  await backend.plotThreadDelete(to.id);
+  await backend.plotThreadDelete(from.id, from.version);
+  await backend.plotThreadDelete(to.id, to.version);
 });
 
 test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で確定・再送する", async () => {
-  await run(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s-move', ?, 'scene', 'Move')",
-    [PROJECT],
-  );
+  await createScene("s-move");
   const from = JSON.parse(
     await backend.plotThreadCreate({
       id: "move-from-thread",
@@ -294,6 +339,8 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
     phaseType: rawLink.phase_type,
     note: rawLink.note,
     sortOrder: rawLink.sort_order,
+    semanticKey: rawLink.semantic_key,
+    version: rawLink.version,
     createdAt: rawLink.created_at,
     updatedAt: rawLink.updated_at,
   };
@@ -301,6 +348,8 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
     ...markerBefore,
     threadId: to.id,
     nodeId: "s-move",
+    semanticKey: `${to.id}|s-move|turn`,
+    version: markerBefore.version + 1,
     updatedAt: "2026-07-29T04:00:00.000Z",
   };
   const branchAfter = {
@@ -310,6 +359,8 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
     toThreadId: to.id,
     atNodeId: "s-move",
     kind: "branch",
+    semanticKey: `${from.id}|${to.id}|s-move|branch`,
+    version: 0,
     createdAt: "2026-07-29T04:00:00.000Z",
     updatedAt: "2026-07-29T04:00:00.000Z",
   };
@@ -353,8 +404,8 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
     branches: 1,
   });
 
-  await backend.plotThreadDelete(from.id);
-  await backend.plotThreadDelete(to.id);
+  await backend.plotThreadDelete(from.id, from.version);
+  await backend.plotThreadDelete(to.id, to.version);
 });
 
 test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic replay を守る", async () => {
@@ -370,6 +421,7 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     endNodeId: "s1",
     createdAt: "2026-07-28T03:00:00.000Z",
     updatedAt: "2026-07-28T03:01:00.000Z",
+    version: 0,
   };
   const link = {
     id: "snapshot-napi-link",
@@ -378,6 +430,8 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     phaseType: "turn",
     note: "N-API marker",
     sortOrder: "a0",
+    semanticKey: `${thread.id}|s1|turn`,
+    version: 0,
     createdAt: "2026-07-28T03:02:00.000Z",
     updatedAt: "2026-07-28T03:03:00.000Z",
   };
@@ -388,6 +442,8 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     toThreadId: thread.id,
     atNodeId: "s1",
     kind: "branch",
+    semanticKey: `${sourceThread.id}|${thread.id}|s1|branch`,
+    version: 0,
     createdAt: "2026-07-28T03:04:00.000Z",
     updatedAt: "2026-07-28T03:05:00.000Z",
   };
@@ -406,9 +462,12 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     replayed: false,
     entityPresent: true,
   });
-  assert.deepEqual(restored.thread, thread);
-  assert.deepEqual(restored.links, [link]);
-  assert.deepEqual(restored.branches, [branch]);
+  const restoredThread = { ...thread, version: thread.version + 1 };
+  const restoredLink = { ...link, version: link.version + 1 };
+  const restoredBranch = { ...branch, version: branch.version + 1 };
+  assert.deepEqual(restored.thread, restoredThread);
+  assert.deepEqual(restored.links, [restoredLink]);
+  assert.deepEqual(restored.branches, [restoredBranch]);
   const exactRestore = JSON.parse(
     await backend.plotThreadRestoreSnapshot(restorePayload),
   );
@@ -417,16 +476,30 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     entityPresent: true,
   });
 
-  await run(
-    "UPDATE plot_thread_scene_links SET note = 'changed', updated_at = 'changed-at' WHERE id = ?",
-    [link.id],
+  const changedLinkRow = JSON.parse(
+    await backend.plotThreadLinkUpdate(restoredLink.id, {
+      note: "changed",
+      baseVersion: restoredLink.version,
+    }),
   );
+  const changedLink = {
+    id: changedLinkRow.id,
+    threadId: changedLinkRow.thread_id,
+    nodeId: changedLinkRow.node_id,
+    phaseType: changedLinkRow.phase_type,
+    note: changedLinkRow.note,
+    sortOrder: changedLinkRow.sort_order,
+    semanticKey: changedLinkRow.semantic_key,
+    version: changedLinkRow.version,
+    createdAt: changedLinkRow.created_at,
+    updatedAt: changedLinkRow.updated_at,
+  };
   await assert.rejects(
     backend.plotThreadDeleteSnapshot({
       requestId: "snapshot-napi-delete-stale",
       projectId: PROJECT,
-      link,
-      branches: [branch],
+      link: restoredLink,
+      branches: [restoredBranch],
     }),
     /PLOT_THREAD_DELETE_PRECONDITION_FAILED/,
   );
@@ -439,16 +512,11 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     ),
   ).rows;
   assert.deepEqual(staleLedger, []);
-  await run(
-    "UPDATE plot_thread_scene_links SET note = ?, updated_at = ? WHERE id = ?",
-    [link.note, link.updatedAt, link.id],
-  );
-
   const deletePayload = {
     requestId: "snapshot-napi-delete",
     projectId: PROJECT,
-    link,
-    branches: [branch],
+    link: changedLink,
+    branches: [restoredBranch],
   };
   const deleted = JSON.parse(
     await backend.plotThreadDeleteSnapshot(deletePayload),
@@ -467,9 +535,11 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
   });
 
   await backend.plotThreadRestoreSnapshot({
-    ...restorePayload,
     requestId: "snapshot-napi-recreate",
+    projectId: PROJECT,
     thread: null,
+    links: [changedLink],
+    branches: [restoredBranch],
   });
   const staleDelete = JSON.parse(
     await backend.plotThreadDeleteSnapshot(deletePayload),
@@ -482,21 +552,24 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     await backend.dbExecute(
       `SELECT id FROM plot_thread_scene_links WHERE id = ?
        UNION ALL SELECT id FROM plot_thread_branches WHERE id = ?`,
-      [link.id, branch.id],
+      [changedLink.id, restoredBranch.id],
       "all",
     ),
   ).rows;
-  assert.deepEqual(recreatedRows, [{ id: link.id }, { id: branch.id }]);
+  assert.deepEqual(recreatedRows, [
+    { id: changedLink.id },
+    { id: restoredBranch.id },
+  ]);
 
-  await backend.plotThreadDelete(thread.id);
+  await backend.plotThreadDelete(restoredThread.id, restoredThread.version);
 });
 
 test("plotThreadLinkDelete / plotThreadDelete は対象を消す", async () => {
   const [link] = await listLinks();
-  await backend.plotThreadLinkDelete(link.id);
+  await backend.plotThreadLinkDelete(link.id, link.version);
   assert.deepEqual(await listLinks(), []);
 
   const [thread] = await listThreads();
-  await backend.plotThreadDelete(thread.id);
+  await backend.plotThreadDelete(thread.id, thread.version);
   assert.deepEqual(await listThreads(), []);
 });

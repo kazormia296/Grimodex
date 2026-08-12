@@ -42,7 +42,10 @@ export function GenericRolePicker({
       data-testid="generic-import-role-picker"
     >
       <p className="text-sm text-muted-foreground">
-        {t("import.generic.rolePickerHint", "リソースの semantic role を確認します（プレビュー）。")}
+        {t(
+          "import.generic.rolePickerHint",
+          "リソースの semantic role を確認します（プレビュー）。",
+        )}
       </p>
       <div className="flex flex-wrap gap-1">
         {ROLE_OPTIONS.map((option) => (

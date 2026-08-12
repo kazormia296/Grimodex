@@ -9,12 +9,150 @@
 //! (undo_journal / change_events の tracked write) は使わない。tracked な
 //! foreshadow 生成は agent_writes 側の別コマンド。
 
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use super::{
     idempotency::{load_row, payload_fingerprint, run_atomic_create, IdempotencyRequest},
-    BatchStatement, Database,
+    Database,
 };
+use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+
+type PayoffRootState = (Option<String>, Option<i64>, Option<i64>, i64);
+type PayoffUpdateState = (String, Option<String>, Option<i64>, Option<i64>, i64);
+
+pub(crate) fn setup_semantic_key(
+    foreshadow_id: &str,
+    scene_id: &str,
+    from_pos: i64,
+    to_pos: i64,
+) -> String {
+    format!("{foreshadow_id}|{scene_id}|{from_pos}|{to_pos}")
+}
+
+pub(crate) fn setup_semantic_key_for_upsert(
+    setup_id: &str,
+    foreshadow_id: &str,
+    scene_id: &str,
+    from_pos: i64,
+    to_pos: i64,
+    existing_semantic_key: Option<&str>,
+) -> String {
+    let natural_key = setup_semantic_key(foreshadow_id, scene_id, from_pos, to_pos);
+    let legacy_duplicate_key = format!("{natural_key}#dup:{setup_id}");
+    if existing_semantic_key == Some(legacy_duplicate_key.as_str()) {
+        legacy_duplicate_key
+    } else {
+        natural_key
+    }
+}
+
+fn with_immediate_transaction<T>(
+    db: &Database,
+    operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = operation(conn);
+        match result {
+            Ok(value) => match conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(value),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    })
+}
+
+fn load_foreshadow_row_in_tx(conn: &Connection, id: &str) -> anyhow::Result<Value> {
+    let rows = Database::execute_with_conn(
+        conn,
+        "SELECT * FROM foreshadows WHERE id = ?",
+        &[Value::String(id.to_string())],
+        "get",
+    )?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(Value::Object)
+        .unwrap_or(Value::Null))
+}
+
+/// Publish a child aggregate mutation through the root OCC token. The caller
+/// holds BEGIN IMMEDIATE, so the read + CAS increment is atomic. Pure no-ops
+/// return the unchanged authoritative row without advancing the token.
+pub(crate) fn finish_foreshadow_child_write(
+    conn: &Connection,
+    foreshadow_id: &str,
+    changed: bool,
+    expected_base_version: Option<i64>,
+    now: i64,
+) -> anyhow::Result<Value> {
+    if changed {
+        let current_version: i64 = conn.query_row(
+            "SELECT version FROM foreshadows WHERE id = ?1",
+            params![foreshadow_id],
+            |row| row.get(0),
+        )?;
+        if let Some(expected) = expected_base_version {
+            anyhow::ensure!(
+                current_version == expected,
+                "FORESHADOW_VERSION_MISMATCH: expected version {expected}, found {current_version}"
+            );
+        }
+        let next_version = current_version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("foreshadow version overflow"))?;
+        let updated = conn.execute(
+            "UPDATE foreshadows
+                SET version = ?1, updated_at = ?2
+              WHERE id = ?3 AND version = ?4",
+            params![next_version, now, foreshadow_id, current_version],
+        )?;
+        anyhow::ensure!(
+            updated == 1,
+            "FORESHADOW_VERSION_MISMATCH: expected version {current_version}"
+        );
+    }
+    load_foreshadow_row_in_tx(conn, foreshadow_id)
+}
+
+fn validate_setup_anchor_ownership(
+    conn: &Connection,
+    foreshadow_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<()> {
+    let projects: Option<(String, String)> = conn
+        .query_row(
+            "SELECT f.project_id, scene.project_id
+               FROM foreshadows f
+               JOIN tree_nodes scene ON scene.id = ?2 AND scene.node_type = 'scene'
+              WHERE f.id = ?1",
+            params![foreshadow_id, scene_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match projects {
+        Some((foreshadow_project_id, scene_project_id))
+            if foreshadow_project_id == scene_project_id =>
+        {
+            Ok(())
+        }
+        Some(_) => anyhow::bail!("foreshadow setup anchor must belong to the same project"),
+        None => anyhow::bail!(
+            "foreshadow setup anchor must reference an existing foreshadow and scene in the same project"
+        ),
+    }
+}
 
 // ─────────────────────────── DTO ───────────────────────────
 
@@ -53,18 +191,33 @@ pub struct ForeshadowCreatePayload {
     codex_link_dirty_at: Option<i64>,
 }
 
+fn deserialize_present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForeshadowPatch {
+    base_version: i64,
     title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     intent: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     notes: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     payoff_scene_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     payoff_from_pos: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     payoff_to_pos: Option<Option<i64>>,
     payoff_confirmed: Option<bool>,
     abandoned: Option<bool>,
     secret: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     load_bearing: Option<Option<String>>,
 }
 
@@ -72,6 +225,7 @@ pub struct ForeshadowPatch {
 #[serde(rename_all = "camelCase")]
 pub struct OrphanResolvePayload {
     setup_id: String,
+    base_version: i64,
     action: String,
     scene_id: Option<String>,
     from_pos: Option<i64>,
@@ -83,6 +237,7 @@ pub struct OrphanResolvePayload {
 pub struct SetupAnchorInput {
     id: String,
     foreshadow_id: String,
+    base_version: i64,
     scene_id: String,
     from_pos: i64,
     to_pos: i64,
@@ -92,6 +247,7 @@ pub struct SetupAnchorInput {
 #[serde(rename_all = "camelCase")]
 pub struct PayoffAnchorInput {
     foreshadow_id: String,
+    base_version: i64,
     scene_id: String,
     from_pos: i64,
     to_pos: i64,
@@ -109,10 +265,15 @@ pub struct AnchorMarkOutput {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForeshadowSetupPatch {
+    base_version: i64,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     strength: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     ai_strength: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     ai_reasoning: Option<Option<String>>,
     is_orphan: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     last_evaluated_at: Option<Option<i64>>,
 }
 
@@ -125,6 +286,7 @@ pub struct ForeshadowSetupPatch {
 pub struct SetupCreateAiInput {
     pub id: String,
     pub foreshadow_id: String,
+    pub base_version: i64,
     pub scene_id: String,
     pub from_pos: i64,
     pub to_pos: i64,
@@ -203,6 +365,26 @@ fn validate_payoff_anchor(
             "foreshadow payoff positions must both be null or satisfy 0 <= from <= to"
         )),
     }
+}
+
+fn validate_payoff_scene_ownership(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<()> {
+    let scene_project_id: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM tree_nodes
+              WHERE id = ?1 AND node_type = 'scene'",
+            params![scene_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    anyhow::ensure!(
+        scene_project_id.as_deref() == Some(project_id),
+        "foreshadow payoff scene must reference an existing same project scene"
+    );
+    Ok(())
 }
 
 fn in_placeholders(count: usize) -> String {
@@ -284,19 +466,7 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
                 payoff_to_pos,
             )?;
             if let Some(scene_id) = payoff_scene_id.as_deref() {
-                let scene = Database::execute_with_conn(
-                    conn,
-                    "SELECT project_id FROM tree_nodes WHERE id = ?",
-                    &[Value::String(scene_id.to_string())],
-                    "get",
-                )?;
-                if scene.first().and_then(|row| row.get("project_id")).and_then(Value::as_str)
-                    != Some(project_id.as_str())
-                {
-                    return Err(anyhow::anyhow!(
-                        "foreshadow payoff scene must belong to the same project"
-                    ));
-                }
+                validate_payoff_scene_ownership(conn, &project_id, scene_id)?;
             }
             Database::execute_with_conn(
                 conn,
@@ -418,13 +588,17 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
 }
 
 pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        patch.base_version >= 0,
+        "foreshadow baseVersion must be non-negative"
+    );
+    let base_version = patch.base_version;
     if let Some(ref lb) = patch.load_bearing {
         validate_load_bearing(lb.as_deref())?;
     }
-    let payoff_scene_for_validation = patch
-        .payoff_scene_id
-        .as_ref()
-        .and_then(|scene_id| scene_id.clone());
+    let payoff_scene_patch = patch.payoff_scene_id.clone();
+    let payoff_from_patch = patch.payoff_from_pos;
+    let payoff_to_patch = patch.payoff_to_pos;
     let now = chrono::Utc::now().timestamp_millis();
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
@@ -480,56 +654,80 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
 
     if sets.is_empty() {
         let rows = db.execute(
-            "SELECT * FROM foreshadows WHERE id = ?",
-            &[Value::String(id)],
+            "SELECT * FROM foreshadows WHERE id = ? AND version = ?",
+            &[Value::String(id), Value::Number(base_version.into())],
             "get",
         )?;
-        return Ok(rows
-            .first()
-            .cloned()
-            .map(Value::Object)
-            .unwrap_or(Value::Null));
+        anyhow::ensure!(
+            !rows.is_empty(),
+            "FORESHADOW_VERSION_MISMATCH: row missing or expected version {base_version} is stale"
+        );
+        return Ok(Value::Object(rows[0].clone()));
     }
 
+    sets.push("version = version + 1");
     sets.push("updated_at = ?");
     params.push(Value::Number(now.into()));
     params.push(Value::String(id.clone()));
+    params.push(Value::Number(base_version.into()));
 
-    let sql = format!("UPDATE foreshadows SET {} WHERE id = ?", sets.join(", "));
+    let sql = format!(
+        "UPDATE foreshadows SET {} WHERE id = ? AND version = ?",
+        sets.join(", ")
+    );
     db.with_conn(|conn| {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
-            if let Some(scene_id) = payoff_scene_for_validation.as_deref() {
-                let owner = Database::execute_with_conn(
-                    conn,
-                    "SELECT project_id FROM foreshadows WHERE id = ?",
-                    &[Value::String(id.clone())],
-                    "get",
-                )?;
-                if let Some(owner_project_id) = owner
-                    .first()
-                    .and_then(|row| row.get("project_id"))
-                    .and_then(Value::as_str)
-                {
-                    let payoff_scene = Database::execute_with_conn(
-                        conn,
-                        "SELECT project_id FROM tree_nodes WHERE id = ?",
-                        &[Value::String(scene_id.to_string())],
-                        "get",
-                    )?;
-                    if payoff_scene
-                        .first()
-                        .and_then(|row| row.get("project_id"))
-                        .and_then(Value::as_str)
-                        != Some(owner_project_id)
-                    {
-                        return Err(anyhow::anyhow!(
-                            "foreshadow payoff scene must belong to the same project"
-                        ));
-                    }
-                }
+            let current: Option<PayoffUpdateState> = conn
+                .query_row(
+                    "SELECT project_id, payoff_scene_id, payoff_from_pos,
+                            payoff_to_pos, version
+                       FROM foreshadows WHERE id = ?1",
+                    params![id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((
+                project_id,
+                current_scene_id,
+                current_from_pos,
+                current_to_pos,
+                current_version,
+            )) = current
+            else {
+                return Err(anyhow::anyhow!(
+                    "FORESHADOW_VERSION_MISMATCH: row missing or expected version {base_version} is stale"
+                ));
+            };
+            anyhow::ensure!(
+                current_version == base_version,
+                "FORESHADOW_VERSION_MISMATCH: expected version {base_version}, found {current_version}"
+            );
+
+            let effective_scene_id = payoff_scene_patch.clone().unwrap_or(current_scene_id);
+            let effective_from_pos = payoff_from_patch.unwrap_or(current_from_pos);
+            let effective_to_pos = payoff_to_patch.unwrap_or(current_to_pos);
+            validate_payoff_anchor(
+                effective_scene_id.as_deref(),
+                effective_from_pos,
+                effective_to_pos,
+            )?;
+            if let Some(scene_id) = effective_scene_id.as_deref() {
+                validate_payoff_scene_ownership(conn, &project_id, scene_id)?;
             }
             Database::execute_with_conn(conn, &sql, &params, "run")?;
+            anyhow::ensure!(
+                conn.changes() == 1,
+                "FORESHADOW_VERSION_MISMATCH: expected version {base_version}"
+            );
             let rows = Database::execute_with_conn(
                 conn,
                 "SELECT * FROM foreshadows WHERE id = ?",
@@ -555,13 +753,96 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
     })
 }
 
-pub fn delete(db: &Database, id: String) -> anyhow::Result<()> {
-    db.execute(
-        "DELETE FROM foreshadows WHERE id = ?",
-        &[Value::String(id)],
-        "run",
-    )?;
-    Ok(())
+pub fn delete(
+    db: &Database,
+    id: String,
+    project_id: String,
+    base_version: i64,
+    session_id: String,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        base_version >= 0,
+        "foreshadow baseVersion must be non-negative"
+    );
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    with_immediate_transaction(db, |conn| {
+        let before =
+            crate::narrative_extraction::collect_aggregate_snapshot(conn, &project_id, &id)
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "FORESHADOW_VERSION_MISMATCH: row missing or inaccessible: {error}"
+                    )
+                })?;
+        let current_version = before
+            .get("version")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow::anyhow!("foreshadow snapshot missing version before delete"))?;
+        anyhow::ensure!(
+            current_version == base_version,
+            "FORESHADOW_VERSION_MISMATCH: expected version {base_version}, found {current_version}"
+        );
+        crate::narrative_extraction::ensure_foreshadow_snapshot_matches(
+            conn,
+            &project_id,
+            &id,
+            &before,
+            base_version,
+        )?;
+
+        let deleted = conn.execute(
+            "DELETE FROM foreshadows
+              WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+            params![id, project_id, base_version],
+        )?;
+        anyhow::ensure!(
+            deleted == 1,
+            "FORESHADOW_VERSION_MISMATCH: expected version {base_version}"
+        );
+
+        let before_json = serde_json::to_string(&before)?;
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id: &project_id,
+                surface: "manual",
+                entity_kind: "foreshadow",
+                entity_id: &id,
+                op_kind: "delete",
+                before_json: Some(&before_json),
+                after_json: None,
+                base_version: current_version,
+                result_version: current_version,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+        append_change_events_in_tx(
+            conn,
+            &project_id,
+            &session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "foreshadow".to_string(),
+                op_type: "foreshadow.delete".to_string(),
+                entity_type: Some("foreshadow".to_string()),
+                entity_id: Some(id.clone()),
+                payload: serde_json::json!({ "baseVersion": base_version }).to_string(),
+                timestamp,
+            }],
+        )?;
+
+        Ok(serde_json::json!({
+            "entityId": id,
+            "projectId": project_id,
+            "version": current_version,
+            "changeEventUid": event_uid,
+            "undoJournalId": undo_id,
+        }))
+    })
 }
 
 /// List foreshadows and their setup rows in a single DB lock acquisition.
@@ -622,7 +903,7 @@ pub fn list_open_for_context(
     project_id: String,
 ) -> anyhow::Result<ForeshadowListWithLabelsResponse> {
     let foreshadow_rows = db.execute(
-        "SELECT id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at \
+        "SELECT id, title, intent, load_bearing, version, payoff_confirmed, abandoned, updated_at \
          FROM foreshadows \
          WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
         &[Value::String(project_id)],
@@ -854,50 +1135,97 @@ pub fn get_setup(db: &Database, setup_id: String) -> anyhow::Result<Option<Value
     Ok(rows.first().cloned().map(Value::Object))
 }
 
-pub fn update_setup(db: &Database, id: String, patch: ForeshadowSetupPatch) -> anyhow::Result<()> {
+pub fn update_setup(
+    db: &Database,
+    id: String,
+    patch: ForeshadowSetupPatch,
+) -> anyhow::Result<Value> {
     let now = chrono::Utc::now().timestamp_millis();
-    let mut sets: Vec<&str> = Vec::new();
-    let mut params: Vec<Value> = Vec::new();
+    let base_version = patch.base_version;
+    with_immediate_transaction(db, |conn| {
+        let foreshadow_id: Option<String> = conn
+            .query_row(
+                "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(foreshadow_id) = foreshadow_id else {
+            return Ok(Value::Null);
+        };
 
-    if let Some(strength) = patch.strength {
-        sets.push("strength = ?");
-        params.push(strength.map(Value::String).unwrap_or(Value::Null));
-    }
-    if let Some(ai_strength) = patch.ai_strength {
-        sets.push("ai_strength = ?");
-        params.push(ai_strength.map(Value::String).unwrap_or(Value::Null));
-    }
-    if let Some(ai_reasoning) = patch.ai_reasoning {
-        sets.push("ai_reasoning = ?");
-        params.push(ai_reasoning.map(Value::String).unwrap_or(Value::Null));
-    }
-    if let Some(is_orphan) = patch.is_orphan {
-        sets.push("is_orphan = ?");
-        params.push(Value::Bool(is_orphan));
-    }
-    if let Some(last_evaluated_at) = patch.last_evaluated_at {
-        sets.push("last_evaluated_at = ?");
-        params.push(
-            last_evaluated_at
-                .map(|v| Value::Number(v.into()))
-                .unwrap_or(Value::Null),
-        );
-    }
+        let mut sets: Vec<&str> = Vec::new();
+        let mut predicates: Vec<&str> = Vec::new();
+        let mut assignment_values: Vec<Value> = Vec::new();
+        let mut predicate_values: Vec<Value> = Vec::new();
+        let mut add_field = |column: &'static str, value: Value| {
+            sets.push(match column {
+                "strength" => "strength = ?",
+                "ai_strength" => "ai_strength = ?",
+                "ai_reasoning" => "ai_reasoning = ?",
+                "is_orphan" => "is_orphan = ?",
+                "last_evaluated_at" => "last_evaluated_at = ?",
+                _ => unreachable!(),
+            });
+            predicates.push(match column {
+                "strength" => "strength IS NOT ?",
+                "ai_strength" => "ai_strength IS NOT ?",
+                "ai_reasoning" => "ai_reasoning IS NOT ?",
+                "is_orphan" => "is_orphan IS NOT ?",
+                "last_evaluated_at" => "last_evaluated_at IS NOT ?",
+                _ => unreachable!(),
+            });
+            assignment_values.push(value.clone());
+            predicate_values.push(value);
+        };
 
-    if sets.is_empty() {
-        return Ok(());
-    }
+        if let Some(strength) = patch.strength {
+            add_field(
+                "strength",
+                strength.map(Value::String).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(ai_strength) = patch.ai_strength {
+            add_field(
+                "ai_strength",
+                ai_strength.map(Value::String).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(ai_reasoning) = patch.ai_reasoning {
+            add_field(
+                "ai_reasoning",
+                ai_reasoning.map(Value::String).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(is_orphan) = patch.is_orphan {
+            add_field("is_orphan", Value::Bool(is_orphan));
+        }
+        if let Some(last_evaluated_at) = patch.last_evaluated_at {
+            add_field(
+                "last_evaluated_at",
+                last_evaluated_at
+                    .map(|value| Value::Number(value.into()))
+                    .unwrap_or(Value::Null),
+            );
+        }
 
-    sets.push("updated_at = ?");
-    params.push(Value::Number(now.into()));
-    params.push(Value::String(id.clone()));
-
-    let sql = format!(
-        "UPDATE foreshadow_setups SET {} WHERE id = ?",
-        sets.join(", ")
-    );
-    db.execute(&sql, &params, "run")?;
-    Ok(())
+        let changed = if sets.is_empty() {
+            false
+        } else {
+            sets.push("updated_at = ?");
+            assignment_values.push(Value::Number(now.into()));
+            assignment_values.push(Value::String(id.clone()));
+            assignment_values.extend(predicate_values);
+            let sql = format!(
+                "UPDATE foreshadow_setups SET {} WHERE id = ? AND ({})",
+                sets.join(", "),
+                predicates.join(" OR ")
+            );
+            Database::execute_with_conn(conn, &sql, &assignment_values, "run")?;
+            conn.changes() == 1
+        };
+        finish_foreshadow_child_write(conn, &foreshadow_id, changed, Some(base_version), now)
+    })
 }
 
 pub fn get(db: &Database, id: String) -> anyhow::Result<Value> {
@@ -927,22 +1255,55 @@ pub fn get(db: &Database, id: String) -> anyhow::Result<Value> {
     Ok(Value::Object(detail))
 }
 
-pub fn link_codex(db: &Database, foreshadow_id: String, codex_id: String) -> anyhow::Result<()> {
-    db.execute(
-        "INSERT OR IGNORE INTO foreshadow_codex_links (foreshadow_id, codex_entry_id) VALUES (?, ?)",
-        &[Value::String(foreshadow_id), Value::String(codex_id)],
-        "run",
-    )?;
-    Ok(())
+pub fn link_codex(
+    db: &Database,
+    foreshadow_id: String,
+    codex_id: String,
+    base_version: i64,
+) -> anyhow::Result<Value> {
+    let now = chrono::Utc::now().timestamp_millis();
+    with_immediate_transaction(db, |conn| {
+        let projects: Option<(String, String)> = conn
+            .query_row(
+                "SELECT f.project_id, ce.project_id
+                   FROM foreshadows f
+                   JOIN codex_entries ce ON ce.id = ?2
+                  WHERE f.id = ?1",
+                params![foreshadow_id, codex_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if !matches!(projects, Some((ref left, ref right)) if left == right) {
+            anyhow::bail!("foreshadow Codex link must stay within one project");
+        }
+        let changed = conn.execute(
+            "INSERT OR IGNORE INTO foreshadow_codex_links
+                (foreshadow_id, codex_entry_id) VALUES (?1, ?2)",
+            params![foreshadow_id, codex_id],
+        )? == 1;
+        finish_foreshadow_child_write(conn, &foreshadow_id, changed, Some(base_version), now)
+    })
 }
 
-pub fn unlink_codex(db: &Database, foreshadow_id: String, codex_id: String) -> anyhow::Result<()> {
-    db.execute(
-        "DELETE FROM foreshadow_codex_links WHERE foreshadow_id = ? AND codex_entry_id = ?",
-        &[Value::String(foreshadow_id), Value::String(codex_id)],
-        "run",
-    )?;
-    Ok(())
+pub fn unlink_codex(
+    db: &Database,
+    foreshadow_id: String,
+    codex_id: String,
+    base_version: i64,
+) -> anyhow::Result<Value> {
+    // The IPC contract carries globally unique entity ids but no project id.
+    // Scope deletion to the exact composite association; intentionally do not
+    // require same-project ownership here so legacy invalid links remain
+    // removable after `link_codex` starts rejecting their creation.
+    let now = chrono::Utc::now().timestamp_millis();
+    with_immediate_transaction(db, |conn| {
+        let changed = conn.execute(
+            "DELETE FROM foreshadow_codex_links
+              WHERE foreshadow_id = ?1 AND codex_entry_id = ?2",
+            params![foreshadow_id, codex_id],
+        )? == 1;
+        finish_foreshadow_child_write(conn, &foreshadow_id, changed, Some(base_version), now)
+    })
 }
 
 /// impact-review: Codex 埋め込み対象フィールド更新時に、リンク伏線へ再評価ダーティ印を付ける。
@@ -950,26 +1311,39 @@ pub fn mark_linked_codex_dirty(
     db: &Database,
     project_id: String,
     codex_entry_id: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Value>> {
     let now = chrono::Utc::now().timestamp_millis();
-    db.execute(
-        "UPDATE foreshadows
-            SET codex_link_dirty_at = ?, updated_at = ?
+    with_immediate_transaction(db, |conn| {
+        Database::execute_with_conn(
+            conn,
+            "UPDATE foreshadows
+            SET codex_link_dirty_at = ?, version = version + 1, updated_at = ?
           WHERE project_id = ?
             AND id IN (
                 SELECT foreshadow_id
                   FROM foreshadow_codex_links
                  WHERE codex_entry_id = ?
             )",
-        &[
-            Value::Number(now.into()),
-            Value::Number(now.into()),
-            Value::String(project_id),
-            Value::String(codex_entry_id),
-        ],
-        "run",
-    )?;
-    Ok(())
+            &[
+                Value::Number(now.into()),
+                Value::Number(now.into()),
+                Value::String(project_id.clone()),
+                Value::String(codex_entry_id.clone()),
+            ],
+            "run",
+        )?;
+        let rows = Database::execute_with_conn(
+            conn,
+            "SELECT f.*
+               FROM foreshadows f
+               JOIN foreshadow_codex_links link ON link.foreshadow_id = f.id
+              WHERE f.project_id = ? AND link.codex_entry_id = ?
+              ORDER BY f.id",
+            &[Value::String(project_id), Value::String(codex_entry_id)],
+            "all",
+        )?;
+        Ok(rows.into_iter().map(Value::Object).collect())
+    })
 }
 
 pub fn list_linked_codex(db: &Database, foreshadow_id: String) -> anyhow::Result<Vec<Value>> {
@@ -988,60 +1362,115 @@ pub fn set_setup_strength(
     db: &Database,
     setup_id: String,
     strength: Option<String>,
-) -> anyhow::Result<()> {
-    let now = chrono::Utc::now().timestamp_millis();
-    db.execute(
-        "UPDATE foreshadow_setups SET strength = ?, updated_at = ? WHERE id = ?",
-        &[
-            strength.map(Value::String).unwrap_or(Value::Null),
-            Value::Number(now.into()),
-            Value::String(setup_id),
-        ],
-        "run",
-    )?;
-    Ok(())
+    base_version: i64,
+) -> anyhow::Result<Value> {
+    update_setup(
+        db,
+        setup_id,
+        ForeshadowSetupPatch {
+            base_version,
+            strength: Some(strength),
+            ai_strength: None,
+            ai_reasoning: None,
+            is_orphan: None,
+            last_evaluated_at: None,
+        },
+    )
 }
 
-pub fn setup_create_ai(db: &Database, input: SetupCreateAiInput) -> anyhow::Result<()> {
+pub fn setup_create_ai(db: &Database, input: SetupCreateAiInput) -> anyhow::Result<Value> {
     let now = chrono::Utc::now().timestamp_millis();
-    db.execute(
-        "INSERT INTO foreshadow_setups
-         (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, ai_strength,
-          attribution, ai_rationale, ai_reasoning, last_evaluated_at, is_orphan, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           from_pos   = excluded.from_pos,
-           to_pos     = excluded.to_pos,
-           is_orphan  = 0,
-           updated_at = excluded.updated_at",
-        &[
-            Value::String(input.id),
-            Value::String(input.foreshadow_id),
-            Value::String(input.scene_id),
-            Value::Number(input.from_pos.into()),
-            Value::Number(input.to_pos.into()),
-            Value::String(input.kind),
-            input.strength.map(Value::String).unwrap_or(Value::Null),
-            input.ai_strength.map(Value::String).unwrap_or(Value::Null),
-            Value::String(input.attribution),
-            input.ai_rationale.map(Value::String).unwrap_or(Value::Null),
-            input.ai_reasoning.map(Value::String).unwrap_or(Value::Null),
-            input
-                .last_evaluated_at
-                .map(|v| Value::Number(v.into()))
-                .unwrap_or(Value::Null),
-            Value::Number(now.into()),
-            Value::Number(now.into()),
-        ],
-        "run",
-    )?;
-    Ok(())
+    with_immediate_transaction(db, |conn| {
+        let existing: Option<(String, String, String, i64, i64, i64)> = conn
+            .query_row(
+                "SELECT foreshadow_id, scene_id, semantic_key, from_pos, to_pos, is_orphan
+                   FROM foreshadow_setups WHERE id = ?1",
+                params![input.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((existing_foreshadow_id, existing_scene_id, ..)) = existing.as_ref() {
+            if existing_foreshadow_id != &input.foreshadow_id
+                || existing_scene_id != &input.scene_id
+            {
+                anyhow::bail!(
+                    "foreshadow setup '{}' belongs to a different anchor",
+                    input.id
+                );
+            }
+        }
+        validate_setup_anchor_ownership(conn, &input.foreshadow_id, &input.scene_id)?;
+        let semantic_key = setup_semantic_key_for_upsert(
+            &input.id,
+            &input.foreshadow_id,
+            &input.scene_id,
+            input.from_pos,
+            input.to_pos,
+            existing.as_ref().map(|(_, _, key, ..)| key.as_str()),
+        );
+        let changed = existing.as_ref().is_none_or(
+            |(_, _, existing_key, existing_from, existing_to, existing_orphan)| {
+                *existing_from != input.from_pos
+                    || *existing_to != input.to_pos
+                    || existing_key != &semantic_key
+                    || *existing_orphan != 0
+            },
+        );
+        if changed {
+            let affected = conn.execute(
+                "INSERT INTO foreshadow_setups
+             (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, ai_strength,
+              attribution, ai_rationale, ai_reasoning, last_evaluated_at, is_orphan,
+              semantic_key, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, ?13, ?14, ?14)
+             ON CONFLICT(id) DO UPDATE SET
+               from_pos = excluded.from_pos,
+               to_pos = excluded.to_pos,
+               semantic_key = excluded.semantic_key,
+               is_orphan = 0,
+               updated_at = excluded.updated_at",
+                params![
+                    input.id,
+                    input.foreshadow_id,
+                    input.scene_id,
+                    input.from_pos,
+                    input.to_pos,
+                    input.kind,
+                    input.strength,
+                    input.ai_strength,
+                    input.attribution,
+                    input.ai_rationale,
+                    input.ai_reasoning,
+                    input.last_evaluated_at,
+                    semantic_key,
+                    now,
+                ],
+            )?;
+            anyhow::ensure!(
+                affected == 1,
+                "foreshadow setup write affected {affected} rows"
+            );
+        }
+        finish_foreshadow_child_write(
+            conn,
+            &input.foreshadow_id,
+            changed,
+            Some(input.base_version),
+            now,
+        )
+    })
 }
 
-pub fn resolve_orphan(
-    db: &Database,
-    payload: OrphanResolvePayload,
-) -> anyhow::Result<Option<String>> {
+pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::Result<Value> {
     let now = chrono::Utc::now().timestamp_millis();
     match payload.action.as_str() {
         "reanchor" => {
@@ -1054,88 +1483,211 @@ pub fn resolve_orphan(
             let to_pos = payload
                 .to_pos
                 .ok_or_else(|| anyhow::anyhow!("reanchor requires to_pos"))?;
-            db.execute(
-                "UPDATE foreshadow_setups
-                 SET scene_id = ?, from_pos = ?, to_pos = ?, is_orphan = 0, updated_at = ?
-                 WHERE id = ?",
-                &[
-                    Value::String(scene_id),
-                    Value::Number(from_pos.into()),
-                    Value::Number(to_pos.into()),
-                    Value::Number(now.into()),
-                    Value::String(payload.setup_id),
-                ],
-                "run",
-            )?;
-            Ok(None)
+            with_immediate_transaction(db, |conn| {
+                let existing: Option<(String, String, String, i64, i64, i64)> = conn
+                    .query_row(
+                        "SELECT foreshadow_id, semantic_key, scene_id, from_pos, to_pos, is_orphan
+                           FROM foreshadow_setups WHERE id = ?1",
+                        params![payload.setup_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let Some((
+                    foreshadow_id,
+                    existing_semantic_key,
+                    current_scene_id,
+                    current_from_pos,
+                    current_to_pos,
+                    current_is_orphan,
+                )) = existing
+                else {
+                    return Ok(serde_json::json!({ "setupId": null, "foreshadow": null }));
+                };
+                validate_setup_anchor_ownership(conn, &foreshadow_id, &scene_id)?;
+                let semantic_key = setup_semantic_key_for_upsert(
+                    &payload.setup_id,
+                    &foreshadow_id,
+                    &scene_id,
+                    from_pos,
+                    to_pos,
+                    Some(&existing_semantic_key),
+                );
+                let changed = current_scene_id != scene_id
+                    || current_from_pos != from_pos
+                    || current_to_pos != to_pos
+                    || existing_semantic_key != semantic_key
+                    || current_is_orphan != 0;
+                if changed {
+                    let affected = conn.execute(
+                        "UPDATE foreshadow_setups
+                        SET scene_id = ?1, from_pos = ?2, to_pos = ?3,
+                            semantic_key = ?4, is_orphan = 0, updated_at = ?5
+                      WHERE id = ?6",
+                        params![
+                            scene_id,
+                            from_pos,
+                            to_pos,
+                            semantic_key,
+                            now,
+                            payload.setup_id
+                        ],
+                    )?;
+                    anyhow::ensure!(
+                        affected == 1,
+                        "foreshadow setup reanchor affected {affected} rows"
+                    );
+                }
+                let foreshadow = finish_foreshadow_child_write(
+                    conn,
+                    &foreshadow_id,
+                    changed,
+                    Some(payload.base_version),
+                    now,
+                )?;
+                Ok(serde_json::json!({ "setupId": null, "foreshadow": foreshadow }))
+            })
         }
-        "delete" => {
-            db.execute(
-                "DELETE FROM foreshadow_setups WHERE id = ?",
-                &[Value::String(payload.setup_id)],
-                "run",
-            )?;
-            Ok(None)
-        }
-        "reinsert" => {
-            let rows = db.execute(
-                "SELECT foreshadow_id, strength, ai_strength, ai_reasoning, attribution, ai_rationale, last_evaluated_at
-                 FROM foreshadow_setups WHERE id = ?",
-                &[Value::String(payload.setup_id.clone())],
-                "get",
-            )?;
-            let Some(existing) = rows.first() else {
-                return Ok(None);
+        "delete" => with_immediate_transaction(db, |conn| {
+            let foreshadow_id: Option<String> = conn
+                .query_row(
+                    "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?1",
+                    params![payload.setup_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(foreshadow_id) = foreshadow_id else {
+                return Ok(serde_json::json!({ "setupId": null, "foreshadow": null }));
             };
+            let changed = conn.execute(
+                "DELETE FROM foreshadow_setups WHERE id = ?1",
+                params![payload.setup_id],
+            )? == 1;
+            let foreshadow = finish_foreshadow_child_write(
+                conn,
+                &foreshadow_id,
+                changed,
+                Some(payload.base_version),
+                now,
+            )?;
+            Ok(serde_json::json!({ "setupId": null, "foreshadow": foreshadow }))
+        }),
+        "reinsert" => with_immediate_transaction(db, |conn| {
+            #[allow(clippy::type_complexity)]
+            let existing: Option<(
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+                Option<String>,
+                Option<i64>,
+                String,
+                Option<String>,
+            )> = conn
+                .query_row(
+                    "SELECT foreshadow_id, strength, ai_strength, ai_reasoning,
+                                attribution, ai_rationale, last_evaluated_at, role,
+                                evidence_anchor_id
+                           FROM foreshadow_setups WHERE id = ?1",
+                    params![payload.setup_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((
+                foreshadow_id,
+                strength,
+                ai_strength,
+                ai_reasoning,
+                attribution,
+                ai_rationale,
+                last_evaluated_at,
+                role,
+                evidence_anchor_id,
+            )) = existing
+            else {
+                return Ok(serde_json::json!({ "setupId": null, "foreshadow": null }));
+            };
+            let scene_id = payload
+                .scene_id
+                .ok_or_else(|| anyhow::anyhow!("reinsert requires scene_id"))?;
+            let from_pos = payload
+                .from_pos
+                .ok_or_else(|| anyhow::anyhow!("reinsert requires from_pos"))?;
+            let to_pos = payload
+                .to_pos
+                .ok_or_else(|| anyhow::anyhow!("reinsert requires to_pos"))?;
+            validate_setup_anchor_ownership(conn, &foreshadow_id, &scene_id)?;
+            let semantic_key = setup_semantic_key(&foreshadow_id, &scene_id, from_pos, to_pos);
             let new_id = uuid::Uuid::new_v4().to_string();
-            // INSERT + DELETE must be atomic to prevent duplicate rows on partial failure.
-            db.execute_batch_tx(&[
-                BatchStatement {
-                    sql: "INSERT INTO foreshadow_setups
-                          (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, ai_strength, ai_reasoning, attribution, ai_rationale, last_evaluated_at, is_orphan, created_at, updated_at)
-                          VALUES (?, ?, ?, ?, ?, 'inserted_new', ?, ?, ?, ?, ?, ?, 0, ?, ?)"
-                        .to_string(),
-                    params: vec![
-                        Value::String(new_id.clone()),
-                        existing.get("foreshadow_id").cloned().unwrap_or(Value::Null),
-                        payload
-                            .scene_id
-                            .map(Value::String)
-                            .unwrap_or(Value::Null),
-                        payload
-                            .from_pos
-                            .map(|v| Value::Number(v.into()))
-                            .unwrap_or(Value::Null),
-                        payload
-                            .to_pos
-                            .map(|v| Value::Number(v.into()))
-                            .unwrap_or(Value::Null),
-                        existing.get("strength").cloned().unwrap_or(Value::Null),
-                        existing.get("ai_strength").cloned().unwrap_or(Value::Null),
-                        existing.get("ai_reasoning").cloned().unwrap_or(Value::Null),
-                        existing
-                            .get("attribution")
-                            .cloned()
-                            .unwrap_or_else(|| Value::String("human".to_string())),
-                        existing.get("ai_rationale").cloned().unwrap_or(Value::Null),
-                        existing
-                            .get("last_evaluated_at")
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                        Value::Number(now.into()),
-                        Value::Number(now.into()),
-                    ],
-                    method: "run".to_string(),
-                },
-                BatchStatement {
-                    sql: "DELETE FROM foreshadow_setups WHERE id = ?".to_string(),
-                    params: vec![Value::String(payload.setup_id)],
-                    method: "run".to_string(),
-                },
-            ])?;
-            Ok(Some(new_id))
-        }
-        _ => Ok(None),
+            let deleted = conn.execute(
+                "DELETE FROM foreshadow_setups WHERE id = ?1",
+                params![payload.setup_id],
+            )?;
+            anyhow::ensure!(
+                deleted == 1,
+                "foreshadow setup reinsert delete affected {deleted} rows"
+            );
+            let inserted = conn.execute(
+                "INSERT INTO foreshadow_setups
+                        (id, foreshadow_id, scene_id, from_pos, to_pos, kind, role,
+                         strength, ai_strength, ai_reasoning, attribution, ai_rationale,
+                         last_evaluated_at, is_orphan, evidence_anchor_id, semantic_key,
+                         created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'inserted_new', ?6, ?7, ?8, ?9,
+                             ?10, ?11, ?12, 0, ?13, ?14, ?15, ?15)",
+                params![
+                    new_id,
+                    foreshadow_id,
+                    scene_id,
+                    from_pos,
+                    to_pos,
+                    role,
+                    strength,
+                    ai_strength,
+                    ai_reasoning,
+                    attribution,
+                    ai_rationale,
+                    last_evaluated_at,
+                    evidence_anchor_id,
+                    semantic_key,
+                    now,
+                ],
+            )?;
+            anyhow::ensure!(
+                inserted == 1,
+                "foreshadow setup reinsert insert affected {inserted} rows"
+            );
+            let foreshadow = finish_foreshadow_child_write(
+                conn,
+                &foreshadow_id,
+                true,
+                Some(payload.base_version),
+                now,
+            )?;
+            Ok(serde_json::json!({ "setupId": new_id, "foreshadow": foreshadow }))
+        }),
+        _ => Ok(serde_json::json!({ "setupId": null, "foreshadow": null })),
     }
 }
 
@@ -1144,87 +1696,246 @@ pub fn save_anchors_for_scene(
     scene_id: String,
     setups: Vec<SetupAnchorInput>,
     payoffs: Vec<PayoffAnchorInput>,
+    base_versions: HashMap<String, i64>,
     doc_content_size: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Value>> {
+    anyhow::ensure!(doc_content_size >= 0, "docContentSize must be non-negative");
+    for setup in &setups {
+        anyhow::ensure!(
+            setup.base_version >= 0,
+            "foreshadow setup baseVersion must be non-negative"
+        );
+        anyhow::ensure!(
+            base_versions.get(&setup.foreshadow_id) == Some(&setup.base_version),
+            "foreshadow setup '{}' baseVersion disagrees with the scene snapshot",
+            setup.id
+        );
+        anyhow::ensure!(
+            setup.scene_id == scene_id,
+            "foreshadow setup scene must match the saved scene"
+        );
+        anyhow::ensure!(
+            setup.from_pos >= 0
+                && setup.to_pos >= setup.from_pos
+                && setup.to_pos <= doc_content_size,
+            "foreshadow setup range must satisfy 0 <= from <= to <= docContentSize"
+        );
+    }
+    let mut payoff_ids = HashSet::new();
+    for payoff in &payoffs {
+        anyhow::ensure!(
+            payoff_ids.insert(payoff.foreshadow_id.as_str()),
+            "duplicate foreshadow payoff '{}' in one scene save",
+            payoff.foreshadow_id
+        );
+        anyhow::ensure!(
+            payoff.base_version >= 0,
+            "foreshadow payoff baseVersion must be non-negative"
+        );
+        anyhow::ensure!(
+            base_versions.get(&payoff.foreshadow_id) == Some(&payoff.base_version),
+            "foreshadow payoff '{}' baseVersion disagrees with the scene snapshot",
+            payoff.foreshadow_id
+        );
+        anyhow::ensure!(
+            payoff.scene_id == scene_id,
+            "foreshadow payoff scene must match the saved scene"
+        );
+        anyhow::ensure!(
+            payoff.from_pos >= 0
+                && payoff.to_pos >= payoff.from_pos
+                && payoff.to_pos <= doc_content_size,
+            "foreshadow payoff range must satisfy 0 <= from <= to <= docContentSize"
+        );
+    }
+
     let now = chrono::Utc::now().timestamp_millis();
-    let mut statements: Vec<BatchStatement> = Vec::new();
+    with_immediate_transaction(db, |conn| {
+        let mut touched_roots = BTreeSet::new();
+        let mut changed_roots = BTreeSet::new();
 
-    for s in &setups {
-        statements.push(BatchStatement {
-            sql: "INSERT INTO foreshadow_setups
-                  (id, foreshadow_id, scene_id, from_pos, to_pos, kind, attribution, is_orphan, created_at, updated_at)
-                  VALUES (?, ?, ?, ?, ?, 'designated_existing', 'human', 0, ?, ?)
-                  ON CONFLICT(id) DO UPDATE SET
-                    from_pos   = excluded.from_pos,
-                    to_pos     = excluded.to_pos,
-                    is_orphan  = 0,
-                    updated_at = excluded.updated_at"
-                .to_string(),
-            params: vec![
-                Value::String(s.id.clone()),
-                Value::String(s.foreshadow_id.clone()),
-                Value::String(s.scene_id.clone()),
-                Value::Number(s.from_pos.into()),
-                Value::Number(s.to_pos.into()),
-                Value::Number(now.into()),
-                Value::Number(now.into()),
-            ],
-            method: "run".to_string(),
-        });
-    }
-
-    for p in &payoffs {
-        statements.push(BatchStatement {
-            sql: "UPDATE foreshadows
-                  SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?, updated_at = ?
-                  WHERE id = ?"
-                .to_string(),
-            params: vec![
-                Value::String(p.scene_id.clone()),
-                Value::Number(p.from_pos.into()),
-                Value::Number(p.to_pos.into()),
-                Value::Number(now.into()),
-                Value::String(p.foreshadow_id.clone()),
-            ],
-            method: "run".to_string(),
-        });
-    }
-
-    if setups.is_empty() {
-        // Guard: skip bulk-orphan when the document has content (doc_content_size > 2).
-        // ProseMirror empty doc has size=2 (root+paragraph). A non-empty doc with zero
-        // extracted setups could indicate an extraction bug; conservatively skip to
-        // prevent accidental data loss. Users can reload or manually clean orphans.
-        if doc_content_size <= 2 {
-            statements.push(BatchStatement {
-                sql:
-                    "UPDATE foreshadow_setups SET is_orphan = 1, updated_at = ? WHERE scene_id = ?"
-                        .to_string(),
-                params: vec![Value::Number(now.into()), Value::String(scene_id.clone())],
-                method: "run".to_string(),
-            });
+        // Validate every payoff token against the pre-write aggregate state.
+        // Root versions are advanced only after all setup/payoff changes have
+        // been applied, so one root can safely carry both kinds in one save.
+        for payoff in &payoffs {
+            validate_setup_anchor_ownership(conn, &payoff.foreshadow_id, &payoff.scene_id)?;
+            let current: Option<PayoffRootState> = conn
+                .query_row(
+                    "SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                       FROM foreshadows WHERE id = ?1",
+                    params![payoff.foreshadow_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?;
+            let Some((current_scene_id, current_from, current_to, current_version)) = current
+            else {
+                anyhow::bail!(
+                    "foreshadow payoff '{}' does not exist",
+                    payoff.foreshadow_id
+                );
+            };
+            let changed = current_scene_id.as_deref() != Some(payoff.scene_id.as_str())
+                || current_from != Some(payoff.from_pos)
+                || current_to != Some(payoff.to_pos);
+            if changed {
+                anyhow::ensure!(
+                    current_version == payoff.base_version,
+                    "FORESHADOW_VERSION_MISMATCH: payoff '{}' expected version {}, found {}",
+                    payoff.foreshadow_id,
+                    payoff.base_version,
+                    current_version
+                );
+            }
+            touched_roots.insert(payoff.foreshadow_id.clone());
         }
-    } else {
-        let placeholders = std::iter::repeat_n("?", setups.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut params = vec![Value::Number(now.into()), Value::String(scene_id.clone())];
-        params.extend(setups.iter().map(|s| Value::String(s.id.clone())));
-        statements.push(BatchStatement {
-            sql: format!(
-                "UPDATE foreshadow_setups
-                 SET is_orphan = 1, updated_at = ?
-                 WHERE scene_id = ? AND id NOT IN ({placeholders})"
-            ),
-            params,
-            method: "run".to_string(),
-        });
-    }
 
-    if !statements.is_empty() {
-        db.execute_batch_tx(&statements)?;
-    }
-    Ok(())
+        for setup in &setups {
+            let existing: Option<(String, String, String, i64, i64, i64)> = conn
+                .query_row(
+                    "SELECT foreshadow_id, semantic_key, scene_id, from_pos, to_pos, is_orphan
+                       FROM foreshadow_setups WHERE id = ?1",
+                    params![setup.id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some((existing_foreshadow_id, ..)) = existing.as_ref() {
+                anyhow::ensure!(
+                    existing_foreshadow_id == &setup.foreshadow_id,
+                    "foreshadow setup '{}' belongs to a different foreshadow",
+                    setup.id
+                );
+            }
+            validate_setup_anchor_ownership(conn, &setup.foreshadow_id, &setup.scene_id)?;
+            let semantic_key = setup_semantic_key_for_upsert(
+                &setup.id,
+                &setup.foreshadow_id,
+                &setup.scene_id,
+                setup.from_pos,
+                setup.to_pos,
+                existing.as_ref().map(|(_, key, ..)| key.as_str()),
+            );
+            let changed = existing.as_ref().is_none_or(
+                |(_, current_key, current_scene, current_from, current_to, current_orphan)| {
+                    current_key != &semantic_key
+                        || current_scene != &setup.scene_id
+                        || *current_from != setup.from_pos
+                        || *current_to != setup.to_pos
+                        || *current_orphan != 0
+                },
+            );
+            if changed {
+                let affected = conn.execute(
+                    "INSERT INTO foreshadow_setups
+                        (id, foreshadow_id, scene_id, from_pos, to_pos, kind,
+                         attribution, is_orphan, semantic_key, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'designated_existing', 'human', 0, ?6, ?7, ?7)
+                     ON CONFLICT(id) DO UPDATE SET
+                        scene_id = excluded.scene_id,
+                        from_pos = excluded.from_pos,
+                        to_pos = excluded.to_pos,
+                        semantic_key = excluded.semantic_key,
+                        is_orphan = 0,
+                        updated_at = excluded.updated_at",
+                    params![
+                        setup.id,
+                        setup.foreshadow_id,
+                        setup.scene_id,
+                        setup.from_pos,
+                        setup.to_pos,
+                        semantic_key,
+                        now,
+                    ],
+                )?;
+                anyhow::ensure!(
+                    affected == 1,
+                    "foreshadow setup write affected {affected} rows"
+                );
+                changed_roots.insert(setup.foreshadow_id.clone());
+            }
+            touched_roots.insert(setup.foreshadow_id.clone());
+        }
+
+        for payoff in &payoffs {
+            let changed = conn.execute(
+                "UPDATE foreshadows
+                    SET payoff_scene_id = ?1, payoff_from_pos = ?2,
+                        payoff_to_pos = ?3
+                  WHERE id = ?4
+                    AND (payoff_scene_id IS NOT ?1 OR payoff_from_pos IS NOT ?2 OR payoff_to_pos IS NOT ?3)",
+                params![
+                    payoff.scene_id,
+                    payoff.from_pos,
+                    payoff.to_pos,
+                    payoff.foreshadow_id,
+                ],
+            )? == 1;
+            if changed {
+                changed_roots.insert(payoff.foreshadow_id.clone());
+            }
+        }
+
+        let valid_setup_ids: HashSet<&str> = setups.iter().map(|setup| setup.id.as_str()).collect();
+        let existing_scene_setups = {
+            let mut stmt = conn.prepare(
+                "SELECT id, foreshadow_id, is_orphan
+                   FROM foreshadow_setups WHERE scene_id = ?1",
+            )?;
+            let rows = stmt
+                .query_map(params![scene_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let allow_bulk_orphan = !setups.is_empty() || doc_content_size <= 2;
+        if allow_bulk_orphan {
+            for (setup_id, foreshadow_id, is_orphan) in existing_scene_setups {
+                if !valid_setup_ids.contains(setup_id.as_str()) && is_orphan != 1 {
+                    let changed = conn.execute(
+                        "UPDATE foreshadow_setups
+                            SET is_orphan = 1, updated_at = ?1
+                          WHERE id = ?2 AND is_orphan IS NOT 1",
+                        params![now, setup_id],
+                    )? == 1;
+                    if changed {
+                        changed_roots.insert(foreshadow_id.clone());
+                    }
+                    touched_roots.insert(foreshadow_id);
+                }
+            }
+        }
+
+        let mut authoritative = Vec::with_capacity(touched_roots.len());
+        for foreshadow_id in touched_roots {
+            let expected_base_version = *base_versions.get(&foreshadow_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "FORESHADOW_VERSION_MISMATCH: scene snapshot has no baseVersion for '{}'",
+                    foreshadow_id
+                )
+            })?;
+            authoritative.push(finish_foreshadow_child_write(
+                conn,
+                &foreshadow_id,
+                changed_roots.contains(&foreshadow_id),
+                Some(expected_base_version),
+                now,
+            )?);
+        }
+        Ok(authoritative)
+    })
 }
 
 pub fn load_anchors_for_scene(
@@ -1232,14 +1943,16 @@ pub fn load_anchors_for_scene(
     scene_id: String,
 ) -> anyhow::Result<Vec<AnchorMarkOutput>> {
     let setup_rows = db.execute(
-        "SELECT id, foreshadow_id, from_pos, to_pos
-         FROM foreshadow_setups
-         WHERE scene_id = ? AND is_orphan = 0",
+        "SELECT setup.id, setup.foreshadow_id, setup.from_pos, setup.to_pos,
+                foreshadow.version
+         FROM foreshadow_setups setup
+         JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
+         WHERE setup.scene_id = ? AND setup.is_orphan = 0",
         &[Value::String(scene_id.clone())],
         "all",
     )?;
     let payoff_rows = db.execute(
-        "SELECT id, payoff_from_pos, payoff_to_pos
+        "SELECT id, payoff_from_pos, payoff_to_pos, version
          FROM foreshadows
          WHERE payoff_scene_id = ?",
         &[Value::String(scene_id)],
@@ -1263,11 +1976,16 @@ pub fn load_anchors_for_scene(
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
+        let base_version = row.get("version").and_then(Value::as_i64).unwrap_or(0);
         out.push(AnchorMarkOutput {
             from,
             to,
             mark_name: "foreshadowSetup".to_string(),
-            attrs: serde_json::json!({ "setupId": setup_id, "foreshadowId": foreshadow_id }),
+            attrs: serde_json::json!({
+                "setupId": setup_id,
+                "foreshadowId": foreshadow_id,
+                "baseVersion": base_version,
+            }),
         });
     }
     for row in payoff_rows {
@@ -1287,11 +2005,15 @@ pub fn load_anchors_for_scene(
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
+        let base_version = row.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
         out.push(AnchorMarkOutput {
             from,
             to,
             mark_name: "foreshadowPayoff".to_string(),
-            attrs: serde_json::json!({ "foreshadowId": foreshadow_id }),
+            attrs: serde_json::json!({
+                "foreshadowId": foreshadow_id,
+                "baseVersion": base_version,
+            }),
         });
     }
     Ok(out)
@@ -1338,6 +2060,24 @@ mod tests {
         id
     }
 
+    fn foreshadow_version(db: &Database, id: &str) -> i64 {
+        db.execute(
+            "SELECT version FROM foreshadows WHERE id = ?",
+            &[Value::String(id.to_string())],
+            "get",
+        )
+        .expect("load foreshadow version")[0]["version"]
+            .as_i64()
+            .expect("integer foreshadow version")
+    }
+
+    fn base_versions(entries: &[(&str, i64)]) -> HashMap<String, i64> {
+        entries
+            .iter()
+            .map(|(id, version)| ((*id).to_string(), *version))
+            .collect()
+    }
+
     fn insert_scene(db: &Database, project_id: &str) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         db.execute(
@@ -1353,6 +2093,69 @@ mod tests {
         id
     }
 
+    fn insert_folder(db: &Database, project_id: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+             VALUES (?, ?, 'folder', 'Folder', 'a0')",
+            &[
+                Value::String(id.clone()),
+                Value::String(project_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("insert folder");
+        id
+    }
+
+    fn seed_payoff_anchor(
+        db: &Database,
+        foreshadow_id: &str,
+        scene_id: &str,
+        from_pos: i64,
+        to_pos: i64,
+    ) {
+        db.execute(
+            "UPDATE foreshadows
+                SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?
+              WHERE id = ?",
+            &[
+                Value::String(scene_id.to_string()),
+                Value::Number(from_pos.into()),
+                Value::Number(to_pos.into()),
+                Value::String(foreshadow_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("seed payoff anchor");
+    }
+
+    fn insert_codex_entry(db: &Database, project_id: &str) -> String {
+        let type_id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT OR IGNORE INTO codex_types (id, project_id, slug, label)
+             VALUES (?, ?, 'character', 'Character')",
+            &[
+                Value::String(type_id),
+                Value::String(project_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("insert Codex type");
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name)
+             VALUES (?, ?, 'character', 'Entry')",
+            &[
+                Value::String(id.clone()),
+                Value::String(project_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("insert Codex entry");
+        id
+    }
+
     fn insert_setup(
         db: &Database,
         foreshadow_id: &str,
@@ -1362,11 +2165,36 @@ mod tests {
         is_orphan: bool,
     ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
+        let semantic_key = setup_semantic_key(foreshadow_id, scene_id, from_pos, to_pos);
+        insert_setup_with_semantic_key(
+            db,
+            id,
+            foreshadow_id,
+            scene_id,
+            from_pos,
+            to_pos,
+            is_orphan,
+            semantic_key,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_setup_with_semantic_key(
+        db: &Database,
+        id: String,
+        foreshadow_id: &str,
+        scene_id: &str,
+        from_pos: i64,
+        to_pos: i64,
+        is_orphan: bool,
+        semantic_key: String,
+    ) -> String {
         let now = chrono::Utc::now().timestamp_millis();
         db.execute(
             "INSERT INTO foreshadow_setups
-             (id, foreshadow_id, scene_id, from_pos, to_pos, kind, attribution, is_orphan, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'designated_existing', 'human', ?, ?, ?)",
+             (id, foreshadow_id, scene_id, from_pos, to_pos, kind, attribution,
+              is_orphan, semantic_key, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'designated_existing', 'human', ?, ?, ?, ?)",
             &[
                 Value::String(id.clone()),
                 Value::String(foreshadow_id.to_string()),
@@ -1374,6 +2202,7 @@ mod tests {
                 Value::Number(from_pos.into()),
                 Value::Number(to_pos.into()),
                 Value::Bool(is_orphan),
+                Value::String(semantic_key),
                 Value::Number(now.into()),
                 Value::Number(now.into()),
             ],
@@ -1383,7 +2212,117 @@ mod tests {
         id
     }
 
+    fn setup_create_ai_input(
+        id: &str,
+        foreshadow_id: &str,
+        scene_id: &str,
+        from_pos: i64,
+        to_pos: i64,
+    ) -> SetupCreateAiInput {
+        SetupCreateAiInput {
+            id: id.to_string(),
+            foreshadow_id: foreshadow_id.to_string(),
+            base_version: 0,
+            scene_id: scene_id.to_string(),
+            from_pos,
+            to_pos,
+            kind: "inserted_new".to_string(),
+            strength: None,
+            ai_strength: None,
+            attribution: "ai".to_string(),
+            ai_rationale: None,
+            ai_reasoning: None,
+            last_evaluated_at: None,
+        }
+    }
+
     // ── update ────────────────────────────────────────────────────────
+
+    #[test]
+    fn link_codex_rejects_cross_project_association() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let local_codex_id = insert_codex_entry(&db, &project_id);
+        let foreign_codex_id = insert_codex_entry(&db, &foreign_project_id);
+
+        link_codex(&db, foreshadow_id.clone(), local_codex_id.clone(), 0)
+            .expect("same-project link");
+        let error = link_codex(&db, foreshadow_id.clone(), foreign_codex_id, 1)
+            .expect_err("cross-project link must be rejected");
+        assert!(error.to_string().contains("within one project"));
+
+        let rows = db
+            .execute(
+                "SELECT codex_entry_id FROM foreshadow_codex_links WHERE foreshadow_id = ?",
+                &[Value::String(foreshadow_id)],
+                "all",
+            )
+            .expect("load links");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["codex_entry_id"], Value::String(local_codex_id));
+    }
+
+    #[test]
+    fn unlink_codex_deletes_only_the_exact_pair_and_can_clean_legacy_cross_project_link() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let first_foreshadow_id = insert_foreshadow(&db, &project_id);
+        let second_foreshadow_id = insert_foreshadow(&db, &project_id);
+        let local_codex_id = insert_codex_entry(&db, &project_id);
+        let foreign_codex_id = insert_codex_entry(&db, &foreign_project_id);
+        link_codex(&db, first_foreshadow_id.clone(), local_codex_id.clone(), 0)
+            .expect("first local link");
+        link_codex(&db, second_foreshadow_id.clone(), local_codex_id.clone(), 0)
+            .expect("second local link");
+        db.execute(
+            "INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id)
+             VALUES (?, ?)",
+            &[
+                Value::String(first_foreshadow_id.clone()),
+                Value::String(foreign_codex_id.clone()),
+            ],
+            "run",
+        )
+        .expect("insert legacy cross-project link fixture");
+
+        unlink_codex(&db, first_foreshadow_id.clone(), local_codex_id.clone(), 1)
+            .expect("unlink exact local pair");
+        let surviving_local = db
+            .execute(
+                "SELECT 1 AS present FROM foreshadow_codex_links
+                  WHERE foreshadow_id = ? AND codex_entry_id = ?",
+                &[
+                    Value::String(second_foreshadow_id),
+                    Value::String(local_codex_id),
+                ],
+                "all",
+            )
+            .expect("load other root link");
+        assert_eq!(surviving_local.len(), 1);
+
+        unlink_codex(
+            &db,
+            first_foreshadow_id.clone(),
+            foreign_codex_id.clone(),
+            2,
+        )
+        .expect("legacy invalid pair should remain removable");
+        let legacy = db
+            .execute(
+                "SELECT 1 AS present FROM foreshadow_codex_links
+                  WHERE foreshadow_id = ? AND codex_entry_id = ?",
+                &[
+                    Value::String(first_foreshadow_id),
+                    Value::String(foreign_codex_id),
+                ],
+                "all",
+            )
+            .expect("load legacy link after cleanup");
+        assert!(legacy.is_empty());
+    }
 
     #[test]
     fn update_impl_no_fields_returns_existing() {
@@ -1392,6 +2331,7 @@ mod tests {
         let fid = insert_foreshadow(&db, &proj);
 
         let patch = ForeshadowPatch {
+            base_version: 0,
             title: None,
             intent: None,
             notes: None,
@@ -1405,6 +2345,7 @@ mod tests {
         };
         let result = update(&db, fid.clone(), patch).unwrap();
         assert_eq!(result["id"], Value::String(fid));
+        assert_eq!(result["version"], Value::Number(0.into()));
     }
 
     #[test]
@@ -1414,6 +2355,7 @@ mod tests {
         let fid = insert_foreshadow(&db, &proj);
 
         let patch = ForeshadowPatch {
+            base_version: 0,
             title: Some("新タイトル".to_string()),
             intent: None,
             notes: None,
@@ -1427,6 +2369,7 @@ mod tests {
         };
         let result = update(&db, fid.clone(), patch).unwrap();
         assert_eq!(result["title"], Value::String("新タイトル".to_string()));
+        assert_eq!(result["version"], Value::Number(1.into()));
     }
 
     #[test]
@@ -1437,6 +2380,7 @@ mod tests {
 
         // Set intent first
         let set_patch = ForeshadowPatch {
+            base_version: 0,
             title: None,
             intent: Some(Some("intent".to_string())),
             notes: None,
@@ -1452,6 +2396,7 @@ mod tests {
 
         // Now clear it with Some(None)
         let clear_patch = ForeshadowPatch {
+            base_version: 1,
             title: None,
             intent: Some(None),
             notes: None,
@@ -1465,6 +2410,286 @@ mod tests {
         };
         let result = update(&db, fid.clone(), clear_patch).unwrap();
         assert_eq!(result["intent"], Value::Null);
+        assert_eq!(result["version"], Value::Number(2.into()));
+    }
+
+    #[test]
+    fn nullable_patch_deserialization_distinguishes_omitted_from_explicit_null() {
+        let omitted: ForeshadowPatch = serde_json::from_value(serde_json::json!({
+            "baseVersion": 0,
+        }))
+        .expect("deserialize omitted patch");
+        assert!(omitted.intent.is_none());
+        assert!(omitted.notes.is_none());
+        assert!(omitted.payoff_scene_id.is_none());
+        assert!(omitted.payoff_from_pos.is_none());
+        assert!(omitted.payoff_to_pos.is_none());
+        assert!(omitted.load_bearing.is_none());
+
+        let cleared: ForeshadowPatch = serde_json::from_value(serde_json::json!({
+            "baseVersion": 0,
+            "intent": null,
+            "notes": null,
+            "payoffSceneId": null,
+            "payoffFromPos": null,
+            "payoffToPos": null,
+            "loadBearing": null,
+        }))
+        .expect("deserialize explicit null patch");
+        assert_eq!(cleared.intent, Some(None));
+        assert_eq!(cleared.notes, Some(None));
+        assert_eq!(cleared.payoff_scene_id, Some(None));
+        assert_eq!(cleared.payoff_from_pos, Some(None));
+        assert_eq!(cleared.payoff_to_pos, Some(None));
+        assert_eq!(cleared.load_bearing, Some(None));
+
+        let setup_omitted: ForeshadowSetupPatch =
+            serde_json::from_value(serde_json::json!({ "baseVersion": 0 }))
+                .expect("deserialize omitted setup patch");
+        assert!(setup_omitted.strength.is_none());
+        assert!(setup_omitted.ai_reasoning.is_none());
+        assert!(setup_omitted.last_evaluated_at.is_none());
+
+        let setup_cleared: ForeshadowSetupPatch = serde_json::from_value(serde_json::json!({
+            "baseVersion": 0,
+            "strength": null,
+            "aiReasoning": null,
+            "lastEvaluatedAt": null,
+        }))
+        .expect("deserialize explicit-null setup patch");
+        assert_eq!(setup_cleared.strength, Some(None));
+        assert_eq!(setup_cleared.ai_reasoning, Some(None));
+        assert_eq!(setup_cleared.last_evaluated_at, Some(None));
+    }
+
+    #[test]
+    fn stale_root_update_and_delete_are_atomic_nonmutating() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+
+        update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: Some("fresh title".to_string()),
+                intent: None,
+                notes: None,
+                payoff_scene_id: None,
+                payoff_from_pos: None,
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect("first window update");
+
+        let stale_update = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: Some("stale title".to_string()),
+                intent: None,
+                notes: None,
+                payoff_scene_id: None,
+                payoff_from_pos: None,
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("second window stale update must conflict");
+        assert!(stale_update
+            .to_string()
+            .contains("FORESHADOW_VERSION_MISMATCH"));
+
+        let stale_delete = delete(
+            &db,
+            foreshadow_id.clone(),
+            project_id,
+            0,
+            "stale-window".to_string(),
+        )
+        .expect_err("second window stale delete must conflict");
+        assert!(stale_delete
+            .to_string()
+            .contains("FORESHADOW_VERSION_MISMATCH"));
+
+        let row = db
+            .execute(
+                "SELECT title, version FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load surviving root");
+        assert_eq!(row[0]["title"], "fresh title");
+        assert_eq!(row[0]["version"], 1);
+        let journal = db
+            .execute(
+                "SELECT COUNT(*) AS count FROM undo_journal WHERE entity_kind = 'foreshadow'",
+                &[],
+                "get",
+            )
+            .expect("load journal count");
+        assert_eq!(journal[0]["count"], 0);
+    }
+
+    #[test]
+    fn mark_linked_codex_dirty_advances_only_matching_project_roots() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let linked_id = insert_foreshadow(&db, &project_id);
+        let unlinked_id = insert_foreshadow(&db, &project_id);
+        let foreign_id = insert_foreshadow(&db, &foreign_project_id);
+        let codex_id = insert_codex_entry(&db, &project_id);
+        link_codex(&db, linked_id.clone(), codex_id.clone(), 0).expect("link local root");
+        db.execute(
+            "INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id)
+             VALUES (?, ?)",
+            &[
+                Value::String(foreign_id.clone()),
+                Value::String(codex_id.clone()),
+            ],
+            "insert legacy foreign link fixture",
+        )
+        .expect("insert legacy foreign link fixture");
+
+        mark_linked_codex_dirty(&db, project_id.clone(), codex_id.clone())
+            .expect("mark matching roots dirty");
+        mark_linked_codex_dirty(&db, project_id, codex_id)
+            .expect("a second successful mutation advances again");
+
+        let rows = db
+            .execute(
+                "SELECT id, version, codex_link_dirty_at FROM foreshadows
+                 WHERE id IN (?, ?, ?) ORDER BY id",
+                &[
+                    Value::String(linked_id.clone()),
+                    Value::String(unlinked_id.clone()),
+                    Value::String(foreign_id.clone()),
+                ],
+                "all",
+            )
+            .expect("load root versions");
+        let by_id: std::collections::HashMap<&str, &serde_json::Map<String, Value>> = rows
+            .iter()
+            .map(|row| (row["id"].as_str().expect("id"), row))
+            .collect();
+        assert_eq!(
+            by_id[linked_id.as_str()]["version"],
+            Value::Number(3.into())
+        );
+        assert!(by_id[linked_id.as_str()]["codex_link_dirty_at"].is_number());
+        assert_eq!(
+            by_id[unlinked_id.as_str()]["version"],
+            Value::Number(0.into())
+        );
+        assert_eq!(
+            by_id[foreign_id.as_str()]["version"],
+            Value::Number(0.into())
+        );
+    }
+
+    #[test]
+    fn stale_child_writes_roll_back_without_mutating_children() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        let setup_id = insert_setup(&db, &foreshadow_id, &scene_id, 1, 5, false);
+        let codex_id = insert_codex_entry(&db, &project_id);
+
+        let first = update_setup(
+            &db,
+            setup_id.clone(),
+            ForeshadowSetupPatch {
+                base_version: 0,
+                strength: Some(Some("strong".to_string())),
+                ai_strength: None,
+                ai_reasoning: None,
+                is_orphan: None,
+                last_evaluated_at: None,
+            },
+        )
+        .expect("first window child update");
+        assert_eq!(first["version"], 1);
+
+        update_setup(
+            &db,
+            setup_id.clone(),
+            ForeshadowSetupPatch {
+                base_version: 0,
+                strength: Some(Some("weak".to_string())),
+                ai_strength: None,
+                ai_reasoning: None,
+                is_orphan: None,
+                last_evaluated_at: None,
+            },
+        )
+        .expect_err("stale setup update must conflict");
+        link_codex(&db, foreshadow_id.clone(), codex_id.clone(), 0)
+            .expect_err("stale link must conflict and roll back");
+        save_anchors_for_scene(
+            &db,
+            scene_id.clone(),
+            vec![SetupAnchorInput {
+                id: setup_id.clone(),
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                scene_id: scene_id.clone(),
+                from_pos: 2,
+                to_pos: 6,
+            }],
+            vec![],
+            base_versions(&[(&foreshadow_id, 0)]),
+            20,
+        )
+        .expect_err("stale anchor save must conflict and roll back");
+        resolve_orphan(
+            &db,
+            OrphanResolvePayload {
+                setup_id: setup_id.clone(),
+                base_version: 0,
+                action: "delete".to_string(),
+                scene_id: None,
+                from_pos: None,
+                to_pos: None,
+            },
+        )
+        .expect_err("stale child delete must conflict and roll back");
+
+        let setup = db
+            .execute(
+                "SELECT strength, from_pos, to_pos, is_orphan
+                   FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(setup_id)],
+                "get",
+            )
+            .expect("load setup after stale writers");
+        assert_eq!(setup[0]["strength"], "strong");
+        assert_eq!(setup[0]["from_pos"], 1);
+        assert_eq!(setup[0]["to_pos"], 5);
+        assert_eq!(setup[0]["is_orphan"], 0);
+        let links = db
+            .execute(
+                "SELECT COUNT(*) AS count FROM foreshadow_codex_links
+                  WHERE foreshadow_id = ? AND codex_entry_id = ?",
+                &[
+                    Value::String(foreshadow_id.clone()),
+                    Value::String(codex_id),
+                ],
+                "get",
+            )
+            .expect("load links after stale writer");
+        assert_eq!(links[0]["count"], 0);
+        assert_eq!(foreshadow_version(&db, &foreshadow_id), 1);
     }
 
     // ── load_bearing 軸（Phase 6） ─────────────────────────────────────
@@ -1563,7 +2788,14 @@ mod tests {
         assert_eq!(retry["__idempotency"]["replayed"], Value::Bool(true));
         assert_eq!(retry["__idempotency"]["entityPresent"], Value::Bool(true));
 
-        delete(&db, "foreshadow-entity-1".to_string()).expect("delete entity");
+        delete(
+            &db,
+            "foreshadow-entity-1".to_string(),
+            proj.clone(),
+            0,
+            "fixture-session".to_string(),
+        )
+        .expect("delete entity");
         let deleted_retry = create(&db, payload.clone()).expect("retry after delete");
         assert_eq!(deleted_retry["id"], first["id"]);
         assert_eq!(
@@ -1693,6 +2925,53 @@ mod tests {
     }
 
     #[test]
+    fn create_rejects_same_project_folder_as_payoff_scene_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let folder_id = insert_folder(&db, &project_id);
+        let error = create(
+            &db,
+            ForeshadowCreatePayload {
+                id: Some("foreshadow-folder-payoff".to_string()),
+                request_id: Some("foreshadow-folder-payoff".to_string()),
+                project_id,
+                title: "Invalid folder payoff".to_string(),
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(folder_id),
+                payoff_from_pos: Some(1),
+                payoff_to_pos: Some(2),
+                payoff_confirmed: false,
+                abandoned: false,
+                secret: true,
+                load_bearing: None,
+                codex_link_dirty_at: None,
+            },
+        )
+        .expect_err("folder payoff must be rejected");
+        assert!(error.to_string().contains("same project scene"));
+
+        let rows = db
+            .execute(
+                "SELECT COUNT(*) AS count FROM foreshadows
+                  WHERE id = 'foreshadow-folder-payoff'",
+                &[],
+                "get",
+            )
+            .expect("count rejected foreshadow");
+        assert_eq!(rows[0]["count"], 0);
+        let ledger = db
+            .execute(
+                "SELECT COUNT(*) AS count FROM idempotency_requests
+                  WHERE request_id = 'foreshadow-folder-payoff'",
+                &[],
+                "get",
+            )
+            .expect("count rejected idempotency ledger");
+        assert_eq!(ledger[0]["count"], 0);
+    }
+
+    #[test]
     fn update_rejects_a_cross_project_payoff_scene() {
         let db = test_db();
         let project_id = insert_project(&db);
@@ -1700,6 +2979,7 @@ mod tests {
         let foreshadow_id = insert_foreshadow(&db, &project_id);
         let foreign_scene_id = insert_scene(&db, &foreign_project_id);
         let patch = ForeshadowPatch {
+            base_version: 0,
             title: None,
             intent: None,
             notes: None,
@@ -1722,6 +3002,240 @@ mod tests {
             )
             .expect("read foreshadow");
         assert_eq!(persisted[0]["payoff_scene_id"], Value::Null);
+    }
+
+    #[test]
+    fn update_rejects_clearing_payoff_scene_while_positions_remain_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let error = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: Some("must roll back".to_string()),
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(None),
+                payoff_from_pos: None,
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("scene clear with retained positions must reject");
+        assert!(error.to_string().contains("require a payoff scene"));
+
+        let rows = db
+            .execute(
+                "SELECT title, payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                   FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load unchanged foreshadow");
+        assert_eq!(rows[0]["title"], "Test");
+        assert_eq!(rows[0]["payoff_scene_id"], scene_id);
+        assert_eq!(rows[0]["payoff_from_pos"], 10);
+        assert_eq!(rows[0]["payoff_to_pos"], 20);
+        assert_eq!(rows[0]["version"], 0);
+    }
+
+    #[test]
+    fn update_rejects_partial_position_patches_against_effective_tuple() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let invalid_range = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: None,
+                payoff_from_pos: Some(Some(30)),
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("effective from > to must reject");
+        assert!(invalid_range.to_string().contains("0 <= from <= to"));
+
+        let half_null = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: None,
+                payoff_from_pos: Some(None),
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("one null position must reject");
+        assert!(half_null.to_string().contains("both be null"));
+
+        let rows = db
+            .execute(
+                "SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                   FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load unchanged foreshadow");
+        assert_eq!(rows[0]["payoff_scene_id"], scene_id);
+        assert_eq!(rows[0]["payoff_from_pos"], 10);
+        assert_eq!(rows[0]["payoff_to_pos"], 20);
+        assert_eq!(rows[0]["version"], 0);
+    }
+
+    #[test]
+    fn update_rejects_same_project_folder_as_payoff_scene_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        let folder_id = insert_folder(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let error = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: Some("must roll back".to_string()),
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(Some(folder_id)),
+                payoff_from_pos: None,
+                payoff_to_pos: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("folder payoff must be rejected");
+        assert!(error.to_string().contains("same project scene"));
+
+        let rows = db
+            .execute(
+                "SELECT title, payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                   FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load unchanged foreshadow");
+        assert_eq!(rows[0]["title"], "Test");
+        assert_eq!(rows[0]["payoff_scene_id"], scene_id);
+        assert_eq!(rows[0]["payoff_from_pos"], 10);
+        assert_eq!(rows[0]["payoff_to_pos"], 20);
+        assert_eq!(rows[0]["version"], 0);
+    }
+
+    #[test]
+    fn update_accepts_a_valid_payoff_tuple_as_one_cas_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let old_scene_id = insert_scene(&db, &project_id);
+        let new_scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &old_scene_id, 10, 20);
+
+        let updated = update(
+            &db,
+            foreshadow_id.clone(),
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(Some(new_scene_id.clone())),
+                payoff_from_pos: Some(Some(30)),
+                payoff_to_pos: Some(Some(40)),
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect("valid tuple update");
+        assert_eq!(updated["payoff_scene_id"], new_scene_id);
+        assert_eq!(updated["payoff_from_pos"], 30);
+        assert_eq!(updated["payoff_to_pos"], 40);
+        assert_eq!(updated["version"], 1);
+
+        let stale = update(
+            &db,
+            foreshadow_id,
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(Some(old_scene_id)),
+                payoff_from_pos: Some(Some(1)),
+                payoff_to_pos: Some(Some(2)),
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect_err("stale payoff tuple update must reject");
+        assert!(stale.to_string().contains("FORESHADOW_VERSION_MISMATCH"));
+    }
+
+    #[test]
+    fn update_accepts_explicitly_clearing_the_entire_payoff_tuple() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        seed_payoff_anchor(&db, &foreshadow_id, &scene_id, 10, 20);
+
+        let updated = update(
+            &db,
+            foreshadow_id,
+            ForeshadowPatch {
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                payoff_scene_id: Some(None),
+                payoff_from_pos: Some(None),
+                payoff_to_pos: Some(None),
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+                load_bearing: None,
+            },
+        )
+        .expect("explicit all-null tuple clear");
+        assert_eq!(updated["payoff_scene_id"], Value::Null);
+        assert_eq!(updated["payoff_from_pos"], Value::Null);
+        assert_eq!(updated["payoff_to_pos"], Value::Null);
+        assert_eq!(updated["version"], 1);
     }
 
     #[test]
@@ -1765,6 +3279,7 @@ mod tests {
         let fid = insert_foreshadow(&db, &proj);
 
         let patch = ForeshadowPatch {
+            base_version: 0,
             title: None,
             intent: None,
             notes: None,
@@ -1791,6 +3306,7 @@ mod tests {
 
         // まず critical にセット
         let set_patch = ForeshadowPatch {
+            base_version: 0,
             title: None,
             intent: None,
             notes: None,
@@ -1806,6 +3322,7 @@ mod tests {
 
         // Some(None) で NULL クリア
         let clear_patch = ForeshadowPatch {
+            base_version: 1,
             title: None,
             intent: None,
             notes: None,
@@ -1828,6 +3345,7 @@ mod tests {
         let fid = insert_foreshadow(&db, &proj);
 
         let patch = ForeshadowPatch {
+            base_version: 0,
             title: Some("should not apply".to_string()),
             intent: None,
             notes: None,
@@ -1856,10 +3374,161 @@ mod tests {
     // ── resolve_orphan ────────────────────────────────────────────────
 
     #[test]
+    fn setup_create_ai_rejects_existing_id_rebinding_without_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let original_foreshadow_id = insert_foreshadow(&db, &project_id);
+        let other_foreshadow_id = insert_foreshadow(&db, &project_id);
+        let original_scene_id = insert_scene(&db, &project_id);
+        let other_scene_id = insert_scene(&db, &project_id);
+        let setup_id = insert_setup(
+            &db,
+            &original_foreshadow_id,
+            &original_scene_id,
+            1,
+            5,
+            false,
+        );
+
+        let foreshadow_error = setup_create_ai(
+            &db,
+            setup_create_ai_input(&setup_id, &other_foreshadow_id, &original_scene_id, 10, 20),
+        )
+        .expect_err("existing setup id must not be rebound to another foreshadow");
+        assert!(foreshadow_error.to_string().contains("different anchor"));
+
+        let scene_error = setup_create_ai(
+            &db,
+            setup_create_ai_input(&setup_id, &original_foreshadow_id, &other_scene_id, 10, 20),
+        )
+        .expect_err("AI setup update must keep the original scene identity");
+        assert!(scene_error.to_string().contains("different anchor"));
+
+        let rows = db
+            .execute(
+                "SELECT foreshadow_id, scene_id, from_pos, to_pos, semantic_key
+                   FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(setup_id)],
+                "get",
+            )
+            .expect("load unchanged setup");
+        assert_eq!(
+            rows[0]["foreshadow_id"],
+            Value::String(original_foreshadow_id.clone())
+        );
+        assert_eq!(
+            rows[0]["scene_id"],
+            Value::String(original_scene_id.clone())
+        );
+        assert_eq!(rows[0]["from_pos"], Value::Number(1.into()));
+        assert_eq!(rows[0]["to_pos"], Value::Number(5.into()));
+        assert_eq!(
+            rows[0]["semantic_key"],
+            Value::String(setup_semantic_key(
+                &original_foreshadow_id,
+                &original_scene_id,
+                1,
+                5,
+            ))
+        );
+
+        let foreign_project_id = insert_project(&db);
+        let foreign_scene_id = insert_scene(&db, &foreign_project_id);
+        let cross_project_error = setup_create_ai(
+            &db,
+            setup_create_ai_input(
+                "cross-project-new-setup",
+                &original_foreshadow_id,
+                &foreign_scene_id,
+                1,
+                5,
+            ),
+        )
+        .expect_err("new cross-project setup anchor must be rejected");
+        assert!(cross_project_error.to_string().contains("same project"));
+        let cross_project_rows = db
+            .execute(
+                "SELECT id FROM foreshadow_setups WHERE id = 'cross-project-new-setup'",
+                &[],
+                "all",
+            )
+            .expect("check rejected cross-project setup");
+        assert!(cross_project_rows.is_empty());
+    }
+
+    #[test]
+    fn setup_create_ai_preserves_matching_legacy_duplicate_key_and_rejects_collision() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        insert_setup(&db, &foreshadow_id, &scene_id, 1, 5, false);
+        let duplicate_id = "legacy-duplicate-setup".to_string();
+        let natural_key = setup_semantic_key(&foreshadow_id, &scene_id, 1, 5);
+        let legacy_key = format!("{natural_key}#dup:{duplicate_id}");
+        insert_setup_with_semantic_key(
+            &db,
+            duplicate_id.clone(),
+            &foreshadow_id,
+            &scene_id,
+            1,
+            5,
+            false,
+            legacy_key.clone(),
+        );
+
+        setup_create_ai(
+            &db,
+            setup_create_ai_input(&duplicate_id, &foreshadow_id, &scene_id, 1, 5),
+        )
+        .expect("unchanged legacy duplicate anchor must retain its suffix");
+        let preserved = db
+            .execute(
+                "SELECT semantic_key FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(duplicate_id.clone())],
+                "get",
+            )
+            .expect("load preserved semantic key");
+        assert_eq!(preserved[0]["semantic_key"], Value::String(legacy_key));
+
+        setup_create_ai(
+            &db,
+            setup_create_ai_input(&duplicate_id, &foreshadow_id, &scene_id, 6, 10),
+        )
+        .expect("moving away from a duplicate natural key should use the new natural key");
+        let moved_key = setup_semantic_key(&foreshadow_id, &scene_id, 6, 10);
+        let moved = db
+            .execute(
+                "SELECT semantic_key FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(duplicate_id.clone())],
+                "get",
+            )
+            .expect("load moved semantic key");
+        assert_eq!(moved[0]["semantic_key"], Value::String(moved_key));
+
+        insert_setup(&db, &foreshadow_id, &scene_id, 11, 15, false);
+        setup_create_ai(
+            &db,
+            setup_create_ai_input(&duplicate_id, &foreshadow_id, &scene_id, 11, 15),
+        )
+        .expect_err("moving onto another row's natural key must be rejected");
+        let after_collision = db
+            .execute(
+                "SELECT from_pos, to_pos, semantic_key FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(duplicate_id)],
+                "get",
+            )
+            .expect("load setup after rejected collision");
+        assert_eq!(after_collision[0]["from_pos"], Value::Number(6.into()));
+        assert_eq!(after_collision[0]["to_pos"], Value::Number(10.into()));
+    }
+
+    #[test]
     fn resolve_orphan_reanchor_missing_scene_id_errors() {
         let db = test_db();
         let payload = OrphanResolvePayload {
             setup_id: "s-1".to_string(),
+            base_version: 0,
             action: "reanchor".to_string(),
             scene_id: None,
             from_pos: Some(10),
@@ -1877,6 +3546,7 @@ mod tests {
         let db = test_db();
         let payload = OrphanResolvePayload {
             setup_id: "s-1".to_string(),
+            base_version: 0,
             action: "reanchor".to_string(),
             scene_id: Some("sc-1".to_string()),
             from_pos: None,
@@ -1897,6 +3567,7 @@ mod tests {
 
         let payload = OrphanResolvePayload {
             setup_id: sid.clone(),
+            base_version: 0,
             action: "reanchor".to_string(),
             scene_id: Some(new_scene.clone()),
             from_pos: Some(5),
@@ -1927,12 +3598,17 @@ mod tests {
 
         let payload = OrphanResolvePayload {
             setup_id: sid.clone(),
+            base_version: 0,
             action: "reinsert".to_string(),
             scene_id: Some(scene.clone()),
             from_pos: Some(10),
             to_pos: Some(20),
         };
-        let new_id = resolve_orphan(&db, payload).unwrap().unwrap();
+        let receipt = resolve_orphan(&db, payload).unwrap();
+        let new_id = receipt["setupId"]
+            .as_str()
+            .expect("reinserted setup id")
+            .to_string();
 
         // Old row must be gone
         let old_rows = db
@@ -1963,13 +3639,55 @@ mod tests {
         let db = test_db();
         let payload = OrphanResolvePayload {
             setup_id: "nonexistent".to_string(),
+            base_version: 0,
             action: "reinsert".to_string(),
             scene_id: Some("sc".to_string()),
             from_pos: Some(1),
             to_pos: Some(5),
         };
         let result = resolve_orphan(&db, payload).unwrap();
-        assert!(result.is_none());
+        assert!(result["setupId"].is_null());
+        assert!(result["foreshadow"].is_null());
+    }
+
+    #[test]
+    fn resolve_orphan_reinsert_rejects_cross_project_scene_without_deleting_original() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let original_scene_id = insert_scene(&db, &project_id);
+        let foreign_scene_id = insert_scene(&db, &foreign_project_id);
+        let setup_id = insert_setup(&db, &foreshadow_id, &original_scene_id, 1, 5, true);
+
+        let error = resolve_orphan(
+            &db,
+            OrphanResolvePayload {
+                setup_id: setup_id.clone(),
+                base_version: 0,
+                action: "reinsert".to_string(),
+                scene_id: Some(foreign_scene_id),
+                from_pos: Some(10),
+                to_pos: Some(20),
+            },
+        )
+        .expect_err("cross-project reinsert must be rejected");
+        assert!(error.to_string().contains("same project"));
+
+        let rows = db
+            .execute(
+                "SELECT foreshadow_id, scene_id, from_pos, to_pos, is_orphan
+                   FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(setup_id)],
+                "get",
+            )
+            .expect("original setup must survive rejected reinsert");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["foreshadow_id"], Value::String(foreshadow_id));
+        assert_eq!(rows[0]["scene_id"], Value::String(original_scene_id));
+        assert_eq!(rows[0]["from_pos"], Value::Number(1.into()));
+        assert_eq!(rows[0]["to_pos"], Value::Number(5.into()));
+        assert_eq!(rows[0]["is_orphan"], Value::Number(1.into()));
     }
 
     // ── save_anchors_for_scene ────────────────────────────────────────
@@ -1987,11 +3705,20 @@ mod tests {
         let setups = vec![SetupAnchorInput {
             id: kept.clone(),
             foreshadow_id: fid.clone(),
+            base_version: 0,
             scene_id: scene.clone(),
             from_pos: 1,
             to_pos: 5,
         }];
-        save_anchors_for_scene(&db, scene.clone(), setups, vec![], 50).unwrap();
+        save_anchors_for_scene(
+            &db,
+            scene.clone(),
+            setups,
+            vec![],
+            base_versions(&[(&fid, 0)]),
+            50,
+        )
+        .unwrap();
 
         let rows = db
             .execute(
@@ -2014,6 +3741,445 @@ mod tests {
     }
 
     #[test]
+    fn save_anchors_payoff_advances_root_once_and_identical_repeat_is_noop() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        save_anchors_for_scene(
+            &db,
+            scene_id.clone(),
+            vec![],
+            vec![PayoffAnchorInput {
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                scene_id: scene_id.clone(),
+                from_pos: 4,
+                to_pos: 12,
+            }],
+            base_versions(&[(&foreshadow_id, 0)]),
+            50,
+        )
+        .expect("save payoff");
+        save_anchors_for_scene(
+            &db,
+            scene_id.clone(),
+            vec![],
+            vec![PayoffAnchorInput {
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 1,
+                scene_id,
+                from_pos: 4,
+                to_pos: 12,
+            }],
+            base_versions(&[(&foreshadow_id, 1)]),
+            50,
+        )
+        .expect("repeat payoff mutation");
+
+        let rows = db
+            .execute(
+                "SELECT payoff_from_pos, payoff_to_pos, version
+                 FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load payoff root");
+        assert_eq!(rows[0]["payoff_from_pos"], Value::Number(4.into()));
+        assert_eq!(rows[0]["payoff_to_pos"], Value::Number(12.into()));
+        assert_eq!(rows[0]["version"], Value::Number(1.into()));
+    }
+
+    #[test]
+    fn save_anchors_groups_multiple_setup_and_payoff_changes_into_one_root_bump() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        let first_setup = insert_setup(&db, &foreshadow_id, &scene_id, 1, 3, false);
+        let second_setup = insert_setup(&db, &foreshadow_id, &scene_id, 4, 6, false);
+
+        let rows = save_anchors_for_scene(
+            &db,
+            scene_id.clone(),
+            vec![
+                SetupAnchorInput {
+                    id: first_setup.clone(),
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 0,
+                    scene_id: scene_id.clone(),
+                    from_pos: 2,
+                    to_pos: 4,
+                },
+                SetupAnchorInput {
+                    id: second_setup.clone(),
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 0,
+                    scene_id: scene_id.clone(),
+                    from_pos: 5,
+                    to_pos: 7,
+                },
+            ],
+            vec![PayoffAnchorInput {
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                scene_id: scene_id.clone(),
+                from_pos: 8,
+                to_pos: 12,
+            }],
+            base_versions(&[(&foreshadow_id, 0)]),
+            20,
+        )
+        .expect("persist grouped anchors");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["version"], 1);
+        assert_eq!(foreshadow_version(&db, &foreshadow_id), 1);
+
+        let unchanged = save_anchors_for_scene(
+            &db,
+            scene_id.clone(),
+            vec![
+                SetupAnchorInput {
+                    id: first_setup,
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 1,
+                    scene_id: scene_id.clone(),
+                    from_pos: 2,
+                    to_pos: 4,
+                },
+                SetupAnchorInput {
+                    id: second_setup,
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 1,
+                    scene_id: scene_id.clone(),
+                    from_pos: 5,
+                    to_pos: 7,
+                },
+            ],
+            vec![PayoffAnchorInput {
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 1,
+                scene_id,
+                from_pos: 8,
+                to_pos: 12,
+            }],
+            base_versions(&[(&foreshadow_id, 1)]),
+            20,
+        )
+        .expect("repeat identical grouped anchors");
+        assert_eq!(unchanged.len(), 1);
+        assert_eq!(unchanged[0]["version"], 1);
+        assert_eq!(foreshadow_version(&db, &foreshadow_id), 1);
+    }
+
+    #[test]
+    fn save_anchors_payoff_scene_mismatch_rejects_before_root_version_advance() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let first_id = insert_foreshadow(&db, &project_id);
+        let second_id = insert_foreshadow(&db, &project_id);
+        let local_scene_id = insert_scene(&db, &project_id);
+        let foreign_scene_id = insert_scene(&db, &foreign_project_id);
+
+        let error = save_anchors_for_scene(
+            &db,
+            local_scene_id.clone(),
+            vec![],
+            vec![
+                PayoffAnchorInput {
+                    foreshadow_id: first_id.clone(),
+                    base_version: 0,
+                    scene_id: local_scene_id,
+                    from_pos: 1,
+                    to_pos: 5,
+                },
+                PayoffAnchorInput {
+                    foreshadow_id: second_id.clone(),
+                    base_version: 0,
+                    scene_id: foreign_scene_id,
+                    from_pos: 6,
+                    to_pos: 10,
+                },
+            ],
+            base_versions(&[(&first_id, 0), (&second_id, 0)]),
+            50,
+        )
+        .expect_err("payoff scene mismatch must reject the full batch");
+        assert!(error.to_string().contains("match the saved scene"));
+
+        let rows = db
+            .execute(
+                "SELECT id, payoff_scene_id, version FROM foreshadows
+                 WHERE id IN (?, ?) ORDER BY id",
+                &[Value::String(first_id), Value::String(second_id)],
+                "all",
+            )
+            .expect("load roots after rollback");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row["payoff_scene_id"].is_null()));
+        assert!(rows
+            .iter()
+            .all(|row| row["version"] == Value::Number(0.into())));
+    }
+
+    #[test]
+    fn save_anchors_invalid_ranges_reject_before_any_setup_or_payoff_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        let setup_id = insert_setup(&db, &foreshadow_id, &scene_id, 1, 5, false);
+
+        for (from_pos, to_pos) in [(-1, 3), (6, 5), (0, 21)] {
+            let error = save_anchors_for_scene(
+                &db,
+                scene_id.clone(),
+                vec![SetupAnchorInput {
+                    id: setup_id.clone(),
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 0,
+                    scene_id: scene_id.clone(),
+                    from_pos,
+                    to_pos,
+                }],
+                vec![],
+                base_versions(&[(&foreshadow_id, 0)]),
+                20,
+            )
+            .expect_err("invalid setup range must be rejected");
+            assert!(error.to_string().contains("setup range"));
+        }
+
+        for (from_pos, to_pos) in [(-1, 3), (6, 5), (0, 21)] {
+            let error = save_anchors_for_scene(
+                &db,
+                scene_id.clone(),
+                vec![SetupAnchorInput {
+                    id: setup_id.clone(),
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 0,
+                    scene_id: scene_id.clone(),
+                    from_pos: 2,
+                    to_pos: 4,
+                }],
+                vec![PayoffAnchorInput {
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 0,
+                    scene_id: scene_id.clone(),
+                    from_pos,
+                    to_pos,
+                }],
+                base_versions(&[(&foreshadow_id, 0)]),
+                20,
+            )
+            .expect_err("invalid payoff range must be rejected");
+            assert!(error.to_string().contains("payoff range"));
+        }
+
+        let setup = db
+            .execute(
+                "SELECT from_pos, to_pos, is_orphan FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(setup_id)],
+                "get",
+            )
+            .expect("load unchanged setup");
+        assert_eq!(setup[0]["from_pos"], Value::Number(1.into()));
+        assert_eq!(setup[0]["to_pos"], Value::Number(5.into()));
+        assert_eq!(setup[0]["is_orphan"], Value::Number(0.into()));
+
+        let root = db
+            .execute(
+                "SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version
+                 FROM foreshadows WHERE id = ?",
+                &[Value::String(foreshadow_id)],
+                "get",
+            )
+            .expect("load unchanged payoff root");
+        assert!(root[0]["payoff_scene_id"].is_null());
+        assert!(root[0]["payoff_from_pos"].is_null());
+        assert!(root[0]["payoff_to_pos"].is_null());
+        assert_eq!(root[0]["version"], Value::Number(0.into()));
+    }
+
+    #[test]
+    fn save_anchors_rejects_foreshadow_rebinding_and_scene_mismatch() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let other_foreshadow_id = insert_foreshadow(&db, &project_id);
+        let original_scene_id = insert_scene(&db, &project_id);
+        let destination_scene_id = insert_scene(&db, &project_id);
+        let setup_id = insert_setup(&db, &foreshadow_id, &original_scene_id, 1, 5, false);
+
+        let error = save_anchors_for_scene(
+            &db,
+            original_scene_id.clone(),
+            vec![SetupAnchorInput {
+                id: setup_id.clone(),
+                foreshadow_id: other_foreshadow_id.clone(),
+                base_version: 0,
+                scene_id: original_scene_id.clone(),
+                from_pos: 10,
+                to_pos: 20,
+            }],
+            vec![],
+            base_versions(&[(&other_foreshadow_id, 0)]),
+            50,
+        )
+        .expect_err("existing setup id must not be rebound to another foreshadow");
+        assert!(error.to_string().contains("different foreshadow"));
+
+        let mismatch = save_anchors_for_scene(
+            &db,
+            original_scene_id.clone(),
+            vec![SetupAnchorInput {
+                id: setup_id.clone(),
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                scene_id: destination_scene_id.clone(),
+                from_pos: 10,
+                to_pos: 20,
+            }],
+            vec![],
+            base_versions(&[(&foreshadow_id, 0)]),
+            50,
+        )
+        .expect_err("anchor scene must match the top-level saved scene");
+        assert!(mismatch.to_string().contains("match the saved scene"));
+
+        let rows = db
+            .execute(
+                "SELECT foreshadow_id, scene_id, from_pos, to_pos, semantic_key
+                   FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(setup_id)],
+                "get",
+            )
+            .expect("load moved setup");
+        assert_eq!(
+            rows[0]["foreshadow_id"],
+            Value::String(foreshadow_id.clone())
+        );
+        assert_eq!(
+            rows[0]["scene_id"],
+            Value::String(original_scene_id.clone())
+        );
+        assert_eq!(rows[0]["from_pos"], Value::Number(1.into()));
+        assert_eq!(rows[0]["to_pos"], Value::Number(5.into()));
+        assert_eq!(
+            rows[0]["semantic_key"],
+            Value::String(setup_semantic_key(&foreshadow_id, &original_scene_id, 1, 5,))
+        );
+    }
+
+    #[test]
+    fn save_anchors_scene_mismatch_rejects_before_earlier_updates() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let source_scene_id = insert_scene(&db, &project_id);
+        let foreign_scene_id = insert_scene(&db, &foreign_project_id);
+        let first_id = insert_setup(&db, &foreshadow_id, &source_scene_id, 1, 5, false);
+        let second_id = insert_setup(&db, &foreshadow_id, &source_scene_id, 6, 10, false);
+
+        let error = save_anchors_for_scene(
+            &db,
+            source_scene_id.clone(),
+            vec![
+                SetupAnchorInput {
+                    id: first_id.clone(),
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 0,
+                    scene_id: source_scene_id.clone(),
+                    from_pos: 11,
+                    to_pos: 15,
+                },
+                SetupAnchorInput {
+                    id: second_id.clone(),
+                    foreshadow_id: foreshadow_id.clone(),
+                    base_version: 0,
+                    scene_id: foreign_scene_id,
+                    from_pos: 16,
+                    to_pos: 20,
+                },
+            ],
+            vec![],
+            base_versions(&[(&foreshadow_id, 0)]),
+            50,
+        )
+        .expect_err("scene mismatch must reject the whole anchor batch");
+        assert!(error.to_string().contains("match the saved scene"));
+
+        let rows = db
+            .execute(
+                "SELECT id, scene_id, from_pos, to_pos
+                   FROM foreshadow_setups WHERE id IN (?, ?) ORDER BY from_pos",
+                &[
+                    Value::String(first_id.clone()),
+                    Value::String(second_id.clone()),
+                ],
+                "all",
+            )
+            .expect("load setups after rejected batch");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], Value::String(first_id));
+        assert_eq!(rows[0]["scene_id"], Value::String(source_scene_id.clone()));
+        assert_eq!(rows[0]["from_pos"], Value::Number(1.into()));
+        assert_eq!(rows[1]["id"], Value::String(second_id));
+        assert_eq!(rows[1]["scene_id"], Value::String(source_scene_id));
+        assert_eq!(rows[1]["from_pos"], Value::Number(6.into()));
+    }
+
+    #[test]
+    fn save_anchors_preserves_matching_legacy_duplicate_semantic_key() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow(&db, &project_id);
+        let scene_id = insert_scene(&db, &project_id);
+        insert_setup(&db, &foreshadow_id, &scene_id, 1, 5, false);
+        let duplicate_id = "legacy-save-anchor-duplicate".to_string();
+        let natural_key = setup_semantic_key(&foreshadow_id, &scene_id, 1, 5);
+        let legacy_key = format!("{natural_key}#dup:{duplicate_id}");
+        insert_setup_with_semantic_key(
+            &db,
+            duplicate_id.clone(),
+            &foreshadow_id,
+            &scene_id,
+            1,
+            5,
+            false,
+            legacy_key.clone(),
+        );
+
+        save_anchors_for_scene(
+            &db,
+            scene_id.clone(),
+            vec![SetupAnchorInput {
+                id: duplicate_id.clone(),
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                scene_id,
+                from_pos: 1,
+                to_pos: 5,
+            }],
+            vec![],
+            base_versions(&[(&foreshadow_id, 0)]),
+            50,
+        )
+        .expect("legacy duplicate should not collide with its unsuffixed peer");
+
+        let rows = db
+            .execute(
+                "SELECT semantic_key FROM foreshadow_setups WHERE id = ?",
+                &[Value::String(duplicate_id)],
+                "get",
+            )
+            .expect("load preserved legacy key");
+        assert_eq!(rows[0]["semantic_key"], Value::String(legacy_key));
+    }
+
+    #[test]
     fn save_anchors_bulk_orphan_skipped_when_doc_has_content() {
         let db = test_db();
         let proj = insert_project(&db);
@@ -2022,7 +4188,7 @@ mod tests {
         let sid = insert_setup(&db, &fid, &scene, 1, 5, false);
 
         // setups empty but doc has content (size > 2) → bulk orphan must be skipped
-        save_anchors_for_scene(&db, scene.clone(), vec![], vec![], 50).unwrap();
+        save_anchors_for_scene(&db, scene.clone(), vec![], vec![], base_versions(&[]), 50).unwrap();
 
         let rows = db
             .execute(
@@ -2047,7 +4213,15 @@ mod tests {
         let sid = insert_setup(&db, &fid, &scene, 1, 5, false);
 
         // setups empty and doc is empty (size <= 2) → bulk orphan must fire
-        save_anchors_for_scene(&db, scene.clone(), vec![], vec![], 2).unwrap();
+        save_anchors_for_scene(
+            &db,
+            scene.clone(),
+            vec![],
+            vec![],
+            base_versions(&[(&fid, 0)]),
+            2,
+        )
+        .unwrap();
 
         let rows = db
             .execute(

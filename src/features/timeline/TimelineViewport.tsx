@@ -740,9 +740,17 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         l.id === d.linkId ? { ...l, threadId: newThread, nodeId: newScene } : l,
       );
       // 既存アンカー（to===自スレッド && at===開始シーン）は追従。自己参照は落とす。
-      const anchored = branches.filter(
-        (b) => b.atNodeId === d.nodeId && b.toThreadId === d.threadId,
+      const hasCoAnchor = links.some(
+        (link) =>
+          link.id !== d.linkId &&
+          link.threadId === d.threadId &&
+          link.nodeId === d.nodeId,
       );
+      const anchored = hasCoAnchor
+        ? []
+        : branches.filter(
+            (b) => b.atNodeId === d.nodeId && b.toThreadId === d.threadId,
+          );
       let previewBranches = branches;
       if (anchored.length > 0) {
         previewBranches = branches
@@ -1223,10 +1231,18 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       const newScene =
         action.type === "move-scene" ? action.nodeId : action.atNodeId;
       const crossThread = newThread !== d.threadId;
-      const anchored = store.branches.filter(
-        (branch) =>
-          branch.atNodeId === d.nodeId && branch.toThreadId === d.threadId,
+      const hasCoAnchor = store.links.some(
+        (link) =>
+          link.id !== d.linkId &&
+          link.threadId === d.threadId &&
+          link.nodeId === d.nodeId,
       );
+      const anchored = hasCoAnchor
+        ? []
+        : store.branches.filter(
+            (branch) =>
+              branch.atNodeId === d.nodeId && branch.toThreadId === d.threadId,
+          );
 
       let operation: Promise<void>;
       if (anchored.length > 0) {

@@ -24,7 +24,15 @@ const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
 
 const root = mkdtempSync(join(tmpdir(), "grimodex-node-agent-"));
-process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+process.on("exit", () => {
+  try {
+    rmSync(root, { recursive: true, force: true });
+  } catch (error) {
+    // The native Backend can release its SQLite handle after exit listeners
+    // on Windows, so fixture cleanup is best-effort there.
+    if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+  }
+});
 
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed（'character' codex_type も seed 済み）
@@ -117,6 +125,81 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
   await assert.rejects(
     backend.agentCodexCreate({ ...payload, name: "別人" }),
     /AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT/,
+  );
+});
+
+test("agentCodexMutate creates a Detail Definition and semantic binding atomically", async () => {
+  const created = JSON.parse(
+    await backend.agentCodexMutate({
+      operation: "detail.definition.create",
+      projectId: PROJECT,
+      sessionId: "preset-semantic-session",
+      surface: "manual",
+      definitionId: "definition-semantic-napi",
+      typeSlug: "character",
+      name: "Role",
+      fieldType: "dropdown",
+      sortOrder: 1,
+      includeInContext: 1,
+      semanticBinding: {
+        id: "binding-semantic-napi",
+        facetKey: "role.current",
+        projectionKind: "enum",
+        temporalPolicy: "base-and-phase",
+        source: "preset",
+        confirmed: false,
+      },
+    }),
+  );
+  assert.equal(created.entityId, "definition-semantic-napi");
+  assert.equal(created.version, 0);
+
+  const binding = await rows(
+    `SELECT project_id, definition_id, facet_key, projection_kind,
+            temporal_policy, source, confirmed, version
+       FROM codex_detail_semantic_bindings WHERE id = ?`,
+    ["binding-semantic-napi"],
+  );
+  assert.deepEqual(binding, [
+    {
+      project_id: PROJECT,
+      definition_id: "definition-semantic-napi",
+      facet_key: "role.current",
+      projection_kind: "enum",
+      temporal_policy: "base-and-phase",
+      source: "preset",
+      confirmed: 0,
+      version: 0,
+    },
+  ]);
+
+  await assert.rejects(
+    backend.agentCodexMutate({
+      operation: "detail.definition.create",
+      projectId: PROJECT,
+      sessionId: "preset-semantic-session",
+      surface: "manual",
+      definitionId: "definition-semantic-rolled-back-napi",
+      typeSlug: "character",
+      name: "Duplicate semantic binding id",
+      fieldType: "text",
+      sortOrder: 2,
+      includeInContext: 1,
+      semanticBinding: {
+        id: "binding-semantic-napi",
+        facetKey: "goal.active",
+        projectionKind: "summary-text",
+        temporalPolicy: "phase-on-durable-change",
+        source: "preset",
+        confirmed: false,
+      },
+    }),
+  );
+  assert.deepEqual(
+    await rows("SELECT id FROM codex_detail_definitions WHERE id = ?", [
+      "definition-semantic-rolled-back-napi",
+    ]),
+    [],
   );
 });
 
@@ -278,44 +361,83 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
   const datedEventId = "chronicle-bulk-napi-event-2";
   const sceneId = "chronicle-bulk-napi-scene-1";
   const datedSceneId = "chronicle-bulk-napi-scene-2";
-  const sceneUpdatedAt = "2026-07-29T00:00:00.000Z";
-  const datedSceneUpdatedAt = "2026-07-29T00:00:01.000Z";
-  await backend.dbExecute(
-    `INSERT INTO events
-       (id, project_id, title, ordinal, start_time, start_minute,
-        start_granularity, end_granularity, precision, kind,
-        created_at, updated_at, version)
-     VALUES (?, ?, 'Bulk event', 'z-bulk', 42, 90, 'time', 'none',
-             'exact', 'generic', datetime('now'), datetime('now'), 1)`,
-    [eventId, PROJECT],
-    "run",
+  await backend.agentEventCreate({
+    requestId: `fixture:${eventId}`,
+    eventId,
+    projectId: PROJECT,
+    sessionId: "sess-bulk-fixture",
+    surface: "manual",
+    title: "Bulk event",
+    ordinal: "z-bulk",
+    startTime: 42,
+    startMinute: 90,
+    startGranularity: "time",
+    endGranularity: "none",
+    precision: "exact",
+    kind: "generic",
+  });
+  await backend.agentEventCreate({
+    requestId: `fixture:${datedEventId}`,
+    eventId: datedEventId,
+    projectId: PROJECT,
+    sessionId: "sess-bulk-fixture",
+    surface: "manual",
+    title: "Dated bulk event",
+    ordinal: "z-bulk-2",
+    startTime: 142,
+    startGranularity: "day",
+    endGranularity: "none",
+    precision: "exact",
+    kind: "generic",
+  });
+
+  const scene = JSON.parse(
+    await backend.treeNodeCreate({
+      id: sceneId,
+      projectId: PROJECT,
+      parentId: null,
+      nodeType: "scene",
+      title: "Bulk scene",
+      sortOrder: "z-bulk",
+      content: "{}",
+    }),
   );
-  await backend.dbExecute(
-    `INSERT INTO events
-       (id, project_id, title, ordinal, start_time, start_minute,
-        start_granularity, end_granularity, precision, kind,
-        created_at, updated_at, version)
-     VALUES (?, ?, 'Dated bulk event', 'z-bulk-2', 142, NULL, 'day', 'none',
-             'exact', 'generic', datetime('now'), datetime('now'), 1)`,
-    [datedEventId, PROJECT],
-    "run",
+  const sceneTemporal = JSON.parse(
+    await backend.temporalScenePatch({
+      projectId: PROJECT,
+      targetId: sceneId,
+      baseVersion: scene.version,
+      startTime: 84,
+      startGranularity: "day",
+      endGranularity: "none",
+      precision: "exact",
+    }),
   );
-  await backend.dbExecute(
-    `INSERT INTO tree_nodes
-       (id, project_id, node_type, title, sort_order,
-        chronicle_start_time, chronicle_start_granularity, updated_at)
-     VALUES (?, ?, 'scene', 'Bulk scene', 'z-bulk', 84, 'day', ?)`,
-    [sceneId, PROJECT, sceneUpdatedAt],
-    "run",
+  const sceneUpdatedAt = sceneTemporal.updatedAt;
+
+  const datedScene = JSON.parse(
+    await backend.treeNodeCreate({
+      id: datedSceneId,
+      projectId: PROJECT,
+      parentId: null,
+      nodeType: "scene",
+      title: "Dated bulk scene",
+      sortOrder: "z-bulk-2",
+      content: "{}",
+    }),
   );
-  await backend.dbExecute(
-    `INSERT INTO tree_nodes
-       (id, project_id, node_type, title, sort_order,
-        chronicle_start_time, chronicle_start_granularity, updated_at)
-     VALUES (?, ?, 'scene', 'Dated bulk scene', 'z-bulk-2', 184, 'day', ?)`,
-    [datedSceneId, PROJECT, datedSceneUpdatedAt],
-    "run",
+  const datedSceneTemporal = JSON.parse(
+    await backend.temporalScenePatch({
+      projectId: PROJECT,
+      targetId: datedSceneId,
+      baseVersion: datedScene.version,
+      startTime: 184,
+      startGranularity: "day",
+      endGranularity: "none",
+      precision: "exact",
+    }),
   );
+  const datedSceneUpdatedAt = datedSceneTemporal.updatedAt;
 
   const result = JSON.parse(
     await backend.agentChronicleBulkMutate({

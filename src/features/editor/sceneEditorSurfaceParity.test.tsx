@@ -225,6 +225,14 @@ vi.mock("@/features/editor/persistSceneBody", () => ({
   persistSceneBody: vi.fn(
     async (_sceneId: string, doc: TiptapEditor["state"]["doc"]) => {
       harness.persisted.linear.push(doc.toJSON());
+      return {
+        placedBeatPreview: null,
+        unplacedBeatPreview: null,
+        contentVersion: 1,
+        contentUpdatedAt: "2100-01-01T00:00:00.000Z",
+        dbTransactionCount: 1,
+        foreshadowRows: [],
+      };
     },
   ),
 }));

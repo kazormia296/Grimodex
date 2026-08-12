@@ -672,7 +672,15 @@ async function restoreStructural(
       );
     }
     for (const row of auxByScope.get("scene_events") ?? []) {
-      pushStmt(buildInsert("scene_events", row));
+      pushStmt(
+        buildInsert("scene_events", {
+          ...row,
+          // A structural restore is a new physical association incarnation.
+          // Never revive the captured token: an older journal could otherwise
+          // mistake the restored row for the association it originally owned.
+          incarnation_token: crypto.randomUUID(),
+        }),
+      );
     }
     for (const row of auxByScope.get("event_participants") ?? []) {
       // codex_entry_id is NOT NULL FK. Codex unselected and entry missing → skip.

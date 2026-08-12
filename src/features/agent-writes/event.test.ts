@@ -45,6 +45,7 @@ import {
   uiLinkSceneEvent,
   uiUnlinkSceneEvent,
   agentLinkSceneEvent,
+  agentLinkSceneEventsBatch,
   agentAddEventRelation,
   agentCreateEvent,
   agentUpdateEvent,
@@ -151,6 +152,35 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     expect(h.invoke).toHaveBeenNthCalledWith(2, "agent_event_relation_add", {
       payload: expect.objectContaining({ requestId: "relation-request-1" }),
     });
+  });
+
+  it("scene link batchはraw payloadを1回のdomain writeに束ねる", async () => {
+    await agentLinkSceneEventsBatch(["s1", "s2", "s1"], "e1", {
+      requestId: "batch-request-1",
+      projectId: "p1",
+      surface: "manual",
+      skipPolicyGate: true,
+    });
+
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_link_batch", {
+      payload: {
+        requestId: "batch-request-1",
+        projectId: "p1",
+        sessionId: "sess-1",
+        surface: "manual",
+        eventId: "e1",
+        sceneIds: ["s1", "s2", "s1"],
+      },
+    });
+    expect(h.push).toHaveBeenCalledTimes(1);
+  });
+
+  it("scene link batchは空集合をinvoke前に拒否する", async () => {
+    await expect(agentLinkSceneEventsBatch([], "e1")).rejects.toThrow(
+      "at least one scene",
+    );
+    expect(h.invoke).not.toHaveBeenCalled();
   });
 });
 

@@ -28,13 +28,19 @@ export type CommittedEvidenceLocation =
 
 export function isProjectDocumentEvidence(
   location: CommittedEvidenceLocation,
-): location is Extract<CommittedEvidenceLocation, { kind: "project-document" }> {
+): location is Extract<
+  CommittedEvidenceLocation,
+  { kind: "project-document" }
+> {
   return location.kind === "project-document";
 }
 
 export function isRetainedImportSourceEvidence(
   location: CommittedEvidenceLocation,
-): location is Extract<CommittedEvidenceLocation, { kind: "retained-import-source" }> {
+): location is Extract<
+  CommittedEvidenceLocation,
+  { kind: "retained-import-source" }
+> {
   return location.kind === "retained-import-source";
 }
 

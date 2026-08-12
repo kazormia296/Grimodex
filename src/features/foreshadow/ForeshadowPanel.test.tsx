@@ -10,6 +10,7 @@ const {
   mockReanchorSetup,
   mockReinsertSetup,
   mockSetSetupStrength,
+  mockPublishAuthoritativeForeshadowRows,
   ITEMS,
   SETUPS,
 } = vi.hoisted(() => {
@@ -19,7 +20,12 @@ const {
   const mockRemoveSetup = vi.fn().mockResolvedValue(undefined);
   const mockReanchorSetup = vi.fn().mockResolvedValue(undefined);
   const mockReinsertSetup = vi.fn().mockResolvedValue(undefined);
-  const mockSetSetupStrength = vi.fn().mockResolvedValue(undefined);
+  const mockSetSetupStrength = vi.fn().mockResolvedValue({
+    id: "2",
+    projectId: "p1",
+    version: 1,
+  });
+  const mockPublishAuthoritativeForeshadowRows = vi.fn();
 
   const ITEMS = [
     {
@@ -35,6 +41,7 @@ const {
       label: "seeded",
       intent: null,
       setupCount: 1,
+      version: 0,
     },
     {
       id: "3",
@@ -110,6 +117,7 @@ const {
     mockReanchorSetup,
     mockReinsertSetup,
     mockSetSetupStrength,
+    mockPublishAuthoritativeForeshadowRows,
     ITEMS,
     SETUPS,
   };
@@ -130,7 +138,10 @@ vi.mock("./foreshadowStore", () => {
     evaluateSetup: vi.fn(),
     evaluatingSetupIds: new Set<string>(),
   };
-  return { useForeshadowStore: () => state };
+  return {
+    publishAuthoritativeForeshadowRows: mockPublishAuthoritativeForeshadowRows,
+    useForeshadowStore: () => state,
+  };
 });
 
 vi.mock("./api", () => ({
@@ -345,6 +356,7 @@ describe("ForeshadowPanel - strength セレクタ", () => {
   beforeEach(() => {
     mockLoadSetups.mockClear();
     mockSetSetupStrength.mockClear();
+    mockPublishAuthoritativeForeshadowRows.mockClear();
   });
 
   it("strength 変更で setSetupStrength が呼ばれ loadSetups がリフレッシュする", async () => {
@@ -362,8 +374,11 @@ describe("ForeshadowPanel - strength セレクタ", () => {
     });
 
     await waitFor(() =>
-      expect(mockSetSetupStrength).toHaveBeenCalledWith("s-active", "overt"),
+      expect(mockSetSetupStrength).toHaveBeenCalledWith("s-active", "overt", 0),
     );
+    expect(mockPublishAuthoritativeForeshadowRows).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "2", version: 1 }),
+    ]);
     await waitFor(() => expect(mockLoadSetups).toHaveBeenCalledWith("2"));
   });
 
@@ -382,7 +397,10 @@ describe("ForeshadowPanel - strength セレクタ", () => {
     });
 
     await waitFor(() =>
-      expect(mockSetSetupStrength).toHaveBeenCalledWith("s-active", null),
+      expect(mockSetSetupStrength).toHaveBeenCalledWith("s-active", null, 0),
     );
+    expect(mockPublishAuthoritativeForeshadowRows).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "2", version: 1 }),
+    ]);
   });
 });

@@ -152,7 +152,8 @@ export function resolveStoryRanks(
   }
 
   const beforeClosure = new Map<TemporalNodeId, Set<TemporalNodeId>>();
-  for (const r of reps) beforeClosure.set(r, new Set(incomingReachable(r, adj)));
+  for (const r of reps)
+    beforeClosure.set(r, new Set(incomingReachable(r, adj)));
 
   function compare(left: TemporalNodeId, right: TemporalNodeId): StoryCompare {
     if (!parent.has(left) || !parent.has(right)) {

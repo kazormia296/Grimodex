@@ -15,7 +15,10 @@ export type ForeshadowLifecycle =
   | "orphan-payoff"
   | "abandoned";
 
-export type ForeshadowQualityIssue = "too-subtle" | "needs-strengthening" | "none";
+export type ForeshadowQualityIssue =
+  | "too-subtle"
+  | "needs-strengthening"
+  | "none";
 
 export interface ForeshadowLifecycleInput {
   readonly abandoned: boolean;
@@ -54,7 +57,11 @@ export function deriveForeshadowLifecycle(
 export function deriveForeshadowQuality(
   input: ForeshadowQualityInput,
 ): ForeshadowQualityResult {
-  if (!input.anyWeak || input.lifecycle === "paid" || input.lifecycle === "abandoned") {
+  if (
+    !input.anyWeak ||
+    input.lifecycle === "paid" ||
+    input.lifecycle === "abandoned"
+  ) {
     return { qualityIssue: "none", notes: null };
   }
   if (input.loadBearing === "critical") {
@@ -96,7 +103,11 @@ export function deriveForeshadowState(
   row: ForeshadowRow,
   setupCount: number,
   anyWeak: boolean,
-): { lifecycle: ForeshadowLifecycle; quality: ForeshadowQualityResult; label: DerivedLabel } {
+): {
+  lifecycle: ForeshadowLifecycle;
+  quality: ForeshadowQualityResult;
+  label: DerivedLabel;
+} {
   const lifecycle = deriveForeshadowLifecycle({
     abandoned: row.abandoned,
     setupCount,

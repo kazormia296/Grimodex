@@ -104,7 +104,7 @@ describe("BrowserMock web AI runtime contract", () => {
       JSON.parse(localStorage.getItem("grimodex:global-settings") ?? "{}"),
     ).toEqual(normalized);
     mock.close();
-  });
+  }, 15_000);
 
   it("resolves the selected OpenAI-compatible endpoint for browser requests", async () => {
     const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);

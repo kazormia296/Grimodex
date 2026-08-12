@@ -171,19 +171,25 @@ export async function updatePlotThread(
   id: string,
   patch: Partial<
     Pick<PlotThreadRow, "name" | "color" | "description" | "sortOrder">
-  > & { baseVersion?: number },
+  > & { baseVersion: number },
 ): Promise<PlotThreadRow> {
   const p: Record<string, unknown> = {};
   if (patch.name !== undefined) p.name = patch.name;
   if (patch.color !== undefined) p.color = patch.color;
   if (patch.description !== undefined) p.description = patch.description;
   if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
-  if (patch.baseVersion !== undefined) p.baseVersion = patch.baseVersion;
+  p.baseVersion = patch.baseVersion;
   return normalizeThread(await invoke("plot_thread_update", { id, patch: p }));
 }
 
-export async function deletePlotThread(id: string): Promise<void> {
-  await invoke("plot_thread_delete", { id });
+export async function deletePlotThread(
+  id: string,
+  options: { baseVersion: number },
+): Promise<void> {
+  await invoke("plot_thread_delete", {
+    id,
+    baseVersion: options.baseVersion,
+  });
 }
 
 export async function listPlotThreads(
@@ -254,7 +260,7 @@ export async function updatePlotThreadLink(
       PlotThreadLinkRow,
       "threadId" | "nodeId" | "phaseType" | "note" | "sortOrder"
     >
-  >,
+  > & { baseVersion: number },
 ): Promise<PlotThreadLinkRow> {
   const p: Record<string, unknown> = {};
   if (patch.threadId !== undefined) p.threadId = patch.threadId;
@@ -262,13 +268,20 @@ export async function updatePlotThreadLink(
   if (patch.phaseType !== undefined) p.phaseType = patch.phaseType;
   if (patch.note !== undefined) p.note = patch.note;
   if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
+  p.baseVersion = patch.baseVersion;
   return normalizeLink(
     await invoke("plot_thread_link_update", { id, patch: p }),
   );
 }
 
-export async function deletePlotThreadLink(id: string): Promise<void> {
-  await invoke("plot_thread_link_delete", { id });
+export async function deletePlotThreadLink(
+  id: string,
+  options: { baseVersion: number },
+): Promise<void> {
+  await invoke("plot_thread_link_delete", {
+    id,
+    baseVersion: options.baseVersion,
+  });
 }
 
 export async function listPlotThreadLinks(
@@ -353,12 +366,27 @@ export interface PlotThreadRestoreSnapshotResult {
   branches: PlotThreadBranchRow[];
 }
 
-export interface PlotThreadDeleteSnapshot {
+export interface PlotThreadDeleteMarkerSnapshot {
   requestId?: string;
   projectId: string;
   link: PlotThreadLinkRow;
   branches: PlotThreadBranchRow[];
+  thread?: never;
+  links?: never;
 }
+
+export interface PlotThreadDeleteThreadSnapshot {
+  requestId?: string;
+  projectId: string;
+  thread: PlotThreadRow;
+  links: PlotThreadLinkRow[];
+  branches: PlotThreadBranchRow[];
+  link?: never;
+}
+
+export type PlotThreadDeleteSnapshot =
+  | PlotThreadDeleteMarkerSnapshot
+  | PlotThreadDeleteThreadSnapshot;
 
 export interface PlotThreadDeleteSnapshotResult {
   id: string;
@@ -455,13 +483,23 @@ export async function deletePlotThreadSnapshot(
 ): Promise<PlotThreadDeleteSnapshotResult> {
   const requestId = data.requestId ?? crypto.randomUUID();
   try {
+    const payload =
+      "thread" in data
+        ? {
+            requestId,
+            projectId: data.projectId,
+            thread: data.thread,
+            links: data.links,
+            branches: data.branches,
+          }
+        : {
+            requestId,
+            projectId: data.projectId,
+            link: data.link,
+            branches: data.branches,
+          };
     const raw = await invoke("plot_thread_delete_snapshot", {
-      payload: {
-        requestId,
-        projectId: data.projectId,
-        link: data.link,
-        branches: data.branches,
-      },
+      payload,
     });
     const row = (raw ?? {}) as Record<string, unknown>;
     return attachCreateResultMetadata(
@@ -562,13 +600,13 @@ export async function updatePlotThreadBranch(
   id: string,
   patch: Partial<
     Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
-  > & { baseVersion?: number },
+  > & { baseVersion: number },
 ): Promise<PlotThreadBranchRow> {
   const p: Record<string, unknown> = {};
   if (patch.fromThreadId !== undefined) p.fromThreadId = patch.fromThreadId;
   if (patch.toThreadId !== undefined) p.toThreadId = patch.toThreadId;
   if (patch.atNodeId !== undefined) p.atNodeId = patch.atNodeId;
-  if (patch.baseVersion !== undefined) p.baseVersion = patch.baseVersion;
+  p.baseVersion = patch.baseVersion;
   return normalizeBranch(
     await invoke("plot_thread_branch_update", { id, patch: p }),
   );
@@ -576,11 +614,11 @@ export async function updatePlotThreadBranch(
 
 export async function deletePlotThreadBranch(
   id: string,
-  options?: { baseVersion?: number },
+  options: { baseVersion: number },
 ): Promise<void> {
   await invoke("plot_thread_branch_delete", {
     id,
-    baseVersion: options?.baseVersion ?? null,
+    baseVersion: options.baseVersion,
   });
 }
 

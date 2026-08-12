@@ -1,14 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { deleteFromDb, scheduleImeExportRefresh } = vi.hoisted(() => ({
-  deleteFromDb: vi.fn(),
-  scheduleImeExportRefresh: vi.fn(),
-}));
+const {
+  deleteFromDb,
+  selectFromDb,
+  selectWhere,
+  invokeTypedWriter,
+  scheduleImeExportRefresh,
+} = vi.hoisted(() => {
+  const selectWhere = vi
+    .fn()
+    .mockResolvedValue([{ id: "codex-1", projectId: "project-1", version: 7 }]);
+  return {
+    deleteFromDb: vi.fn(),
+    selectFromDb: vi.fn(() => ({ where: selectWhere })),
+    selectWhere,
+    invokeTypedWriter: vi.fn(),
+    scheduleImeExportRefresh: vi.fn(),
+  };
+});
 
 vi.mock("@/db/client", () => ({
   db: {
     delete: deleteFromDb,
+    select: () => ({ from: selectFromDb }),
   },
+}));
+
+vi.mock("@/lib/tauri", () => ({
+  invoke: invokeTypedWriter,
 }));
 
 vi.mock("@/features/ime/scheduler", () => ({
@@ -48,6 +67,12 @@ function deferNextDelete() {
   return { durableDelete, where };
 }
 
+function deferNextTypedDelete() {
+  const durableDelete = deferred<void>();
+  invokeTypedWriter.mockReturnValueOnce(durableDelete.promise);
+  return { durableDelete };
+}
+
 describe("Chat anchor deletion admission", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -63,7 +88,7 @@ describe("Chat anchor deletion admission", () => {
   });
 
   it("holds Codex deletion authority through DB deletion and scope reconciliation", async () => {
-    const { durableDelete, where } = deferNextDelete();
+    const { durableDelete } = deferNextTypedDelete();
     const notified = vi.fn();
     let admissionDuringNotification:
       | ReturnType<typeof tryAcquireChatTurnAdmissionLease>
@@ -76,8 +101,17 @@ describe("Chat anchor deletion admission", () => {
     });
 
     const deleting = deleteCodexEntry("project-1", "codex-1");
-    expect(where).toHaveBeenCalledOnce();
     expect(tryAcquireChatTurnAdmissionLease()).toBeNull();
+    await vi.waitFor(() => expect(invokeTypedWriter).toHaveBeenCalledOnce());
+    expect(selectFromDb).toHaveBeenCalledOnce();
+    expect(selectWhere).toHaveBeenCalledOnce();
+    expect(invokeTypedWriter).toHaveBeenCalledWith("agent_codex_delete", {
+      payload: expect.objectContaining({
+        projectId: "project-1",
+        entryId: "codex-1",
+        baseVersion: 7,
+      }),
+    });
 
     durableDelete.resolve(undefined);
     await deleting;
@@ -98,6 +132,8 @@ describe("Chat anchor deletion admission", () => {
       deleteCodexEntry("project-1", "codex-1"),
     ).rejects.toBeInstanceOf(ChatAnchorDeletionBlockedError);
     expect(deleteFromDb).not.toHaveBeenCalled();
+    expect(selectFromDb).not.toHaveBeenCalled();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
 
     chatAdmission?.release();
   });
@@ -135,6 +171,8 @@ describe("Chat anchor deletion admission", () => {
       deleteSnippet("project-1", "snippet-1"),
     ).rejects.toBeInstanceOf(ChatAnchorDeletionBlockedError);
     expect(deleteFromDb).not.toHaveBeenCalled();
+    expect(selectFromDb).not.toHaveBeenCalled();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
 
     chatAdmission?.release();
   });

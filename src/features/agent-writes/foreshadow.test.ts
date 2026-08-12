@@ -55,6 +55,7 @@ const storedItem = {
   abandoned: false,
   secret: true,
   loadBearing: null,
+  version: 1,
 };
 
 describe("agentCreateForeshadow", () => {
@@ -157,7 +158,11 @@ describe("agentUpdateForeshadow", () => {
   it("is gated by knowledgeWrite", async () => {
     h.blockIfPolicyOff.mockReturnValue(true);
     await expect(
-      agentUpdateForeshadow({ foreshadowId: "f1", title: "x" }),
+      agentUpdateForeshadow({
+        foreshadowId: "f1",
+        baseVersion: 1,
+        title: "x",
+      }),
     ).rejects.toThrow();
     expect(h.blockIfPolicyOff).toHaveBeenCalledWith("knowledgeWrite");
     expect(h.invoke).not.toHaveBeenCalled();
@@ -165,7 +170,7 @@ describe("agentUpdateForeshadow", () => {
 
   it("rejects an empty patch before invoking", async () => {
     await expect(
-      agentUpdateForeshadow({ foreshadowId: "f1" }),
+      agentUpdateForeshadow({ foreshadowId: "f1", baseVersion: 1 }),
     ).rejects.toThrow();
     expect(h.invoke).not.toHaveBeenCalled();
   });
@@ -173,6 +178,7 @@ describe("agentUpdateForeshadow", () => {
   it("invokes the tracked command with only the provided fields and pushes undo", async () => {
     const result = await agentUpdateForeshadow({
       foreshadowId: "f1",
+      baseVersion: 1,
       payoffConfirmed: true,
     });
 
@@ -181,6 +187,7 @@ describe("agentUpdateForeshadow", () => {
         projectId: "p1",
         sessionId: "sess-1",
         foreshadowId: "f1",
+        baseVersion: 1,
         title: null,
         intent: null,
         notes: null,

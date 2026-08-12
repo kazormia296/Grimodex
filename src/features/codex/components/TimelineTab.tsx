@@ -571,9 +571,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           onClose={handleClose}
           resolveCurrentContent={resolveContentAtAnchor}
           existingDetailOverrideCount={
-            editingPhase
-              ? (detailOverrides[editingPhase.id]?.length ?? 0)
-              : 0
+            editingPhase ? (detailOverrides[editingPhase.id]?.length ?? 0) : 0
           }
         />
       )}

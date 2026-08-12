@@ -1,95 +1,137 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { SQL } from "drizzle-orm";
-import { SQLiteSyncDialect } from "drizzle-orm/sqlite-core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// db をモック: 条件付き UPDATE の .returning() と、衝突判定用の存在チェック
-// (.select().from().where().limit()) を制御する。markLinkedForeshadowsDirty の
-// db.select は then で [] に解決させ「リンク無し→早期 return」にする。
-const returningMock = vi.fn();
-const limitMock = vi.fn();
-const updateWhereMock = vi.fn((_condition: unknown) => ({
-  returning: returningMock,
-}));
-const whereResult = {
-  limit: limitMock,
-  then: (resolve: (v: unknown) => void) => resolve([]),
-};
+const invokeMock = vi.fn();
+const scheduleImeExportRefreshMock = vi.fn();
+let selectQueue: unknown[][] = [];
+
+function takeSelectResult(): Promise<unknown[]> {
+  return Promise.resolve(selectQueue.shift() ?? []);
+}
+
 vi.mock("@/db/client", () => ({
   db: {
-    update: () => ({
-      set: () => ({ where: updateWhereMock }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          then: (
+            resolve: (value: unknown[]) => void,
+            reject: (reason: unknown) => void,
+          ) => takeSelectResult().then(resolve, reject),
+        }),
+      }),
     }),
-    select: () => ({ from: () => ({ where: () => whereResult }) }),
   },
 }));
+
+vi.mock("@/lib/tauri", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleCodexIndex: vi.fn(),
 }));
-const scheduleImeExportRefreshMock = vi.fn();
+
 vi.mock("@/features/ime/scheduler", () => ({
   scheduleImeExportRefresh: (...args: unknown[]) =>
     scheduleImeExportRefreshMock(...args),
 }));
+
+vi.mock("./impactBaselineVisibility", () => ({
+  markImpactBaselinePhasesRestricted: vi.fn(),
+}));
+
 vi.mock("./mentionRescanQueue", () => ({ enqueueRescan: vi.fn() }));
 
 import { updateCodexEntry } from "./api";
 import { CodexVersionConflictError } from "./occ";
 
+const currentEntry = {
+  id: "e1",
+  projectId: "p",
+  version: 2,
+  name: "A",
+  aliases: null,
+  excludedAliases: null,
+  readings: '{"A":["a"]}',
+};
+
 beforeEach(() => {
-  returningMock.mockReset();
-  limitMock.mockReset();
-  updateWhereMock.mockClear();
+  invokeMock.mockReset();
+  invokeMock.mockResolvedValue(undefined);
   scheduleImeExportRefreshMock.mockReset();
+  selectQueue = [];
 });
 
 describe("updateCodexEntry OCC (base_version)", () => {
-  it("baseVersion 一致 → 更新成功し、返り値の version はインクリメント値", async () => {
-    returningMock.mockResolvedValueOnce([
-      { id: "e1", projectId: "p", version: 3, content: "x" },
-    ]);
-    const r = await updateCodexEntry(
+  it("baseVersion 一致で typed writer を呼び、永続化後の version を返す", async () => {
+    selectQueue.push(
+      [currentEntry],
+      [{ ...currentEntry, version: 3, content: "x" }],
+    );
+
+    const result = await updateCodexEntry(
       "p",
       "e1",
       { content: "x" },
       { baseVersion: 2 },
     );
-    expect(r?.version).toBe(3);
+
+    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+      payload: expect.objectContaining({
+        projectId: "p",
+        entryId: "e1",
+        surface: "manual",
+        baseVersion: 2,
+        content: "x",
+      }),
+    });
+    expect(result?.version).toBe(3);
   });
 
-  it("baseVersion 不一致かつ行は存在 → CodexVersionConflictError を投げる", async () => {
-    returningMock.mockResolvedValueOnce([]); // 条件付き UPDATE が 0 件
-    limitMock.mockResolvedValueOnce([{ id: "e1" }]); // 行は存在する
+  it("typed writer の CAS 失敗を CodexVersionConflictError に変換する", async () => {
+    selectQueue.push([currentEntry]);
+    invokeMock.mockRejectedValueOnce(new Error("Codex version conflict"));
+
     await expect(
-      updateCodexEntry("p", "e1", { content: "x" }, { baseVersion: 2 }),
+      updateCodexEntry("p", "e1", { content: "x" }, { baseVersion: 1 }),
     ).rejects.toBeInstanceOf(CodexVersionConflictError);
   });
 
-  it("行が存在しない (別プロジェクト等) → undefined (従来通り)", async () => {
-    returningMock.mockResolvedValueOnce([]);
-    limitMock.mockResolvedValueOnce([]); // 行なし
-    const r = await updateCodexEntry(
+  it("別プロジェクトを含む未検出行は undefined のまま返す", async () => {
+    selectQueue.push([]);
+
+    const result = await updateCodexEntry(
       "p",
       "e1",
       { content: "x" },
       { baseVersion: 2 },
     );
-    expect(r).toBeUndefined();
+
+    expect(result).toBeUndefined();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("baseVersion 省略 → blind UPDATE (version 非加算・後方互換)", async () => {
-    returningMock.mockResolvedValueOnce([
-      { id: "e1", projectId: "p", version: 0, content: "x" },
-    ]);
-    const r = await updateCodexEntry("p", "e1", { content: "x" });
-    expect(r?.id).toBe("e1");
-    // OCC を使っていないので存在チェック (limit) は呼ばれない
-    expect(limitMock).not.toHaveBeenCalled();
+  it("baseVersion 省略時も pre-read した version で typed OCC writer を呼ぶ", async () => {
+    selectQueue.push(
+      [currentEntry],
+      [{ ...currentEntry, version: 3, content: "x" }],
+    );
+
+    const result = await updateCodexEntry("p", "e1", { content: "x" });
+
+    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+      payload: expect.objectContaining({
+        projectId: "p",
+        entryId: "e1",
+        baseVersion: 2,
+        content: "x",
+      }),
+    });
+    expect(result?.version).toBe(3);
   });
 
-  it("baseSurface 指定時は取得時の readings JSON も UPDATE 条件に含める", async () => {
-    returningMock.mockResolvedValueOnce([
-      { id: "e1", projectId: "p", version: 3, readings: '{"A":["a"]}' },
-    ]);
+  it("baseSurface が pre-read surface と一致すれば typed writer へ進む", async () => {
+    selectQueue.push([currentEntry], [{ ...currentEntry, version: 3 }]);
 
     await updateCodexEntry(
       "p",
@@ -106,64 +148,57 @@ describe("updateCodexEntry OCC (base_version)", () => {
       },
     );
 
-    const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
-    const query = new SQLiteSyncDialect().sqlToQuery(condition);
-    expect(query.sql).toMatch(/"readings"\s*=\s*\?/);
-    expect(query.params).toContain('{"A":["a"]}');
+    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+      payload: expect.objectContaining({
+        entryId: "e1",
+        baseVersion: 2,
+        readings: '{"A":["a"],"B":["b"]}',
+      }),
+    });
   });
 
-  it("baseSurface.readings が null なら readings IS NULL を UPDATE 条件に含める", async () => {
-    returningMock.mockResolvedValueOnce([
-      { id: "e1", projectId: "p", version: 1, readings: '{"A":["a"]}' },
-    ]);
+  it("baseSurface.readings が stale なら native write 前に conflict にする", async () => {
+    selectQueue.push([{ ...currentEntry, readings: '{"A":["updated"]}' }]);
 
-    await updateCodexEntry(
-      "p",
-      "e1",
-      { readings: '{"A":["a"]}' },
-      {
-        baseVersion: 0,
-        baseSurface: {
-          name: "A",
-          aliases: null,
-          excludedAliases: null,
-          readings: null,
+    await expect(
+      updateCodexEntry(
+        "p",
+        "e1",
+        { readings: '{"A":["a"]}' },
+        {
+          baseVersion: 2,
+          baseSurface: {
+            name: "A",
+            aliases: null,
+            excludedAliases: null,
+            readings: null,
+          },
         },
-      },
-    );
-
-    const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
-    const query = new SQLiteSyncDialect().sqlToQuery(condition);
-    expect(query.sql).toMatch(/"readings"\s+is\s+null/i);
+      ),
+    ).rejects.toBeInstanceOf(CodexVersionConflictError);
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("baseSurface は name / aliases / excludedAliases も同じ UPDATE 条件に含める", async () => {
-    returningMock.mockResolvedValueOnce([
-      { id: "e1", projectId: "p", version: 2, readings: '{"A":["a"]}' },
-    ]);
+  it("baseSurface の name / aliases / excludedAliases の stale 値も conflict にする", async () => {
+    selectQueue.push([{ ...currentEntry, aliases: '["current"]' }]);
 
-    await updateCodexEntry(
-      "p",
-      "e1",
-      { readings: '{"A":["a"],"B":["b"]}' },
-      {
-        baseVersion: 1,
-        baseSurface: {
-          name: "A",
-          aliases: null,
-          excludedAliases: '["old"]',
-          readings: '{"A":["a"]}',
+    await expect(
+      updateCodexEntry(
+        "p",
+        "e1",
+        { aliases: '["next"]' },
+        {
+          baseVersion: 2,
+          baseSurface: {
+            name: "A",
+            aliases: null,
+            excludedAliases: null,
+            readings: '{"A":["a"]}',
+          },
         },
-      },
-    );
-
-    const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
-    const query = new SQLiteSyncDialect().sqlToQuery(condition);
-    expect(query.sql).toMatch(/"name"\s*=\s*\?/);
-    expect(query.sql).toMatch(/"aliases"\s+is\s+null/i);
-    expect(query.sql).toMatch(/"excluded_aliases"\s*=\s*\?/);
-    expect(query.params).toContain("A");
-    expect(query.params).toContain('["old"]');
+      ),
+    ).rejects.toBeInstanceOf(CodexVersionConflictError);
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 });
 
@@ -180,27 +215,39 @@ describe("updateCodexEntry IME refresh trigger", () => {
   ];
 
   it.each(relevantPatches)(
-    "refreshes after a successful %s mutation",
+    "refreshes after a successful %s typed mutation",
     async (_, patch) => {
-      returningMock.mockResolvedValueOnce([
-        { id: "e1", projectId: "p", version: 0 },
-      ]);
+      selectQueue.push([currentEntry], [{ ...currentEntry, version: 3 }]);
+
       await updateCodexEntry("p", "e1", patch);
+
+      expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+        payload: expect.objectContaining({
+          projectId: "p",
+          entryId: "e1",
+          baseVersion: 2,
+        }),
+      });
       expect(scheduleImeExportRefreshMock).toHaveBeenCalledWith("p");
     },
   );
 
   it("does not refresh for content-only mutations", async () => {
-    returningMock.mockResolvedValueOnce([
-      { id: "e1", projectId: "p", version: 0, content: "x" },
-    ]);
+    selectQueue.push(
+      [currentEntry],
+      [{ ...currentEntry, version: 3, content: "x" }],
+    );
+
     await updateCodexEntry("p", "e1", { content: "x" });
+
     expect(scheduleImeExportRefreshMock).not.toHaveBeenCalled();
   });
 
   it("does not refresh when no row was updated", async () => {
-    returningMock.mockResolvedValueOnce([]);
+    selectQueue.push([]);
+
     await updateCodexEntry("p", "e1", { name: "changed" });
+
     expect(scheduleImeExportRefreshMock).not.toHaveBeenCalled();
   });
 });

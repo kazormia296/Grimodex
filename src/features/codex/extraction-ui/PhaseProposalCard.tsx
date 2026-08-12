@@ -37,9 +37,11 @@ export function PhaseProposalCard({
   onDecide,
 }: PhaseProposalCardProps) {
   const blocked = proposal.applicability === "blocked";
+  const applied = Boolean(proposal.application);
   const payload = proposal.proposal.payload;
   const safeHint =
     !blocked &&
+    !applied &&
     proposal.status === "unreviewed" &&
     isSafeForCodexPhaseBulkApprove(proposal.safety);
 
@@ -104,7 +106,7 @@ export function PhaseProposalCard({
         </div>
       )}
 
-      {!blocked && (
+      {!blocked && !applied && (
         <div className="flex flex-wrap gap-1 pl-6">
           <button
             type="button"

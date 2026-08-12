@@ -28,6 +28,7 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getSceneVersion, loadSceneFull } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
+import { refreshForeshadowPayoffMarkVersions } from "@/features/foreshadow/saveAnchors";
 import {
   registerDiscardHandler,
   registerRecoveryDraftProvider,
@@ -376,6 +377,15 @@ function MountedSceneBlock({
     const persisted = await persistSceneBody(sceneId, docAtStart, {
       baseVersion: sceneVersionRef.current,
     });
+    if (persisted.foreshadowRows.length > 0) {
+      runProgrammaticProjectionUpdate(() => {
+        refreshForeshadowPayoffMarkVersions((apply) => {
+          const tr = ed.state.tr;
+          apply(tr);
+          if (tr.steps.length > 0) ed.view.dispatch(tr);
+        }, persisted.foreshadowRows);
+      });
+    }
     if (persisted?.contentVersion !== undefined) {
       sceneVersionRef.current = persisted.contentVersion;
       announcePersistedBinding(
@@ -402,7 +412,13 @@ function MountedSceneBlock({
         .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
     }
     return { persisted: true, committed };
-  }, [documentKey, isFileBacked, sceneId, treeNodeType]);
+  }, [
+    documentKey,
+    isFileBacked,
+    runProgrammaticProjectionUpdate,
+    sceneId,
+    treeNodeType,
+  ]);
 
   const saveFn = useCallback(async () => {
     const result = await runCoordinatedDocumentSave(documentKey, coreSave, {

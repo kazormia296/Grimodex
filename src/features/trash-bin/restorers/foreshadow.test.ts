@@ -61,6 +61,7 @@ function createdRow(id = "restored-foreshadow:trash-row-1"): ForeshadowRow {
     abandoned: true,
     secret: false,
     loadBearing: "critical",
+    version: 0,
     codexLinkDirtyAt: new Date(1_784_000_000_000),
     createdAt: new Date(1_784_000_000_001),
     updatedAt: new Date(1_784_000_000_001),

@@ -50,13 +50,22 @@ function makeFixture(label) {
     root,
     backend,
     events,
-    cleanup: () =>
-      rmSync(root, {
-        recursive: true,
-        force: true,
-        maxRetries: 20,
-        retryDelay: 50,
-      }),
+    cleanup: () => {
+      try {
+        rmSync(root, {
+          recursive: true,
+          force: true,
+          maxRetries: 20,
+          retryDelay: 50,
+        });
+      } catch (error) {
+        // The native Backend can release its SQLite handle after test hooks
+        // on Windows, so fixture cleanup is best-effort there.
+        if (process.platform !== "win32" || error?.code !== "EPERM") {
+          throw error;
+        }
+      }
+    },
   };
 }
 
@@ -126,13 +135,16 @@ function tiptapDoc(text) {
 }
 
 async function seedScene(backend, id, title, text) {
-  await exec(
-    backend,
-    `INSERT INTO tree_nodes
-       (id, project_id, node_type, title, content, sort_order)
-     VALUES (?, 'default-project', 'scene', ?, ?, 'a0')`,
-    [id, title, tiptapDoc(text)],
-    "run",
+  return JSON.parse(
+    await backend.treeNodeCreate({
+      id,
+      projectId: "default-project",
+      parentId: null,
+      nodeType: "scene",
+      title,
+      sortOrder: "a0",
+      content: tiptapDoc(text),
+    }),
   );
 }
 
@@ -401,7 +413,12 @@ test("restoreBackup再活性化後は復元DBだけを読みsemantic commandsを
   const workspace = join(fixture.root, "workspace");
   const backups = join(workspace, "backups");
   await fixture.backend.openWorkspace(workspace);
-  await seedScene(fixture.backend, "restore-scene", "Before", "saved state");
+  const seededScene = await seedScene(
+    fixture.backend,
+    "restore-scene",
+    "Before",
+    "saved state",
+  );
   mkdirSync(backups, { recursive: true });
   const backupName = "grimodex-20260711-130000.db";
   await writeTrustedPlainBackup(
@@ -409,12 +426,14 @@ test("restoreBackup再活性化後は復元DBだけを読みsemantic commandsを
     workspace,
     join(backups, backupName),
   );
-  await exec(
-    fixture.backend,
-    "UPDATE tree_nodes SET title = ?, content = ? WHERE id = 'restore-scene'",
-    ["After", tiptapDoc("mutated state")],
-    "run",
-  );
+  await fixture.backend.treeNodePatch({
+    projectId: "default-project",
+    nodeId: "restore-scene",
+    patch: { title: "After", content: tiptapDoc("mutated state") },
+    baseVersion: seededScene.version,
+    bumpVersion: true,
+    updatedAt: new Date().toISOString(),
+  });
 
   await fixture.backend.restoreBackup(backupName);
   const restored = JSON.parse(

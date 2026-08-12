@@ -62,7 +62,8 @@ function parseResult(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const row = parsed as Record<string, unknown>;
   if (row.threadHypothesisId !== input.threadHypothesisId) return null;
   if (typeof row.anyWeak !== "boolean") return null;
@@ -100,7 +101,9 @@ export async function runForeshadowQualityTask(
   const projectId = requireAuditProjectId(
     input.projectId ?? useTreeStore.getState().projectId,
   );
-  const ov = resolveRoleSendOverride(NARRATIVE_FORESHADOW_QUALITY_EVALUATE_PATH);
+  const ov = resolveRoleSendOverride(
+    NARRATIVE_FORESHADOW_QUALITY_EVALUATE_PATH,
+  );
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: buildPrompt(input) }],
     {

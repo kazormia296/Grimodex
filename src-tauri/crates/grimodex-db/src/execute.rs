@@ -937,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_project_delete_retains_ai_audit_events() {
+    fn typed_project_delete_cascades_protected_rows_and_retains_ai_audit_events() {
         let db = test_db();
         db.migrate().expect("migrate database");
         db.execute(
@@ -947,6 +947,14 @@ mod tests {
             "run",
         )
         .expect("seed project");
+        db.execute(
+            "INSERT INTO lint_term_dictionary
+             (id, project_id, preferred, variants, created_at, updated_at)
+             VALUES ('term-1', 'project-1', 'preferred', '[]', 1, 1)",
+            &[],
+            "run",
+        )
+        .expect("seed project-scoped legacy cleanup row");
         db.execute(
             "INSERT INTO ai_audit_events
              (scope_id, project_id, sequence, event_id, execution_id, operation_id,
@@ -960,12 +968,40 @@ mod tests {
         )
         .expect("trusted audit append fixture");
 
-        db.execute_renderer(
-            "DELETE FROM projects WHERE id = ?1",
-            &[Value::from("project-1")],
-            "run",
+        let renderer_error = db
+            .execute_renderer(
+                "DELETE FROM projects WHERE id = ?1",
+                &[Value::from("project-1")],
+                "run",
+            )
+            .expect_err("renderer project delete must not bypass protected cascades");
+        assert!(renderer_error.to_string().contains(PROTECTED_WRITER_SQL_ERROR));
+
+        crate::domain_writes::project_delete(
+            &db,
+            crate::domain_writes::ProjectDeletePayload {
+                project_id: "project-1".to_string(),
+            },
         )
-        .expect("delete mutable project without erasing audit ledger");
+        .expect("trusted project delete without erasing audit ledger");
+
+        let projects = db
+            .execute(
+                "SELECT count(*) AS n FROM projects WHERE id = 'project-1'",
+                &[],
+                "get",
+            )
+            .expect("query deleted project");
+        assert_eq!(projects[0]["n"], Value::from(0));
+
+        let lint_rows = db
+            .execute(
+                "SELECT count(*) AS n FROM lint_term_dictionary WHERE project_id = 'project-1'",
+                &[],
+                "get",
+            )
+            .expect("query deleted project dictionary rows");
+        assert_eq!(lint_rows[0]["n"], Value::from(0));
 
         let rows = db
             .execute(
@@ -975,6 +1011,15 @@ mod tests {
             )
             .expect("query retained ledger");
         assert_eq!(rows[0]["n"], Value::from(1));
+
+        let missing = crate::domain_writes::project_delete(
+            &db,
+            crate::domain_writes::ProjectDeletePayload {
+                project_id: "project-1".to_string(),
+            },
+        )
+        .expect_err("repeated project delete must report not found");
+        assert!(missing.to_string().contains("project 'project-1' not found"));
     }
 
     #[test]

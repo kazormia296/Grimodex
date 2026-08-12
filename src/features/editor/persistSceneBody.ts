@@ -16,7 +16,12 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { scheduleWriteBack } from "@/features/external-mount/writeBack";
 import { saveAuthorshipSpans } from "@/features/attribution/api";
-import { saveForeshadowAnchors } from "@/features/foreshadow/saveAnchors";
+import {
+  getSceneForeshadowBaseVersions,
+  saveForeshadowAnchors,
+} from "@/features/foreshadow/saveAnchors";
+import { publishAuthoritativeForeshadowRows } from "@/features/foreshadow/foreshadowStore";
+import type { ForeshadowRow } from "@/features/foreshadow/types";
 import { saveAnnotationAnchors } from "@/features/post-effect/syncAnnotations";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
@@ -61,6 +66,7 @@ export interface PersistedSceneBody {
   contentJson: string;
   contentVersion: number;
   contentUpdatedAt: string;
+  foreshadowRows: ForeshadowRow[];
 }
 
 export interface PersistSceneBodyOptions {
@@ -378,6 +384,7 @@ export async function persistSceneBody(
     unplacedBeatPreview,
     contentVersion,
     contentUpdatedAt,
+    foreshadowRows,
   } = await serializeSceneWrite(id, async () => {
     markStart("editor.coreSave.invokeSave");
     // Generate one authoritative renderer-wide tree token for both the native
@@ -385,10 +392,15 @@ export async function persistSceneBody(
     // wall clock time after the JS monotonic clock has advanced past it.
     const contentUpdatedAt = nextTreeNodeMutationTimestamp();
     let previews: DerivedPreviews;
+    let foreshadowRows: ForeshadowRow[] = [];
     if (nativeSnapshot) {
       recordCounter("editor.coreSave.domainIpc");
       const bundledPreviews = await saveSceneBodyBundle({
         ...nativeSnapshot,
+        foreshadowBaseVersions: {
+          ...getSceneForeshadowBaseVersions(id, doc),
+          ...nativeSnapshot.foreshadowBaseVersions,
+        },
         sceneId: id,
         projectId,
         includeSidecars: !isFileBacked,
@@ -402,6 +414,7 @@ export async function persistSceneBody(
         bundledPreviews.dbTransactionCount,
       );
       previews = bundledPreviews;
+      foreshadowRows = bundledPreviews.foreshadowRows;
     } else {
       previews = await saveSceneContentInner(id, {
         content: sceneJsonStr,
@@ -447,7 +460,7 @@ export async function persistSceneBody(
       await saveAuthorshipSpans(id, doc);
       markEnd("editor.coreSave.saveAuthorship");
       markStart("editor.coreSave.saveForeshadow");
-      await saveForeshadowAnchors(id, doc);
+      foreshadowRows = await saveForeshadowAnchors(id, doc);
       markEnd("editor.coreSave.saveForeshadow");
       markStart("editor.coreSave.saveAnnotations");
       await saveAnnotationAnchors(projectId, id, doc);
@@ -489,7 +502,8 @@ export async function persistSceneBody(
         markEnd("editor.coreSave.upsertBeatPovOverrides");
       }
     }
-    return previews;
+    publishAuthoritativeForeshadowRows(foreshadowRows);
+    return { ...previews, foreshadowRows };
   });
   if (fileBackedUri && isFileBacked) {
     markStart("editor.save.finalize");
@@ -525,6 +539,7 @@ export async function persistSceneBody(
       contentJson: sceneJsonStr,
       contentVersion,
       contentUpdatedAt,
+      foreshadowRows,
     };
   }
 
@@ -565,5 +580,6 @@ export async function persistSceneBody(
     contentJson: sceneJsonStr,
     contentVersion,
     contentUpdatedAt,
+    foreshadowRows,
   };
 }

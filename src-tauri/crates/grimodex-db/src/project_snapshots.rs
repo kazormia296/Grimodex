@@ -1129,6 +1129,15 @@ pub fn apply_project_snapshot_restore(
                 })?;
                 row.insert("updated_at".to_string(), Value::from(updated_at.clone()));
             }
+            if insert.table == SnapshotRestoreTable::SceneEvents {
+                // Structural restore creates a new physical association. Do
+                // not trust or revive the captured incarnation token, because
+                // a pre-restore journal could otherwise pass its stale CAS.
+                row.insert(
+                    "incarnation_token".to_string(),
+                    Value::from(uuid::Uuid::new_v4().to_string()),
+                );
+            }
             insert_record(
                 &transaction,
                 insert.table.as_str(),
@@ -1240,6 +1249,79 @@ mod tests {
             .filter_map(|row| row["id"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["l1"]);
+    }
+
+    #[test]
+    fn body_restore_assigns_scene_event_a_fresh_incarnation() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO events
+                    (id, project_id, title, ordinal, created_at, updated_at)
+                 VALUES ('e1', 'p1', 'Event', 'a0', datetime('now'), datetime('now'));
+                 INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+                 VALUES ('t1', 'e1', 'captured-incarnation');",
+            )?;
+            Ok(())
+        })
+        .expect("seed scene-event incarnation");
+        create_project_snapshot(&db, empty_snapshot("s-scene-event"))
+            .expect("create scene-event snapshot");
+
+        apply_project_snapshot_restore(
+            &db,
+            ApplyProjectSnapshotRestorePayload {
+                project_id: "p1".to_string(),
+                snapshot_id: "s-scene-event".to_string(),
+                scopes: vec![RestoreScope::Body],
+                inserts: vec![
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::TreeNodes,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "id": "t1",
+                            "project_id": "p1",
+                            "node_type": "scene",
+                            "title": "One",
+                            "sort_order": "a"
+                        })),
+                    },
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::Events,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "id": "e1",
+                            "project_id": "p1",
+                            "title": "Event",
+                            "ordinal": "a0"
+                        })),
+                    },
+                    SnapshotInsertPlan {
+                        table: SnapshotRestoreTable::SceneEvents,
+                        mode: SnapshotInsertMode::Insert,
+                        row: raw(json!({
+                            "scene_id": "t1",
+                            "event_id": "e1",
+                            "incarnation_token": "captured-incarnation"
+                        })),
+                    },
+                ],
+            },
+        )
+        .expect("restore scene-event snapshot");
+
+        db.with_conn(|conn| {
+            let token: String = conn.query_row(
+                "SELECT incarnation_token FROM scene_events
+                  WHERE scene_id = 't1' AND event_id = 'e1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(!token.is_empty());
+            assert_ne!(token, "captured-incarnation");
+            Ok(())
+        })
+        .expect("verify fresh scene-event incarnation");
     }
 
     #[test]

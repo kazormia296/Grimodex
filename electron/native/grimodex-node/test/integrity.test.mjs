@@ -20,7 +20,15 @@ const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
 
 const root = mkdtempSync(join(tmpdir(), "grimodex-node-integrity-"));
-process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+process.on("exit", () => {
+  try {
+    rmSync(root, { recursive: true, force: true });
+  } catch (error) {
+    // The native Backend can release its SQLite handle after exit listeners
+    // on Windows, so fixture cleanup is best-effort there.
+    if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+  }
+});
 
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project";
@@ -62,11 +70,15 @@ test("ftsOptimize / ftsRebuild / ftsRebuildEn は空 workspace で成功する",
 test("FTS 再構築後もシーン本文の roundtrip 検索が通る", async () => {
   // db_execute で tree_nodes の scene 行を挿入 → fts_rebuild → 検索ヒット、
   // の粗い end-to-end（FTS トリガ/rebuild と search_fts の整合を疎通確認）。
-  await backend.dbExecute(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title, content) VALUES (?, ?, 'scene', ?, ?)",
-    ["itg-scene-1", PROJECT, "検証シーン", "唯一無二の検索対象テキスト"],
-    "run",
-  );
+  await backend.treeNodeCreate({
+    id: "itg-scene-1",
+    projectId: PROJECT,
+    parentId: null,
+    nodeType: "scene",
+    title: "検証シーン",
+    sortOrder: "a0",
+    content: "唯一無二の検索対象テキスト",
+  });
   await backend.ftsRebuild();
   const rows = JSON.parse(
     await backend.ftsSearch(PROJECT, "唯一無二", "scenes", 10),

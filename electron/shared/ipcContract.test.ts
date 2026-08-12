@@ -87,7 +87,13 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     saveSceneBodyBundle: record(
       "saveSceneBodyBundle",
       Promise.resolve(
-        '{"placedBeatPreview":null,"unplacedBeatPreview":null,"contentVersion":2,"contentUpdatedAt":"2026-07-28T00:00:00.000Z","dbTransactionCount":1}',
+        '{"placedBeatPreview":null,"unplacedBeatPreview":null,"contentVersion":2,"contentUpdatedAt":"2026-07-28T00:00:00.000Z","dbTransactionCount":1,"foreshadowRows":[]}',
+      ),
+    ) as never,
+    runtimePerformanceSeed: record(
+      "runtimePerformanceSeed",
+      Promise.resolve(
+        '{"fixtureId":"runtime-fixture","insertedRowCount":3,"dbTransactionCount":1,"historySideEffectCount":0}',
       ),
     ) as never,
     vacuumDatabase: record(
@@ -317,11 +323,15 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     foreshadowUpdate: record(
       "foreshadowUpdate",
-      Promise.resolve('{"id":"f1","title":"改名"}'),
+      Promise.resolve(
+        '{"id":"f1","project_id":"p1","title":"改名","version":1}',
+      ),
     ) as never,
     foreshadowDelete: record(
       "foreshadowDelete",
-      Promise.resolve(undefined),
+      Promise.resolve(
+        '{"entityId":"f1","projectId":"p1","version":1,"changeEventUid":"ce1","undoJournalId":"uj1"}',
+      ),
     ) as never,
     foreshadowListWithLabels: record(
       "foreshadowListWithLabels",
@@ -355,7 +365,7 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     foreshadowUpdateSetup: record(
       "foreshadowUpdateSetup",
-      Promise.resolve(undefined),
+      Promise.resolve('{"id":"f1","project_id":"p1","version":1}'),
     ) as never,
     foreshadowGet: record(
       "foreshadowGet",
@@ -363,11 +373,11 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     foreshadowLinkCodex: record(
       "foreshadowLinkCodex",
-      Promise.resolve(undefined),
+      Promise.resolve('{"id":"f1","project_id":"p1","version":1}'),
     ) as never,
     foreshadowUnlinkCodex: record(
       "foreshadowUnlinkCodex",
-      Promise.resolve(undefined),
+      Promise.resolve('{"id":"f1","project_id":"p1","version":2}'),
     ) as never,
     foreshadowListLinkedCodex: record(
       "foreshadowListLinkedCodex",
@@ -375,19 +385,21 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     foreshadowSetSetupStrength: record(
       "foreshadowSetSetupStrength",
-      Promise.resolve(undefined),
+      Promise.resolve('{"id":"f1","project_id":"p1","version":1}'),
     ) as never,
     foreshadowSetupCreateAi: record(
       "foreshadowSetupCreateAi",
-      Promise.resolve(undefined),
+      Promise.resolve('{"id":"f1","project_id":"p1","version":1}'),
     ) as never,
     foreshadowResolveOrphan: record(
       "foreshadowResolveOrphan",
-      Promise.resolve('"new-setup-id"'),
+      Promise.resolve(
+        '{"setupId":"new-setup-id","foreshadow":{"id":"f1","project_id":"p1","version":1}}',
+      ),
     ) as never,
     foreshadowSaveAnchorsForScene: record(
       "foreshadowSaveAnchorsForScene",
-      Promise.resolve(undefined),
+      Promise.resolve('[{"id":"f1","project_id":"p1","version":1}]'),
     ) as never,
     foreshadowLoadAnchorsForScene: record(
       "foreshadowLoadAnchorsForScene",
@@ -442,6 +454,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     agentSceneEventLink: record(
       "agentSceneEventLink",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentSceneEventLinkBatch: record(
+      "agentSceneEventLinkBatch",
       AGENT_WRITE_RESULT,
     ) as never,
     agentSceneEventUnlink: record(
@@ -1807,6 +1823,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const entityTagsSet = vi.fn().mockResolvedValue(undefined);
     const codexRenameUndo = vi.fn().mockResolvedValue(undefined);
     const scanStagingProjectCreate = vi.fn().mockResolvedValue(undefined);
+    const projectDelete = vi.fn().mockResolvedValue(undefined);
     const treePlanUndo = vi.fn().mockResolvedValue(undefined);
     const mapWriteBundle = vi.fn().mockResolvedValue(undefined);
     const { backend } = fakeBackend({
@@ -1814,6 +1831,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       entityTagsSet: entityTagsSet as never,
       codexRenameUndo: codexRenameUndo as never,
       scanStagingProjectCreate: scanStagingProjectCreate as never,
+      projectDelete: projectDelete as never,
       treePlanUndo: treePlanUndo as never,
       mapWriteBundle: mapWriteBundle as never,
     });
@@ -1882,6 +1900,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
           },
         },
         scanStagingProjectCreate,
+      ],
+      [
+        "project_delete",
+        { payload: { projectId: "project-1" } },
+        projectDelete,
       ],
       [
         "tree_plan_undo",
@@ -1961,6 +1984,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "authorship_replace_lane",
       "codex_rename_undo",
       "entity_tags_set",
+      "project_delete",
       "scan_staging_project_create",
       "tree_plan_undo",
       "map_write_bundle",
@@ -1997,25 +2021,27 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
                       createdAt: "now",
                     },
                   }
-                : command === "map_write_bundle"
-                  ? {
-                      payload: {
-                        kind: "erase-ai-branch",
-                        projectId: "project-1",
-                        branchId: "branch-1",
-                        spanIds: [],
-                        stickyPositionIds: [],
-                        stickyIds: [],
+                : command === "project_delete"
+                  ? { payload: { projectId: "project-1" } }
+                  : command === "map_write_bundle"
+                    ? {
+                        payload: {
+                          kind: "erase-ai-branch",
+                          projectId: "project-1",
+                          branchId: "branch-1",
+                          spanIds: [],
+                          stickyPositionIds: [],
+                          stickyIds: [],
+                        },
+                      }
+                    : {
+                        payload: {
+                          projectId: "project-1",
+                          beforeStates: [],
+                          createdIds: [],
+                          updatedAt: "now",
+                        },
                       },
-                    }
-                  : {
-                      payload: {
-                        projectId: "project-1",
-                        beforeStates: [],
-                        createdIds: [],
-                        updatedAt: "now",
-                      },
-                    },
         { backend: fakeBackend().backend, shell: noShell },
       );
       expect(oldNative).toMatchObject({
@@ -2023,6 +2049,22 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
       });
     }
+  });
+
+  it("project_delete rejects an empty projectId before native dispatch", async () => {
+    const projectDelete = vi.fn().mockResolvedValue(undefined);
+    const { backend } = fakeBackend({
+      projectDelete: projectDelete as never,
+    });
+
+    const env = await dispatchInvoke(
+      "project_delete",
+      { payload: { projectId: "" } },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(projectDelete).not.toHaveBeenCalled();
   });
 
   it("project snapshot typed commands は集約payloadを明示写像する", async () => {
@@ -2188,6 +2230,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       authorshipSpans: [],
       foreshadowSetups: [],
       foreshadowPayoffs: [],
+      foreshadowBaseVersions: {},
       annotationAnchors: [],
       beatMentions: [],
       beatPovOverrides: [],
@@ -2207,6 +2250,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         contentVersion: 2,
         contentUpdatedAt: "2026-07-28T00:00:00.000Z",
         dbTransactionCount: 1,
+        foreshadowRows: [],
       },
     });
   });
@@ -2309,6 +2353,87 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
     expect(env.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("runtime_performance_seed: owner tokenとtyped graphを1回のnative呼び出しへ写像する", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      fixtureId: "runtime-fixture",
+      projectId: "default-project",
+      treeNodes: [{}],
+      mapBoard: { id: "board" },
+      projectSetting: { key: "editor.tabState", value: "{}" },
+      mapNodePositions: [],
+      mapEdges: [],
+      plotThreads: [],
+      plotThreadSceneLinks: [],
+      events: [],
+      eventRelations: [],
+      chatSession: null,
+      chatMessages: [],
+    };
+    const env = await dispatchInvoke(
+      "runtime_performance_seed",
+      { ownerToken: "owner-token", payload },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      {
+        method: "runtimePerformanceSeed",
+        args: ["owner-token", payload],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        fixtureId: "runtime-fixture",
+        insertedRowCount: 3,
+        dbTransactionCount: 1,
+        historySideEffectCount: 0,
+      },
+    });
+  });
+
+  it("runtime_performance_seed: token欠落とraw statement shapeをnative前に拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    for (const args of [
+      { ownerToken: "", payload: {} },
+      { ownerToken: "x".repeat(201), payload: {} },
+      {
+        ownerToken: "owner-token",
+        payload: {
+          fixtureId: "runtime-fixture",
+          projectId: "default-project",
+          statements: [{ sql: "INSERT INTO tree_nodes ..." }],
+        },
+      },
+      {
+        ownerToken: "owner-token",
+        payload: {
+          fixtureId: "runtime-fixture",
+          projectId: "default-project",
+          treeNodes: [{}],
+          mapBoard: {},
+          projectSetting: {},
+          mapNodePositions: [],
+          mapEdges: [],
+          plotThreads: [],
+          plotThreadSceneLinks: Array.from({ length: 6_001 }, () => ({})),
+          events: [],
+          eventRelations: [],
+          chatSession: null,
+          chatMessages: [],
+        },
+      },
+    ]) {
+      const env = await dispatchInvoke("runtime_performance_seed", args, {
+        backend,
+        shell: noShell,
+      });
+      expect(env.ok).toBe(false);
+    }
     expect(calls).toEqual([]);
   });
 
@@ -2803,6 +2928,51 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: true,
       value: { insertedCount: 1, tailSequence: 2, tailHash: "h" },
     });
+  });
+
+  it("tree_node_patch: optional content eventを同じtyped payloadへ保持する", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      projectId: "p1",
+      nodeId: "scene-1",
+      patch: { content: '{"type":"doc"}', charCount: 4 },
+      baseVersion: 3,
+      bumpVersion: true,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      changeEvent: {
+        eventUid: "external-event-1",
+        sessionId: "external-product-journey",
+        timestamp: 1_786_492_800_000,
+      },
+    };
+    const env = await dispatchInvoke(
+      "tree_node_patch",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toContainEqual({ method: "treeNodePatch", args: [payload] });
+    expect(env).toEqual({
+      ok: true,
+      value: { id: "node-1", projectId: "p1", version: 1 },
+    });
+
+    for (const invalidPayload of [
+      { ...payload, baseVersion: undefined },
+      { ...payload, bumpVersion: false },
+      { ...payload, patch: { title: "not content" } },
+      {
+        ...payload,
+        changeEvent: { ...payload.changeEvent, timestamp: -1 },
+      },
+    ]) {
+      const rejected = await dispatchInvoke(
+        "tree_node_patch",
+        { payload: invalidPayload },
+        { backend, shell: noShell },
+      );
+      expect(rejected.ok).toBe(false);
+    }
   });
 
   it("AI audit commands: workspace identityと型検証済みイベントをnativeへ写像する", async () => {
@@ -3359,6 +3529,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "agent_foreshadow_update",
       "agent_propose_scene_body",
       "agent_scene_event_link",
+      "agent_scene_event_link_batch",
       "agent_scene_event_unlink",
       "agent_snippet_create",
       "agent_write_bundle",
@@ -3486,6 +3657,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_restore_snapshot",
       "plot_thread_update",
       "project_calendar_upsert",
+      "project_delete",
       "project_snapshot_apply_restore",
       "project_snapshot_create",
       "project_snapshot_restore_context",
@@ -3495,6 +3667,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "restore_backup",
       "restore_recovery_candidate",
       "revalidate_license",
+      "runtime_performance_seed",
       "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",
@@ -3517,9 +3690,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "send_inline_ai_stream",
       "start_post_effect_run",
       "start_post_effect_run_multi",
+      "temporal_scene_patch",
       "test_ai_connection",
       "timelapse_append_batch",
-      "temporal_scene_patch",
       "trash_bin_clear_all",
       "trash_bin_create",
       "trash_bin_delete",
@@ -4218,13 +4391,13 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
 
   it("plot_thread_update / link_update: {id, patch} を位置引数へ写像し行を parse", async () => {
     const { backend, calls } = fakeBackend();
-    const patch = { name: "改名", description: null };
+    const patch = { name: "改名", description: null, baseVersion: 3 };
     const upd = await dispatchInvoke(
       "plot_thread_update",
       { id: "pt1", patch },
       { backend, shell: noShell },
     );
-    const linkPatch = { threadId: "pt2" };
+    const linkPatch = { threadId: "pt2", baseVersion: 4 };
     const linkUpd = await dispatchInvoke(
       "plot_thread_link_update",
       { id: "pl1", patch: linkPatch },
@@ -4239,6 +4412,38 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: true,
       value: { id: "pl1", thread_id: "pt2" },
     });
+  });
+
+  it("plot nullable patches preserve explicit null across the IPC contract", async () => {
+    const { backend, calls } = fakeBackend();
+    const threadPatch = {
+      color: null,
+      description: null,
+      baseVersion: 5,
+    };
+    const linkPatch = { note: null, sortOrder: null, baseVersion: 8 };
+
+    await dispatchInvoke(
+      "plot_thread_update",
+      { id: "pt-nullable", patch: threadPatch },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "plot_thread_link_update",
+      { id: "pl-nullable", patch: linkPatch },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      {
+        method: "plotThreadUpdate",
+        args: ["pt-nullable", threadPatch],
+      },
+      {
+        method: "plotThreadLinkUpdate",
+        args: ["pl-nullable", linkPatch],
+      },
+    ]);
   });
 
   it("plot_thread_list / list_links: {projectId} → 位置引数、行配列を parse", async () => {
@@ -4268,17 +4473,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const del = await dispatchInvoke(
       "plot_thread_delete",
-      { id: "pt1" },
+      { id: "pt1", baseVersion: 3 },
       { backend, shell: noShell },
     );
     const linkDel = await dispatchInvoke(
       "plot_thread_link_delete",
-      { id: "pl1" },
+      { id: "pl1", baseVersion: 4 },
       { backend, shell: noShell },
     );
     expect(calls).toEqual([
-      { method: "plotThreadDelete", args: ["pt1"] },
-      { method: "plotThreadLinkDelete", args: ["pl1"] },
+      { method: "plotThreadDelete", args: ["pt1", 3] },
+      { method: "plotThreadLinkDelete", args: ["pl1", 4] },
     ]);
     expect(del).toEqual({ ok: true, value: null });
     expect(linkDel).toEqual({ ok: true, value: null });
@@ -4428,6 +4633,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       phaseType: "turn",
       note: null,
       sortOrder: null,
+      version: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-02T00:00:00.000Z",
     };
@@ -4435,6 +4641,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ...markerBefore,
       threadId: "pt2",
       nodeId: "s2",
+      version: 1,
       updatedAt: "2026-01-03T00:00:00.000Z",
     };
     const branchAfter = {
@@ -4444,6 +4651,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       toThreadId: "pt2",
       atNodeId: "s2",
       kind: "branch",
+      version: 0,
       createdAt: "2026-01-03T00:00:00.000Z",
       updatedAt: "2026-01-03T00:00:00.000Z",
     };
@@ -4536,6 +4744,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         sortOrder: "a0",
         startNodeId: null,
         endNodeId: null,
+        version: 0,
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-02T00:00:00.000Z",
       },
@@ -4552,6 +4761,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         phaseType: "turn",
         note: "marker",
         sortOrder: "a0",
+        version: 0,
         createdAt: "2026-01-01T01:00:00.000Z",
         updatedAt: "2026-01-02T01:00:00.000Z",
       },
@@ -4563,6 +4773,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
           toThreadId: "pt1",
           atNodeId: "scene-1",
           kind: "branch",
+          version: 0,
           createdAt: "2026-01-01T02:00:00.000Z",
           updatedAt: "2026-01-02T02:00:00.000Z",
         },
@@ -4769,6 +4980,27 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env.ok).toBe(false);
   });
 
+  it.each([
+    ["plot_thread_update", { id: "pt1", patch: { name: "stale" } }],
+    ["plot_thread_delete", { id: "pt1" }],
+    ["plot_thread_link_update", { id: "pl1", patch: { note: "stale" } }],
+    ["plot_thread_link_delete", { id: "pl1" }],
+    ["plot_thread_branch_update", { id: "pb1", patch: { atNodeId: "s2" } }],
+    ["plot_thread_branch_delete", { id: "pb1" }],
+  ] as const)(
+    "%s requires a baseVersion before calling native",
+    async (command, args) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(command, args, {
+        backend,
+        shell: noShell,
+      });
+      expect(calls).toHaveLength(0);
+      expect(env).toMatchObject({ ok: false });
+      if (!env.ok) expect(env.error).toContain("baseVersion");
+    },
+  );
+
   // ── foreshadow 20 コマンド（Phase 3 バッチ1） ──────────────────────────
   it("foreshadow_create / update / delete: payload・id+patch 写像、unit→null", async () => {
     const { backend, calls } = fakeBackend();
@@ -4783,7 +5015,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { payload },
       { backend, shell: noShell },
     );
-    const patch = { title: "改名", intent: null };
+    const patch = { baseVersion: 0, title: "改名", intent: null };
     const updated = await dispatchInvoke(
       "foreshadow_update",
       { id: "f1", patch },
@@ -4791,20 +5023,40 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
     const deleted = await dispatchInvoke(
       "foreshadow_delete",
-      { id: "f1" },
+      {
+        id: "f1",
+        projectId: "p1",
+        baseVersion: 1,
+        sessionId: "session-1",
+      },
       { backend, shell: noShell },
     );
     expect(calls).toEqual([
       { method: "foreshadowCreate", args: [payload] },
       { method: "foreshadowUpdate", args: ["f1", patch] },
-      { method: "foreshadowDelete", args: ["f1"] },
+      {
+        method: "foreshadowDelete",
+        args: ["f1", "p1", 1, "session-1"],
+      },
     ]);
     expect(created).toEqual({
       ok: true,
       value: { id: "f1", project_id: "p1", title: "伏線" },
     });
-    expect(updated).toEqual({ ok: true, value: { id: "f1", title: "改名" } });
-    expect(deleted).toEqual({ ok: true, value: null });
+    expect(updated).toEqual({
+      ok: true,
+      value: { id: "f1", project_id: "p1", title: "改名", version: 1 },
+    });
+    expect(deleted).toEqual({
+      ok: true,
+      value: {
+        entityId: "f1",
+        projectId: "p1",
+        version: 1,
+        changeEventUid: "ce1",
+        undoJournalId: "uj1",
+      },
+    });
   });
 
   it("foreshadow の read 系: projectId / sceneId / chapterId / codexEntryId を写像し struct を parse", async () => {
@@ -4871,42 +5123,54 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const link = await dispatchInvoke(
       "foreshadow_link_codex",
-      { foreshadowId: "f1", codexId: "c1" },
+      { foreshadowId: "f1", codexId: "c1", baseVersion: 0 },
       { backend, shell: noShell },
     );
     await dispatchInvoke(
       "foreshadow_unlink_codex",
-      { foreshadowId: "f1", codexId: "c1" },
+      { foreshadowId: "f1", codexId: "c1", baseVersion: 1 },
       { backend, shell: noShell },
     );
     expect(calls).toEqual([
-      { method: "foreshadowLinkCodex", args: ["f1", "c1"] },
-      { method: "foreshadowUnlinkCodex", args: ["f1", "c1"] },
+      { method: "foreshadowLinkCodex", args: ["f1", "c1", 0] },
+      { method: "foreshadowUnlinkCodex", args: ["f1", "c1", 1] },
     ]);
-    expect(link).toEqual({ ok: true, value: null });
+    expect(link).toEqual({
+      ok: true,
+      value: { id: "f1", project_id: "p1", version: 1 },
+    });
   });
 
   it("foreshadow_set_setup_strength: 文字列は Some、null / 省略は None(undefined)", async () => {
     const { backend, calls } = fakeBackend();
     await dispatchInvoke(
       "foreshadow_set_setup_strength",
-      { setupId: "su1", strength: "critical" },
+      { setupId: "su1", strength: "critical", baseVersion: 0 },
       { backend, shell: noShell },
     );
     await dispatchInvoke(
       "foreshadow_set_setup_strength",
-      { setupId: "su1", strength: null },
+      { setupId: "su1", strength: null, baseVersion: 1 },
       { backend, shell: noShell },
     );
     await dispatchInvoke(
       "foreshadow_set_setup_strength",
-      { setupId: "su1" },
+      { setupId: "su1", baseVersion: 2 },
       { backend, shell: noShell },
     );
     expect(calls).toEqual([
-      { method: "foreshadowSetSetupStrength", args: ["su1", "critical"] },
-      { method: "foreshadowSetSetupStrength", args: ["su1", undefined] },
-      { method: "foreshadowSetSetupStrength", args: ["su1", undefined] },
+      {
+        method: "foreshadowSetSetupStrength",
+        args: ["su1", "critical", 0],
+      },
+      {
+        method: "foreshadowSetSetupStrength",
+        args: ["su1", undefined, 1],
+      },
+      {
+        method: "foreshadowSetSetupStrength",
+        args: ["su1", undefined, 2],
+      },
     ]);
   });
 
@@ -4915,6 +5179,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const args = {
       id: "su1",
       foreshadowId: "f1",
+      baseVersion: 0,
       sceneId: "s1",
       fromPos: 3,
       toPos: 7,
@@ -4933,12 +5198,15 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toEqual([
       { method: "foreshadowSetupCreateAi", args: [args] },
     ]);
-    expect(env).toEqual({ ok: true, value: null });
+    expect(env).toEqual({
+      ok: true,
+      value: { id: "f1", project_id: "p1", version: 1 },
+    });
   });
 
   it("foreshadow_resolve_orphan: {payload} を写像し Option<String> を parse（reinsert の new_id）", async () => {
     const { backend, calls } = fakeBackend();
-    const payload = { setupId: "su1", action: "reinsert" };
+    const payload = { setupId: "su1", baseVersion: 0, action: "reinsert" };
     const env = await dispatchInvoke(
       "foreshadow_resolve_orphan",
       { payload },
@@ -4947,27 +5215,44 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toEqual([
       { method: "foreshadowResolveOrphan", args: [payload] },
     ]);
-    expect(env).toEqual({ ok: true, value: "new-setup-id" });
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        setupId: "new-setup-id",
+        foreshadow: { id: "f1", project_id: "p1", version: 1 },
+      },
+    });
   });
 
   it("foreshadow_save_anchors_for_scene: sceneId+setups+payoffs+docContentSize(number) を写像", async () => {
     const { backend, calls } = fakeBackend();
     const setups = [
-      { id: "su1", foreshadowId: "f1", sceneId: "s1", fromPos: 1, toPos: 5 },
+      {
+        id: "su1",
+        foreshadowId: "f1",
+        baseVersion: 0,
+        sceneId: "s1",
+        fromPos: 1,
+        toPos: 5,
+      },
     ];
     const payoffs: unknown[] = [];
+    const baseVersions = { f1: 0 };
     const env = await dispatchInvoke(
       "foreshadow_save_anchors_for_scene",
-      { sceneId: "s1", setups, payoffs, docContentSize: 2 },
+      { sceneId: "s1", setups, payoffs, baseVersions, docContentSize: 2 },
       { backend, shell: noShell },
     );
     expect(calls).toEqual([
       {
         method: "foreshadowSaveAnchorsForScene",
-        args: ["s1", setups, payoffs, 2],
+        args: ["s1", setups, payoffs, baseVersions, 2],
       },
     ]);
-    expect(env).toEqual({ ok: true, value: null });
+    expect(env).toEqual({
+      ok: true,
+      value: [{ id: "f1", project_id: "p1", version: 1 }],
+    });
   });
 
   it("foreshadow_load_anchors_for_scene: sceneId を写像し camelCase mark 配列を parse", async () => {
@@ -5004,7 +5289,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env.ok).toBe(false);
   });
 
-  // ── agent_writes 19 コマンド（Phase 3 バッチ1） ────────────────────────
+  // ── agent_writes 20 コマンド（Phase 3 バッチ1） ────────────────────────
   it("agent_writes: すべて単一 {payload} を素通しし AgentWriteResult を parse", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -5103,6 +5388,151 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       method: "agentEventUpdate",
       args: [payload],
     });
+  });
+
+  it("agent_scene_event_link_batch: validated payloadを1回だけN-APIへ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      requestId: "scene-link-batch-request-1",
+      projectId: "p1",
+      sessionId: "session-1",
+      surface: "manual",
+      eventId: "event-1",
+      // Domain writers canonicalize order and duplicates for stable retries.
+      sceneIds: ["scene-2", "scene-1", "scene-2"],
+    };
+
+    const env = await dispatchInvoke(
+      "agent_scene_event_link_batch",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        entityId: "e1",
+        version: 1,
+        changeEventUid: "ce1",
+        undoJournalId: "uj1",
+      },
+    });
+    expect(calls).toContainEqual({
+      method: "agentSceneEventLinkBatch",
+      args: [payload],
+    });
+  });
+
+  it.each([
+    [
+      "requestId欠落",
+      { projectId: "p1", sessionId: "s1", eventId: "e1", sceneIds: ["sc1"] },
+    ],
+    [
+      "空sceneIds",
+      {
+        requestId: "r1",
+        projectId: "p1",
+        sessionId: "s1",
+        eventId: "e1",
+        sceneIds: [],
+      },
+    ],
+    [
+      "空sceneId",
+      {
+        requestId: "r1",
+        projectId: "p1",
+        sessionId: "s1",
+        eventId: "e1",
+        sceneIds: [""],
+      },
+    ],
+  ])(
+    "agent_scene_event_link_batch: %sはbackendを呼ばず拒否する",
+    async (_label, payload) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "agent_scene_event_link_batch",
+        { payload },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it("agent_scene_event_link_batch: 10000件を超えるpayloadはbackend前に拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "agent_scene_event_link_batch",
+      {
+        payload: {
+          requestId: "r-oversized",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          sceneIds: Array.from({ length: 10_001 }, (_, index) => `sc-${index}`),
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("agent_scene_event_link_batch: backend不在を明示エラーにする", async () => {
+    const env = await dispatchInvoke(
+      "agent_scene_event_link_batch",
+      {
+        payload: {
+          requestId: "r1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          sceneIds: ["sc1"],
+        },
+      },
+      { backend: null, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} agent_scene_event_link_batch`,
+      errorInfo: {
+        code: "IPC_BACKEND_UNAVAILABLE",
+        message: `${IPC_BACKEND_UNAVAILABLE_MARKER} agent_scene_event_link_batch`,
+        outcome: "failed",
+        retryable: false,
+      },
+    });
+  });
+
+  it("agent_scene_event_link_batch: 旧native bindingのmethod欠落を明示エラーにする", async () => {
+    const { backend, calls } = fakeBackend({
+      agentSceneEventLinkBatch: undefined,
+    });
+    const env = await dispatchInvoke(
+      "agent_scene_event_link_batch",
+      {
+        payload: {
+          requestId: "r1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          sceneIds: ["sc1"],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method agentSceneEventLinkBatch`,
+    });
+    expect(calls).toHaveLength(0);
   });
 
   it("agent_chronicle_bulk_mutate: mixed operations を検証して N-API へ渡す", async () => {

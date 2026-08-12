@@ -1,4 +1,4 @@
-import { registerImportDecoder } from "./registry";
+import { registerImportDecoder } from "./registryStorage";
 import { textDecoder } from "./textDecoder";
 import { markdownDecoder } from "./markdownDecoder";
 import { jsonDecoder } from "./jsonDecoder";

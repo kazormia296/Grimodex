@@ -191,8 +191,12 @@ describe("Codex Relation rematch after Binding resolve", () => {
       },
       proposals: [left, right],
       relationProposals: [relation],
+      baseDetailProposals: [],
+      phaseProposals: [],
       entityCount: 2,
       relationCount: 1,
+      baseDetailCount: 0,
+      phaseCount: 0,
       unresolvedCount: 2,
       approvedCount: 0,
       catalog: {

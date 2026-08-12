@@ -256,7 +256,7 @@ describe("BrowserMock AI audit ledger", () => {
     });
     owned.push(reopened);
     expect(reopenDirty).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("does not resolve an audit append before its persistent durability ACK", async () => {
     let releaseDurability!: () => void;

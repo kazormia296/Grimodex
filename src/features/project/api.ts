@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { projects, lintTermDictionary, projectSettings } from "@/db/schema";
+import { projects, projectSettings } from "@/db/schema";
 import { and, eq, notExists } from "drizzle-orm";
 import {
   SCAN_IMPORT_STATE_KEY,
@@ -130,13 +130,7 @@ export async function deleteProject(id: string): Promise<void> {
   // refresh can become latest, fail on the deleted DB row, and leave the old
   // plaintext snapshot behind.
   cancelScheduledImeExports(id);
-  // lint_term_dictionary.project_id is FK-cascaded only on fresh DBs; on DBs
-  // upgraded via ALTER the column has no FK, so delete its rows explicitly to
-  // avoid orphans (harmless on fresh DBs — the rows are already gone).
-  await db
-    .delete(lintTermDictionary)
-    .where(eq(lintTermDictionary.projectId, id));
-  await db.delete(projects).where(eq(projects.id, id));
+  await invoke("project_delete", { payload: { projectId: id } });
   // The DB delete is authoritative; cleanup has a bounded background retry so
   // a transient filesystem failure cannot leave plaintext indefinitely.
   // Cancel again after the awaited DB work: another window/local mutation may

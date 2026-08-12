@@ -17,6 +17,14 @@ import {
   type BindCodexEntityPayload,
   type BindCodexEntityProposal,
 } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
+import {
+  CODEX_PHASE_BIND_PROPOSAL_KIND,
+  type BindCodexPhasePayload,
+} from "@/features/narrative-extraction/proposals/bindCodexPhaseProposal";
+import {
+  CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+  type SetCodexBaseDetailPayload,
+} from "@/features/narrative-extraction/proposals/setCodexBaseDetailProposal";
 import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
 import type {
   CanonicalRange,
@@ -205,6 +213,12 @@ interface CodexStructureReviewArtifactPayload {
       { readonly subjectLabel: string; readonly objectLabel: string }
     >
   >;
+  /**
+   * Display/review metadata that is not part of a Native proposal revision.
+   * Native proposal rows remain authoritative for status/revision/payload.
+   */
+  readonly baseDetailProposals?: readonly CodexBaseDetailReviewProposal[];
+  readonly phaseProposals?: readonly CodexPhaseReviewProposal[];
 }
 
 export interface CodexStructureExtractionHeuristicSeed {
@@ -945,12 +959,295 @@ function recountProjection(
       ).length +
       baseDetailProposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length +
       phaseProposals.filter(
         (item) =>
-          item.applicability === "applicable" && item.status === "approved",
+          item.applicability === "applicable" &&
+          item.status === "approved" &&
+          !item.application,
       ).length,
+  };
+}
+
+function buildPhaseDetailReviewProposals(input: {
+  readonly phaseSeeds: readonly CodexStructureExtractionPhaseSeed[];
+  readonly baseDetailSeeds: readonly CodexStructureExtractionBaseDetailSeed[];
+  readonly existingPhases: readonly ExistingPhaseCatalogRecord[];
+  readonly extractionScope: "full-corpus" | "partial";
+  readonly entityProposals: readonly CodexEntityReviewProposal[];
+  readonly entityLabelById: ReadonlyMap<string, string>;
+  readonly createId: () => string;
+}): {
+  readonly baseDetailProposals: readonly CodexBaseDetailReviewProposal[];
+  readonly phaseProposals: readonly CodexPhaseReviewProposal[];
+} {
+  const entityBindingProposalIds = new Map(
+    input.entityProposals.map((proposal) => [
+      proposal.proposal.payload.narrativeEntityId,
+      proposal.proposalId,
+    ]),
+  );
+  const boundaries: PhaseBoundaryHypothesis[] = input.phaseSeeds.map(
+    (seed, index) => ({
+      boundaryId: `boundary-${index + 1}`,
+      observationRefs: [`phase-obs-${index + 1}`],
+      payload: {
+        entityId: seed.entityId,
+        anchorDocumentRef: seed.anchorDocumentRef,
+        labelSuggestion: seed.labelSuggestion ?? null,
+        transitions: [
+          {
+            transitionId: `tr-${index + 1}`,
+            durability: "major",
+            magnitude: "major",
+            facetKey: seed.facetKey ?? "role.current",
+          },
+        ],
+        persistence: {
+          kind: "proposal",
+          reason: seed.persistenceReason ?? "major-durable",
+        },
+      },
+      epistemic: {
+        polarity: "affirmed",
+        commitment: "story-fact",
+        support: "direct",
+        narrativeFrame: "primary",
+      },
+    }),
+  );
+  const detailProjections: DetailProjectionHypothesis[] = [
+    ...input.phaseSeeds.flatMap((seed, index): DetailProjectionHypothesis[] => {
+      if (!seed.definitionRef || !seed.nextValue) return [];
+      return [
+        {
+          projectionId: `phase-proj-${index + 1}`,
+          observationRefs: [`phase-obs-${index + 1}`],
+          payload: {
+            entityId: seed.entityId,
+            facetKey: seed.facetKey ?? "role.current",
+            destination: "phase",
+            scope: {
+              kind: "phase",
+              boundaryId: `boundary-${index + 1}`,
+            },
+            binding: {
+              status: "resolved",
+              definitionRef: seed.definitionRef,
+              basis: "confirmed-binding",
+            },
+            write: { kind: "set", value: seed.nextValue },
+            value: seed.nextValue,
+          },
+        },
+      ];
+    }),
+    ...input.baseDetailSeeds.flatMap(
+      (seed, index): DetailProjectionHypothesis[] => {
+        if (seed.unbound || !seed.definitionRef) return [];
+        return [
+          {
+            projectionId: `base-proj-${index + 1}`,
+            observationRefs: [`base-obs-${index + 1}`],
+            payload: {
+              entityId: seed.entityId,
+              facetKey: seed.facetKey,
+              destination: "base",
+              scope: {
+                kind: "base",
+                temporalEligibility: seed.temporalEligibility ?? "timeless",
+              },
+              binding: {
+                status: "resolved",
+                definitionRef: seed.definitionRef,
+                basis: "confirmed-binding",
+              },
+              write: { kind: "set", value: seed.value },
+              value: seed.value,
+            },
+          },
+        ];
+      },
+    ),
+  ];
+  const planned = planPhaseAndDetailProposals({
+    boundaries,
+    detailProjections,
+    existingPhases: input.existingPhases,
+    extractionScope: input.extractionScope,
+    entityBindingProposalIds,
+    createId: input.createId,
+  });
+  const phaseProposals: CodexPhaseReviewProposal[] = planned.phaseProposals.map(
+    (item, index) => {
+      const seed =
+        input.phaseSeeds[
+          Math.min(index, Math.max(0, input.phaseSeeds.length - 1))
+        ];
+      const binding = item.proposal.payload.binding;
+      const hasClearWrite = item.proposal.payload.detailOverrides.some(
+        (override) => override.write.kind === "clear",
+      );
+      const valueDeltas: CodexDetailValueDelta[] =
+        item.proposal.payload.detailOverrides.map((override) => ({
+          definitionRef: override.definitionRef,
+          facetKey: seed?.facetKey,
+          previousDisplay: formatProjectedDetailValue(
+            seed?.existingValue ?? null,
+          ),
+          nextDisplay:
+            override.write.kind === "set"
+              ? formatProjectedDetailValue(override.write.value)
+              : override.write.kind === "clear"
+                ? "(clear)"
+                : "(inherit)",
+          writeKind: override.write.kind,
+        }));
+      const entityLabel =
+        input.entityLabelById.get(item.proposal.payload.narrativeEntityId) ??
+        item.proposal.payload.narrativeEntityId;
+      return {
+        proposalId: item.proposal.proposalId,
+        revisionId: null,
+        proposalKey: item.boundaryId,
+        status: "unreviewed",
+        applicability: item.blocked ? "blocked" : "applicable",
+        displayTitle:
+          item.proposal.payload.labelSuggestion ??
+          (binding.kind === "create-new"
+            ? binding.phase.label
+            : `Phase @ ${item.proposal.payload.anchorDocumentRef}`),
+        proposal: item.proposal,
+        evidence: [
+          {
+            anchorId: `phase-anchor-${item.proposal.proposalId}`,
+            quote: seed?.quote ?? item.proposal.payload.anchorDocumentRef,
+            documentRef: item.proposal.payload.anchorDocumentRef,
+            method: "exact",
+          },
+        ],
+        safety: buildCodexPhaseProposalSafetyFlags({
+          summaryOverrideKind: item.proposal.payload.summaryOverride.kind,
+          bindingKind: binding.kind,
+          hasConflict: item.blocked,
+          bound: true,
+          hasClearWrite,
+        }),
+        entityLabel,
+        persistence: {
+          kind: "proposal",
+          reason: seed?.persistenceReason ?? "major-durable",
+        },
+        valueDeltas,
+        existingPhaseCandidates:
+          binding.kind === "unresolved"
+            ? binding.candidates.map((candidate) => ({
+                ref: candidate.ref,
+                score: candidate.score,
+              }))
+            : [],
+        blockedReason: item.blockedReason,
+        boundaryId: item.boundaryId,
+      };
+    },
+  );
+  const plannedBase: CodexBaseDetailReviewProposal[] =
+    planned.baseDetailProposals.map((item, index) => {
+      const seed =
+        input.baseDetailSeeds.find(
+          (candidate) =>
+            candidate.entityId === item.proposal.payload.narrativeEntityId &&
+            candidate.facetKey === item.proposal.payload.facetKey,
+        ) ?? input.baseDetailSeeds[index];
+      const entityLabel =
+        input.entityLabelById.get(item.proposal.payload.narrativeEntityId) ??
+        item.proposal.payload.narrativeEntityId;
+      const existingValue = seed?.existingValue ?? null;
+      return {
+        proposalId: item.proposal.proposalId,
+        revisionId: null,
+        proposalKey: item.projectionId,
+        status: "unreviewed",
+        applicability: "applicable",
+        displayTitle: `${entityLabel} · ${item.proposal.payload.facetKey}`,
+        proposal: item.proposal,
+        evidence: [
+          {
+            anchorId: `base-anchor-${item.proposal.proposalId}`,
+            quote: seed?.quote ?? item.proposal.payload.facetKey,
+            documentRef: `B${String(index + 1).padStart(6, "0")}`,
+            method: "exact",
+          },
+        ],
+        safety: buildCodexBaseDetailProposalSafetyFlags({
+          temporalEligibility: item.proposal.payload.temporalEligibility,
+          existingValue,
+          evidenceMethods: ["exact"],
+          bound: true,
+          valueKind: item.proposal.payload.value.kind,
+        }),
+        entityLabel,
+        facetKey: item.proposal.payload.facetKey,
+        existingValue,
+      };
+    });
+  const unboundBase: CodexBaseDetailReviewProposal[] = input.baseDetailSeeds
+    .filter((seed) => seed.unbound || !seed.definitionRef)
+    .map((seed, index) => {
+      const entityLabel =
+        input.entityLabelById.get(seed.entityId) ?? seed.entityId;
+      const proposalId = input.createId();
+      return {
+        proposalId,
+        revisionId: null,
+        proposalKey: `unbound-base-${index + 1}`,
+        status: "unreviewed",
+        applicability: "blocked",
+        displayTitle: `${entityLabel} · ${seed.facetKey}`,
+        proposal: {
+          proposalId,
+          kind: CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+          target: {
+            kind: "narrative-entity",
+            narrativeEntityId: seed.entityId,
+          },
+          payload: {
+            narrativeEntityId: seed.entityId,
+            definitionRef: seed.definitionRef ?? "",
+            facetKey: seed.facetKey,
+            value: seed.value,
+            temporalEligibility: seed.temporalEligibility ?? "timeless",
+          },
+          dependencies: [],
+        },
+        evidence: [
+          {
+            anchorId: `unbound-base-anchor-${index + 1}`,
+            quote: seed.quote ?? seed.facetKey,
+            documentRef: `U${String(index + 1).padStart(6, "0")}`,
+            method: "exact",
+          },
+        ],
+        safety: buildCodexBaseDetailProposalSafetyFlags({
+          temporalEligibility: seed.temporalEligibility ?? "timeless",
+          existingValue: seed.existingValue ?? null,
+          evidenceMethods: ["exact"],
+          bound: false,
+          valueKind: seed.value.kind,
+        }),
+        entityLabel,
+        facetKey: seed.facetKey,
+        existingValue: seed.existingValue ?? null,
+        unbound: true,
+        blockedReason: "Detail 定義が未割当です",
+      };
+    });
+  return {
+    baseDetailProposals: [...plannedBase, ...unboundBase],
+    phaseProposals,
   };
 }
 
@@ -1464,10 +1761,22 @@ export async function startCodexStructureExtraction(
       ];
     });
 
+  const phaseDetailDrafts = buildPhaseDetailReviewProposals({
+    phaseSeeds: request.phaseSeeds ?? [],
+    baseDetailSeeds: request.baseDetailSeeds ?? [],
+    existingPhases: request.existingPhases ?? [],
+    extractionScope: request.extractionScope ?? "partial",
+    entityProposals: proposals,
+    entityLabelById,
+    createId,
+  });
+
   let runId = createId();
   let proposalSetId: string | null = `proposal-set-${runId}`;
   let finalProposals: CodexEntityReviewProposal[];
   let finalRelations: CodexRelationReviewProposal[];
+  let finalBaseDetailProposals: CodexBaseDetailReviewProposal[];
+  let finalPhaseProposals: CodexPhaseReviewProposal[];
   let runStatus: CodexStructureExtractionReviewProjection["status"] =
     "completed";
   let taskCounts = {
@@ -1523,7 +1832,11 @@ export async function startCodexStructureExtraction(
         projectId: request.projectId,
         setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
         summaryJson: {
-          proposalCount: proposals.length + relationProposals.length,
+          proposalCount:
+            proposals.length +
+            relationProposals.length +
+            phaseDetailDrafts.baseDetailProposals.length +
+            phaseDetailDrafts.phaseProposals.length,
           catalog: catalogSnapshot,
           existingRelations,
           // Immutable across append_revision: Relation dependency graph keyed by
@@ -1549,6 +1862,22 @@ export async function startCodexStructureExtraction(
             proposalKey: proposal.proposalKey,
             kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
             // Domain payload only — dependencies live in summaryJson.
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: proposal.proposal.payload,
+            }) as unknown as Record<string, unknown>,
+          })),
+          ...phaseDetailDrafts.baseDetailProposals.map((proposal) => ({
+            proposalId: proposal.proposalId,
+            proposalKey: proposal.proposalKey,
+            kind: CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: proposal.proposal.payload,
+            }) as unknown as Record<string, unknown>,
+          })),
+          ...phaseDetailDrafts.phaseProposals.map((proposal) => ({
+            proposalId: proposal.proposalId,
+            proposalKey: proposal.proposalKey,
+            kind: CODEX_PHASE_BIND_PROPOSAL_KIND,
             payloadJson: buildCodexReviewRevisionEnvelope({
               reviewPayload: proposal.proposal.payload,
             }) as unknown as Record<string, unknown>,
@@ -1597,6 +1926,46 @@ export async function startCodexStructureExtraction(
           status: seed.status ?? proposal.status,
         };
       });
+      finalBaseDetailProposals = phaseDetailDrafts.baseDetailProposals.map(
+        (proposal) => {
+          const seed = byKey.get(proposal.proposalKey);
+          if (!seed?.revisionId) {
+            throw new Error(
+              `Missing Native revision for Base Detail key ${proposal.proposalKey}`,
+            );
+          }
+          if (seed.proposalId !== proposal.proposalId) {
+            throw new Error(
+              `Native remapped Base Detail proposalId for ${proposal.proposalKey}; expected stable client id`,
+            );
+          }
+          return {
+            ...proposal,
+            proposalId: seed.proposalId,
+            revisionId: seed.revisionId,
+            status: seed.status ?? proposal.status,
+          };
+        },
+      );
+      finalPhaseProposals = phaseDetailDrafts.phaseProposals.map((proposal) => {
+        const seed = byKey.get(proposal.proposalKey);
+        if (!seed?.revisionId) {
+          throw new Error(
+            `Missing Native revision for Phase key ${proposal.proposalKey}`,
+          );
+        }
+        if (seed.proposalId !== proposal.proposalId) {
+          throw new Error(
+            `Native remapped Phase proposalId for ${proposal.proposalKey}; expected stable client id`,
+          );
+        }
+        return {
+          ...proposal,
+          proposalId: seed.proposalId,
+          revisionId: seed.revisionId,
+          status: seed.status ?? proposal.status,
+        };
+      });
 
       // Terminal "適用不要" decisions so already-satisfied rows leave resumable
       // unreviewed queues and survive cold-start without Apply attempts.
@@ -1631,6 +2000,8 @@ export async function startCodexStructureExtraction(
           proposalSetId: saved.proposalSetId,
           entityProposalCount: finalProposals.length,
           relationProposalCount: finalRelations.length,
+          baseDetailProposalCount: finalBaseDetailProposals.length,
+          phaseProposalCount: finalPhaseProposals.length,
         },
         artifacts: (() => {
           const evidenceByProposalId: Record<
@@ -1657,6 +2028,8 @@ export async function startCodexStructureExtraction(
               proposalSetId: saved.proposalSetId,
               evidenceByProposalId,
               relationLabelsByProposalId,
+              baseDetailProposals: finalBaseDetailProposals,
+              phaseProposals: finalPhaseProposals,
             } as unknown as Record<string, unknown>,
           );
           rememberInlineJsonArtifact({
@@ -1709,286 +2082,25 @@ export async function startCodexStructureExtraction(
       ...proposal,
       revisionId: proposal.revisionId ?? `test-rev-${proposal.proposalKey}`,
     }));
+    finalBaseDetailProposals = phaseDetailDrafts.baseDetailProposals.map(
+      (proposal) => ({
+        ...proposal,
+        revisionId: `test-rev-${proposal.proposalKey}`,
+      }),
+    );
+    finalPhaseProposals = phaseDetailDrafts.phaseProposals.map((proposal) => ({
+      ...proposal,
+      revisionId: `test-rev-${proposal.proposalKey}`,
+    }));
   }
 
   lastRunId = runId;
 
-  const entityBindingProposalIds = new Map(
-    finalProposals.map((proposal) => [
-      proposal.proposal.payload.narrativeEntityId,
-      proposal.proposalId,
-    ]),
-  );
-
-  const phaseSeeds = request.phaseSeeds ?? [];
-  const baseDetailSeeds = request.baseDetailSeeds ?? [];
-  const boundaries: PhaseBoundaryHypothesis[] = phaseSeeds.map(
-    (seed, index) => ({
-      boundaryId: `boundary-${index + 1}`,
-      observationRefs: [`phase-obs-${index + 1}`],
-      payload: {
-        entityId: seed.entityId,
-        anchorDocumentRef: seed.anchorDocumentRef,
-        labelSuggestion: seed.labelSuggestion ?? null,
-        transitions: [
-          {
-            transitionId: `tr-${index + 1}`,
-            durability: "major",
-            magnitude: "major",
-            facetKey: seed.facetKey ?? "role.current",
-          },
-        ],
-        persistence: {
-          kind: "proposal",
-          reason: seed.persistenceReason ?? "major-durable",
-        },
-      },
-      epistemic: {
-        polarity: "affirmed",
-        commitment: "story-fact",
-        support: "direct",
-        narrativeFrame: "primary",
-      },
-    }),
-  );
-
-  const detailProjections: DetailProjectionHypothesis[] = [
-    ...phaseSeeds.flatMap((seed, index): DetailProjectionHypothesis[] => {
-      if (!seed.definitionRef || !seed.nextValue) return [];
-      return [
-        {
-          projectionId: `phase-proj-${index + 1}`,
-          observationRefs: [`phase-obs-${index + 1}`],
-          payload: {
-            entityId: seed.entityId,
-            facetKey: seed.facetKey ?? "role.current",
-            destination: "phase",
-            scope: { kind: "phase", boundaryId: `boundary-${index + 1}` },
-            binding: {
-              status: "resolved",
-              definitionRef: seed.definitionRef,
-              basis: "confirmed-binding",
-            },
-            write: { kind: "set", value: seed.nextValue },
-            value: seed.nextValue,
-          },
-        },
-      ];
-    }),
-    ...baseDetailSeeds.flatMap((seed, index): DetailProjectionHypothesis[] => {
-      if (seed.unbound || !seed.definitionRef) {
-        // Still surface unbound rows via a synthetic review proposal below.
-        return [];
-      }
-      return [
-        {
-          projectionId: `base-proj-${index + 1}`,
-          observationRefs: [`base-obs-${index + 1}`],
-          payload: {
-            entityId: seed.entityId,
-            facetKey: seed.facetKey,
-            destination: "base",
-            scope: {
-              kind: "base",
-              temporalEligibility: seed.temporalEligibility ?? "timeless",
-            },
-            binding: {
-              status: "resolved",
-              definitionRef: seed.definitionRef,
-              basis: "confirmed-binding",
-            },
-            write: { kind: "set", value: seed.value },
-            value: seed.value,
-          },
-        },
-      ];
-    }),
-  ];
-
-  const plannedPhaseDetail = planPhaseAndDetailProposals({
-    boundaries,
-    detailProjections,
-    existingPhases: request.existingPhases ?? [],
-    extractionScope: request.extractionScope ?? "partial",
-    entityBindingProposalIds,
-    createId,
-  });
-
-  const phaseProposals: CodexPhaseReviewProposal[] =
-    plannedPhaseDetail.phaseProposals.map((item, index) => {
-      const seed =
-        phaseSeeds[Math.min(index, Math.max(0, phaseSeeds.length - 1))];
-      const binding = item.proposal.payload.binding;
-      const hasClearWrite = item.proposal.payload.detailOverrides.some(
-        (override) => override.write.kind === "clear",
-      );
-      const deltas: CodexDetailValueDelta[] =
-        item.proposal.payload.detailOverrides.map((override) => {
-          const nextDisplay =
-            override.write.kind === "set"
-              ? formatProjectedDetailValue(override.write.value)
-              : override.write.kind === "clear"
-                ? "(clear)"
-                : "(inherit)";
-          return {
-            definitionRef: override.definitionRef,
-            facetKey: seed?.facetKey,
-            previousDisplay: formatProjectedDetailValue(
-              seed?.existingValue ?? null,
-            ),
-            nextDisplay,
-            writeKind: override.write.kind,
-          };
-        });
-      const entityLabel =
-        entityLabelById.get(item.proposal.payload.narrativeEntityId) ??
-        item.proposal.payload.narrativeEntityId;
-      return {
-        proposalId: item.proposal.proposalId,
-        revisionId: crypto.randomUUID(),
-        proposalKey: item.boundaryId,
-        status: "unreviewed" as const,
-        applicability: item.blocked
-          ? ("blocked" as const)
-          : ("applicable" as const),
-        displayTitle:
-          item.proposal.payload.labelSuggestion ??
-          (binding.kind === "create-new"
-            ? binding.phase.label
-            : `Phase @ ${item.proposal.payload.anchorDocumentRef}`),
-        proposal: item.proposal,
-        evidence: [
-          {
-            anchorId: `phase-anchor-${item.proposal.proposalId}`,
-            quote: seed?.quote ?? item.proposal.payload.anchorDocumentRef,
-            documentRef: item.proposal.payload.anchorDocumentRef,
-            method: "exact" as const,
-          },
-        ],
-        safety: buildCodexPhaseProposalSafetyFlags({
-          summaryOverrideKind: item.proposal.payload.summaryOverride.kind,
-          bindingKind: binding.kind,
-          hasConflict: item.blocked,
-          bound: true,
-          hasClearWrite,
-        }),
-        entityLabel,
-        persistence: {
-          kind: "proposal",
-          reason: seed?.persistenceReason ?? "major-durable",
-        },
-        valueDeltas: deltas,
-        existingPhaseCandidates:
-          binding.kind === "unresolved"
-            ? binding.candidates.map((candidate) => ({
-                ref: candidate.ref,
-                score: candidate.score,
-              }))
-            : [],
-        blockedReason: item.blockedReason,
-        boundaryId: item.boundaryId,
-      } satisfies CodexPhaseReviewProposal;
-    });
-
-  const plannedBase = plannedPhaseDetail.baseDetailProposals.map(
-    (item, index) => {
-      const seed =
-        baseDetailSeeds.find(
-          (candidate) =>
-            candidate.entityId === item.proposal.payload.narrativeEntityId &&
-            candidate.facetKey === item.proposal.payload.facetKey,
-        ) ?? baseDetailSeeds[index];
-      const entityLabel =
-        entityLabelById.get(item.proposal.payload.narrativeEntityId) ??
-        item.proposal.payload.narrativeEntityId;
-      const existingValue = seed?.existingValue ?? null;
-      return {
-        proposalId: item.proposal.proposalId,
-        revisionId: crypto.randomUUID(),
-        proposalKey: item.projectionId,
-        status: "unreviewed" as const,
-        applicability: "applicable" as const,
-        displayTitle: `${entityLabel} · ${item.proposal.payload.facetKey}`,
-        proposal: item.proposal,
-        evidence: [
-          {
-            anchorId: `base-anchor-${item.proposal.proposalId}`,
-            quote: seed?.quote ?? item.proposal.payload.facetKey,
-            documentRef: `B${String(index + 1).padStart(6, "0")}`,
-            method: "exact" as const,
-          },
-        ],
-        safety: buildCodexBaseDetailProposalSafetyFlags({
-          temporalEligibility: item.proposal.payload.temporalEligibility,
-          existingValue,
-          evidenceMethods: ["exact"],
-          bound: true,
-          valueKind: item.proposal.payload.value.kind,
-        }),
-        entityLabel,
-        facetKey: item.proposal.payload.facetKey,
-        existingValue,
-      } satisfies CodexBaseDetailReviewProposal;
-    },
-  );
-
-  const unboundBase: CodexBaseDetailReviewProposal[] = baseDetailSeeds
-    .filter((seed) => seed.unbound || !seed.definitionRef)
-    .map((seed, index) => {
-      const entityLabel = entityLabelById.get(seed.entityId) ?? seed.entityId;
-      const proposalId = createId();
-      return {
-        proposalId,
-        revisionId: crypto.randomUUID(),
-        proposalKey: `unbound-base-${index + 1}`,
-        status: "unreviewed",
-        applicability: "blocked",
-        displayTitle: `${entityLabel} · ${seed.facetKey}`,
-        proposal: {
-          proposalId,
-          kind: "codex.detail.base.set",
-          target: {
-            kind: "narrative-entity",
-            narrativeEntityId: seed.entityId,
-          },
-          payload: {
-            narrativeEntityId: seed.entityId,
-            definitionRef: seed.definitionRef ?? "",
-            facetKey: seed.facetKey,
-            value: seed.value,
-            temporalEligibility: seed.temporalEligibility ?? "timeless",
-          },
-          dependencies: [],
-        },
-        evidence: [
-          {
-            anchorId: `unbound-base-anchor-${index + 1}`,
-            quote: seed.quote ?? seed.facetKey,
-            documentRef: `U${String(index + 1).padStart(6, "0")}`,
-            method: "exact",
-          },
-        ],
-        safety: buildCodexBaseDetailProposalSafetyFlags({
-          temporalEligibility: seed.temporalEligibility ?? "timeless",
-          existingValue: seed.existingValue ?? null,
-          evidenceMethods: ["exact"],
-          bound: false,
-          valueKind: seed.value.kind,
-        }),
-        entityLabel,
-        facetKey: seed.facetKey,
-        existingValue: seed.existingValue ?? null,
-        unbound: true,
-        blockedReason: "Detail 定義が未割当です",
-      } satisfies CodexBaseDetailReviewProposal;
-    });
-
-  const baseDetailProposals = [...plannedBase, ...unboundBase];
   const counts = recountProjection(
     finalProposals,
     finalRelations,
-    baseDetailProposals,
-    phaseProposals,
+    finalBaseDetailProposals,
+    finalPhaseProposals,
   );
   const projection: CodexStructureExtractionReviewProjection = {
     runId,
@@ -2008,8 +2120,8 @@ export async function startCodexStructureExtraction(
     taskCounts,
     proposals: finalProposals,
     relationProposals: finalRelations,
-    baseDetailProposals,
-    phaseProposals,
+    baseDetailProposals: finalBaseDetailProposals,
+    phaseProposals: finalPhaseProposals,
     catalog: catalogSnapshot,
     existingRelations,
     ...counts,
@@ -2273,6 +2385,8 @@ function parseEvidenceArtifact(
     string,
     { readonly subjectLabel: string; readonly objectLabel: string }
   >;
+  readonly baseDetailProposals: readonly CodexBaseDetailReviewProposal[];
+  readonly phaseProposals: readonly CodexPhaseReviewProposal[];
 } {
   const evidenceByProposalId = new Map<
     string,
@@ -2283,7 +2397,12 @@ function parseEvidenceArtifact(
     { readonly subjectLabel: string; readonly objectLabel: string }
   >();
   if (!raw) {
-    return { evidenceByProposalId, relationLabelsByProposalId };
+    return {
+      evidenceByProposalId,
+      relationLabelsByProposalId,
+      baseDetailProposals: [],
+      phaseProposals: [],
+    };
   }
   if (
     raw.evidenceByProposalId &&
@@ -2320,6 +2439,26 @@ function parseEvidenceArtifact(
       typeof raw.proposalSetId === "string" ? raw.proposalSetId : undefined,
     evidenceByProposalId,
     relationLabelsByProposalId,
+    baseDetailProposals: Array.isArray(raw.baseDetailProposals)
+      ? raw.baseDetailProposals.filter(
+          (proposal) =>
+            proposal !== null &&
+            typeof proposal === "object" &&
+            typeof proposal.proposalId === "string" &&
+            proposal.proposal !== null &&
+            typeof proposal.proposal === "object",
+        )
+      : [],
+    phaseProposals: Array.isArray(raw.phaseProposals)
+      ? raw.phaseProposals.filter(
+          (proposal) =>
+            proposal !== null &&
+            typeof proposal === "object" &&
+            typeof proposal.proposalId === "string" &&
+            proposal.proposal !== null &&
+            typeof proposal.proposal === "object",
+        )
+      : [],
   };
 }
 
@@ -2523,6 +2662,92 @@ function rebuildRelationFromNative(args: {
   };
 }
 
+function isPersistedBaseDetailPayload(
+  value: unknown,
+): value is SetCodexBaseDetailPayload {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.narrativeEntityId === "string" &&
+    typeof record.definitionRef === "string" &&
+    typeof record.facetKey === "string" &&
+    record.value !== null &&
+    typeof record.value === "object" &&
+    (record.temporalEligibility === "timeless" ||
+      record.temporalEligibility === "corpus-initial")
+  );
+}
+
+function isPersistedPhasePayload(
+  value: unknown,
+): value is BindCodexPhasePayload {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.narrativeEntityId === "string" &&
+    typeof record.anchorDocumentRef === "string" &&
+    record.binding !== null &&
+    typeof record.binding === "object" &&
+    record.summaryOverride !== null &&
+    typeof record.summaryOverride === "object" &&
+    Array.isArray(record.detailOverrides)
+  );
+}
+
+function rebuildBaseDetailFromNative(args: {
+  readonly native: ReviewBundleProposal;
+  readonly metadata: CodexBaseDetailReviewProposal | undefined;
+}): CodexBaseDetailReviewProposal | null {
+  if (!args.metadata || args.metadata.proposalId !== args.native.proposalId) {
+    return null;
+  }
+  const envelope = parseCodexReviewRevisionEnvelope(args.native.payloadJson);
+  if (!envelope || !isPersistedBaseDetailPayload(envelope.reviewPayload)) {
+    return null;
+  }
+  return {
+    ...args.metadata,
+    proposalId: args.native.proposalId,
+    revisionId: args.native.currentRevisionId,
+    proposalKey: args.native.proposalKey,
+    status: args.native.status,
+    proposal: {
+      ...args.metadata.proposal,
+      proposalId: args.native.proposalId,
+      kind: CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+      payload: envelope.reviewPayload,
+    },
+    application: applicationFromNative(args.native),
+  };
+}
+
+function rebuildPhaseFromNative(args: {
+  readonly native: ReviewBundleProposal;
+  readonly metadata: CodexPhaseReviewProposal | undefined;
+}): CodexPhaseReviewProposal | null {
+  if (!args.metadata || args.metadata.proposalId !== args.native.proposalId) {
+    return null;
+  }
+  const envelope = parseCodexReviewRevisionEnvelope(args.native.payloadJson);
+  if (!envelope || !isPersistedPhasePayload(envelope.reviewPayload)) {
+    return null;
+  }
+  return {
+    ...args.metadata,
+    proposalId: args.native.proposalId,
+    revisionId: args.native.currentRevisionId,
+    proposalKey: args.native.proposalKey,
+    status: args.native.status,
+    proposal: {
+      ...args.metadata.proposal,
+      proposalId: args.native.proposalId,
+      kind: CODEX_PHASE_BIND_PROPOSAL_KIND,
+      payload: envelope.reviewPayload,
+    },
+    application: applicationFromNative(args.native),
+  };
+}
+
 /**
  * Build a review projection from Native without publishing to the store.
  * Callers (Dialog) must setProjection only after generation/folder authority checks.
@@ -2657,6 +2882,12 @@ export async function getCodexStructureExtractionReview(
   const relationNatives = bundle.proposals.filter(
     (row) => row.kind === CODEX_RELATION_CREATE_PROPOSAL_KIND,
   );
+  const baseDetailNatives = bundle.proposals.filter(
+    (row) => row.kind === CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+  );
+  const phaseNatives = bundle.proposals.filter(
+    (row) => row.kind === CODEX_PHASE_BIND_PROPOSAL_KIND,
+  );
 
   assertReviewEvidenceComplete({
     runId,
@@ -2740,7 +2971,45 @@ export async function getCodexStructureExtractionReview(
     };
   });
 
-  const counts = recountProjection(proposals, relationProposals);
+  const baseDetailMetadataById = new Map(
+    artifact.baseDetailProposals.map((proposal) => [
+      proposal.proposalId,
+      proposal,
+    ]),
+  );
+  const phaseMetadataById = new Map(
+    artifact.phaseProposals.map((proposal) => [proposal.proposalId, proposal]),
+  );
+  const baseDetailProposals = baseDetailNatives.flatMap((native) => {
+    const proposal = rebuildBaseDetailFromNative({
+      native,
+      metadata: baseDetailMetadataById.get(native.proposalId),
+    });
+    return proposal ? [proposal] : [];
+  });
+  const phaseProposals = phaseNatives.flatMap((native) => {
+    const proposal = rebuildPhaseFromNative({
+      native,
+      metadata: phaseMetadataById.get(native.proposalId),
+    });
+    return proposal ? [proposal] : [];
+  });
+  if (baseDetailProposals.length !== baseDetailNatives.length) {
+    throw new Error(
+      `Codex structure extraction run ${runId} missing review metadata or payloads for Base Detail proposals`,
+    );
+  }
+  if (phaseProposals.length !== phaseNatives.length) {
+    throw new Error(
+      `Codex structure extraction run ${runId} missing review metadata or payloads for Phase proposals`,
+    );
+  }
+  const counts = recountProjection(
+    proposals,
+    relationProposals,
+    baseDetailProposals,
+    phaseProposals,
+  );
   const projection: CodexStructureExtractionReviewProjection = {
     runId,
     projectId: scope.projectId,
@@ -2753,6 +3022,8 @@ export async function getCodexStructureExtractionReview(
     taskCounts: runProjection.taskCounts,
     proposals,
     relationProposals,
+    baseDetailProposals,
+    phaseProposals,
     catalog,
     existingRelations,
     ...counts,
@@ -3021,14 +3292,16 @@ export async function applyCodexStructureExtractionReview(
       proposal.applicability === "applicable" &&
       proposal.status === "approved" &&
       proposal.revisionId &&
-      !proposal.unbound,
+      !proposal.unbound &&
+      !proposal.application,
   );
   const approvedPhases = (active.phaseProposals ?? []).filter(
     (proposal) =>
       proposal.applicability === "applicable" &&
       proposal.status === "approved" &&
       proposal.revisionId &&
-      proposal.proposal.payload.binding.kind !== "unresolved",
+      proposal.proposal.payload.binding.kind !== "unresolved" &&
+      !proposal.application,
   );
 
   const phaseDetailOps = compilePhaseAndDetailOpsAfterEntities({

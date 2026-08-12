@@ -91,11 +91,19 @@ fn restore_codex_entry_fields(
     snap: &serde_json::Value,
     entity_id: &str,
     project_id: &str,
-    target_version: i64,
+    replay_version: i64,
     expected_current_version: i64,
 ) -> anyhow::Result<()> {
+    validate_codex_snapshot_identity(conn, snap, entity_id, project_id)?;
+    let entry_type = snap["type"].as_str();
     let name = snap["name"].as_str().unwrap_or("");
-    let summary = snap["summary"].as_str().unwrap_or("");
+    // The original workspace schema permits NULL summaries. Preserve an
+    // explicit snapshot null; only a truly missing legacy key falls back to
+    // the historical empty string.
+    let summary = snap
+        .get("summary")
+        .map(serde_json::Value::as_str)
+        .unwrap_or(Some(""));
     let content = snap["content"].as_str().unwrap_or("{}");
     let aliases = snap["aliases"].as_str();
     let excluded_aliases = snap["excludedAliases"].as_str();
@@ -107,12 +115,14 @@ fn restore_codex_entry_fields(
     let children_budget = snap["childrenBudget"].as_str().unwrap_or("compact");
     let notes = snap["notes"].as_str();
     let updated = conn.execute(
-        "UPDATE codex_entries SET name = ?1, summary = ?2, content = ?3,
-         aliases = ?4, excluded_aliases = ?5, readings = ?6, parent_id = ?7,
-         icon = ?8, tags_cache = ?9, context_mode = ?10, children_budget = ?11,
-         notes = ?12, version = ?13, updated_at = datetime('now')
-         WHERE id = ?14 AND project_id = ?15 AND version = ?16",
+        "UPDATE codex_entries SET type = COALESCE(?1, type), name = ?2,
+         summary = ?3, content = ?4, aliases = ?5, excluded_aliases = ?6,
+         readings = ?7, parent_id = ?8, icon = ?9, tags_cache = ?10,
+         context_mode = ?11, children_budget = ?12, notes = ?13,
+         version = ?14, updated_at = datetime('now')
+         WHERE id = ?15 AND project_id = ?16 AND version = ?17",
         params![
+            entry_type,
             name,
             summary,
             content,
@@ -125,7 +135,7 @@ fn restore_codex_entry_fields(
             context_mode,
             children_budget,
             notes,
-            target_version,
+            replay_version,
             entity_id,
             project_id,
             expected_current_version,
@@ -142,12 +152,67 @@ fn restore_codex_entry_fields(
     Ok(())
 }
 
-fn insert_codex_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow::Result<()> {
-    let id = snap["id"].as_str().unwrap_or("");
-    let project = snap["projectId"].as_str().unwrap_or("");
+fn validate_codex_snapshot_identity(
+    conn: &Connection,
+    snap: &serde_json::Value,
+    entity_id: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        snap["id"].as_str() == Some(entity_id),
+        "codex entry '{}' journal snapshot identity mismatch",
+        entity_id
+    );
+    anyhow::ensure!(
+        snap["projectId"].as_str() == Some(project_id),
+        "codex entry '{}' journal snapshot project mismatch",
+        entity_id
+    );
+    if let Some(parent_id) = snap["parentId"].as_str().filter(|value| !value.is_empty()) {
+        anyhow::ensure!(
+            parent_id != entity_id,
+            "codex entry '{}' cannot be its own parent during journal restore",
+            entity_id
+        );
+        let parent_found: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            params![parent_id, project_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            parent_found == 1,
+            "codex parent '{}' is not found in project '{}' during journal restore",
+            parent_id,
+            project_id
+        );
+    }
+    Ok(())
+}
+
+fn insert_codex_from_snap(
+    conn: &Connection,
+    snap: &serde_json::Value,
+    entity_id: &str,
+    project_id: &str,
+    replay_version: i64,
+) -> anyhow::Result<()> {
+    validate_codex_snapshot_identity(conn, snap, entity_id, project_id)?;
+    let existing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1",
+        params![entity_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        existing == 0,
+        "codex entry '{}' version conflict during journal restore",
+        entity_id
+    );
     let entry_type = snap["type"].as_str().unwrap_or("lore");
     let name = snap["name"].as_str().unwrap_or("Untitled");
-    let summary = snap["summary"].as_str().unwrap_or("");
+    let summary = snap
+        .get("summary")
+        .map(serde_json::Value::as_str)
+        .unwrap_or(Some(""));
     let content = snap["content"].as_str().unwrap_or("{}");
     let aliases = snap["aliases"].as_str();
     let excluded_aliases = snap["excludedAliases"].as_str();
@@ -160,8 +225,7 @@ fn insert_codex_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow
     let source_chat_message_id = snap["sourceChatMessageId"].as_str();
     let notes = snap["notes"].as_str();
     let created_at = snap["createdAt"].as_str();
-    let version = snap["version"].as_i64().unwrap_or(1);
-    conn.execute(
+    let inserted = conn.execute(
         "INSERT INTO codex_entries
          (id, project_id, type, name, aliases, excluded_aliases, readings, summary,
           content, parent_id, icon, tags_cache, context_mode, children_budget,
@@ -169,8 +233,8 @@ fn insert_codex_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
                  coalesce(?18, datetime('now')), datetime('now'))",
         params![
-            id,
-            project,
+            entity_id,
+            project_id,
             entry_type,
             name,
             aliases,
@@ -185,26 +249,114 @@ fn insert_codex_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow
             children_budget,
             source_chat_message_id,
             notes,
-            version,
+            replay_version,
             created_at,
         ],
     )?;
-    restore_codex_authorship_spans(conn, id, snap)?;
+    anyhow::ensure!(
+        inserted == 1,
+        "codex entry '{}' was not restored",
+        entity_id
+    );
+    restore_codex_authorship_spans(conn, entity_id, snap)?;
     Ok(())
 }
 
-/// Restore a foreshadow row from a snapshot. Versionless optimistic guard:
-/// `foreshadows` has no version column, so the journal stores updated_at
-/// millis in base/result_version and restores guard on updated_at equality
-/// (see writes::foreshadow module docs).
+fn next_codex_replay_version(version: i64, direction: &str) -> anyhow::Result<i64> {
+    version
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("codex entry version overflow during {direction}"))
+}
+
+/// Replace a replayed logical state token throughout one Codex entry's
+/// journal chain. Adjacent create/update/delete commands then remain connected
+/// after a fresh live version is allocated, while a stale external token can
+/// never become current again (the ABA case).
+fn advance_codex_journal_state_token(
+    conn: &Connection,
+    project_id: &str,
+    entity_id: &str,
+    previous_version: i64,
+    replay_version: i64,
+) -> anyhow::Result<()> {
+    let updated = conn.execute(
+        "UPDATE undo_journal
+         SET base_version = CASE WHEN base_version = ?1 THEN ?2 ELSE base_version END,
+             result_version = CASE WHEN result_version = ?1 THEN ?2 ELSE result_version END
+         WHERE project_id = ?3 AND entity_kind = 'codex_entry' AND entity_id = ?4
+           AND (base_version = ?1 OR result_version = ?1)",
+        params![previous_version, replay_version, project_id, entity_id],
+    )?;
+    anyhow::ensure!(
+        updated > 0,
+        "codex entry undo journal chain for '{}' lost state version {}",
+        entity_id,
+        previous_version
+    );
+    Ok(())
+}
+
+fn foreshadow_snapshot_has_version(snap: &serde_json::Value) -> bool {
+    snap.get("version")
+        .and_then(serde_json::Value::as_i64)
+        .is_some()
+}
+
+/// Restore a foreshadow row from a snapshot. v12 snapshots use the root
+/// `version` as their OCC token and allocate a fresh version for every replay.
+/// Pre-v12 snapshots have no version and retain their historical updated_at
+/// guard so journals created before the migration remain replayable.
 fn restore_foreshadow_fields(
     conn: &Connection,
     snap: &serde_json::Value,
     entity_id: &str,
     project_id: &str,
-    target_updated_at: i64,
-    expected_current_updated_at: i64,
-) -> anyhow::Result<()> {
+    target_state_token: i64,
+    expected_current_token: i64,
+) -> anyhow::Result<Option<i64>> {
+    if foreshadow_snapshot_has_version(snap) {
+        let replay_version = expected_current_token
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("foreshadow version overflow during journal restore"))?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let updated = conn.execute(
+            "UPDATE foreshadows SET title = ?1, intent = ?2, notes = ?3,
+             payoff_scene_id = ?4, payoff_from_pos = ?5, payoff_to_pos = ?6,
+             payoff_confirmed = ?7, abandoned = ?8, secret = ?9, load_bearing = ?10,
+             mechanism = ?11, codex_link_dirty_at = ?12, version = ?13,
+             created_at = ?14, updated_at = ?15
+             WHERE id = ?16 AND project_id = ?17 AND version = ?18",
+            params![
+                snap["title"].as_str().unwrap_or(""),
+                snap["intent"].as_str(),
+                snap["notes"].as_str(),
+                snap["payoffSceneId"].as_str(),
+                snap["payoffFromPos"].as_i64(),
+                snap["payoffToPos"].as_i64(),
+                snap["payoffConfirmed"].as_i64().unwrap_or(0),
+                snap["abandoned"].as_i64().unwrap_or(0),
+                snap["secret"].as_i64().unwrap_or(1),
+                snap["loadBearing"].as_str(),
+                snap["mechanism"].as_str(),
+                snap["codexLinkDirtyAt"].as_i64(),
+                replay_version,
+                snap["createdAt"].as_i64().unwrap_or(0),
+                now,
+                entity_id,
+                project_id,
+                expected_current_token,
+            ],
+        )?;
+        if updated == 0 {
+            anyhow::bail!(
+                "foreshadow '{}' version {} conflict during journal restore",
+                entity_id,
+                expected_current_token
+            );
+        }
+        return Ok(Some(replay_version));
+    }
+
     let updated = conn.execute(
         "UPDATE foreshadows SET title = ?1, intent = ?2, notes = ?3,
          payoff_scene_id = ?4, payoff_from_pos = ?5, payoff_to_pos = ?6,
@@ -222,23 +374,62 @@ fn restore_foreshadow_fields(
             snap["abandoned"].as_i64().unwrap_or(0),
             snap["secret"].as_i64().unwrap_or(1),
             snap["loadBearing"].as_str(),
-            target_updated_at,
+            target_state_token,
             entity_id,
             project_id,
-            expected_current_updated_at,
+            expected_current_token,
         ],
     )?;
     if updated == 0 {
         anyhow::bail!(
             "foreshadow '{}' updated_at {} conflict during journal restore",
             entity_id,
-            expected_current_updated_at
+            expected_current_token
         );
     }
-    Ok(())
+    Ok(None)
 }
 
-fn insert_foreshadow_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow::Result<()> {
+fn insert_foreshadow_from_snap(
+    conn: &Connection,
+    snap: &serde_json::Value,
+    replay_version: Option<i64>,
+) -> anyhow::Result<()> {
+    if foreshadow_snapshot_has_version(snap) {
+        let version = replay_version.unwrap_or_else(|| snap["version"].as_i64().unwrap_or(0));
+        let updated_at = replay_version
+            .map(|_| chrono::Utc::now().timestamp_millis())
+            .unwrap_or_else(|| snap["updatedAt"].as_i64().unwrap_or(0));
+        conn.execute(
+            "INSERT INTO foreshadows
+             (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos,
+              payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing,
+              mechanism, version, codex_link_dirty_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                     ?13, ?14, ?15, ?16, ?17)",
+            params![
+                snap["id"].as_str().unwrap_or(""),
+                snap["projectId"].as_str().unwrap_or(""),
+                snap["title"].as_str().unwrap_or("Untitled"),
+                snap["intent"].as_str(),
+                snap["notes"].as_str(),
+                snap["payoffSceneId"].as_str(),
+                snap["payoffFromPos"].as_i64(),
+                snap["payoffToPos"].as_i64(),
+                snap["payoffConfirmed"].as_i64().unwrap_or(0),
+                snap["abandoned"].as_i64().unwrap_or(0),
+                snap["secret"].as_i64().unwrap_or(1),
+                snap["loadBearing"].as_str(),
+                snap["mechanism"].as_str(),
+                version,
+                snap["codexLinkDirtyAt"].as_i64(),
+                snap["createdAt"].as_i64().unwrap_or(0),
+                updated_at,
+            ],
+        )?;
+        return Ok(());
+    }
+
     conn.execute(
         "INSERT INTO foreshadows
          (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos,
@@ -262,6 +453,62 @@ fn insert_foreshadow_from_snap(conn: &Connection, snap: &serde_json::Value) -> a
             snap["updatedAt"].as_i64().unwrap_or(0),
         ],
     )?;
+    Ok(())
+}
+
+pub fn advance_foreshadow_journal_state_token(
+    conn: &Connection,
+    project_id: &str,
+    entity_id: &str,
+    previous_version: i64,
+    replay_version: i64,
+) -> anyhow::Result<()> {
+    let rows = {
+        let mut stmt = conn.prepare(
+            "SELECT id, before_json, after_json, base_version, result_version
+             FROM undo_journal
+             WHERE project_id = ?1 AND entity_kind = 'foreshadow' AND entity_id = ?2",
+        )?;
+        let mapped = stmt.query_map(params![project_id, entity_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        mapped.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut updated = 0;
+    for (journal_id, before_json, after_json, base_version, result_version) in rows {
+        let uses_root_version = [before_json.as_deref(), after_json.as_deref()]
+            .into_iter()
+            .flatten()
+            .try_fold(false, |found, raw| {
+                let snap: serde_json::Value = serde_json::from_str(raw)?;
+                Ok::<_, anyhow::Error>(found || foreshadow_snapshot_has_version(&snap))
+            })?;
+        if !uses_root_version
+            || (base_version != previous_version && result_version != previous_version)
+        {
+            continue;
+        }
+        updated += conn.execute(
+            "UPDATE undo_journal
+             SET base_version = CASE WHEN base_version = ?1 THEN ?2 ELSE base_version END,
+                 result_version = CASE WHEN result_version = ?1 THEN ?2 ELSE result_version END
+             WHERE id = ?3 AND project_id = ?4",
+            params![previous_version, replay_version, journal_id, project_id],
+        )?;
+    }
+    anyhow::ensure!(
+        updated > 0,
+        "foreshadow undo journal chain for '{}' lost state version {}",
+        entity_id,
+        previous_version
+    );
     Ok(())
 }
 
@@ -319,13 +566,21 @@ pub fn revert_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("revert update: missing before_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(before)?;
+                let replay_version = next_codex_replay_version(row.result_version, "undo update")?;
                 restore_codex_entry_fields(
                     conn,
                     &snap,
                     &row.entity_id,
                     project_id,
-                    row.base_version,
+                    replay_version,
                     row.result_version,
+                )?;
+                advance_codex_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.base_version,
+                    replay_version,
                 )?;
             }
             "delete" => {
@@ -338,7 +593,15 @@ pub fn revert_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("revert delete: missing before_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(before)?;
-                insert_codex_from_snap(conn, &snap)?;
+                let replay_version = next_codex_replay_version(row.base_version, "undo delete")?;
+                insert_codex_from_snap(conn, &snap, &row.entity_id, project_id, replay_version)?;
+                advance_codex_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.base_version,
+                    replay_version,
+                )?;
             }
             other => anyhow::bail!("revert_undo_journal: unsupported codex op_kind '{other}'"),
         },
@@ -360,19 +623,41 @@ pub fn revert_undo_journal_in_tx(
         },
         "foreshadow" => match row.op_kind.as_str() {
             "create" => {
-                // Guard on updated_at (= result_version): refuse to delete a
-                // row someone edited after the tracked create.
-                let deleted = conn.execute(
-                    "DELETE FROM foreshadows
-                     WHERE id = ?1 AND project_id = ?2 AND updated_at = ?3",
-                    params![row.entity_id, project_id, row.result_version],
-                )?;
+                let after = row
+                    .after_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("revert create: missing after_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(after)?;
+                let versioned = foreshadow_snapshot_has_version(&snap);
+                let deleted = if versioned {
+                    conn.execute(
+                        "DELETE FROM foreshadows
+                         WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+                        params![row.entity_id, project_id, row.result_version],
+                    )?
+                } else {
+                    // Explicit pre-v12 compatibility: old journals used the
+                    // row timestamp as their optimistic token.
+                    conn.execute(
+                        "DELETE FROM foreshadows
+                         WHERE id = ?1 AND project_id = ?2 AND updated_at = ?3",
+                        params![row.entity_id, project_id, row.result_version],
+                    )?
+                };
                 if deleted == 0 {
-                    anyhow::bail!(
-                        "revert create: foreshadow '{}' updated_at {} not found (edited or removed)",
-                        row.entity_id,
-                        row.result_version
-                    );
+                    if versioned {
+                        anyhow::bail!(
+                            "revert create: foreshadow '{}' version {} not found (edited or removed)",
+                            row.entity_id,
+                            row.result_version
+                        );
+                    } else {
+                        anyhow::bail!(
+                            "revert create: foreshadow '{}' updated_at {} not found (edited or removed)",
+                            row.entity_id,
+                            row.result_version
+                        );
+                    }
                 }
             }
             "update" => {
@@ -381,14 +666,44 @@ pub fn revert_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("revert update: missing before_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(before)?;
-                restore_foreshadow_fields(
+                if let Some(replay_version) = restore_foreshadow_fields(
                     conn,
                     &snap,
                     &row.entity_id,
                     project_id,
                     row.base_version,
                     row.result_version,
-                )?;
+                )? {
+                    advance_foreshadow_journal_state_token(
+                        conn,
+                        project_id,
+                        &row.entity_id,
+                        row.base_version,
+                        replay_version,
+                    )?;
+                }
+            }
+            "delete" => {
+                let before = row
+                    .before_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("revert delete: missing before_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(before)?;
+                if foreshadow_snapshot_has_version(&snap) {
+                    let replay_version = row.base_version.checked_add(1).ok_or_else(|| {
+                        anyhow::anyhow!("foreshadow version overflow during undo delete")
+                    })?;
+                    insert_foreshadow_from_snap(conn, &snap, Some(replay_version))?;
+                    advance_foreshadow_journal_state_token(
+                        conn,
+                        project_id,
+                        &row.entity_id,
+                        row.base_version,
+                        replay_version,
+                    )?;
+                } else {
+                    insert_foreshadow_from_snap(conn, &snap, None)?;
+                }
             }
             other => anyhow::bail!("revert_undo_journal: unsupported foreshadow op_kind '{other}'"),
         },
@@ -412,7 +727,15 @@ pub fn apply_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("apply create: missing after_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(after)?;
-                insert_codex_from_snap(conn, &snap)?;
+                let replay_version = next_codex_replay_version(row.result_version, "redo create")?;
+                insert_codex_from_snap(conn, &snap, &row.entity_id, project_id, replay_version)?;
+                advance_codex_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.result_version,
+                    replay_version,
+                )?;
             }
             "update" => {
                 let after = row
@@ -420,28 +743,36 @@ pub fn apply_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("apply update: missing after_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(after)?;
+                let replay_version = next_codex_replay_version(row.base_version, "redo update")?;
                 restore_codex_entry_fields(
                     conn,
                     &snap,
                     &row.entity_id,
                     project_id,
-                    row.result_version,
+                    replay_version,
                     row.base_version,
+                )?;
+                advance_codex_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.result_version,
+                    replay_version,
                 )?;
             }
             "delete" => {
                 // Redoing a delete removes the row that undo just restored.
-                // Guard on base_version, which is what insert_codex_from_snap
-                // (called during the matching undo) wrote back.
+                // The matching undo rewrites both sides of the delete journal
+                // to the fresh live token, so redo guards on result_version.
                 let deleted = conn.execute(
                     "DELETE FROM codex_entries WHERE id = ?1 AND project_id = ?2 AND version = ?3",
-                    params![row.entity_id, project_id, row.base_version],
+                    params![row.entity_id, project_id, row.result_version],
                 )?;
                 if deleted == 0 {
                     anyhow::bail!(
                         "apply delete: codex entry '{}' version {} not found",
                         row.entity_id,
-                        row.base_version
+                        row.result_version
                     );
                 }
             }
@@ -465,7 +796,21 @@ pub fn apply_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("apply create: missing after_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(after)?;
-                insert_foreshadow_from_snap(conn, &snap)?;
+                if foreshadow_snapshot_has_version(&snap) {
+                    let replay_version = row.result_version.checked_add(1).ok_or_else(|| {
+                        anyhow::anyhow!("foreshadow version overflow during redo create")
+                    })?;
+                    insert_foreshadow_from_snap(conn, &snap, Some(replay_version))?;
+                    advance_foreshadow_journal_state_token(
+                        conn,
+                        project_id,
+                        &row.entity_id,
+                        row.result_version,
+                        replay_version,
+                    )?;
+                } else {
+                    insert_foreshadow_from_snap(conn, &snap, None)?;
+                }
             }
             "update" => {
                 let after = row
@@ -473,14 +818,48 @@ pub fn apply_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("apply update: missing after_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(after)?;
-                restore_foreshadow_fields(
+                if let Some(replay_version) = restore_foreshadow_fields(
                     conn,
                     &snap,
                     &row.entity_id,
                     project_id,
                     row.result_version,
                     row.base_version,
-                )?;
+                )? {
+                    advance_foreshadow_journal_state_token(
+                        conn,
+                        project_id,
+                        &row.entity_id,
+                        row.result_version,
+                        replay_version,
+                    )?;
+                }
+            }
+            "delete" => {
+                let before = row
+                    .before_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("apply delete: missing before_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(before)?;
+                let deleted = if foreshadow_snapshot_has_version(&snap) {
+                    conn.execute(
+                        "DELETE FROM foreshadows
+                          WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+                        params![row.entity_id, project_id, row.result_version],
+                    )?
+                } else {
+                    conn.execute(
+                        "DELETE FROM foreshadows
+                          WHERE id = ?1 AND project_id = ?2 AND updated_at = ?3",
+                        params![row.entity_id, project_id, row.result_version],
+                    )?
+                };
+                anyhow::ensure!(
+                    deleted == 1,
+                    "apply delete: foreshadow '{}' token {} not found",
+                    row.entity_id,
+                    row.result_version
+                );
             }
             other => anyhow::bail!("apply_undo_journal: unsupported foreshadow op_kind '{other}'"),
         },
@@ -538,9 +917,17 @@ mod tests {
                 type TEXT NOT NULL,
                 name TEXT NOT NULL,
                 aliases TEXT,
+                excluded_aliases TEXT,
+                readings TEXT,
                 summary TEXT NOT NULL DEFAULT '',
                 content TEXT NOT NULL DEFAULT '{}',
                 parent_id TEXT,
+                icon TEXT,
+                tags_cache TEXT,
+                context_mode TEXT NOT NULL DEFAULT 'mentioned',
+                children_budget TEXT NOT NULL DEFAULT 'compact',
+                source_chat_message_id TEXT,
+                notes TEXT,
                 version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -638,7 +1025,9 @@ mod tests {
         let before_json = codex_update_before_snapshot(&conn, entry_id, &before_base).unwrap();
 
         conn.execute(
-            "UPDATE codex_entries SET name = 'New', summary = 'new sum', version = 2 WHERE id = ?1",
+            "UPDATE codex_entries
+             SET type = 'character', name = 'New', summary = 'new sum', version = 2
+             WHERE id = ?1",
             params![entry_id],
         )
         .unwrap();
@@ -682,14 +1071,16 @@ mod tests {
 
         revert_undo_journal_in_tx(&conn, "p1", "j1").unwrap();
 
-        let name: String = conn
+        let (entry_type, name, version): (String, String, i64) = conn
             .query_row(
-                "SELECT name FROM codex_entries WHERE id = ?1",
+                "SELECT type, name, version FROM codex_entries WHERE id = ?1",
                 params![entry_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
+        assert_eq!(entry_type, "lore");
         assert_eq!(name, "Old");
+        assert_eq!(version, 3, "undo must allocate a fresh OCC token");
 
         let spans = load_codex_authorship_spans(&conn, entry_id).unwrap();
         assert_eq!(spans.len(), 2);
@@ -699,14 +1090,16 @@ mod tests {
             .any(|s| s.model.as_deref() == Some(LANE_SUMMARY_MODEL) && s.to_pos == 8));
 
         apply_undo_journal_in_tx(&conn, "p1", "j1").unwrap();
-        let name: String = conn
+        let (entry_type, name, version): (String, String, i64) = conn
             .query_row(
-                "SELECT name FROM codex_entries WHERE id = ?1",
+                "SELECT type, name, version FROM codex_entries WHERE id = ?1",
                 params![entry_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
+        assert_eq!(entry_type, "character");
         assert_eq!(name, "New");
+        assert_eq!(version, 4, "redo must allocate another fresh OCC token");
         let spans = load_codex_authorship_spans(&conn, entry_id).unwrap();
         assert_eq!(spans.len(), 2);
         assert!(spans

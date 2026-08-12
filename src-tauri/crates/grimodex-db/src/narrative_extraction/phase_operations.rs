@@ -34,20 +34,15 @@ pub(crate) struct CodexPhaseCreatePayload {
     pub detail_overrides: Vec<PhaseDetailOverrideItem>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum PhaseSummaryPatch {
+    #[default]
     Leave,
     Set {
         #[serde(default)]
         value: Option<String>,
     },
-}
-
-impl Default for PhaseSummaryPatch {
-    fn default() -> Self {
-        Self::Leave
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -7,7 +7,12 @@ import {
 describe("documentPartition", () => {
   it("accepts a partition covering all blocks exactly once", () => {
     const blockIds = ["b1", "b2", "b3"];
-    const proposal = singleSegmentPartition("r1", "chapter.md", "Chapter", blockIds);
+    const proposal = singleSegmentPartition(
+      "r1",
+      "chapter.md",
+      "Chapter",
+      blockIds,
+    );
     const result = validateBoundaries(proposal, blockIds);
     expect(result.ok).toBe(true);
     expect(result.diagnostics).toHaveLength(0);
@@ -24,17 +29,19 @@ describe("documentPartition", () => {
     };
     const result = validateBoundaries(proposal, ["b1", "b2"]);
     expect(result.ok).toBe(false);
-    expect(result.diagnostics.some((d) => d.code === "partition-duplicate-block")).toBe(
-      true,
-    );
+    expect(
+      result.diagnostics.some((d) => d.code === "partition-duplicate-block"),
+    ).toBe(true);
   });
 
   it("rejects missing blocks", () => {
-    const proposal = singleSegmentPartition("r1", "chapter.md", "Chapter", ["b1"]);
+    const proposal = singleSegmentPartition("r1", "chapter.md", "Chapter", [
+      "b1",
+    ]);
     const result = validateBoundaries(proposal, ["b1", "b2"]);
     expect(result.ok).toBe(false);
-    expect(result.diagnostics.some((d) => d.code === "partition-missing-block")).toBe(
-      true,
-    );
+    expect(
+      result.diagnostics.some((d) => d.code === "partition-missing-block"),
+    ).toBe(true);
   });
 });

@@ -260,6 +260,7 @@ describe("captureForeshadowDeletion", () => {
       abandoned: true,
       secret: false,
       loadBearing: "critical",
+      version: 0,
       codexLinkDirtyAt: new Date(1_784_000_000_000),
       createdAt: new Date(1_783_000_000_000),
       updatedAt: new Date(1_783_000_000_001),

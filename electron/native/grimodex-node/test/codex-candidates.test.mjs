@@ -165,13 +165,26 @@ test("entity seed DTO は unknown field と lone surrogate を native 境界で�
 
 test("既知名を除外し、未知固有名詞を count/初出/context 付きで返す", async () => {
   await backend.openWorkspace(workspace);
-  await exec(
-    "INSERT INTO codex_entries (id, project_id, name, aliases) VALUES ('known-tokyo', 'default-project', '東京', '[]')",
-  );
-  await exec(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, content) VALUES ('scene-1', 'default-project', 'scene', '第一場', 'a0', ?)",
-    [proseDoc("東京から京都へ行った。京都では雨が降った。")],
-  );
+  await backend.agentCodexCreate({
+    requestId: "fixture:known-tokyo",
+    entryId: "known-tokyo",
+    projectId: "default-project",
+    sessionId: "fixture:codex-candidates",
+    surface: "manual",
+    typeSlug: "character",
+    name: "東京",
+    aliases: "[]",
+    authorshipSpans: [],
+  });
+  await backend.treeNodeCreate({
+    id: "scene-1",
+    projectId: "default-project",
+    parentId: null,
+    nodeType: "scene",
+    title: "第一場",
+    sortOrder: "a0",
+    content: proseDoc("東京から京都へ行った。京都では雨が降った。"),
+  });
 
   const candidates = JSON.parse(
     await backend.extractCodexCandidates("default-project", 2),
@@ -223,11 +236,14 @@ test("新 entity seed core から旧 CodexCandidate wire への投影は既存 c
 });
 
 test("非日本語 project は解析せず空配列を返す", async () => {
-  await exec(
-    "UPDATE projects SET language = 'en' WHERE id = 'default-project'",
-  );
+  await backend.scanStagingProjectCreate({
+    id: "english-project",
+    title: "English project",
+    language: "en",
+    createdAt: new Date().toISOString(),
+  });
   const candidates = JSON.parse(
-    await backend.extractCodexCandidates("default-project", undefined),
+    await backend.extractCodexCandidates("english-project", undefined),
   );
   assert.deepEqual(candidates, []);
 });

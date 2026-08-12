@@ -19,16 +19,61 @@ export const DEFAULT_ROLE_RULES: readonly {
   readonly role: GenericImportResourceRole;
   readonly priority: number;
 }[] = [
-  { id: "manuscript-dir", pattern: "**/manuscript/", role: "manuscript", priority: 10 },
-  { id: "chapters-dir", pattern: "chapters/", role: "manuscript", priority: 20 },
-  { id: "characters-dir", pattern: "**/characters/", role: "character-reference", priority: 10 },
-  { id: "codex-dir", pattern: "**/codex/", role: "character-reference", priority: 20 },
-  { id: "world-dir", pattern: "**/world/", role: "world-reference", priority: 10 },
-  { id: "glossary-dir", pattern: "**/glossary/", role: "glossary", priority: 10 },
-  { id: "timeline-dir", pattern: "**/timeline/", role: "timeline-reference", priority: 10 },
+  {
+    id: "manuscript-dir",
+    pattern: "**/manuscript/",
+    role: "manuscript",
+    priority: 10,
+  },
+  {
+    id: "chapters-dir",
+    pattern: "chapters/",
+    role: "manuscript",
+    priority: 20,
+  },
+  {
+    id: "characters-dir",
+    pattern: "**/characters/",
+    role: "character-reference",
+    priority: 10,
+  },
+  {
+    id: "codex-dir",
+    pattern: "**/codex/",
+    role: "character-reference",
+    priority: 20,
+  },
+  {
+    id: "world-dir",
+    pattern: "**/world/",
+    role: "world-reference",
+    priority: 10,
+  },
+  {
+    id: "glossary-dir",
+    pattern: "**/glossary/",
+    role: "glossary",
+    priority: 10,
+  },
+  {
+    id: "timeline-dir",
+    pattern: "**/timeline/",
+    role: "timeline-reference",
+    priority: 10,
+  },
   { id: "plot-dir", pattern: "**/plot/", role: "plot-reference", priority: 10 },
-  { id: "snippets-dir", pattern: "**/snippets/", role: "snippet-library", priority: 10 },
-  { id: "research-dir", pattern: "**/research/", role: "research-reference", priority: 10 },
+  {
+    id: "snippets-dir",
+    pattern: "**/snippets/",
+    role: "snippet-library",
+    priority: 10,
+  },
+  {
+    id: "research-dir",
+    pattern: "**/research/",
+    role: "research-reference",
+    priority: 10,
+  },
   { id: "assets-dir", pattern: "assets/", role: "attachment", priority: 40 },
   { id: "ignore-dot", pattern: "**/.", role: "ignore", priority: 100 },
 ];
@@ -37,15 +82,18 @@ export function normalizeRelativePath(path: string): string {
   return path.replace(/\\/gu, "/").replace(/^\/+/u, "");
 }
 
-export function matchesRolePattern(relativePath: string, pattern: string): boolean {
-  const normalizedPath = normalizeRelativePath(relativePath).toLocaleLowerCase("en-US");
+export function matchesRolePattern(
+  relativePath: string,
+  pattern: string,
+): boolean {
+  const normalizedPath =
+    normalizeRelativePath(relativePath).toLocaleLowerCase("en-US");
   const normalizedPattern = pattern.toLocaleLowerCase("en-US");
 
   if (normalizedPattern.startsWith("**/")) {
     const suffix = normalizedPattern.slice(3);
     return (
-      normalizedPath.includes(`/${suffix}`) ||
-      normalizedPath.startsWith(suffix)
+      normalizedPath.includes(`/${suffix}`) || normalizedPath.startsWith(suffix)
     );
   }
 
@@ -58,7 +106,11 @@ export function matchRoleRules(input: RoleRuleInput): readonly RoleRuleMatch[] {
 
   for (const rule of DEFAULT_ROLE_RULES) {
     if (matchesRolePattern(input.relativePath, rule.pattern)) {
-      matches.push({ ruleId: rule.id, role: rule.role, priority: rule.priority });
+      matches.push({
+        ruleId: rule.id,
+        role: rule.role,
+        priority: rule.priority,
+      });
     }
   }
 
@@ -68,7 +120,9 @@ export function matchRoleRules(input: RoleRuleInput): readonly RoleRuleMatch[] {
     );
     if (
       headers.includes("name") &&
-      (headers.includes("aliases") || headers.includes("role") || headers.includes("type"))
+      (headers.includes("aliases") ||
+        headers.includes("role") ||
+        headers.includes("type"))
     ) {
       matches.push({
         ruleId: "header-character-table",

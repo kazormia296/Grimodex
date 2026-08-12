@@ -18,6 +18,7 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getSceneVersion } from "@/features/tree/api";
+import { refreshForeshadowPayoffMarkVersions } from "@/features/foreshadow/saveAnchors";
 import { extractPlacedBeatPreview } from "@/features/editor/beat/placedBeatPreview";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
@@ -713,6 +714,23 @@ export function EditorPane({
       } finally {
         setIsSaving(false);
       }
+      const persistedForeshadows = result.persistedSceneBody?.foreshadowRows;
+      const currentEditor = editorRef.current;
+      if (
+        persistedForeshadows?.length &&
+        currentEditor &&
+        !currentEditor.isDestroyed
+      ) {
+        mutationGate.runProgrammatic(() => {
+          runProgrammaticProjectionUpdate(() => {
+            refreshForeshadowPayoffMarkVersions((apply) => {
+              const tr = currentEditor.state.tr;
+              apply(tr);
+              if (tr.steps.length > 0) currentEditor.view.dispatch(tr);
+            }, persistedForeshadows);
+          });
+        });
+      }
       markStart("editor.save.durableComplete");
       let committed: boolean;
       try {
@@ -772,7 +790,13 @@ export function EditorPane({
         });
       }
       return { persisted: true, committed };
-    }, [coreSave, mutationGate, setIsDirtyRef, setIsSaving]);
+    }, [
+      coreSave,
+      mutationGate,
+      runProgrammaticProjectionUpdate,
+      setIsDirtyRef,
+      setIsSaving,
+    ]);
   const saveFn = useCallback(async () => {
     const saveKey = activeLoadedDocumentKey ?? loadedDocumentKeyRef.current;
     if (!saveKey) {

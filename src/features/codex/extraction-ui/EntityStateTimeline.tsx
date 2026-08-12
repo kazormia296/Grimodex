@@ -14,7 +14,10 @@ export interface EntityStateTimelineEntity {
 export interface EntityStateTimelineProps {
   readonly entities: readonly EntityStateTimelineEntity[];
   readonly selectedProposalId?: string | null;
-  readonly onSelectProposal?: (proposalId: string, kind: "base" | "phase") => void;
+  readonly onSelectProposal?: (
+    proposalId: string,
+    kind: "base" | "phase",
+  ) => void;
 }
 
 /**
@@ -70,7 +73,9 @@ export function EntityStateTimeline({
                     {" "}
                     · {proposal.facetKey} ·{" "}
                     {formatProjectedDetailValue(proposal.existingValue)} →{" "}
-                    {formatProjectedDetailValue(proposal.proposal.payload.value)}
+                    {formatProjectedDetailValue(
+                      proposal.proposal.payload.value,
+                    )}
                   </span>
                 </button>
               );

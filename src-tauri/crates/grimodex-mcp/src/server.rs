@@ -280,7 +280,7 @@ impl GrimodexServer {
 
     /// List unresolved foreshadowing items (excludes secret, abandoned, payoff-confirmed).
     #[tool(
-        description = "List open (unresolved) foreshadowing items: id, title, intent, loadBearing, setupCount. Sorted by loadBearing priority then updatedAt."
+        description = "List open (unresolved) foreshadowing items: id, title, intent, loadBearing, setupCount, and version. Pass version unchanged as base_version to update_foreshadow. Sorted by loadBearing priority then updatedAt."
     )]
     async fn list_open_foreshadows(&self) -> Result<CallToolResult, ErrorData> {
         tools::foreshadow::list_open_foreshadows(self).await
@@ -288,7 +288,7 @@ impl GrimodexServer {
 
     /// Get full detail for a single foreshadowing item including setups and payoff scene.
     #[tool(
-        description = "Get foreshadow detail: title, intent, notes, loadBearing, payoff state, payoff scene, and setup list with scene titles."
+        description = "Get foreshadow detail: title, intent, notes, loadBearing, payoff state, payoff scene, setup list with scene titles, and version. Pass version unchanged as base_version to update_foreshadow."
     )]
     async fn get_foreshadow_detail(
         &self,
@@ -299,7 +299,7 @@ impl GrimodexServer {
 
     /// Create a new foreshadowing item. Disabled in readonly mode. knowledgeWrite gate.
     #[tool(
-        description = "Create a new foreshadowing (plant/payoff) item: title, optional intent, notes, load_bearing ('critical'|'supporting'|'optional'), and secret flag (defaults true). Disabled in readonly mode."
+        description = "Create a new foreshadowing (plant/payoff) item: title, optional intent, notes, load_bearing ('critical'|'supporting'|'optional'), and secret flag (defaults true). Returns the initial version for the next update. Disabled in readonly mode."
     )]
     async fn create_foreshadow(
         &self,
@@ -310,7 +310,7 @@ impl GrimodexServer {
 
     /// Update fields of an existing foreshadowing item. Only provided fields change. Disabled in readonly mode. knowledgeWrite gate.
     #[tool(
-        description = "Update an existing foreshadowing item (title, intent, notes, load_bearing, payoff_confirmed, abandoned, secret). Only provided fields change. Scoped to the active project. Disabled in readonly mode."
+        description = "Update an existing foreshadowing item (title, intent, notes, load_bearing, payoff_confirmed, abandoned, secret). base_version is required and must equal the version returned by create/list/detail/the previous update; stale versions fail without mutation. Returns the incremented version. Scoped to the active project. Disabled in readonly mode."
     )]
     async fn update_foreshadow(
         &self,

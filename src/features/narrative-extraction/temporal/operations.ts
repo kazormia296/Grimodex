@@ -37,7 +37,11 @@ export const TEMPORAL_NODE_ENSURE_KIND = "temporal.node.ensure" as const;
 
 export interface TemporalNodeEnsureOperationPayloadV1 {
   readonly nodeId: TemporalNodeId;
-  readonly timelineKind?: "primary" | "alternate" | "embedded-fiction" | "hypothetical";
+  readonly timelineKind?:
+    | "primary"
+    | "alternate"
+    | "embedded-fiction"
+    | "hypothetical";
   readonly timelineKey?: string | null;
   readonly subject: TemporalNodeSubject;
   readonly shape?: "point" | "interval" | "unknown";
@@ -50,7 +54,8 @@ export type TemporalNodeEnsureOperationV1 = DomainOperationBase<
 
 // ─── temporal.constraint.create ─────────────────────────────────────────────
 
-export const TEMPORAL_CONSTRAINT_CREATE_KIND = "temporal.constraint.create" as const;
+export const TEMPORAL_CONSTRAINT_CREATE_KIND =
+  "temporal.constraint.create" as const;
 
 interface TemporalConstraintOperationCommon {
   readonly constraintId?: string;
@@ -60,8 +65,7 @@ interface TemporalConstraintOperationCommon {
   readonly fingerprint?: string;
 }
 
-export interface TemporalAbsoluteWindowConstraintOperationPayloadV1
-  extends TemporalConstraintOperationCommon {
+export interface TemporalAbsoluteWindowConstraintOperationPayloadV1 extends TemporalConstraintOperationCommon {
   readonly kind: "absolute-window";
   readonly nodeId: TemporalNodeId;
   readonly endpoint: "start" | "end" | "point";
@@ -69,11 +73,16 @@ export interface TemporalAbsoluteWindowConstraintOperationPayloadV1
   readonly resolved?: unknown;
 }
 
-export interface TemporalRelativeOffsetConstraintOperationPayloadV1
-  extends TemporalConstraintOperationCommon {
+export interface TemporalRelativeOffsetConstraintOperationPayloadV1 extends TemporalConstraintOperationCommon {
   readonly kind: "relative-offset";
-  readonly left: { readonly nodeId: TemporalNodeId; readonly endpoint: "start" | "end" | "point" };
-  readonly right: { readonly nodeId: TemporalNodeId; readonly endpoint: "start" | "end" | "point" };
+  readonly left: {
+    readonly nodeId: TemporalNodeId;
+    readonly endpoint: "start" | "end" | "point";
+  };
+  readonly right: {
+    readonly nodeId: TemporalNodeId;
+    readonly endpoint: "start" | "end" | "point";
+  };
   readonly offset: {
     readonly min: number;
     readonly max: number;
@@ -82,23 +91,24 @@ export interface TemporalRelativeOffsetConstraintOperationPayloadV1
   };
 }
 
-export interface TemporalIntervalRelationConstraintOperationPayloadV1
-  extends TemporalConstraintOperationCommon {
+export interface TemporalIntervalRelationConstraintOperationPayloadV1 extends TemporalConstraintOperationCommon {
   readonly kind: "interval-relation";
   readonly leftNodeId: TemporalNodeId;
   readonly relation: TemporalIntervalRelation;
   readonly rightNodeId: TemporalNodeId;
 }
 
-export interface TemporalDurationConstraintOperationPayloadV1
-  extends TemporalConstraintOperationCommon {
+export interface TemporalDurationConstraintOperationPayloadV1 extends TemporalConstraintOperationCommon {
   readonly kind: "duration";
   readonly nodeId: TemporalNodeId;
-  readonly duration: { readonly min: number; readonly max: number; readonly unit: TemporalOffsetUnit };
+  readonly duration: {
+    readonly min: number;
+    readonly max: number;
+    readonly unit: TemporalOffsetUnit;
+  };
 }
 
-export interface TemporalSymbolicConstraintOperationPayloadV1
-  extends TemporalConstraintOperationCommon {
+export interface TemporalSymbolicConstraintOperationPayloadV1 extends TemporalConstraintOperationCommon {
   readonly kind: "symbolic";
   readonly nodeId: TemporalNodeId;
   readonly relation:
@@ -126,8 +136,10 @@ export type TemporalConstraintCreateOperationV1 = DomainOperationBase<
 
 // ─── temporal.scene.metadata.patch / temporal.event.metadata.patch ─────────
 
-export const TEMPORAL_SCENE_METADATA_PATCH_KIND = "temporal.scene.metadata.patch" as const;
-export const TEMPORAL_EVENT_METADATA_PATCH_KIND = "temporal.event.metadata.patch" as const;
+export const TEMPORAL_SCENE_METADATA_PATCH_KIND =
+  "temporal.scene.metadata.patch" as const;
+export const TEMPORAL_EVENT_METADATA_PATCH_KIND =
+  "temporal.event.metadata.patch" as const;
 
 export type TemporalChronicleGranularity = "none" | "day" | "time";
 
@@ -142,8 +154,7 @@ interface TemporalChronicleMetadataPatchOperationPayloadCommon {
   readonly precision?: "exact" | "approx" | "unknown";
 }
 
-export interface TemporalSceneMetadataPatchOperationPayloadV1
-  extends TemporalChronicleMetadataPatchOperationPayloadCommon {
+export interface TemporalSceneMetadataPatchOperationPayloadV1 extends TemporalChronicleMetadataPatchOperationPayloadCommon {
   readonly sceneId: string;
 }
 
@@ -152,8 +163,7 @@ export type TemporalSceneMetadataPatchOperationV1 = DomainOperationBase<
   TemporalSceneMetadataPatchOperationPayloadV1
 >;
 
-export interface TemporalEventMetadataPatchOperationPayloadV1
-  extends TemporalChronicleMetadataPatchOperationPayloadCommon {
+export interface TemporalEventMetadataPatchOperationPayloadV1 extends TemporalChronicleMetadataPatchOperationPayloadCommon {
   readonly eventId: string;
 }
 
@@ -181,7 +191,8 @@ export type TemporalStoryOrderMaterializeOperationV1 = DomainOperationBase<
 
 // ─── temporal.projection.record ─────────────────────────────────────────────
 
-export const TEMPORAL_PROJECTION_RECORD_KIND = "temporal.projection.record" as const;
+export const TEMPORAL_PROJECTION_RECORD_KIND =
+  "temporal.projection.record" as const;
 
 export type TemporalProjectionTargetKind =
   | "scene-time"

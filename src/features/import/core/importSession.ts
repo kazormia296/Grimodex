@@ -28,7 +28,9 @@ export interface ImportSession {
   readonly diagnostics: readonly ImportDiagnostic[];
 }
 
-export function createImportSession(now = new Date().toISOString()): ImportSession {
+export function createImportSession(
+  now = new Date().toISOString(),
+): ImportSession {
   const id = createImportSessionId(crypto.randomUUID());
   return {
     id,

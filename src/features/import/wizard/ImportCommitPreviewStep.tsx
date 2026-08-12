@@ -8,7 +8,10 @@ interface Props {
 
 export function ImportCommitPreviewStep({ draft, target }: Props) {
   return (
-    <section className="flex flex-col gap-2" data-testid="import-wizard-commit-preview-step">
+    <section
+      className="flex flex-col gap-2"
+      data-testid="import-wizard-commit-preview-step"
+    >
       <p className="text-xs text-muted-foreground">
         コミットはプレビューのみ — 実際の書き込みは行いません。
       </p>
@@ -22,7 +25,8 @@ export function ImportCommitPreviewStep({ draft, target }: Props) {
       )}
       {draft && (
         <p className="text-xs text-muted-foreground">
-          {draft.documents.length} ドキュメント / {draft.structure.codexEntries.length} codex
+          {draft.documents.length} ドキュメント /{" "}
+          {draft.structure.codexEntries.length} codex
         </p>
       )}
     </section>

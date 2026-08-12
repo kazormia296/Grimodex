@@ -68,7 +68,8 @@ function parseResult(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const row = parsed as Record<string, unknown>;
   if (row.clusterRef !== input.clusterRef) return null;
   const bridgeKind = row.bridgeKind;

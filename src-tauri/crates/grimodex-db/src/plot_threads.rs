@@ -45,11 +45,75 @@ fn one(rows: Vec<serde_json::Map<String, Value>>) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// 行 id の所属 project_id を引く。table は静的リテラルのみ（インジェクション無し）。
-fn project_of(db: &Database, table: &str, id: &str) -> anyhow::Result<Option<String>> {
-    db.with_conn(|conn| project_of_conn(conn, table, id))
+/// Preserve the distinction required by PATCH payloads:
+///
+/// - an omitted field leaves the outer `Option` as `None`;
+/// - an explicit JSON `null` becomes `Some(None)`;
+/// - a concrete value becomes `Some(Some(value))`.
+///
+/// Serde's built-in `Option<Option<T>>` handling otherwise maps both omission
+/// and `null` to the outer `None`, which turns an Electron clear into a no-op.
+fn deserialize_present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 
+fn delete_versioned_row(
+    db: &Database,
+    table: &str,
+    conflict_marker: &str,
+    id: String,
+    base_version: i64,
+) -> anyhow::Result<()> {
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            let delete_sql = format!("DELETE FROM {table} WHERE id = ? AND version = ?");
+            Database::execute_with_conn(
+                conn,
+                &delete_sql,
+                &[
+                    Value::String(id.clone()),
+                    Value::Number(base_version.into()),
+                ],
+                "run",
+            )?;
+            if conn.changes() == 1 {
+                return Ok(());
+            }
+            let select_sql = format!("SELECT version FROM {table} WHERE id = ?");
+            let rows = Database::execute_with_conn(
+                conn,
+                &select_sql,
+                &[Value::String(id.clone())],
+                "get",
+            )?;
+            let current = rows
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("{table} row not found: {id}"))?;
+            let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
+            anyhow::bail!(
+                "{conflict_marker}: expected {base_version}, found {current_version}"
+            )
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    })
+}
+
+/// 行 id の所属 project_id を引く。table は静的リテラルのみ（インジェクション無し）。
 fn project_of_conn(conn: &Connection, table: &str, id: &str) -> anyhow::Result<Option<String>> {
     let sql = format!("SELECT project_id FROM {table} WHERE id = ?");
     let rows = Database::execute_with_conn(conn, &sql, &[Value::String(id.to_string())], "get")?;
@@ -80,11 +144,12 @@ pub struct PlotThreadCreatePayload {
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadPatch {
     name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     color: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     description: Option<Option<String>>,
     sort_order: Option<String>,
-    #[serde(default)]
-    base_version: Option<i64>,
+    base_version: i64,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -106,8 +171,11 @@ pub struct PlotThreadLinkPatch {
     thread_id: Option<String>,
     node_id: Option<String>,
     phase_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     note: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
     sort_order: Option<Option<String>>,
+    base_version: i64,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -129,7 +197,7 @@ pub struct PlotThreadBranchPatch {
     from_thread_id: Option<String>,
     to_thread_id: Option<String>,
     at_node_id: Option<String>,
-    base_version: Option<i64>,
+    base_version: i64,
 }
 
 /// Full persisted row used by history restore. Timestamps are intentionally
@@ -148,6 +216,8 @@ pub struct PlotThreadSnapshotRow {
     end_node_id: Option<String>,
     created_at: String,
     updated_at: String,
+    #[serde(default)]
+    version: i64,
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -159,6 +229,10 @@ pub struct PlotThreadLinkSnapshotRow {
     phase_type: String,
     note: Option<String>,
     sort_order: Option<String>,
+    #[serde(default)]
+    semantic_key: Option<String>,
+    #[serde(default)]
+    version: i64,
     created_at: String,
     updated_at: String,
 }
@@ -172,6 +246,10 @@ pub struct PlotThreadBranchSnapshotRow {
     to_thread_id: String,
     at_node_id: String,
     kind: String,
+    #[serde(default)]
+    semantic_key: Option<String>,
+    #[serde(default)]
+    version: i64,
     created_at: String,
     updated_at: String,
 }
@@ -192,14 +270,20 @@ pub struct PlotThreadRestoreSnapshotPayload {
     branches: Vec<PlotThreadBranchSnapshotRow>,
 }
 
-/// Marker deletion is a compound mutation because branches are anchored to a
-/// marker semantically even though SQLite has no FK from branch to link.
+/// Exact history deletion for either a whole thread aggregate or one marker
+/// plus its semantically dependent branches. Exactly one of `thread` and
+/// `link` must be present.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadDeleteSnapshotPayload {
     request_id: String,
     project_id: String,
-    link: PlotThreadLinkSnapshotRow,
+    #[serde(default)]
+    thread: Option<PlotThreadSnapshotRow>,
+    #[serde(default)]
+    link: Option<PlotThreadLinkSnapshotRow>,
+    #[serde(default)]
+    links: Vec<PlotThreadLinkSnapshotRow>,
     #[serde(default)]
     branches: Vec<PlotThreadBranchSnapshotRow>,
 }
@@ -241,6 +325,49 @@ fn nullable_string_value(value: &Option<String>) -> Value {
     value.clone().map(Value::String).unwrap_or(Value::Null)
 }
 
+fn link_natural_key(row: &PlotThreadLinkSnapshotRow) -> String {
+    format!("{}|{}|{}", row.thread_id, row.node_id, row.phase_type)
+}
+
+fn branch_natural_key(row: &PlotThreadBranchSnapshotRow) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        row.from_thread_id, row.to_thread_id, row.at_node_id, row.kind
+    )
+}
+
+fn effective_semantic_key(explicit: &Option<String>, natural: String) -> String {
+    explicit
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or(natural)
+}
+
+fn link_semantic_key(row: &PlotThreadLinkSnapshotRow) -> String {
+    effective_semantic_key(&row.semantic_key, link_natural_key(row))
+}
+
+fn branch_semantic_key(row: &PlotThreadBranchSnapshotRow) -> String {
+    effective_semantic_key(&row.semantic_key, branch_natural_key(row))
+}
+
+fn validate_snapshot_semantic_key(
+    explicit: &Option<String>,
+    natural: &str,
+    label: &str,
+) -> anyhow::Result<()> {
+    let Some(explicit) = explicit.as_deref().filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let valid = explicit == natural
+        || explicit
+            .strip_prefix(natural)
+            .is_some_and(|suffix| suffix.starts_with("#dup:") && suffix.len() > 5);
+    anyhow::ensure!(valid, "{label} semanticKey does not match its topology");
+    Ok(())
+}
+
 fn row_string<'a>(row: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     row.get(key).and_then(Value::as_str)
 }
@@ -256,6 +383,7 @@ fn thread_row_matches(row: &Map<String, Value>, expected: &PlotThreadSnapshotRow
         && row.get("end_node_id") == Some(&nullable_string_value(&expected.end_node_id))
         && row_string(row, "created_at") == Some(expected.created_at.as_str())
         && row_string(row, "updated_at") == Some(expected.updated_at.as_str())
+        && row.get("version").and_then(Value::as_i64) == Some(expected.version)
 }
 
 fn link_row_matches(row: &Map<String, Value>, expected: &PlotThreadLinkSnapshotRow) -> bool {
@@ -265,6 +393,8 @@ fn link_row_matches(row: &Map<String, Value>, expected: &PlotThreadLinkSnapshotR
         && row_string(row, "phase_type") == Some(expected.phase_type.as_str())
         && row.get("note") == Some(&nullable_string_value(&expected.note))
         && row.get("sort_order") == Some(&nullable_string_value(&expected.sort_order))
+        && row_string(row, "semantic_key") == Some(link_semantic_key(expected).as_str())
+        && row.get("version").and_then(Value::as_i64) == Some(expected.version)
         && row_string(row, "created_at") == Some(expected.created_at.as_str())
         && row_string(row, "updated_at") == Some(expected.updated_at.as_str())
 }
@@ -276,6 +406,8 @@ fn branch_row_matches(row: &Map<String, Value>, expected: &PlotThreadBranchSnaps
         && row_string(row, "to_thread_id") == Some(expected.to_thread_id.as_str())
         && row_string(row, "at_node_id") == Some(expected.at_node_id.as_str())
         && row_string(row, "kind") == Some(expected.kind.as_str())
+        && row_string(row, "semantic_key") == Some(branch_semantic_key(expected).as_str())
+        && row.get("version").and_then(Value::as_i64) == Some(expected.version)
         && row_string(row, "created_at") == Some(expected.created_at.as_str())
         && row_string(row, "updated_at") == Some(expected.updated_at.as_str())
 }
@@ -306,6 +438,28 @@ fn require_project_member(
     Ok(())
 }
 
+fn require_project_scene(
+    conn: &Connection,
+    id: &str,
+    project_id: &str,
+    label: &str,
+) -> anyhow::Result<()> {
+    let rows = Database::execute_with_conn(
+        conn,
+        "SELECT id FROM tree_nodes
+          WHERE id = ? AND project_id = ? AND node_type = 'scene'",
+        &[
+            Value::String(id.to_string()),
+            Value::String(project_id.to_string()),
+        ],
+        "get",
+    )?;
+    if rows.is_empty() {
+        anyhow::bail!("{label} must be a scene in the snapshot project");
+    }
+    Ok(())
+}
+
 fn validate_restore_snapshot_shape(
     payload: &PlotThreadRestoreSnapshotPayload,
 ) -> anyhow::Result<()> {
@@ -319,6 +473,10 @@ fn validate_restore_snapshot_shape(
         anyhow::bail!("plot restore snapshot must contain at least one row");
     }
     if let Some(thread) = &payload.thread {
+        anyhow::ensure!(
+            thread.version >= 0,
+            "plot restore thread version must be non-negative"
+        );
         for (label, value) in [
             ("thread.id", thread.id.as_str()),
             ("thread.projectId", thread.project_id.as_str()),
@@ -342,6 +500,15 @@ fn validate_restore_snapshot_shape(
     }
     let mut ids = HashSet::new();
     for link in &payload.links {
+        anyhow::ensure!(
+            link.version >= 0,
+            "plot restore link version must be non-negative"
+        );
+        validate_snapshot_semantic_key(
+            &link.semantic_key,
+            &link_natural_key(link),
+            "plot restore link",
+        )?;
         for (label, value) in [
             ("link.id", link.id.as_str()),
             ("link.threadId", link.thread_id.as_str()),
@@ -359,6 +526,15 @@ fn validate_restore_snapshot_shape(
         }
     }
     for branch in &payload.branches {
+        anyhow::ensure!(
+            branch.version >= 0,
+            "plot restore branch version must be non-negative"
+        );
+        validate_snapshot_semantic_key(
+            &branch.semantic_key,
+            &branch_natural_key(branch),
+            "plot restore branch",
+        )?;
         for (label, value) in [
             ("branch.id", branch.id.as_str()),
             ("branch.projectId", branch.project_id.as_str()),
@@ -393,9 +569,8 @@ fn validate_restore_snapshot_membership(
             .into_iter()
             .flatten()
         {
-            require_project_member(
+            require_project_scene(
                 conn,
-                "tree_nodes",
                 node_id,
                 &payload.project_id,
                 "plot restore thread boundary scene",
@@ -411,9 +586,8 @@ fn validate_restore_snapshot_membership(
             &payload.project_id,
             "plot restore link thread",
         )?;
-        require_project_member(
+        require_project_scene(
             conn,
-            "tree_nodes",
             &link.node_id,
             &payload.project_id,
             "plot restore link scene",
@@ -441,9 +615,8 @@ fn validate_restore_snapshot_membership(
             &payload.project_id,
             "plot restore branch target thread",
         )?;
-        require_project_member(
+        require_project_scene(
             conn,
-            "tree_nodes",
             &branch.at_node_id,
             &payload.project_id,
             "plot restore branch scene",
@@ -463,8 +636,8 @@ fn insert_or_validate_thread(conn: &Connection, row: &PlotThreadSnapshotRow) -> 
         conn,
         "INSERT INTO plot_threads
              (id, project_id, name, color, description, sort_order,
-              start_node_id, end_node_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              start_node_id, end_node_id, created_at, updated_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             Value::String(row.id.clone()),
             Value::String(row.project_id.clone()),
@@ -476,6 +649,7 @@ fn insert_or_validate_thread(conn: &Connection, row: &PlotThreadSnapshotRow) -> 
             nullable_string_value(&row.end_node_id),
             Value::String(row.created_at.clone()),
             Value::String(row.updated_at.clone()),
+            Value::Number(row.version.into()),
         ],
         "run",
     )?;
@@ -495,8 +669,9 @@ fn insert_or_validate_link(
     Database::execute_with_conn(
         conn,
         "INSERT INTO plot_thread_scene_links
-             (id, thread_id, node_id, phase_type, note, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, thread_id, node_id, phase_type, note, sort_order,
+              semantic_key, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             Value::String(row.id.clone()),
             Value::String(row.thread_id.clone()),
@@ -504,6 +679,8 @@ fn insert_or_validate_link(
             Value::String(row.phase_type.clone()),
             nullable_string_value(&row.note),
             nullable_string_value(&row.sort_order),
+            Value::String(link_semantic_key(row)),
+            Value::Number(row.version.into()),
             Value::String(row.created_at.clone()),
             Value::String(row.updated_at.clone()),
         ],
@@ -526,8 +703,8 @@ fn insert_or_validate_branch(
         conn,
         "INSERT INTO plot_thread_branches
              (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
-              created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              semantic_key, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             Value::String(row.id.clone()),
             Value::String(row.project_id.clone()),
@@ -535,6 +712,8 @@ fn insert_or_validate_branch(
             Value::String(row.to_thread_id.clone()),
             Value::String(row.at_node_id.clone()),
             Value::String(row.kind.clone()),
+            Value::String(branch_semantic_key(row)),
+            Value::Number(row.version.into()),
             Value::String(row.created_at.clone()),
             Value::String(row.updated_at.clone()),
         ],
@@ -553,6 +732,30 @@ fn restore_snapshot_response(
         "links": payload.links,
         "branches": payload.branches,
     })
+}
+
+fn advance_restore_snapshot_versions(
+    payload: &mut PlotThreadRestoreSnapshotPayload,
+) -> anyhow::Result<()> {
+    if let Some(thread) = payload.thread.as_mut() {
+        thread.version = thread
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("plot thread restore version overflow"))?;
+    }
+    for link in &mut payload.links {
+        link.version = link
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("plot link restore version overflow"))?;
+    }
+    for branch in &mut payload.branches {
+        branch.version = branch
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("plot branch restore version overflow"))?;
+    }
+    Ok(())
 }
 
 fn load_exact_restore_snapshot(
@@ -672,6 +875,7 @@ pub fn create(db: &Database, p: PlotThreadCreatePayload) -> anyhow::Result<Value
 }
 
 pub fn update(db: &Database, id: String, patch: PlotThreadPatch) -> anyhow::Result<Value> {
+    let base_version = patch.base_version;
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
     if let Some(name) = patch.name {
@@ -691,43 +895,60 @@ pub fn update(db: &Database, id: String, patch: PlotThreadPatch) -> anyhow::Resu
         params.push(Value::String(sort_order));
     }
     if sets.is_empty() {
-        return Ok(one(db.execute(
+        let rows = db.execute(
             "SELECT * FROM plot_threads WHERE id = ?",
-            &[Value::String(id)],
+            &[Value::String(id.clone())],
             "get",
-        )?));
+        )?;
+        let current = rows
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("plot thread not found: {id}"))?;
+        let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
+        anyhow::ensure!(
+            current_version == base_version,
+            "PLOT_THREAD_VERSION_MISMATCH: expected {base_version}, found {current_version}"
+        );
+        return Ok(one(rows));
     }
     sets.push("version = version + 1");
     sets.push("updated_at = datetime('now')");
-    let sql = format!("UPDATE plot_threads SET {} WHERE id = ?", sets.join(", "));
+    let sql = format!(
+        "UPDATE plot_threads SET {} WHERE id = ? AND version = ?",
+        sets.join(", ")
+    );
     params.push(Value::String(id.clone()));
-    if let Some(base_version) = patch.base_version {
-        let full_sql = format!("{sql} AND version = ?");
-        params.push(Value::Number(base_version.into()));
-        let updated = db.with_conn(|conn| {
-            Database::execute_with_conn(conn, &full_sql, &params, "run")?;
-            Ok(conn.changes())
-        })?;
-        if updated == 0 {
-            anyhow::bail!("plot thread '{id}' version conflict during update");
+    params.push(Value::Number(base_version.into()));
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Value> {
+            Database::execute_with_conn(conn, &sql, &params, "run")?;
+            anyhow::ensure!(
+                conn.changes() == 1,
+                "PLOT_THREAD_VERSION_MISMATCH: expected base version {base_version}"
+            );
+            Ok(one(Database::execute_with_conn(
+                conn,
+                "SELECT * FROM plot_threads WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?))
+        })();
+        match result {
+            Ok(value) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
         }
-    } else {
-        db.execute(&sql, &params, "run")?;
-    }
-    Ok(one(db.execute(
-        "SELECT * FROM plot_threads WHERE id = ?",
-        &[Value::String(id)],
-        "get",
-    )?))
+    })
 }
 
-pub fn delete(db: &Database, id: String) -> anyhow::Result<()> {
-    db.execute(
-        "DELETE FROM plot_threads WHERE id = ?",
-        &[Value::String(id)],
-        "run",
-    )?;
-    Ok(())
+pub fn delete(db: &Database, id: String, base_version: i64) -> anyhow::Result<()> {
+    delete_versioned_row(db, "plot_threads", "PLOT_THREAD_VERSION_MISMATCH", id, base_version)
 }
 
 pub fn list(db: &Database, project_id: String) -> anyhow::Result<Vec<Value>> {
@@ -763,20 +984,9 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
             // XPROJ is evaluated after the durable replay lookup. An exact
             // replay can therefore return its original response even when a
             // later cascade removed the thread or scene.
-            let thread_project = project_of_conn(conn, "plot_threads", &thread_id)?;
-            let node_project = project_of_conn(conn, "tree_nodes", &node_id)?;
-            let project_id = match (thread_project, node_project) {
-                (Some(thread_project), Some(node_project))
-                    if thread_project == node_project =>
-                {
-                    thread_project
-                }
-                _ => {
-                    anyhow::bail!(
-                        "plot thread link must reference a thread and scene in the same project"
-                    )
-                }
-            };
+            let project_id = project_of_conn(conn, "plot_threads", &thread_id)?
+                .ok_or_else(|| anyhow::anyhow!("plot thread link thread does not exist"))?;
+            require_project_scene(conn, &node_id, &project_id, "plot thread link scene")?;
             let semantic_key = format!("{thread_id}|{node_id}|{phase_type}");
             Database::execute_with_conn(
                 conn,
@@ -847,87 +1057,151 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
 }
 
 pub fn link_update(db: &Database, id: String, patch: PlotThreadLinkPatch) -> anyhow::Result<Value> {
+    let base_version = patch.base_version;
     if let Some(ref pt) = patch.phase_type {
         validate_phase(pt)?;
     }
-    let mut sets: Vec<&str> = Vec::new();
-    let mut params: Vec<Value> = Vec::new();
-    // 別スレッドへ移動する場合は XPROJ ガード: 移動先スレッドと（変更後の）シーンが
-    // 同一 project であることを強制する。node_id が同 patch に無ければ既存値を引く。
-    if let Some(ref new_thread_id) = patch.thread_id {
-        let effective_node_id: Option<String> = match &patch.node_id {
-            Some(n) => Some(n.clone()),
-            None => db
-                .execute(
-                    "SELECT node_id FROM plot_thread_scene_links WHERE id = ?",
-                    &[Value::String(id.clone())],
-                    "get",
-                )?
+    if patch.thread_id.is_none()
+        && patch.node_id.is_none()
+        && patch.phase_type.is_none()
+        && patch.note.is_none()
+        && patch.sort_order.is_none()
+    {
+        let rows = db.execute(
+            "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+            &[Value::String(id.clone())],
+            "get",
+        )?;
+        let current = rows
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("plot thread link not found: {id}"))?;
+        let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
+        anyhow::ensure!(
+            current_version == base_version,
+            "PLOT_THREAD_LINK_VERSION_MISMATCH: expected {base_version}, found {current_version}"
+        );
+        return Ok(one(rows));
+    }
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Value> {
+            let current_rows = Database::execute_with_conn(
+                conn,
+                "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?;
+            let current = current_rows
                 .first()
-                .and_then(|r| r.get("node_id"))
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        };
-        let thread_project = project_of(db, "plot_threads", new_thread_id)?;
-        let node_project = match &effective_node_id {
-            Some(n) => project_of(db, "tree_nodes", n)?,
-            None => None,
-        };
-        match (thread_project, node_project) {
-            (Some(a), Some(b)) if a == b => {}
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "plot thread link move must stay within the same project"
-                ))
+                .ok_or_else(|| anyhow::anyhow!("plot thread link not found: {id}"))?;
+            let current_thread_id = current
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot thread link missing thread_id"))?;
+            let current_node_id = current
+                .get("node_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot thread link missing node_id"))?;
+            let current_phase_type = current
+                .get("phase_type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot thread link missing phase_type"))?;
+            let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
+            anyhow::ensure!(
+                current_version == base_version,
+                "PLOT_THREAD_LINK_VERSION_MISMATCH: expected {base_version}, found {current_version}"
+            );
+
+            let thread_id = patch.thread_id.as_deref().unwrap_or(current_thread_id);
+            let node_id = patch.node_id.as_deref().unwrap_or(current_node_id);
+            let phase_type = patch.phase_type.as_deref().unwrap_or(current_phase_type);
+            let current_project = project_of_conn(conn, "plot_threads", current_thread_id)?;
+            let thread_project = project_of_conn(conn, "plot_threads", thread_id)?;
+            let project_id = match (current_project, thread_project) {
+                (Some(current_project), Some(thread_project))
+                    if current_project == thread_project => current_project,
+                _ => anyhow::bail!("plot thread link move must stay within the same project"),
+            };
+            require_project_scene(conn, node_id, &project_id, "plot thread link scene")?;
+
+            let note = patch
+                .note
+                .clone()
+                .map(|value| value.map(Value::String).unwrap_or(Value::Null))
+                .unwrap_or_else(|| current.get("note").cloned().unwrap_or(Value::Null));
+            let sort_order = patch
+                .sort_order
+                .clone()
+                .map(|value| value.map(Value::String).unwrap_or(Value::Null))
+                .unwrap_or_else(|| current.get("sort_order").cloned().unwrap_or(Value::Null));
+            let natural_key = format!("{thread_id}|{node_id}|{phase_type}");
+            let current_key = current
+                .get("semantic_key")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let semantic_key = if current_key == natural_key
+                || current_key
+                    .strip_prefix(&natural_key)
+                    .is_some_and(|suffix| suffix.starts_with("#dup:"))
+            {
+                current_key.to_string()
+            } else {
+                natural_key
+            };
+
+            Database::execute_with_conn(
+                conn,
+                "UPDATE plot_thread_scene_links
+                    SET thread_id = ?, node_id = ?, phase_type = ?, note = ?, sort_order = ?,
+                        semantic_key = ?, version = version + 1, updated_at = datetime('now')
+                  WHERE id = ? AND version = ?",
+                &[
+                    Value::String(thread_id.to_string()),
+                    Value::String(node_id.to_string()),
+                    Value::String(phase_type.to_string()),
+                    note,
+                    sort_order,
+                    Value::String(semantic_key),
+                    Value::String(id.clone()),
+                    Value::Number(base_version.into()),
+                ],
+                "run",
+            )?;
+            anyhow::ensure!(
+                conn.changes() == 1,
+                "PLOT_THREAD_LINK_VERSION_MISMATCH: link changed during update"
+            );
+            Ok(one(Database::execute_with_conn(
+                conn,
+                "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?))
+        })();
+
+        match result {
+            Ok(value) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
             }
         }
-        sets.push("thread_id = ?");
-        params.push(Value::String(new_thread_id.clone()));
-    }
-    if let Some(node_id) = patch.node_id {
-        sets.push("node_id = ?");
-        params.push(Value::String(node_id));
-    }
-    if let Some(phase_type) = patch.phase_type {
-        sets.push("phase_type = ?");
-        params.push(Value::String(phase_type));
-    }
-    if let Some(note) = patch.note {
-        sets.push("note = ?");
-        params.push(note.map(Value::String).unwrap_or(Value::Null));
-    }
-    if let Some(sort_order) = patch.sort_order {
-        sets.push("sort_order = ?");
-        params.push(sort_order.map(Value::String).unwrap_or(Value::Null));
-    }
-    if sets.is_empty() {
-        return Ok(one(db.execute(
-            "SELECT * FROM plot_thread_scene_links WHERE id = ?",
-            &[Value::String(id)],
-            "get",
-        )?));
-    }
-    sets.push("updated_at = datetime('now')");
-    params.push(Value::String(id.clone()));
-    let sql = format!(
-        "UPDATE plot_thread_scene_links SET {} WHERE id = ?",
-        sets.join(", ")
-    );
-    db.execute(&sql, &params, "run")?;
-    Ok(one(db.execute(
-        "SELECT * FROM plot_thread_scene_links WHERE id = ?",
-        &[Value::String(id)],
-        "get",
-    )?))
+    })
 }
 
-pub fn link_delete(db: &Database, id: String) -> anyhow::Result<()> {
-    db.execute(
-        "DELETE FROM plot_thread_scene_links WHERE id = ?",
-        &[Value::String(id)],
-        "run",
-    )?;
-    Ok(())
+pub fn link_delete(db: &Database, id: String, base_version: i64) -> anyhow::Result<()> {
+    delete_versioned_row(
+        db,
+        "plot_thread_scene_links",
+        "PLOT_THREAD_LINK_VERSION_MISMATCH",
+        id,
+        base_version,
+    )
 }
 
 pub fn list_links(db: &Database, project_id: String) -> anyhow::Result<Vec<Value>> {
@@ -971,14 +1245,13 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
             }
             let from_project = project_of_conn(conn, "plot_threads", &from_thread_id)?;
             let to_project = project_of_conn(conn, "plot_threads", &to_thread_id)?;
-            let node_project = project_of_conn(conn, "tree_nodes", &at_node_id)?;
-            match (from_project, to_project, node_project) {
-                (Some(from), Some(to), Some(node))
-                    if from == project_id && to == project_id && node == project_id => {}
+            match (from_project, to_project) {
+                (Some(from), Some(to)) if from == project_id && to == project_id => {}
                 _ => anyhow::bail!(
                     "plot thread branch must reference a project, threads, and scene in the same project"
                 ),
             }
+            require_project_scene(conn, &at_node_id, &project_id, "plot thread branch scene")?;
 
             let semantic_key = format!(
                 "{from_thread_id}|{to_thread_id}|{at_node_id}|{kind}"
@@ -1048,138 +1321,164 @@ pub fn branch_update(
     id: String,
     patch: PlotThreadBranchPatch,
 ) -> anyhow::Result<Value> {
-    let current_rows = db.execute(
-        "SELECT * FROM plot_thread_branches WHERE id = ?",
-        &[Value::String(id.clone())],
-        "get",
-    )?;
-    let Some(current) = current_rows.first() else {
-        anyhow::bail!("plot thread branch not found: {id}");
-    };
-    let current_version = current
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    if let Some(base_version) = patch.base_version {
-        if current_version != base_version {
-            anyhow::bail!(
-                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {base_version}, found {current_version}"
-            );
-        }
-    }
-
-    let project_id = current
-        .get("project_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("plot thread branch missing project_id"))?
-        .to_string();
-    let kind = current
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("plot thread branch missing kind"))?
-        .to_string();
-
-    let from_thread_id = patch.from_thread_id.clone().unwrap_or_else(|| {
-        current
-            .get("from_thread_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    });
-    let to_thread_id = patch.to_thread_id.clone().unwrap_or_else(|| {
-        current
-            .get("to_thread_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    });
-    let at_node_id = patch.at_node_id.clone().unwrap_or_else(|| {
-        current
-            .get("at_node_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    });
-
-    if from_thread_id == to_thread_id {
-        anyhow::bail!("plot thread branch cannot reference the same thread twice");
-    }
-
-    if patch.from_thread_id.is_none()
-        && patch.to_thread_id.is_none()
-        && patch.at_node_id.is_none()
+    if patch.from_thread_id.is_none() && patch.to_thread_id.is_none() && patch.at_node_id.is_none()
     {
+        let current_rows = db.execute(
+            "SELECT * FROM plot_thread_branches WHERE id = ?",
+            &[Value::String(id.clone())],
+            "get",
+        )?;
+        let Some(current) = current_rows.first() else {
+            anyhow::bail!("plot thread branch not found: {id}");
+        };
+        let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
+        anyhow::ensure!(
+            current_version == patch.base_version,
+            "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {}, found {current_version}",
+            patch.base_version
+        );
         return Ok(one(current_rows));
     }
 
     db.with_conn(|conn| {
-        let from_project = project_of_conn(conn, "plot_threads", &from_thread_id)?;
-        let to_project = project_of_conn(conn, "plot_threads", &to_thread_id)?;
-        let node_project = project_of_conn(conn, "tree_nodes", &at_node_id)?;
-        match (from_project, to_project, node_project) {
-            (Some(from), Some(to), Some(node))
-                if from == project_id && to == project_id && node == project_id => {}
-            _ => anyhow::bail!(
-                "plot thread branch must reference a project, threads, and scene in the same project"
-            ),
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Value> {
+            let current_rows = Database::execute_with_conn(
+                conn,
+                "SELECT * FROM plot_thread_branches WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?;
+            let Some(current) = current_rows.first() else {
+                anyhow::bail!("plot thread branch not found: {id}");
+            };
+            let current_version = current
+                .get("version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            anyhow::ensure!(
+                current_version == patch.base_version,
+                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {}, found {current_version}",
+                patch.base_version
+            );
+
+            let project_id = current
+                .get("project_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot thread branch missing project_id"))?;
+            let kind = current
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot thread branch missing kind"))?;
+            let from_thread_id = patch.from_thread_id.as_deref().unwrap_or_else(|| {
+                current
+                    .get("from_thread_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            });
+            let to_thread_id = patch.to_thread_id.as_deref().unwrap_or_else(|| {
+                current
+                    .get("to_thread_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            });
+            let at_node_id = patch.at_node_id.as_deref().unwrap_or_else(|| {
+                current
+                    .get("at_node_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            });
+            anyhow::ensure!(
+                from_thread_id != to_thread_id,
+                "plot thread branch cannot reference the same thread twice"
+            );
+
+            let from_project = project_of_conn(conn, "plot_threads", from_thread_id)?;
+            let to_project = project_of_conn(conn, "plot_threads", to_thread_id)?;
+            match (from_project, to_project) {
+                (Some(from), Some(to)) if from == project_id && to == project_id => {}
+                _ => anyhow::bail!(
+                    "plot thread branch must reference a project, threads, and scene in the same project"
+                ),
+            }
+            require_project_scene(conn, at_node_id, project_id, "plot thread branch scene")?;
+
+            let natural_key = format!("{from_thread_id}|{to_thread_id}|{at_node_id}|{kind}");
+            let current_key = current
+                .get("semantic_key")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let semantic_key = if current_key == natural_key
+                || current_key
+                    .strip_prefix(&natural_key)
+                    .is_some_and(|suffix| suffix.starts_with("#dup:"))
+            {
+                current_key.to_string()
+            } else {
+                natural_key
+            };
+            Database::execute_with_conn(
+                conn,
+                "UPDATE plot_thread_branches
+                    SET from_thread_id = ?, to_thread_id = ?, at_node_id = ?,
+                        semantic_key = ?, version = version + 1, updated_at = datetime('now')
+                  WHERE id = ? AND version = ?",
+                &[
+                    Value::String(from_thread_id.to_string()),
+                    Value::String(to_thread_id.to_string()),
+                    Value::String(at_node_id.to_string()),
+                    Value::String(semantic_key),
+                    Value::String(id.clone()),
+                    Value::Number(current_version.into()),
+                ],
+                "run",
+            )?;
+            anyhow::ensure!(
+                conn.changes() == 1,
+                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: branch changed during update"
+            );
+            Ok(one(Database::execute_with_conn(
+                conn,
+                "SELECT * FROM plot_thread_branches WHERE id = ?",
+                &[Value::String(id.clone())],
+                "get",
+            )?))
+        })();
+
+        match result {
+            Ok(value) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
         }
-        Ok(())
-    })?;
-
-    let semantic_key = format!("{from_thread_id}|{to_thread_id}|{at_node_id}|{kind}");
-    let next_version = current_version + 1;
-    db.execute(
-        "UPDATE plot_thread_branches
-            SET from_thread_id = ?, to_thread_id = ?, at_node_id = ?,
-                semantic_key = ?, version = ?, updated_at = datetime('now')
-          WHERE id = ?",
-        &[
-            Value::String(from_thread_id),
-            Value::String(to_thread_id),
-            Value::String(at_node_id),
-            Value::String(semantic_key),
-            Value::Number(next_version.into()),
-            Value::String(id.clone()),
-        ],
-        "run",
-    )?;
-
-    Ok(one(db.execute(
-        "SELECT * FROM plot_thread_branches WHERE id = ?",
-        &[Value::String(id)],
-        "get",
-    )?))
+    })
 }
 
-pub fn branch_delete(db: &Database, id: String, base_version: Option<i64>) -> anyhow::Result<()> {
-    if let Some(expected) = base_version {
-        let rows = db.execute(
-            "SELECT version FROM plot_thread_branches WHERE id = ?",
-            &[Value::String(id.clone())],
-            "get",
-        )?;
-        let Some(current) = rows.first() else {
-            return Ok(());
-        };
-        let current_version = current
-            .get("version")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        if current_version != expected {
-            anyhow::bail!(
-                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {expected}, found {current_version}"
-            );
-        }
-    }
-    db.execute(
-        "DELETE FROM plot_thread_branches WHERE id = ?",
-        &[Value::String(id)],
-        "run",
-    )?;
-    Ok(())
+pub fn branch_delete(db: &Database, id: String, base_version: i64) -> anyhow::Result<()> {
+    delete_versioned_row(
+        db,
+        "plot_thread_branches",
+        "PLOT_THREAD_BRANCH_VERSION_MISMATCH",
+        id,
+        base_version,
+    )
 }
 
 fn validate_move_link_row(label: &str, row: &PlotThreadLinkSnapshotRow) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        row.version >= 0,
+        "plot marker move {label}.version must be non-negative"
+    );
+    validate_snapshot_semantic_key(
+        &row.semantic_key,
+        &link_natural_key(row),
+        &format!("plot marker move {label}"),
+    )?;
     for (field, value) in [
         ("id", row.id.as_str()),
         ("threadId", row.thread_id.as_str()),
@@ -1200,6 +1499,15 @@ fn validate_move_branch_row(
     row: &PlotThreadBranchSnapshotRow,
     project_id: &str,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        row.version >= 0,
+        "plot marker move {label}.version must be non-negative"
+    );
+    validate_snapshot_semantic_key(
+        &row.semantic_key,
+        &branch_natural_key(row),
+        &format!("plot marker move {label}"),
+    )?;
     for (field, value) in [
         ("id", row.id.as_str()),
         ("projectId", row.project_id.as_str()),
@@ -1223,6 +1531,33 @@ fn validate_move_branch_row(
     validate_branch_kind(&row.kind)
 }
 
+fn normalize_move_marker_bundle(
+    payload: &mut PlotThreadMoveMarkerBundlePayload,
+) -> anyhow::Result<()> {
+    payload.marker_before.semantic_key = Some(link_semantic_key(&payload.marker_before));
+    payload.marker_after.semantic_key = Some(link_semantic_key(&payload.marker_after));
+    payload.marker_after.version = payload
+        .marker_before
+        .version
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("plot marker version overflow"))?;
+    for transition in &mut payload.branch_transitions {
+        if let Some(before) = &mut transition.before {
+            before.semantic_key = Some(branch_semantic_key(before));
+        }
+        if let Some(after) = &mut transition.after {
+            after.semantic_key = Some(branch_semantic_key(after));
+            if let Some(before) = &transition.before {
+                after.version = before
+                    .version
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("plot branch version overflow"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_move_marker_bundle_shape(
     payload: &PlotThreadMoveMarkerBundlePayload,
 ) -> anyhow::Result<()> {
@@ -1237,6 +1572,10 @@ fn validate_move_marker_bundle_shape(
     if payload.marker_before.id != payload.marker_after.id {
         anyhow::bail!("plot marker move marker identity cannot change");
     }
+    anyhow::ensure!(
+        payload.marker_after.version == payload.marker_before.version + 1,
+        "plot marker move marker version must advance exactly once"
+    );
     if payload.marker_before.phase_type != payload.marker_after.phase_type
         || payload.marker_before.note != payload.marker_after.note
         || payload.marker_before.sort_order != payload.marker_after.sort_order
@@ -1256,6 +1595,11 @@ fn validate_move_marker_bundle_shape(
                 before,
                 &payload.project_id,
             )?;
+            anyhow::ensure!(
+                before.to_thread_id == payload.marker_before.thread_id
+                    && before.at_node_id == payload.marker_before.node_id,
+                "plot marker move before branch must depend on markerBefore"
+            );
         }
         if let Some(after) = &transition.after {
             validate_move_branch_row(
@@ -1263,6 +1607,11 @@ fn validate_move_marker_bundle_shape(
                 after,
                 &payload.project_id,
             )?;
+            anyhow::ensure!(
+                after.to_thread_id == payload.marker_after.thread_id
+                    && after.at_node_id == payload.marker_after.node_id,
+                "plot marker move after branch must depend on markerAfter"
+            );
         }
         let id = transition
             .before
@@ -1282,6 +1631,10 @@ fn validate_move_marker_bundle_shape(
                     "plot marker move may only change branch endpoints, anchor, and updatedAt"
                 );
             }
+            anyhow::ensure!(
+                after.version == before.version + 1,
+                "plot marker move branch version must advance exactly once"
+            );
         }
         if !branch_ids.insert(id.to_string()) {
             anyhow::bail!("plot marker move contains duplicate branch ids");
@@ -1303,9 +1656,8 @@ fn validate_move_marker_bundle_membership(
             &payload.project_id,
             "plot marker move thread",
         )?;
-        require_project_member(
+        require_project_scene(
             conn,
-            "tree_nodes",
             &marker.node_id,
             &payload.project_id,
             "plot marker move scene",
@@ -1330,15 +1682,69 @@ fn validate_move_marker_bundle_membership(
                 &payload.project_id,
                 "plot marker move branch target thread",
             )?;
-            require_project_member(
+            require_project_scene(
                 conn,
-                "tree_nodes",
                 &branch.at_node_id,
                 &payload.project_id,
                 "plot marker move branch scene",
             )?;
         }
     }
+    Ok(())
+}
+
+fn validate_move_marker_dependency_set(
+    conn: &Connection,
+    payload: &PlotThreadMoveMarkerBundlePayload,
+) -> anyhow::Result<()> {
+    if payload.marker_before.thread_id == payload.marker_after.thread_id
+        && payload.marker_before.node_id == payload.marker_after.node_id
+    {
+        return Ok(());
+    }
+
+    let other_markers: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM plot_thread_scene_links
+          WHERE id <> ?1 AND thread_id = ?2 AND node_id = ?3",
+        rusqlite::params![
+            payload.marker_before.id,
+            payload.marker_before.thread_id,
+            payload.marker_before.node_id,
+        ],
+        |row| row.get(0),
+    )?;
+    let live_ids = if other_markers > 0 {
+        HashSet::new()
+    } else {
+        let mut statement = conn.prepare(
+            "SELECT id FROM plot_thread_branches
+              WHERE to_thread_id = ?1 AND at_node_id = ?2",
+        )?;
+        let ids = statement
+            .query_map(
+                rusqlite::params![
+                    payload.marker_before.thread_id,
+                    payload.marker_before.node_id,
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<HashSet<_>, _>>()?;
+        ids
+    };
+    let expected_ids = payload
+        .branch_transitions
+        .iter()
+        .filter_map(|transition| transition.before.as_ref())
+        .filter(|branch| {
+            branch.to_thread_id == payload.marker_before.thread_id
+                && branch.at_node_id == payload.marker_before.node_id
+        })
+        .map(|branch| branch.id.clone())
+        .collect::<HashSet<_>>();
+    anyhow::ensure!(
+        live_ids == expected_ids,
+        "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: dependent branch set changed since snapshot"
+    );
     Ok(())
 }
 
@@ -1403,47 +1809,71 @@ fn move_marker_bundle_effect_present(
     Ok(Some(move_marker_bundle_response(request_id, payload)))
 }
 
-fn replace_link_row(conn: &Connection, row: &PlotThreadLinkSnapshotRow) -> anyhow::Result<()> {
+fn replace_link_row(
+    conn: &Connection,
+    before: &PlotThreadLinkSnapshotRow,
+    after: &PlotThreadLinkSnapshotRow,
+) -> anyhow::Result<()> {
     Database::execute_with_conn(
         conn,
         "UPDATE plot_thread_scene_links
             SET thread_id = ?, node_id = ?, phase_type = ?, note = ?,
-                sort_order = ?, created_at = ?, updated_at = ?
-          WHERE id = ?",
+                sort_order = ?, semantic_key = ?, version = ?,
+                created_at = ?, updated_at = ?
+          WHERE id = ? AND version = ?",
         &[
-            Value::String(row.thread_id.clone()),
-            Value::String(row.node_id.clone()),
-            Value::String(row.phase_type.clone()),
-            nullable_string_value(&row.note),
-            nullable_string_value(&row.sort_order),
-            Value::String(row.created_at.clone()),
-            Value::String(row.updated_at.clone()),
-            Value::String(row.id.clone()),
+            Value::String(after.thread_id.clone()),
+            Value::String(after.node_id.clone()),
+            Value::String(after.phase_type.clone()),
+            nullable_string_value(&after.note),
+            nullable_string_value(&after.sort_order),
+            Value::String(link_semantic_key(after)),
+            Value::Number(after.version.into()),
+            Value::String(after.created_at.clone()),
+            Value::String(after.updated_at.clone()),
+            Value::String(after.id.clone()),
+            Value::Number(before.version.into()),
         ],
         "run",
     )?;
+    anyhow::ensure!(
+        conn.changes() == 1,
+        "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker version changed"
+    );
     Ok(())
 }
 
-fn replace_branch_row(conn: &Connection, row: &PlotThreadBranchSnapshotRow) -> anyhow::Result<()> {
+fn replace_branch_row(
+    conn: &Connection,
+    before: &PlotThreadBranchSnapshotRow,
+    after: &PlotThreadBranchSnapshotRow,
+) -> anyhow::Result<()> {
     Database::execute_with_conn(
         conn,
         "UPDATE plot_thread_branches
             SET project_id = ?, from_thread_id = ?, to_thread_id = ?,
-                at_node_id = ?, kind = ?, created_at = ?, updated_at = ?
-          WHERE id = ?",
+                at_node_id = ?, kind = ?, semantic_key = ?, version = ?,
+                created_at = ?, updated_at = ?
+          WHERE id = ? AND version = ?",
         &[
-            Value::String(row.project_id.clone()),
-            Value::String(row.from_thread_id.clone()),
-            Value::String(row.to_thread_id.clone()),
-            Value::String(row.at_node_id.clone()),
-            Value::String(row.kind.clone()),
-            Value::String(row.created_at.clone()),
-            Value::String(row.updated_at.clone()),
-            Value::String(row.id.clone()),
+            Value::String(after.project_id.clone()),
+            Value::String(after.from_thread_id.clone()),
+            Value::String(after.to_thread_id.clone()),
+            Value::String(after.at_node_id.clone()),
+            Value::String(after.kind.clone()),
+            Value::String(branch_semantic_key(after)),
+            Value::Number(after.version.into()),
+            Value::String(after.created_at.clone()),
+            Value::String(after.updated_at.clone()),
+            Value::String(after.id.clone()),
+            Value::Number(before.version.into()),
         ],
         "run",
     )?;
+    anyhow::ensure!(
+        conn.changes() == 1,
+        "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch version changed"
+    );
     Ok(())
 }
 
@@ -1484,8 +1914,9 @@ fn reject_duplicate_branch_topology(
 /// after an unknown IPC outcome cannot apply only part of the drag twice.
 pub fn move_marker_bundle(
     db: &Database,
-    payload: PlotThreadMoveMarkerBundlePayload,
+    mut payload: PlotThreadMoveMarkerBundlePayload,
 ) -> anyhow::Result<Value> {
+    normalize_move_marker_bundle(&mut payload)?;
     validate_move_marker_bundle_shape(&payload)?;
     let request_id = payload.request_id.clone();
     let fingerprint_payload = json!({
@@ -1521,6 +1952,7 @@ pub fn move_marker_bundle(
                     "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker changed since snapshot"
                 );
             }
+            validate_move_marker_dependency_set(conn, &payload)?;
             for transition in &payload.branch_transitions {
                 match &transition.before {
                     Some(before) => {
@@ -1551,18 +1983,27 @@ pub fn move_marker_bundle(
                 }
             }
 
-            replace_link_row(conn, &payload.marker_after)?;
+            replace_link_row(conn, &payload.marker_before, &payload.marker_after)?;
             for transition in &payload.branch_transitions {
                 match (&transition.before, &transition.after) {
                     (None, Some(after)) => insert_or_validate_branch(conn, after)?,
-                    (Some(_), Some(after)) => replace_branch_row(conn, after)?,
+                    (Some(before), Some(after)) => {
+                        replace_branch_row(conn, before, after)?
+                    }
                     (Some(before), None) => {
                         Database::execute_with_conn(
                             conn,
-                            "DELETE FROM plot_thread_branches WHERE id = ?",
-                            &[Value::String(before.id.clone())],
+                            "DELETE FROM plot_thread_branches WHERE id = ? AND version = ?",
+                            &[
+                                Value::String(before.id.clone()),
+                                Value::Number(before.version.into()),
+                            ],
                             "run",
                         )?;
+                        anyhow::ensure!(
+                            conn.changes() == 1,
+                            "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch version changed"
+                        );
                     }
                     (None, None) => {
                         anyhow::bail!("plot marker move branch transition has no rows")
@@ -1601,6 +2042,8 @@ pub fn restore_snapshot(
         "branches": payload.branches,
     });
     let payload_hash = payload_fingerprint("plot_thread_restore_snapshot", &fingerprint_payload)?;
+    let mut restored = payload;
+    advance_restore_snapshot_versions(&mut restored)?;
 
     run_atomic_create(
         db,
@@ -1613,22 +2056,22 @@ pub fn restore_snapshot(
         |conn| {
             // The parent must exist before child membership checks. Any later
             // validation failure rolls this insert back with the ledger.
-            if let Some(thread) = &payload.thread {
+            if let Some(thread) = &restored.thread {
                 insert_or_validate_thread(conn, thread)?;
             }
-            validate_restore_snapshot_membership(conn, &payload)?;
-            for link in &payload.links {
+            validate_restore_snapshot_membership(conn, &restored)?;
+            for link in &restored.links {
                 insert_or_validate_link(conn, link)?;
             }
-            for branch in &payload.branches {
+            for branch in &restored.branches {
                 insert_or_validate_branch(conn, branch)?;
             }
             Ok((
-                payload.project_id.clone(),
-                restore_snapshot_response(&request_id, &payload),
+                restored.project_id.clone(),
+                restore_snapshot_response(&request_id, &restored),
             ))
         },
-        |conn| load_exact_restore_snapshot(conn, &request_id, &payload),
+        |conn| load_exact_restore_snapshot(conn, &request_id, &restored),
     )
     .map(|outcome| outcome.into_wire_value())
 }
@@ -1651,9 +2094,8 @@ fn expected_delete_branch_ids(
         project_id,
         "plot delete snapshot link thread",
     )?;
-    require_project_member(
+    require_project_scene(
         conn,
-        "tree_nodes",
         node_id,
         project_id,
         "plot delete snapshot link scene",
@@ -1710,8 +2152,20 @@ fn delete_snapshot_effect_present(
     request_id: &str,
     payload: &PlotThreadDeleteSnapshotPayload,
 ) -> anyhow::Result<Option<Value>> {
-    if load_row(conn, "plot_thread_scene_links", &payload.link.id)?.is_some() {
-        return Ok(None);
+    if let Some(thread) = &payload.thread {
+        if load_row(conn, "plot_threads", &thread.id)?.is_some() {
+            return Ok(None);
+        }
+    }
+    if let Some(link) = &payload.link {
+        if load_row(conn, "plot_thread_scene_links", &link.id)?.is_some() {
+            return Ok(None);
+        }
+    }
+    for link in &payload.links {
+        if load_row(conn, "plot_thread_scene_links", &link.id)?.is_some() {
+            return Ok(None);
+        }
     }
     for branch in &payload.branches {
         if load_row(conn, "plot_thread_branches", &branch.id)?.is_some() {
@@ -1719,6 +2173,94 @@ fn delete_snapshot_effect_present(
         }
     }
     Ok(Some(json!({ "id": request_id, "deleted": true })))
+}
+
+fn load_sorted_ids(
+    conn: &Connection,
+    sql: &str,
+    params: &[Value],
+) -> anyhow::Result<Vec<String>> {
+    let rows = Database::execute_with_conn(conn, sql, params, "all")?;
+    rows.into_iter()
+        .map(|row| {
+            row.get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| anyhow::anyhow!("plot snapshot dependency row has no id"))
+        })
+        .collect()
+}
+
+fn validate_thread_delete_snapshot(
+    conn: &Connection,
+    payload: &PlotThreadDeleteSnapshotPayload,
+    thread: &PlotThreadSnapshotRow,
+) -> anyhow::Result<()> {
+    let current = load_map(conn, "plot_threads", &thread.id)?.ok_or_else(|| {
+        anyhow::anyhow!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread no longer exists")
+    })?;
+    if !thread_row_matches(&current, thread) {
+        anyhow::bail!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread changed since snapshot");
+    }
+
+    let expected_links = load_sorted_ids(
+        conn,
+        "SELECT id FROM plot_thread_scene_links WHERE thread_id = ? ORDER BY id",
+        &[Value::String(thread.id.clone())],
+    )?;
+    let mut supplied_links = payload
+        .links
+        .iter()
+        .map(|link| link.id.clone())
+        .collect::<Vec<_>>();
+    supplied_links.sort();
+    if expected_links != supplied_links {
+        anyhow::bail!(
+            "PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread link set changed since snapshot"
+        );
+    }
+
+    let expected_branches = load_sorted_ids(
+        conn,
+        "SELECT id FROM plot_thread_branches
+          WHERE from_thread_id = ? OR to_thread_id = ?
+          ORDER BY id",
+        &[
+            Value::String(thread.id.clone()),
+            Value::String(thread.id.clone()),
+        ],
+    )?;
+    let mut supplied_branches = payload
+        .branches
+        .iter()
+        .map(|branch| branch.id.clone())
+        .collect::<Vec<_>>();
+    supplied_branches.sort();
+    if expected_branches != supplied_branches {
+        anyhow::bail!(
+            "PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread branch set changed since snapshot"
+        );
+    }
+
+    for link in &payload.links {
+        let current = load_map(conn, "plot_thread_scene_links", &link.id)?.ok_or_else(|| {
+            anyhow::anyhow!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: link no longer exists")
+        })?;
+        if !link_row_matches(&current, link) {
+            anyhow::bail!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: link changed since snapshot");
+        }
+    }
+    for branch in &payload.branches {
+        let current = load_map(conn, "plot_thread_branches", &branch.id)?.ok_or_else(|| {
+            anyhow::anyhow!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch no longer exists")
+        })?;
+        if !branch_row_matches(&current, branch) {
+            anyhow::bail!(
+                "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot"
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn delete_snapshot(
@@ -1731,49 +2273,43 @@ pub fn delete_snapshot(
     if payload.project_id.is_empty() {
         anyhow::bail!("plot delete snapshot projectId must be non-empty");
     }
-    if payload.link.id.is_empty()
-        || payload.link.thread_id.is_empty()
-        || payload.link.node_id.is_empty()
-        || payload.link.phase_type.is_empty()
-        || payload.link.created_at.is_empty()
-        || payload.link.updated_at.is_empty()
-    {
-        anyhow::bail!("plot delete snapshot link identity and timestamps must be non-empty");
+    anyhow::ensure!(
+        payload.thread.is_some() ^ payload.link.is_some(),
+        "plot delete snapshot must contain exactly one of thread or link"
+    );
+    if payload.link.is_some() && !payload.links.is_empty() {
+        anyhow::bail!("plot marker delete snapshot cannot contain aggregate links");
     }
-    validate_phase(&payload.link.phase_type)?;
-    let mut unique_branch_ids = payload
-        .branches
-        .iter()
-        .map(|branch| branch.id.clone())
-        .collect::<Vec<_>>();
-    if payload.branches.iter().any(|branch| {
-        branch.id.is_empty()
-            || branch.project_id.is_empty()
-            || branch.from_thread_id.is_empty()
-            || branch.to_thread_id.is_empty()
-            || branch.at_node_id.is_empty()
-            || branch.kind.is_empty()
-            || branch.created_at.is_empty()
-            || branch.updated_at.is_empty()
-    }) {
-        anyhow::bail!("plot delete snapshot branch identity and timestamps must be non-empty");
+    let validation_snapshot = PlotThreadRestoreSnapshotPayload {
+        request_id: payload.request_id.clone(),
+        project_id: payload.project_id.clone(),
+        thread: payload.thread.clone(),
+        links: payload
+            .link
+            .clone()
+            .into_iter()
+            .chain(payload.links.clone())
+            .collect(),
+        branches: payload.branches.clone(),
+    };
+    validate_restore_snapshot_shape(&validation_snapshot)?;
+    for link in &validation_snapshot.links {
+        validate_phase(&link.phase_type)?;
     }
     for branch in &payload.branches {
         validate_branch_kind(&branch.kind)?;
-        if branch.from_thread_id == branch.to_thread_id {
-            anyhow::bail!("plot thread branch cannot reference the same thread twice");
-        }
-    }
-    unique_branch_ids.sort();
-    unique_branch_ids.dedup();
-    if unique_branch_ids.len() != payload.branches.len() {
-        anyhow::bail!("plot delete snapshot contains duplicate branch ids");
+        anyhow::ensure!(
+            branch.from_thread_id != branch.to_thread_id,
+            "plot thread branch cannot reference the same thread twice"
+        );
     }
 
     let request_id = payload.request_id.clone();
     let fingerprint_payload = json!({
         "projectId": payload.project_id,
+        "thread": payload.thread,
         "link": payload.link,
+        "links": payload.links,
         "branches": payload.branches,
     });
     let payload_hash = payload_fingerprint("plot_thread_delete_snapshot", &fingerprint_payload)?;
@@ -1788,92 +2324,81 @@ pub fn delete_snapshot(
         },
         |conn| {
             require_project(conn, &payload.project_id)?;
-            let link = load_map(conn, "plot_thread_scene_links", &payload.link.id)?
-                .ok_or_else(|| anyhow::anyhow!("plot delete snapshot link does not exist"))?;
-            if !link_row_matches(&link, &payload.link) {
-                anyhow::bail!(
-                    "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link changed since snapshot"
+            validate_restore_snapshot_membership(conn, &validation_snapshot)?;
+            if let Some(thread) = &payload.thread {
+                validate_thread_delete_snapshot(conn, &payload, thread)?;
+                Database::execute_with_conn(
+                    conn,
+                    "DELETE FROM plot_threads WHERE id = ? AND version = ?",
+                    &[
+                        Value::String(thread.id.clone()),
+                        Value::Number(thread.version.into()),
+                    ],
+                    "run",
+                )?;
+                anyhow::ensure!(
+                    conn.changes() == 1,
+                    "PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread version changed"
                 );
-            }
-            require_project_member(
-                conn,
-                "plot_threads",
-                &payload.link.thread_id,
-                &payload.project_id,
-                "plot delete snapshot link thread",
-            )?;
-            require_project_member(
-                conn,
-                "tree_nodes",
-                &payload.link.node_id,
-                &payload.project_id,
-                "plot delete snapshot link scene",
-            )?;
-            let mut expected =
-                expected_delete_branch_ids(conn, &payload.project_id, &payload.link.id)?;
-            let mut supplied = payload
-                .branches
-                .iter()
-                .map(|branch| branch.id.clone())
-                .collect::<Vec<_>>();
-            expected.sort();
-            supplied.sort();
-            if supplied != expected {
-                anyhow::bail!(
-                    "plot delete snapshot branch ids do not match the marker dependencies"
-                );
-            }
-            for branch in &payload.branches {
-                if branch.project_id != payload.project_id {
+            } else if let Some(link) = &payload.link {
+                let current = load_map(conn, "plot_thread_scene_links", &link.id)?
+                    .ok_or_else(|| anyhow::anyhow!("plot delete snapshot link does not exist"))?;
+                if !link_row_matches(&current, link) {
                     anyhow::bail!(
-                        "plot delete snapshot branch must belong to the snapshot project"
+                        "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link changed since snapshot"
                     );
                 }
-                require_project_member(
-                    conn,
-                    "plot_threads",
-                    &branch.from_thread_id,
-                    &payload.project_id,
-                    "plot delete snapshot branch source thread",
-                )?;
-                require_project_member(
-                    conn,
-                    "plot_threads",
-                    &branch.to_thread_id,
-                    &payload.project_id,
-                    "plot delete snapshot branch target thread",
-                )?;
-                require_project_member(
-                    conn,
-                    "tree_nodes",
-                    &branch.at_node_id,
-                    &payload.project_id,
-                    "plot delete snapshot branch scene",
-                )?;
-                let current =
-                    load_map(conn, "plot_thread_branches", &branch.id)?.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch no longer exists"
-                        )
-                    })?;
-                if !branch_row_matches(&current, branch) {
+                let mut expected =
+                    expected_delete_branch_ids(conn, &payload.project_id, &link.id)?;
+                let mut supplied = payload
+                    .branches
+                    .iter()
+                    .map(|branch| branch.id.clone())
+                    .collect::<Vec<_>>();
+                expected.sort();
+                supplied.sort();
+                if supplied != expected {
                     anyhow::bail!(
-                        "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot"
+                        "plot delete snapshot branch ids do not match the marker dependencies"
+                    );
+                }
+                for branch in &payload.branches {
+                    let current = load_map(conn, "plot_thread_branches", &branch.id)?.ok_or_else(
+                        || anyhow::anyhow!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch no longer exists"),
+                    )?;
+                    if !branch_row_matches(&current, branch) {
+                        anyhow::bail!(
+                            "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot"
+                        );
+                    }
+                    Database::execute_with_conn(
+                        conn,
+                        "DELETE FROM plot_thread_branches WHERE id = ? AND version = ?",
+                        &[
+                            Value::String(branch.id.clone()),
+                            Value::Number(branch.version.into()),
+                        ],
+                        "run",
+                    )?;
+                    anyhow::ensure!(
+                        conn.changes() == 1,
+                        "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch version changed"
                     );
                 }
                 Database::execute_with_conn(
                     conn,
-                    "DELETE FROM plot_thread_branches WHERE id = ?",
-                    &[Value::String(branch.id.clone())],
+                    "DELETE FROM plot_thread_scene_links WHERE id = ? AND version = ?",
+                    &[
+                        Value::String(link.id.clone()),
+                        Value::Number(link.version.into()),
+                    ],
                     "run",
                 )?;
+                anyhow::ensure!(
+                    conn.changes() == 1,
+                    "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link version changed"
+                );
             }
-            Database::execute_with_conn(
-                conn,
-                "DELETE FROM plot_thread_scene_links WHERE id = ?",
-                &[Value::String(payload.link.id.clone())],
-                "run",
-            )?;
             Ok((
                 payload.project_id.clone(),
                 json!({ "id": request_id, "deleted": true }),
@@ -1895,6 +2420,99 @@ mod tests {
         db.execute("INSERT INTO projects (id) VALUES ('p1')", &[], "run")
             .unwrap();
         db
+    }
+
+    #[test]
+    fn nullable_patches_preserve_omitted_null_and_value_states() {
+        let omitted: PlotThreadPatch = serde_json::from_value(json!({ "baseVersion": 0 })).unwrap();
+        assert_eq!(omitted.color, None);
+        assert_eq!(omitted.description, None);
+
+        let clear: PlotThreadPatch = serde_json::from_value(json!({
+            "color": null,
+            "description": null,
+            "baseVersion": 0
+        }))
+        .unwrap();
+        assert_eq!(clear.color, Some(None));
+        assert_eq!(clear.description, Some(None));
+
+        let set: PlotThreadPatch = serde_json::from_value(json!({
+            "color": "#123456",
+            "description": "detail",
+            "baseVersion": 0
+        }))
+        .unwrap();
+        assert_eq!(set.color, Some(Some("#123456".to_string())));
+        assert_eq!(set.description, Some(Some("detail".to_string())));
+
+        let omitted_link: PlotThreadLinkPatch =
+            serde_json::from_value(json!({ "baseVersion": 0 })).unwrap();
+        assert_eq!(omitted_link.note, None);
+        assert_eq!(omitted_link.sort_order, None);
+
+        let clear_link: PlotThreadLinkPatch = serde_json::from_value(json!({
+            "note": null,
+            "sortOrder": null,
+            "baseVersion": 0
+        }))
+        .unwrap();
+        assert_eq!(clear_link.note, Some(None));
+        assert_eq!(clear_link.sort_order, Some(None));
+    }
+
+    #[test]
+    fn deserialized_explicit_null_clears_thread_and_link_columns() {
+        let d = db();
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title)
+                   VALUES ('scene-nullable','p1','scene','Scene');
+                 INSERT INTO plot_threads
+                   (id, project_id, name, color, description, sort_order, version)
+                   VALUES ('thread-nullable','p1','thread','#123456','detail','a0',0);
+                 INSERT INTO plot_thread_scene_links
+                   (id, thread_id, node_id, phase_type, note, sort_order,
+                    semantic_key, version)
+                   VALUES ('link-nullable','thread-nullable','scene-nullable','turn',
+                           'marker note','marker-a0',
+                           'thread-nullable|scene-nullable|turn',0);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let thread_patch: PlotThreadPatch = serde_json::from_value(json!({
+            "color": null,
+            "description": null,
+            "baseVersion": 0
+        }))
+        .unwrap();
+        let cleared_thread = update(&d, "thread-nullable".into(), thread_patch).unwrap();
+        assert_eq!(cleared_thread["color"], Value::Null);
+        assert_eq!(cleared_thread["description"], Value::Null);
+        assert_eq!(cleared_thread["version"], 1);
+
+        let omitted_thread_patch: PlotThreadPatch =
+            serde_json::from_value(json!({ "baseVersion": 1 })).unwrap();
+        let unchanged_thread = update(&d, "thread-nullable".into(), omitted_thread_patch).unwrap();
+        assert_eq!(unchanged_thread["version"], 1);
+
+        let link_patch: PlotThreadLinkPatch = serde_json::from_value(json!({
+            "note": null,
+            "sortOrder": null,
+            "baseVersion": 0
+        }))
+        .unwrap();
+        let cleared_link = link_update(&d, "link-nullable".into(), link_patch).unwrap();
+        assert_eq!(cleared_link["note"], Value::Null);
+        assert_eq!(cleared_link["sort_order"], Value::Null);
+        assert_eq!(cleared_link["version"], 1);
+
+        let omitted_link_patch: PlotThreadLinkPatch =
+            serde_json::from_value(json!({ "baseVersion": 1 })).unwrap();
+        let unchanged_link = link_update(&d, "link-nullable".into(), omitted_link_patch).unwrap();
+        assert_eq!(unchanged_link["version"], 1);
     }
 
     #[test]
@@ -1948,7 +2566,7 @@ mod tests {
         assert_eq!(first.get("id"), retried.get("id"));
         assert_eq!(retried["__idempotency"]["replayed"], Value::Bool(true));
         assert_eq!(retried["__idempotency"]["entityPresent"], Value::Bool(true));
-        delete(&d, "request-1".to_string()).expect("delete thread");
+        delete(&d, "request-1".to_string(), 0).expect("delete thread");
         let deleted_retry = create(
             &d,
             PlotThreadCreatePayload {
@@ -1966,6 +2584,126 @@ mod tests {
             Value::Bool(false)
         );
         assert!(list(&d, "p1".into()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn regular_thread_and_link_mutations_reject_stale_versions() {
+        let d = db();
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title)
+                   VALUES ('scene','p1','scene','Scene');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order, version)
+                   VALUES ('thread','p1','original','a0',0);
+                 INSERT INTO plot_thread_scene_links
+                   (id, thread_id, node_id, phase_type, semantic_key, version)
+                   VALUES ('link','thread','scene','turn','thread|scene|turn',0);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let updated_thread = update(
+            &d,
+            "thread".into(),
+            PlotThreadPatch {
+                name: Some("winner".into()),
+                color: None,
+                description: None,
+                sort_order: None,
+                base_version: 0,
+            },
+        )
+        .expect("current thread update");
+        assert_eq!(updated_thread["version"], 1);
+        let stale_thread = update(
+            &d,
+            "thread".into(),
+            PlotThreadPatch {
+                name: Some("stale".into()),
+                color: None,
+                description: None,
+                sort_order: None,
+                base_version: 0,
+            },
+        )
+        .expect_err("stale thread update");
+        assert!(stale_thread
+            .to_string()
+            .contains("PLOT_THREAD_VERSION_MISMATCH"));
+        assert!(delete(&d, "thread".into(), 0).is_err());
+
+        let updated_link = link_update(
+            &d,
+            "link".into(),
+            PlotThreadLinkPatch {
+                thread_id: None,
+                node_id: None,
+                phase_type: None,
+                note: Some(Some("winner".into())),
+                sort_order: None,
+                base_version: 0,
+            },
+        )
+        .expect("current link update");
+        assert_eq!(updated_link["version"], 1);
+        let stale_link = link_update(
+            &d,
+            "link".into(),
+            PlotThreadLinkPatch {
+                thread_id: None,
+                node_id: None,
+                phase_type: None,
+                note: Some(Some("stale".into())),
+                sort_order: None,
+                base_version: 0,
+            },
+        )
+        .expect_err("stale link update");
+        assert!(stale_link
+            .to_string()
+            .contains("PLOT_THREAD_LINK_VERSION_MISMATCH"));
+        assert!(link_delete(&d, "link".into(), 0).is_err());
+
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT name || ':' || version FROM plot_threads WHERE id = 'thread') AS thread,
+                   (SELECT note || ':' || version FROM plot_thread_scene_links WHERE id = 'link') AS link",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["thread"].as_str(), Some("winner:1"));
+        assert_eq!(rows[0]["link"].as_str(), Some("winner:1"));
+
+        link_delete(&d, "link".into(), 1).expect("current link delete");
+        delete(&d, "thread".into(), 1).expect("current thread delete");
+        assert!(link_update(
+            &d,
+            "link".into(),
+            PlotThreadLinkPatch {
+                thread_id: None,
+                node_id: None,
+                phase_type: None,
+                note: Some(Some("missing".into())),
+                sort_order: None,
+                base_version: 1,
+            },
+        )
+        .is_err());
+        assert!(update(
+            &d,
+            "thread".into(),
+            PlotThreadPatch {
+                name: Some("missing".into()),
+                color: None,
+                description: None,
+                sort_order: None,
+                base_version: 1,
+            },
+        )
+        .is_err());
     }
 
     #[test]
@@ -2101,7 +2839,7 @@ mod tests {
         .unwrap();
         assert_eq!(first.get("id"), retried.get("id"));
         assert_eq!(retried["__idempotency"]["entityPresent"], Value::Bool(true));
-        link_delete(&d, "link-request-1".to_string()).expect("delete link");
+        link_delete(&d, "link-request-1".to_string(), 0).expect("delete link");
         let deleted_retry = link_create(
             &d,
             PlotThreadLinkCreatePayload {
@@ -2207,6 +2945,12 @@ mod tests {
         )
         .unwrap();
         d.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s2','p2','scene','S2')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        d.execute(
             "INSERT INTO plot_threads (id, project_id, name, sort_order) VALUES ('c','p2','c','a0')",
             &[],
             "run",
@@ -2241,6 +2985,7 @@ mod tests {
                 phase_type: None,
                 note: None,
                 sort_order: None,
+                base_version: 0,
             },
         )
         .unwrap();
@@ -2250,20 +2995,119 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("b")
         );
+        assert_eq!(ok["version"].as_i64(), Some(1));
+        assert_eq!(ok["semantic_key"].as_str(), Some("b|s1|introduce"));
+
+        // node-only moves are subject to the same project guard.
+        let cross_node = link_update(
+            &d,
+            lid.clone(),
+            PlotThreadLinkPatch {
+                thread_id: None,
+                node_id: Some("s2".into()),
+                phase_type: None,
+                note: None,
+                sort_order: None,
+                base_version: 1,
+            },
+        );
+        assert!(
+            cross_node.is_err(),
+            "cross-project scene move must be rejected"
+        );
+
+        let cross_both = link_update(
+            &d,
+            lid.clone(),
+            PlotThreadLinkPatch {
+                thread_id: Some("c".into()),
+                node_id: Some("s2".into()),
+                phase_type: None,
+                note: None,
+                sort_order: None,
+                base_version: 1,
+            },
+        );
+        assert!(
+            cross_both.is_err(),
+            "moving both endpoints must not transfer link ownership"
+        );
 
         // 別 project の thread c へ移動 → 拒否。
         let cross = link_update(
             &d,
-            lid,
+            lid.clone(),
             PlotThreadLinkPatch {
                 thread_id: Some("c".into()),
                 node_id: None,
                 phase_type: None,
                 note: None,
                 sort_order: None,
+                base_version: 1,
             },
         );
         assert!(cross.is_err(), "cross-project thread move must be rejected");
+        let stored = d
+            .execute(
+                "SELECT thread_id, node_id, semantic_key, version
+                   FROM plot_thread_scene_links WHERE id = ?",
+                &[Value::String(lid)],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(stored[0]["thread_id"].as_str(), Some("b"));
+        assert_eq!(stored[0]["node_id"].as_str(), Some("s1"));
+        assert_eq!(stored[0]["semantic_key"].as_str(), Some("b|s1|introduce"));
+        assert_eq!(stored[0]["version"].as_i64(), Some(1));
+    }
+
+    #[test]
+    fn link_update_preserves_legacy_duplicate_semantic_key_suffix() {
+        let d = db();
+        d.execute(
+            "INSERT INTO plot_threads (id, project_id, name, sort_order)
+             VALUES ('thread','p1','thread','a0')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        d.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title)
+             VALUES ('scene','p1','scene','Scene')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        d.execute(
+            "INSERT INTO plot_thread_scene_links
+                (id, thread_id, node_id, phase_type, semantic_key, version)
+             VALUES
+                ('primary','thread','scene','introduce','thread|scene|introduce',0),
+                ('legacy','thread','scene','introduce','thread|scene|introduce#dup:legacy',0)",
+            &[],
+            "run",
+        )
+        .unwrap();
+
+        let updated = link_update(
+            &d,
+            "legacy".into(),
+            PlotThreadLinkPatch {
+                thread_id: None,
+                node_id: None,
+                phase_type: None,
+                note: Some(Some("kept".into())),
+                sort_order: None,
+                base_version: 0,
+            },
+        )
+        .expect("legacy duplicate remains writable");
+        assert_eq!(
+            updated["semantic_key"].as_str(),
+            Some("thread|scene|introduce#dup:legacy")
+        );
+        assert_eq!(updated["version"].as_i64(), Some(1));
+        assert_eq!(updated["note"].as_str(), Some("kept"));
     }
 
     #[test]
@@ -2359,6 +3203,262 @@ mod tests {
         assert!(error.to_string().contains("same project"));
     }
 
+    #[test]
+    fn plot_topology_rejects_non_scene_nodes_without_mutation() {
+        let d = db();
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title)
+                   VALUES
+                     ('scene','p1','scene','Scene'),
+                     ('folder','p1','folder','Folder');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order)
+                   VALUES
+                     ('source','p1','source','a0'),
+                     ('target','p1','target','a1');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(link_create(
+            &d,
+            PlotThreadLinkCreatePayload {
+                id: Some("folder-link".into()),
+                thread_id: "target".into(),
+                node_id: "folder".into(),
+                phase_type: "turn".into(),
+                note: None,
+                sort_order: None,
+            },
+        )
+        .is_err());
+        assert!(branch_create(
+            &d,
+            PlotThreadBranchCreatePayload {
+                id: Some("folder-branch".into()),
+                project_id: "p1".into(),
+                from_thread_id: "source".into(),
+                to_thread_id: "target".into(),
+                at_node_id: "folder".into(),
+                kind: "branch".into(),
+            },
+        )
+        .is_err());
+
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO plot_thread_scene_links
+                   (id, thread_id, node_id, phase_type, semantic_key, version)
+                 VALUES ('link','target','scene','turn','target|scene|turn',0);
+                 INSERT INTO plot_thread_branches
+                   (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
+                    semantic_key, version)
+                 VALUES ('branch','p1','source','target','scene','branch',
+                         'source|target|scene|branch',0);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(link_update(
+            &d,
+            "link".into(),
+            PlotThreadLinkPatch {
+                thread_id: None,
+                node_id: Some("folder".into()),
+                phase_type: None,
+                note: None,
+                sort_order: None,
+                base_version: 0,
+            },
+        )
+        .is_err());
+        assert!(branch_update(
+            &d,
+            "branch".into(),
+            PlotThreadBranchPatch {
+                from_thread_id: None,
+                to_thread_id: None,
+                at_node_id: Some("folder".into()),
+                base_version: 0,
+            },
+        )
+        .is_err());
+
+        let mut restored_thread = thread_snapshot("restored");
+        restored_thread.start_node_id = Some("folder".into());
+        restored_thread.end_node_id = None;
+        assert!(restore_snapshot(
+            &d,
+            PlotThreadRestoreSnapshotPayload {
+                request_id: "restore-folder-boundary".into(),
+                project_id: "p1".into(),
+                thread: Some(restored_thread),
+                links: vec![],
+                branches: vec![],
+            },
+        )
+        .is_err());
+
+        let mut marker_after = link_snapshot("link", "target");
+        marker_after.node_id = "folder".into();
+        marker_after.updated_at = "2026-01-03T01:00:00.000Z".into();
+        assert!(move_marker_bundle(
+            &d,
+            PlotThreadMoveMarkerBundlePayload {
+                request_id: "move-marker-to-folder".into(),
+                project_id: "p1".into(),
+                marker_before: link_snapshot("link", "target"),
+                marker_after,
+                branch_transitions: vec![],
+            },
+        )
+        .is_err());
+
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT COUNT(*) FROM plot_thread_scene_links WHERE id = 'folder-link') AS folder_links,
+                   (SELECT COUNT(*) FROM plot_thread_branches WHERE id = 'folder-branch') AS folder_branches,
+                   (SELECT node_id || ':' || version FROM plot_thread_scene_links WHERE id = 'link') AS link_state,
+                   (SELECT at_node_id || ':' || version FROM plot_thread_branches WHERE id = 'branch') AS branch_state,
+                   (SELECT COUNT(*) FROM plot_threads WHERE id = 'restored') AS restored_threads,
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE request_id IN ('restore-folder-boundary','move-marker-to-folder')) AS ledgers",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["folder_links"].as_i64(), Some(0));
+        assert_eq!(rows[0]["folder_branches"].as_i64(), Some(0));
+        assert_eq!(rows[0]["link_state"].as_str(), Some("scene:0"));
+        assert_eq!(rows[0]["branch_state"].as_str(), Some("scene:0"));
+        assert_eq!(rows[0]["restored_threads"].as_i64(), Some(0));
+        assert_eq!(rows[0]["ledgers"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn branch_update_is_atomic_versioned_and_preserves_legacy_suffixes() {
+        let d = db();
+        d.execute(
+            "INSERT INTO plot_threads (id, project_id, name, sort_order)
+             VALUES
+                ('from','p1','from','a0'),
+                ('to','p1','to','a1'),
+                ('alternate','p1','alternate','a2')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        d.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title)
+             VALUES ('scene','p1','scene','Scene')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        let created = branch_create(
+            &d,
+            PlotThreadBranchCreatePayload {
+                id: Some("branch".into()),
+                project_id: "p1".into(),
+                from_thread_id: "from".into(),
+                to_thread_id: "to".into(),
+                at_node_id: "scene".into(),
+                kind: "branch".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(created["version"].as_i64(), Some(0));
+
+        let updated = branch_update(
+            &d,
+            "branch".into(),
+            PlotThreadBranchPatch {
+                from_thread_id: Some("alternate".into()),
+                to_thread_id: None,
+                at_node_id: None,
+                base_version: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(updated["version"].as_i64(), Some(1));
+        assert_eq!(
+            updated["semantic_key"].as_str(),
+            Some("alternate|to|scene|branch")
+        );
+
+        let stale = branch_update(
+            &d,
+            "branch".into(),
+            PlotThreadBranchPatch {
+                from_thread_id: None,
+                to_thread_id: Some("from".into()),
+                at_node_id: None,
+                base_version: 0,
+            },
+        )
+        .expect_err("stale branch patch");
+        assert!(stale
+            .to_string()
+            .contains("PLOT_THREAD_BRANCH_VERSION_MISMATCH"));
+        let stored = d
+            .execute(
+                "SELECT from_thread_id, to_thread_id, semantic_key, version
+                   FROM plot_thread_branches WHERE id = 'branch'",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(stored[0]["from_thread_id"].as_str(), Some("alternate"));
+        assert_eq!(stored[0]["to_thread_id"].as_str(), Some("to"));
+        assert_eq!(stored[0]["version"].as_i64(), Some(1));
+        let stale_delete = branch_delete(&d, "branch".into(), 0)
+            .expect_err("stale branch delete must not remove the row");
+        assert!(stale_delete
+            .to_string()
+            .contains("PLOT_THREAD_BRANCH_VERSION_MISMATCH"));
+        branch_delete(&d, "branch".into(), 1).expect("matching branch delete");
+        assert!(d
+            .execute(
+                "SELECT id FROM plot_thread_branches WHERE id = 'branch'",
+                &[],
+                "get",
+            )
+            .unwrap()
+            .is_empty());
+
+        d.execute(
+            "INSERT INTO plot_thread_branches
+                (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
+                 semantic_key, version)
+             VALUES
+                ('primary','p1','from','to','scene','branch',
+                 'from|to|scene|branch',0),
+                ('legacy','p1','from','to','scene','branch',
+                 'from|to|scene|branch#dup:legacy',0)",
+            &[],
+            "run",
+        )
+        .unwrap();
+        let legacy = branch_update(
+            &d,
+            "legacy".into(),
+            PlotThreadBranchPatch {
+                from_thread_id: Some("from".into()),
+                to_thread_id: None,
+                at_node_id: None,
+                base_version: 0,
+            },
+        )
+        .expect("legacy duplicate remains writable");
+        assert_eq!(
+            legacy["semantic_key"].as_str(),
+            Some("from|to|scene|branch#dup:legacy")
+        );
+        assert_eq!(legacy["version"].as_i64(), Some(1));
+    }
+
     fn thread_snapshot(id: &str) -> PlotThreadSnapshotRow {
         PlotThreadSnapshotRow {
             id: id.into(),
@@ -2371,6 +3471,7 @@ mod tests {
             end_node_id: Some("scene".into()),
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: "2026-01-02T00:00:00.000Z".into(),
+            version: 0,
         }
     }
 
@@ -2382,6 +3483,8 @@ mod tests {
             phase_type: "turn".into(),
             note: Some("marker".into()),
             sort_order: Some("a0".into()),
+            semantic_key: None,
+            version: 0,
             created_at: "2026-01-01T01:00:00.000Z".into(),
             updated_at: "2026-01-02T01:00:00.000Z".into(),
         }
@@ -2399,6 +3502,8 @@ mod tests {
             to_thread_id: to_thread_id.into(),
             at_node_id: "scene".into(),
             kind: "branch".into(),
+            semantic_key: None,
+            version: 0,
             created_at: "2026-01-01T02:00:00.000Z".into(),
             updated_at: "2026-01-02T02:00:00.000Z".into(),
         }
@@ -2452,6 +3557,195 @@ mod tests {
             )
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn restore_snapshot_preserves_multiple_semantic_keys_and_advances_versions() {
+        let d = db();
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title)
+                 VALUES ('scene','p1','scene','Scene');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order)
+                 VALUES ('source','p1','source','a0');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let mut thread = thread_snapshot("target");
+        thread.version = 3;
+        let mut primary_link = link_snapshot("link-primary", "target");
+        primary_link.semantic_key = Some("target|scene|turn".into());
+        primary_link.version = 4;
+        let mut duplicate_link = link_snapshot("link-legacy", "target");
+        duplicate_link.semantic_key = Some("target|scene|turn#dup:link-legacy".into());
+        duplicate_link.version = 5;
+        let mut primary_branch = branch_snapshot("branch-primary", "source", "target");
+        primary_branch.semantic_key = Some("source|target|scene|branch".into());
+        primary_branch.version = 6;
+        let mut duplicate_branch = branch_snapshot("branch-legacy", "source", "target");
+        duplicate_branch.semantic_key = Some("source|target|scene|branch#dup:branch-legacy".into());
+        duplicate_branch.version = 7;
+
+        restore_snapshot(
+            &d,
+            PlotThreadRestoreSnapshotPayload {
+                request_id: "restore-multiple-semantic-keys".into(),
+                project_id: "p1".into(),
+                thread: Some(thread),
+                links: vec![primary_link, duplicate_link],
+                branches: vec![primary_branch, duplicate_branch],
+            },
+        )
+        .expect("restore duplicate legacy topology rows");
+
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT version FROM plot_threads WHERE id = 'target') AS thread_version,
+                   (SELECT group_concat(semantic_key || ':' || version, ',')
+                      FROM (SELECT semantic_key, version FROM plot_thread_scene_links
+                             ORDER BY semantic_key)) AS link_keys,
+                   (SELECT group_concat(semantic_key || ':' || version, ',')
+                      FROM (SELECT semantic_key, version FROM plot_thread_branches
+                             ORDER BY semantic_key)) AS branch_keys",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["thread_version"].as_i64(), Some(4));
+        assert_eq!(
+            rows[0]["link_keys"].as_str(),
+            Some("target|scene|turn:5,target|scene|turn#dup:link-legacy:6")
+        );
+        assert_eq!(
+            rows[0]["branch_keys"].as_str(),
+            Some("source|target|scene|branch:7,source|target|scene|branch#dup:branch-legacy:8")
+        );
+    }
+
+    #[test]
+    fn thread_snapshot_delete_is_exact_and_restore_versions_prevent_aba() {
+        let d = db();
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title)
+                   VALUES ('scene','p1','scene','Scene');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order)
+                   VALUES ('source','p1','source','a0');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let restored_v1 = restore_snapshot(
+            &d,
+            PlotThreadRestoreSnapshotPayload {
+                request_id: "thread-restore-v1".into(),
+                project_id: "p1".into(),
+                thread: Some(thread_snapshot("target")),
+                links: vec![link_snapshot("link", "target")],
+                branches: vec![branch_snapshot("branch", "source", "target")],
+            },
+        )
+        .expect("restore aggregate v1");
+        let thread_v1: PlotThreadSnapshotRow =
+            serde_json::from_value(restored_v1["thread"].clone()).expect("thread v1");
+        let link_v1: PlotThreadLinkSnapshotRow =
+            serde_json::from_value(restored_v1["links"][0].clone()).expect("link v1");
+        let branch_v1: PlotThreadBranchSnapshotRow =
+            serde_json::from_value(restored_v1["branches"][0].clone()).expect("branch v1");
+        assert_eq!(thread_v1.version, 1);
+        assert_eq!(link_v1.version, 1);
+        assert_eq!(branch_v1.version, 1);
+
+        delete_snapshot(
+            &d,
+            PlotThreadDeleteSnapshotPayload {
+                request_id: "thread-delete-v1".into(),
+                project_id: "p1".into(),
+                thread: Some(thread_v1.clone()),
+                link: None,
+                links: vec![link_v1.clone()],
+                branches: vec![branch_v1.clone()],
+            },
+        )
+        .expect("delete exact aggregate v1");
+
+        let restored_v2 = restore_snapshot(
+            &d,
+            PlotThreadRestoreSnapshotPayload {
+                request_id: "thread-restore-v2".into(),
+                project_id: "p1".into(),
+                thread: Some(thread_v1.clone()),
+                links: vec![link_v1.clone()],
+                branches: vec![branch_v1.clone()],
+            },
+        )
+        .expect("restore aggregate with fresh versions");
+        assert_eq!(restored_v2["thread"]["version"], 2);
+        assert_eq!(restored_v2["links"][0]["version"], 2);
+        assert_eq!(restored_v2["branches"][0]["version"], 2);
+
+        let stale = delete_snapshot(
+            &d,
+            PlotThreadDeleteSnapshotPayload {
+                request_id: "thread-delete-stale".into(),
+                project_id: "p1".into(),
+                thread: Some(thread_v1),
+                link: None,
+                links: vec![link_v1],
+                branches: vec![branch_v1],
+            },
+        )
+        .expect_err("a pre-restore snapshot must not delete the new generation");
+        assert!(stale
+            .to_string()
+            .contains("thread changed since snapshot"));
+
+        let thread_v2: PlotThreadSnapshotRow =
+            serde_json::from_value(restored_v2["thread"].clone()).expect("thread v2");
+        let link_v2: PlotThreadLinkSnapshotRow =
+            serde_json::from_value(restored_v2["links"][0].clone()).expect("link v2");
+        let branch_v2: PlotThreadBranchSnapshotRow =
+            serde_json::from_value(restored_v2["branches"][0].clone()).expect("branch v2");
+        d.execute(
+            "INSERT INTO plot_thread_scene_links
+                (id, thread_id, node_id, phase_type, semantic_key, version)
+             VALUES ('late-link','target','scene','develop','target|scene|develop',0)",
+            &[],
+            "run",
+        )
+        .unwrap();
+        let incomplete = delete_snapshot(
+            &d,
+            PlotThreadDeleteSnapshotPayload {
+                request_id: "thread-delete-incomplete".into(),
+                project_id: "p1".into(),
+                thread: Some(thread_v2),
+                link: None,
+                links: vec![link_v2],
+                branches: vec![branch_v2],
+            },
+        )
+        .expect_err("a concurrently added child must reject the aggregate delete");
+        assert!(incomplete.to_string().contains("link set changed"));
+        let counts = d
+            .execute(
+                "SELECT
+                   (SELECT COUNT(*) FROM plot_threads WHERE id = 'target') AS threads,
+                   (SELECT COUNT(*) FROM plot_thread_scene_links WHERE thread_id = 'target') AS links,
+                   (SELECT COUNT(*) FROM plot_thread_branches WHERE id = 'branch') AS branches,
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE request_id IN ('thread-delete-stale','thread-delete-incomplete')) AS ledgers",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(counts[0]["threads"].as_i64(), Some(1));
+        assert_eq!(counts[0]["links"].as_i64(), Some(2));
+        assert_eq!(counts[0]["branches"].as_i64(), Some(1));
+        assert_eq!(counts[0]["ledgers"].as_i64(), Some(0));
     }
 
     #[test]
@@ -2560,15 +3854,18 @@ mod tests {
              INSERT INTO plot_threads (id, project_id, name, sort_order)
              VALUES ('source','p1','source','a0'), ('target','p1','target','a1');
              INSERT INTO plot_thread_scene_links
-               (id, thread_id, node_id, phase_type, note, sort_order, created_at, updated_at)
+               (id, thread_id, node_id, phase_type, note, sort_order,
+                semantic_key, version, created_at, updated_at)
              VALUES
                ('link','target','scene','turn','marker','a0',
+                'target|scene|turn',0,
                 '2026-01-01T01:00:00.000Z','2026-01-02T01:00:00.000Z');
              INSERT INTO plot_thread_branches
                (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
-                created_at, updated_at)
+                semantic_key, version, created_at, updated_at)
              VALUES
                ('branch','p1','source','target','scene','branch',
+                'source|target|scene|branch',0,
                 '2026-01-01T02:00:00.000Z','2026-01-02T02:00:00.000Z')",
             )?;
             Ok(())
@@ -2620,10 +3917,17 @@ mod tests {
         let first =
             move_marker_bundle(&d, marker_move_payload("move-request")).expect("marker move");
         assert_eq!(first["marker"]["nodeId"], Value::String("scene-2".into()));
+        assert_eq!(first["marker"]["semanticKey"], "target|scene-2|turn");
+        assert_eq!(first["marker"]["version"], 1);
         assert_eq!(
             first["branches"][0]["id"],
             Value::String("moved-branch".into())
         );
+        assert_eq!(
+            first["branches"][0]["semanticKey"],
+            "source|target|scene-2|branch"
+        );
+        assert_eq!(first["branches"][0]["version"], 0);
         assert_eq!(first["__idempotency"]["replayed"], Value::Bool(false));
 
         let replay =
@@ -2647,6 +3951,73 @@ mod tests {
         assert_eq!(rows[0]["markers"].as_i64(), Some(1));
         assert_eq!(rows[0]["branches"].as_i64(), Some(1));
         assert_eq!(rows[0]["ledger"].as_i64(), Some(1));
+
+        let mut stale_marker: PlotThreadLinkSnapshotRow =
+            serde_json::from_value(first["marker"].clone()).expect("current marker snapshot");
+        stale_marker.version = 0;
+        let mut stale_after = stale_marker.clone();
+        stale_after.node_id = "scene".into();
+        stale_after.semantic_key = Some("target|scene|turn".into());
+        stale_after.updated_at = "2026-01-04T01:00:00.000Z".into();
+        let stale = move_marker_bundle(
+            &d,
+            PlotThreadMoveMarkerBundlePayload {
+                request_id: "move-stale-version".into(),
+                project_id: "p1".into(),
+                marker_before: stale_marker,
+                marker_after: stale_after,
+                branch_transitions: vec![],
+            },
+        )
+        .expect_err("version-only stale marker snapshot must conflict");
+        assert!(stale
+            .to_string()
+            .contains("PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED"));
+
+        let forward_marker: PlotThreadLinkSnapshotRow =
+            serde_json::from_value(first["marker"].clone()).expect("forward marker snapshot");
+        let forward_branch: PlotThreadBranchSnapshotRow =
+            serde_json::from_value(first["branches"][0].clone()).expect("forward branch snapshot");
+        let undo = move_marker_bundle(
+            &d,
+            PlotThreadMoveMarkerBundlePayload {
+                request_id: "move-undo".into(),
+                project_id: "p1".into(),
+                marker_before: forward_marker.clone(),
+                marker_after: link_snapshot("link", "target"),
+                branch_transitions: vec![PlotThreadBranchTransition {
+                    before: Some(forward_branch.clone()),
+                    after: None,
+                }],
+            },
+        )
+        .expect("undo marker move with monotonic version");
+        assert_eq!(undo["marker"]["nodeId"], "scene");
+        assert_eq!(undo["marker"]["semanticKey"], "target|scene|turn");
+        assert_eq!(undo["marker"]["version"], 2);
+        assert!(undo["branches"].as_array().is_some_and(Vec::is_empty));
+
+        let undo_marker: PlotThreadLinkSnapshotRow =
+            serde_json::from_value(undo["marker"].clone()).expect("undo marker snapshot");
+        let mut restored_branch = forward_branch;
+        restored_branch.version = 1;
+        let redo = move_marker_bundle(
+            &d,
+            PlotThreadMoveMarkerBundlePayload {
+                request_id: "move-redo".into(),
+                project_id: "p1".into(),
+                marker_before: undo_marker,
+                marker_after: forward_marker,
+                branch_transitions: vec![PlotThreadBranchTransition {
+                    before: None,
+                    after: Some(restored_branch),
+                }],
+            },
+        )
+        .expect("redo marker move with monotonic version");
+        assert_eq!(redo["marker"]["nodeId"], "scene-2");
+        assert_eq!(redo["marker"]["version"], 3);
+        assert_eq!(redo["branches"][0]["version"], 1);
     }
 
     #[test]
@@ -2689,13 +4060,117 @@ mod tests {
     }
 
     #[test]
+    fn move_marker_bundle_rejects_unrelated_branch_transitions_without_mutation() {
+        let d = db();
+        seed_marker_move_bundle(&d);
+        let mut payload = marker_move_payload("move-unrelated-branch");
+        payload.branch_transitions = vec![PlotThreadBranchTransition {
+            before: None,
+            after: Some(branch_snapshot("unrelated", "target", "source")),
+        }];
+
+        let error = move_marker_bundle(&d, payload)
+            .expect_err("an unrelated branch must not be smuggled into a marker move");
+        assert!(error.to_string().contains("must depend on markerAfter"));
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT node_id || ':' || version FROM plot_thread_scene_links
+                     WHERE id = 'link') AS marker_state,
+                   (SELECT COUNT(*) FROM plot_thread_branches WHERE id = 'unrelated') AS branches,
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'plot_thread_move_marker_bundle'
+                       AND request_id = 'move-unrelated-branch') AS ledger",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["marker_state"].as_str(), Some("scene:0"));
+        assert_eq!(rows[0]["branches"].as_i64(), Some(0));
+        assert_eq!(rows[0]["ledger"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn move_marker_bundle_rejects_an_unlisted_dependent_branch_without_mutation() {
+        let d = db();
+        seed_marker_delete_snapshot(&d);
+        d.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title)
+             VALUES ('scene-2','p1','scene','Scene 2')",
+            &[],
+            "run",
+        )
+        .unwrap();
+
+        let error = move_marker_bundle(&d, marker_move_payload("move-stale-dependencies"))
+            .expect_err("an unlisted incoming branch must reject the entire move");
+        assert!(error
+            .to_string()
+            .contains("dependent branch set changed since snapshot"));
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT node_id FROM plot_thread_scene_links WHERE id = 'link') AS marker_node,
+                   (SELECT COUNT(*) FROM plot_thread_branches WHERE id = 'branch') AS old_branch,
+                   (SELECT COUNT(*) FROM plot_thread_branches WHERE id = 'moved-branch') AS new_branch,
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'plot_thread_move_marker_bundle'
+                       AND request_id = 'move-stale-dependencies') AS ledger",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["marker_node"].as_str(), Some("scene"));
+        assert_eq!(rows[0]["old_branch"].as_i64(), Some(1));
+        assert_eq!(rows[0]["new_branch"].as_i64(), Some(0));
+        assert_eq!(rows[0]["ledger"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn move_marker_bundle_keeps_branches_when_a_coanchored_marker_remains() {
+        let d = db();
+        seed_marker_delete_snapshot(&d);
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title)
+                   VALUES ('scene-2','p1','scene','Scene 2');
+                 INSERT INTO plot_thread_scene_links
+                   (id, thread_id, node_id, phase_type, semantic_key, version)
+                 VALUES
+                   ('coanchor','target','scene','develop','target|scene|develop',0);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut payload = marker_move_payload("move-coanchored-marker");
+        payload.branch_transitions.clear();
+        let moved = move_marker_bundle(&d, payload).expect("move only one coanchored marker");
+        assert_eq!(moved["marker"]["nodeId"], "scene-2");
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT node_id FROM plot_thread_scene_links WHERE id = 'coanchor') AS coanchor_node,
+                   (SELECT COUNT(*) FROM plot_thread_branches
+                     WHERE id = 'branch' AND to_thread_id = 'target' AND at_node_id = 'scene') AS branches",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["coanchor_node"].as_str(), Some("scene"));
+        assert_eq!(rows[0]["branches"].as_i64(), Some(1));
+    }
+
+    #[test]
     fn delete_snapshot_is_atomic_and_old_replay_does_not_delete_recreated_rows() {
         let d = db();
         seed_marker_delete_snapshot(&d);
         let payload = || PlotThreadDeleteSnapshotPayload {
             request_id: "delete-request-1".into(),
             project_id: "p1".into(),
-            link: link_snapshot("link", "target"),
+            thread: None,
+            link: Some(link_snapshot("link", "target")),
+            links: vec![],
             branches: vec![branch_snapshot("branch", "source", "target")],
         };
 
@@ -2708,15 +4183,18 @@ mod tests {
         d.with_conn(|conn| {
             conn.execute_batch(
                 "INSERT INTO plot_thread_scene_links
-               (id, thread_id, node_id, phase_type, note, sort_order, created_at, updated_at)
+               (id, thread_id, node_id, phase_type, note, sort_order,
+                semantic_key, version, created_at, updated_at)
              VALUES
                ('link','target','scene','turn','marker','a0',
+                'target|scene|turn',0,
                 '2026-01-01T01:00:00.000Z','2026-01-02T01:00:00.000Z');
              INSERT INTO plot_thread_branches
                (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
-                created_at, updated_at)
+                semantic_key, version, created_at, updated_at)
              VALUES
                ('branch','p1','source','target','scene','branch',
+                'source|target|scene|branch',0,
                 '2026-01-01T02:00:00.000Z','2026-01-02T02:00:00.000Z')",
             )?;
             Ok(())
@@ -2748,7 +4226,9 @@ mod tests {
             PlotThreadDeleteSnapshotPayload {
                 request_id: "delete-invalid".into(),
                 project_id: "p1".into(),
-                link: link_snapshot("link", "target"),
+                thread: None,
+                link: Some(link_snapshot("link", "target")),
+                links: vec![],
                 branches: vec![],
             },
         )
@@ -2778,7 +4258,9 @@ mod tests {
         let payload = |request_id: &str| PlotThreadDeleteSnapshotPayload {
             request_id: request_id.into(),
             project_id: "p1".into(),
-            link: link_snapshot("link", "target"),
+            thread: None,
+            link: Some(link_snapshot("link", "target")),
+            links: vec![],
             branches: vec![branch_snapshot("branch", "source", "target")],
         };
 

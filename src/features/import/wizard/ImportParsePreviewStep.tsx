@@ -8,9 +8,14 @@ interface Props {
 
 export function ImportParsePreviewStep({ draft, diagnostics }: Props) {
   return (
-    <section className="flex flex-col gap-3" data-testid="import-wizard-parse-preview-step">
+    <section
+      className="flex flex-col gap-3"
+      data-testid="import-wizard-parse-preview-step"
+    >
       {!draft ? (
-        <p className="text-sm text-muted-foreground">解析結果はまだありません。</p>
+        <p className="text-sm text-muted-foreground">
+          解析結果はまだありません。
+        </p>
       ) : (
         <>
           <dl className="grid grid-cols-2 gap-2 text-xs">
@@ -34,7 +39,10 @@ export function ImportParsePreviewStep({ draft, diagnostics }: Props) {
           {diagnostics.length > 0 && (
             <ul className="max-h-32 overflow-y-auto rounded border border-border p-2 text-xs">
               {diagnostics.map((d, index) => (
-                <li key={`${d.code}-${index}`} className="text-muted-foreground">
+                <li
+                  key={`${d.code}-${index}`}
+                  className="text-muted-foreground"
+                >
                   [{d.severity}] {d.message}
                 </li>
               ))}

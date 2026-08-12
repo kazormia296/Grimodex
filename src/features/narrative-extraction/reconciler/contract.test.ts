@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import {
   assertDeclarativeReconcilerResult,
   buildProposalDraftEnvelope,
-  defaultSemanticAssessmentForFreshness,
   isAllowedPropagationSignal,
   isEvidenceFreshness,
   isSemanticAssessment,
@@ -44,12 +43,26 @@ const evidenceReadSet = {
 
 describe("NarrativeReconciler contract", () => {
   it("separates EvidenceFreshness (Core) from SemanticAssessment (Reconciler)", () => {
-    expect(isEvidenceFreshness("stale")).toBe(true);
-    expect(isEvidenceFreshness("revision")).toBe(false);
-    expect(isSemanticAssessment("revision")).toBe(true);
-    expect(isSemanticAssessment("stale")).toBe(false);
-    expect(defaultSemanticAssessmentForFreshness("fresh")).toBe("unchanged");
-    expect(defaultSemanticAssessmentForFreshness("stale")).toBe("revision");
+    for (const freshness of [
+      "fresh",
+      "stale",
+      "source-missing",
+      "anchor-mismatch",
+      "read-set-drift",
+      "unknown",
+    ]) {
+      expect(isEvidenceFreshness(freshness)).toBe(true);
+      expect(isSemanticAssessment(freshness)).toBe(false);
+    }
+    for (const assessment of [
+      "unchanged",
+      "revision",
+      "retraction",
+      "conflict",
+    ]) {
+      expect(isSemanticAssessment(assessment)).toBe(true);
+      expect(isEvidenceFreshness(assessment)).toBe(false);
+    }
   });
 
   it("limits propagation to needs-reconciliation", () => {
@@ -228,6 +241,7 @@ describe("reconciler module contract boundary", () => {
     const indexSource = readFileSync(join(moduleDir, "index.ts"), "utf8");
     expect(indexSource).not.toMatch(/from ["']@\/db/);
     expect(indexSource).not.toMatch(/from ["'].*grimodex/);
+    expect(indexSource).not.toMatch(/defaultSemanticAssessmentForFreshness/);
     expect(indexSource).toMatch(/from "\.\/types"/);
     expect(indexSource).toMatch(/from "\.\/contract"/);
   });

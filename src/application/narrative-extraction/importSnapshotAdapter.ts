@@ -30,7 +30,8 @@ export function buildImportCorpusSnapshotStub(
   const documentInputs: NarrativeSnapshotDocumentInput[] = pkg.documents.map(
     (doc, index) => ({
       sourceKey: doc.key,
-      parentSourceKey: pkg.nodes.find((n) => n.key === doc.nodeKey)?.parentKey ?? null,
+      parentSourceKey:
+        pkg.nodes.find((n) => n.key === doc.nodeKey)?.parentKey ?? null,
       title: doc.title,
       orderIndex: doc.orderIndex ?? index,
       proseMirrorJson: doc.proseMirrorJson,
@@ -73,7 +74,10 @@ export async function buildImportCorpusSnapshotDigest(
 
 export function toNarrativeCorpusSnapshotPlaceholder(
   stub: ImportCorpusSnapshot,
-): Pick<NarrativeCorpusSnapshot, "snapshotId" | "digest" | "language" | "origin"> {
+): Pick<
+  NarrativeCorpusSnapshot,
+  "snapshotId" | "digest" | "language" | "origin"
+> {
   return {
     snapshotId: stub.snapshotId,
     digest: stub.digest,

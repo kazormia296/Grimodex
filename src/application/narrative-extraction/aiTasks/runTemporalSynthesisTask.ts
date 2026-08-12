@@ -44,7 +44,9 @@ function buildPrompt(input: RunTemporalSynthesisTaskInput): string {
   const expressions = input.expressionSummaries
     .map((row) => `- ${row.expressionRef}: ${row.surface}`)
     .join("\n");
-  const candidates = input.candidateNodeRefs.map((ref) => `- ${ref}`).join("\n");
+  const candidates = input.candidateNodeRefs
+    .map((ref) => `- ${ref}`)
+    .join("\n");
   return `あなたは小説の時間関係推論アシスタントです。明示された時間関係だけを JSON で返してください。
 暦計算・epoch day・実 Scene/Event ID は出力しないでください。候補 Node Ref のみを使います。
 
@@ -73,7 +75,8 @@ function parseResult(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const relations = (parsed as { relations?: unknown }).relations;
   if (!Array.isArray(relations)) return null;
   const catalog = new Set(input.candidateNodeRefs);

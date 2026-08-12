@@ -58,6 +58,7 @@ function makeForeshadowRow(
     abandoned: false,
     secret: false,
     loadBearing: null,
+    version: 0,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-01"),
     ...overrides,

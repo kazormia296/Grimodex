@@ -430,12 +430,13 @@ fn apply_codex_rename_updates_in_tx(
     for update in updates {
         let changed = match update.kind.as_str() {
             "scene-body" => {
-                let char_count = update
-                    .char_count
-                    .filter(|count| *count >= 0)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("scene-body rename requires a non-negative charCount")
-                    })?;
+                let char_count =
+                    update
+                        .char_count
+                        .filter(|count| *count >= 0)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("scene-body rename requires a non-negative charCount")
+                        })?;
                 conn.execute(
                     "UPDATE tree_nodes
                         SET content = ?1, char_count = ?2,
@@ -556,7 +557,10 @@ pub struct CodexRenameApplyPayload {
 /// pre-cutover `agentWriteBundle` + Drizzle `.update().toSQL()` statements).
 /// Runs every update in one transaction, then records undo_journal +
 /// change_event exactly like `agent_write_bundle_impl` did.
-pub fn apply_codex_rename(db: &Database, payload: CodexRenameApplyPayload) -> anyhow::Result<Value> {
+pub fn apply_codex_rename(
+    db: &Database,
+    payload: CodexRenameApplyPayload,
+) -> anyhow::Result<Value> {
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.updated_at, "updatedAt")?;
     require_non_empty(&payload.entry_id, "entryId")?;
@@ -597,7 +601,10 @@ pub fn apply_codex_rename(db: &Database, payload: CodexRenameApplyPayload) -> an
                 crate::undo_journal::UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: payload.surface.as_deref().unwrap_or("codex-rename-propagation"),
+                    surface: payload
+                        .surface
+                        .as_deref()
+                        .unwrap_or("codex-rename-propagation"),
                     entity_kind: "codex_rename",
                     entity_id: &payload.entry_id,
                     op_kind: "codex.renamePropagate",
@@ -653,6 +660,37 @@ pub struct CreateScanStagingProjectPayload {
     pub title: String,
     pub language: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDeletePayload {
+    pub project_id: String,
+}
+
+/// Delete a project through a trusted domain writer so foreign-key cascades
+/// may clean up protected Narrative tables without reopening generic renderer
+/// SQL access. Durable AI audit rows intentionally have no project FK and are
+/// therefore retained.
+pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::Result<()> {
+    require_non_empty(&payload.project_id, "projectId")?;
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        // Upgraded workspaces may have received project_id through ALTER TABLE,
+        // which cannot add the fresh-schema foreign key. Keep that legacy
+        // cleanup inside the same trusted transaction as the root delete.
+        tx.execute(
+            "DELETE FROM lint_term_dictionary WHERE project_id = ?1",
+            rusqlite::params![payload.project_id],
+        )?;
+        let deleted = tx.execute(
+            "DELETE FROM projects WHERE id = ?1",
+            rusqlite::params![payload.project_id],
+        )?;
+        anyhow::ensure!(deleted == 1, "project '{}' not found", payload.project_id);
+        tx.commit()?;
+        Ok(())
+    })
 }
 
 pub fn create_scan_staging_project(
@@ -715,6 +753,14 @@ pub struct TreeNodeDeletePayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TreeNodePatchChangeEvent {
+    pub event_uid: String,
+    pub session_id: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TreeNodePatchPayload {
     pub project_id: String,
     pub node_id: String,
@@ -722,6 +768,7 @@ pub struct TreeNodePatchPayload {
     pub base_version: Option<i64>,
     pub bump_version: bool,
     pub updated_at: String,
+    pub change_event: Option<TreeNodePatchChangeEvent>,
 }
 
 const TREE_NODE_ROW_SELECT: &str = "
@@ -783,10 +830,83 @@ fn select_tree_node(
         .ok_or_else(|| anyhow::anyhow!("tree node '{node_id}' not found in project '{project_id}'"))
 }
 
-pub fn tree_node_create(
-    db: &Database,
-    payload: TreeNodeCreatePayload,
-) -> anyhow::Result<Value> {
+fn ensure_tree_parent_in_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    parent_id: &str,
+) -> anyhow::Result<()> {
+    require_non_empty(parent_id, "parentId")?;
+    let node_type = conn
+        .query_row(
+            "SELECT node_type FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+            params![parent_id, project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    anyhow::ensure!(
+        node_type.is_some(),
+        "tree node parent '{parent_id}' is not in project '{project_id}'"
+    );
+    anyhow::ensure!(
+        node_type.as_deref() == Some("folder"),
+        "tree node parent '{parent_id}' must be a folder"
+    );
+    Ok(())
+}
+
+fn ensure_tree_parent_does_not_cycle(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    node_id: &str,
+    parent_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        node_id != parent_id,
+        "tree node '{node_id}' cannot be its own parent"
+    );
+    let would_cycle: i64 = conn.query_row(
+        "WITH RECURSIVE ancestors(id) AS (
+             SELECT ?1
+             UNION
+             SELECT node.parent_id
+               FROM tree_nodes node
+               JOIN ancestors current ON current.id = node.id
+              WHERE node.project_id = ?2 AND node.parent_id IS NOT NULL
+         )
+         SELECT EXISTS(SELECT 1 FROM ancestors WHERE id = ?3)",
+        params![parent_id, project_id, node_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        would_cycle == 0,
+        "tree node parent '{parent_id}' would create a cycle for '{node_id}'"
+    );
+    Ok(())
+}
+
+fn ensure_tree_codex_reference_in_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    field: &str,
+    entry_id: &str,
+) -> anyhow::Result<()> {
+    require_non_empty(entry_id, field)?;
+    let owned = conn
+        .query_row(
+            "SELECT 1 FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            params![entry_id, project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    anyhow::ensure!(
+        owned,
+        "tree node {field} '{entry_id}' is not in project '{project_id}'"
+    );
+    Ok(())
+}
+
+pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow::Result<Value> {
     for (value, field) in [
         (&payload.id, "id"),
         (&payload.project_id, "projectId"),
@@ -802,19 +922,29 @@ pub fn tree_node_create(
     );
 
     db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        if let Some(parent_id) = payload.parent_id.as_deref() {
+            anyhow::ensure!(
+                parent_id != payload.id,
+                "tree node '{}' cannot be its own parent",
+                payload.id
+            );
+            ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
+        }
         let now = chrono::Utc::now().to_rfc3339();
         Database::execute_with_conn(
-            conn,
+            &tx,
             "INSERT INTO tree_nodes
-              (id, project_id, parent_id, node_type, title, synopsis, status,
+              (id, project_id, parent_id, node_type, title, sort_order, synopsis, status,
                source_uri, source_mtime, content, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
             &[
                 Value::String(payload.id.clone()),
                 Value::String(payload.project_id.clone()),
                 payload.parent_id.clone().map_or(Value::Null, Value::String),
                 Value::String(payload.node_type.clone()),
                 Value::String(payload.title.clone()),
+                Value::String(payload.sort_order.clone()),
                 payload.synopsis.clone().map_or(Value::Null, Value::String),
                 payload.status.clone().map_or(Value::Null, Value::String),
                 payload
@@ -830,14 +960,13 @@ pub fn tree_node_create(
             ],
             "run",
         )?;
-        select_tree_node(conn, &payload.project_id, &payload.id)
+        let row = select_tree_node(&tx, &payload.project_id, &payload.id)?;
+        tx.commit()?;
+        Ok(row)
     })
 }
 
-pub fn tree_node_delete(
-    db: &Database,
-    payload: TreeNodeDeletePayload,
-) -> anyhow::Result<()> {
+pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow::Result<()> {
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.node_id, "nodeId")?;
     db.with_conn(|conn| {
@@ -897,9 +1026,32 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
         }
     }
     anyhow::ensure!(
-        payload.patch.keys().all(|key| columns.iter().any(|(wire, _)| wire == key)),
+        payload
+            .patch
+            .keys()
+            .all(|key| columns.iter().any(|(wire, _)| wire == key)),
         "tree node patch contains an unsupported field"
     );
+    if let Some(event) = payload.change_event.as_ref() {
+        require_non_empty(&event.event_uid, "changeEvent.eventUid")?;
+        require_non_empty(&event.session_id, "changeEvent.sessionId")?;
+        anyhow::ensure!(
+            event.timestamp >= 0,
+            "tree node changeEvent timestamp must be non-negative"
+        );
+        anyhow::ensure!(
+            payload.base_version.is_some() && payload.bump_version,
+            "tree node content event requires versioned OCC"
+        );
+        anyhow::ensure!(
+            payload.patch.contains_key("content")
+                && payload
+                    .patch
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "content" | "charCount")),
+            "tree node content event requires a content-only patch"
+        );
+    }
     assignments.push(format!("updated_at = ?{}", params.len() + 1));
     params.push(Value::String(payload.updated_at.clone()));
     if payload.bump_version {
@@ -921,8 +1073,57 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
         sql.push_str(&format!(" AND version = ?{version_param}"));
     }
     db.with_conn(|conn| {
-        Database::execute_with_conn(conn, &sql, &params, "run")?;
-        let row = select_tree_node(conn, &payload.project_id, &payload.node_id)?;
+        let tx = conn.unchecked_transaction()?;
+        if let Some(parent_id) = payload.patch.get("parentId") {
+            match parent_id {
+                Value::Null => {}
+                Value::String(parent_id) => {
+                    ensure_tree_parent_does_not_cycle(
+                        &tx,
+                        &payload.project_id,
+                        &payload.node_id,
+                        parent_id,
+                    )?;
+                    ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
+                }
+                _ => anyhow::bail!("tree node parentId must be a string or null"),
+            }
+        }
+        for (wire_name, field) in [
+            ("povCharacterId", "povCharacterId"),
+            ("locationId", "locationId"),
+        ] {
+            if let Some(entry_id) = payload.patch.get(wire_name) {
+                match entry_id {
+                    Value::Null => {}
+                    Value::String(entry_id) => ensure_tree_codex_reference_in_project(
+                        &tx,
+                        &payload.project_id,
+                        field,
+                        entry_id,
+                    )?,
+                    _ => anyhow::bail!("tree node {field} must be a string or null"),
+                }
+            }
+        }
+
+        Database::execute_with_conn(&tx, &sql, &params, "run")?;
+        let updated = tx.changes();
+        if updated != 1 {
+            if let Some(base_version) = payload.base_version {
+                anyhow::bail!(
+                    "TREE_NODE_VERSION_MISMATCH: node '{}' version conflict; expected base version {}",
+                    payload.node_id,
+                    base_version
+                );
+            }
+            anyhow::bail!(
+                "tree node '{}' not found in project '{}'",
+                payload.node_id,
+                payload.project_id
+            );
+        }
+        let row = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
         if let Some(base_version) = payload.base_version {
             let expected_version = if payload.bump_version {
                 base_version
@@ -933,11 +1134,38 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
             };
             anyhow::ensure!(
                 row.get("version").and_then(Value::as_i64) == Some(expected_version),
-                "TREE_NODE_VERSION_MISMATCH: node '{}' expected version {}",
+                "TREE_NODE_VERSION_MISMATCH: node '{}' version conflict; expected base version {}",
                 payload.node_id,
                 base_version
             );
         }
+        if let Some(event) = payload.change_event.as_ref() {
+            anyhow::ensure!(
+                row.get("nodeType").and_then(Value::as_str) == Some("scene"),
+                "tree node content event target must be a scene"
+            );
+            let appended = crate::change_events::append_change_events_in_tx(
+                &tx,
+                &payload.project_id,
+                &event.session_id,
+                &[crate::change_events::AppendChangeEvent {
+                    event_uid: event.event_uid.clone(),
+                    scene_id: Some(payload.node_id.clone()),
+                    domain: "editor".to_string(),
+                    op_type: "scene.content_update".to_string(),
+                    entity_type: Some("tree_batch".to_string()),
+                    entity_id: Some(payload.node_id.clone()),
+                    payload: serde_json::json!({ "sceneId": payload.node_id }).to_string(),
+                    timestamp: event.timestamp,
+                }],
+            )?;
+            anyhow::ensure!(
+                appended.inserted_count == 1,
+                "tree node content event UID '{}' already exists",
+                event.event_uid
+            );
+        }
+        tx.commit()?;
         Ok(row)
     })
 }
@@ -1315,17 +1543,12 @@ mod tests {
         )
         .expect("create tree node");
         assert_eq!(created["id"], "native-scene");
+        assert_eq!(created["sortOrder"], "a1");
         assert_eq!(created["version"], 0);
 
         let patch = serde_json::Map::from_iter([
-            (
-                "storyTimeOrder".to_string(),
-                serde_json::json!("a0V"),
-            ),
-            (
-                "storyTimeLabel".to_string(),
-                serde_json::json!("Day 1"),
-            ),
+            ("storyTimeOrder".to_string(), serde_json::json!("a0V")),
+            ("storyTimeLabel".to_string(), serde_json::json!("Day 1")),
         ]);
         let patched = tree_node_patch(
             &db,
@@ -1336,6 +1559,7 @@ mod tests {
                 base_version: Some(0),
                 bump_version: true,
                 updated_at: "native-update".to_string(),
+                change_event: None,
             },
         )
         .expect("patch tree node");
@@ -1360,5 +1584,375 @@ mod tests {
             Ok(())
         })
         .expect("verify tree node deletion");
+    }
+
+    #[test]
+    fn native_tree_create_persists_distinct_sort_orders() {
+        let db = fixture();
+        for (id, node_type, sort_order) in [
+            ("ordered-folder", "folder", "a2"),
+            ("ordered-scene", "scene", "a0V"),
+            ("ordered-note", "note", "a1"),
+        ] {
+            let created = tree_node_create(
+                &db,
+                TreeNodeCreatePayload {
+                    id: id.to_string(),
+                    project_id: "p1".to_string(),
+                    parent_id: Some("root".to_string()),
+                    node_type: node_type.to_string(),
+                    title: id.to_string(),
+                    sort_order: sort_order.to_string(),
+                    synopsis: None,
+                    status: None,
+                    source_uri: None,
+                    source_mtime: None,
+                    content: None,
+                },
+            )
+            .expect("create ordered tree node");
+            assert_eq!(created["sortOrder"], sort_order);
+        }
+
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id FROM tree_nodes
+                  WHERE project_id = 'p1' AND id LIKE 'ordered-%'
+                  ORDER BY sort_order",
+            )?;
+            let ordered_ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(
+                ordered_ids,
+                vec!["ordered-scene", "ordered-note", "ordered-folder"]
+            );
+            Ok(())
+        })
+        .expect("read ordered tree nodes");
+    }
+
+    #[test]
+    fn native_tree_create_rejects_invalid_parents_without_inserting() {
+        let db = fixture();
+        for (id, parent_id, marker) in [
+            ("cross-parent-create", "foreign-node", "not in project 'p1'"),
+            ("non-folder-parent-create", "moved", "must be a folder"),
+            ("self-parent-create", "self-parent-create", "own parent"),
+        ] {
+            let error = tree_node_create(
+                &db,
+                TreeNodeCreatePayload {
+                    id: id.to_string(),
+                    project_id: "p1".to_string(),
+                    parent_id: Some(parent_id.to_string()),
+                    node_type: "scene".to_string(),
+                    title: "Must not exist".to_string(),
+                    sort_order: "a9".to_string(),
+                    synopsis: None,
+                    status: None,
+                    source_uri: None,
+                    source_mtime: None,
+                    content: None,
+                },
+            )
+            .expect_err("invalid parent must be rejected");
+            assert!(error.to_string().contains(marker));
+            db.with_conn(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0);
+                Ok(())
+            })
+            .expect("verify invalid-parent create rollback");
+        }
+    }
+
+    #[test]
+    fn native_tree_patch_rejects_cross_project_relations_without_mutation() {
+        let db = fixture();
+        for (field, value) in [
+            ("parentId", "foreign-node"),
+            ("povCharacterId", "foreign-codex"),
+            ("locationId", "foreign-codex"),
+        ] {
+            let error = tree_node_patch(
+                &db,
+                TreeNodePatchPayload {
+                    project_id: "p1".to_string(),
+                    node_id: "moved".to_string(),
+                    patch: serde_json::Map::from_iter([(
+                        field.to_string(),
+                        Value::String(value.to_string()),
+                    )]),
+                    base_version: Some(0),
+                    bump_version: true,
+                    updated_at: format!("rejected-{field}"),
+                    change_event: None,
+                },
+            )
+            .expect_err("cross-project relation must be rejected");
+            assert!(error.to_string().contains("not in project 'p1'"));
+
+            db.with_conn(|conn| {
+                let (parent_id, pov_id, location_id, version, updated_at): (
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    i64,
+                    String,
+                ) = conn.query_row(
+                    "SELECT parent_id, pov_character_id, location_id, version, updated_at
+                       FROM tree_nodes WHERE id = 'moved'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )?;
+                assert_eq!(parent_id, None);
+                assert_eq!(pov_id, None);
+                assert_eq!(location_id, None);
+                assert_eq!(version, 0);
+                assert_ne!(updated_at, format!("rejected-{field}"));
+                Ok(())
+            })
+            .expect("verify cross-project patch rollback");
+        }
+
+        tree_node_create(
+            &db,
+            TreeNodeCreatePayload {
+                id: "leaf-parent".to_string(),
+                project_id: "p1".to_string(),
+                parent_id: Some("root".to_string()),
+                node_type: "note".to_string(),
+                title: "Leaf".to_string(),
+                sort_order: "a9".to_string(),
+                synopsis: None,
+                status: None,
+                source_uri: None,
+                source_mtime: None,
+                content: None,
+            },
+        )
+        .expect("create non-folder parent candidate");
+        for (parent_id, marker) in [("leaf-parent", "must be a folder"), ("moved", "own parent")] {
+            let error = tree_node_patch(
+                &db,
+                TreeNodePatchPayload {
+                    project_id: "p1".to_string(),
+                    node_id: "moved".to_string(),
+                    patch: serde_json::Map::from_iter([(
+                        "parentId".to_string(),
+                        Value::String(parent_id.to_string()),
+                    )]),
+                    base_version: Some(0),
+                    bump_version: true,
+                    updated_at: format!("rejected-parent-{parent_id}"),
+                    change_event: None,
+                },
+            )
+            .expect_err("invalid structural parent must be rejected");
+            assert!(error.to_string().contains(marker));
+        }
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET parent_id = 'root' WHERE id = 'created-parent'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed descendant folder");
+        let cycle = tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "p1".to_string(),
+                node_id: "root".to_string(),
+                patch: serde_json::Map::from_iter([(
+                    "parentId".to_string(),
+                    Value::String("created-parent".to_string()),
+                )]),
+                base_version: Some(0),
+                bump_version: true,
+                updated_at: "rejected-cycle".to_string(),
+                change_event: None,
+            },
+        )
+        .expect_err("descendant parent must be rejected");
+        assert!(cycle.to_string().contains("create a cycle"));
+
+        db.with_conn(|conn| {
+            let (moved_parent, moved_version): (Option<String>, i64) = conn.query_row(
+                "SELECT parent_id, version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let (root_parent, root_version): (Option<String>, i64) = conn.query_row(
+                "SELECT parent_id, version FROM tree_nodes WHERE id = 'root'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(moved_parent, None);
+            assert_eq!(moved_version, 0);
+            assert_eq!(root_parent, None);
+            assert_eq!(root_version, 0);
+            Ok(())
+        })
+        .expect("verify structural parent rejections did not mutate nodes");
+    }
+
+    #[test]
+    fn native_tree_patch_rejects_one_generation_stale_conflict_without_mutation() {
+        let db = fixture();
+        let winner = tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "p1".to_string(),
+                node_id: "moved".to_string(),
+                patch: serde_json::Map::from_iter([(
+                    "content".to_string(),
+                    serde_json::json!("winner"),
+                )]),
+                base_version: Some(0),
+                bump_version: true,
+                updated_at: "winner-update".to_string(),
+                change_event: None,
+            },
+        )
+        .expect("write winning tree patch");
+        assert_eq!(winner["content"], "winner");
+        assert_eq!(winner["version"], 1);
+
+        let error = tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "p1".to_string(),
+                node_id: "moved".to_string(),
+                patch: serde_json::Map::from_iter([(
+                    "content".to_string(),
+                    serde_json::json!("stale"),
+                )]),
+                base_version: Some(0),
+                bump_version: true,
+                updated_at: "stale-update".to_string(),
+                change_event: None,
+            },
+        )
+        .expect_err("one-generation-stale patch must conflict");
+        let message = error.to_string();
+        assert!(message.contains("TREE_NODE_VERSION_MISMATCH"));
+        assert!(message.contains("conflict"));
+
+        db.with_conn(|conn| {
+            let (content, version, updated_at): (String, i64, String) = conn.query_row(
+                "SELECT content, version, updated_at FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(content, "winner");
+            assert_eq!(version, 1);
+            assert_eq!(updated_at, "winner-update");
+            Ok(())
+        })
+        .expect("verify stale patch did not mutate the tree node");
+    }
+
+    #[test]
+    fn native_tree_content_event_commits_with_canonical_chain_and_rolls_back_duplicate_uid() {
+        let db = fixture();
+        let patch = |content: &str, base_version: i64, event_uid: &str, timestamp: i64| {
+            tree_node_patch(
+                &db,
+                TreeNodePatchPayload {
+                    project_id: "p1".to_string(),
+                    node_id: "moved".to_string(),
+                    patch: serde_json::Map::from_iter([
+                        ("content".to_string(), serde_json::json!(content)),
+                        ("charCount".to_string(), serde_json::json!(content.len())),
+                    ]),
+                    base_version: Some(base_version),
+                    bump_version: true,
+                    updated_at: format!("event-{timestamp}"),
+                    change_event: Some(TreeNodePatchChangeEvent {
+                        event_uid: event_uid.to_string(),
+                        session_id: "external-product-journey".to_string(),
+                        timestamp,
+                    }),
+                },
+            )
+        };
+
+        patch("first", 0, "event-1", 10).expect("first atomic content event");
+        patch("second", 1, "event-2", 20).expect("second atomic content event");
+
+        db.with_conn(|conn| {
+            let rows = conn
+                .prepare(
+                    "SELECT event_uid, scene_id, domain, op_type, entity_type,
+                            entity_id, payload, session_id, sequence, prev_hash, hash
+                       FROM change_events WHERE project_id = 'p1' ORDER BY sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].0, "event-1");
+            assert_eq!(rows[0].1.as_deref(), Some("moved"));
+            assert_eq!(rows[0].2, "editor");
+            assert_eq!(rows[0].3, "scene.content_update");
+            assert_eq!(rows[0].4.as_deref(), Some("tree_batch"));
+            assert_eq!(rows[0].5.as_deref(), Some("moved"));
+            assert_eq!(rows[0].6, r#"{"sceneId":"moved"}"#);
+            assert_eq!(rows[0].7, "external-product-journey");
+            assert_eq!(rows[0].8, 1);
+            assert_eq!(rows[0].9, "0".repeat(64));
+            assert_eq!(rows[0].10.len(), 64);
+            assert_eq!(rows[1].8, 2);
+            assert_eq!(rows[1].9, rows[0].10);
+            assert_eq!(rows[1].10.len(), 64);
+            Ok(())
+        })
+        .expect("read canonical content event chain");
+
+        let error = patch("must-roll-back", 2, "event-2", 30)
+            .expect_err("duplicate event UID must roll back the content patch");
+        assert!(error.to_string().contains("already exists"));
+        db.with_conn(|conn| {
+            let (content, version, event_count): (String, i64, i64) = conn.query_row(
+                "SELECT content, version,
+                        (SELECT COUNT(*) FROM change_events WHERE project_id = 'p1')
+                   FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(content, "second");
+            assert_eq!(version, 2);
+            assert_eq!(event_count, 2);
+            Ok(())
+        })
+        .expect("verify duplicate UID rollback");
     }
 }

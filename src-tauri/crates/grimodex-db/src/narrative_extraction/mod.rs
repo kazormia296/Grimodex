@@ -25,6 +25,12 @@ mod temporal_snapshots;
 mod temporal_undo;
 mod undo;
 
+pub(crate) use foreshadow_operations::collect_aggregate_snapshot;
+pub(crate) use foreshadow_undo::{
+    delete_snapshot_at_version, ensure_matches_snapshot as ensure_foreshadow_snapshot_matches,
+    reapply_created_snapshot,
+};
+
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,

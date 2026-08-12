@@ -43,7 +43,10 @@ function validateField(
       ),
     );
   }
-  if (field.type === "enum" && (!field.enumValues || field.enumValues.length === 0)) {
+  if (
+    field.type === "enum" &&
+    (!field.enumValues || field.enumValues.length === 0)
+  ) {
     diagnostics.push(
       importDiagnostic(
         "error",
@@ -95,7 +98,9 @@ function validateRecord(
   }
 
   for (const nested of record.nestedRecords ?? []) {
-    diagnostics.push(...validateRecord(nested, depth + 1, new Set(seenRecordIds)));
+    diagnostics.push(
+      ...validateRecord(nested, depth + 1, new Set(seenRecordIds)),
+    );
   }
 
   seenRecordIds.delete(record.recordId);

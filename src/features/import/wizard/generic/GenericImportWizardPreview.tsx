@@ -62,15 +62,14 @@ export function GenericImportWizardPreview({ onClose }: Props) {
   );
 
   const resolutions = useMemo(() => {
-    const decodedResources: DecodedImportResource[] = decodedPreviewResources.map(
-      ({ _index: _, ...resource }) => ({
+    const decodedResources: DecodedImportResource[] =
+      decodedPreviewResources.map(({ _index: _, ...resource }) => ({
         ...resource,
         decoderId: "markdown",
         decoderVersion: "1",
         blocks: [],
         diagnostics: [],
-      }),
-    );
+      }));
     const base = classifyResources(decodedResources);
     return base.map((resolution) => {
       const override = roleOverrides[resolution.resourceKey];
@@ -125,7 +124,9 @@ export function GenericImportWizardPreview({ onClose }: Props) {
         />
         <GenericResourceTree
           resources={resolutions}
-          selectedResourceKey={selectedResourceKey ?? selectedResolution?.resourceKey ?? null}
+          selectedResourceKey={
+            selectedResourceKey ?? selectedResolution?.resourceKey ?? null
+          }
           onSelectResource={setSelectedResourceKey}
         />
         {selectedResolution && (
@@ -143,7 +144,10 @@ export function GenericImportWizardPreview({ onClose }: Props) {
         )}
         <GenericImportSummary draft={draft} assemblyPlan={assemblyPlan} />
         {diagnostics.length > 0 && (
-          <ul className="text-xs text-muted-foreground" data-testid="generic-import-diagnostics">
+          <ul
+            className="text-xs text-muted-foreground"
+            data-testid="generic-import-diagnostics"
+          >
             {diagnostics.map((diag, index) => (
               <li key={`${diag.code}-${index}`}>
                 [{diag.severity}] {diag.message}

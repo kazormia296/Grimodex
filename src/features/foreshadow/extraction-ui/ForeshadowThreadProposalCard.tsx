@@ -24,10 +24,7 @@ function bindingLabel(
         "候補が複数あり未解決",
       );
     case "already-satisfied":
-      return t(
-        "foreshadow.reviewExtract.binding.alreadySatisfied",
-        "既に充足",
-      );
+      return t("foreshadow.reviewExtract.binding.alreadySatisfied", "既に充足");
   }
 }
 

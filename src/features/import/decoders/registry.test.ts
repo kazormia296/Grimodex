@@ -22,7 +22,9 @@ describe("import decoder registry", () => {
 
   it("rejects duplicate id+version registration", () => {
     registerImportDecoder(textDecoder);
-    expect(() => registerImportDecoder(textDecoder)).toThrow(/already registered/);
+    expect(() => registerImportDecoder(textDecoder)).toThrow(
+      /already registered/,
+    );
   });
 
   it("loads default decoders on module import", async () => {
@@ -36,4 +38,10 @@ describe("import decoder registry", () => {
   });
 });
 
-export { textDecoder, markdownDecoder, jsonDecoder, delimitedTextDecoder, htmlDecoder };
+export {
+  textDecoder,
+  markdownDecoder,
+  jsonDecoder,
+  delimitedTextDecoder,
+  htmlDecoder,
+};

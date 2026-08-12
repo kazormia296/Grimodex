@@ -87,7 +87,8 @@ export async function runGenericImportRecordReconcileTask(
   if (!parsed && input.repairOnFailure !== false) {
     const repaired = await runStructuredRepairTask({
       brokenText: response.text,
-      expectedShape: '{"groups":[{"canonicalId":"string","memberIds":["string"]}]}',
+      expectedShape:
+        '{"groups":[{"canonicalId":"string","memberIds":["string"]}]}',
       projectId,
     });
     if (repaired) parsed = parseReconcileResult(repaired);

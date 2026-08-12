@@ -23,11 +23,18 @@ export interface TemporalAttachmentAiResult {
   readonly expressionRef: string;
   readonly targetRef: string | null;
   readonly anchorRef: string | null;
-  readonly role: "occurs-at" | "starts-at" | "ends-at" | "duration" | "relative-to";
+  readonly role:
+    | "occurs-at"
+    | "starts-at"
+    | "ends-at"
+    | "duration"
+    | "relative-to";
 }
 
 function buildPrompt(input: RunTemporalAttachmentTaskInput): string {
-  const candidates = input.candidateNodeRefs.map((ref) => `- ${ref}`).join("\n");
+  const candidates = input.candidateNodeRefs
+    .map((ref) => `- ${ref}`)
+    .join("\n");
   return `あなたは小説の時間表現 Attachment アシスタントです。時間表現がどの Temporal Node に掛かるかを JSON で返してください。
 候補にない Node Ref は絶対に作らないでください。実 Scene / Event / DB ID は使いません。
 
@@ -56,7 +63,8 @@ function parseResult(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const row = parsed as Record<string, unknown>;
   if (row.expressionRef !== input.expressionRef) return null;
   const catalog = new Set(input.candidateNodeRefs);

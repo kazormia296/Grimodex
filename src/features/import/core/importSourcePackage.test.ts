@@ -42,8 +42,12 @@ function baseDraft(createdAt: string): ImportSourcePackageDraft {
 
 describe("import source package digest", () => {
   it("ignores createdAt when computing digest", async () => {
-    const a = await digestImportSourcePackage(baseDraft("2026-01-01T00:00:00.000Z"));
-    const b = await digestImportSourcePackage(baseDraft("2026-02-01T00:00:00.000Z"));
+    const a = await digestImportSourcePackage(
+      baseDraft("2026-01-01T00:00:00.000Z"),
+    );
+    const b = await digestImportSourcePackage(
+      baseDraft("2026-02-01T00:00:00.000Z"),
+    );
     expect(a).toBe(b);
   });
 

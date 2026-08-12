@@ -39,7 +39,7 @@ use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
 use grimodex_db::domain_writes::{
     self, CodexRenameApplyPayload, CodexRenameUndoPayload, CreateScanStagingProjectPayload,
-    ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
+    ProjectDeletePayload, ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
     TreeNodeDeletePayload, TreeNodePatchPayload, UndoTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
@@ -79,6 +79,7 @@ use grimodex_db::recovery::{
     export_safe_mode_diagnostics, list_safe_mode_candidates, quarantine_live_database,
     restore_safe_mode_candidate, verify_safe_mode_candidate,
 };
+use grimodex_db::runtime_performance_seed::{self, RuntimePerformanceSeedPayload};
 use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
@@ -92,6 +93,24 @@ use grimodex_db::{with_db_state, AppError, BatchStatement, Database, QueryResult
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn};
+
+const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
+
+fn validate_runtime_performance_owner_token(owner_token: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        owner_token.len() <= 200,
+        "runtime performance fixture owner token is too long"
+    );
+    let expected = std::env::var(RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("runtime performance fixture seed is disabled"))?;
+    anyhow::ensure!(
+        !owner_token.is_empty() && owner_token == expected,
+        "runtime performance fixture owner token mismatch"
+    );
+    Ok(())
+}
 
 #[derive(Clone)]
 struct CorrelatedStreamEmitter {
@@ -1926,6 +1945,16 @@ impl Backend {
     }
 
     #[napi]
+    pub async fn project_delete(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ProjectDeletePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::project_delete(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
     pub async fn tree_plan_undo(&self, payload: serde_json::Value) -> Result<()> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
@@ -2059,6 +2088,29 @@ impl Backend {
             let payload: SaveSceneBodyBundlePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
                 let result = scene_body::save_scene_body_bundle(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
+    /// CI-only deterministic runtime fixture writer. The per-launch owner
+    /// token makes the command fail closed outside the performance harness;
+    /// the shared DB layer validates and commits the typed graph in one tx.
+    #[napi]
+    pub async fn runtime_performance_seed(
+        &self,
+        owner_token: String,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            validate_runtime_performance_owner_token(&owner_token)?;
+            runtime_performance_seed::validate_runtime_performance_seed_wire_value(&payload)?;
+            let payload: RuntimePerformanceSeedPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result =
+                    runtime_performance_seed::seed_runtime_performance_fixture(db, payload)?;
                 Ok(serde_json::to_string(&result)?)
             })
         })
@@ -3580,9 +3632,12 @@ impl Backend {
 
     /// プロットスレッド削除。
     #[napi]
-    pub async fn plot_thread_delete(&self, id: String) -> Result<()> {
+    pub async fn plot_thread_delete(&self, id: String, base_version: i64) -> Result<()> {
         let state = Arc::clone(&self.state);
-        run_blocking(move || with_db_state(&state.ws, |db| plot_threads::delete(db, id))).await
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| plot_threads::delete(db, id, base_version))
+        })
+        .await
     }
 
     /// プロジェクトのスレッド一覧 (sort_order 昇順)。
@@ -3653,7 +3708,7 @@ impl Backend {
     pub async fn plot_thread_branch_delete(
         &self,
         id: String,
-        base_version: Option<i64>,
+        base_version: i64,
     ) -> Result<()> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
@@ -3732,9 +3787,14 @@ impl Backend {
 
     /// リンク削除。
     #[napi]
-    pub async fn plot_thread_link_delete(&self, id: String) -> Result<()> {
+    pub async fn plot_thread_link_delete(&self, id: String, base_version: i64) -> Result<()> {
         let state = Arc::clone(&self.state);
-        run_blocking(move || with_db_state(&state.ws, |db| plot_threads::link_delete(db, id))).await
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                plot_threads::link_delete(db, id, base_version)
+            })
+        })
+        .await
     }
 
     /// プロジェクトの全リンク (thread の project で JOIN 絞り込み)。
@@ -3790,11 +3850,25 @@ impl Backend {
         .await
     }
 
-    /// 伏線削除。
+    /// 伏線削除。呼び出し元が観測した version と一致するときだけ削除し、
+    /// 削除した aggregate の receipt を返す。
     #[napi]
-    pub async fn foreshadow_delete(&self, id: String) -> Result<()> {
+    pub async fn foreshadow_delete(
+        &self,
+        id: String,
+        project_id: String,
+        base_version: i64,
+        session_id: String,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
-        run_blocking(move || with_db_state(&state.ws, |db| foreshadow::delete(db, id))).await
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let receipt =
+                    foreshadow::delete(db, id, project_id, base_version, session_id)?;
+                Ok(serde_json::to_string(&receipt)?)
+            })
+        })
+        .await
     }
 
     /// 伏線 + setup ラベル行を 1 ロックで取得。返り値: ForeshadowListWithLabels
@@ -3900,11 +3974,14 @@ impl Backend {
         &self,
         id: String,
         patch: serde_json::Value,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let patch: ForeshadowSetupPatch = from_wire("patch", patch)?;
-            with_db_state(&state.ws, |db| foreshadow::update_setup(db, id, patch))
+            with_db_state(&state.ws, |db| {
+                let row = foreshadow::update_setup(db, id, patch)?;
+                Ok(serde_json::to_string(&row)?)
+            })
         })
         .await
     }
@@ -3929,11 +4006,13 @@ impl Backend {
         &self,
         foreshadow_id: String,
         codex_id: String,
-    ) -> Result<()> {
+        base_version: i64,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                foreshadow::link_codex(db, foreshadow_id, codex_id)
+                let row = foreshadow::link_codex(db, foreshadow_id, codex_id, base_version)?;
+                Ok(serde_json::to_string(&row)?)
             })
         })
         .await
@@ -3945,11 +4024,13 @@ impl Backend {
         &self,
         foreshadow_id: String,
         codex_id: String,
-    ) -> Result<()> {
+        base_version: i64,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                foreshadow::unlink_codex(db, foreshadow_id, codex_id)
+                let row = foreshadow::unlink_codex(db, foreshadow_id, codex_id, base_version)?;
+                Ok(serde_json::to_string(&row)?)
             })
         })
         .await
@@ -3961,11 +4042,12 @@ impl Backend {
         &self,
         project_id: String,
         codex_entry_id: String,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                foreshadow::mark_linked_codex_dirty(db, project_id, codex_entry_id)
+                let rows = foreshadow::mark_linked_codex_dirty(db, project_id, codex_entry_id)?;
+                Ok(serde_json::to_string(&rows)?)
             })
         })
         .await
@@ -3991,11 +4073,14 @@ impl Backend {
         &self,
         setup_id: String,
         strength: Option<String>,
-    ) -> Result<()> {
+        base_version: i64,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                foreshadow::set_setup_strength(db, setup_id, strength)
+                let row =
+                    foreshadow::set_setup_strength(db, setup_id, strength, base_version)?;
+                Ok(serde_json::to_string(&row)?)
             })
         })
         .await
@@ -4004,18 +4089,21 @@ impl Backend {
     /// AI 由来 setup の upsert。`input` は camelCase の SetupCreateAiInput
     /// (fromPos/toPos は i64、lastEvaluatedAt は Option<i64> — from_wire が正規化)。
     #[napi]
-    pub async fn foreshadow_setup_create_ai(&self, input: serde_json::Value) -> Result<()> {
+    pub async fn foreshadow_setup_create_ai(&self, input: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let input: SetupCreateAiInput = from_wire("input", input)?;
-            with_db_state(&state.ws, |db| foreshadow::setup_create_ai(db, input))
+            with_db_state(&state.ws, |db| {
+                let row = foreshadow::setup_create_ai(db, input)?;
+                Ok(serde_json::to_string(&row)?)
+            })
         })
         .await
     }
 
     /// orphan setup の解決 (reanchor / delete / reinsert)。`payload` は camelCase
     /// の OrphanResolvePayload (fromPos/toPos は Option<i64>)。
-    /// 返り値: reinsert 時のみ new_id、その他は null の JSON 文字列。
+    /// 返り値: setup id と authoritative Foreshadow 行を含む receipt の JSON 文字列。
     #[napi]
     pub async fn foreshadow_resolve_orphan(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
@@ -4038,14 +4126,25 @@ impl Backend {
         scene_id: String,
         setups: serde_json::Value,
         payoffs: serde_json::Value,
+        base_versions: serde_json::Value,
         doc_content_size: i64,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let setups: Vec<SetupAnchorInput> = from_wire("setups", setups)?;
             let payoffs: Vec<PayoffAnchorInput> = from_wire("payoffs", payoffs)?;
+            let base_versions: std::collections::HashMap<String, i64> =
+                from_wire("baseVersions", base_versions)?;
             with_db_state(&state.ws, |db| {
-                foreshadow::save_anchors_for_scene(db, scene_id, setups, payoffs, doc_content_size)
+                let rows = foreshadow::save_anchors_for_scene(
+                    db,
+                    scene_id,
+                    setups,
+                    payoffs,
+                    base_versions,
+                    doc_content_size,
+                )?;
+                Ok(serde_json::to_string(&rows)?)
             })
         })
         .await
@@ -4270,6 +4369,20 @@ impl Backend {
             |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
                 agent_writes::agent_scene_event_mutate_impl(db, p, true)
             },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_scene_event_link_batch(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_scene_event_link_batch_impl,
         )
         .await
     }

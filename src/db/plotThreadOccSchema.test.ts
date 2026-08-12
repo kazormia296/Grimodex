@@ -21,9 +21,7 @@ describe("plot thread OCC schema (SCHEMA 10)", () => {
 
   it("is present in schema-contract at version 10+", () => {
     expect(contractJson.schemaVersion).toBeGreaterThanOrEqual(10);
-    expect(
-      contractJson.tables.plot_threads.columns.version,
-    ).toBeDefined();
+    expect(contractJson.tables.plot_threads.columns.version).toBeDefined();
     expect(
       contractJson.tables.plot_thread_scene_links.columns.semantic_key,
     ).toBeDefined();

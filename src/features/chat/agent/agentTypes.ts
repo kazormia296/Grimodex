@@ -5,6 +5,7 @@ export interface ToolParameterSchema {
   type: string;
   /** ネストしたプロパティでは省略可。トップレベルは付けるのが望ましい。 */
   description?: string;
+  minimum?: number;
   items?: ToolParameterSchema;
   enum?: string[];
   properties?: Record<string, ToolParameterSchema>;

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { delimitedTextDecoder, parseDelimitedLine } from "./delimitedTextDecoder";
+import {
+  delimitedTextDecoder,
+  parseDelimitedLine,
+} from "./delimitedTextDecoder";
 
 describe("delimitedTextDecoder", () => {
   it("parses quoted CSV cells", () => {
@@ -16,7 +19,10 @@ describe("delimitedTextDecoder", () => {
     });
     expect(decoded.kind).toBe("table");
     expect(decoded.blocks).toHaveLength(2);
-    const data = decoded.structuredData as { headers: string[]; rows: string[][] };
+    const data = decoded.structuredData as {
+      headers: string[];
+      rows: string[][];
+    };
     expect(data.headers).toEqual(["name", "role"]);
     expect(data.rows[0]).toEqual(["Alice", "hero"]);
   });

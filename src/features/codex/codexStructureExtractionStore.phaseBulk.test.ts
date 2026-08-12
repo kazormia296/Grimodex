@@ -41,6 +41,7 @@ function emptyProjection(
     phaseCount: 0,
     unresolvedCount: 0,
     approvedCount: 0,
+    catalog: null,
     ...overrides,
   };
 }

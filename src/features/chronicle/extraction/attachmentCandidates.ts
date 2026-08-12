@@ -15,7 +15,10 @@ export interface AttachmentCandidateContext {
 
 export type AttachmentCandidateResult =
   | { readonly status: "resolved"; readonly nodeId: TemporalNodeId }
-  | { readonly status: "ambiguous"; readonly candidates: readonly TemporalNodeId[] }
+  | {
+      readonly status: "ambiguous";
+      readonly candidates: readonly TemporalNodeId[];
+    }
   | { readonly status: "unresolved" };
 
 /**
@@ -49,11 +52,13 @@ export function buildAttachmentCandidates(
 export function validateAttachmentNodeRefs(
   returnedRefs: readonly string[],
   catalog: ReadonlySet<string>,
-): { readonly ok: true; readonly refs: readonly TemporalNodeId[] } | {
-  readonly ok: false;
-  readonly reason: "unknown-ref";
-  readonly invalid: readonly string[];
-} {
+):
+  | { readonly ok: true; readonly refs: readonly TemporalNodeId[] }
+  | {
+      readonly ok: false;
+      readonly reason: "unknown-ref";
+      readonly invalid: readonly string[];
+    } {
   const invalid = returnedRefs.filter((ref) => !catalog.has(ref));
   if (invalid.length > 0) {
     return { ok: false, reason: "unknown-ref", invalid };

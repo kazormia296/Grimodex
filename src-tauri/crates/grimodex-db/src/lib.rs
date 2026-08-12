@@ -567,6 +567,7 @@ pub mod plot_threads;
 pub mod post_effect;
 pub mod project_snapshots;
 pub mod protected_writers;
+pub mod runtime_performance_seed;
 pub mod runtime_threads;
 pub mod sample_seed;
 pub mod scene_body;

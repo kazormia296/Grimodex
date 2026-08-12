@@ -109,7 +109,10 @@ export function propagateDomains(input: PropagateInput): PropagateResult {
 
   let changed = true;
   let guard = 0;
-  const maxIter = Math.max(64, input.variables.length * input.variables.length + 8);
+  const maxIter = Math.max(
+    64,
+    input.variables.length * input.variables.length + 8,
+  );
   while (changed && guard++ < maxIter) {
     changed = false;
     for (const diff of input.differences) {
@@ -138,10 +141,7 @@ export function propagateDomains(input: PropagateInput): PropagateResult {
             conflictingConstraintIds: [diff.sourceConstraintId],
           };
         }
-        if (
-          merged.earliest !== x.earliest ||
-          merged.latest !== x.latest
-        ) {
+        if (merged.earliest !== x.earliest || merged.latest !== x.latest) {
           nextX = merged;
           changed = true;
         }
@@ -164,10 +164,7 @@ export function propagateDomains(input: PropagateInput): PropagateResult {
             conflictingConstraintIds: [diff.sourceConstraintId],
           };
         }
-        if (
-          merged.earliest !== y.earliest ||
-          merged.latest !== y.latest
-        ) {
+        if (merged.earliest !== y.earliest || merged.latest !== y.latest) {
           nextY = merged;
           changed = true;
         }

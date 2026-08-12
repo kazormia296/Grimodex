@@ -10,8 +10,12 @@ import {
 describe("narrative temporal tables schema", () => {
   it("exposes nodes / constraints / projections with version columns", () => {
     expect(getTableColumns(narrativeTemporalNodes).version.default).toBe(0);
-    expect(getTableColumns(narrativeTemporalConstraints).version.default).toBe(0);
-    expect(getTableColumns(narrativeTemporalProjections).version.default).toBe(0);
+    expect(getTableColumns(narrativeTemporalConstraints).version.default).toBe(
+      0,
+    );
+    expect(getTableColumns(narrativeTemporalProjections).version.default).toBe(
+      0,
+    );
   });
 
   it("is present in schema-contract at SCHEMA_VERSION 9+", () => {

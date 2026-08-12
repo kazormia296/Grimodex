@@ -22,7 +22,14 @@ const {
 } = vi.hoisted(() => ({
   mockLoadSceneFull: vi.fn(),
   mockLoadAuthorshipSpans: vi.fn().mockResolvedValue([]),
-  mockPersist: vi.fn().mockResolvedValue(undefined),
+  mockPersist: vi.fn().mockResolvedValue({
+    placedBeatPreview: null,
+    unplacedBeatPreview: null,
+    contentVersion: 1,
+    contentUpdatedAt: "2026-08-11T00:00:00.000Z",
+    dbTransactionCount: 1,
+    foreshadowRows: [],
+  }),
   mockToastError: vi.fn(),
   mockToastInfo: vi.fn(),
   createdEditors: [] as unknown[],
@@ -786,6 +793,14 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     mockPersist.mockImplementationOnce(async () => {
       // 保存の await 中に次の編集が入る
       lastEditor().commands.insertContentAt(1, "編集B");
+      return {
+        placedBeatPreview: null,
+        unplacedBeatPreview: null,
+        contentVersion: 1,
+        contentUpdatedAt: "2026-08-11T00:00:00.000Z",
+        dbTransactionCount: 1,
+        foreshadowRows: [],
+      };
     });
     mockSetTabDirty.mockClear();
     await saveScene("scene-0001");

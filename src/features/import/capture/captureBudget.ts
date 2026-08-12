@@ -39,7 +39,9 @@ export function captureBudgetFileViolation(
   if (file.size > maxBytes) return "file-too-large";
   const depthViolation = importPathDepthViolation(file.webkitRelativePath);
   if (depthViolation && file.webkitRelativePath) {
-    const depth = file.webkitRelativePath.split(/[\\/]+/u).filter(Boolean).length;
+    const depth = file.webkitRelativePath
+      .split(/[\\/]+/u)
+      .filter(Boolean).length;
     if (depth > budget.maxFolderDepth) return "path-too-deep";
   }
   return importFileLimitViolation(file, kind);

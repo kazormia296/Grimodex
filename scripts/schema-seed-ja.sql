@@ -839,6 +839,7 @@ CREATE INDEX IF NOT EXISTS idx_event_participants_codex ON event_participants(co
 CREATE TABLE IF NOT EXISTS scene_events (
     scene_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
     event_id  TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    incarnation_token TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (scene_id, event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_scene_events_event ON scene_events(event_id);

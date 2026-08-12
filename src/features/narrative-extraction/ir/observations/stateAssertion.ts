@@ -1,8 +1,5 @@
 import type { StateFacet } from "@/features/codex/details/semanticBindingTypes";
-import type {
-  EntityReference,
-  ObservationBase,
-} from "./entityIdentity";
+import type { EntityReference, ObservationBase } from "./entityIdentity";
 
 export type StateAspect = "holds" | "begins" | "ends" | "changes";
 

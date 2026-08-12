@@ -502,31 +502,35 @@ async function prepareCodexContextEntry(harness) {
     }, "authoring workspace and project authority");
     const entryId = `product-codex-${Date.now()}`;
     const now = new Date().toISOString();
-    await harness.invokeOk(prepared.page, "db_execute_batch", {
-      statements: [
-        {
-          sql: `INSERT OR IGNORE INTO codex_types
-            (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
-            VALUES (?, ?, 'character', 'Character', '#888888', 1, 0, ?)`,
-          params: [`product-character-${projectId}`, projectId, now],
-          method: "run",
-        },
-        {
-          sql: `INSERT INTO codex_entries
-            (id, project_id, type, name, summary, content, context_mode, created_at, updated_at)
-            VALUES (?, ?, 'character', ?, ?, ?, 'mentioned', ?, ?)`,
-          params: [
-            entryId,
-            projectId,
-            "Product Journey Codex",
-            CODEX_CONTEXT_MARKER,
-            sceneDocument(CODEX_CONTEXT_MARKER),
-            now,
-            now,
-          ],
-          method: "run",
-        },
-      ],
+    await harness.invokeOk(prepared.page, "db_execute", {
+      sql: `INSERT OR IGNORE INTO codex_types
+        (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
+        VALUES (?, ?, 'character', 'Character', '#888888', 1, 0, ?)`,
+      params: [`product-character-${projectId}`, projectId, now],
+      method: "run",
+    });
+    await harness.invokeOk(prepared.page, "agent_codex_create", {
+      payload: {
+        requestId: `product-codex-create-${entryId}`,
+        entryId,
+        projectId,
+        sessionId: "electron-product-journey",
+        surface: "cross-feature-authoring",
+        typeSlug: "character",
+        name: "Product Journey Codex",
+        summary: CODEX_CONTEXT_MARKER,
+        content: sceneDocument(CODEX_CONTEXT_MARKER),
+        aliases: null,
+        excludedAliases: null,
+        readings: null,
+        tagsCache: null,
+        parentId: null,
+        sourceChatMessageId: null,
+        model: null,
+        chatMessageId: null,
+        traceId: null,
+        authorshipSpans: [],
+      },
     });
     return { projectId, entryId };
   } finally {
@@ -569,39 +573,35 @@ async function commitExternalSceneWrite(
 ) {
   const now = Date.now();
   const content = sceneDocument(text);
-  await harness.invokeOk(page, "db_execute_batch", {
-    statements: [
-      {
-        sql: "UPDATE tree_nodes SET content = ?, char_count = ?, version = version + 1, updated_at = ? WHERE id = ? AND project_id = ?",
-        params: [
-          content,
-          text.length,
-          new Date(now).toISOString(),
-          sceneId,
-          projectId,
-        ],
-        method: "run",
+  const rows = await queryRows(
+    harness,
+    page,
+    "SELECT version FROM tree_nodes WHERE id = ? AND project_id = ?",
+    [sceneId, projectId],
+  );
+  const baseVersion = Number(rows[0]?.version);
+  if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+    throw new Error(
+      `external scene write could not resolve base version: ${sceneId}`,
+    );
+  }
+  await harness.invokeOk(page, "tree_node_patch", {
+    payload: {
+      projectId,
+      nodeId: sceneId,
+      updatedAt: new Date(now).toISOString(),
+      patch: {
+        content,
+        charCount: text.length,
       },
-      {
-        sql: `INSERT INTO change_events
-          (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id, payload, session_id, sequence, timestamp, prev_hash, hash)
-          VALUES (?, ?, ?, 'editor', 'scene.content_update', 'tree_batch', ?, ?, 'external-product-journey',
-            (SELECT COALESCE(MAX(sequence), 0) + 1 FROM change_events WHERE project_id = ?),
-            ?, ?, ?)`,
-        params: [
-          eventUid,
-          projectId,
-          sceneId,
-          sceneId,
-          JSON.stringify({ sceneId }),
-          projectId,
-          now,
-          `prev-${eventUid}`,
-          `hash-${eventUid}`,
-        ],
-        method: "run",
+      bumpVersion: true,
+      baseVersion,
+      changeEvent: {
+        eventUid,
+        sessionId: "external-product-journey",
+        timestamp: now,
       },
-    ],
+    },
   });
   return content;
 }

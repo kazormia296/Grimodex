@@ -56,7 +56,12 @@ export async function runGenericImportRoleClassifyTask(
   );
   const ov = resolveRoleSendOverride(GENERIC_IMPORT_ROLE_CLASSIFY_PATH);
   const response = await sendChatMessageWithThinking(
-    [{ role: "user", content: buildGenericImportRoleClassifyPrompt(input.samples) }],
+    [
+      {
+        role: "user",
+        content: buildGenericImportRoleClassifyPrompt(input.samples),
+      },
+    ],
     { projectId, pathId: "generic_import_role_classify" },
     undefined,
     undefined,
@@ -100,14 +105,16 @@ function parseRoleAssignments(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const assignments = (parsed as { assignments?: unknown }).assignments;
   if (!Array.isArray(assignments)) return null;
   const results: GenericRoleClassifyAiResult[] = [];
   for (const item of assignments) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const row = item as Record<string, unknown>;
-    if (typeof row.resourceKey !== "string" || typeof row.role !== "string") continue;
+    if (typeof row.resourceKey !== "string" || typeof row.role !== "string")
+      continue;
     results.push({
       resourceKey: row.resourceKey,
       role: row.role as GenericImportResourceRole,

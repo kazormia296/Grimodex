@@ -47,7 +47,12 @@ export async function runGenericImportDocumentPartitionTask(
   );
   const ov = resolveRoleSendOverride(GENERIC_IMPORT_DOCUMENT_PARTITION_PATH);
   const response = await sendChatMessageWithThinking(
-    [{ role: "user", content: buildGenericImportDocumentPartitionPrompt(input) }],
+    [
+      {
+        role: "user",
+        content: buildGenericImportDocumentPartitionPrompt(input),
+      },
+    ],
     { projectId, pathId: "generic_import_document_partition" },
     undefined,
     undefined,
@@ -80,7 +85,9 @@ export async function runGenericImportDocumentPartitionTask(
   return parsed;
 }
 
-function parsePartitionProposal(text: string): ImportDocumentPartitionProposal | null {
+function parsePartitionProposal(
+  text: string,
+): ImportDocumentPartitionProposal | null {
   const jsonText = extractJsonObject(text);
   if (!jsonText) return null;
   try {

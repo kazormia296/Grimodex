@@ -20,7 +20,10 @@ function weekLengthFromGraph(graph: TemporalConstraintGraph): number | null {
 
 function buildResolution(
   nodes: readonly TemporalNode[],
-  domains: ReadonlyMap<string, { earliest: number | null; latest: number | null }>,
+  domains: ReadonlyMap<
+    string,
+    { earliest: number | null; latest: number | null }
+  >,
   derivationByNode: ReadonlyMap<TemporalNodeId, string[]>,
   conflicting: ReadonlySet<TemporalNodeId>,
   symbolic: ReadonlySet<TemporalNodeId>,
@@ -65,7 +68,10 @@ function buildResolution(
         end.latest !== null;
       let resolution: ResolvedTemporalNode["resolution"] = "ordered-only";
       if (!hasAny) resolution = "ordered-only";
-      else if (isExactDomain(start) && (node.shape === "point" || isExactDomain(end))) {
+      else if (
+        isExactDomain(start) &&
+        (node.shape === "point" || isExactDomain(end))
+      ) {
         resolution = "exact";
       } else if (start.earliest !== null || start.latest !== null) {
         resolution = "bounded";
@@ -89,9 +95,7 @@ function buildResolution(
         actualEnd: node.shape === "point" ? null : end,
         duration,
         uncertaintyReason:
-          resolution === "bounded"
-            ? ["non-unique-start-or-end"]
-            : [],
+          resolution === "bounded" ? ["non-unique-start-or-end"] : [],
         derivationConstraintIds: derivationByNode.get(node.id) ?? [],
       };
     });
@@ -124,7 +128,10 @@ function derivationMap(
     }
   }
   for (const [k, v] of map) {
-    map.set(k, [...new Set(v)].sort((a, b) => a.localeCompare(b)));
+    map.set(
+      k,
+      [...new Set(v)].sort((a, b) => a.localeCompare(b)),
+    );
   }
   return map;
 }
@@ -244,7 +251,9 @@ function involvesNode(
     case "symbolic":
       return set.has(constraint.nodeId);
     case "relative-offset":
-      return set.has(constraint.left.nodeId) || set.has(constraint.right.nodeId);
+      return (
+        set.has(constraint.left.nodeId) || set.has(constraint.right.nodeId)
+      );
     case "interval-relation":
       return set.has(constraint.leftNodeId) || set.has(constraint.rightNodeId);
   }
