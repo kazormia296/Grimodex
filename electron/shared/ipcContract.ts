@@ -433,6 +433,7 @@ export interface NapiBackendLike {
   authorshipReplaceLane?(payload: unknown): Promise<void>;
   entityTagsSet?(payload: unknown): Promise<void>;
   codexRenameUndo?(payload: unknown): Promise<void>;
+  codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
   treePlanUndo?(payload: unknown): Promise<void>;
   mapWriteBundle?(payload: unknown): Promise<void>;
@@ -714,6 +715,8 @@ export interface NapiBackendLike {
   // agent_writes 19 コマンド（すべて単一 payload → tracked write result）
   agentCodexCreate(payload: unknown): Promise<string>;
   agentCodexUpdate(payload: unknown): Promise<string>;
+  agentCodexDelete(payload: unknown): Promise<string>;
+  agentCodexMutate(payload: unknown): Promise<string>;
   agentWriteBundle(payload: unknown): Promise<string>;
   agentSnippetCreate(payload: unknown): Promise<string>;
   agentProposeSceneBody(payload: unknown): Promise<string>;
@@ -4037,6 +4040,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  codex_rename_apply: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexRenameApply,
+          "codexRenameApply",
+        )(requirePresent(a, "payload", "codex_rename_apply")),
+      ),
+  },
   scan_staging_project_create: {
     run: async (b, a) => {
       await requireNapiMethod(
@@ -5144,6 +5157,22 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.agentCodexUpdate(
           requirePresent(a, "payload", "agent_codex_update"),
+        ),
+      ),
+  },
+  agent_codex_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentCodexDelete(
+          requirePresent(a, "payload", "agent_codex_delete"),
+        ),
+      ),
+  },
+  agent_codex_mutate: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentCodexMutate(
+          requirePresent(a, "payload", "agent_codex_mutate"),
         ),
       ),
   },

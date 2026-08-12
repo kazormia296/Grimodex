@@ -1,5 +1,5 @@
 import type { CodexDetailDefinition } from "./detailApi";
-import { listDefinitionsByType } from "./detailApi";
+import { createDefinition, listDefinitionsByType } from "./detailApi";
 import type { GenreValue } from "@/features/project/genreOptions";
 import type {
   DetailProjectionKind,
@@ -7,11 +7,7 @@ import type {
   StateFacet,
 } from "./details/semanticBindingTypes";
 import { db } from "@/db/client";
-import {
-  codexDetailDefinitions,
-  codexDetailSemanticBindings,
-} from "@/db/schema";
-import { invoke } from "@/lib/tauri";
+import { codexDetailSemanticBindings } from "@/db/schema";
 
 export interface DetailFieldPresetSemantic {
   readonly facetKey: StateFacet;
@@ -318,12 +314,6 @@ export interface ApplyDetailPresetResult {
   skipped: number;
 }
 
-type BatchStatement = { sql: string; params: unknown[]; method: string };
-
-function toRun(query: { sql: string; params: unknown[] }): BatchStatement {
-  return { sql: query.sql, params: query.params, method: "run" };
-}
-
 /**
  * プリセットのフィールド定義を一括追加する。
  * 既存と同名のフィールドはスキップ（(project, type, name) UNIQUE 準拠の冪等適用）。
@@ -340,8 +330,6 @@ export async function applyDetailPreset(
   const existingNames = new Set(existing.map((d) => d.name));
   let sortOrder = Math.max(0, ...existing.map((d) => d.sortOrder));
 
-  const now = new Date().toISOString();
-  const statements: BatchStatement[] = [];
   const added: CodexDetailDefinition[] = [];
   let skipped = 0;
 
@@ -352,7 +340,7 @@ export async function applyDetailPreset(
     }
     sortOrder += 1.0;
     const id = crypto.randomUUID();
-    const definition: CodexDetailDefinition = {
+    const definition = await createDefinition({
       id,
       projectId,
       typeSlug,
@@ -363,69 +351,25 @@ export async function applyDetailPreset(
         : null,
       sortOrder,
       includeInContext: field.includeInContext ? 1 : 0,
-      version: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
-    statements.push(
-      toRun(
-        db
-          .insert(codexDetailDefinitions)
-          .values({
-            id: definition.id,
-            projectId: definition.projectId,
-            typeSlug: definition.typeSlug,
-            name: definition.name,
-            fieldType: definition.fieldType,
-            fieldConfig: definition.fieldConfig,
-            sortOrder: definition.sortOrder,
-            includeInContext: definition.includeInContext,
-            version: definition.version,
-            createdAt: definition.createdAt,
-            updatedAt: definition.updatedAt,
-          })
-          .toSQL(),
-      ),
-    );
+    });
     if (field.semantic) {
-      statements.push(
-        toRun(
-          db
-            .insert(codexDetailSemanticBindings)
-            .values({
-              id: crypto.randomUUID(),
-              projectId,
-              definitionId: id,
-              facetKey: field.semantic.facetKey,
-              projectionKind: field.semantic.projectionKind,
-              temporalPolicy: field.semantic.temporalPolicy,
-              source: "preset",
-              confirmed: false,
-              version: 0,
-              createdAt: now,
-              updatedAt: now,
-            })
-            .toSQL(),
-        ),
-      );
+      await db.insert(codexDetailSemanticBindings).values({
+        id: crypto.randomUUID(),
+        projectId,
+        definitionId: id,
+        facetKey: field.semantic.facetKey,
+        projectionKind: field.semantic.projectionKind,
+        temporalPolicy: field.semantic.temporalPolicy,
+        source: "preset",
+        confirmed: false,
+        version: 0,
+        createdAt: definition.createdAt,
+        updatedAt: definition.updatedAt,
+      });
     }
     added.push(definition);
     existingNames.add(field.name);
   }
 
-  if (statements.length === 0) {
-    return { added, skipped };
-  }
-
-  try {
-    await invoke("db_execute_batch", { statements });
-  } catch (err) {
-    // 並行ライター (別ウィンドウ/MCP) との TOCTOU で UNIQUE に
-    // 当たったら冪等スキップに畳む。それ以外は失敗として伝播。
-    if (String(err).includes("UNIQUE")) {
-      return { added: [], skipped: fields.length };
-    }
-    throw err;
-  }
   return { added, skipped };
 }

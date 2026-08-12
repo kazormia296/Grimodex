@@ -1,6 +1,8 @@
 import { db } from "@/db/client";
 import { codexDismissedRelations, codexEntries } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 
 /**
  * List all dismissed relation IDs for a given entry.
@@ -54,8 +56,29 @@ export async function setParentRelation(
   childId: string,
   parentId: string | null,
 ): Promise<void> {
-  await db
-    .update(codexEntries)
-    .set({ parentId, updatedAt: new Date().toISOString() })
-    .where(eq(codexEntries.id, childId));
+  const current = await db
+    .select({
+      projectId: codexEntries.projectId,
+      version: codexEntries.version,
+    })
+    .from(codexEntries)
+    .where(eq(codexEntries.id, childId))
+    .limit(1);
+  const entry = current[0];
+  if (!entry) return;
+  await invoke("agent_codex_update", {
+    payload: {
+      projectId: entry.projectId,
+      sessionId: getRecorderSessionId(),
+      surface: "manual",
+      entryId: childId,
+      baseVersion: entry.version,
+      parentId: parentId ?? "",
+      model: null,
+      chatMessageId: null,
+      traceId: null,
+      authorshipSpans: null,
+      authorshipSpanLanes: null,
+    },
+  });
 }

@@ -112,7 +112,7 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.entry",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "codex-relation",
@@ -120,7 +120,7 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.relation",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "phase",
@@ -128,7 +128,7 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.phase",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "detail-definition",
@@ -136,7 +136,7 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.detail",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "detail-value",
@@ -144,7 +144,7 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.detail",
-    "enforcement": "deferred"
+    "enforcement": "active"
   },
   {
     "aggregate": "narrative-runtime",

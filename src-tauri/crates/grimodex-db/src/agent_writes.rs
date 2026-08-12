@@ -48,11 +48,21 @@ pub struct AgentCodexCreatePayload {
     entry_id: Option<String>,
     project_id: String,
     session_id: String,
+    /// undo_journal に記録する書き込み元の表面。省略時は in-app-agent（AI）。
+    /// UI 手動作成 (legacy api.ts 経路) は "manual" を明示送信する。
+    #[serde(default)]
+    surface: Option<String>,
     type_slug: String,
     name: String,
     summary: Option<String>,
     content: Option<String>,
     aliases: Option<String>,
+    #[serde(default)]
+    excluded_aliases: Option<String>,
+    #[serde(default)]
+    readings: Option<String>,
+    #[serde(default)]
+    tags_cache: Option<String>,
     parent_id: Option<String>,
     source_chat_message_id: Option<String>,
     model: Option<String>,
@@ -66,19 +76,60 @@ pub struct AgentCodexCreatePayload {
 pub struct AgentCodexUpdatePayload {
     project_id: String,
     session_id: String,
+    /// undo_journal に記録する書き込み元の表面。省略時は in-app-agent（AI）。
+    #[serde(default)]
+    surface: Option<String>,
     entry_id: String,
     /// Client-observed version before this write (optimistic lock).
     base_version: i64,
+    /// Human 経路のみ更新する type。AI 経路は type を書き換えない。
+    #[serde(default)]
+    type_slug: Option<String>,
     name: Option<String>,
     summary: Option<String>,
     content: Option<String>,
     aliases: Option<String>,
+    /// set-if-present。空文字は NULL（除外語なし）に正規化する。
+    #[serde(default)]
+    excluded_aliases: Option<String>,
+    /// set-if-present。空文字は NULL（読み情報なし）に正規化する。
+    #[serde(default)]
+    readings: Option<String>,
+    /// set-if-present。空文字は NULL（タグなし）に正規化する。
+    #[serde(default)]
+    tags_cache: Option<String>,
+    /// set-if-present。空文字は NULL（親なし=ルート）に正規化する。
+    #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
+    context_mode: Option<String>,
+    /// set-if-present。空文字は NULL（アイコンなし）に正規化する。
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    children_budget: Option<String>,
+    /// set-if-present。空文字は NULL（メモなし）に正規化する。
+    #[serde(default)]
+    notes: Option<String>,
     model: Option<String>,
     chat_message_id: Option<String>,
     trace_id: Option<String>,
     authorship_spans: Option<Vec<AuthorshipSpanInput>>,
     /// Per-span lane for partial updates: "summary" | "content".
     authorship_span_lanes: Option<Vec<Option<String>>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCodexDeletePayload {
+    project_id: String,
+    session_id: String,
+    /// undo_journal に記録する書き込み元の表面。省略時は in-app-agent（AI）。
+    #[serde(default)]
+    surface: Option<String>,
+    entry_id: String,
+    /// Client-observed version before this write (optimistic lock).
+    base_version: i64,
 }
 
 #[derive(serde::Serialize)]
@@ -461,6 +512,9 @@ pub(crate) struct CodexEntryCreateTxInput<'a> {
     pub summary: &'a str,
     pub content: &'a str,
     pub aliases: Option<&'a str>,
+    pub excluded_aliases: Option<&'a str>,
+    pub readings: Option<&'a str>,
+    pub tags_cache: Option<&'a str>,
     pub parent_id: Option<&'a str>,
     pub source_chat_message_id: Option<&'a str>,
     pub authorship_spans: &'a [AuthorshipSpanInput],
@@ -490,15 +544,19 @@ pub(crate) fn apply_codex_entry_create_in_tx(
 ) -> anyhow::Result<CodexEntryCreateTxResult> {
     conn.execute(
         "INSERT INTO codex_entries
-         (id, project_id, type, name, aliases, summary, content, parent_id,
+         (id, project_id, type, name, aliases, excluded_aliases, readings,
+          tags_cache, summary, content, parent_id,
           source_chat_message_id, version, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?13)",
         rusqlite::params![
             input.entry_id,
             input.project_id,
             input.type_slug,
             input.name,
             input.aliases,
+            input.excluded_aliases,
+            input.readings,
+            input.tags_cache,
             input.summary,
             input.content,
             input.parent_id,
@@ -580,6 +638,13 @@ pub(crate) fn apply_codex_entry_create_in_tx(
     })
 }
 
+/// set-if-present な nullable text 列の入力。TS 側は「未送信=変更なし」と
+/// 「空文字送信=NULL に明示クリア」を区別するため、空文字を sentinel として
+/// 使う (AgentEventUpdatePayload と同じ流儀)。
+fn normalize_nullable_sentinel(value: Option<&str>) -> Option<Option<&str>> {
+    value.map(|v| if v.is_empty() { None } else { Some(v) })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CodexEntryPatchTxInput<'a> {
     pub project_id: &'a str,
@@ -589,12 +654,28 @@ pub(crate) struct CodexEntryPatchTxInput<'a> {
     pub undo_id: &'a str,
     pub event_uid: &'a str,
     pub base_version: i64,
+    /// Human 経路のみ更新する type。AI 経路は None を渡し type を書き換えない。
+    pub type_slug: Option<&'a str>,
     pub name: Option<&'a str>,
     pub summary: Option<&'a str>,
     /// When true, summary is applied only if the current summary is empty.
     pub summary_fill_if_empty: bool,
     pub content: Option<&'a str>,
     pub aliases: Option<&'a str>,
+    /// set-if-present。空文字は NULL（除外語なし）に正規化する。
+    pub excluded_aliases: Option<&'a str>,
+    /// set-if-present。空文字は NULL（読み情報なし）に正規化する。
+    pub readings: Option<&'a str>,
+    /// set-if-present。空文字は NULL（タグなし）に正規化する。
+    pub tags_cache: Option<&'a str>,
+    /// set-if-present。空文字は NULL（親なし=ルート）に正規化する。
+    pub parent_id: Option<&'a str>,
+    pub context_mode: Option<&'a str>,
+    /// set-if-present。空文字は NULL（アイコンなし）に正規化する。
+    pub icon: Option<&'a str>,
+    pub children_budget: Option<&'a str>,
+    /// set-if-present。空文字は NULL（メモなし）に正規化する。
+    pub notes: Option<&'a str>,
     pub authorship_spans: Option<&'a [AuthorshipSpanInput]>,
     pub authorship_span_lanes: Option<&'a [Option<String>]>,
     pub model: Option<&'a str>,
@@ -634,7 +715,11 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
         "SELECT version, json_object(
             'id', id, 'projectId', project_id, 'type', type, 'name', name,
             'summary', summary, 'content', content, 'aliases', aliases,
-            'parentId', parent_id, 'version', version
+            'excludedAliases', excluded_aliases, 'readings', readings,
+            'tagsCache', tags_cache, 'parentId', parent_id, 'icon', icon,
+            'contextMode', context_mode, 'childrenBudget', children_budget,
+            'sourceChatMessageId', source_chat_message_id, 'notes', notes,
+            'createdAt', created_at, 'version', version
          ) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
         rusqlite::params![input.entry_id, input.project_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -678,6 +763,11 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(input.now.to_string())];
     let mut param_idx = 2;
 
+    if let Some(type_slug) = input.type_slug {
+        sets.push(format!("type = ?{param_idx}"));
+        params.push(Box::new(type_slug.to_string()));
+        param_idx += 1;
+    }
     if let Some(name) = input.name {
         sets.push(format!("name = ?{param_idx}"));
         params.push(Box::new(name.to_string()));
@@ -696,6 +786,46 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
     if let Some(aliases) = input.aliases {
         sets.push(format!("aliases = ?{param_idx}"));
         params.push(Box::new(aliases.to_string()));
+        param_idx += 1;
+    }
+    if let Some(excluded_aliases) = normalize_nullable_sentinel(input.excluded_aliases) {
+        sets.push(format!("excluded_aliases = ?{param_idx}"));
+        params.push(Box::new(excluded_aliases.map(str::to_string)));
+        param_idx += 1;
+    }
+    if let Some(readings) = normalize_nullable_sentinel(input.readings) {
+        sets.push(format!("readings = ?{param_idx}"));
+        params.push(Box::new(readings.map(str::to_string)));
+        param_idx += 1;
+    }
+    if let Some(tags_cache) = normalize_nullable_sentinel(input.tags_cache) {
+        sets.push(format!("tags_cache = ?{param_idx}"));
+        params.push(Box::new(tags_cache.map(str::to_string)));
+        param_idx += 1;
+    }
+    if let Some(parent_id) = normalize_nullable_sentinel(input.parent_id) {
+        sets.push(format!("parent_id = ?{param_idx}"));
+        params.push(Box::new(parent_id.map(str::to_string)));
+        param_idx += 1;
+    }
+    if let Some(context_mode) = input.context_mode {
+        sets.push(format!("context_mode = ?{param_idx}"));
+        params.push(Box::new(context_mode.to_string()));
+        param_idx += 1;
+    }
+    if let Some(icon) = normalize_nullable_sentinel(input.icon) {
+        sets.push(format!("icon = ?{param_idx}"));
+        params.push(Box::new(icon.map(str::to_string)));
+        param_idx += 1;
+    }
+    if let Some(children_budget) = input.children_budget {
+        sets.push(format!("children_budget = ?{param_idx}"));
+        params.push(Box::new(children_budget.to_string()));
+        param_idx += 1;
+    }
+    if let Some(notes) = normalize_nullable_sentinel(input.notes) {
+        sets.push(format!("notes = ?{param_idx}"));
+        params.push(Box::new(notes.map(str::to_string)));
         param_idx += 1;
     }
 
@@ -763,10 +893,19 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
 
     if input.write_change_event {
         let fields: Vec<&str> = [
+            input.type_slug.map(|_| "type"),
             input.name.map(|_| "name"),
             effective_summary.map(|_| "summary"),
             input.content.map(|_| "content"),
             input.aliases.map(|_| "aliases"),
+            input.excluded_aliases.map(|_| "excludedAliases"),
+            input.readings.map(|_| "readings"),
+            input.tags_cache.map(|_| "tagsCache"),
+            input.parent_id.map(|_| "parentId"),
+            input.context_mode.map(|_| "contextMode"),
+            input.icon.map(|_| "icon"),
+            input.children_budget.map(|_| "childrenBudget"),
+            input.notes.map(|_| "notes"),
         ]
         .into_iter()
         .flatten()
@@ -806,7 +945,11 @@ pub(crate) fn collect_codex_entry_snapshot(
         "SELECT json_object(
             'id', id, 'projectId', project_id, 'type', type, 'name', name,
             'summary', summary, 'content', content, 'aliases', aliases,
-            'parentId', parent_id, 'version', version
+            'excludedAliases', excluded_aliases, 'readings', readings,
+            'tagsCache', tags_cache, 'parentId', parent_id, 'icon', icon,
+            'contextMode', context_mode, 'childrenBudget', children_budget,
+            'sourceChatMessageId', source_chat_message_id, 'notes', notes,
+            'createdAt', created_at, 'version', version
          ) FROM codex_entries WHERE id = ?1",
         rusqlite::params![entry_id],
         |row| row.get(0),
@@ -867,8 +1010,12 @@ pub fn agent_codex_create_impl(
     let content = payload.content.unwrap_or_else(|| "{}".to_string());
     let summary = payload.summary.unwrap_or_default();
     let aliases = payload.aliases;
+    let excluded_aliases = payload.excluded_aliases;
+    let readings = payload.readings;
+    let tags_cache = payload.tags_cache;
     let parent_id = payload.parent_id;
     let source_chat_message_id = payload.source_chat_message_id;
+    let surface = payload.surface.clone();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
@@ -903,7 +1050,7 @@ pub fn agent_codex_create_impl(
                 CodexEntryCreateTxInput {
                     project_id: &payload.project_id,
                     session_id: &payload.session_id,
-                    surface: Some("in-app-agent"),
+                    surface: surface.as_deref().or(Some("in-app-agent")),
                     entry_id: &entry_id,
                     undo_id: &undo_id,
                     event_uid: &event_uid,
@@ -912,6 +1059,9 @@ pub fn agent_codex_create_impl(
                     summary: &summary,
                     content: &content,
                     aliases: aliases.as_deref(),
+                    excluded_aliases: excluded_aliases.as_deref(),
+                    readings: readings.as_deref(),
+                    tags_cache: tags_cache.as_deref(),
                     parent_id: parent_id.as_deref(),
                     source_chat_message_id: source_chat_message_id.as_deref(),
                     authorship_spans: &payload.authorship_spans,
@@ -965,16 +1115,25 @@ pub fn agent_codex_update_impl(
                 CodexEntryPatchTxInput {
                     project_id: &payload.project_id,
                     session_id: &payload.session_id,
-                    surface: Some("in-app-agent"),
+                    surface: payload.surface.as_deref().or(Some("in-app-agent")),
                     entry_id: &payload.entry_id,
                     undo_id: &undo_id,
                     event_uid: &event_uid,
                     base_version: payload.base_version,
+                    type_slug: payload.type_slug.as_deref(),
                     name: payload.name.as_deref(),
                     summary: payload.summary.as_deref(),
                     summary_fill_if_empty: false,
                     content: payload.content.as_deref(),
                     aliases: payload.aliases.as_deref(),
+                    excluded_aliases: payload.excluded_aliases.as_deref(),
+                    readings: payload.readings.as_deref(),
+                    tags_cache: payload.tags_cache.as_deref(),
+                    parent_id: payload.parent_id.as_deref(),
+                    context_mode: payload.context_mode.as_deref(),
+                    icon: payload.icon.as_deref(),
+                    children_budget: payload.children_budget.as_deref(),
+                    notes: payload.notes.as_deref(),
                     authorship_spans: payload.authorship_spans.as_deref(),
                     authorship_span_lanes: payload.authorship_span_lanes.as_deref(),
                     model: payload.model.as_deref(),
@@ -992,6 +1151,100 @@ pub fn agent_codex_update_impl(
                 version: patched.version,
                 change_event_uid: patched.change_event_uid,
                 undo_journal_id: patched.undo_journal_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                grimodex_core::commit_or_rollback(conn)?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+/// Codex entry の削除 (OCC + undo_journal + change_event)。Human (legacy
+/// `deleteCodexEntry`) 経路専用。`delete_codex_entry_cascade` の FK CASCADE で
+/// relations/phases/detail values も一緒に消える。undo (revert) は codex_entries
+/// 行と authorship_spans のみ復元する — カスケードされた子は復元しない
+/// (cutover 前の `deleteCodexEntry` に undo が無かった挙動をそのまま維持)。
+pub fn agent_codex_delete_impl(
+    db: &Database,
+    payload: AgentCodexDeletePayload,
+) -> anyhow::Result<Value> {
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let db_version: i64 = conn.query_row(
+                "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.entry_id, payload.project_id],
+                |row| row.get(0),
+            )?;
+            if db_version != payload.base_version {
+                anyhow::bail!(
+                    "Codex entry '{}' version conflict: expected {} but database has {}",
+                    payload.entry_id,
+                    payload.base_version,
+                    db_version
+                );
+            }
+            let before_snapshot = collect_codex_entry_snapshot(conn, &payload.entry_id)?;
+            let before_json = before_snapshot.to_string();
+
+            delete_codex_entry_cascade(
+                conn,
+                &payload.project_id,
+                &payload.entry_id,
+                Some(payload.base_version),
+            )?;
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
+                    entity_kind: "codex_entry",
+                    entity_id: &payload.entry_id,
+                    op_kind: "delete",
+                    before_json: Some(&before_json),
+                    after_json: None,
+                    base_version: payload.base_version,
+                    result_version: payload.base_version,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: None,
+                    domain: "codex".to_string(),
+                    op_type: "entry.delete".to_string(),
+                    entity_type: Some("codex_entry".to_string()),
+                    entity_id: Some(payload.entry_id.clone()),
+                    payload: json!({}).to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.entry_id.clone(),
+                version: payload.base_version,
+                change_event_uid: event_uid.clone(),
+                undo_journal_id: undo_id.clone(),
             })
         })();
 
@@ -4366,11 +4619,15 @@ mod tests {
                 entry_id: None,
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
+                surface: None,
                 type_slug: "character".to_string(),
                 name: "Alice".to_string(),
                 summary: Some("summary".to_string()),
                 content: None,
                 aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
                 parent_id: None,
                 source_chat_message_id: None,
                 model: None,
@@ -4455,6 +4712,7 @@ mod tests {
             entry_id: None,
             project_id,
             session_id: "sess".to_string(),
+            surface: None,
             type_slug: "character".to_string(),
             name: "Alice".to_string(),
             summary: None,
@@ -4473,6 +4731,9 @@ mod tests {
                 .to_string(),
             ),
             aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
             parent_id: None,
             source_chat_message_id: None,
             model: None,

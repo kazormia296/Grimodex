@@ -11,6 +11,8 @@ import {
   DetailDefinitionVersionConflictError,
   DetailValueVersionConflictError,
 } from "./detailOcc";
+import { invoke } from "@/lib/tauri";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 
 export interface ContextDetail {
   entryId: string;
@@ -133,23 +135,26 @@ export async function createDefinition(data: {
   sortOrder?: number;
   includeInContext?: number;
 }): Promise<CodexDetailDefinition> {
-  const now = new Date().toISOString();
-  const rows = await db
-    .insert(codexDetailDefinitions)
-    .values({
-      id: data.id,
+  await invoke("agent_codex_mutate", {
+    payload: {
+      operation: "detail.definition.create",
       projectId: data.projectId,
+      sessionId: getRecorderSessionId(),
+      surface: "manual",
+      definitionId: data.id,
       typeSlug: data.typeSlug,
       name: data.name,
       fieldType: data.fieldType ?? "text",
       fieldConfig: data.fieldConfig ?? null,
-      sortOrder: data.sortOrder ?? 0.0,
+      sortOrder: data.sortOrder ?? 0,
       includeInContext: data.includeInContext ?? 0,
-      version: 0,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
+    },
+  });
+  const rows = await db
+    .select()
+    .from(codexDetailDefinitions)
+    .where(eq(codexDetailDefinitions.id, data.id))
+    .limit(1);
   return rows[0];
 }
 
@@ -163,38 +168,41 @@ export async function updateDefinition(
   >,
   opts: { baseVersion: number },
 ): Promise<CodexDetailDefinition | undefined> {
-  const now = new Date().toISOString();
-  const rows = await db
-    .update(codexDetailDefinitions)
-    .set({
-      ...data,
-      version: opts.baseVersion + 1,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(codexDetailDefinitions.id, id),
-        eq(codexDetailDefinitions.version, opts.baseVersion),
-      ),
-    )
-    .returning();
-  const updated = rows[0];
-  if (!updated) {
-    const exists = await db
-      .select({ id: codexDetailDefinitions.id })
-      .from(codexDetailDefinitions)
-      .where(eq(codexDetailDefinitions.id, id))
-      .limit(1);
-    if (exists[0]) throw new DetailDefinitionVersionConflictError(id);
-    return undefined;
+  const current = await getDefinition(id);
+  if (!current) return undefined;
+  try {
+    await invoke("agent_codex_mutate", {
+      payload: {
+        operation: "detail.definition.update",
+        projectId: current.projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        definitionId: id,
+        baseVersion: opts.baseVersion,
+        ...data,
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new DetailDefinitionVersionConflictError(id);
+    }
+    throw error;
   }
-  return updated;
+  return getDefinition(id);
 }
 
 export async function deleteDefinition(id: string): Promise<void> {
-  await db
-    .delete(codexDetailDefinitions)
-    .where(eq(codexDetailDefinitions.id, id));
+  const definition = await getDefinition(id);
+  if (!definition) return;
+  await invoke("agent_codex_mutate", {
+    payload: {
+      operation: "detail.definition.delete",
+      projectId: definition.projectId,
+      sessionId: getRecorderSessionId(),
+      surface: "manual",
+      definitionId: id,
+    },
+  });
 }
 
 export async function listRawDetailValuesByEntryIds(
@@ -248,15 +256,15 @@ export async function upsertValue(
   entryId: string,
   definitionId: string,
   value: string | null,
-  opts?: { baseVersion?: number },
+  opts?: { baseVersion?: number; raw?: boolean },
 ): Promise<CodexDetailValue> {
   const definition = await getDefinition(definitionId);
   if (!definition) {
     throw new Error(`Detail definition '${definitionId}' not found`);
   }
-  const encoded = encodeStoredDetailValue(definition, value);
-  const now = new Date().toISOString();
-
+  const encoded = opts?.raw
+    ? value
+    : encodeStoredDetailValue(definition, value);
   const existing = await db
     .select()
     .from(codexDetailValues)
@@ -268,43 +276,75 @@ export async function upsertValue(
     );
 
   if (existing.length === 0) {
-    const rows = await db
-      .insert(codexDetailValues)
-      .values({
-        id: crypto.randomUUID(),
+    const entry = await db
+      .select({ projectId: codexEntries.projectId })
+      .from(codexEntries)
+      .where(eq(codexEntries.id, entryId))
+      .limit(1);
+    if (!entry[0]) throw new Error(`Codex entry '${entryId}' not found`);
+    await invoke("agent_codex_mutate", {
+      payload: {
+        operation: "detail.value.upsert",
+        projectId: entry[0].projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        valueId: crypto.randomUUID(),
         entryId,
         definitionId,
         value: encoded,
-        version: 1,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    return rows[0];
+      },
+    });
+    const created = await db
+      .select()
+      .from(codexDetailValues)
+      .where(
+        and(
+          eq(codexDetailValues.entryId, entryId),
+          eq(codexDetailValues.definitionId, definitionId),
+        ),
+      );
+    return created[0];
   }
 
   if (opts?.baseVersion === undefined) {
     throw new DetailValueVersionConflictError(entryId, definitionId);
   }
 
-  const rows = await db
-    .update(codexDetailValues)
-    .set({
-      value: encoded,
-      version: opts.baseVersion + 1,
-      updatedAt: now,
-    })
+  const entry = await db
+    .select({ projectId: codexEntries.projectId })
+    .from(codexEntries)
+    .where(eq(codexEntries.id, entryId))
+    .limit(1);
+  if (!entry[0]) throw new Error(`Codex entry '${entryId}' not found`);
+  try {
+    await invoke("agent_codex_mutate", {
+      payload: {
+        operation: "detail.value.upsert",
+        projectId: entry[0].projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        entryId,
+        definitionId,
+        value: encoded,
+        baseVersion: opts.baseVersion,
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new DetailValueVersionConflictError(entryId, definitionId);
+    }
+    throw error;
+  }
+  const updated = await db
+    .select()
+    .from(codexDetailValues)
     .where(
       and(
         eq(codexDetailValues.entryId, entryId),
         eq(codexDetailValues.definitionId, definitionId),
-        eq(codexDetailValues.version, opts.baseVersion),
       ),
-    )
-    .returning();
-  const updated = rows[0];
-  if (!updated) {
+    );
+  if (!updated[0])
     throw new DetailValueVersionConflictError(entryId, definitionId);
-  }
-  return updated;
+  return updated[0];
 }

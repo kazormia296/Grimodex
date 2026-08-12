@@ -6,6 +6,8 @@ import {
   type CodexRelationDirectionalityStored,
 } from "@/features/codex/extraction/relationVocabulary";
 import { notifyCodexRelationsChanged } from "./codexRelationEvents";
+import { invoke } from "@/lib/tauri";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 
 export type CodexRelationRow = typeof codexRelations.$inferSelect;
 export type NewCodexRelation = typeof codexRelations.$inferInsert;
@@ -64,7 +66,6 @@ export async function createCodexRelation(
     inverseLabel?: string | null;
   },
 ): Promise<CodexRelationRow> {
-  const now = new Date().toISOString();
   const directionality = data.directionality ?? "directed";
   const forwardLabel = data.label ?? "";
   const inverseLabel =
@@ -81,11 +82,14 @@ export async function createCodexRelation(
     forwardLabel,
     inverseLabel,
   });
-  const rows = await db
-    .insert(codexRelations)
-    .values({
-      id: data.id ?? crypto.randomUUID(),
+  const id = data.id ?? crypto.randomUUID();
+  await invoke("agent_codex_mutate", {
+    payload: {
+      operation: "relation.create",
       projectId: data.projectId,
+      sessionId: getRecorderSessionId(),
+      surface: "manual",
+      relationId: id,
       fromCodexId: data.fromCodexId,
       toCodexId: data.toCodexId,
       relationType,
@@ -93,13 +97,15 @@ export async function createCodexRelation(
       directionality,
       inverseLabel,
       semanticKey,
-      version: 1,
       depthHint: data.depthHint ?? null,
       sourceMapEdgeId: data.sourceMapEdgeId ?? null,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
+    },
+  });
+  const rows = await db
+    .select()
+    .from(codexRelations)
+    .where(eq(codexRelations.id, id))
+    .limit(1);
   notifyCodexRelationsChanged(data.projectId);
   return rows[0];
 }
@@ -111,9 +117,18 @@ export async function deleteCodexRelation(id: string): Promise<void> {
     .from(codexRelations)
     .where(eq(codexRelations.id, id))
     .limit(1);
-  await db.delete(codexRelations).where(eq(codexRelations.id, id));
   const projectId = existing[0]?.projectId;
-  if (projectId) notifyCodexRelationsChanged(projectId);
+  if (!projectId) return;
+  await invoke("agent_codex_mutate", {
+    payload: {
+      operation: "relation.delete",
+      projectId,
+      sessionId: getRecorderSessionId(),
+      surface: "manual",
+      relationId: id,
+    },
+  });
+  notifyCodexRelationsChanged(projectId);
 }
 
 /**

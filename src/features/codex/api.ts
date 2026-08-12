@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { codexEntries } from "@/db/schema";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
@@ -14,6 +14,7 @@ import {
   tryAcquireChatAnchorDeletionLease,
 } from "@/lib/chatNavigationGuard";
 import { notifyCodexAnchorDeletedIfRegistered } from "@/application/codex/codexAnchorLifecycle";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 
 export {
   listCodexMatchTargets,
@@ -32,6 +33,10 @@ const IME_EXPORT_FIELDS = new Set([
 
 function affectsImeExport(data: Record<string, unknown>): boolean {
   return Object.keys(data).some((key) => IME_EXPORT_FIELDS.has(key));
+}
+
+function nativeNullable(value: string | null | undefined): string | undefined {
+  return value === null ? "" : value;
 }
 
 /**
@@ -198,27 +203,51 @@ export async function createCodexEntry(
       Pick<
         NewCodexEntry,
         | "summary"
+        | "content"
         | "tagsCache"
         | "aliases"
         | "excludedAliases"
         | "readings"
         | "parentId"
+        | "contextMode"
+        | "icon"
+        | "childrenBudget"
+        | "notes"
         | "sourceChatMessageId"
       >
     >,
   opts?: { suppressImeExport?: boolean },
 ): Promise<CodexEntry> {
-  const now = new Date().toISOString();
-  const rows = await db
-    .insert(codexEntries)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
+  const result = await invoke<{ entityId: string }>("agent_codex_create", {
+    payload: {
+      requestId: null,
+      entryId: data.id,
+      projectId: data.projectId,
+      sessionId: getRecorderSessionId(),
+      surface: "manual",
+      typeSlug: data.type,
+      name: data.name,
+      summary: data.summary ?? null,
+      content: data.content ?? null,
+      aliases: data.aliases ?? null,
+      excludedAliases: data.excludedAliases ?? null,
+      readings: data.readings ?? null,
+      tagsCache: data.tagsCache ?? null,
+      parentId: data.parentId ?? null,
+      sourceChatMessageId: data.sourceChatMessageId ?? null,
+      model: null,
+      chatMessageId: null,
+      traceId: null,
+      authorshipSpans: [],
+    },
+  });
+  const created = await getCodexEntry(data.projectId, result.entityId);
+  if (!created)
+    throw new Error(`Codex entry ${result.entityId} was not created`);
   // 段階3: 新規エントリを semantic index へ (debounce + Rust 側 hash 再検証で冪等)。
-  if (rows[0]) {
-    scheduleCodexIndex(rows[0].id);
-    if (!opts?.suppressImeExport) scheduleImeExportRefresh(data.projectId);
-  }
-  return rows[0];
+  scheduleCodexIndex(created.id);
+  if (!opts?.suppressImeExport) scheduleImeExportRefresh(data.projectId);
+  return created;
 }
 
 type CodexEntryUpdateData = Partial<
@@ -268,71 +297,77 @@ export async function updateCodexEntry(
     // before a hidden/suppressed/unknown mode can become observable.
     await markImpactBaselinePhasesRestricted(id);
   }
-  // OCC: baseVersion 指定時は version 照合 + インクリメント。
-  // baseSurface 指定時は取得時の表記関連列も比較し、version 非更新の既存 writer が
-  // 間に入った場合も read-modify-write で上書きしない。両方省略なら従来通り。
-  const useOcc = opts?.baseVersion !== undefined;
+  const current = await getCodexEntry(projectId, id);
+  if (!current) return undefined;
+  // Native writers always use OCC. Preserve the legacy surface comparison before
+  // crossing the boundary so a stale read-modify-write cannot overwrite a rename.
   const baseSurface = opts?.baseSurface;
-  const compareSurface = baseSurface !== undefined;
-  const useConditionalUpdate = useOcc || compareSurface;
-  const baseVersion = opts?.baseVersion ?? 0;
-  const rows = await db
-    .update(codexEntries)
-    .set(
-      useOcc
-        ? {
-            ...data,
-            version: baseVersion + 1,
-            updatedAt: new Date().toISOString(),
-          }
-        : { ...data, updatedAt: new Date().toISOString() },
-    )
-    .where(
-      and(
-        eq(codexEntries.id, id),
-        eq(codexEntries.projectId, projectId),
-        useOcc ? eq(codexEntries.version, baseVersion) : undefined,
-        compareSurface ? eq(codexEntries.name, baseSurface.name) : undefined,
-        compareSurface
-          ? baseSurface.aliases === null
-            ? isNull(codexEntries.aliases)
-            : eq(codexEntries.aliases, baseSurface.aliases)
-          : undefined,
-        compareSurface
-          ? baseSurface.excludedAliases === null
-            ? isNull(codexEntries.excludedAliases)
-            : eq(codexEntries.excludedAliases, baseSurface.excludedAliases)
-          : undefined,
-        compareSurface
-          ? baseSurface.readings === null
-            ? isNull(codexEntries.readings)
-            : eq(codexEntries.readings, baseSurface.readings)
-          : undefined,
-      ),
-    )
-    .returning();
-
-  // 0 件マッチ。version / baseSurface の条件付き更新時は「行が存在するのに
-  // 0 件」= 競合として CodexVersionConflictError を投げ、呼び出し側に
-  // 非破壊リロードを委ねる。
-  // 行が存在しないなら従来通り undefined (別プロジェクト等のスコープ miss)。
-  // OCC 無効時は従来通り undefined。
-  // どちらの 0 件でも後続の副作用 (rescan/index/伏線 dirty) は走らせない。
-  // 特に markLinkedForeshadowsDirty は projectId 非依存なので、ここで
-  // 早期 return しないと別プロジェクトの伏線を汚染しうる。
-  if (!rows[0]) {
-    if (useConditionalUpdate) {
-      const exists = await db
-        .select({ id: codexEntries.id })
-        .from(codexEntries)
-        .where(
-          and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
-        )
-        .limit(1);
-      if (exists[0]) throw new CodexVersionConflictError(id);
-    }
-    return undefined;
+  if (
+    baseSurface &&
+    (current.name !== baseSurface.name ||
+      current.aliases !== baseSurface.aliases ||
+      current.excludedAliases !== baseSurface.excludedAliases ||
+      current.readings !== baseSurface.readings)
+  ) {
+    throw new CodexVersionConflictError(id);
   }
+  const baseVersion = opts?.baseVersion ?? current.version;
+  try {
+    await invoke("agent_codex_update", {
+      payload: {
+        projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        entryId: id,
+        baseVersion,
+        ...(data.type !== undefined ? { typeSlug: data.type } : {}),
+        ...(data.name !== undefined ? { name: nativeNullable(data.name) } : {}),
+        ...(data.summary !== undefined
+          ? { summary: nativeNullable(data.summary) }
+          : {}),
+        ...(data.content !== undefined
+          ? { content: nativeNullable(data.content) }
+          : {}),
+        ...(data.aliases !== undefined
+          ? { aliases: nativeNullable(data.aliases) }
+          : {}),
+        ...(data.excludedAliases !== undefined
+          ? { excludedAliases: nativeNullable(data.excludedAliases) }
+          : {}),
+        ...(data.readings !== undefined
+          ? { readings: nativeNullable(data.readings) }
+          : {}),
+        ...(data.tagsCache !== undefined
+          ? { tagsCache: nativeNullable(data.tagsCache) }
+          : {}),
+        ...(data.parentId !== undefined
+          ? { parentId: nativeNullable(data.parentId) }
+          : {}),
+        ...(data.contextMode !== undefined
+          ? { contextMode: nativeNullable(data.contextMode) }
+          : {}),
+        ...(data.icon !== undefined ? { icon: nativeNullable(data.icon) } : {}),
+        ...(data.childrenBudget !== undefined
+          ? { childrenBudget: nativeNullable(data.childrenBudget) }
+          : {}),
+        ...(data.notes !== undefined
+          ? { notes: nativeNullable(data.notes) }
+          : {}),
+        model: null,
+        chatMessageId: null,
+        traceId: null,
+        authorshipSpans: null,
+        authorshipSpanLanes: null,
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new CodexVersionConflictError(id);
+    }
+    throw error;
+  }
+  const updated = await getCodexEntry(projectId, id);
+  if (!updated) return undefined;
 
   // If name/aliases/excludedAliases changed, body-mention cache may be stale
   if (
@@ -364,7 +399,7 @@ export async function updateCodexEntry(
   if (affectsImeExport(data) && !opts?.suppressImeExport)
     scheduleImeExportRefresh(projectId);
 
-  return rows[0];
+  return updated;
 }
 
 export async function deleteCodexEntry(
@@ -375,11 +410,17 @@ export async function deleteCodexEntry(
   if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
   try {
     chatPersistenceDeletionGuard.assertDeletionAllowed();
-    await db
-      .delete(codexEntries)
-      .where(
-        and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
-      );
+    const existing = await getCodexEntry(projectId, id);
+    if (!existing) return;
+    await invoke("agent_codex_delete", {
+      payload: {
+        projectId,
+        sessionId: getRecorderSessionId(),
+        surface: "manual",
+        entryId: id,
+        baseVersion: existing.version,
+      },
+    });
     notifyCodexAnchorDeletedIfRegistered(id);
     scheduleImeExportRefresh(projectId);
   } finally {

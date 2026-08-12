@@ -98,17 +98,33 @@ fn restore_codex_entry_fields(
     let summary = snap["summary"].as_str().unwrap_or("");
     let content = snap["content"].as_str().unwrap_or("{}");
     let aliases = snap["aliases"].as_str();
+    let excluded_aliases = snap["excludedAliases"].as_str();
+    let readings = snap["readings"].as_str();
     let parent_id = snap["parentId"].as_str();
+    let icon = snap["icon"].as_str();
+    let tags_cache = snap["tagsCache"].as_str();
+    let context_mode = snap["contextMode"].as_str().unwrap_or("mentioned");
+    let children_budget = snap["childrenBudget"].as_str().unwrap_or("compact");
+    let notes = snap["notes"].as_str();
     let updated = conn.execute(
         "UPDATE codex_entries SET name = ?1, summary = ?2, content = ?3,
-         aliases = ?4, parent_id = ?5, version = ?6, updated_at = datetime('now')
-         WHERE id = ?7 AND project_id = ?8 AND version = ?9",
+         aliases = ?4, excluded_aliases = ?5, readings = ?6, parent_id = ?7,
+         icon = ?8, tags_cache = ?9, context_mode = ?10, children_budget = ?11,
+         notes = ?12, version = ?13, updated_at = datetime('now')
+         WHERE id = ?14 AND project_id = ?15 AND version = ?16",
         params![
             name,
             summary,
             content,
             aliases,
+            excluded_aliases,
+            readings,
             parent_id,
+            icon,
+            tags_cache,
+            context_mode,
+            children_budget,
+            notes,
             target_version,
             entity_id,
             project_id,
@@ -134,22 +150,43 @@ fn insert_codex_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow
     let summary = snap["summary"].as_str().unwrap_or("");
     let content = snap["content"].as_str().unwrap_or("{}");
     let aliases = snap["aliases"].as_str();
+    let excluded_aliases = snap["excludedAliases"].as_str();
+    let readings = snap["readings"].as_str();
     let parent_id = snap["parentId"].as_str();
+    let icon = snap["icon"].as_str();
+    let tags_cache = snap["tagsCache"].as_str();
+    let context_mode = snap["contextMode"].as_str().unwrap_or("mentioned");
+    let children_budget = snap["childrenBudget"].as_str().unwrap_or("compact");
+    let source_chat_message_id = snap["sourceChatMessageId"].as_str();
+    let notes = snap["notes"].as_str();
+    let created_at = snap["createdAt"].as_str();
     let version = snap["version"].as_i64().unwrap_or(1);
     conn.execute(
         "INSERT INTO codex_entries
-         (id, project_id, type, name, aliases, summary, content, parent_id, version, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), datetime('now'))",
+         (id, project_id, type, name, aliases, excluded_aliases, readings, summary,
+          content, parent_id, icon, tags_cache, context_mode, children_budget,
+          source_chat_message_id, notes, version, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 coalesce(?18, datetime('now')), datetime('now'))",
         params![
             id,
             project,
             entry_type,
             name,
             aliases,
+            excluded_aliases,
+            readings,
             summary,
             content,
             parent_id,
+            icon,
+            tags_cache,
+            context_mode,
+            children_budget,
+            source_chat_message_id,
+            notes,
             version,
+            created_at,
         ],
     )?;
     restore_codex_authorship_spans(conn, id, snap)?;
@@ -291,6 +328,18 @@ pub fn revert_undo_journal_in_tx(
                     row.result_version,
                 )?;
             }
+            "delete" => {
+                // Undoing a delete re-inserts the row from the pre-delete
+                // snapshot. Cascaded children (relations/phases/detail values)
+                // are not restored — this mirrors the pre-cutover behavior
+                // where deleteCodexEntry had no undo at all.
+                let before = row
+                    .before_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("revert delete: missing before_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(before)?;
+                insert_codex_from_snap(conn, &snap)?;
+            }
             other => anyhow::bail!("revert_undo_journal: unsupported codex op_kind '{other}'"),
         },
         "snippet" => match row.op_kind.as_str() {
@@ -379,6 +428,22 @@ pub fn apply_undo_journal_in_tx(
                     row.result_version,
                     row.base_version,
                 )?;
+            }
+            "delete" => {
+                // Redoing a delete removes the row that undo just restored.
+                // Guard on base_version, which is what insert_codex_from_snap
+                // (called during the matching undo) wrote back.
+                let deleted = conn.execute(
+                    "DELETE FROM codex_entries WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+                    params![row.entity_id, project_id, row.base_version],
+                )?;
+                if deleted == 0 {
+                    anyhow::bail!(
+                        "apply delete: codex entry '{}' version {} not found",
+                        row.entity_id,
+                        row.base_version
+                    );
+                }
             }
             other => anyhow::bail!("apply_undo_journal: unsupported codex op_kind '{other}'"),
         },
