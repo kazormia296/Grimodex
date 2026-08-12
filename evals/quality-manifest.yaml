@@ -167,6 +167,7 @@ requirements:
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
+      - src/features/ai-policy/webAiConsent.live.test.tsx
     evaluatedBy:
       - eval-ai-data-consent-precheck
   - id: GDX-TOOL-001
@@ -566,12 +567,12 @@ heavyEvaluations:
     suiteId: narrative-extraction
     command: OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live
     reason: Measures the current production Chronicle Prompt and Parser against Human Gold with billed OpenRouter access; the legacy schema lacks exact Evidence and semantic dimensions, so completion is explicitly not certification.
+  - id: heavy-web-ai-consent-live
+    suiteId: tool-policy
+    command: pnpm eval:web-ai-consent:live
+    reason: Proves consent dialog, refusal-before-provider (0 HTTP), approve (>0 HTTP), destination-change re-consent, and teardown against a loopback OpenAI-compatible Local LLM. Model quality is out of scope.
 blockedEvaluations:
   - id: blocked-impact-gate4-fresh-holdout
     suiteId: retrieval-grounding
     reason: The current synthetic test fingerprint is consumed and Gate 3.1 full-scene latency is Hold, so changing the run output cannot authorize another locked-test evaluation.
     requiredAction: First pass the same Gate 3.1 full-scene workload, then freeze a new work-isolated holdout and intentionally update the selection protocol identity before registering a new runnable Heavy command.
-  - id: blocked-web-ai-consent-live
-    suiteId: tool-policy
-    reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, and teardown against a real user-selected HTTP Local LLM or BYOK provider.
-    requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.
