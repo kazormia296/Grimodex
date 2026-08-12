@@ -25,6 +25,7 @@ import {
   validateFullCiEvidence,
   validateJourneyEvidence,
   validateChronicleProductionReport,
+  validateWebAiConsentBrowserReport,
   validateWebAiConsentReport,
   verifyFullCiWithGithub,
   writeGateB2AttemptRecord,
@@ -779,6 +780,68 @@ test("consent report requires observed teardown flags and binding metadata", () 
   );
 });
 
+test("browser consent report requires real Chromium evidence and all teardown flags", () => {
+  const consentExpected = {
+    ...heavyExpected,
+    suiteId: "heavy-web-ai-consent-browser-live",
+  };
+  const valid = {
+    ...validHeavyReport({ suiteId: consentExpected.suiteId }),
+    mode: "web-ai-consent-browser-live",
+    browser: {
+      realBrowser: true,
+      provider: "@vitest/browser-playwright",
+      engine: "chromium",
+    },
+    requestCountBeforeConsent: 0,
+    requestCountAfterRefuse: 0,
+    requestCountAfterApprove: 1,
+    requestCountAfterDestinationChangeRefuse: 1,
+    providerRequestCount: 1,
+    assertions: [
+      "refusal-before-provider-is-zero-http",
+      "approval-dispatches-provider-http",
+      "destination-change-requires-fresh-consent",
+      "indexeddb-and-localstorage-are-cleared",
+      "browser-mock-is-closed-before-evidence",
+    ],
+    teardown: {
+      serverClosed: true,
+      evidenceServerClosed: true,
+      localStorageCleared: true,
+      indexedDbCleared: true,
+      consentBrokerDeclined: true,
+      browserMockClosed: true,
+    },
+  };
+  assert.equal(
+    validateWebAiConsentBrowserReport(valid, consentExpected).ok,
+    true,
+  );
+  assert.equal(
+    validateWebAiConsentBrowserReport(
+      {
+        ...valid,
+        requestCountAfterApprove: 0,
+        requestCountAfterDestinationChangeRefuse: 0,
+        providerRequestCount: 0,
+      },
+      consentExpected,
+    ).ok,
+    false,
+  );
+  assert.equal(
+    validateWebAiConsentBrowserReport(
+      {
+        ...valid,
+        teardown: { ...valid.teardown, indexedDbCleared: false },
+      },
+      consentExpected,
+    ).ok,
+    false,
+  );
+});
+
 test("decision document includes suiteSummaries and digests", () => {
   const doc = buildDecisionDocument({
     candidate: {
@@ -869,7 +932,7 @@ test("assertDigestsMatchFreeze errors on missing harness digests and contractVer
       error.startsWith("certificationManifestDigest: missing in freeze"),
     ),
   );
-  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 11);
+  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 14);
   assert.equal(
     HARNESS_DIGEST_PATHS.certifyBootstrapDigest,
     "scripts/quality/certify-gate-b2-bootstrap.mjs",

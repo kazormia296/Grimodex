@@ -39,12 +39,15 @@ OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna \
 ## C3 — Web AI consent live
 
 C3 は loopback OpenAI-compatible Local LLM に対して、consent dialog・拒否時
-0 HTTP・承認後送信・destination 変更時の再同意・teardown を証明する。
-モデル品質は評価しない。
+0 HTTP・承認後送信・destination 変更時の再同意・IndexedDB／Local Storage の
+teardown を、実 Chromium で証明する。モデル品質は評価しない。
 
 ```bash
-pnpm eval:web-ai-consent:live
+pnpm eval:web-ai-consent:browser
 ```
+
+`pnpm eval:web-ai-consent:live` は同じ契約を jsdom + loopback で確認する
+informational 補助であり、Gate B2 Engineering の実ブラウザ証跡にはならない。
 
 ## コマンド
 

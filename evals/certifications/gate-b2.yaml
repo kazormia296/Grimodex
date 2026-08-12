@@ -31,6 +31,9 @@ candidate:
   chronicleAdapterDigest: null
   chronicleScorerDigest: null
   webConsentJourneyDigest: null
+  webConsentBrowserJourneyDigest: null
+  webConsentBrowserRunnerDigest: null
+  webConsentBrowserConfigDigest: null
 
 inputs:
   writerRegistry: policies/narrative/protected-writers.json
@@ -54,6 +57,9 @@ inputs:
   chronicleAdapter: src/features/narrative-extraction/eval/productionChronicleAdapter.ts
   chronicleScorer: src/features/narrative-extraction/eval/productionChronicleScoring.ts
   webConsentJourney: src/features/ai-policy/webAiConsent.live.test.tsx
+  webConsentBrowserJourney: src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx
+  webConsentBrowserRunner: scripts/quality/run-web-ai-consent-browser.mjs
+  webConsentBrowserConfig: vitest.gate-b2-web-ai-consent.config.ts
 
 # Light / Heavy / Journey の ID は runner が減らさない。欠落は BLOCK。
 requiredLight:
@@ -108,14 +114,8 @@ requiredHeavy:
   - id: heavy-narrative-chronicle-production
     qualityManifestId: heavy-narrative-chronicle-production
     requiresEnv: [OPENROUTER_API_KEY]
-  # Real browser consent is still required for Gate B2 Engineering PASS.
-  # jsdom loopback remains informational only (below).
   - id: heavy-web-ai-consent-browser-live
-    status: blocked
-    requiredAction: >
-      Add Playwright/Vitest Browser Web Editor journey proving
-      refusal=0 HTTP, approval>0 HTTP, destination re-consent,
-      IndexedDB/localStorage cleanup and server teardown on a real browser.
+    qualityManifestId: heavy-web-ai-consent-browser-live
 
 informational:
   - id: heavy-narrative-chronicle-legacy-baseline

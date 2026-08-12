@@ -43,6 +43,7 @@ import {
   validateFullCiEvidence,
   validateJsonAgainstSchema,
   validateJourneyEvidence,
+  validateWebAiConsentBrowserReport,
   validateWebAiConsentReport,
   verifyFullCiWithGithub,
 } from "./certify-gate-b2-bindings.mjs";
@@ -1557,6 +1558,19 @@ async function runHeavySuites({
           message = validation.message;
         }
       }
+      if (
+        entry.id === "heavy-web-ai-consent-browser-live" &&
+        result !== "failed"
+      ) {
+        const validation = validateWebAiConsentBrowserReport(
+          liveReport,
+          bindingExpected,
+        );
+        if (!validation.ok && bucket === "requiredHeavy") {
+          result = "failed";
+          message = validation.message;
+        }
+      }
 
       if (liveReport && result !== "failed") {
         let digest;
@@ -1577,6 +1591,7 @@ async function runHeavySuites({
         [
           "heavy-narrative-chronicle-production",
           "heavy-web-ai-consent-live",
+          "heavy-web-ai-consent-browser-live",
         ].includes(entry.id)
       ) {
         result = "failed";

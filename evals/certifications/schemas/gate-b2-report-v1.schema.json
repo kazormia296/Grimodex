@@ -137,6 +137,18 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "webConsentBrowserJourneyDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "webConsentBrowserRunnerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "webConsentBrowserConfigDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "boundVia": { "type": "string" },
         "frozen": { "type": "boolean" },
         "dirty": { "type": "boolean" }

@@ -3,22 +3,34 @@ import { realpathSync } from "node:fs";
 import { defineConfig, searchForWorkspaceRoot } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import path from "path";
+import path from "node:path";
 import { playwright } from "@vitest/browser-playwright";
+
+function requiredEnvironment(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing ${name} for Gate B2 browser journey`);
+  return value;
+}
 
 const alias = { "@": path.resolve(__dirname, "./src") };
 const dependencyRoot = realpathSync(path.resolve(__dirname, "node_modules"));
 
 export default defineConfig({
-  // Tailwind 4 は utilities を Vite plugin 経由で生成する。これが無いと
-  // browser test で `grid` `h-full` 等のクラスが no-op になり、layout が
-  // 全く効かない (shell が display:block に潰れる)。
   plugins: [react(), tailwindcss()],
   resolve: { alias },
+  define: {
+    __GATE_B2_PROVIDER_BASE_URL__: JSON.stringify(
+      requiredEnvironment("GATE_B2_PROVIDER_BASE_URL"),
+    ),
+    __GATE_B2_PROVIDER_STATS_URL__: JSON.stringify(
+      requiredEnvironment("GATE_B2_PROVIDER_STATS_URL"),
+    ),
+    __GATE_B2_EVIDENCE_URL__: JSON.stringify(
+      requiredEnvironment("GATE_B2_EVIDENCE_URL"),
+    ),
+  },
   server: {
     fs: {
-      // Worktrees may reuse a dependency tree through a node_modules symlink.
-      // Fontsource URLs resolve to its real path during browser tests.
       allow: [...new Set([searchForWorkspaceRoot(__dirname), dependencyRoot])],
     },
   },
@@ -26,7 +38,7 @@ export default defineConfig({
     include: ["@tanstack/react-virtual"],
   },
   test: {
-    name: "browser",
+    name: "gate-b2-web-ai-consent-browser",
     globals: true,
     browser: {
       enabled: true,
@@ -35,15 +47,8 @@ export default defineConfig({
       instances: [{ browser: "chromium" }],
     },
     setupFiles: ["./src/test-setup-browser.ts"],
-    include: ["src/**/*.browser.test.{ts,tsx}"],
-    exclude: [
+    include: [
       "src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx",
-      "src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx",
-      "src/features/editor/zen/ZenBlurResearchRunner.browser.test.tsx",
-      "src/features/editor/zen/ZenShaderResearchRunner.browser.test.tsx",
-      "src/features/editor/zen/ZenShaderAbbaResearchRunner.browser.test.tsx",
-      "src/features/editor/zen/ZenShaderCadenceResearchRunner.browser.test.tsx",
-      "src/features/editor/zen/ZenShaderBaselineResearchRunner.browser.test.tsx",
     ],
   },
 });

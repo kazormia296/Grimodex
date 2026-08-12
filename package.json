@@ -96,6 +96,7 @@
     "test:gate-b2:immutable-retraction-history": "node scripts/quality/run-gate-b2-journey.mjs --journey-id immutable-retraction-history",
     "test:gate-b2:semantic-gate-exclusion": "node scripts/quality/run-gate-b2-journey.mjs --journey-id semantic-gate-exclusion",
     "eval:web-ai-consent:live": "pnpm test:node --run src/features/ai-policy/webAiConsent.live.test.tsx",
+    "eval:web-ai-consent:browser": "node scripts/quality/run-web-ai-consent-browser.mjs",
     "certify:gate-b2:freeze": "node scripts/quality/freeze-gate-b2-candidate.mjs"
   },
   "dependencies": {

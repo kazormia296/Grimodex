@@ -56,7 +56,7 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   const browserConsent = raw.requiredHeavy.find(
     (entry) => entry.id === "heavy-web-ai-consent-browser-live",
   );
-  assert.equal(browserConsent.status, "blocked");
+  assert.equal(browserConsent.qualityManifestId, "heavy-web-ai-consent-browser-live");
   assert.ok(raw.fullCi?.workflowId);
   assert.equal(raw.fullCi.workflowPath, ".github/workflows/ci.yml");
   assert.equal(raw.fullCi.acceptedEvents.includes("pull_request"), false);
@@ -740,11 +740,12 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
     const browserConsent = report.suites.find(
       (suite) => suite.suiteId === "heavy-web-ai-consent-browser-live",
     );
-    assert.equal(browserConsent.result, "blocked");
+    assert.equal(browserConsent.result, "not-run");
     assert.match(
-      browserConsent.message,
-      /Playwright|Vitest Browser|IndexedDB/i,
+      browserConsent.command.join(" "),
+      /eval:web-ai-consent:browser/,
     );
+    assert.match(browserConsent.message, /dry-run/i);
     assert.match(
       production.command.join(" "),
       /eval:narrative:chronicle:production:live/,
@@ -754,7 +755,7 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
     assert.match(consent.message, /dry-run/i);
     assert.notEqual(production.result, "passed");
     assert.notEqual(consent.result, "skipped");
-    assert.equal(report.verdict, "BLOCK");
+    assert.equal(report.verdict, "INCOMPLETE");
   } finally {
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;

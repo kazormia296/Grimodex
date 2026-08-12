@@ -43,6 +43,12 @@ export const HARNESS_DIGEST_PATHS = {
   chronicleScorerDigest:
     "src/features/narrative-extraction/eval/productionChronicleScoring.ts",
   webConsentJourneyDigest: "src/features/ai-policy/webAiConsent.live.test.tsx",
+  webConsentBrowserJourneyDigest:
+    "src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx",
+  webConsentBrowserRunnerDigest:
+    "scripts/quality/run-web-ai-consent-browser.mjs",
+  webConsentBrowserConfigDigest:
+    "vitest.gate-b2-web-ai-consent.config.ts",
 };
 
 const INPUT_DIGEST_KEYS = [
@@ -1483,6 +1489,100 @@ export function validateWebAiConsentReport(report, expected) {
     };
   }
   return { ok: true, message: "consent report accepted" };
+}
+
+export function validateWebAiConsentBrowserReport(report, expected) {
+  if (!report) {
+    return { ok: false, message: "web AI browser consent report missing" };
+  }
+  const binding = validateHeavyReportBinding(
+    report,
+    {
+      commitSha: expected?.commitSha,
+      treeSha: expected?.treeSha,
+    },
+    expected,
+  );
+  if (!binding.ok) return binding;
+  if (report.mode !== "web-ai-consent-browser-live") {
+    return { ok: false, message: "browser consent report mode is invalid" };
+  }
+  if (report.certificationEligible !== true) {
+    return {
+      ok: false,
+      message: "browser consent certificationEligible must be true",
+    };
+  }
+  const browser = report.browser ?? {};
+  if (
+    browser.realBrowser !== true ||
+    browser.provider !== "@vitest/browser-playwright" ||
+    browser.engine !== "chromium"
+  ) {
+    return {
+      ok: false,
+      message: "browser consent report must prove real Chromium execution",
+    };
+  }
+  const counts = [
+    report.requestCountBeforeConsent,
+    report.requestCountAfterRefuse,
+    report.requestCountAfterApprove,
+    report.requestCountAfterDestinationChangeRefuse,
+    report.providerRequestCount,
+  ];
+  if (!counts.every((value) => Number.isInteger(value) && value >= 0)) {
+    return {
+      ok: false,
+      message: "browser consent request counts must be non-negative integers",
+    };
+  }
+  if (
+    report.requestCountBeforeConsent !== 0 ||
+    report.requestCountAfterRefuse !== 0 ||
+    report.requestCountAfterApprove <= 0 ||
+    report.requestCountAfterDestinationChangeRefuse !==
+      report.requestCountAfterApprove ||
+    report.providerRequestCount !== report.requestCountAfterDestinationChangeRefuse
+  ) {
+    return {
+      ok: false,
+      message:
+        "browser consent report does not prove refusal=0, approval>0, and destination re-consent",
+    };
+  }
+  const requiredAssertions = [
+    "refusal-before-provider-is-zero-http",
+    "approval-dispatches-provider-http",
+    "destination-change-requires-fresh-consent",
+    "indexeddb-and-localstorage-are-cleared",
+    "browser-mock-is-closed-before-evidence",
+  ];
+  if (
+    !Array.isArray(report.assertions) ||
+    !requiredAssertions.every((assertion) => report.assertions.includes(assertion))
+  ) {
+    return {
+      ok: false,
+      message: "browser consent report is missing required journey assertions",
+    };
+  }
+  const teardown = report.teardown ?? {};
+  if (
+    teardown.serverClosed !== true ||
+    teardown.evidenceServerClosed !== true ||
+    teardown.localStorageCleared !== true ||
+    teardown.indexedDbCleared !== true ||
+    teardown.consentBrokerDeclined !== true ||
+    teardown.browserMockClosed !== true
+  ) {
+    return {
+      ok: false,
+      message:
+        "browser consent teardown must close servers, storage, broker, and mock",
+    };
+  }
+  return { ok: true, message: "browser consent report accepted" };
 }
 
 async function resolvePnpmStoreDir(repoRoot, baseEnv = process.env) {

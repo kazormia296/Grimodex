@@ -145,11 +145,12 @@ Local LLM／BYOK だけを有効化する。アプリ所有の API key、
 が変わった場合は fail closed とし、過去の同意を流用しない。BYOK の API key は現在の
 ページの実行メモリだけに置き、IndexedDB や Local Storage へ永続化しない。
 
-これらの contract test は実 provider の成功を証明しない。資格情報付きかつ
-teardown 可能なブラウザ runner は存在しないため、manifest の
-`blocked-web-ai-consent-live` を `passed` と読み替えてはならない。
-この blocked 評価はユーザー所有の HTTP Local LLM／BYOK 経路だけを対象とし、
-管理型 AI を意味しない。
+これらの contract test は実 provider のモデル品質を証明しない。Gate B2 の
+candidate-bound browser runner は loopback OpenAI-compatible server と Chromium を使い、
+実 HTTP の refusal／approval／destination re-consent、IndexedDB／Local Storage の
+teardown を確認する。`pnpm eval:web-ai-consent:live` は jsdom による informational
+補助であり、実ブラウザ証跡の代替ではない。この評価はユーザー所有の HTTP Local
+LLM／BYOK 経路だけを対象とし、管理型 AI を意味しない。
 また Sakana の公式 API は 2026-07-24 時点で公開 Web origin の preflight に応答しないため、
 Vite 開発 proxy では検証できるが静的な本番 Web Editor からの直接実行は Heavy 未達とする。
 原稿と BYOK key を受け取る Grimodex relay は現行の「開発者サーバーへ原稿を送らない」
