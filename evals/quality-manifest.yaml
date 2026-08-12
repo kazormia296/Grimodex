@@ -477,6 +477,8 @@ requirements:
     definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
     implementedBy:
       - scripts/quality/impact-map.mjs
+      - scripts/quality/certify-gate-b2.mjs
+      - evals/certifications/gate-b2.yaml
       - evals/impact-map.yaml
       - src/features/ai-verification/aiPathRegistry.ts
       - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
@@ -493,6 +495,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - scripts/quality/impact-map.test.mjs
+      - scripts/quality/certify-gate-b2.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
       - scripts/semantic-reranker-release.test.mjs
