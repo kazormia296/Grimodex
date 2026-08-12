@@ -176,7 +176,11 @@ test("validateFullCiEvidence rejects requiredJobs that shrink contract set", () 
   assert.equal(shrunk.ok, false);
   assert.match(shrunk.message, /requiredJobs must match contract/);
 
-  const ok = validateFullCiEvidence(fullCiEvidence(), candidate, fullCiContract);
+  const ok = validateFullCiEvidence(
+    fullCiEvidence(),
+    candidate,
+    fullCiContract,
+  );
   assert.equal(ok.ok, true);
 });
 
@@ -224,8 +228,7 @@ test("verifyFullCiWithGithub rejects workflow, path, and event mismatches", asyn
   const fetchRun = async () => githubRunPayload();
 
   const badWorkflow = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () =>
-      githubRunPayload({ run: { workflow_id: 99999999 } }),
+    fetchRun: async () => githubRunPayload({ run: { workflow_id: 99999999 } }),
     fullCiContract,
   });
   assert.equal(badWorkflow.ok, false);
@@ -240,7 +243,8 @@ test("verifyFullCiWithGithub rejects workflow, path, and event mismatches", asyn
   assert.match(badPath.message, /workflow path/);
 
   const badEvent = await verifyFullCiWithGithub(raw, candidate, {
-    fetchRun: async () => githubRunPayload({ run: { event: "workflow_dispatch" } }),
+    fetchRun: async () =>
+      githubRunPayload({ run: { event: "workflow_dispatch" } }),
     fullCiContract,
   });
   assert.equal(badEvent.ok, false);
@@ -449,7 +453,9 @@ test("listRunArtifacts paginates with per_page=100", async () => {
     repoRoot,
     runGh: async (_command, args) => {
       pages.push(String(args[1]));
-      const page = Number(new URLSearchParams(String(args[1]).split("?")[1]).get("page"));
+      const page = Number(
+        new URLSearchParams(String(args[1]).split("?")[1]).get("page"),
+      );
       if (page === 1) {
         return JSON.stringify({
           artifacts: Array.from({ length: 100 }, (_, index) => ({
@@ -529,7 +535,10 @@ test("journey contract mismatch rejects forged runner metadata", () => {
       runnerId: contract.runnerId,
       runnerVersion: contract.runnerVersion,
       environmentDigest: `sha256:${"c".repeat(64)}`,
-      assertions: contract.requiredAssertions.map((id) => ({ id, passed: true })),
+      assertions: contract.requiredAssertions.map((id) => ({
+        id,
+        passed: true,
+      })),
       result: "passed",
       startedAt: "2026-01-01T00:00:00.000Z",
       completedAt: "2026-01-01T00:01:00.000Z",
@@ -553,8 +562,11 @@ test("chronicle report must bind candidate metadata and remain 14/14 eligible", 
     false,
   );
   assert.equal(
-    validateChronicleProductionReport(validHeavyReport(), candidate, heavyExpected)
-      .ok,
+    validateChronicleProductionReport(
+      validHeavyReport(),
+      candidate,
+      heavyExpected,
+    ).ok,
     true,
   );
   assert.equal(
@@ -595,7 +607,10 @@ test("consent report requires observed teardown flags and binding metadata", () 
   assert.equal(
     validateWebAiConsentReport(
       {
-        ...validHeavyReport({ suiteId: consentExpected.suiteId, runId: "wrong" }),
+        ...validHeavyReport({
+          suiteId: consentExpected.suiteId,
+          runId: "wrong",
+        }),
         teardown: { serverClosed: true, localStorageCleared: true },
       },
       consentExpected,
@@ -648,7 +663,10 @@ test("assertDigestsMatchFreeze detects input and harness drift", () => {
     webConsentJourneyDigest: digest,
   };
   const drift = assertDigestsMatchFreeze(
-    { writerRegistryDigest: `sha256:${"b".repeat(64)}`, certificationManifestDigest: digest },
+    {
+      writerRegistryDigest: `sha256:${"b".repeat(64)}`,
+      certificationManifestDigest: digest,
+    },
     freezeCandidate,
   );
   assert.ok(drift.some((error) => error.startsWith("writerRegistryDigest:")));
@@ -670,7 +688,9 @@ test("assertDigestsMatchFreeze detects input and harness drift", () => {
     freezeCandidate,
   );
   assert.ok(
-    harnessDrift.some((error) => error.startsWith("certificationManifestDigest:")),
+    harnessDrift.some((error) =>
+      error.startsWith("certificationManifestDigest:"),
+    ),
   );
 });
 
@@ -689,7 +709,11 @@ test("assertDigestsMatchFreeze errors on missing harness digests and contractVer
       error.startsWith("certificationManifestDigest: missing in freeze"),
     ),
   );
-  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 10);
+  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 11);
+  assert.equal(
+    HARNESS_DIGEST_PATHS.certifyBootstrapDigest,
+    "scripts/quality/certify-gate-b2-bootstrap.mjs",
+  );
 });
 
 test("assertFreezeActive rejects superseded freeze", () => {
@@ -710,7 +734,11 @@ test("prepareWorktreeDependencies rejects lockfile mismatch", async () => {
   await mkdir(repoRoot, { recursive: true });
   await mkdir(executionRoot, { recursive: true });
   try {
-    await writeFile(path.join(repoRoot, "pnpm-lock.yaml"), "lockfileVersion: 9\n", "utf8");
+    await writeFile(
+      path.join(repoRoot, "pnpm-lock.yaml"),
+      "lockfileVersion: 9\n",
+      "utf8",
+    );
     await writeFile(
       path.join(executionRoot, "pnpm-lock.yaml"),
       "lockfileVersion: 9\npatched: true\n",
@@ -785,7 +813,8 @@ test(
         executionRoot: worktreePath,
       });
       assert.ok(
-        prepared.mode === "offline-install" || prepared.mode === "online-install",
+        prepared.mode === "offline-install" ||
+          prepared.mode === "online-install",
       );
       assert.match(prepared.lockfileDigest, /^sha256:/);
 

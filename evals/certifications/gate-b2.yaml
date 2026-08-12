@@ -3,7 +3,7 @@
 # Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
 # candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
 schemaVersion: 1
-contractVersion: 4
+contractVersion: 5
 id: gate-b2
 
 candidate:
@@ -20,6 +20,7 @@ candidate:
   classificationDigest: null
   # Harness / runner digests (see HARNESS_DIGEST_PATHS in certify-gate-b2-bindings.mjs)
   certificationManifestDigest: null
+  certifyBootstrapDigest: null
   certifyRunnerDigest: null
   certifyBindingsDigest: null
   adrValidatorDigest: null
@@ -41,6 +42,7 @@ inputs:
   classification: policies/narrative/gate-b2-classification.json
   # Harness paths (digested at freeze; keys match HARNESS_DIGEST_PATHS)
   certificationManifest: evals/certifications/gate-b2.yaml
+  certifyBootstrap: scripts/quality/certify-gate-b2-bootstrap.mjs
   certifyRunner: scripts/quality/certify-gate-b2.mjs
   certifyBindings: scripts/quality/certify-gate-b2-bindings.mjs
   adrValidator: scripts/quality/validate-gate-b2-adr.mjs

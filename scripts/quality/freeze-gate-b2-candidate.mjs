@@ -15,7 +15,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   FREEZE_RELATIVE,
   GATE_B2_CONTRACT_VERSION,
+  buildDecisionDocument,
   pathExists,
+  validateJsonAgainstSchema,
 } from "./certify-gate-b2-bindings.mjs";
 import {
   collectInputDigests,
@@ -39,21 +41,27 @@ function parseFreezeArgs(argv) {
   };
 }
 
-function emptySuiteCounts(notRun) {
-  return {
-    passed: 0,
-    failed: 0,
-    blocked: 0,
-    hold: 0,
-    notRun,
-  };
+function provisionalSuites(manifest) {
+  return [
+    ...(manifest.requiredLight ?? []).map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredLight",
+      result: "not-run",
+    })),
+    ...(manifest.requiredHeavy ?? []).map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredHeavy",
+      result: "not-run",
+    })),
+    ...(manifest.requiredManualJourneys ?? []).map((entry) => ({
+      suiteId: entry.id,
+      bucket: "requiredJourneys",
+      result: "not-run",
+    })),
+  ];
 }
 
-async function archiveSupersededFreeze({
-  repoRoot,
-  oldFreeze,
-  newCommitSha,
-}) {
+async function archiveSupersededFreeze({ repoRoot, oldFreeze, newCommitSha }) {
   const archiveDir = path.join(repoRoot, "evals/certifications/archive");
   await mkdir(archiveDir, { recursive: true });
   const archivePath = path.join(
@@ -66,7 +74,11 @@ async function archiveSupersededFreeze({
     supersededBy: newCommitSha,
     supersededAt: new Date().toISOString(),
   };
-  await writeFile(archivePath, `${JSON.stringify(superseded, null, 2)}\n`, "utf8");
+  await writeFile(
+    archivePath,
+    `${JSON.stringify(superseded, null, 2)}\n`,
+    "utf8",
+  );
   return archivePath;
 }
 
@@ -94,16 +106,6 @@ export async function freezeGateB2Candidate({
   const digests = await collectInputDigests(manifest, repoRoot, {
     manifestDigest,
   });
-  const requiredLightCount = Array.isArray(manifest.requiredLight)
-    ? manifest.requiredLight.length
-    : 0;
-  const requiredHeavyCount = Array.isArray(manifest.requiredHeavy)
-    ? manifest.requiredHeavy.length
-    : 0;
-  const requiredJourneyCount = Array.isArray(manifest.requiredManualJourneys)
-    ? manifest.requiredManualJourneys.length
-    : 0;
-
   const repoFreezePath = path.join(repoRoot, FREEZE_RELATIVE);
   let archivedPath = null;
   if (writeRepoFreeze && (await pathExists(repoFreezePath))) {
@@ -165,33 +167,45 @@ export async function freezeGateB2Candidate({
     );
   }
 
+  const provisionalReasons = [
+    "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
+    "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
+    "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
+  ];
   const provisionalDecision = {
-    schemaVersion: 1,
-    gateId: "gate-b2",
-    candidateCommitSha: identity.commitSha,
-    candidateTreeSha: identity.treeSha,
-    baseMasterSha: identity.baseMasterSha,
-    schemaVersionProduct: 16,
-    verdict: "INCOMPLETE",
-    reasons: [
-      "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
-      "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
-      "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
-    ],
-    suiteSummaries: {
-      requiredLight: emptySuiteCounts(requiredLightCount),
-      requiredHeavy: emptySuiteCounts(requiredHeavyCount),
-      requiredJourneys: emptySuiteCounts(requiredJourneyCount),
-    },
-    digests: {
-      ...digests,
+    ...buildDecisionDocument({
+      candidate: {
+        commitSha: identity.commitSha,
+        treeSha: identity.treeSha,
+        baseMasterSha: identity.baseMasterSha,
+      },
+      verdict: "INCOMPLETE",
+      reasons: provisionalReasons,
+      suites: provisionalSuites(manifest),
       reportDigest: null,
-    },
-    heavyAttempts: [],
-    generatedAt: new Date().toISOString(),
+      digests,
+    }),
     notes:
       "Provisional freeze decision only. Replace after --run-light/--run-heavy/--run-journeys against this candidate.",
   };
+  const decisionSchema = JSON.parse(
+    await readFile(
+      path.join(
+        repoRoot,
+        "evals/certifications/schemas/gate-b2-decision-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  const decisionValidation = validateJsonAgainstSchema(
+    provisionalDecision,
+    decisionSchema,
+  );
+  if (!decisionValidation.ok) {
+    throw new Error(
+      `Gate B2 provisional decision schema validation failed: ${JSON.stringify(decisionValidation.errors)}`,
+    );
+  }
 
   await writeFile(
     path.join(artifactDir, "decision.json"),

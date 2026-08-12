@@ -6,7 +6,8 @@ Gate B2 の正式認証は Global Release Quality（Related Scenes / Semantic Re
 
 - Manifest: `evals/certifications/gate-b2.yaml`
 - Report schema: `evals/certifications/schemas/gate-b2-report-v1.schema.json`
-- Runner: `scripts/quality/certify-gate-b2.mjs`
+- Bootstrap: `scripts/quality/certify-gate-b2-bootstrap.mjs`
+- Frozen candidate runner: `scripts/quality/certify-gate-b2.mjs`
 - ADR checklist: `policies/narrative/gate-b2-adr-checklist.json`
 - Validator classification: `policies/narrative/gate-b2-classification.json`
 

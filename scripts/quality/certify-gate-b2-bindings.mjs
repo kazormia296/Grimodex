@@ -3,29 +3,23 @@
  */
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import {
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  access,
-} from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
-const PLACEHOLDER_ENV_ASSIGN =
-  /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
+const PLACEHOLDER_ENV_ASSIGN = /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
 
-export const GATE_B2_CONTRACT_VERSION = 4;
+export const GATE_B2_CONTRACT_VERSION = 5;
 
 export const FREEZE_RELATIVE =
   "evals/certifications/gate-b2-candidate.freeze.json";
 
 export const HARNESS_DIGEST_PATHS = {
   certificationManifestDigest: "evals/certifications/gate-b2.yaml",
+  certifyBootstrapDigest: "scripts/quality/certify-gate-b2-bootstrap.mjs",
   certifyRunnerDigest: "scripts/quality/certify-gate-b2.mjs",
   certifyBindingsDigest: "scripts/quality/certify-gate-b2-bindings.mjs",
   adrValidatorDigest: "scripts/quality/validate-gate-b2-adr.mjs",
@@ -39,8 +33,7 @@ export const HARNESS_DIGEST_PATHS = {
     "src/features/narrative-extraction/eval/productionChronicleAdapter.ts",
   chronicleScorerDigest:
     "src/features/narrative-extraction/eval/productionChronicleScoring.ts",
-  webConsentJourneyDigest:
-    "src/features/ai-policy/webAiConsent.live.test.tsx",
+  webConsentJourneyDigest: "src/features/ai-policy/webAiConsent.live.test.tsx",
 };
 
 const INPUT_DIGEST_KEYS = [
@@ -146,7 +139,9 @@ function runCommand(command, args, cwd, env = process.env) {
 export async function assertWorkingTreeClean(repoRoot) {
   const status = await runGit(["status", "--porcelain"], repoRoot);
   if (status.length > 0) {
-    throw new Error("working tree is dirty; commit or stash before certification");
+    throw new Error(
+      "working tree is dirty; commit or stash before certification",
+    );
   }
 }
 
@@ -517,7 +512,9 @@ export async function fetchCheckoutIdentityArtifact({
 
     const jsonFiles = await findCheckoutIdentityJsonFiles(tempDir);
     if (jsonFiles.length === 0) {
-      throw new Error("checkout-identity.json not found in downloaded artifact");
+      throw new Error(
+        "checkout-identity.json not found in downloaded artifact",
+      );
     }
     if (jsonFiles.length > 1) {
       throw new Error(
@@ -558,9 +555,13 @@ async function resolveGithubRepoSlug(repoRoot) {
   const remoteUrl = await runGit(["remote", "get-url", "origin"], repoRoot);
   const sshMatch = remoteUrl.match(/^git@github\.com:(.+?)(?:\.git)?$/);
   if (sshMatch) return sshMatch[1];
-  const httpsMatch = remoteUrl.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/);
+  const httpsMatch = remoteUrl.match(
+    /^https:\/\/github\.com\/(.+?)(?:\.git)?$/,
+  );
   if (httpsMatch) return httpsMatch[1];
-  throw new Error(`unable to resolve GitHub repo slug from origin: ${remoteUrl}`);
+  throw new Error(
+    `unable to resolve GitHub repo slug from origin: ${remoteUrl}`,
+  );
 }
 
 async function defaultFetchGithubRun(runId, { repoRoot, raw }) {
@@ -773,7 +774,10 @@ const JOURNEY_REQUIRED = [
   "completedAt",
 ];
 
-export function validateJourneyEvidence(raw, { journeyId, candidate, contract }) {
+export function validateJourneyEvidence(
+  raw,
+  { journeyId, candidate, contract },
+) {
   const missing = JOURNEY_REQUIRED.filter((key) => {
     if (key === "assertions") {
       return !Array.isArray(raw.assertions) || raw.assertions.length === 0;
@@ -822,7 +826,11 @@ export function validateJourneyEvidence(raw, { journeyId, candidate, contract })
       message: "journey environmentDigest must be sha256:...",
     };
   }
-  if (!raw.assertions.every((a) => a && typeof a.id === "string" && a.passed === true)) {
+  if (
+    !raw.assertions.every(
+      (a) => a && typeof a.id === "string" && a.passed === true,
+    )
+  ) {
     return {
       ok: false,
       result: "failed",
@@ -908,8 +916,7 @@ export function buildDecisionDocument({
       notRun: 0,
     };
     for (const row of rows) {
-      if (row.result === "passed" || row.result === "informational")
-        counts.passed += 1;
+      if (row.result === "passed") counts.passed += 1;
       else if (row.result === "failed") counts.failed += 1;
       else if (row.result === "blocked") counts.blocked += 1;
       else if (row.result === "hold") counts.hold += 1;
@@ -999,16 +1006,8 @@ function validateHeavyReportBinding(report, candidate, expected) {
   return { ok: true };
 }
 
-export async function readHeavyLiveReport(
-  artifactDir,
-  suiteId,
-  options = {},
-) {
-  const {
-    outputPath,
-    allowedPaths = [],
-    env = process.env,
-  } = options;
+export async function readHeavyLiveReport(artifactDir, suiteId, options = {}) {
+  const { outputPath, allowedPaths = [], env = process.env } = options;
   const candidates = [];
   const primary = outputPath ?? env.GATE_B2_OUTPUT_PATH;
   if (primary) candidates.push(primary);

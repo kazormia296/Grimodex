@@ -20,9 +20,8 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
   assert.equal(status.status, 0);
   const dirty = status.stdout.trim().length > 0;
 
-  const { freezeGateB2Candidate } = await import(
-    "./freeze-gate-b2-candidate.mjs"
-  );
+  const { freezeGateB2Candidate } =
+    await import("./freeze-gate-b2-candidate.mjs");
 
   if (dirty) {
     await assert.rejects(
@@ -54,7 +53,7 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     });
     assert.match(result.freeze.candidate.commitSha, /^[0-9a-f]{40}$/);
     assert.match(result.freeze.candidate.treeSha, /^[0-9a-f]{40}$/);
-    assert.equal(result.freeze.contractVersion, 4);
+    assert.equal(result.freeze.contractVersion, 5);
     assert.match(
       result.freeze.candidate.writerRegistryDigest,
       /^sha256:[0-9a-f]{64}$/,
@@ -75,6 +74,18 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     assert.equal(
       result.provisionalDecision.suiteSummaries.requiredJourneys.notRun,
       manifest.requiredManualJourneys.length,
+    );
+    assert.deepEqual(
+      Object.keys(result.provisionalDecision.digests).sort(),
+      [
+        "adrChecklistDigest",
+        "aiPathRegistryDigest",
+        "classificationDigest",
+        "narrativeEvalManifestDigest",
+        "qualityManifestDigest",
+        "reportDigest",
+        "writerRegistryDigest",
+      ].sort(),
     );
     const saved = JSON.parse(await readFile(result.freezePath, "utf8"));
     assert.equal(saved.candidate.commitSha, result.freeze.candidate.commitSha);

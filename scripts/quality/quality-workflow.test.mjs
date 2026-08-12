@@ -47,7 +47,7 @@ test("package scripts expose one canonical quality workflow", async () => {
   assert.match(packageJson.scripts["verify:quality"], /eval:narrative/);
   assert.equal(
     packageJson.scripts["certify:gate-b2"],
-    "node scripts/quality/certify-gate-b2.mjs",
+    "node scripts/quality/certify-gate-b2-bootstrap.mjs",
   );
   assert.equal(
     packageJson.scripts["certify:gate-b2:freeze"],
