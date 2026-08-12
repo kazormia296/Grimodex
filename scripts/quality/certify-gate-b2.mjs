@@ -716,6 +716,18 @@ async function evaluateFullCiEvidence({
   };
 }
 
+export function journeyCertificationCommandDigest(journeyEntry) {
+  if (
+    !Array.isArray(journeyEntry?.command) ||
+    journeyEntry.command.length < 2
+  ) {
+    throw new Error(
+      `Journey ${journeyEntry?.id ?? "unknown"} has no fixed certification command.`,
+    );
+  }
+  return sha256Text(JSON.stringify(journeyEntry.command));
+}
+
 export async function runJourneySuite({
   journeyEntry,
   candidate,
@@ -770,7 +782,7 @@ export async function runJourneySuite({
     });
   }
 
-  const commandDigest = sha256Text(JSON.stringify(command));
+  const commandDigest = journeyCertificationCommandDigest(journeyEntry);
   const outputPath = path.join(allocation.attemptDir, "journey-evidence.json");
   const runnerArtifactPath = path.join(
     allocation.attemptDir,

@@ -12,14 +12,18 @@ import {
   certifyGateB2,
   decideVerdict,
   emptyBucketSummary,
+  journeyCertificationCommandDigest,
   loadGateB2Manifest,
   parseCertifyArgs,
   runJourneySuite,
+  sha256Text,
   tallyBucket,
   validateGateB2Manifest,
 } from "./certify-gate-b2.mjs";
 import { validateJsonAgainstSchema } from "./certify-gate-b2-bindings.mjs";
 import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
+import { certificationCommandForJourney } from "./run-gate-b2-journey.mjs";
+import { validateNativeWriterOwnership } from "./validate-native-writer-ownership.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -57,6 +61,23 @@ test("Gate B2 v8 is credential-free and uses the dedicated GitHub Actions author
     modelQuality: "excluded",
     externalCredentialsUsed: false,
   });
+});
+
+test("certifier and Journey runner bind the same fixed command digest", async () => {
+  const { raw } = await loadGateB2Manifest(repoRoot);
+  for (const entry of raw.requiredManualJourneys) {
+    assert.deepEqual(entry.command, certificationCommandForJourney(entry.id));
+    assert.equal(
+      journeyCertificationCommandDigest(entry),
+      sha256Text(JSON.stringify(certificationCommandForJourney(entry.id))),
+    );
+  }
+});
+
+test("trusted project deletion stays inside native writer ownership", () => {
+  const result = validateNativeWriterOwnership();
+  assert.equal(result.activeCount > 0, true);
+  assert.deepEqual(result.violations, []);
 });
 
 test("dedicated workflow binds a metadata-only freeze envelope to candidate and Full CI", async () => {

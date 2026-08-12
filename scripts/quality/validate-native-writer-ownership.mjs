@@ -57,18 +57,22 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/execute.rs",
   ],
   "narrative.authority": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
   ],
   "narrative.revision-envelope": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
   ],
   "narrative.freshness": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
   ],
   "narrative.field-authority": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
   ],
   "chronicle.event": [
