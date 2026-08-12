@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 16,
+  "schemaVersion": 17,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6927,14 +6927,14 @@
       "kind": "table",
       "columns": {
         "created_at": {
-          "ordinal": 6,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
         "created_by": {
-          "ordinal": 7,
+          "ordinal": 10,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6946,6 +6946,13 @@
           "notNull": false,
           "default": null,
           "primaryKey": 1
+        },
+        "origin_kind": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'legacy-unbound'",
+          "primaryKey": 0
         },
         "payload_json": {
           "ordinal": 3,
@@ -6975,6 +6982,20 @@
           "default": null,
           "primaryKey": 0
         },
+        "reconciliation_envelope_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reconciliation_envelope_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "revision_number": {
           "ordinal": 2,
           "declaredType": "INTEGER",
@@ -6985,7 +7006,7 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_proposal_revisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_number INTEGER NOT NULL, payload_json TEXT NOT NULL, plan_fragment_json TEXT, plan_fragment_digest TEXT, created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
+      "createSql": "CREATE TABLE narrative_proposal_revisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_number INTEGER NOT NULL, payload_json TEXT NOT NULL, plan_fragment_json TEXT, plan_fragment_digest TEXT, origin_kind TEXT NOT NULL DEFAULT 'legacy-unbound', reconciliation_envelope_json TEXT, reconciliation_envelope_digest TEXT, created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
     },
     "narrative_proposal_sets": {
       "kind": "table",
@@ -7139,6 +7160,63 @@
       "foreignKeys": [],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_proposals ( id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL, proposal_key TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unreviewed', payload_json TEXT NOT NULL, current_revision_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
+    },
+    "narrative_revision_source_basis": {
+      "kind": "table",
+      "columns": {
+        "observed_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "ordinal": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "revision_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "revision_token": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "revision_id",
+            "source_key"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_revision_source_basis ( revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL, source_kind TEXT NOT NULL, source_key TEXT NOT NULL, revision_token TEXT NOT NULL, observed_at TEXT, PRIMARY KEY (revision_id, ordinal), UNIQUE (revision_id, source_key) )"
     },
     "narrative_runtime_policy": {
       "kind": "table",

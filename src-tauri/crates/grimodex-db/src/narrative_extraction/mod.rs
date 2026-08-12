@@ -15,6 +15,7 @@ mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
 mod repository;
+mod reconciliation_envelope;
 mod semantic_bindings;
 mod task_leases;
 mod temporal_constraints;

@@ -50,6 +50,7 @@ import { buildProjectNarrativeSnapshot } from "@/application/narrative-extractio
 import {
   appendDecision,
   appendRevision,
+  buildNativeReconciliationEnvelope,
   reviseAndDecide,
   saveProposalSet,
 } from "@/application/narrative-extraction/proposalRepository";
@@ -1827,6 +1828,13 @@ export async function startCodexStructureExtraction(
         throw new Error(`Failed to claim task ${CODEX_STRUCTURE_TASK_KIND}`);
       }
 
+      const reconciliationEnvelope =
+        await buildNativeReconciliationEnvelope({
+          runId,
+          taskId: claim.task.taskId,
+          sourceRevisionToken: snapshotDigest ?? `run:${runId}`,
+        });
+
       const saved = await saveProposalSet({
         runId,
         projectId: request.projectId,
@@ -1853,6 +1861,7 @@ export async function startCodexStructureExtraction(
             proposalId: proposal.proposalId,
             proposalKey: proposal.proposalKey,
             kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+            reconciliationEnvelope,
             payloadJson: buildCodexReviewRevisionEnvelope({
               reviewPayload: proposal.proposal.payload,
             }) as unknown as Record<string, unknown>,
@@ -1861,6 +1870,7 @@ export async function startCodexStructureExtraction(
             proposalId: proposal.proposalId,
             proposalKey: proposal.proposalKey,
             kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+            reconciliationEnvelope,
             // Domain payload only — dependencies live in summaryJson.
             payloadJson: buildCodexReviewRevisionEnvelope({
               reviewPayload: proposal.proposal.payload,
@@ -1870,6 +1880,7 @@ export async function startCodexStructureExtraction(
             proposalId: proposal.proposalId,
             proposalKey: proposal.proposalKey,
             kind: CODEX_BASE_DETAIL_SET_PROPOSAL_KIND,
+            reconciliationEnvelope,
             payloadJson: buildCodexReviewRevisionEnvelope({
               reviewPayload: proposal.proposal.payload,
             }) as unknown as Record<string, unknown>,
@@ -1878,6 +1889,7 @@ export async function startCodexStructureExtraction(
             proposalId: proposal.proposalId,
             proposalKey: proposal.proposalKey,
             kind: CODEX_PHASE_BIND_PROPOSAL_KIND,
+            reconciliationEnvelope,
             payloadJson: buildCodexReviewRevisionEnvelope({
               reviewPayload: proposal.proposal.payload,
             }) as unknown as Record<string, unknown>,

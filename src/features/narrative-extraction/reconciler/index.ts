@@ -11,6 +11,7 @@ export type {
   ProjectionFreshnessInput,
   ProposalChangeKind,
   ProposalSchemaRef,
+  ReconciliationEnvelopeV1,
   ReadSetDigest,
   ReadSetEntry,
   ReconcilerIdentity,

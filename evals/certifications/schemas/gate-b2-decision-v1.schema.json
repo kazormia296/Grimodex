@@ -33,7 +33,7 @@
       "type": ["string", "null"],
       "pattern": "^[0-9a-f]{40}$"
     },
-    "schemaVersionProduct": { "type": "integer", "const": 16 },
+    "schemaVersionProduct": { "type": "integer", "const": 17 },
     "freezeId": { "type": ["string", "null"], "minLength": 1 },
     "certificationRunId": { "type": ["string", "null"], "minLength": 1 },
     "verdict": {

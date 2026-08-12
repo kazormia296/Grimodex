@@ -25,15 +25,14 @@ const context = {
   reconcilerVersion: "1.0.0",
 };
 
-const sourceBasis: SourceBasis = {
-  revisions: [
-    {
-      sourceKey: "scene/chapter-1",
-      revisionToken: "revision-7",
-      revisionObservedAt: "2026-08-12T00:00:00.000Z",
-    },
-  ],
-};
+const sourceBasis: SourceBasis = [
+  {
+    sourceKind: "snapshot-document",
+    sourceKey: "scene/chapter-1",
+    revisionToken: "revision-7",
+    revisionObservedAt: "2026-08-12T00:00:00.000Z",
+  },
+];
 
 const evidenceReadSet = {
   evidenceSet: [
@@ -47,10 +46,7 @@ const evidenceReadSet = {
     { inputRef: "scene/chapter-1", kind: "snapshot-document" as const },
     { inputRef: "projection/parent", kind: "projection" as const },
   ],
-  readSetDigest: {
-    algorithm: "sha256" as const,
-    digest: "sha256:read-set" as const,
-  },
+  readSetDigest: "sha256:read-set" as const,
 };
 
 function draftEnvelope(
@@ -64,7 +60,10 @@ function draftEnvelope(
 ): NarrativeProposalDraftEnvelope {
   return buildProposalDraftEnvelope({
     context,
-    schema: { schemaId: "narrative.proposal", schemaVersion: "1" },
+    schema: {
+      proposalSchemaId: "narrative.proposal",
+      proposalSchemaVersion: "1",
+    },
     proposalKey: `proposal:${draftId}`,
     kind: "gate-b2.contract@1",
     sourceBasis,

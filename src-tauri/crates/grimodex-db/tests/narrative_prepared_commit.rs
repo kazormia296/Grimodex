@@ -2,7 +2,7 @@
 
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
+    CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
 };
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
@@ -70,6 +70,30 @@ fn event_payload() -> Value {
     })
 }
 
+fn envelope(run_id: &str) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "runId": run_id,
+        "taskId": "task-prepared",
+        "reconcilerId": "test.prepared",
+        "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "chronicle.event",
+        "proposalSchemaVersion": "1",
+        "sourceBasis": [{
+            "sourceKind": "snapshot-document",
+            "sourceKey": "scene-1",
+            "revisionToken": "revision-1"
+        }],
+        "evidenceSet": [],
+        "readSet": [{
+            "inputRef": "scene-1",
+            "kind": "snapshot-document"
+        }],
+        "readSetDigest": "sha256:6fc6334c25d478c13c06bc71c83644e4709e0578798f5d6d7f0e087ec11f4481",
+        "changeKind": "add"
+    })
+}
+
 fn seed_one_approved(db: &Database) -> (String, String, String, String) {
     let run_id = "run-prepared";
     let set_id = "set-prepared";
@@ -86,7 +110,12 @@ fn seed_one_approved(db: &Database) -> (String, String, String, String) {
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some("task-prepared".to_string()),
+                task_kind: "chronicle.plan-proposals".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -104,6 +133,7 @@ fn seed_one_approved(db: &Database) -> (String, String, String, String) {
                 proposal_key: "key-prepared".to_string(),
                 kind: "chronicle.event.create".to_string(),
                 payload_json: event_payload(),
+                reconciliation_envelope: Some(envelope(run_id)),
             }],
         },
     )
@@ -191,23 +221,91 @@ fn prepare_seals_prepared_commit_row() {
     assert!(prepared["authorityDigest"].as_str().unwrap().len() == 64);
 
     db.with_conn(|conn| {
-        let (status, plan_json, fragment): (String, String, Option<String>) = conn.query_row(
-            "SELECT c.status, c.prepared_plan_json, r.plan_fragment_json
+        let (status, plan_json): (String, String) = conn.query_row(
+            "SELECT c.status, c.prepared_plan_json
                FROM narrative_apply_commits c
-               JOIN narrative_proposal_revisions r ON r.id = ?1
-              WHERE c.id = ?2",
+              WHERE c.id = ?1",
             rusqlite::params![
-                revision_id,
                 prepared["preparedCommitId"].as_str().unwrap()
             ],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         assert_eq!(status, "prepared");
         assert!(plan_json.contains("chronicle.event.create"));
-        assert!(fragment.unwrap().contains("chronicle.event.create"));
+        assert!(plan_json.contains("planFragments"));
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn legacy_unbound_revision_fails_closed_at_prepare() {
+    let db = migrated_db();
+    let run_id = "run-legacy-prepare";
+    let set_id = "set-legacy-prepare";
+    narrative_extraction::narrative_extraction_create_run(
+        &db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({}),
+            spec_digest: "legacy-spec".to_string(),
+            snapshot_digest: None,
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![],
+        },
+    )
+    .expect("create legacy run");
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("prop-legacy-prepare".to_string()),
+                proposal_key: "key-legacy-prepare".to_string(),
+                kind: "chronicle.event.create".to_string(),
+                payload_json: event_payload(),
+                reconciliation_envelope: None,
+            }],
+        },
+    )
+    .expect("save legacy proposal");
+    let proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .expect("proposal id")
+        .to_string();
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("revision id")
+        .to_string();
+    narrative_extraction::narrative_extraction_append_decision(
+        &db,
+        grimodex_db::narrative_extraction::AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("approve legacy proposal for review-only proof");
+    enable_manual_apply(&db);
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(run_id, set_id, &proposal_id, &revision_id),
+    )
+    .expect_err("legacy revision must not reach Apply");
+    assert!(error.to_string().contains("NEX_REVISION_LEGACY_UNBOUND"));
 }
 
 #[test]

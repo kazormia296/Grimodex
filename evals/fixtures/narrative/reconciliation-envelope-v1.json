@@ -1,0 +1,44 @@
+{
+  "envelope": {
+    "schemaVersion": 1,
+    "runId": "run-golden",
+    "taskId": "task-golden",
+    "reconcilerId": "golden.reconciler",
+    "reconcilerVersion": "1.2.3",
+    "proposalSchemaId": "narrative.proposal",
+    "proposalSchemaVersion": "1",
+    "sourceBasis": [
+      {
+        "sourceKind": "snapshot-document",
+        "sourceKey": "source-1",
+        "revisionToken": "revision-7",
+        "revisionObservedAt": "2026-08-12T00:00:00.000Z"
+      }
+    ],
+    "evidenceSet": [
+      {
+        "evidenceRef": "evidence-1",
+        "documentRef": "source-1",
+        "quoteDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "readSet": [
+      {
+        "inputRef": "source-1",
+        "kind": "snapshot-document"
+      },
+      {
+        "inputRef": "projection-1",
+        "kind": "projection"
+      }
+    ],
+    "readSetDigest": "sha256:f39b8779d0a6e991f75273449613d58ecdfbcb9c571fa8ea9cd5eb830176eea4",
+    "changeKind": "revise",
+    "targetProjectionRef": "projection-1"
+  },
+  "expected": {
+    "canonicalJson": "{\"changeKind\":\"revise\",\"evidenceSet\":[{\"documentRef\":\"source-1\",\"evidenceRef\":\"evidence-1\",\"quoteDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}],\"proposalSchemaId\":\"narrative.proposal\",\"proposalSchemaVersion\":\"1\",\"readSet\":[{\"inputRef\":\"source-1\",\"kind\":\"snapshot-document\"},{\"inputRef\":\"projection-1\",\"kind\":\"projection\"}],\"readSetDigest\":\"sha256:f39b8779d0a6e991f75273449613d58ecdfbcb9c571fa8ea9cd5eb830176eea4\",\"reconcilerId\":\"golden.reconciler\",\"reconcilerVersion\":\"1.2.3\",\"runId\":\"run-golden\",\"schemaVersion\":1,\"sourceBasis\":[{\"revisionObservedAt\":\"2026-08-12T00:00:00.000Z\",\"revisionToken\":\"revision-7\",\"sourceKey\":\"source-1\",\"sourceKind\":\"snapshot-document\"}],\"targetProjectionRef\":\"projection-1\",\"taskId\":\"task-golden\"}",
+    "readSetDigest": "sha256:f39b8779d0a6e991f75273449613d58ecdfbcb9c571fa8ea9cd5eb830176eea4",
+    "envelopeDigest": "sha256:7d5b5f2688794145e550c7a80888bac15662cceb125c22f83dbfe8ffe73943cd"
+  }
+}

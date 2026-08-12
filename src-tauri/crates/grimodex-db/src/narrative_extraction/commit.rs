@@ -64,6 +64,7 @@ use super::models::{
     ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
     GetCommitStatusPayload, PrepareCommitPayload,
 };
+use super::reconciliation_envelope::ORIGIN_ENVELOPED;
 use super::repository::{ensure_proposal_not_applied, ensure_run_project};
 use super::task_leases::with_immediate_transaction;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
@@ -149,29 +150,6 @@ pub fn narrative_extraction_prepare_commit(
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
             let prepared_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
             let policy_version = load_narrative_runtime_policy(conn).version;
-            for operation in &payload.operations {
-                let fragment = json!({
-                    "kind": operation.kind,
-                    "payload": operation.payload,
-                });
-                let updated = conn.execute(
-                    "UPDATE narrative_proposal_revisions
-                        SET plan_fragment_json = ?1,
-                            plan_fragment_digest = ?2
-                      WHERE id = ?3 AND proposal_id = ?4",
-                    params![
-                        fragment.to_string(),
-                        digest_plan(&fragment),
-                        operation.revision_id,
-                        operation.proposal_id,
-                    ],
-                )?;
-                anyhow::ensure!(
-                    updated == 1,
-                    "proposal revision '{}' disappeared while preparing commit",
-                    operation.revision_id
-                );
-            }
             let prepared_commit_id = Uuid::new_v4().to_string();
             conn.execute(
                 "INSERT INTO narrative_apply_commits
@@ -210,6 +188,24 @@ pub fn narrative_extraction_prepare_commit(
 }
 
 fn sealed_plan_json(payload: &PrepareCommitPayload) -> anyhow::Result<Value> {
+    let plan_fragments: Vec<Value> = payload
+        .operations
+        .iter()
+        .map(|operation| {
+            let fragment = json!({
+                "proposalId": operation.proposal_id,
+                "revisionId": operation.revision_id,
+                "kind": operation.kind,
+                "payload": operation.payload,
+            });
+            json!({
+                "proposalId": operation.proposal_id,
+                "revisionId": operation.revision_id,
+                "fragment": fragment,
+                "fragmentDigest": digest_plan(&fragment),
+            })
+        })
+        .collect();
     Ok(json!({
         "requestId": payload.request_id,
         "sessionId": payload.session_id,
@@ -222,6 +218,7 @@ fn sealed_plan_json(payload: &PrepareCommitPayload) -> anyhow::Result<Value> {
         "runId": payload.run_id,
         "proposalSetId": payload.proposal_set_id,
         "surface": payload.surface,
+        "planFragments": plan_fragments,
     }))
 }
 
@@ -1392,11 +1389,18 @@ fn ensure_proposal_approved_and_bound(
         "NEX_PROPOSAL_KIND_MISMATCH: proposal '{proposal_id}' kind '{proposal_kind}' != operation '{operation_kind}'"
     );
 
-    let revision_payload_raw: String = conn.query_row(
-        "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1 AND proposal_id = ?2",
-        params![revision_id, proposal_id],
-        |row| row.get(0),
-    )?;
+    let (revision_payload_raw, origin_kind, envelope_digest):
+        (String, String, Option<String>) = conn.query_row(
+            "SELECT payload_json, origin_kind, reconciliation_envelope_digest
+               FROM narrative_proposal_revisions
+              WHERE id = ?1 AND proposal_id = ?2",
+            params![revision_id, proposal_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    anyhow::ensure!(
+        origin_kind == ORIGIN_ENVELOPED && envelope_digest.is_some(),
+        "NEX_REVISION_LEGACY_UNBOUND: proposal '{proposal_id}' revision '{revision_id}' requires re-extract/re-review before Apply"
+    );
     let revision_payload: Value = serde_json::from_str(&revision_payload_raw)?;
     let comparable = revision_payload_for_commit_compare(&revision_payload, operation_kind)?;
     let revision_digest = digest_plan(comparable);

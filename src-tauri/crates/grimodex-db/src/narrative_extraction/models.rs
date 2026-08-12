@@ -122,6 +122,8 @@ pub struct ProposalSeed {
     pub proposal_key: String,
     pub kind: String,
     pub payload_json: Value,
+    #[serde(default)]
+    pub reconciliation_envelope: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -131,6 +133,8 @@ pub struct AppendRevisionPayload {
     pub project_id: String,
     pub proposal_id: String,
     pub payload_json: Value,
+    #[serde(default)]
+    pub reconciliation_envelope: Option<Value>,
     /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
     pub expected_current_revision_id: String,
     #[serde(default)]
@@ -158,6 +162,8 @@ pub struct ReviseAndDecidePayload {
     pub project_id: String,
     pub proposal_id: String,
     pub payload_json: Value,
+    #[serde(default)]
+    pub reconciliation_envelope: Option<Value>,
     /// Optimistic concurrency: must match `narrative_proposals.current_revision_id`.
     pub expected_current_revision_id: String,
     pub decision: String,

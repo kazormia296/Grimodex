@@ -14,10 +14,46 @@ import {
 } from "./nativeApi";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import { CHRONICLE_EVENT_PROPOSAL_KIND } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
+import { digestStableJson } from "@/features/narrative-extraction/source/digest";
+import type { ReconciliationEnvelopeV1 } from "@/features/narrative-extraction/reconciler/types";
+
+export async function buildNativeReconciliationEnvelope(input: {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly sourceRevisionToken: string;
+  readonly changeKind?: ReconciliationEnvelopeV1["changeKind"];
+}): Promise<ReconciliationEnvelopeV1> {
+  const sourceKey = `snapshot:${input.runId}`;
+  const readSet = [
+    { inputRef: sourceKey, kind: "snapshot-document" as const },
+  ];
+  return {
+    schemaVersion: 1,
+    runId: input.runId,
+    taskId: input.taskId,
+    reconcilerId: "grimodex.extraction",
+    reconcilerVersion: "1",
+    proposalSchemaId: "narrative.proposal",
+    proposalSchemaVersion: "1",
+    sourceBasis: [
+      {
+        sourceKind: "snapshot-document",
+        sourceKey,
+        revisionToken: input.sourceRevisionToken,
+      },
+    ],
+    evidenceSet: [],
+    readSet,
+    readSetDigest: await digestStableJson(readSet),
+    changeKind: input.changeKind ?? "add",
+  };
+}
 
 export interface SaveChronicleProposalSetInput {
   readonly runId: string;
   readonly projectId: string;
+  readonly taskId: string;
+  readonly sourceRevisionToken: string;
   readonly proposalSetId?: string;
   readonly summaryJson?: Readonly<Record<string, unknown>>;
   readonly proposals: readonly {
@@ -35,10 +71,16 @@ export async function saveProposalSet(
 export async function saveChronicleProposalSet(
   input: SaveChronicleProposalSetInput,
 ): Promise<SaveProposalSetResult> {
+  const reconciliationEnvelope = await buildNativeReconciliationEnvelope({
+    runId: input.runId,
+    taskId: input.taskId,
+    sourceRevisionToken: input.sourceRevisionToken,
+  });
   const proposals: ProposalSeed[] = input.proposals.map((proposal) => ({
     proposalKey: proposal.proposalKey,
     kind: CHRONICLE_EVENT_PROPOSAL_KIND,
     payloadJson: proposal.payload,
+    reconciliationEnvelope,
   }));
   return saveProposalSet({
     runId: input.runId,

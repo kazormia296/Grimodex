@@ -2351,8 +2351,21 @@ impl Database {
                 payload_json TEXT NOT NULL,
                 plan_fragment_json TEXT,
                 plan_fragment_digest TEXT,
+                origin_kind TEXT NOT NULL DEFAULT 'legacy-unbound',
+                reconciliation_envelope_json TEXT,
+                reconciliation_envelope_digest TEXT,
                 created_at TEXT NOT NULL,
                 created_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                revision_token TEXT NOT NULL,
+                observed_at TEXT,
+                PRIMARY KEY (revision_id, ordinal),
+                UNIQUE (revision_id, source_key)
             );
             CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (
                 id TEXT PRIMARY KEY,
@@ -2864,6 +2877,41 @@ impl Database {
             "narrative_proposal_revisions",
             "plan_fragment_digest",
             "TEXT",
+        )?;
+
+        // SCHEMA_VERSION 17: Proposal Revision Envelope identity and the
+        // source-basis vector are immutable persistence facts. Existing rows
+        // deliberately default to legacy-unbound and remain reviewable but
+        // cannot be applied until re-extracted/re-reviewed.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "origin_kind",
+            "TEXT NOT NULL DEFAULT 'legacy-unbound'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "reconciliation_envelope_json",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_revisions",
+            "reconciliation_envelope_digest",
+            "TEXT",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                revision_token TEXT NOT NULL,
+                observed_at TEXT,
+                PRIMARY KEY (revision_id, ordinal),
+                UNIQUE (revision_id, source_key)
+            );",
         )?;
 
         // SCHEMA_VERSION 16: a generation token identifies one physical

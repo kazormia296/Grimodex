@@ -2317,9 +2317,32 @@ export const narrativeProposalRevisions = sqliteTable(
     // SCHEMA_VERSION 15: sealed plan fragment for Prepared Commit.
     planFragmentJson: text("plan_fragment_json"),
     planFragmentDigest: text("plan_fragment_digest"),
+    // SCHEMA_VERSION 17: immutable Proposal Revision Envelope binding.
+    originKind: text("origin_kind").notNull().default("legacy-unbound"),
+    reconciliationEnvelopeJson: text("reconciliation_envelope_json"),
+    reconciliationEnvelopeDigest: text("reconciliation_envelope_digest"),
     createdAt: text("created_at").notNull(),
     createdBy: text("created_by").notNull(),
   },
+);
+
+export const narrativeRevisionSourceBasis = sqliteTable(
+  "narrative_revision_source_basis",
+  {
+    revisionId: text("revision_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceKey: text("source_key").notNull(),
+    revisionToken: text("revision_token").notNull(),
+    observedAt: text("observed_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.revisionId, table.ordinal] }),
+    uniqueIndex("uq_narrative_revision_source_basis_key").on(
+      table.revisionId,
+      table.sourceKey,
+    ),
+  ],
 );
 
 export const narrativeProposalDecisions = sqliteTable(

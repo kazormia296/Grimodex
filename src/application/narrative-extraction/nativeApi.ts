@@ -5,6 +5,7 @@ import type {
   NarrativeProposalDecision,
   NarrativeProposalStatus,
 } from "@/features/narrative-extraction/runtime/types";
+import type { ReconciliationEnvelopeV1 } from "@/features/narrative-extraction/reconciler/types";
 
 export interface CreateRunTaskSeed {
   readonly taskId?: string;
@@ -104,6 +105,8 @@ export interface ProposalSeed {
   readonly proposalKey: string;
   readonly kind: string;
   readonly payloadJson: object;
+  /** Optional V1 contract; omitted legacy revisions remain reviewable but cannot Apply. */
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
 }
 
 export interface SaveProposalSetPayload {
@@ -120,6 +123,8 @@ export interface SavedProposalSeed {
   readonly proposalKey: string;
   readonly revisionId: string;
   readonly status: NarrativeProposalStatus;
+  readonly originKind?: "enveloped" | "legacy-unbound";
+  readonly reconciliationEnvelopeDigest?: string | null;
 }
 
 export interface SaveProposalSetResult {
@@ -180,6 +185,8 @@ export interface ReviewBundleProposal {
   readonly currentRevisionId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly originKind?: "enveloped" | "legacy-unbound";
+  readonly reconciliationEnvelopeDigest?: string | null;
   readonly latestDecision: ReviewBundleLatestDecision | null;
   /** Present when Native already applied this proposal (partial Apply / cold-start). */
   readonly application?: ReviewBundleProposalApplication | null;
@@ -198,6 +205,8 @@ export interface AppendRevisionPayload {
   readonly projectId: string;
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
+  /** Optional V1 contract; omitted revisions are explicitly legacy-unbound. */
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
   /** Must match Native `current_revision_id` (OCC). */
   readonly expectedCurrentRevisionId: string;
   readonly createdBy?: string;
@@ -233,6 +242,7 @@ export interface ReviseAndDecidePayload {
   readonly projectId: string;
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
+  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1;
   /** Must match Native `current_revision_id` (OCC). */
   readonly expectedCurrentRevisionId: string;
   readonly decision: NarrativeProposalDecision;

@@ -38,11 +38,12 @@ export interface ReconcilerIdentity {
 }
 
 export interface ProposalSchemaRef {
-  readonly schemaId: string;
-  readonly schemaVersion: string;
+  readonly proposalSchemaId: string;
+  readonly proposalSchemaVersion: string;
 }
 
 export interface SourceBasisRevision {
+  readonly sourceKind: string;
   readonly sourceKey: string;
   readonly revisionToken: string;
   readonly revisionObservedAt?: string;
@@ -52,14 +53,10 @@ export interface SourceBasisRevision {
  * Vector of source revisions consulted for a reconciliation pass.
  * Not a single `basedOnSourceRevision` scalar — ADR 004 ClaimEnvelope.
  */
-export interface SourceBasis {
-  readonly revisions: readonly SourceBasisRevision[];
-}
+export type SourceBasis = readonly SourceBasisRevision[];
 
-export interface ReadSetDigest {
-  readonly algorithm: "sha256";
-  readonly digest: Sha256Digest;
-}
+/** Native recomputes this digest from the canonical read-set array. */
+export type ReadSetDigest = Sha256Digest;
 
 export interface EvidenceSetEntry {
   readonly evidenceRef: string;
@@ -108,14 +105,20 @@ export interface NarrativeProposalDraftPayload {
   readonly payload: Readonly<Record<string, unknown>>;
 }
 
-export interface NarrativeProposalDraftEnvelope
+export interface ReconciliationEnvelopeV1
   extends ReconcilerIdentity, ProposalSchemaRef, EvidenceReadSetSeparation {
-  readonly draftId: string;
-  readonly proposalKey: string;
-  readonly kind: string;
+  readonly schemaVersion: 1;
+  readonly runId: string;
+  readonly taskId: string;
   readonly sourceBasis: SourceBasis;
   readonly changeKind: ProposalChangeKind;
   readonly targetProjectionRef?: string;
+}
+
+export interface NarrativeProposalDraftEnvelope extends ReconciliationEnvelopeV1 {
+  readonly draftId: string;
+  readonly proposalKey: string;
+  readonly kind: string;
   readonly semanticAssessment: SemanticAssessment;
   readonly propagation: ReconciliationPropagationSignal;
   readonly payload: Readonly<Record<string, unknown>>;

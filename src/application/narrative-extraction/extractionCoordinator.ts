@@ -877,6 +877,8 @@ export async function runChronicleExtractionCoordinator(
         const saved = await saveChronicleProposalSet({
           runId,
           projectId: request.projectId,
+          taskId: claim.task.taskId,
+          sourceRevisionToken: snapshotResult.snapshot.digest,
           summaryJson: {
             proposalCount: proposals.length,
             surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,

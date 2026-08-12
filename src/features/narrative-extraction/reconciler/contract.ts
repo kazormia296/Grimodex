@@ -69,8 +69,8 @@ export function assertDeclarativeReconcilerResult(
 export function buildProposalDraftEnvelope(input: {
   readonly context: NarrativeReconcilerRunContext;
   readonly schema: {
-    readonly schemaId: string;
-    readonly schemaVersion: string;
+    readonly proposalSchemaId: string;
+    readonly proposalSchemaVersion: string;
   };
   readonly proposalKey: string;
   readonly kind: string;
@@ -81,13 +81,16 @@ export function buildProposalDraftEnvelope(input: {
 }): NarrativeProposalDraftEnvelope {
   const createId = input.createId ?? (() => crypto.randomUUID());
   return {
+    schemaVersion: 1,
+    runId: input.context.runId,
+    taskId: input.context.taskId,
     draftId: createId(),
     proposalKey: input.proposalKey,
     kind: input.kind,
     reconcilerId: input.context.reconcilerId,
     reconcilerVersion: input.context.reconcilerVersion,
-    schemaId: input.schema.schemaId,
-    schemaVersion: input.schema.schemaVersion,
+    proposalSchemaId: input.schema.proposalSchemaId,
+    proposalSchemaVersion: input.schema.proposalSchemaVersion,
     sourceBasis: input.sourceBasis,
     evidenceSet: input.evidenceReadSet.evidenceSet,
     readSet: input.evidenceReadSet.readSet,

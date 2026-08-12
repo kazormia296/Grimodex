@@ -1,6 +1,6 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, EntityBindingSeed, PrepareCommitPayload, ProposalSeed,
+    CreateRunPayload, CreateTaskSeed, EntityBindingSeed, PrepareCommitPayload, ProposalSeed,
     SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::{
@@ -19,6 +19,18 @@ fn migrated_db() -> Database {
     )
     .expect("insert project");
     db
+}
+
+fn test_envelope(run_id: &str, task_id: &str) -> Value {
+    json!({
+        "schemaVersion": 1, "runId": run_id, "taskId": task_id,
+        "reconcilerId": "test.reconciler", "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "narrative.test", "proposalSchemaVersion": "1",
+        "sourceBasis": [{"sourceKind":"snapshot-document","sourceKey":"test-source","revisionToken":"revision-1"}],
+        "evidenceSet": [], "readSet": [{"inputRef":"test-source","kind":"snapshot-document"}],
+        "readSetDigest": "sha256:8bf090f5e1d3d00393f6d51d8d8546144dadcf53218d68e073a2eed21ab53708",
+        "changeKind": "add"
+    })
 }
 
 fn seed_definition(db: &Database, definition_id: &str, name: &str) {
@@ -55,7 +67,12 @@ fn seed_approved_proposals(
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -68,6 +85,7 @@ fn seed_approved_proposals(
             proposal_key: format!("key-{index}"),
             kind: (*kind).to_string(),
             payload_json: payload.clone(),
+            reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
         })
         .collect();
 

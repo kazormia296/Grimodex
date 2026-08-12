@@ -1,6 +1,6 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, CommitApplicationRef,
-    CommitOperation, CreateRunPayload, EntityBindingSeed, GetCommitStatusPayload,
+    CommitOperation, CreateRunPayload, CreateTaskSeed, EntityBindingSeed, GetCommitStatusPayload,
     ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
     RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
@@ -22,6 +22,23 @@ fn migrated_db() -> Database {
     db
 }
 
+fn test_envelope(run_id: &str, task_id: &str) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "runId": run_id,
+        "taskId": task_id,
+        "reconcilerId": "test.reconciler",
+        "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "narrative.test",
+        "proposalSchemaVersion": "1",
+        "sourceBasis": [{"sourceKind":"snapshot-document","sourceKey":"test-source","revisionToken":"revision-1"}],
+        "evidenceSet": [],
+        "readSet": [{"inputRef":"test-source","kind":"snapshot-document"}],
+        "readSetDigest": "sha256:8bf090f5e1d3d00393f6d51d8d8546144dadcf53218d68e073a2eed21ab53708",
+        "changeKind": "add"
+    })
+}
+
 fn seed_approved_proposals(
     db: &Database,
     run_id: &str,
@@ -41,7 +58,12 @@ fn seed_approved_proposals(
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -54,6 +76,7 @@ fn seed_approved_proposals(
             proposal_key: format!("{proposal_set_id}-key-{index}"),
             kind: (*kind).to_string(),
             payload_json: payload.clone(),
+            reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
         })
         .collect();
 
@@ -256,7 +279,12 @@ fn seed_single_codex_proposal(
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
-            tasks: vec![],
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_string(),
+                input_json: None,
+                priority: None,
+            }],
         },
     )
     .expect("create run");
@@ -274,6 +302,7 @@ fn seed_single_codex_proposal(
                 proposal_key: format!("{proposal_id}-key"),
                 kind: kind.to_string(),
                 payload_json: payload,
+                reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
             }],
         },
     )
@@ -976,6 +1005,10 @@ fn envelope_revise_and_decide_prepare_apply_succeeds() {
             decision: "approved".to_string(),
             decision_json: Some(json!({ "source": "envelope-test" })),
             created_by: Some("reviewer".to_string()),
+            reconciliation_envelope: Some(test_envelope(
+                "run-env-apply",
+                "run-env-apply-task",
+            )),
         },
     )
     .expect("revise and decide");
@@ -1046,6 +1079,10 @@ fn envelope_revision_rejects_operation_payload_mismatch() {
             decision: "approved".to_string(),
             decision_json: None,
             created_by: Some("reviewer".to_string()),
+            reconciliation_envelope: Some(test_envelope(
+                "run-env-mismatch",
+                "run-env-mismatch-task",
+            )),
         },
     )
     .expect("revise and decide");
@@ -1285,6 +1322,7 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
             payload_json: entry_create("entry-applied-guard", "Revised", "ent:applied-guard"),
             expected_current_revision_id: revision_id.clone(),
             created_by: Some("test".to_string()),
+            reconciliation_envelope: None,
         },
     )
     .expect_err("revision after apply");
@@ -1306,6 +1344,7 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
             decision: "approved".to_string(),
             decision_json: None,
             created_by: Some("test".to_string()),
+            reconciliation_envelope: None,
         },
     )
     .expect_err("revise_and_decide after apply");
@@ -1460,6 +1499,7 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
             payload_json: entry_create("entry-retry", "Retry Hero", "ent:retry"),
             expected_current_revision_id: pairs[0].1.clone(),
             created_by: Some("test".to_string()),
+            reconciliation_envelope: None,
         },
     )
     .expect_err("revision after apply");
