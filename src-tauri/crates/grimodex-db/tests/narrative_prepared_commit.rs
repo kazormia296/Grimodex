@@ -71,6 +71,8 @@ fn event_payload() -> Value {
 }
 
 fn envelope(run_id: &str) -> Value {
+    let source_key = format!("snapshot:{run_id}");
+    let read_set = json!([{"inputRef": source_key, "kind": "snapshot-document"}]);
     json!({
         "schemaVersion": 1,
         "runId": run_id,
@@ -81,15 +83,12 @@ fn envelope(run_id: &str) -> Value {
         "proposalSchemaVersion": "1",
         "sourceBasis": [{
             "sourceKind": "snapshot-document",
-            "sourceKey": "scene-1",
+            "sourceKey": source_key,
             "revisionToken": "revision-1"
         }],
         "evidenceSet": [],
-        "readSet": [{
-            "inputRef": "scene-1",
-            "kind": "snapshot-document"
-        }],
-        "readSetDigest": "sha256:6fc6334c25d478c13c06bc71c83644e4709e0578798f5d6d7f0e087ec11f4481",
+        "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
         "changeKind": "add"
     })
 }
@@ -106,7 +105,7 @@ fn seed_one_approved(db: &Database) -> (String, String, String, String) {
             scope_json: json!({}),
             spec_json: json!({ "domain": "chronicle" }),
             spec_digest: "spec".to_string(),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
@@ -159,7 +158,12 @@ fn seed_one_approved(db: &Database) -> (String, String, String, String) {
         },
     )
     .expect("approve");
-    (run_id.to_string(), set_id.to_string(), proposal_id, revision_id)
+    (
+        run_id.to_string(),
+        set_id.to_string(),
+        proposal_id,
+        revision_id,
+    )
 }
 
 fn build_prepare(
@@ -190,6 +194,22 @@ fn build_prepare(
         entity_bindings: vec![],
         expected_calendar_version: None,
     }
+}
+
+fn apply_prepared(db: &Database, prepared: &Value) -> anyhow::Result<Value> {
+    narrative_extraction::narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("prepared commit id")
+                .to_string(),
+            request_id: "req-prepared-1".to_string(),
+            session_id: "sess-prepared".to_string(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
 }
 
 #[test]
@@ -225,9 +245,7 @@ fn prepare_seals_prepared_commit_row() {
             "SELECT c.status, c.prepared_plan_json
                FROM narrative_apply_commits c
               WHERE c.id = ?1",
-            rusqlite::params![
-                prepared["preparedCommitId"].as_str().unwrap()
-            ],
+            rusqlite::params![prepared["preparedCommitId"].as_str().unwrap()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         assert_eq!(status, "prepared");
@@ -236,6 +254,136 @@ fn prepare_seals_prepared_commit_row() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn apply_records_source_contract_and_freshness_only_dependency() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+    )
+    .expect("prepare");
+
+    db.with_conn(|conn| {
+        let plan_json: String = conn.query_row(
+            "SELECT prepared_plan_json FROM narrative_apply_commits WHERE id = ?1",
+            rusqlite::params![prepared["preparedCommitId"].as_str().unwrap()],
+            |row| row.get(0),
+        )?;
+        let plan: Value = serde_json::from_str(&plan_json)?;
+        let contract = plan
+            .get("sourceContract")
+            .and_then(Value::as_object)
+            .expect("sealed source contract");
+        for field in [
+            "revisionEnvelopeDigest",
+            "aggregateSourceBasisDigest",
+            "aggregateReadSetDigest",
+        ] {
+            assert!(contract[field].as_str().unwrap().starts_with("sha256:"));
+        }
+        Ok(())
+    })?;
+
+    let applied = apply_prepared(&db, &prepared).expect("apply");
+    assert_eq!(applied["status"], "applied");
+
+    db.with_conn(|conn| {
+        let application_id: String = conn.query_row(
+            "SELECT id
+               FROM narrative_proposal_applications
+              WHERE commit_id = ?1",
+            rusqlite::params![prepared["preparedCommitId"].as_str().unwrap()],
+            |row| row.get(0),
+        )?;
+        let (freshness_status, propagation, observed_token): (String, String, String) = conn
+            .query_row(
+                "SELECT f.status, d.propagation, d.observed_revision_token
+                   FROM narrative_projection_freshness f
+                   JOIN narrative_projection_dependencies d
+                     ON d.application_id = f.application_id
+                  WHERE f.application_id = ?1",
+                rusqlite::params![application_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        assert_eq!(freshness_status, "fresh");
+        assert_eq!(propagation, "freshness-only");
+        assert_eq!(observed_token, "revision-1");
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn stale_source_invalidates_prepared_commit_without_domain_mutation() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+    )
+    .expect("prepare");
+
+    db.execute(
+        "UPDATE narrative_extraction_runs
+            SET snapshot_digest = ?1
+          WHERE id = ?2",
+        &[
+            Value::String("revision-2".to_string()),
+            Value::String(run_id),
+        ],
+        "run",
+    )
+    .expect("advance snapshot revision");
+
+    let error = apply_prepared(&db, &prepared).expect_err("stale source must reject apply");
+    assert!(error.to_string().contains("NEX_SOURCE_BASIS_STALE"));
+
+    db.with_conn(|conn| {
+        let (status, application_count, operation_count, journal_count, change_event_count): (
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn.query_row(
+            "SELECT c.status,
+                    (SELECT COUNT(*) FROM narrative_proposal_applications WHERE commit_id = c.id),
+                    (SELECT COUNT(*) FROM narrative_apply_operations WHERE commit_id = c.id),
+                    (SELECT COUNT(*) FROM narrative_commit_journals WHERE commit_id = c.id),
+                    (SELECT COUNT(*) FROM change_events
+                      WHERE project_id = c.project_id AND entity_id = c.id)
+               FROM narrative_apply_commits c
+              WHERE c.id = ?1",
+            rusqlite::params![prepared["preparedCommitId"].as_str().unwrap()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(status, "invalidated");
+        assert_eq!(application_count, 0);
+        assert_eq!(operation_count, 0);
+        assert_eq!(journal_count, 0);
+        assert_eq!(change_event_count, 0);
+        let event_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE id = 'event-prepared-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(event_count, 0);
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[test]
@@ -369,8 +517,9 @@ fn prepare_is_idempotent_for_same_request_and_native_digest() {
     enable_manual_apply(&db);
 
     let first_payload = build_prepare(&run_id, &set_id, &proposal_id, &revision_id);
-    let first = narrative_extraction::narrative_extraction_prepare_commit(&db, first_payload.clone())
-        .expect("first prepare");
+    let first =
+        narrative_extraction::narrative_extraction_prepare_commit(&db, first_payload.clone())
+            .expect("first prepare");
     let second = narrative_extraction::narrative_extraction_prepare_commit(
         &db,
         PrepareCommitPayload {
@@ -399,9 +548,7 @@ fn prepare_rejects_same_request_with_different_native_plan() {
 
     let err = narrative_extraction::narrative_extraction_prepare_commit(&db, changed_payload)
         .expect_err("native plan change must conflict");
-    assert!(err
-        .to_string()
-        .contains("NEX_COMMIT_IDEMPOTENCY_CONFLICT"));
+    assert!(err.to_string().contains("NEX_COMMIT_IDEMPOTENCY_CONFLICT"));
 }
 
 #[test]

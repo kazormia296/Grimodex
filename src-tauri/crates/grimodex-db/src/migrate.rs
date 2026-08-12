@@ -2914,6 +2914,31 @@ impl Database {
             );",
         )?;
 
+        // SCHEMA_VERSION 18: Prepared Commit source-basis OCC records the
+        // freshness-only dependency of each immutable Application. These
+        // tables intentionally have no source/domain foreign keys: source
+        // deletion must never cascade into audit history or domain rows.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_projection_freshness (
+                application_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+                    CHECK(status IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift')),
+                reason_json TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_projection_dependencies (
+                application_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                observed_revision_token TEXT NOT NULL,
+                propagation TEXT NOT NULL CHECK(propagation = 'freshness-only'),
+                PRIMARY KEY (application_id, source_kind, source_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_projection_dependencies_source
+                ON narrative_projection_dependencies(source_kind, source_key);",
+        )?;
+
         // SCHEMA_VERSION 16: a generation token identifies one physical
         // scene-event association incarnation. Legacy rows deliberately use
         // the empty token so tokenless journals can only match migrated state.

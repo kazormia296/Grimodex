@@ -562,16 +562,18 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 17 adds Proposal Revision Envelope persistence
-/// and normalized source-basis rows on top of every v16 invariant.
+/// [`SCHEMA_VERSION`]. Version 18 adds Prepared Commit source-basis OCC
+/// projections and freshness-only dependency rows on top of every v17
+/// invariant.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 17
+    Ok(SCHEMA_VERSION == 18
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
         && has_v15_prepared_commit_columns(conn)?
         && has_v16_scene_event_incarnation_column(conn)?
-        && has_v17_reconciliation_envelope_columns(conn)?)
+        && has_v17_reconciliation_envelope_columns(conn)?
+        && has_v18_projection_freshness_columns(conn)?)
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -631,6 +633,29 @@ fn has_v17_reconciliation_envelope_columns(conn: &Connection) -> anyhow::Result<
         && has_text(&source_basis, "source_kind")
         && has_text(&source_basis, "source_key")
         && has_text(&source_basis, "revision_token"))
+}
+
+fn has_v18_projection_freshness_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_projection_freshness")?
+        || !table_exists(conn, "narrative_projection_dependencies")?
+    {
+        return Ok(false);
+    }
+    let freshness = table_columns(conn, "narrative_projection_freshness")?;
+    let dependencies = table_columns(conn, "narrative_projection_dependencies")?;
+    let has_text = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "TEXT")
+    };
+    Ok(has_text(&freshness, "application_id")
+        && has_text(&freshness, "status")
+        && has_text(&freshness, "updated_at")
+        && has_text(&dependencies, "application_id")
+        && has_text(&dependencies, "source_kind")
+        && has_text(&dependencies, "source_key")
+        && has_text(&dependencies, "observed_revision_token")
+        && has_text(&dependencies, "propagation"))
 }
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

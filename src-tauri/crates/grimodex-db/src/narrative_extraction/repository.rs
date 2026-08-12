@@ -1303,6 +1303,22 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
             PRIMARY KEY (revision_id, ordinal),
             UNIQUE (revision_id, source_key)
         );
+        CREATE TABLE IF NOT EXISTS narrative_projection_freshness (
+            application_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL
+                CHECK(status IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift')),
+            reason_json TEXT,
+            version INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS narrative_projection_dependencies (
+            application_id TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            observed_revision_token TEXT NOT NULL,
+            propagation TEXT NOT NULL CHECK(propagation = 'freshness-only'),
+            PRIMARY KEY (application_id, source_kind, source_key)
+        );
         CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (
             id TEXT PRIMARY KEY,
             proposal_id TEXT NOT NULL,

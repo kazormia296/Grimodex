@@ -23,6 +23,8 @@ fn migrated_db() -> Database {
 }
 
 fn test_envelope(run_id: &str, task_id: &str) -> Value {
+    let source_key = format!("snapshot:{run_id}");
+    let read_set = json!([{"inputRef": source_key, "kind": "snapshot-document"}]);
     json!({
         "schemaVersion": 1,
         "runId": run_id,
@@ -31,10 +33,10 @@ fn test_envelope(run_id: &str, task_id: &str) -> Value {
         "reconcilerVersion": "1.0.0",
         "proposalSchemaId": "narrative.test",
         "proposalSchemaVersion": "1",
-        "sourceBasis": [{"sourceKind":"snapshot-document","sourceKey":"test-source","revisionToken":"revision-1"}],
+        "sourceBasis": [{"sourceKind":"snapshot-document","sourceKey":source_key,"revisionToken":"revision-1"}],
         "evidenceSet": [],
-        "readSet": [{"inputRef":"test-source","kind":"snapshot-document"}],
-        "readSetDigest": "sha256:8bf090f5e1d3d00393f6d51d8d8546144dadcf53218d68e073a2eed21ab53708",
+        "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
         "changeKind": "add"
     })
 }
@@ -54,7 +56,7 @@ fn seed_approved_proposals(
             scope_json: json!({}),
             spec_json: json!({ "domain": "codex" }),
             spec_digest: "spec".to_string(),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
@@ -275,7 +277,7 @@ fn seed_single_codex_proposal(
             scope_json: json!({}),
             spec_json: json!({ "domain": "codex" }),
             spec_digest: format!("spec-{run_id}"),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,

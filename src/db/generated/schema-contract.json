@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 17,
+  "schemaVersion": 18,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6809,6 +6809,92 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_extraction_tasks ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_kind TEXT NOT NULL, status TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT, priority INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
     },
+    "narrative_projection_dependencies": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "observed_revision_token": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "propagation": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "source_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_projection_dependencies ( application_id TEXT NOT NULL, source_kind TEXT NOT NULL, source_key TEXT NOT NULL, observed_revision_token TEXT NOT NULL, propagation TEXT NOT NULL CHECK(propagation = 'freshness-only'), PRIMARY KEY (application_id, source_kind, source_key) )"
+    },
+    "narrative_projection_freshness": {
+      "kind": "table",
+      "columns": {
+        "application_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "reason_json": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_projection_freshness ( application_id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift')), reason_json TEXT, version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL )"
+    },
     "narrative_proposal_applications": {
       "kind": "table",
       "columns": {
@@ -12367,6 +12453,22 @@
         }
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
+    },
+    "idx_narrative_projection_dependencies_source": {
+      "table": "narrative_projection_dependencies",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "source_kind"
+        },
+        {
+          "ordinal": 1,
+          "column": "source_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_projection_dependencies_source ON narrative_projection_dependencies(source_kind, source_key)"
     },
     "idx_narrative_temporal_constraints_project": {
       "table": "narrative_temporal_constraints",

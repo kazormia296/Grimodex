@@ -31,6 +31,30 @@ pub(crate) struct ValidatedReconciliationEnvelope {
     pub source_basis: Vec<SourceBasisRow>,
 }
 
+pub(crate) fn load_source_basis_rows(
+    conn: &Connection,
+    revision_id: &str,
+) -> anyhow::Result<Vec<SourceBasisRow>> {
+    let mut statement = conn.prepare(
+        "SELECT ordinal, source_kind, source_key, revision_token, observed_at
+           FROM narrative_revision_source_basis
+          WHERE revision_id = ?1
+          ORDER BY ordinal ASC",
+    )?;
+    let rows = statement
+        .query_map(params![revision_id], |row| {
+            Ok(SourceBasisRow {
+                ordinal: row.get(0)?,
+                source_kind: row.get(1)?,
+                source_key: row.get(2)?,
+                revision_token: row.get(3)?,
+                observed_at: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Validate a client envelope and return the canonical bytes/digests Native
 /// will persist. `None` is an intentional legacy-unbound revision.
 pub(crate) fn validate_reconciliation_envelope(

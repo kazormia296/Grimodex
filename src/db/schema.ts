@@ -2345,6 +2345,39 @@ export const narrativeRevisionSourceBasis = sqliteTable(
   ],
 );
 
+// SCHEMA_VERSION 18: Application source dependencies are freshness-only
+// records; they deliberately do not reference source/domain rows by FK.
+export const narrativeProjectionFreshness = sqliteTable(
+  "narrative_projection_freshness",
+  {
+    applicationId: text("application_id").primaryKey(),
+    status: text("status").notNull(),
+    reasonJson: text("reason_json"),
+    version: integer("version").notNull().default(0),
+    updatedAt: text("updated_at").notNull(),
+  },
+);
+
+export const narrativeProjectionDependencies = sqliteTable(
+  "narrative_projection_dependencies",
+  {
+    applicationId: text("application_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceKey: text("source_key").notNull(),
+    observedRevisionToken: text("observed_revision_token").notNull(),
+    propagation: text("propagation").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.applicationId, table.sourceKind, table.sourceKey],
+    }),
+    index("idx_narrative_projection_dependencies_source").on(
+      table.sourceKind,
+      table.sourceKey,
+    ),
+  ],
+);
+
 export const narrativeProposalDecisions = sqliteTable(
   "narrative_proposal_decisions",
   {

@@ -16,6 +16,7 @@ mod plot_thread_operations;
 mod plot_thread_undo;
 mod repository;
 mod reconciliation_envelope;
+mod source_revision;
 mod semantic_bindings;
 mod task_leases;
 mod temporal_constraints;
@@ -39,6 +40,7 @@ pub use models::{
     ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed, ReviseAndDecidePayload,
     RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
+pub use commit::digest_plan;
 pub use temporal_operations::TemporalScenePatchPayload;
 pub use repository::ensure_test_schema;
 
