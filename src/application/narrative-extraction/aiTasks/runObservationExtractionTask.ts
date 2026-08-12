@@ -6,6 +6,7 @@ import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { normalizeWindowObservations } from "@/features/chronicle/extraction/windowExtractor";
+import { parseRawChronicleEventObservationList } from "@/features/chronicle/extraction/schemas";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import { runStructuredRepairTask } from "./runStructuredRepairTask";
 
@@ -32,6 +33,7 @@ export interface RunObservationExtractionTaskInput {
   readonly projectId?: string | null;
   readonly createId?: () => string;
   readonly repairOnFailure?: boolean;
+  readonly onParseStatus?: (status: "parsed" | "invalid") => void;
   /** Live eval / tests may inject OpenRouter (or other) transport. */
   readonly send?: ObservationExtractionSend;
 }
@@ -57,7 +59,10 @@ async function parseObservationsFromText(
   responseText: string,
   allowedSourceRefs: ReadonlySet<string>,
   createId?: () => string,
-): Promise<readonly RawChronicleEventObservation[] | null> {
+): Promise<{
+  readonly observations: readonly RawChronicleEventObservation[];
+  readonly status: "parsed" | "invalid";
+} | null> {
   const jsonText = extractJsonObject(responseText);
   if (!jsonText) return null;
   let parsed: unknown;
@@ -66,10 +71,15 @@ async function parseObservationsFromText(
   } catch {
     return null;
   }
-  return normalizeWindowObservations(parsed, {
-    allowedSourceRefs,
-    createId,
-  });
+  return {
+    observations: normalizeWindowObservations(parsed, {
+      allowedSourceRefs,
+      createId,
+    }),
+    status: parseRawChronicleEventObservationList(parsed).ok
+      ? "parsed"
+      : "invalid",
+  };
 }
 
 /**
@@ -124,8 +134,14 @@ export async function runObservationExtractionTask(
     allowedSourceRefs,
     input.createId,
   );
-  if (first !== null) return first;
-  if (input.repairOnFailure === false) return [];
+  if (first !== null) {
+    input.onParseStatus?.(first.status);
+    return first.observations;
+  }
+  if (input.repairOnFailure === false) {
+    input.onParseStatus?.("invalid");
+    return [];
+  }
 
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
@@ -133,12 +149,15 @@ export async function runObservationExtractionTask(
       '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
     projectId,
   });
-  if (!repaired) return [];
-  return (
-    (await parseObservationsFromText(
-      repaired,
-      allowedSourceRefs,
-      input.createId,
-    )) ?? []
+  if (!repaired) {
+    input.onParseStatus?.("invalid");
+    return [];
+  }
+  const parsed = await parseObservationsFromText(
+    repaired,
+    allowedSourceRefs,
+    input.createId,
   );
+  input.onParseStatus?.(parsed?.status ?? "invalid");
+  return parsed?.observations ?? [];
 }

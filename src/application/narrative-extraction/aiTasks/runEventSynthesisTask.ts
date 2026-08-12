@@ -6,6 +6,7 @@ import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { normalizeEventSynthesis } from "@/features/chronicle/extraction/eventSynthesis";
+import { parseRawEventSynthesisResult } from "@/features/chronicle/extraction/schemas";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import { runStructuredRepairTask } from "./runStructuredRepairTask";
@@ -13,12 +14,25 @@ import { runStructuredRepairTask } from "./runStructuredRepairTask";
 export const NARRATIVE_EVENT_SYNTHESIZE_PATH =
   "narrative_event_synthesize" as const;
 
+export type EventSynthesisSend = (
+  messages: Parameters<typeof sendChatMessageWithThinking>[0],
+  options: Parameters<typeof sendChatMessageWithThinking>[1],
+) => Promise<
+  Pick<
+    Awaited<ReturnType<typeof sendChatMessageWithThinking>>,
+    "text" | "inputTokens" | "outputTokens"
+  >
+>;
+
 export interface RunEventSynthesisTaskInput {
   readonly clusterRef: string;
   readonly observations: readonly RawChronicleEventObservation[];
   readonly projectId?: string | null;
   readonly createId?: () => string;
   readonly repairOnFailure?: boolean;
+  readonly onParseStatus?: (status: "parsed" | "invalid") => void;
+  /** Live eval / tests may inject OpenRouter (or other) transport. */
+  readonly send?: EventSynthesisSend;
 }
 
 function buildSynthesisPrompt(input: RunEventSynthesisTaskInput): string {
@@ -46,7 +60,10 @@ ${rows}
 async function parseSynthesisFromText(
   responseText: string,
   input: RunEventSynthesisTaskInput,
-): Promise<readonly EventHypothesis[] | null> {
+): Promise<{
+  readonly hypotheses: readonly EventHypothesis[];
+  readonly status: "parsed" | "invalid";
+} | null> {
   const jsonText = extractJsonObject(responseText);
   if (!jsonText) return null;
   let parsed: unknown;
@@ -58,11 +75,14 @@ async function parseSynthesisFromText(
   const allowedObservationRefs = new Set(
     input.observations.map((observation) => observation.localId),
   );
-  return normalizeEventSynthesis(parsed, {
-    clusterRef: input.clusterRef,
-    allowedObservationRefs,
-    createId: input.createId,
-  });
+  return {
+    hypotheses: normalizeEventSynthesis(parsed, {
+      clusterRef: input.clusterRef,
+      allowedObservationRefs,
+      createId: input.createId,
+    }),
+    status: parseRawEventSynthesisResult(parsed).ok ? "parsed" : "invalid",
+  };
 }
 
 /**
@@ -80,20 +100,25 @@ export async function runEventSynthesisTask(
     input.projectId ?? useTreeStore.getState().projectId,
   );
   const ov = resolveRoleSendOverride("narrative_event_synthesize");
-  const response = await sendChatMessageWithThinking(
-    [{ role: "user", content: prompt }],
-    {
-      projectId,
-      pathId: "narrative_event_synthesize",
-    },
-    undefined,
-    undefined,
-    ov.apiVariant,
-    undefined,
-    ov.model,
-    ov.provider,
-    ov.endpointId,
-  );
+  const response = input.send
+    ? await input.send([{ role: "user", content: prompt }], {
+        projectId,
+        pathId: "narrative_event_synthesize",
+      })
+    : await sendChatMessageWithThinking(
+        [{ role: "user", content: prompt }],
+        {
+          projectId,
+          pathId: "narrative_event_synthesize",
+        },
+        undefined,
+        undefined,
+        ov.apiVariant,
+        undefined,
+        ov.model,
+        ov.provider,
+        ov.endpointId,
+      );
   void recordAiUsage({
     surface: "narrative_event_synthesize",
     model: ov.model,
@@ -105,14 +130,25 @@ export async function runEventSynthesisTask(
   });
 
   const first = await parseSynthesisFromText(response.text, input);
-  if (first !== null) return first;
-  if (input.repairOnFailure === false) return [];
+  if (first !== null) {
+    input.onParseStatus?.(first.status);
+    return first.hypotheses;
+  }
+  if (input.repairOnFailure === false) {
+    input.onParseStatus?.("invalid");
+    return [];
+  }
 
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
     expectedShape: `{"clusterRef":"${input.clusterRef}","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}`,
     projectId,
   });
-  if (!repaired) return [];
-  return (await parseSynthesisFromText(repaired, input)) ?? [];
+  if (!repaired) {
+    input.onParseStatus?.("invalid");
+    return [];
+  }
+  const parsed = await parseSynthesisFromText(repaired, input);
+  input.onParseStatus?.(parsed?.status ?? "invalid");
+  return parsed?.hypotheses ?? [];
 }
