@@ -3,7 +3,7 @@
 # Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
 # candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
 schemaVersion: 1
-contractVersion: 3
+contractVersion: 4
 id: gate-b2
 
 candidate:
@@ -136,30 +136,51 @@ releaseAdjacent:
     status: blocked
 
 requiredManualJourneys:
+  # Journeys stay BLOCKED until real runners emit candidate-bound evidence under
+  # GATE_B2_* env (or GitHub-attested artifacts). Handwritten JSON alone cannot PASS.
   - id: prepared-plan-toctou
     runnerId: gate-b2-prepared-plan-toctou-journey
     runnerVersion: "1"
     requiredAssertions: [source-changed-after-prepare, apply-rejected-or-revalidated]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:prepared-plan-toctou that runs on the frozen
+      candidate worktree and writes GATE_B2_OUTPUT_PATH evidence with binding fields.
   - id: runtime-terminalization
     runnerId: gate-b2-runtime-terminalization-journey
     runnerVersion: "1"
     requiredAssertions: [runtime-terminal-state, no-partial-apply]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:runtime-terminalization with GATE_B2_* bound evidence.
   - id: browser-electron-writer-parity
     runnerId: gate-b2-browser-electron-writer-parity-journey
     runnerVersion: "1"
     requiredAssertions: [parity-write-result, parity-event-shape]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:browser-electron-writer-parity with GATE_B2_* bound evidence.
   - id: locked-field-enforcement
     runnerId: gate-b2-locked-field-journey
     runnerVersion: "1"
     requiredAssertions: [locked-write-rejected, target-value-unchanged, no-change-event, no-undo-journal]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:locked-field-enforcement with GATE_B2_* bound evidence.
   - id: dirty-only-propagation
     runnerId: gate-b2-dirty-only-propagation-journey
     runnerVersion: "1"
     requiredAssertions: [dirty-only-propagated, clean-fields-untouched]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:dirty-only-propagation with GATE_B2_* bound evidence.
   - id: immutable-retraction-history
     runnerId: gate-b2-immutable-retraction-history-journey
     runnerVersion: "1"
     requiredAssertions: [retraction-appended, prior-history-immutable]
+    status: blocked
+    requiredAction: >
+      Implement pnpm test:gate-b2:immutable-retraction-history with GATE_B2_* bound evidence.
 
 decisionPolicy:
   blockedIsPass: false

@@ -19,7 +19,7 @@
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "contractVersion": { "type": "integer", "const": 3 },
+    "contractVersion": { "type": "integer", "const": 4 },
     "gateId": { "const": "gate-b2" },
     "manifestDigest": {
       "type": "string",

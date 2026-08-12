@@ -20,6 +20,7 @@ import { performance } from "node:perf_hooks";
 import yaml from "js-yaml";
 
 import {
+  FREEZE_RELATIVE,
   GATE_B2_CONTRACT_VERSION,
   HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
@@ -239,6 +240,11 @@ export function validateGateB2Manifest(raw) {
     ) {
       errors.push(
         `requiredManualJourneys ${entry.id} requiredAssertions must be a non-empty array`,
+      );
+    }
+    if (entry.status === "blocked" && !entry.requiredAction) {
+      errors.push(
+        `requiredManualJourneys ${entry.id} blocked status requires requiredAction`,
       );
     }
   }
@@ -563,6 +569,20 @@ async function evaluateFullCiEvidence({
       fullCiContract,
     });
   }
+  const artifactDigests = [digest];
+  if (validation.checkoutArtifactDigest) {
+    artifactDigests.push(validation.checkoutArtifactDigest);
+  }
+  let message = validation.message;
+  if (validation.checkoutArtifactId != null) {
+    message = `${message}; checkout artifact id=${validation.checkoutArtifactId}`;
+  }
+  if (validation.checkoutCommitSha) {
+    message = `${message}; checkout commit=${validation.checkoutCommitSha}`;
+  }
+  if (validation.checkoutTreeSha) {
+    message = `${message}; checkout tree=${validation.checkoutTreeSha}`;
+  }
   return {
     suiteId: "full-ci",
     bucket: "requiredLight",
@@ -574,9 +594,9 @@ async function evaluateFullCiEvidence({
     commandDigest: null,
     stdoutDigest: null,
     stderrDigest: null,
-    artifactDigests: [digest],
+    artifactDigests,
     result: validation.result,
-    message: validation.message,
+    message,
   };
 }
 
@@ -587,6 +607,20 @@ async function evaluateJourneyEvidence({
   candidate,
 }) {
   const journeyId = journeyEntry.id;
+  if (
+    journeyEntry.status === "blocked" ||
+    String(journeyId).startsWith("blocked-")
+  ) {
+    return blockedSuite({
+      suiteId: journeyId,
+      bucket: "requiredJourneys",
+      message:
+        (journeyEntry.requiredAction
+          ? String(journeyEntry.requiredAction).trim()
+          : journeyEntry.reason) ||
+        `Journey ${journeyId} is blocked until a real runner emits candidate-bound evidence.`,
+    });
+  }
   const baseDir =
     journeyEvidenceDir ??
     (artifactDir ? path.join(artifactDir, "journeys") : null);
@@ -1181,11 +1215,15 @@ async function runHeavySuites({
 export async function certifyGateB2({
   repoRoot = DEFAULT_REPO_ROOT,
   args,
+  freezePath = null,
+  freezeDocument = null,
 }) {
   const startedAt = new Date().toISOString();
   const needsExecution =
     args.runLight || args.runHeavy || args.runJourneys || args.runInformational;
-  const freeze = await loadFreezeDocument(repoRoot);
+  const freeze =
+    freezeDocument ??
+    (await loadFreezeDocument(repoRoot, freezePath ?? FREEZE_RELATIVE));
   let executionRoot = repoRoot;
   let cleanup = async () => {};
   let boundVia = "unbound";

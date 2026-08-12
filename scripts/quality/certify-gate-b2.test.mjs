@@ -30,7 +30,7 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   const raw = yaml.load(text);
   assert.deepEqual(validateGateB2Manifest(raw), []);
   assert.equal(raw.id, "gate-b2");
-  assert.equal(raw.contractVersion, 3);
+  assert.equal(raw.contractVersion, 4);
   assert.equal(raw.decisionPolicy.blockedIsPass, false);
   assert.equal(raw.decisionPolicy.deferredIsPass, false);
   assert.equal(raw.decisionPolicy.credentialShortageIsPass, false);
@@ -72,6 +72,8 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   assert.equal(journey.runnerVersion, "1");
   assert.ok(Array.isArray(journey.requiredAssertions));
   assert.ok(journey.requiredAssertions.length > 0);
+  assert.equal(journey.status, "blocked");
+  assert.ok(journey.requiredAction);
 
   const releaseAdjacent = raw.releaseAdjacent.map((entry) => entry.id);
   assert.ok(releaseAdjacent.includes("heavy-related-scenes"));
@@ -123,7 +125,7 @@ test("package script and report schema exist for certify:gate-b2", async () => {
     ),
   );
   assert.equal(schema.title, "Gate B2 Certification Report");
-  assert.equal(schema.properties.contractVersion.const, 3);
+  assert.equal(schema.properties.contractVersion.const, 4);
   assert.deepEqual(schema.properties.verdict.enum, [
     "PASS",
     "HOLD",
@@ -248,7 +250,7 @@ test("preflight loads manifest digests and writes report without claiming PASS",
     });
 
     assert.equal(report.gateId, "gate-b2");
-    assert.equal(report.contractVersion, 3);
+    assert.equal(report.contractVersion, 4);
     assert.equal(report.mode, "preflight");
     assert.equal(report.verdict, "INCOMPLETE");
     assert.match(report.manifestDigest, /^sha256:[0-9a-f]{64}$/);
@@ -367,23 +369,26 @@ test("credential shortage for billed heavies is BLOCK not passed/skipped", async
   const { freezeGateB2Candidate } = await import(
     "./freeze-gate-b2-candidate.mjs"
   );
-  const freezePath = path.join(
-    repoRoot,
-    "evals/certifications/gate-b2-candidate.freeze.json",
-  );
-  const originalFreeze = await readFile(freezePath, "utf8");
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-cred-"));
   const previousKey = process.env.OPENROUTER_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   try {
+    const isolatedFreezePath = path.join(temp, "gate-b2-candidate.freeze.json");
     const { freeze } = await freezeGateB2Candidate({
       repoRoot,
       writeResults: false,
-      writeRepoFreeze: true,
+      writeRepoFreeze: false,
       artifactRoot: path.join(temp, "freeze-artifacts"),
     });
+    await writeFile(
+      isolatedFreezePath,
+      `${JSON.stringify(freeze, null, 2)}\n`,
+      "utf8",
+    );
     const { report } = await certifyGateB2({
       repoRoot,
+      freezePath: isolatedFreezePath,
+      freezeDocument: freeze,
       args: {
         preflight: false,
         runLight: false,
@@ -411,7 +416,6 @@ test("credential shortage for billed heavies is BLOCK not passed/skipped", async
     assert.equal(report.candidate.boundVia, "detached-worktree");
     assert.equal(report.candidate.commitSha, freeze.candidate.commitSha);
   } finally {
-    await writeFile(freezePath, originalFreeze, "utf8");
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;
     await rm(temp, { recursive: true, force: true });
@@ -533,7 +537,7 @@ test("report schema accepts SuiteResult.runId from an executed heavy", async () 
   const report = {
     schemaVersion: 1,
     gateId: "gate-b2",
-    contractVersion: 3,
+    contractVersion: 4,
     manifestDigest: digest,
     generatedAt: "2026-01-01T00:00:00.000Z",
     startedAt: "2026-01-01T00:00:00.000Z",
@@ -637,7 +641,7 @@ test("report schema accepts SuiteResult.runId from an executed heavy", async () 
   assert.equal(typeof sha256Text, "function");
 });
 
-test("journey evidence rejects forged passed:true without candidate binding", async () => {
+test("journey evidence rejects handwritten PASS while journeys remain blocked", async () => {
   const { mkdir } = await import("node:fs/promises");
   const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-"));
@@ -646,7 +650,22 @@ test("journey evidence rejects forged passed:true without candidate binding", as
     await mkdir(journeyDir, { recursive: true });
     await writeFile(
       path.join(journeyDir, "prepared-plan-toctou.json"),
-      JSON.stringify({ result: "passed", startedAt: "x", completedAt: "y" }),
+      JSON.stringify({
+        schemaVersion: 1,
+        journeyId: "prepared-plan-toctou",
+        candidateCommitSha: "a".repeat(40),
+        candidateTreeSha: "b".repeat(40),
+        runnerId: "gate-b2-prepared-plan-toctou-journey",
+        runnerVersion: "1",
+        environmentDigest: `sha256:${"c".repeat(64)}`,
+        assertions: [
+          { id: "source-changed-after-prepare", passed: true },
+          { id: "apply-rejected-or-revalidated", passed: true },
+        ],
+        result: "passed",
+        startedAt: "x",
+        completedAt: "y",
+      }),
       "utf8",
     );
     const { report } = await certifyGateB2({
@@ -671,8 +690,9 @@ test("journey evidence rejects forged passed:true without candidate binding", as
     const journey = report.suites.find(
       (suite) => suite.suiteId === "prepared-plan-toctou",
     );
-    assert.equal(journey.result, "failed");
-    assert.match(journey.message, /missing required fields/);
+    assert.equal(journey.result, "blocked");
+    assert.match(journey.message, /GATE_B2_OUTPUT_PATH|Implement pnpm/i);
+    assert.equal(report.verdict, "BLOCK");
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

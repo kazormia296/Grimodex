@@ -12,13 +12,14 @@ import {
 import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
+import { unzipSync } from "fflate";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const PLACEHOLDER_ENV_ASSIGN =
   /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
 
-export const GATE_B2_CONTRACT_VERSION = 3;
+export const GATE_B2_CONTRACT_VERSION = 4;
 
 export const FREEZE_RELATIVE =
   "evals/certifications/gate-b2-candidate.freeze.json";
@@ -69,8 +70,13 @@ export async function pathExists(target) {
   }
 }
 
-export async function loadFreezeDocument(repoRoot) {
-  const freezePath = path.join(repoRoot, FREEZE_RELATIVE);
+export async function loadFreezeDocument(
+  repoRoot,
+  freezeRelativePath = FREEZE_RELATIVE,
+) {
+  const freezePath = path.isAbsolute(freezeRelativePath)
+    ? freezeRelativePath
+    : path.join(repoRoot, freezeRelativePath);
   if (!(await pathExists(freezePath))) return null;
   return JSON.parse(await readFile(freezePath, "utf8"));
 }
@@ -386,32 +392,82 @@ export function validateFullCiEvidence(raw, candidate, contract) {
         "full-ci evidence requiredJobs must match contract requiredJobs exactly",
     };
   }
-  if (contract?.requireCheckoutIdentityArtifact) {
-    if (!raw.checkoutCommitSha || !raw.checkoutTreeSha) {
-      return {
-        ok: false,
-        result: "failed",
-        message:
-          "full-ci evidence missing checkoutCommitSha/checkoutTreeSha from CI checkout-identity artifact",
-      };
-    }
-    if (String(raw.checkoutCommitSha).toLowerCase() !== candidate.commitSha) {
-      return {
-        ok: false,
-        result: "failed",
-        message: `checkoutCommitSha ${raw.checkoutCommitSha} != candidate ${candidate.commitSha}`,
-      };
-    }
-    if (String(raw.checkoutTreeSha).toLowerCase() !== candidate.treeSha) {
-      return {
-        ok: false,
-        result: "failed",
-        message: `checkoutTreeSha ${raw.checkoutTreeSha} != candidate ${candidate.treeSha}`,
-      };
-    }
-  }
-  // Do not accept bare passed:true without structured fields (already required above).
+  // checkoutCommitSha/checkoutTreeSha are optional in evidence; when present they
+  // are consistency-checked against the downloaded artifact in verifyFullCiWithGithub.
   return { ok: true, result: "passed", message: "full-ci evidence accepted" };
+}
+
+async function defaultDownloadArtifactZip({ slug, artifactId, repoRoot }) {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "gate-b2-artifact-"));
+  const zipPath = path.join(tempDir, "artifact.zip");
+  try {
+    await runCommand(
+      "gh",
+      [
+        "api",
+        `repos/${slug}/actions/artifacts/${artifactId}/zip`,
+        "--output",
+        zipPath,
+      ],
+      repoRoot,
+    );
+    return await readFile(zipPath);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Download and parse the CI checkout-identity GitHub Actions artifact.
+ */
+export async function fetchCheckoutIdentityArtifact({
+  repoRoot,
+  runId,
+  runAttempt,
+  slug: slugOverride,
+  downloadArtifactZip = defaultDownloadArtifactZip,
+}) {
+  const slug = slugOverride ?? (await resolveGithubRepoSlug(repoRoot));
+  const artifactName = `checkout-identity-${runId}-${runAttempt}`;
+  const listJson = await runCommand(
+    "gh",
+    ["api", `repos/${slug}/actions/runs/${runId}/artifacts`],
+    repoRoot,
+  );
+  const artifacts = JSON.parse(listJson).artifacts ?? [];
+  const matching = artifacts.filter((entry) => entry.name === artifactName);
+  if (matching.length === 0) {
+    throw new Error(`no checkout-identity artifact named ${artifactName}`);
+  }
+  if (matching.length > 1) {
+    throw new Error(
+      `expected exactly one checkout-identity artifact named ${artifactName}, found ${matching.length}`,
+    );
+  }
+  const artifact = matching[0];
+  const zipBytes = await downloadArtifactZip({
+    slug,
+    artifactId: artifact.id,
+    repoRoot,
+  });
+  const artifactDigest = `sha256:${createHash("sha256").update(zipBytes).digest("hex")}`;
+  const entries = unzipSync(zipBytes);
+  const jsonPath = Object.keys(entries).find((entryPath) =>
+    entryPath.endsWith("checkout-identity.json"),
+  );
+  if (!jsonPath) {
+    throw new Error("checkout-identity.json not found in artifact zip");
+  }
+  const identity = JSON.parse(Buffer.from(entries[jsonPath]).toString("utf8"));
+  if (!identity.commitSha || !identity.treeSha) {
+    throw new Error("checkout-identity.json missing commitSha or treeSha");
+  }
+  return {
+    artifactId: artifact.id,
+    artifactName: artifact.name,
+    artifactDigest,
+    identity,
+  };
 }
 
 async function resolveGithubRepoSlug(repoRoot) {
@@ -465,7 +521,7 @@ function workflowPathMatches(runPath, contractPath) {
 export async function verifyFullCiWithGithub(
   raw,
   candidate,
-  { fetchRun, repoRoot, fullCiContract } = {},
+  { fetchRun, fetchCheckoutIdentity, repoRoot, fullCiContract } = {},
 ) {
   const base = validateFullCiEvidence(raw, candidate, fullCiContract);
   if (!base.ok) return base;
@@ -558,6 +614,62 @@ export async function verifyFullCiWithGithub(
           message: `github job ${requiredJob} conclusion is ${jobConclusion}`,
         };
       }
+    }
+
+    if (fullCiContract?.requireCheckoutIdentityArtifact) {
+      const slug = await resolveGithubRepoSlug(resolvedRepoRoot);
+      const fetcher = fetchCheckoutIdentity ?? fetchCheckoutIdentityArtifact;
+      const checkout = await fetcher({
+        repoRoot: resolvedRepoRoot,
+        runId: raw.runId,
+        runAttempt: raw.runAttempt,
+        slug,
+      });
+      const artifactCommit = String(checkout.identity.commitSha).toLowerCase();
+      const artifactTree = String(checkout.identity.treeSha).toLowerCase();
+      if (artifactCommit !== candidate.commitSha) {
+        return {
+          ok: false,
+          result: "failed",
+          message: `checkout-identity commitSha ${artifactCommit} != candidate ${candidate.commitSha}`,
+        };
+      }
+      if (artifactTree !== candidate.treeSha) {
+        return {
+          ok: false,
+          result: "failed",
+          message: `checkout-identity treeSha ${artifactTree} != candidate ${candidate.treeSha}`,
+        };
+      }
+      if (raw.checkoutCommitSha) {
+        const evidenceCommit = String(raw.checkoutCommitSha).toLowerCase();
+        if (evidenceCommit !== artifactCommit) {
+          return {
+            ok: false,
+            result: "failed",
+            message: `evidence checkoutCommitSha ${evidenceCommit} != artifact ${artifactCommit}`,
+          };
+        }
+      }
+      if (raw.checkoutTreeSha) {
+        const evidenceTree = String(raw.checkoutTreeSha).toLowerCase();
+        if (evidenceTree !== artifactTree) {
+          return {
+            ok: false,
+            result: "failed",
+            message: `evidence checkoutTreeSha ${evidenceTree} != artifact ${artifactTree}`,
+          };
+        }
+      }
+      return {
+        ok: true,
+        result: "passed",
+        message: "full-ci github evidence verified",
+        checkoutArtifactId: checkout.artifactId,
+        checkoutArtifactDigest: checkout.artifactDigest,
+        checkoutCommitSha: artifactCommit,
+        checkoutTreeSha: artifactTree,
+      };
     }
 
     return {

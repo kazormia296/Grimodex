@@ -39,6 +39,24 @@ const fullCiContract = {
   requiredJobs: ["Frontend", "Rust"],
 };
 
+const fullCiContractWithCheckout = {
+  ...fullCiContract,
+  requireCheckoutIdentityArtifact: true,
+};
+
+function makeCheckoutIdentity(overrides = {}) {
+  return {
+    artifactId: 12345,
+    artifactName: "checkout-identity-999-1",
+    artifactDigest: `sha256:${"e".repeat(64)}`,
+    identity: {
+      commitSha: candidate.commitSha,
+      treeSha: candidate.treeSha,
+      ...overrides,
+    },
+  };
+}
+
 function fullCiEvidence(overrides = {}) {
   return {
     commitSha: candidate.commitSha,
@@ -158,6 +176,25 @@ test("validateFullCiEvidence rejects requiredJobs that shrink contract set", () 
   assert.equal(ok.ok, true);
 });
 
+test("validateFullCiEvidence does not require checkout fields when artifact verification is enabled", () => {
+  const withoutCheckout = validateFullCiEvidence(
+    fullCiEvidence(),
+    candidate,
+    fullCiContractWithCheckout,
+  );
+  assert.equal(withoutCheckout.ok, true);
+
+  const withCheckout = validateFullCiEvidence(
+    fullCiEvidence({
+      checkoutCommitSha: candidate.commitSha,
+      checkoutTreeSha: candidate.treeSha,
+    }),
+    candidate,
+    fullCiContractWithCheckout,
+  );
+  assert.equal(withCheckout.ok, true);
+});
+
 test("verifyFullCiWithGithub accepts injected github payload with contract", async () => {
   const raw = fullCiEvidence();
   const fetchRun = async () => githubRunPayload();
@@ -225,6 +262,46 @@ test("verifyFullCiWithGithub fails when fetchRun throws", async () => {
   });
   assert.equal(failed.ok, false);
   assert.match(failed.message, /gh unavailable/);
+});
+
+test("verifyFullCiWithGithub rejects checkout identity mismatch from artifact", async () => {
+  const raw = fullCiEvidence();
+  const fetchRun = async () => githubRunPayload();
+  const fetchCheckoutIdentity = async () =>
+    makeCheckoutIdentity({ treeSha: "c".repeat(40) });
+
+  const badTree = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun,
+    fetchCheckoutIdentity,
+    fullCiContract: fullCiContractWithCheckout,
+  });
+  assert.equal(badTree.ok, false);
+  assert.match(badTree.message, /checkout-identity treeSha/);
+
+  const ok = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun,
+    fetchCheckoutIdentity: async () => makeCheckoutIdentity(),
+    fullCiContract: fullCiContractWithCheckout,
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.checkoutArtifactId, 12345);
+  assert.equal(ok.checkoutArtifactDigest, `sha256:${"e".repeat(64)}`);
+  assert.equal(ok.checkoutCommitSha, candidate.commitSha);
+  assert.equal(ok.checkoutTreeSha, candidate.treeSha);
+});
+
+test("verifyFullCiWithGithub rejects evidence checkout fields that disagree with artifact", async () => {
+  const raw = fullCiEvidence({
+    checkoutCommitSha: "f".repeat(40),
+    checkoutTreeSha: candidate.treeSha,
+  });
+  const result = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun: async () => githubRunPayload(),
+    fetchCheckoutIdentity: async () => makeCheckoutIdentity(),
+    fullCiContract: fullCiContractWithCheckout,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.message, /evidence checkoutCommitSha/);
 });
 
 test("journey evidence requires candidate binding and assertions", () => {
