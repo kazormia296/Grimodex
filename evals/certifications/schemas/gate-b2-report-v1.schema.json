@@ -15,11 +15,11 @@
     "summary",
     "suites",
     "retries",
-    "artifactDigests",
     "blockedReasons"
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
+    "contractVersion": { "type": "integer", "const": 2 },
     "gateId": { "const": "gate-b2" },
     "manifestDigest": {
       "type": "string",
@@ -79,6 +79,47 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "certificationManifestDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyRunnerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyBindingsDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "adrValidatorDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reportSchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "decisionSchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "journeySchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "chronicleAdapterDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "chronicleScorerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "webConsentJourneyDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "boundVia": { "type": "string" },
         "frozen": { "type": "boolean" },
         "dirty": { "type": "boolean" }
       }

@@ -3,6 +3,7 @@
 # Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
 # candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
 schemaVersion: 1
+contractVersion: 2
 id: gate-b2
 
 candidate:
@@ -17,6 +18,17 @@ candidate:
   narrativeEvalManifestDigest: null
   adrChecklistDigest: null
   classificationDigest: null
+  # Harness / runner digests (see HARNESS_DIGEST_PATHS in certify-gate-b2-bindings.mjs)
+  certificationManifestDigest: null
+  certifyRunnerDigest: null
+  certifyBindingsDigest: null
+  adrValidatorDigest: null
+  reportSchemaDigest: null
+  decisionSchemaDigest: null
+  journeySchemaDigest: null
+  chronicleAdapterDigest: null
+  chronicleScorerDigest: null
+  webConsentJourneyDigest: null
 
 inputs:
   writerRegistry: policies/narrative/protected-writers.json
@@ -27,6 +39,17 @@ inputs:
   adrChecklist: policies/narrative/gate-b2-adr-checklist.json
   adrChecklistDocument: docs/adr/004-narrative-reconciliation-boundary-checklist.md
   classification: policies/narrative/gate-b2-classification.json
+  # Harness paths (digested at freeze; keys match HARNESS_DIGEST_PATHS)
+  certificationManifest: evals/certifications/gate-b2.yaml
+  certifyRunner: scripts/quality/certify-gate-b2.mjs
+  certifyBindings: scripts/quality/certify-gate-b2-bindings.mjs
+  adrValidator: scripts/quality/validate-gate-b2-adr.mjs
+  reportSchema: evals/certifications/schemas/gate-b2-report-v1.schema.json
+  decisionSchema: evals/certifications/schemas/gate-b2-decision-v1.schema.json
+  journeySchema: evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json
+  chronicleAdapter: src/features/narrative-extraction/eval/productionChronicleAdapter.ts
+  chronicleScorer: src/features/narrative-extraction/eval/productionChronicleScoring.ts
+  webConsentJourney: src/features/ai-policy/webAiConsent.live.test.tsx
 
 # Light / Heavy / Journey の ID は runner が減らさない。欠落は BLOCK。
 requiredLight:
@@ -63,13 +86,15 @@ requiredHeavy:
   - id: heavy-narrative-chronicle-production
     qualityManifestId: heavy-narrative-chronicle-production
     requiresEnv: [OPENROUTER_API_KEY]
-  - id: heavy-web-ai-consent-live
-    qualityManifestId: heavy-web-ai-consent-live
-    requiresEnv: []
 
 informational:
   - id: heavy-narrative-chronicle-legacy-baseline
     qualityManifestId: heavy-narrative-chronicle-legacy-baseline
+    certificationCredit: false
+  # jsdom loopback journey — not certification credit for Gate B2 Engineering PASS
+  - id: heavy-web-ai-consent-live
+    qualityManifestId: heavy-web-ai-consent-live
+    requiresEnv: []
     certificationCredit: false
 
 # Gate B2 Engineering 認証には含めない。Global Release Quality 判定用。
@@ -86,11 +111,29 @@ releaseAdjacent:
 
 requiredManualJourneys:
   - id: prepared-plan-toctou
+    runnerId: gate-b2-prepared-plan-toctou-journey
+    runnerVersion: "1"
+    requiredAssertions: [source-changed-after-prepare, apply-rejected-or-revalidated]
   - id: runtime-terminalization
+    runnerId: gate-b2-runtime-terminalization-journey
+    runnerVersion: "1"
+    requiredAssertions: [runtime-terminal-state, no-partial-apply]
   - id: browser-electron-writer-parity
+    runnerId: gate-b2-browser-electron-writer-parity-journey
+    runnerVersion: "1"
+    requiredAssertions: [parity-write-result, parity-event-shape]
   - id: locked-field-enforcement
+    runnerId: gate-b2-locked-field-journey
+    runnerVersion: "1"
+    requiredAssertions: [locked-write-rejected, target-value-unchanged, no-change-event, no-undo-journal]
   - id: dirty-only-propagation
+    runnerId: gate-b2-dirty-only-propagation-journey
+    runnerVersion: "1"
+    requiredAssertions: [dirty-only-propagated, clean-fields-untouched]
   - id: immutable-retraction-history
+    runnerId: gate-b2-immutable-retraction-history-journey
+    runnerVersion: "1"
+    requiredAssertions: [retraction-appended, prior-history-immutable]
 
 decisionPolicy:
   blockedIsPass: false

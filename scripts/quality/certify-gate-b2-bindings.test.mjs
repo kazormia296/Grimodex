@@ -1,15 +1,54 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
+  GATE_B2_CONTRACT_VERSION,
+  HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
+  assertFreezeActive,
   buildDecisionDocument,
+  buildHeavyCertificationEnv,
+  prepareWorktreeDependencies,
+  sanitizeCertificationEnv,
   stripCredentialPlaceholders,
   validateFullCiEvidence,
   validateJourneyEvidence,
   validateChronicleProductionReport,
   validateWebAiConsentReport,
+  verifyFullCiWithGithub,
 } from "./certify-gate-b2-bindings.mjs";
+
+const candidate = {
+  commitSha: "a".repeat(40),
+  treeSha: "b".repeat(40),
+};
+
+const heavyExpected = {
+  commitSha: candidate.commitSha,
+  treeSha: candidate.treeSha,
+  suiteId: "heavy-narrative-chronicle-production",
+  runId: "run-1",
+  commandDigest: `sha256:${"d".repeat(64)}`,
+};
+
+function validHeavyReport(overrides = {}) {
+  return {
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    suiteId: heavyExpected.suiteId,
+    runId: heavyExpected.runId,
+    commandDigest: heavyExpected.commandDigest,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:10:00.000Z",
+    attempt: 1,
+    caseCount: 14,
+    certificationEligible: true,
+    ...overrides,
+  };
+}
 
 test("stripCredentialPlaceholders removes VAR=... assignments", () => {
   const cleaned = stripCredentialPlaceholders(
@@ -19,8 +58,41 @@ test("stripCredentialPlaceholders removes VAR=... assignments", () => {
   assert.doesNotMatch(cleaned, /OPENROUTER_API_KEY=/);
 });
 
+test("sanitizeCertificationEnv strips narrative overrides but keeps GATE_B2 vars", () => {
+  const env = sanitizeCertificationEnv({
+    NARRATIVE_EVAL_LIMIT: "1",
+    NARRATIVE_EVAL_CASE_ID: "x",
+    NARRATIVE_EVAL_ATTEMPT: "2",
+    GATE_B2_RUN_ID: "run-1",
+    GATE_B2_OUTPUT_PATH: "/tmp/report.json",
+  });
+  assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(env.NARRATIVE_EVAL_CASE_ID, undefined);
+  assert.equal(env.NARRATIVE_EVAL_ATTEMPT, undefined);
+  assert.equal(env.GATE_B2_RUN_ID, "run-1");
+  assert.equal(env.GATE_B2_OUTPUT_PATH, "/tmp/report.json");
+});
+
+test("buildHeavyCertificationEnv binds heavy runner metadata", () => {
+  const env = buildHeavyCertificationEnv({
+    candidate,
+    suiteId: "heavy-web-ai-consent-live",
+    runId: "run-42",
+    outputPath: "/tmp/consent-report.json",
+    commandDigest: heavyExpected.commandDigest,
+    baseEnv: { HOME: "/home/tester" },
+  });
+  assert.equal(env.GATE_B2_CANDIDATE_COMMIT_SHA, candidate.commitSha);
+  assert.equal(env.GATE_B2_CANDIDATE_TREE_SHA, candidate.treeSha);
+  assert.equal(env.GATE_B2_SUITE_ID, "heavy-web-ai-consent-live");
+  assert.equal(env.GATE_B2_RUN_ID, "run-42");
+  assert.equal(env.GATE_B2_OUTPUT_PATH, "/tmp/consent-report.json");
+  assert.equal(env.GATE_B2_COMMAND_DIGEST, heavyExpected.commandDigest);
+  assert.equal(env.HOME, "/home/tester");
+  assert.equal(env.NARRATIVE_EVAL_LIMIT, undefined);
+});
+
 test("full-ci evidence rejects bare passed:true without structured fields", () => {
-  const candidate = { commitSha: "a".repeat(40), treeSha: "b".repeat(40) };
   const bare = validateFullCiEvidence({ passed: true }, candidate);
   assert.equal(bare.ok, false);
   assert.match(bare.message, /missing required fields/);
@@ -40,8 +112,64 @@ test("full-ci evidence rejects bare passed:true without structured fields", () =
   assert.equal(ok.ok, true);
 });
 
+test("verifyFullCiWithGithub accepts injected github payload", async () => {
+  const raw = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    workflowId: "ci.yml",
+    runId: "999",
+    runAttempt: 1,
+    conclusion: "success",
+    requiredJobs: ["Frontend", "Rust"],
+  };
+  const fetchRun = async () => ({
+    run: {
+      head_sha: candidate.commitSha,
+      run_attempt: 1,
+      conclusion: "success",
+    },
+    jobs: [
+      { name: "Frontend", conclusion: "success" },
+      { name: "Rust", conclusion: "success" },
+    ],
+  });
+  const ok = await verifyFullCiWithGithub(raw, candidate, { fetchRun });
+  assert.equal(ok.ok, true);
+
+  const badJobs = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun: async () => ({
+      run: {
+        head_sha: candidate.commitSha,
+        run_attempt: 1,
+        conclusion: "success",
+      },
+      jobs: [{ name: "Frontend", conclusion: "success" }],
+    }),
+  });
+  assert.equal(badJobs.ok, false);
+  assert.match(badJobs.message, /missing required job Rust/);
+});
+
+test("verifyFullCiWithGithub fails when fetchRun throws", async () => {
+  const raw = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    workflowId: "ci.yml",
+    runId: "999",
+    runAttempt: 1,
+    conclusion: "success",
+    requiredJobs: ["Frontend"],
+  };
+  const failed = await verifyFullCiWithGithub(raw, candidate, {
+    fetchRun: async () => {
+      throw new Error("gh unavailable");
+    },
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.message, /gh unavailable/);
+});
+
 test("journey evidence requires candidate binding and assertions", () => {
-  const candidate = { commitSha: "a".repeat(40), treeSha: "b".repeat(40) };
   const forged = validateJourneyEvidence(
     { result: "passed", passed: true },
     { journeyId: "prepared-plan-toctou", candidate },
@@ -67,8 +195,51 @@ test("journey evidence requires candidate binding and assertions", () => {
   assert.equal(ok.ok, true);
 });
 
-test("chronicle report must be certificationEligible with 14/14", () => {
-  const candidate = { treeSha: "b".repeat(40) };
+test("journey contract mismatch rejects forged runner metadata", () => {
+  const contract = {
+    runnerId: "gate-b2-journey-runner",
+    runnerVersion: "2",
+    requiredAssertions: ["source-changed", "plan-bound"],
+  };
+  const mismatch = validateJourneyEvidence(
+    {
+      schemaVersion: 1,
+      journeyId: "prepared-plan-toctou",
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      runnerId: "manual",
+      runnerVersion: "1",
+      environmentDigest: `sha256:${"c".repeat(64)}`,
+      assertions: [{ id: "source-changed", passed: true }],
+      result: "passed",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:01:00.000Z",
+    },
+    { journeyId: "prepared-plan-toctou", candidate, contract },
+  );
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.message, /runnerId/);
+
+  const ok = validateJourneyEvidence(
+    {
+      schemaVersion: 1,
+      journeyId: "prepared-plan-toctou",
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      runnerId: contract.runnerId,
+      runnerVersion: contract.runnerVersion,
+      environmentDigest: `sha256:${"c".repeat(64)}`,
+      assertions: contract.requiredAssertions.map((id) => ({ id, passed: true })),
+      result: "passed",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:01:00.000Z",
+    },
+    { journeyId: "prepared-plan-toctou", candidate, contract },
+  );
+  assert.equal(ok.ok, true);
+});
+
+test("chronicle report must bind candidate metadata and remain 14/14 eligible", () => {
   assert.equal(
     validateChronicleProductionReport(
       {
@@ -77,45 +248,67 @@ test("chronicle report must be certificationEligible with 14/14", () => {
         certificationEligible: false,
       },
       candidate,
+      heavyExpected,
     ).ok,
     false,
+  );
+  assert.equal(
+    validateChronicleProductionReport(validHeavyReport(), candidate, heavyExpected)
+      .ok,
+    true,
   );
   assert.equal(
     validateChronicleProductionReport(
-      {
-        attempt: 1,
-        caseCount: 14,
-        certificationEligible: true,
-        candidateTreeSha: candidate.treeSha,
-      },
+      validHeavyReport({ candidateCommitSha: "c".repeat(40) }),
       candidate,
+      heavyExpected,
     ).ok,
-    true,
+    false,
   );
 });
 
-test("consent report requires observed teardown flags", () => {
+test("consent report requires observed teardown flags and binding metadata", () => {
+  const consentExpected = {
+    ...heavyExpected,
+    suiteId: "heavy-web-ai-consent-live",
+  };
   assert.equal(
-    validateWebAiConsentReport({
-      certificationEligible: true,
-      teardown: { serverClosed: false, localStorageCleared: true },
-    }).ok,
+    validateWebAiConsentReport(
+      {
+        certificationEligible: true,
+        teardown: { serverClosed: false, localStorageCleared: true },
+      },
+      consentExpected,
+    ).ok,
     false,
   );
   assert.equal(
-    validateWebAiConsentReport({
-      certificationEligible: true,
-      teardown: { serverClosed: true, localStorageCleared: true },
-    }).ok,
+    validateWebAiConsentReport(
+      {
+        ...validHeavyReport({ suiteId: consentExpected.suiteId }),
+        teardown: { serverClosed: true, localStorageCleared: true },
+      },
+      consentExpected,
+    ).ok,
     true,
+  );
+  assert.equal(
+    validateWebAiConsentReport(
+      {
+        ...validHeavyReport({ suiteId: consentExpected.suiteId, runId: "wrong" }),
+        teardown: { serverClosed: true, localStorageCleared: true },
+      },
+      consentExpected,
+    ).ok,
+    false,
   );
 });
 
 test("decision document includes suiteSummaries and digests", () => {
   const doc = buildDecisionDocument({
     candidate: {
-      commitSha: "a".repeat(40),
-      treeSha: "b".repeat(40),
+      commitSha: candidate.commitSha,
+      treeSha: candidate.treeSha,
       baseMasterSha: "c".repeat(40),
     },
     verdict: "INCOMPLETE",
@@ -139,10 +332,108 @@ test("decision document includes suiteSummaries and digests", () => {
   assert.match(doc.digests.reportDigest, /^sha256:/);
 });
 
-test("assertDigestsMatchFreeze detects drift", () => {
-  const errors = assertDigestsMatchFreeze(
-    { writerRegistryDigest: "sha256:" + "a".repeat(64) },
-    { writerRegistryDigest: "sha256:" + "b".repeat(64) },
+test("assertDigestsMatchFreeze detects input and harness drift", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const freezeCandidate = {
+    writerRegistryDigest: digest,
+    certificationManifestDigest: digest,
+    certifyRunnerDigest: digest,
+    certifyBindingsDigest: digest,
+    adrValidatorDigest: digest,
+    reportSchemaDigest: digest,
+    decisionSchemaDigest: digest,
+    journeySchemaDigest: digest,
+    chronicleAdapterDigest: digest,
+    chronicleScorerDigest: digest,
+    webConsentJourneyDigest: digest,
+  };
+  const drift = assertDigestsMatchFreeze(
+    { writerRegistryDigest: `sha256:${"b".repeat(64)}`, certificationManifestDigest: digest },
+    freezeCandidate,
   );
-  assert.equal(errors.length, 1);
+  assert.ok(drift.some((error) => error.startsWith("writerRegistryDigest:")));
+
+  const harnessDrift = assertDigestsMatchFreeze(
+    {
+      writerRegistryDigest: digest,
+      certificationManifestDigest: `sha256:${"c".repeat(64)}`,
+      certifyRunnerDigest: digest,
+      certifyBindingsDigest: digest,
+      adrValidatorDigest: digest,
+      reportSchemaDigest: digest,
+      decisionSchemaDigest: digest,
+      journeySchemaDigest: digest,
+      chronicleAdapterDigest: digest,
+      chronicleScorerDigest: digest,
+      webConsentJourneyDigest: digest,
+    },
+    freezeCandidate,
+  );
+  assert.ok(
+    harnessDrift.some((error) => error.startsWith("certificationManifestDigest:")),
+  );
+});
+
+test("assertDigestsMatchFreeze errors on missing harness digests and contractVersion", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const missingHarness = assertDigestsMatchFreeze(
+    { writerRegistryDigest: digest },
+    { writerRegistryDigest: digest },
+    { contractVersion: GATE_B2_CONTRACT_VERSION - 1 },
+  );
+  assert.ok(
+    missingHarness.some((error) => error.startsWith("contractVersion:")),
+  );
+  assert.ok(
+    missingHarness.some((error) =>
+      error.startsWith("certificationManifestDigest: missing in freeze"),
+    ),
+  );
+  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 10);
+});
+
+test("assertFreezeActive rejects superseded freeze", () => {
+  assert.throws(
+    () =>
+      assertFreezeActive({
+        status: "superseded",
+        candidate: { commitSha: candidate.commitSha },
+      }),
+    /superseded/i,
+  );
+});
+
+test("prepareWorktreeDependencies rejects lockfile mismatch", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-deps-"));
+  const repoRoot = path.join(temp, "repo");
+  const executionRoot = path.join(temp, "execution");
+  await mkdir(repoRoot, { recursive: true });
+  await mkdir(executionRoot, { recursive: true });
+  try {
+    await writeFile(path.join(repoRoot, "pnpm-lock.yaml"), "lockfileVersion: 9\n", "utf8");
+    await writeFile(
+      path.join(executionRoot, "pnpm-lock.yaml"),
+      "lockfileVersion: 9\npatched: true\n",
+      "utf8",
+    );
+    await assert.rejects(
+      () => prepareWorktreeDependencies({ repoRoot, executionRoot }),
+      /pnpm-lock.yaml digest mismatch/,
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("prepareWorktreeDependencies returns in-place for same root", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-same-"));
+  try {
+    const result = await prepareWorktreeDependencies({
+      repoRoot: temp,
+      executionRoot: temp,
+    });
+    assert.deepEqual(result, { mode: "in-place" });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });

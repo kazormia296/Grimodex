@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import yaml from "js-yaml";
 
 import {
@@ -14,6 +15,7 @@ import {
   tallyBucket,
   validateGateB2Manifest,
 } from "./certify-gate-b2.mjs";
+import { validateFullCiEvidence } from "./certify-gate-b2-bindings.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -28,6 +30,7 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
   const raw = yaml.load(text);
   assert.deepEqual(validateGateB2Manifest(raw), []);
   assert.equal(raw.id, "gate-b2");
+  assert.equal(raw.contractVersion, 2);
   assert.equal(raw.decisionPolicy.blockedIsPass, false);
   assert.equal(raw.decisionPolicy.deferredIsPass, false);
   assert.equal(raw.decisionPolicy.credentialShortageIsPass, false);
@@ -44,8 +47,23 @@ test("Gate B2 certification manifest is valid and separates release-adjacent sui
     "heavy-rust-post-effect-live",
     "heavy-codex-prompt-surfaces",
     "heavy-narrative-chronicle-production",
-    "heavy-web-ai-consent-live",
   ]);
+
+  const informational = raw.informational.map((entry) => entry.id);
+  assert.ok(informational.includes("heavy-web-ai-consent-live"));
+  assert.ok(informational.includes("heavy-narrative-chronicle-legacy-baseline"));
+  const consentEntry = raw.informational.find(
+    (entry) => entry.id === "heavy-web-ai-consent-live",
+  );
+  assert.equal(consentEntry.certificationCredit, false);
+
+  const journey = raw.requiredManualJourneys[0];
+  assert.equal(typeof journey, "object");
+  assert.equal(journey.id, "prepared-plan-toctou");
+  assert.match(journey.runnerId, /^gate-b2-/);
+  assert.equal(journey.runnerVersion, "1");
+  assert.ok(Array.isArray(journey.requiredAssertions));
+  assert.ok(journey.requiredAssertions.length > 0);
 
   const releaseAdjacent = raw.releaseAdjacent.map((entry) => entry.id);
   assert.ok(releaseAdjacent.includes("heavy-related-scenes"));
@@ -97,6 +115,7 @@ test("package script and report schema exist for certify:gate-b2", async () => {
     ),
   );
   assert.equal(schema.title, "Gate B2 Certification Report");
+  assert.equal(schema.properties.contractVersion.const, 2);
   assert.deepEqual(schema.properties.verdict.enum, [
     "PASS",
     "HOLD",
@@ -221,6 +240,7 @@ test("preflight loads manifest digests and writes report without claiming PASS",
     });
 
     assert.equal(report.gateId, "gate-b2");
+    assert.equal(report.contractVersion, 2);
     assert.equal(report.mode, "preflight");
     assert.equal(report.verdict, "INCOMPLETE");
     assert.match(report.manifestDigest, /^sha256:[0-9a-f]{64}$/);
@@ -237,8 +257,9 @@ test("preflight loads manifest digests and writes report without claiming PASS",
       report.candidate.classificationDigest,
       /^sha256:[0-9a-f]{64}$/,
     );
-    assert.equal(report.summary.requiredHeavy.total, 6);
-    assert.equal(report.summary.requiredHeavy.notRun, 6);
+    assert.equal(report.summary.requiredHeavy.total, 5);
+    assert.equal(report.summary.requiredHeavy.notRun, 5);
+    assert.equal(report.summary.informational.total, 2);
 
     const production = report.suites.find(
       (suite) => suite.suiteId === "heavy-narrative-chronicle-production",
@@ -275,7 +296,7 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
         runLight: false,
         runHeavy: true,
         runJourneys: false,
-        runInformational: false,
+        runInformational: true,
         runReleaseAdjacent: false,
         candidate: null,
         baseMaster: null,
@@ -296,6 +317,7 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
     );
     assert.equal(production.result, "not-run");
     assert.equal(consent.result, "not-run");
+    assert.equal(consent.bucket, "informational");
     assert.match(
       production.command.join(" "),
       /eval:narrative:chronicle:production:live/,
@@ -313,18 +335,39 @@ test("registered Gate B2 heavy runners resolve in dry-run without becoming passe
   }
 });
 
-test("credential shortage for billed heavies is BLOCK not passed/skipped", async () => {
-  const { certifyGateB2 } = await import("./certify-gate-b2.mjs");
-  const freeze = JSON.parse(
-    await readFile(
-      path.join(repoRoot, "evals/certifications/gate-b2-candidate.freeze.json"),
-      "utf8",
-    ),
+test("credential shortage for billed heavies is BLOCK not passed/skipped", async (t) => {
+  const status = spawnSync("git", ["status", "--porcelain"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (status.stdout.trim().length > 0) {
+    const { raw } = await loadGateB2Manifest(repoRoot);
+    const agent = raw.requiredHeavy.find(
+      (entry) => entry.id === "heavy-agent-tool-loop",
+    );
+    assert.deepEqual(agent.requiresEnv, ["OPENROUTER_API_KEY"]);
+    t.skip("requires clean working tree for worktree-bound certification run");
+    return;
+  }
+
+  const { certifyGateB2, freezeGateB2Candidate } = await import(
+    "./certify-gate-b2.mjs"
   );
+  const freezePath = path.join(
+    repoRoot,
+    "evals/certifications/gate-b2-candidate.freeze.json",
+  );
+  const originalFreeze = await readFile(freezePath, "utf8");
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-cred-"));
   const previousKey = process.env.OPENROUTER_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   try {
+    const { freeze } = await freezeGateB2Candidate({
+      repoRoot,
+      writeResults: false,
+      writeRepoFreeze: true,
+      artifactRoot: path.join(temp, "freeze-artifacts"),
+    });
     const { report } = await certifyGateB2({
       repoRoot,
       args: {
@@ -354,6 +397,7 @@ test("credential shortage for billed heavies is BLOCK not passed/skipped", async
     assert.equal(report.candidate.boundVia, "detached-worktree");
     assert.equal(report.candidate.commitSha, freeze.candidate.commitSha);
   } finally {
+    await writeFile(freezePath, originalFreeze, "utf8");
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;
     await rm(temp, { recursive: true, force: true });
@@ -433,6 +477,20 @@ test("full-ci evidence rejects bare passed:true and incomplete binding", async (
     const fullCi = report.suites.find((suite) => suite.suiteId === "full-ci");
     assert.equal(fullCi.result, "failed");
     assert.match(fullCi.message, /commitSha .* != candidate/);
+
+    const structuralOnly = validateFullCiEvidence(
+      {
+        commitSha: "c".repeat(40),
+        treeSha: "d".repeat(40),
+        workflowId: "ci.yml",
+        runId: "1",
+        runAttempt: 1,
+        conclusion: "success",
+        requiredJobs: ["verify"],
+      },
+      { commitSha: "c".repeat(40), treeSha: "d".repeat(40) },
+    );
+    assert.equal(structuralOnly.ok, true);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -478,3 +536,75 @@ test("journey evidence rejects forged passed:true without candidate binding", as
     await rm(temp, { recursive: true, force: true });
   }
 });
+
+test(
+  "prepareWorktreeDependencies runs ADR format validation in detached worktree",
+  { skip: process.env.GATE_B2_WORKTREE_SMOKE !== "1" ? "set GATE_B2_WORKTREE_SMOKE=1" : false },
+  async () => {
+    const { spawn } = await import("node:child_process");
+    const { prepareWorktreeDependencies } = await import(
+      "./certify-gate-b2-bindings.mjs"
+    );
+
+    const headSha = await new Promise((resolve, reject) => {
+      const child = spawn("git", ["rev-parse", "HEAD"], {
+        cwd: repoRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const stdout = [];
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        if (code !== 0) reject(new Error("git rev-parse HEAD failed"));
+        else resolve(Buffer.concat(stdout).toString("utf8").trim());
+      });
+    });
+
+    const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-smoke-"));
+    const worktreePath = path.join(temp, "tree");
+    try {
+      await new Promise((resolve, reject) => {
+        const child = spawn(
+          "git",
+          ["worktree", "add", "--detach", worktreePath, headSha],
+          { cwd: repoRoot, stdio: "inherit" },
+        );
+        child.on("error", reject);
+        child.on("exit", (code) => {
+          if (code !== 0) reject(new Error("git worktree add failed"));
+          else resolve();
+        });
+      });
+
+      const prepared = await prepareWorktreeDependencies({
+        repoRoot,
+        executionRoot: worktreePath,
+      });
+      assert.equal(prepared.mode, "symlink-node_modules");
+
+      const exitCode = await new Promise((resolve) => {
+        const child = spawn(
+          "node",
+          [
+            "scripts/quality/validate-gate-b2-adr.mjs",
+            "--",
+            "--validate-format",
+          ],
+          { cwd: worktreePath, stdio: "inherit" },
+        );
+        child.on("exit", (code) => resolve(code ?? 1));
+      });
+      assert.equal(exitCode, 0);
+    } finally {
+      await new Promise((resolve) => {
+        const child = spawn(
+          "git",
+          ["worktree", "remove", "--force", worktreePath],
+          { cwd: repoRoot, stdio: "inherit" },
+        );
+        child.on("exit", () => resolve());
+      });
+      await rm(temp, { recursive: true, force: true });
+    }
+  },
+);

@@ -10,9 +10,9 @@
  * - artifact digest を生成する
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile, access } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -20,17 +20,26 @@ import { performance } from "node:perf_hooks";
 import yaml from "js-yaml";
 
 import {
+  GATE_B2_CONTRACT_VERSION,
+  HARNESS_DIGEST_PATHS,
   assertDigestsMatchFreeze,
+  assertFreezeActive,
+  assertWorkingTreeClean,
   bindExecutionRoot,
   buildDecisionDocument,
+  buildHeavyCertificationEnv,
   loadFreezeDocument,
+  persistHeavyReport,
+  prepareWorktreeDependencies,
   readHeavyLiveReport,
   sanitizeCertificationEnv,
   stripCredentialPlaceholders,
   validateChronicleProductionReport,
   validateFullCiEvidence,
+  validateJsonAgainstSchema,
   validateJourneyEvidence,
   validateWebAiConsentReport,
+  verifyFullCiWithGithub,
 } from "./certify-gate-b2-bindings.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(
@@ -39,6 +48,10 @@ const DEFAULT_REPO_ROOT = path.resolve(
 );
 const MANIFEST_RELATIVE = "evals/certifications/gate-b2.yaml";
 const QUALITY_MANIFEST_RELATIVE = "evals/quality-manifest.yaml";
+const REPORT_SCHEMA_RELATIVE =
+  "evals/certifications/schemas/gate-b2-report-v1.schema.json";
+const DECISION_SCHEMA_RELATIVE =
+  "evals/certifications/schemas/gate-b2-decision-v1.schema.json";
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 
@@ -159,6 +172,9 @@ export function validateGateB2Manifest(raw) {
     return ["manifest must be an object"];
   }
   if (raw.schemaVersion !== 1) errors.push("schemaVersion must be 1");
+  if (raw.contractVersion !== GATE_B2_CONTRACT_VERSION) {
+    errors.push(`contractVersion must be ${GATE_B2_CONTRACT_VERSION}`);
+  }
   if (raw.id !== "gate-b2") errors.push("id must be gate-b2");
   for (const key of [
     "requiredLight",
@@ -205,6 +221,26 @@ export function validateGateB2Manifest(raw) {
   }
   if (raw.decisionPolicy?.retryOverwritePass === true) {
     errors.push("decisionPolicy.retryOverwritePass must be false");
+  }
+  for (const entry of raw.requiredManualJourneys ?? []) {
+    if (!entry?.id) {
+      errors.push("requiredManualJourneys entry missing id");
+      continue;
+    }
+    if (!entry.runnerId) {
+      errors.push(`requiredManualJourneys ${entry.id} missing runnerId`);
+    }
+    if (!entry.runnerVersion) {
+      errors.push(`requiredManualJourneys ${entry.id} missing runnerVersion`);
+    }
+    if (
+      !Array.isArray(entry.requiredAssertions) ||
+      entry.requiredAssertions.length === 0
+    ) {
+      errors.push(
+        `requiredManualJourneys ${entry.id} requiredAssertions must be a non-empty array`,
+      );
+    }
   }
   return errors;
 }
@@ -298,9 +334,13 @@ export async function resolveCandidateIdentity(
   return { commitSha, treeSha, baseMasterSha, dirty };
 }
 
-export async function collectInputDigests(manifest, repoRoot = DEFAULT_REPO_ROOT) {
+export async function collectInputDigests(
+  manifest,
+  repoRoot = DEFAULT_REPO_ROOT,
+  { manifestDigest = null } = {},
+) {
   const inputs = manifest.inputs ?? {};
-  return {
+  const digests = {
     writerRegistryDigest: await fileDigest(repoRoot, inputs.writerRegistry),
     aiPathRegistryDigest: await fileDigest(repoRoot, inputs.aiPathRegistry),
     qualityManifestDigest: await fileDigest(repoRoot, inputs.qualityManifest),
@@ -311,6 +351,13 @@ export async function collectInputDigests(manifest, repoRoot = DEFAULT_REPO_ROOT
     adrChecklistDigest: await fileDigest(repoRoot, inputs.adrChecklist),
     classificationDigest: await fileDigest(repoRoot, inputs.classification),
   };
+  for (const [key, relativePath] of Object.entries(HARNESS_DIGEST_PATHS)) {
+    digests[key] = await fileDigest(repoRoot, relativePath);
+  }
+  if (manifestDigest) {
+    digests.certificationManifestDigest = manifestDigest;
+  }
+  return digests;
 }
 
 function environmentInfo() {
@@ -460,6 +507,9 @@ async function evaluateFullCiEvidence({
   artifactDir,
   ciEvidence,
   candidate,
+  dryRun = false,
+  repoRoot = DEFAULT_REPO_ROOT,
+  fetchRun,
 }) {
   const evidencePath =
     ciEvidence ??
@@ -474,7 +524,13 @@ async function evaluateFullCiEvidence({
   }
   const raw = JSON.parse(await readFile(evidencePath, "utf8"));
   const digest = sha256Text(JSON.stringify(raw));
-  const validation = validateFullCiEvidence(raw, candidate);
+  let validation = validateFullCiEvidence(raw, candidate);
+  if (validation.ok && !dryRun) {
+    validation = await verifyFullCiWithGithub(raw, candidate, {
+      fetchRun,
+      repoRoot,
+    });
+  }
   return {
     suiteId: "full-ci",
     bucket: "requiredLight",
@@ -493,11 +549,12 @@ async function evaluateFullCiEvidence({
 }
 
 async function evaluateJourneyEvidence({
-  journeyId,
+  journeyEntry,
   artifactDir,
   journeyEvidenceDir,
   candidate,
 }) {
+  const journeyId = journeyEntry.id;
   const baseDir =
     journeyEvidenceDir ??
     (artifactDir ? path.join(artifactDir, "journeys") : null);
@@ -519,7 +576,11 @@ async function evaluateJourneyEvidence({
   }
   const raw = JSON.parse(await readFile(evidencePath, "utf8"));
   const digest = sha256Text(JSON.stringify(raw));
-  const validation = validateJourneyEvidence(raw, { journeyId, candidate });
+  const validation = validateJourneyEvidence(raw, {
+    journeyId,
+    candidate,
+    contract: journeyEntry,
+  });
   return {
     suiteId: journeyId,
     bucket: "requiredJourneys",
@@ -693,6 +754,8 @@ async function runLightSuites({
         artifactDir,
         ciEvidence: args.ciEvidence,
         candidate,
+        dryRun: args.dryRun,
+        repoRoot,
       });
       suites.push(result);
       if (result.result !== "passed") previousFailure = entry.id;
@@ -934,19 +997,36 @@ async function runHeavySuites({
       );
       continue;
     }
+
+    const commandForDigest =
+      resolved.kind === "argv"
+        ? resolved.command
+        : [stripCredentialPlaceholders(resolved.commandString)];
+    const commandDigest = sha256Text(JSON.stringify(commandForDigest));
+    const runId = randomUUID();
+    const outputPath = path.join(artifactDir, "heavy", entry.id, "report.json");
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await rm(outputPath, { force: true });
+
+    const heavyEnv = buildHeavyCertificationEnv({
+      candidate,
+      suiteId: entry.id,
+      runId,
+      outputPath,
+      commandDigest,
+      baseEnv: env,
+    });
+
     const captured =
       resolved.kind === "argv"
         ? await runCapturedCommand(
             resolved.command[0],
             resolved.command.slice(1),
             repoRoot,
-            env,
+            heavyEnv,
           )
-        : await runShellStringCommand(resolved.commandString, repoRoot, env);
-    const commandForDigest =
-      resolved.kind === "argv"
-        ? resolved.command
-        : [stripCredentialPlaceholders(resolved.commandString)];
+        : await runShellStringCommand(resolved.commandString, repoRoot, heavyEnv);
+
     let result =
       captured.status === "passed"
         ? creditInformational
@@ -963,40 +1043,62 @@ async function runHeavySuites({
       message = "completed without certification credit";
     }
 
-    // Heavy report binding for certification-critical suites.
-    if (
-      bucket === "requiredHeavy" &&
-      result === "passed" &&
-      entry.id === "heavy-narrative-chronicle-production"
-    ) {
-      const liveReport = await readHeavyLiveReport(
-        artifactDir,
-        entry.id,
-        repoRoot,
-      );
-      const validation = validateChronicleProductionReport(
-        liveReport,
-        candidate,
-      );
-      if (!validation.ok) {
-        result = "failed";
-        message = validation.message;
+    const bindingExpected = {
+      commitSha: candidate.commitSha,
+      treeSha: candidate.treeSha,
+      suiteId: entry.id,
+      runId,
+      commandDigest,
+    };
+    const artifactDigests = [];
+
+    if (captured.status === "passed") {
+      let liveReport = await readHeavyLiveReport(artifactDir, entry.id, {
+        outputPath,
+        env: heavyEnv,
+      });
+
+      if (
+        bucket === "requiredHeavy" &&
+        entry.id === "heavy-narrative-chronicle-production"
+      ) {
+        const validation = validateChronicleProductionReport(
+          liveReport,
+          candidate,
+          bindingExpected,
+        );
+        if (!validation.ok) {
+          result = "failed";
+          message = validation.message;
+        }
       }
-    }
-    if (
-      bucket === "requiredHeavy" &&
-      result === "passed" &&
-      entry.id === "heavy-web-ai-consent-live"
-    ) {
-      const report = await readHeavyLiveReport(
-        artifactDir,
-        entry.id,
-        repoRoot,
-      );
-      const validation = validateWebAiConsentReport(report);
-      if (!validation.ok) {
+      if (entry.id === "heavy-web-ai-consent-live" && result !== "failed") {
+        const validation = validateWebAiConsentReport(
+          liveReport,
+          bindingExpected,
+        );
+        if (!validation.ok && bucket === "requiredHeavy") {
+          result = "failed";
+          message = validation.message;
+        }
+      }
+
+      if (liveReport && result !== "failed") {
+        const digest = await persistHeavyReport({
+          report: liveReport,
+          artifactDir,
+          suiteId: entry.id,
+        });
+        artifactDigests.push(digest);
+      } else if (
+        bucket === "requiredHeavy" &&
+        result === "passed" &&
+        ["heavy-narrative-chronicle-production", "heavy-web-ai-consent-live"].includes(
+          entry.id,
+        )
+      ) {
         result = "failed";
-        message = validation.message;
+        message = message || "heavy report missing or failed binding validation";
       }
     }
 
@@ -1008,13 +1110,14 @@ async function runHeavySuites({
       completedAt: captured.completedAt,
       exitCode: captured.exitCode,
       environmentDigest: environment.digest,
-      commandDigest: sha256Text(JSON.stringify(commandForDigest)),
+      commandDigest,
       stdoutDigest: captured.stdoutDigest,
       stderrDigest: captured.stderrDigest,
-      artifactDigests: [],
+      artifactDigests,
       result,
       message,
       command: commandForDigest,
+      runId,
     };
     suites.push(suiteResult);
     if (
@@ -1041,6 +1144,14 @@ export async function certifyGateB2({
 
   try {
     const { raw: manifestProbe } = await loadGateB2Manifest(repoRoot);
+    if (needsExecution && freeze && args.candidate) {
+      assertFreezeActive(freeze);
+      if (freeze.contractVersion !== GATE_B2_CONTRACT_VERSION) {
+        throw new Error(
+          `Freeze contractVersion ${freeze.contractVersion} != ${GATE_B2_CONTRACT_VERSION}`,
+        );
+      }
+    }
     if (needsExecution) {
       if (!args.candidate) {
         if (!args.dryRun) {
@@ -1085,6 +1196,9 @@ export async function certifyGateB2({
             throw headMatchError;
           }
         }
+        if (executionRoot !== repoRoot) {
+          await prepareWorktreeDependencies({ repoRoot, executionRoot });
+        }
       }
     }
 
@@ -1102,10 +1216,29 @@ export async function certifyGateB2({
       baseMaster: args.baseMaster ?? undefined,
       repoRoot: executionRoot,
     });
-    const digests = await collectInputDigests(manifest, executionRoot);
+    if (needsExecution && freeze && boundVia !== "dry-run-unbound") {
+      identity.baseMasterSha = freeze.candidate.baseMasterSha;
+      if (args.baseMaster) {
+        const resolvedBase = (
+          await runGit(["rev-parse", args.baseMaster], executionRoot)
+        ).toLowerCase();
+        if (resolvedBase !== freeze.candidate.baseMasterSha) {
+          throw new Error(
+            `--base-master ${resolvedBase} conflicts with freeze baseMasterSha ${freeze.candidate.baseMasterSha}`,
+          );
+        }
+      }
+    }
+    const digests = await collectInputDigests(manifest, executionRoot, {
+      manifestDigest,
+    });
 
     if (needsExecution && freeze && boundVia !== "dry-run-unbound") {
-      const digestErrors = assertDigestsMatchFreeze(digests, freeze.candidate);
+      const digestErrors = assertDigestsMatchFreeze(
+        digests,
+        freeze.candidate,
+        { contractVersion: freeze.contractVersion },
+      );
       if (digestErrors.length > 0) {
         throw new Error(
           `Execution digests drifted from freeze:\n- ${digestErrors.join("\n- ")}`,
@@ -1221,7 +1354,7 @@ export async function certifyGateB2({
       for (const entry of manifest.requiredManualJourneys) {
         suites.push(
           await evaluateJourneyEvidence({
-            journeyId: entry.id,
+            journeyEntry: entry,
             artifactDir,
             journeyEvidenceDir: args.journeyEvidenceDir,
             candidate,
@@ -1347,8 +1480,21 @@ export async function certifyGateB2({
       preflightOnly,
     });
 
+    if (needsExecution && boundVia !== "dry-run-unbound") {
+      try {
+        await assertWorkingTreeClean(executionRoot);
+      } catch (error) {
+        blockedReasons.push(error.message);
+        if (decision.verdict === "PASS") {
+          decision.verdict = "BLOCK";
+          decision.reasons.push(error.message);
+        }
+      }
+    }
+
     const report = {
       schemaVersion: 1,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
       gateId: "gate-b2",
       manifestDigest,
       generatedAt: new Date().toISOString(),
@@ -1374,6 +1520,16 @@ export async function certifyGateB2({
       firstFailure: firstFailureOf(suites),
     };
 
+    const reportSchema = JSON.parse(
+      await readText(executionRoot, REPORT_SCHEMA_RELATIVE),
+    );
+    const reportValidation = validateJsonAgainstSchema(report, reportSchema);
+    if (!reportValidation.ok) {
+      throw new Error(
+        `Gate B2 report schema validation failed: ${JSON.stringify(reportValidation.errors)}`,
+      );
+    }
+
     const defaultReportPath = path.join(artifactDir, "report.json");
     const reportPath = args.report
       ? path.isAbsolute(args.report)
@@ -1395,6 +1551,18 @@ export async function certifyGateB2({
       reportDigest,
       digests,
     });
+    const decisionSchema = JSON.parse(
+      await readText(executionRoot, DECISION_SCHEMA_RELATIVE),
+    );
+    const decisionValidation = validateJsonAgainstSchema(
+      decisionDoc,
+      decisionSchema,
+    );
+    if (!decisionValidation.ok) {
+      throw new Error(
+        `Gate B2 decision schema validation failed: ${JSON.stringify(decisionValidation.errors)}`,
+      );
+    }
     await writeFile(
       decisionPath,
       `${JSON.stringify(decisionDoc, null, 2)}\n`,

@@ -3,17 +3,55 @@
  */
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, access } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  access,
+  symlink,
+  lstat,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import Ajv2020 from "ajv/dist/2020.js";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const PLACEHOLDER_ENV_ASSIGN =
   /\b([A-Z][A-Z0-9_]*)=\.\.\.(\s+)/g;
 
+export const GATE_B2_CONTRACT_VERSION = 2;
+
 export const FREEZE_RELATIVE =
   "evals/certifications/gate-b2-candidate.freeze.json";
+
+export const HARNESS_DIGEST_PATHS = {
+  certificationManifestDigest: "evals/certifications/gate-b2.yaml",
+  certifyRunnerDigest: "scripts/quality/certify-gate-b2.mjs",
+  certifyBindingsDigest: "scripts/quality/certify-gate-b2-bindings.mjs",
+  adrValidatorDigest: "scripts/quality/validate-gate-b2-adr.mjs",
+  reportSchemaDigest:
+    "evals/certifications/schemas/gate-b2-report-v1.schema.json",
+  decisionSchemaDigest:
+    "evals/certifications/schemas/gate-b2-decision-v1.schema.json",
+  journeySchemaDigest:
+    "evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json",
+  chronicleAdapterDigest:
+    "src/features/narrative-extraction/eval/productionChronicleAdapter.ts",
+  chronicleScorerDigest:
+    "src/features/narrative-extraction/eval/productionChronicleScoring.ts",
+  webConsentJourneyDigest:
+    "src/features/ai-policy/webAiConsent.live.test.tsx",
+};
+
+const INPUT_DIGEST_KEYS = [
+  "writerRegistryDigest",
+  "aiPathRegistryDigest",
+  "qualityManifestDigest",
+  "narrativeEvalManifestDigest",
+  "adrChecklistDigest",
+  "classificationDigest",
+];
 
 export function sha256Text(text) {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
@@ -39,6 +77,19 @@ export async function loadFreezeDocument(repoRoot) {
   return JSON.parse(await readFile(freezePath, "utf8"));
 }
 
+export function assertFreezeActive(freeze) {
+  if (!freeze) {
+    throw new Error(
+      `Freeze file missing at ${FREEZE_RELATIVE}; run pnpm certify:gate-b2:freeze first`,
+    );
+  }
+  if (freeze.status === "superseded") {
+    throw new Error(
+      "Gate B2 candidate freeze is superseded; create a new freeze before certification",
+    );
+  }
+}
+
 function runGit(args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, {
@@ -61,6 +112,37 @@ function runGit(args, cwd) {
       resolve(out);
     });
   });
+}
+
+function runCommand(command, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      const out = Buffer.concat(stdout).toString("utf8").trim();
+      const err = Buffer.concat(stderr).toString("utf8").trim();
+      if (code !== 0) {
+        reject(new Error(`${command} ${args.join(" ")} failed: ${err || out}`));
+        return;
+      }
+      resolve(out);
+    });
+  });
+}
+
+export async function assertWorkingTreeClean(repoRoot) {
+  const status = await runGit(["status", "--porcelain"], repoRoot);
+  if (status.length > 0) {
+    throw new Error("working tree is dirty; commit or stash before certification");
+  }
 }
 
 /**
@@ -166,23 +248,44 @@ export async function bindExecutionRoot({
   };
 }
 
-export function assertDigestsMatchFreeze(currentDigests, freezeCandidate) {
+export function assertDigestsMatchFreeze(
+  currentDigests,
+  freezeCandidate,
+  freezeMeta = {},
+) {
   const errors = [];
-  for (const key of [
-    "writerRegistryDigest",
-    "aiPathRegistryDigest",
-    "qualityManifestDigest",
-    "narrativeEvalManifestDigest",
-    "adrChecklistDigest",
-    "classificationDigest",
-  ]) {
-    const expected = freezeCandidate[key];
-    const actual = currentDigests[key];
-    if (!expected) continue;
+  const contractVersion =
+    freezeMeta.contractVersion ?? freezeCandidate?.contractVersion;
+  if (
+    contractVersion !== undefined &&
+    contractVersion !== GATE_B2_CONTRACT_VERSION
+  ) {
+    errors.push(
+      `contractVersion: freeze=${contractVersion} expected=${GATE_B2_CONTRACT_VERSION}`,
+    );
+  }
+
+  for (const key of Object.keys(HARNESS_DIGEST_PATHS)) {
+    const expected = freezeCandidate?.[key];
+    if (!expected) {
+      errors.push(`${key}: missing in freeze`);
+      continue;
+    }
+    const actual = currentDigests?.[key];
     if (actual !== expected) {
-      errors.push(`${key}: freeze=${expected} current=${actual}`);
+      errors.push(`${key}: freeze=${expected} current=${actual ?? "missing"}`);
     }
   }
+
+  for (const key of INPUT_DIGEST_KEYS) {
+    const expected = freezeCandidate?.[key];
+    if (!expected) continue;
+    const actual = currentDigests?.[key];
+    if (actual !== expected) {
+      errors.push(`${key}: freeze=${expected} current=${actual ?? "missing"}`);
+    }
+  }
+
   return errors;
 }
 
@@ -192,7 +295,27 @@ export function sanitizeCertificationEnv(baseEnv = process.env) {
   delete env.NARRATIVE_EVAL_LIMIT;
   delete env.NARRATIVE_EVAL_CASE_ID;
   delete env.NARRATIVE_EVAL_ATTEMPT;
+  // Preserve GATE_B2_* binding vars for heavy suite runners.
   return env;
+}
+
+export function buildHeavyCertificationEnv({
+  candidate,
+  suiteId,
+  runId,
+  outputPath,
+  commandDigest,
+  baseEnv = process.env,
+}) {
+  return {
+    ...sanitizeCertificationEnv(baseEnv),
+    GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
+    GATE_B2_CANDIDATE_TREE_SHA: candidate.treeSha,
+    GATE_B2_SUITE_ID: suiteId,
+    GATE_B2_RUN_ID: runId,
+    GATE_B2_OUTPUT_PATH: outputPath,
+    GATE_B2_COMMAND_DIGEST: commandDigest,
+  };
 }
 
 const FULL_CI_REQUIRED = [
@@ -245,6 +368,118 @@ export function validateFullCiEvidence(raw, candidate) {
   return { ok: true, result: "passed", message: "full-ci evidence accepted" };
 }
 
+async function resolveGithubRepoSlug(repoRoot) {
+  try {
+    const json = await runCommand(
+      "gh",
+      ["repo", "view", "--json", "nameWithOwner"],
+      repoRoot,
+    );
+    const parsed = JSON.parse(json);
+    if (parsed?.nameWithOwner) return parsed.nameWithOwner;
+  } catch {
+    // fall through to git remote
+  }
+  const remoteUrl = await runGit(["remote", "get-url", "origin"], repoRoot);
+  const sshMatch = remoteUrl.match(/^git@github\.com:(.+?)(?:\.git)?$/);
+  if (sshMatch) return sshMatch[1];
+  const httpsMatch = remoteUrl.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/);
+  if (httpsMatch) return httpsMatch[1];
+  throw new Error(`unable to resolve GitHub repo slug from origin: ${remoteUrl}`);
+}
+
+async function defaultFetchGithubRun(runId, { repoRoot, raw }) {
+  const slug = await resolveGithubRepoSlug(repoRoot);
+  const runJson = await runCommand(
+    "gh",
+    ["api", `repos/${slug}/actions/runs/${runId}`],
+    repoRoot,
+  );
+  const jobsJson = await runCommand(
+    "gh",
+    ["api", `repos/${slug}/actions/runs/${runId}/jobs`],
+    repoRoot,
+  );
+  return {
+    run: JSON.parse(runJson),
+    jobs: JSON.parse(jobsJson).jobs ?? [],
+    raw,
+  };
+}
+
+export async function verifyFullCiWithGithub(
+  raw,
+  candidate,
+  { fetchRun, repoRoot } = {},
+) {
+  const base = validateFullCiEvidence(raw, candidate);
+  if (!base.ok) return base;
+
+  try {
+    const resolvedRepoRoot = repoRoot ?? process.cwd();
+    const payload = await (fetchRun ?? defaultFetchGithubRun)(raw.runId, {
+      repoRoot: resolvedRepoRoot,
+      raw,
+    });
+    const run = payload.run ?? payload;
+    const jobs = payload.jobs ?? run.jobs ?? [];
+
+    if (String(run.head_sha).toLowerCase() !== candidate.commitSha) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `github run head_sha ${run.head_sha} != candidate ${candidate.commitSha}`,
+      };
+    }
+    if (Number(run.run_attempt) !== Number(raw.runAttempt)) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `github run_attempt ${run.run_attempt} != evidence ${raw.runAttempt}`,
+      };
+    }
+    const runConclusion = String(run.conclusion ?? run.status).toLowerCase();
+    if (runConclusion !== "success") {
+      return {
+        ok: false,
+        result: "failed",
+        message: `github run conclusion is ${runConclusion}`,
+      };
+    }
+
+    for (const requiredJob of raw.requiredJobs) {
+      const job = jobs.find((entry) => entry.name === requiredJob);
+      if (!job) {
+        return {
+          ok: false,
+          result: "failed",
+          message: `github run missing required job ${requiredJob}`,
+        };
+      }
+      const jobConclusion = String(job.conclusion ?? job.status).toLowerCase();
+      if (jobConclusion !== "success") {
+        return {
+          ok: false,
+          result: "failed",
+          message: `github job ${requiredJob} conclusion is ${jobConclusion}`,
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      result: "passed",
+      message: "full-ci github evidence verified",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      result: "failed",
+      message: `full-ci github verify failed: ${error.message}`,
+    };
+  }
+}
+
 const JOURNEY_REQUIRED = [
   "schemaVersion",
   "journeyId",
@@ -259,7 +494,7 @@ const JOURNEY_REQUIRED = [
   "completedAt",
 ];
 
-export function validateJourneyEvidence(raw, { journeyId, candidate }) {
+export function validateJourneyEvidence(raw, { journeyId, candidate, contract }) {
   const missing = JOURNEY_REQUIRED.filter((key) => {
     if (key === "assertions") {
       return !Array.isArray(raw.assertions) || raw.assertions.length === 0;
@@ -315,6 +550,50 @@ export function validateJourneyEvidence(raw, { journeyId, candidate }) {
       message: "journey assertions must all have id and passed:true",
     };
   }
+
+  if (contract) {
+    if (raw.runnerId !== contract.runnerId) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `journey runnerId ${raw.runnerId} != contract ${contract.runnerId}`,
+      };
+    }
+    if (String(raw.runnerVersion) !== String(contract.runnerVersion)) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `journey runnerVersion ${raw.runnerVersion} != contract ${contract.runnerVersion}`,
+      };
+    }
+    const actualIds = raw.assertions.map((assertion) => assertion.id);
+    const requiredIds = contract.requiredAssertions ?? [];
+    if (actualIds.length !== requiredIds.length) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `journey assertions count ${actualIds.length} != contract ${requiredIds.length}`,
+      };
+    }
+    for (const id of requiredIds) {
+      if (!actualIds.includes(id)) {
+        return {
+          ok: false,
+          result: "failed",
+          message: `journey missing required assertion ${id}`,
+        };
+      }
+    }
+    const extra = actualIds.filter((id) => !requiredIds.includes(id));
+    if (extra.length > 0) {
+      return {
+        ok: false,
+        result: "failed",
+        message: `journey has unexpected assertions: ${extra.join(", ")}`,
+      };
+    }
+  }
+
   const result = String(raw.result).toLowerCase();
   if (result === "passed") {
     return { ok: true, result: "passed", message: "journey evidence accepted" };
@@ -395,43 +674,87 @@ export function buildDecisionDocument({
   };
 }
 
-export async function readHeavyLiveReport(artifactDir, suiteId, repoRoot = null) {
-  const candidates = [
-    path.join(artifactDir, "heavy", `${suiteId}.json`),
-    path.join(artifactDir, "heavy", suiteId, "report.json"),
-  ];
-  if (suiteId === "heavy-narrative-chronicle-production" && repoRoot) {
-    candidates.push(
-      path.join(
-        repoRoot,
-        ".artifacts/narrative-eval/chronicle-production-live/report.json",
-      ),
-    );
+function validateHeavyReportBinding(report, candidate, expected) {
+  const commitSha = expected?.commitSha ?? candidate?.commitSha;
+  const treeSha = expected?.treeSha ?? candidate?.treeSha;
+  if (!report.candidateCommitSha || report.candidateCommitSha !== commitSha) {
+    return {
+      ok: false,
+      message: `report candidateCommitSha mismatch (expected ${commitSha})`,
+    };
+  }
+  if (!report.candidateTreeSha || report.candidateTreeSha !== treeSha) {
+    return {
+      ok: false,
+      message: `report candidateTreeSha mismatch (expected ${treeSha})`,
+    };
+  }
+  if (!expected?.suiteId || report.suiteId !== expected.suiteId) {
+    return {
+      ok: false,
+      message: "report suiteId mismatch or missing",
+    };
+  }
+  if (!expected?.runId || report.runId !== expected.runId) {
+    return {
+      ok: false,
+      message: "report runId mismatch or missing",
+    };
   }
   if (
-    (suiteId === "heavy-web-ai-consent-live" ||
-      suiteId === "web-ai-consent-live") &&
-    repoRoot
+    !expected?.commandDigest ||
+    report.commandDigest !== expected.commandDigest
   ) {
-    candidates.push(
-      path.join(repoRoot, ".artifacts/web-ai-consent-live/report.json"),
-    );
+    return {
+      ok: false,
+      message: "report commandDigest mismatch or missing",
+    };
   }
-  for (const candidate of candidates) {
-    if (await pathExists(candidate)) {
-      return JSON.parse(await readFile(candidate, "utf8"));
+  const completedAt = report.completedAt ?? report.finishedAt;
+  if (!report.startedAt || !completedAt) {
+    return {
+      ok: false,
+      message: "report startedAt/completedAt required",
+    };
+  }
+  return { ok: true };
+}
+
+export async function readHeavyLiveReport(
+  artifactDir,
+  suiteId,
+  options = {},
+) {
+  const {
+    outputPath,
+    allowedPaths = [],
+    env = process.env,
+  } = options;
+  const candidates = [];
+  const primary = outputPath ?? env.GATE_B2_OUTPUT_PATH;
+  if (primary) candidates.push(primary);
+  candidates.push(path.join(artifactDir, "heavy", suiteId, "report.json"));
+  for (const allowed of allowedPaths) {
+    if (allowed) candidates.push(allowed);
+  }
+
+  for (const candidatePath of candidates) {
+    if (await pathExists(candidatePath)) {
+      return JSON.parse(await readFile(candidatePath, "utf8"));
     }
   }
   return null;
 }
 
-export function validateChronicleProductionReport(report, candidate) {
+export function validateChronicleProductionReport(report, candidate, expected) {
   if (!report) {
     return {
       ok: false,
       message: "chronicle production report missing under heavy artifacts",
     };
   }
+  const binding = validateHeavyReportBinding(report, candidate, expected);
+  if (!binding.ok) return binding;
   if (report.diagnosticOnly === true || report.attempt === 2) {
     return {
       ok: false,
@@ -453,19 +776,22 @@ export function validateChronicleProductionReport(report, candidate) {
       message: "certificationEligible must be true",
     };
   }
-  if (
-    report.candidateTreeSha &&
-    report.candidateTreeSha !== candidate.treeSha
-  ) {
-    return { ok: false, message: "chronicle report candidateTreeSha mismatch" };
-  }
   return { ok: true, message: "chronicle production report accepted" };
 }
 
-export function validateWebAiConsentReport(report) {
+export function validateWebAiConsentReport(report, expected) {
   if (!report) {
     return { ok: false, message: "web AI consent report missing" };
   }
+  const binding = validateHeavyReportBinding(
+    report,
+    {
+      commitSha: expected?.commitSha,
+      treeSha: expected?.treeSha,
+    },
+    expected,
+  );
+  if (!binding.ok) return binding;
   if (report.certificationEligible !== true) {
     return { ok: false, message: "consent certificationEligible must be true" };
   }
@@ -477,4 +803,65 @@ export function validateWebAiConsentReport(report) {
     };
   }
   return { ok: true, message: "consent report accepted" };
+}
+
+export async function prepareWorktreeDependencies({ repoRoot, executionRoot }) {
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  const resolvedExecutionRoot = path.resolve(executionRoot);
+  if (resolvedRepoRoot === resolvedExecutionRoot) {
+    return { mode: "in-place" };
+  }
+
+  const repoLockPath = path.join(resolvedRepoRoot, "pnpm-lock.yaml");
+  const executionLockPath = path.join(resolvedExecutionRoot, "pnpm-lock.yaml");
+  const repoLock = await readFile(repoLockPath, "utf8");
+  const executionLock = await readFile(executionLockPath, "utf8");
+  const repoDigest = sha256Text(repoLock);
+  const executionDigest = sha256Text(executionLock);
+  if (repoDigest !== executionDigest) {
+    throw new Error(
+      `pnpm-lock.yaml digest mismatch: repo=${repoDigest} execution=${executionDigest}`,
+    );
+  }
+
+  const sourceNodeModules = path.join(resolvedRepoRoot, "node_modules");
+  const targetNodeModules = path.join(resolvedExecutionRoot, "node_modules");
+  if (!(await pathExists(sourceNodeModules))) {
+    throw new Error(`repo node_modules missing at ${sourceNodeModules}`);
+  }
+
+  if (await pathExists(targetNodeModules)) {
+    const stat = await lstat(targetNodeModules);
+    if (stat.isSymbolicLink()) {
+      await rm(targetNodeModules, { force: true });
+    } else if (stat.isDirectory()) {
+      throw new Error(
+        "executionRoot node_modules exists as a real directory; remove it before binding",
+      );
+    } else {
+      throw new Error("executionRoot node_modules exists and is not a symlink");
+    }
+  }
+
+  await symlink(sourceNodeModules, targetNodeModules, "dir");
+  return { mode: "symlink-node_modules", lockfileDigest: repoDigest };
+}
+
+export function validateJsonAgainstSchema(document, schema) {
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  const validate = ajv.compile(schema);
+  const ok = validate(document);
+  return {
+    ok: Boolean(ok),
+    errors: validate.errors ?? [],
+  };
+}
+
+export async function persistHeavyReport({ report, artifactDir, suiteId }) {
+  const reportPath = path.join(artifactDir, "heavy", suiteId, "report.json");
+  const content = `${JSON.stringify(report, null, 2)}\n`;
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(path.dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, content, "utf8");
+  return sha256Text(content);
 }

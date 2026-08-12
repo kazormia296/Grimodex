@@ -54,8 +54,13 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     });
     assert.match(result.freeze.candidate.commitSha, /^[0-9a-f]{40}$/);
     assert.match(result.freeze.candidate.treeSha, /^[0-9a-f]{40}$/);
+    assert.equal(result.freeze.contractVersion, 2);
     assert.match(
       result.freeze.candidate.writerRegistryDigest,
+      /^sha256:[0-9a-f]{64}$/,
+    );
+    assert.match(
+      result.freeze.candidate.certificationManifestDigest,
       /^sha256:[0-9a-f]{64}$/,
     );
     assert.equal(result.provisionalDecision.verdict, "INCOMPLETE");
