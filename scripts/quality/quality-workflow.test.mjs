@@ -45,8 +45,15 @@ test("package scripts expose one canonical quality workflow", async () => {
   assert.match(packageJson.scripts["verify:quality"], /test:quality/);
   assert.match(packageJson.scripts["verify:quality"], /eval:fixtures/);
   assert.match(packageJson.scripts["verify:quality"], /eval:narrative/);
+  assert.equal(
+    packageJson.scripts["certify:gate-b2"],
+    "node scripts/quality/certify-gate-b2.mjs",
+  );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /certify-gate-b2\.test\.mjs/,
+  );
 });
-
 test("CI runs the diff gate with full history and selected light suites", async () => {
   const workflow = await read(".github/workflows/ci.yml");
 

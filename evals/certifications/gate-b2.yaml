@@ -1,0 +1,109 @@
+# Gate B2 Engineering Certification — 正本
+#
+# Gate B2 固有の正式契約。Global Release Quality（Retrieval Gate 3.1 / 4 等）とは分離する。
+# candidate.commitSha / treeSha は Freeze 時に埋める。null のままでは PASS にならない。
+schemaVersion: 1
+id: gate-b2
+
+candidate:
+  commitSha: null
+  treeSha: null
+  baseMasterSha: null
+  schemaVersion: 16
+  # Freeze 時に scripts/quality/certify-gate-b2.mjs --preflight が埋める／検証する digest
+  writerRegistryDigest: null
+  aiPathRegistryDigest: null
+  qualityManifestDigest: null
+  narrativeEvalManifestDigest: null
+
+inputs:
+  writerRegistry: policies/narrative/protected-writers.json
+  aiPathRegistry: src/features/ai-verification/aiPathRegistry.ts
+  qualityManifest: evals/quality-manifest.yaml
+  narrativeEvalManifest: evals/narrative/manifest.yaml
+  adrDecision: docs/adr/004-narrative-reconciliation-boundary.md
+  adrChecklist: docs/adr/004-narrative-reconciliation-boundary-checklist.md
+  classification: policies/narrative/gate-b2-classification.json
+
+# Light / Heavy / Journey の ID は runner が減らさない。欠落は BLOCK。
+requiredLight:
+  - id: narrative-writer-release
+    command: [pnpm, test:narrative:release]
+  - id: native-writer-ownership
+    command: [pnpm, test:narrative:native-ownership]
+  - id: reconciler-contract
+    command: [pnpm, test, --run, src/features/narrative-extraction/reconciler]
+  - id: impact-selected-light
+    # --base / --head は runner が candidate から注入する
+    command: [pnpm, eval:impact, --, --run]
+    injectCandidateComparison: true
+  - id: full-ci
+    # ローカルでは実行しない。候補 SHA の CI 証跡ファイルが必須。
+    kind: external-evidence
+    evidenceRelativePath: light/full-ci.json
+
+requiredHeavy:
+  - id: heavy-agent-tool-loop
+    qualityManifestId: heavy-agent-tool-loop
+    requiresEnv: [OPENROUTER_API_KEY]
+  - id: heavy-single-shot-surfaces
+    qualityManifestId: heavy-single-shot-surfaces
+    requiresEnv: [OPENROUTER_API_KEY]
+  - id: heavy-rust-post-effect-live
+    qualityManifestId: heavy-rust-post-effect-live
+    requiresEnv: [OPENROUTER_API_KEY]
+  - id: heavy-codex-prompt-surfaces
+    qualityManifestId: heavy-codex-prompt-surfaces
+    requiresEnv: [OPENROUTER_API_KEY]
+  - id: heavy-narrative-chronicle-production
+    # C2 で昇格。未実装 runner は BLOCK（passed/skipped へ変換しない）
+    qualityManifestId: null
+    runner: pnpm eval:narrative:chronicle:production:live
+    requiresEnv: [OPENROUTER_API_KEY]
+  - id: heavy-web-ai-consent-live
+    # C3 で blocked → heavy へ昇格。未実装は BLOCK
+    qualityManifestId: null
+    runner: pnpm eval:web-ai-consent:live
+    requiresEnv: []
+
+informational:
+  - id: heavy-narrative-chronicle-legacy-baseline
+    qualityManifestId: heavy-narrative-chronicle-legacy-baseline
+    certificationCredit: false
+
+# Gate B2 Engineering 認証には含めない。Global Release Quality 判定用。
+releaseAdjacent:
+  - id: heavy-related-scenes
+    qualityManifestId: heavy-related-scenes
+  - id: heavy-semantic-reranker-fixed-fixture
+    qualityManifestId: heavy-semantic-reranker-fixed-fixture
+  - id: heavy-impact-gate31
+    qualityManifestId: heavy-impact-gate31
+  - id: blocked-impact-gate4-fresh-holdout
+    qualityManifestId: blocked-impact-gate4-fresh-holdout
+    status: blocked
+
+requiredManualJourneys:
+  - id: prepared-plan-toctou
+  - id: runtime-terminalization
+  - id: browser-electron-writer-parity
+  - id: locked-field-enforcement
+  - id: dirty-only-propagation
+  - id: immutable-retraction-history
+
+decisionPolicy:
+  blockedIsPass: false
+  deferredIsPass: false
+  skippedIsPass: false
+  credentialShortageIsPass: false
+  # Attempt 1 = normative。Attempt 2 成功でも PASS へ上書きしない。
+  retryOverwritePass: false
+  requireCandidateFreeze: true
+  requireTreeShaMatch: true
+
+verdicts:
+  - PASS
+  - HOLD
+  - BLOCK
+
+reportSchema: schemas/gate-b2-report-v1.schema.json

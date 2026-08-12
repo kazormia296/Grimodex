@@ -38,7 +38,7 @@
     "research:zen-shader-abba": "node scripts/zen-shader-research.mjs --experiment abba",
     "perf:budget": "node scripts/check-performance-budgets.mjs",
     "validate:architecture": "node --test scripts/validate-architecture.test.mjs && node scripts/validate-architecture.mjs",
-    "test:quality": "node --test scripts/quality/impact-map.test.mjs scripts/quality/eval-fixtures.test.mjs scripts/quality/quality-workflow.test.mjs scripts/quality/validate-narrative-writers.test.mjs",
+    "test:quality": "node --test scripts/quality/impact-map.test.mjs scripts/quality/eval-fixtures.test.mjs scripts/quality/quality-workflow.test.mjs scripts/quality/validate-narrative-writers.test.mjs scripts/quality/certify-gate-b2.test.mjs",
     "test:narrative:writers": "node scripts/quality/validate-narrative-writers.mjs",
     "test:narrative:writers:inventory": "node scripts/quality/validate-narrative-writers.mjs --report-deferred",
     "test:narrative:writers:json": "node scripts/quality/validate-narrative-writers.mjs --json",
@@ -83,7 +83,8 @@
     "generate:licenses": "tsx scripts/generate-licenses.ts",
     "generate:db-contract": "cargo run --manifest-path src-tauri/crates/grimodex-db/Cargo.toml --bin schema-contract -- src/db/generated/schema-contract.json",
     "seed:sample-en": "python3 scripts/seed-sample-en.py",
-    "seed:sample-ja": "python3 scripts/seed-sample-ja.py"
+    "seed:sample-ja": "python3 scripts/seed-sample-ja.py",
+    "certify:gate-b2": "node scripts/quality/certify-gate-b2.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

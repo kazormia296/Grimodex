@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/certifications/schemas/gate-b2-report-v1.schema.json",
+  "title": "Gate B2 Certification Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateId",
+    "manifestDigest",
+    "generatedAt",
+    "candidate",
+    "environment",
+    "verdict",
+    "summary",
+    "suites",
+    "retries",
+    "artifactDigests",
+    "blockedReasons"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "gateId": { "const": "gate-b2" },
+    "manifestDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "startedAt": { "type": ["string", "null"], "format": "date-time" },
+    "completedAt": { "type": ["string", "null"], "format": "date-time" },
+    "mode": {
+      "type": "string",
+      "enum": ["preflight", "light", "heavy", "journeys", "full", "decision"]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commitSha",
+        "treeSha",
+        "baseMasterSha",
+        "schemaVersion",
+        "writerRegistryDigest",
+        "aiPathRegistryDigest",
+        "qualityManifestDigest",
+        "narrativeEvalManifestDigest",
+        "frozen",
+        "dirty"
+      ],
+      "properties": {
+        "commitSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "treeSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "baseMasterSha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "schemaVersion": { "type": "integer", "const": 16 },
+        "writerRegistryDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "aiPathRegistryDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "qualityManifestDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "narrativeEvalManifestDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "frozen": { "type": "boolean" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "platform", "arch", "digest"],
+      "properties": {
+        "node": { "type": "string" },
+        "platform": { "type": "string" },
+        "arch": { "type": "string" },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "HOLD", "BLOCK", "INCOMPLETE"]
+    },
+    "verdictReasons": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requiredLight",
+        "requiredHeavy",
+        "requiredJourneys",
+        "informational",
+        "releaseAdjacent"
+      ],
+      "properties": {
+        "requiredLight": { "$ref": "#/$defs/bucketSummary" },
+        "requiredHeavy": { "$ref": "#/$defs/bucketSummary" },
+        "requiredJourneys": { "$ref": "#/$defs/bucketSummary" },
+        "informational": { "$ref": "#/$defs/bucketSummary" },
+        "releaseAdjacent": { "$ref": "#/$defs/bucketSummary" }
+      }
+    },
+    "suites": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/suiteResult" }
+    },
+    "retries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/retryRecord" }
+    },
+    "artifactDigests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "blockedReasons": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "firstFailure": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["suiteId", "result", "message"],
+      "properties": {
+        "suiteId": { "type": "string" },
+        "result": {
+          "type": "string",
+          "enum": ["failed", "blocked", "hold"]
+        },
+        "message": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "bucketSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "passed",
+        "failed",
+        "blocked",
+        "hold",
+        "notRun",
+        "deferred"
+      ],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "integer", "minimum": 0 },
+        "hold": { "type": "integer", "minimum": 0 },
+        "notRun": { "type": "integer", "minimum": 0 },
+        "deferred": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "suiteResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suiteId",
+        "bucket",
+        "attempt",
+        "startedAt",
+        "completedAt",
+        "exitCode",
+        "environmentDigest",
+        "commandDigest",
+        "stdoutDigest",
+        "stderrDigest",
+        "artifactDigests",
+        "result"
+      ],
+      "properties": {
+        "suiteId": { "type": "string", "minLength": 1 },
+        "bucket": {
+          "type": "string",
+          "enum": [
+            "requiredLight",
+            "requiredHeavy",
+            "requiredJourneys",
+            "informational",
+            "releaseAdjacent"
+          ]
+        },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "startedAt": { "type": ["string", "null"] },
+        "completedAt": { "type": ["string", "null"] },
+        "exitCode": { "type": ["integer", "null"] },
+        "environmentDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "commandDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "stdoutDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "stderrDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "artifactDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "blocked",
+            "hold",
+            "not-run",
+            "deferred",
+            "informational"
+          ]
+        },
+        "message": { "type": "string" },
+        "command": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "retryRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suiteId", "attempt", "result", "normative"],
+      "properties": {
+        "suiteId": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "result": { "type": "string" },
+        "normative": { "type": "boolean" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}
