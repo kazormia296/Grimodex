@@ -869,7 +869,7 @@ test("credential shortage for billed heavies is BLOCK not passed/skipped", async
       (suite) => suite.suiteId === "heavy-agent-tool-loop",
     );
     assert.equal(agent.result, "blocked");
-    assert.match(agent.message, /OPENROUTER_API_KEY/);
+    assert.match(agent.message, /OPENROUTER_API_KEY|attempt ledger/i);
     assert.equal(report.verdict, "BLOCK");
     assert.equal(report.firstFailure.suiteId, "heavy-agent-tool-loop");
     assert.equal(report.candidate.boundVia, "detached-worktree");

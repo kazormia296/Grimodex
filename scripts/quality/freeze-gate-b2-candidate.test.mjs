@@ -63,7 +63,16 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     assert.deepEqual(
       {
         attemptLedgerId: result.freeze.candidate.attemptLedgerId,
+        attemptLedgerConfigDigest:
+          result.freeze.candidate.attemptLedgerConfigDigest,
         attemptLedgerDigest: result.freeze.candidate.attemptLedgerDigest,
+        attemptLedgerInstanceId: result.freeze.candidate.attemptLedgerInstanceId,
+        attemptLedgerHeadDigest: result.freeze.candidate.attemptLedgerHeadDigest,
+        attemptHistoryDigest: result.freeze.candidate.attemptHistoryDigest,
+        attemptLedgerRecordCount:
+          result.freeze.candidate.attemptLedgerRecordCount,
+        attemptLedgerMaxSequence: result.freeze.candidate.attemptLedgerMaxSequence,
+        controllerReceiptDigest: result.freeze.candidate.controllerReceiptDigest,
         attemptLedgerAttestation: result.freeze.candidate.attemptLedgerAttestation,
       },
       ledger,
