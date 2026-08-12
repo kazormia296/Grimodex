@@ -31,7 +31,7 @@ fn native_digest_matches_shared_golden_fixture() {
             scope_json: json!({}),
             spec_json: json!({}),
             spec_digest: "golden-spec".to_string(),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-7".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
