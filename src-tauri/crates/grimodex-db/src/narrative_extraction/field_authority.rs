@@ -34,30 +34,23 @@ use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TrustedDecisionActor {
-    /// The generic/automated endpoint has no human authority, regardless of
-    /// what the renderer puts in `createdBy`.
-    Unknown,
     Human { actor_id: String },
+    /// The automated endpoint has no human authority, regardless of what the
+    /// renderer puts in `createdBy`.
     Automated { actor_id: String },
-    System { actor_id: String },
 }
 
 impl TrustedDecisionActor {
     fn kind(&self) -> &'static str {
         match self {
-            Self::Unknown => "unknown",
             Self::Human { .. } => "human",
             Self::Automated { .. } => "ai",
-            Self::System { .. } => "system",
         }
     }
 
     fn actor_id(&self) -> &str {
         match self {
-            Self::Unknown => "native:unknown",
-            Self::Human { actor_id }
-            | Self::Automated { actor_id }
-            | Self::System { actor_id } => actor_id,
+            Self::Human { actor_id } | Self::Automated { actor_id } => actor_id,
         }
     }
 }
@@ -705,9 +698,11 @@ pub(crate) fn validate_operation_field_authority(
                 .override_field_paths
                 .iter()
                 .any(|path| path == &field.field_path);
-            let denied = (explicitly_locked
-                && (authority.actor_kind != "human" || !exact_override))
-                || (!explicitly_locked && human_owned && authority.actor_kind != "human");
+            let denied = if explicitly_locked {
+                authority.actor_kind != "human" || !exact_override
+            } else {
+                human_owned && authority.actor_kind != "human"
+            };
             if denied {
                 anyhow::bail!(
                     "NEX_FIELD_AUTHORITY_DENIED: '{}' on {} '{}' is human-owned or locked",

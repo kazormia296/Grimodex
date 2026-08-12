@@ -362,14 +362,12 @@ pub(crate) fn validate_envelope_source_tokens(
         })?;
         let input_ref = required_string(object, "inputRef")?;
         let kind = required_string(object, "kind")?;
-        let source_kind = optional_string(object, "sourceKind")?.unwrap_or_else(|| {
-            match kind {
-                "snapshot-document" => "snapshot-document",
-                "projection" => "projection",
-                "evidence" => "evidence-anchor",
-                "signal" => "signal",
-                _ => kind,
-            }
+        let source_kind = optional_string(object, "sourceKind")?.unwrap_or(match kind {
+            "snapshot-document" => "snapshot-document",
+            "projection" => "projection",
+            "evidence" => "evidence-anchor",
+            "signal" => "signal",
+            _ => kind,
         });
         let expected = required_string(object, "revisionToken")?;
         let current = resolve_source_revision(
