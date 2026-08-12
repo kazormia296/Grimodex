@@ -14,10 +14,19 @@ import { nextEventOrdinal } from "./chronicleTime";
 // 暦復元の正本は chronicleTime（純粋モジュール）へ集約。ここでは後方互換の再エクスポート。
 export { calendarFromRow } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
-import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { EventVersionConflictError } from "./eventOcc";
 import { ProjectCalendarVersionConflictError } from "./calendarOcc";
+import {
+  agentCreateEvent,
+  agentUpdateEvent,
+  agentDeleteEvent,
+  agentLinkSceneEvent,
+  agentUnlinkSceneEvent,
+  agentAddEventRelation,
+  agentRemoveEventRelation,
+  agentSetEventParticipants,
+} from "@/features/agent-writes/event";
 
 /**
  * Timelapse record for a chronicle (作中年表) mutation. Uses the SAME `event`
@@ -49,6 +58,22 @@ function recordEvent(
  */
 function bumpChronicleRevision(): void {
   useChronicleStore.getState().bumpRevision();
+}
+
+/** Human / legacy api 経路の Native writer 呼び出し既定値。 */
+function manualApiWriteOpts(projectId: string) {
+  return {
+    surface: "manual" as const,
+    skipPolicyGate: true,
+    projectId,
+  };
+}
+
+function rethrowEventVersionConflict(eventId: string, err: unknown): never {
+  if (err instanceof Error && err.message.includes("version conflict")) {
+    throw new EventVersionConflictError(eventId);
+  }
+  throw err;
 }
 
 export interface EventRow {
@@ -176,15 +201,9 @@ export async function createEvent(data: {
   secret?: boolean;
   revealSceneId?: string | null;
 }): Promise<EventRow> {
-  const now = new Date().toISOString();
   const id = data.id ?? crypto.randomUUID();
   let ordinal = data.ordinal;
   if (ordinal === undefined) {
-    // ordinal は base62 の fractional-index（nextEventOrdinal で JS 生成）なので
-    // SQL 側 MAX+1 には畳めない。max 読取→採番は read で行う。sqlite-proxy では
-    // db.transaction の BEGIN/COMMIT が別 IPC となり共有接続上の無関係な書込みを
-    // 巻き込むため使わない。read→insert 間の稀な ordinal 衝突は listEvents の
-    // (ordinal,id) 二段ソートが吸収する（既存挙動どおり）。
     const existing = await db
       .select()
       .from(events)
@@ -192,41 +211,39 @@ export async function createEvent(data: {
       .orderBy(asc(events.ordinal), asc(events.id));
     ordinal = nextEventOrdinal(existing.map((e) => normalizeEvent(e).ordinal));
   }
-  // 単一 INSERT は 1 IPC = 1 statement で原子的（db_execute_batch は複数文を
-  // 原子化する用途。ここは 1 文なので通常の drizzle insert で十分）。
-  await db.insert(events).values({
-    id,
-    projectId: data.projectId,
-    title: data.title ?? "",
-    note: data.note ?? null,
-    detail: data.detail ?? null,
-    ordinal,
-    primaryCodexId: data.primaryCodexId ?? null,
-    locationCodexId: data.locationCodexId ?? null,
-    startTime: data.startTime ?? null,
-    endTime: data.endTime ?? null,
-    startMinute: data.startMinute ?? null,
-    endMinute: data.endMinute ?? null,
-    startGranularity: data.startGranularity ?? "none",
-    endGranularity: data.endGranularity ?? "none",
-    precision: data.precision ?? "exact",
-    kind: data.kind ?? "generic",
-    secret: data.secret ?? false,
-    revealSceneId: data.revealSceneId ?? null,
-    createdAt: now,
-    updatedAt: now,
-  });
-  const [row] = await db.select().from(events).where(eq(events.id, id));
-  bumpChronicleRevision();
-  recordEvent(data.projectId, "event.create", id, {
-    eventId: id,
-    title: row?.title ?? data.title ?? "",
-    ordinal,
-    kind: data.kind ?? "generic",
-  });
-  // 作中年表 RAG (Phase 3): 新出来事をデバウンス付きで意味検索 index に投入。
-  scheduleEventIndex(id);
-  return normalizeEvent(row);
+  await agentCreateEvent(
+    {
+      eventId: id,
+      title: data.title ?? "",
+      note: data.note ?? null,
+      detail: data.detail ?? null,
+      ordinal,
+      primaryCodexId: data.primaryCodexId ?? null,
+      locationCodexId: data.locationCodexId ?? null,
+      startTime: data.startTime ?? null,
+      endTime: data.endTime ?? null,
+      startMinute: data.startMinute ?? null,
+      endMinute: data.endMinute ?? null,
+      ...(data.startGranularity !== undefined
+        ? { startGranularity: data.startGranularity }
+        : {}),
+      ...(data.endGranularity !== undefined
+        ? { endGranularity: data.endGranularity }
+        : {}),
+      precision: data.precision ?? "exact",
+      kind: data.kind ?? "generic",
+      secret: data.secret ?? false,
+      revealSceneId: data.revealSceneId ?? null,
+    },
+    manualApiWriteOpts(data.projectId),
+  );
+  const row = await getEvent(data.projectId, id);
+  if (!row) {
+    throw new Error(
+      `Created event '${id}' not found in project '${data.projectId}'`,
+    );
+  }
+  return row;
 }
 
 export async function updateEvent(
@@ -258,44 +275,28 @@ export async function updateEvent(
   const current = await getEvent(projectId, id);
   if (!current) return null;
   const baseVersion = opts?.baseVersion ?? current.version;
-  // projectId を WHERE に AND して fail-closed にする（他プロジェクトの id を
-  // 渡されても no-op で、cross-project の書込みを構造的に遮断）。
-  const [updated] = await db
-    .update(events)
-    .set({
-      ...patch,
-      version: baseVersion + 1,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(
-      and(
-        eq(events.id, id),
-        eq(events.projectId, projectId),
-        eq(events.version, baseVersion),
-      ),
-    )
-    .returning();
-  if (!updated) throw new EventVersionConflictError(id);
-  bumpChronicleRevision();
-  recordEvent(projectId, "event.update", id, {
-    eventId: id,
-    fields: Object.keys(patch),
-  });
-  // 作中年表 RAG (Phase 3): 出来事更新をデバウンス付きで意味検索 index に反映。
-  scheduleEventIndex(id);
-  return normalizeEvent(updated);
+  try {
+    await agentUpdateEvent(
+      { eventId: id, baseVersion, ...patch },
+      manualApiWriteOpts(projectId),
+    );
+  } catch (err) {
+    rethrowEventVersionConflict(id, err);
+  }
+  const updated = await getEvent(projectId, id);
+  return updated;
 }
 
 export async function deleteEvent(
   id: string,
   projectId: string,
 ): Promise<void> {
-  // fail-closed: id と projectId の両方一致でのみ削除（cross-project 遮断）。
-  await db
-    .delete(events)
-    .where(and(eq(events.id, id), eq(events.projectId, projectId)));
-  bumpChronicleRevision();
-  recordEvent(projectId, "event.delete", id, { eventId: id });
+  const current = await getEvent(projectId, id);
+  if (!current) return;
+  await agentDeleteEvent(id, {
+    ...manualApiWriteOpts(projectId),
+    baseVersion: current.version,
+  });
 }
 
 // ───────── participants ─────────
@@ -329,39 +330,21 @@ export async function setEventParticipants(
   codexEntryIds: string[],
   opts?: { baseVersion?: number },
 ): Promise<number | null> {
-  // event_participants は project_id 列を持たないため、まず対象 event が
-  // projectId に属するかを検証してから書き換える（XPROJ fail-closed：他
-  // プロジェクトの event の参加者は触れない。linkSceneToEvent と同じ流儀）。
-  // この検証は read-only gate なので batch の外に置く（属さなければ何も書かない）。
   const [ev] = await db
     .select({ id: events.id, version: events.version })
     .from(events)
     .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
   if (!ev) return null;
   const baseVersion = opts?.baseVersion ?? ev.version;
-  const resultVersion = baseVersion + 1;
-  const finalUpdatedAt = new Date().toISOString();
-  const committedVersion = await invoke<number | null>(
-    "event_set_participants",
-    {
-      payload: {
-        eventId,
-        projectId,
-        codexEntryIds,
-        baseVersion,
-        updatedAt: finalUpdatedAt,
-      },
-    },
-  );
-  if (committedVersion !== resultVersion) {
-    throw new EventVersionConflictError(eventId);
+  try {
+    const result = await agentSetEventParticipants(eventId, codexEntryIds, {
+      ...manualApiWriteOpts(projectId),
+      baseVersion,
+    });
+    return result.version;
+  } catch (err) {
+    rethrowEventVersionConflict(eventId, err);
   }
-  bumpChronicleRevision();
-  recordEvent(projectId, "participants.set", eventId, {
-    eventId,
-    codexEntryIds,
-  });
-  return resultVersion;
 }
 
 /**
@@ -464,21 +447,7 @@ export async function linkSceneToEvent(
     .from(events)
     .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
   if (!event) return;
-  await db
-    .insert(sceneEvents)
-    .values({ sceneId, eventId })
-    .onConflictDoNothing();
-  bumpChronicleRevision();
-  // sceneId is verified to be a real tree_nodes row above, so it is a safe FK.
-  recordChangeEvent({
-    domain: "event",
-    opType: "sceneLink.add",
-    projectId,
-    entityType: "event",
-    entityId: eventId,
-    sceneId,
-    payload: { eventId, sceneId },
-  });
+  await agentLinkSceneEvent(sceneId, eventId, manualApiWriteOpts(projectId));
 }
 
 /**
@@ -507,23 +476,9 @@ export async function linkScenesToEvent(
     );
   const valid = new Set(sceneRows.map((r) => r.id));
   const targets = [...new Set(sceneIds)].filter((id) => valid.has(id));
-  if (targets.length === 0) return;
-  await db
-    .insert(sceneEvents)
-    .values(targets.map((sceneId) => ({ sceneId, eventId })))
-    .onConflictDoNothing();
-  bumpChronicleRevision();
-  // sceneId is verified against real tree_nodes rows above, so it is a safe FK.
+  const writeOpts = manualApiWriteOpts(projectId);
   for (const sceneId of targets) {
-    recordChangeEvent({
-      domain: "event",
-      opType: "sceneLink.add",
-      projectId,
-      entityType: "event",
-      entityId: eventId,
-      sceneId,
-      payload: { eventId, sceneId },
-    });
+    await agentLinkSceneEvent(sceneId, eventId, writeOpts);
   }
 }
 
@@ -540,13 +495,7 @@ export async function unlinkSceneFromEvent(
     .from(events)
     .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
   if (!event) return;
-  await db
-    .delete(sceneEvents)
-    .where(
-      and(eq(sceneEvents.sceneId, sceneId), eq(sceneEvents.eventId, eventId)),
-    );
-  bumpChronicleRevision();
-  recordEvent(projectId, "sceneLink.remove", eventId, { eventId, sceneId });
+  await agentUnlinkSceneEvent(sceneId, eventId, manualApiWriteOpts(projectId));
 }
 
 // ───────── project_calendar ─────────
@@ -721,16 +670,7 @@ export async function addEventRelation(
     );
   const ids = new Set(scopedEvents.map((e) => e.id));
   if (!ids.has(causeId) || !ids.has(effectId)) return;
-  await db
-    .insert(eventRelations)
-    .values({
-      projectId,
-      causeEventId: causeId,
-      effectEventId: effectId,
-    })
-    .onConflictDoNothing();
-  bumpChronicleRevision();
-  recordEvent(projectId, "edge.add", causeId, { causeId, effectId });
+  await agentAddEventRelation(causeId, effectId, manualApiWriteOpts(projectId));
 }
 
 export async function removeEventRelation(
@@ -738,17 +678,9 @@ export async function removeEventRelation(
   causeId: string,
   effectId: string,
 ): Promise<void> {
-  // fail-closed: projectId も AND し、他プロジェクトのエッジを消せないようにする
-  // （addEventRelation と同じ projectId-first シグネチャに揃える）。
-  await db
-    .delete(eventRelations)
-    .where(
-      and(
-        eq(eventRelations.projectId, projectId),
-        eq(eventRelations.causeEventId, causeId),
-        eq(eventRelations.effectEventId, effectId),
-      ),
-    );
-  bumpChronicleRevision();
-  recordEvent(projectId, "edge.remove", causeId, { causeId, effectId });
+  await agentRemoveEventRelation(
+    causeId,
+    effectId,
+    manualApiWriteOpts(projectId),
+  );
 }

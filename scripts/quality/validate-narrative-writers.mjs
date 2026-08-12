@@ -39,6 +39,7 @@ const EXCLUDED_PATH_FRAGMENTS = [
   ".browser.test.tsx",
   ".stories.",
   "/browser-mock/",
+  "browser-mock.ts",
   "/__fixtures__/",
   "/fixtures/",
   "/generated/",
