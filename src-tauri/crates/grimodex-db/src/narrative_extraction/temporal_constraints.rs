@@ -180,6 +180,14 @@ impl TemporalConstraintPayload {
         }
     }
 
+    pub(crate) fn authority_entity_id(&self) -> String {
+        self.constraint_id()
+            .or_else(|| self.fingerprint())
+            .or_else(|| self.referenced_node_ids().first().copied())
+            .unwrap_or("constraint")
+            .to_string()
+    }
+
     fn authority(&self) -> &str {
         match self {
             Self::AbsoluteWindow { authority, .. }

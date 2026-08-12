@@ -49,9 +49,11 @@ import {
 import { buildProjectNarrativeSnapshot } from "@/application/narrative-extraction/projectSnapshotAdapter";
 import {
   appendDecision,
+  appendHumanDecision,
   appendRevision,
+  buildSnapshotSourceBasis,
   buildNativeReconciliationEnvelope,
-  reviseAndDecide,
+  reviseAndDecideAsHuman,
   saveProposalSet,
 } from "@/application/narrative-extraction/proposalRepository";
 import {
@@ -68,7 +70,7 @@ import {
   type ReviewBundleProposal,
 } from "@/application/narrative-extraction/nativeApi";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
-import { digestStableJson } from "@/features/narrative-extraction/source/digest";
+import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 import { parseAliases } from "./codexMatcher";
 import { BUILTIN_CODEX_TYPES } from "./api";
 import {
@@ -692,6 +694,10 @@ function digestStableString(value: string): Sha256Digest {
 async function nativeEvidenceSet(
   evidence: readonly CodexReviewEvidenceQuote[],
   proposalSchemaId: string,
+  sourceRevisionByDocumentRef: ReadonlyMap<
+    string,
+    { readonly sourceKey: string; readonly revisionToken: string }
+  >,
 ) {
   if (
     evidence.length === 0 ||
@@ -712,7 +718,9 @@ async function nativeEvidenceSet(
     evidence.map(async (row) => ({
       evidenceRef: row.anchorId,
       documentRef: row.documentRef,
-      quoteDigest: await digestStableJson(row.quote),
+      quote: row.quote,
+      quoteDigest: await sha256Digest(row.quote),
+      ...(sourceRevisionByDocumentRef.get(row.documentRef) ?? {}),
     })),
   );
 }
@@ -1433,6 +1441,11 @@ export async function startCodexStructureExtraction(
   let coverageDocumentCount = request.sceneIds.length;
   let coverageWindowCount = Math.max(1, request.sceneIds.length);
   let snapshotDigest: string | null = null;
+  let persistenceSnapshot: NarrativeCorpusSnapshot | null = null;
+  let sourceRevisionByDocumentRef = new Map<
+    string,
+    { readonly sourceKey: string; readonly revisionToken: string }
+  >();
   const skipNativePersist = Boolean(
     (request as { skipNativePersist?: boolean }).skipNativePersist,
   );
@@ -1453,6 +1466,7 @@ export async function startCodexStructureExtraction(
       );
     }
     const snapshot = snapshotResult.snapshot;
+    persistenceSnapshot = snapshot;
     snapshotDigest = snapshot.digest;
     const windowPlan = planExtractionWindows(snapshot);
     const sourceViews = await buildSourceViewsForPlan(snapshot, windowPlan);
@@ -1547,6 +1561,7 @@ export async function startCodexStructureExtraction(
       );
     }
     snapshotDigest = snapshotResult.snapshot.digest;
+    persistenceSnapshot = snapshotResult.snapshot;
   }
 
   // Optional AI path reserved for later wiring (runEntityResolutionTask).
@@ -1874,6 +1889,26 @@ export async function startCodexStructureExtraction(
       ],
     });
     runId = createdRun.runId;
+    if (!persistenceSnapshot) {
+      throw new Error(
+        "Cannot persist Codex proposals without a sealed snapshot",
+      );
+    }
+    const sourceBasis = buildSnapshotSourceBasis(runId, persistenceSnapshot);
+    sourceRevisionByDocumentRef = new Map(
+      persistenceSnapshot.documents.flatMap((document) => {
+        if (document.origin.kind !== "project-node") return [];
+        return [
+          [
+            document.ref,
+            {
+              sourceKey: `project:scene:${document.origin.nodeId}`,
+              revisionToken: `v${document.origin.sourceVersion}@${document.origin.sourceUpdatedAt}`,
+            },
+          ] as const,
+        ];
+      }),
+    );
 
     let claim: ClaimTaskResult | null = null;
     try {
@@ -1895,9 +1930,14 @@ export async function startCodexStructureExtraction(
           runId,
           taskId: claimedTask.taskId,
           sourceRevisionToken,
+          sourceBasis,
           proposalSchemaId,
           reconcilerId: "grimodex.codex-structure-extraction",
-          evidenceSet: await nativeEvidenceSet(evidence, proposalSchemaId),
+          evidenceSet: await nativeEvidenceSet(
+            evidence,
+            proposalSchemaId,
+            sourceRevisionByDocumentRef,
+          ),
         });
 
       const saved = await saveProposalSet({
@@ -3638,7 +3678,7 @@ export async function decideCodexStructureProposal(args: {
                 `Cannot defer already-satisfied Relation ${args.proposalId}: missing revisionId`,
               );
             }
-            await appendDecision({
+            await appendHumanDecision({
               runId: projection.runId,
               projectId: projection.projectId,
               proposalId: rematched.proposalId,
@@ -3697,7 +3737,7 @@ export async function decideCodexStructureProposal(args: {
         }
 
         if (!alreadySatisfiedLocal) {
-          const result = await reviseAndDecide({
+          const result = await reviseAndDecideAsHuman({
             runId: projection.runId,
             projectId: projection.projectId,
             proposalId: args.proposalId,
@@ -3721,7 +3761,7 @@ export async function decideCodexStructureProposal(args: {
           revisionId = result.revisionId;
         }
       } else {
-        await appendDecision({
+        await appendHumanDecision({
           runId: projection.runId,
           projectId: projection.projectId,
           proposalId: args.proposalId,

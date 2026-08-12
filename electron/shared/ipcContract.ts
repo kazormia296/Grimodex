@@ -770,7 +770,10 @@ export interface NapiBackendLike {
   narrativeExtractionGetRunReviewBundle(payload: unknown): Promise<string>;
   narrativeExtractionAppendRevision(payload: unknown): Promise<string>;
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
+  narrativeExtractionAppendHumanDecision(payload: unknown): Promise<string>;
   narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
+  narrativeExtractionReviseAndDecideAsHuman(payload: unknown): Promise<string>;
+  narrativeExtractionSetHumanFieldLock(payload: unknown): Promise<string>;
   narrativeExtractionPrepareCommit(payload: unknown): Promise<string>;
   narrativeExtractionApplyCommit(payload: unknown): Promise<string>;
   narrativeExtractionGetCommitStatus(payload: unknown): Promise<string>;
@@ -5936,6 +5939,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  narrative_extraction_append_human_decision: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionAppendHumanDecision(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_append_human_decision",
+          ),
+        ),
+      ),
+  },
   narrative_extraction_revise_and_decide: {
     run: async (b, a) =>
       parseWire(
@@ -5944,6 +5959,30 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             a,
             "payload",
             "narrative_extraction_revise_and_decide",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_revise_and_decide_as_human: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionReviseAndDecideAsHuman(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_revise_and_decide_as_human",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_set_human_field_lock: {
+    run: async (b, a) =>
+      parseWire(
+        await b.narrativeExtractionSetHumanFieldLock(
+          requirePresent(
+            a,
+            "payload",
+            "narrative_extraction_set_human_field_lock",
           ),
         ),
       ),

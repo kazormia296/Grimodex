@@ -8,6 +8,7 @@ use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
     SetNarrativeRuntimePolicyInput, NARRATIVE_REVIEW_ONLY,
 };
+use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
@@ -70,13 +71,30 @@ fn event_payload() -> Value {
     })
 }
 
+fn scene_body_event_payload() -> Value {
+    let mut payload = event_payload();
+    payload
+        .as_object_mut()
+        .expect("event payload object")
+        .remove("evidenceSceneLinks");
+    payload
+}
+
 fn envelope(run_id: &str) -> Value {
+    envelope_for_task(run_id, "task-prepared")
+}
+
+fn envelope_for_task(run_id: &str, task_id: &str) -> Value {
     let source_key = format!("snapshot:{run_id}");
-    let read_set = json!([{"inputRef": source_key, "kind": "snapshot-document"}]);
+    let read_set = json!([{
+        "inputRef": source_key,
+        "kind": "snapshot-document",
+        "revisionToken": "revision-1"
+    }]);
     json!({
         "schemaVersion": 1,
         "runId": run_id,
-        "taskId": "task-prepared",
+        "taskId": task_id,
         "reconcilerId": "test.prepared",
         "reconcilerVersion": "1.0.0",
         "proposalSchemaId": "chronicle.event",
@@ -91,6 +109,114 @@ fn envelope(run_id: &str) -> Value {
         "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
         "changeKind": "add"
     })
+}
+
+fn scene_body_envelope(db: &Database, run_id: &str, task_id: &str) -> Value {
+    let (version, updated_at): (i64, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT version, updated_at FROM tree_nodes
+                  WHERE id = 'scene-1' AND project_id = 'project-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("scene source revision");
+    let source_key = "project:scene:scene-1";
+    let revision_token = format!("v{version}@{updated_at}");
+    let read_set = json!([{
+        "inputRef": source_key,
+        "kind": "snapshot-document",
+        "sourceKind": "scene-body",
+        "revisionToken": revision_token.clone(),
+    }]);
+    json!({
+        "schemaVersion": 1,
+        "runId": run_id,
+        "taskId": task_id,
+        "reconcilerId": "test.scene-writer",
+        "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "chronicle.event",
+        "proposalSchemaVersion": "1",
+        "sourceBasis": [{
+            "sourceKind": "scene-body",
+            "sourceKey": source_key,
+            "revisionToken": revision_token,
+        }],
+        "evidenceSet": [],
+        "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
+        "changeKind": "add"
+    })
+}
+
+fn seed_scene_body_approved(db: &Database) -> (String, String, String, String) {
+    let run_id = "run-scene-writer";
+    let task_id = "task-scene-writer";
+    let set_id = "set-scene-writer";
+    let proposal_id = "prop-scene-writer";
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "chronicle.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "chronicle" }),
+            spec_digest: "spec-scene-writer".to_string(),
+            snapshot_digest: Some("revision-1".to_string()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.to_string()),
+                task_kind: "chronicle.plan-proposals".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )
+    .expect("create scene-writer run");
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(set_id.to_string()),
+            set_kind: "chronicle.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: "key-scene-writer".to_string(),
+                kind: "chronicle.event.create".to_string(),
+                payload_json: scene_body_event_payload(),
+                reconciliation_envelope: Some(scene_body_envelope(db, run_id, task_id)),
+            }],
+        },
+    )
+    .expect("save scene-writer proposal");
+    let saved_proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    narrative_extraction::narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: saved_proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("approve scene-writer proposal");
+    (run_id.to_string(), set_id.to_string(), saved_proposal_id, revision_id)
 }
 
 fn retraction_envelope(run_id: &str, target_application_id: &str) -> Value {
@@ -160,7 +286,7 @@ fn seed_one_approved(db: &Database) -> (String, String, String, String) {
         .as_str()
         .unwrap()
         .to_string();
-    narrative_extraction::narrative_extraction_append_decision(
+    narrative_extraction::narrative_extraction_append_human_decision(
         db,
         AppendDecisionPayload {
             run_id: run_id.to_string(),
@@ -179,6 +305,129 @@ fn seed_one_approved(db: &Database) -> (String, String, String, String) {
         proposal_id,
         revision_id,
     )
+}
+
+fn story_order_payload(scene_id: &str, label: Option<&str>) -> Value {
+    let mut payload = json!({
+        "sceneId": scene_id,
+        "baseVersion": 0,
+        "storyTimeOrder": "0001",
+    });
+    if let Some(label) = label {
+        payload["storyTimeLabel"] = Value::String(label.to_string());
+    }
+    payload
+}
+
+fn seed_story_order_approved(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    set_id: &str,
+    proposal_id: &str,
+    scene_id: &str,
+    label: Option<&str>,
+) -> (String, String, String, String) {
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "temporal.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "temporal" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: Some("revision-1".to_string()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.to_string()),
+                task_kind: "temporal.plan-proposals".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )
+    .expect("create story-order run");
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(set_id.to_string()),
+            set_kind: "temporal.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: format!("key-{proposal_id}"),
+                kind: "temporal.story-order.materialize".to_string(),
+                payload_json: story_order_payload(scene_id, label),
+                reconciliation_envelope: Some(envelope_for_task(run_id, task_id)),
+            }],
+        },
+    )
+    .expect("save story-order proposal");
+    let saved_proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .expect("story-order proposal id")
+        .to_string();
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("story-order revision id")
+        .to_string();
+    narrative_extraction::narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: saved_proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect("approve story-order proposal");
+    (
+        run_id.to_string(),
+        set_id.to_string(),
+        saved_proposal_id,
+        revision_id,
+    )
+}
+
+fn build_story_order_prepare(
+    run_id: &str,
+    set_id: &str,
+    proposal_id: &str,
+    revision_id: &str,
+    scene_id: &str,
+    label: Option<&str>,
+    request_id: &str,
+) -> PrepareCommitPayload {
+    PrepareCommitPayload {
+        project_id: "project-1".to_string(),
+        run_id: run_id.to_string(),
+        proposal_set_id: set_id.to_string(),
+        request_id: request_id.to_string(),
+        plan_digest: "client-ignored".to_string(),
+        session_id: format!("session-{request_id}"),
+        surface: Some("narrative-extraction".to_string()),
+        operations: vec![CommitOperation {
+            kind: "temporal.story-order.materialize".to_string(),
+            payload: story_order_payload(scene_id, label),
+            proposal_id: proposal_id.to_string(),
+            revision_id: revision_id.to_string(),
+        }],
+        applications: vec![CommitApplicationRef {
+            proposal_id: proposal_id.to_string(),
+            revision_id: revision_id.to_string(),
+        }],
+        expected_tail_ordinal: None,
+        entity_bindings: vec![],
+        expected_calendar_version: None,
+    }
 }
 
 fn build_prepare(
@@ -391,6 +640,275 @@ fn review_only_blocks_prepare() {
     )
     .expect_err("review-only");
     assert!(err.to_string().contains(NARRATIVE_REVIEW_ONLY));
+}
+
+#[test]
+fn automated_decision_cannot_spoof_human_actor_or_override() {
+    let db = migrated_db();
+    let (run_id, _set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    let error = narrative_extraction::narrative_extraction_append_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id,
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            revision_id,
+            decision: "approved".to_string(),
+            decision_json: Some(json!({
+                "actorKind": "human",
+                "authorityScope": format!("project/project-1/proposal/{proposal_id}/revision/forged"),
+                "overrideFieldPaths": ["/title"],
+            })),
+            created_by: Some("reviewer".to_string()),
+        },
+    )
+    .expect_err("generic automated endpoint must not accept a human declaration");
+    assert!(error.to_string().contains("NEX_AUTHORITY_ACTOR_MISMATCH"));
+
+    let decision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_decisions
+                  WHERE proposal_id = ?1",
+                rusqlite::params![proposal_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count decisions");
+    assert_eq!(decision_count, 1, "spoofed decision must not be persisted");
+}
+
+#[test]
+fn story_order_materialize_uses_canonical_scene_payload_and_label() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_story_order_approved(
+        &db,
+        "run-story-order",
+        "task-story-order",
+        "set-story-order",
+        "prop-story-order",
+        "scene-1",
+        Some("Opening"),
+    );
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_story_order_prepare(
+            &run_id,
+            &set_id,
+            &proposal_id,
+            &revision_id,
+            "scene-1",
+            Some("Opening"),
+            "req-story-order",
+        ),
+    )?;
+    let applied = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            request_id: "req-story-order".to_string(),
+            session_id: "session-req-story-order".to_string(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )?;
+    assert_eq!(applied["status"], "applied");
+    db.with_conn(|conn| {
+        let (order, label, version): (String, String, i64) = conn.query_row(
+            "SELECT story_time_order, story_time_label, version
+               FROM tree_nodes WHERE id = 'scene-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(order, "0001");
+        assert_eq!(label, "Opening");
+        assert_eq!(version, 1);
+        let (order_owner, label_owner): (String, String) = conn.query_row(
+            "SELECT order_authority.owner_kind, label_authority.owner_kind
+               FROM narrative_field_authority order_authority
+               JOIN narrative_field_authority label_authority
+                 ON label_authority.project_id = order_authority.project_id
+                AND label_authority.entity_kind = order_authority.entity_kind
+                AND label_authority.entity_id = order_authority.entity_id
+              WHERE order_authority.project_id = 'project-1'
+                AND order_authority.entity_kind = 'scene'
+                AND order_authority.entity_id = 'scene-1'
+                AND order_authority.field_path = '/storyTimeOrder'
+                AND label_authority.field_path = '/storyTimeLabel'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(order_owner, "human");
+        assert_eq!(label_owner, "human");
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn story_order_materialize_rejects_foreign_scene_from_commit_project() -> anyhow::Result<()> {
+    let db = migrated_db();
+    db.execute(
+        "INSERT INTO projects (id, title) VALUES ('project-2', 'Other')",
+        &[],
+        "run",
+    )?;
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, node_type, title, version)
+         VALUES ('scene-2', 'project-2', 'scene', 'Other scene', 0)",
+        &[],
+        "run",
+    )?;
+    let (run_id, set_id, proposal_id, revision_id) = seed_story_order_approved(
+        &db,
+        "run-story-foreign",
+        "task-story-foreign",
+        "set-story-foreign",
+        "prop-story-foreign",
+        "scene-2",
+        Some("Foreign"),
+    );
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_story_order_prepare(
+            &run_id,
+            &set_id,
+            &proposal_id,
+            &revision_id,
+            "scene-2",
+            Some("Foreign"),
+            "req-story-foreign",
+        ),
+    )?;
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            request_id: "req-story-foreign".to_string(),
+            session_id: "session-req-story-foreign".to_string(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("foreign scene must be scoped to the commit project");
+    assert!(error.to_string().contains("not found in project 'project-1'"));
+    Ok(())
+}
+
+#[test]
+fn story_order_materialize_respects_human_field_lock() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_story_order_approved(
+        &db,
+        "run-story-lock",
+        "task-story-lock",
+        "set-story-lock",
+        "prop-story-lock",
+        "scene-1",
+        Some("Locked"),
+    );
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_story_order_prepare(
+            &run_id,
+            &set_id,
+            &proposal_id,
+            &revision_id,
+            "scene-1",
+            Some("Locked"),
+            "req-story-lock",
+        ),
+    )?;
+    db.execute(
+        "INSERT INTO narrative_field_authority
+            (project_id, entity_kind, entity_id, field_path, owner_kind,
+             explicit_lock, version, updated_at)
+         VALUES ('project-1', 'scene', 'scene-1', '/storyTimeOrder',
+                 'human', 1, 0, '2026-08-12T00:00:00.000Z')",
+        &[],
+        "run",
+    )?;
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            request_id: "req-story-lock".to_string(),
+            session_id: "session-req-story-lock".to_string(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("locked story order must not be overwritten");
+    assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+    Ok(())
+}
+
+#[test]
+fn story_order_materialize_without_label_does_not_claim_label_field() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_story_order_approved(
+        &db,
+        "run-story-no-label",
+        "task-story-no-label",
+        "set-story-no-label",
+        "prop-story-no-label",
+        "scene-1",
+        None,
+    );
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_story_order_prepare(
+            &run_id,
+            &set_id,
+            &proposal_id,
+            &revision_id,
+            "scene-1",
+            None,
+            "req-story-no-label",
+        ),
+    )?;
+    narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            request_id: "req-story-no-label".to_string(),
+            session_id: "session-req-story-no-label".to_string(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )?;
+    let (order_count, label_count): (i64, i64) = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM narrative_field_authority
+                  WHERE entity_kind = 'scene' AND entity_id = 'scene-1'
+                    AND field_path = '/storyTimeOrder'),
+                (SELECT COUNT(*) FROM narrative_field_authority
+                  WHERE entity_kind = 'scene' AND entity_id = 'scene-1'
+                    AND field_path = '/storyTimeLabel')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    })?;
+    assert_eq!(order_count, 1);
+    assert_eq!(label_count, 0);
+    Ok(())
 }
 
 #[test]
@@ -621,6 +1139,66 @@ fn stale_source_invalidates_prepared_commit_without_domain_mutation() -> anyhow:
 }
 
 #[test]
+fn actual_scene_writer_invalidates_prepared_commit_on_scene_body_change() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_scene_body_approved(&db);
+    enable_manual_apply(&db);
+    let mut prepare = build_prepare(&run_id, &set_id, &proposal_id, &revision_id);
+    prepare.operations[0].payload = scene_body_event_payload();
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare)?;
+
+    save_scene_body_bundle(
+        &db,
+        SaveSceneBodyBundlePayload {
+            scene_id: "scene-1".to_string(),
+            project_id: "project-1".to_string(),
+            include_sidecars: false,
+            base_version: Some(0),
+            updated_at: "2026-08-12T00:00:01.000Z".to_string(),
+            content_json: "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"edited\"}]}]}".to_string(),
+            char_count: 6,
+            placed_beat_preview: None,
+            unplaced_beats_doc: "[]".to_string(),
+            unplaced_beat_preview: None,
+            authorship_spans: vec![],
+            foreshadow_setups: vec![],
+            foreshadow_payoffs: vec![],
+            foreshadow_base_versions: std::collections::HashMap::new(),
+            annotation_anchors: vec![],
+            beat_mentions: vec![],
+            beat_pov_overrides: vec![],
+            doc_content_size: 2,
+        },
+    )?;
+
+    let error = apply_prepared(&db, &prepared).expect_err("scene writer change must stale apply");
+    assert!(
+        error.to_string().contains("NEX_SOURCE_BASIS_STALE"),
+        "unexpected error: {error}"
+    );
+    db.with_conn(|conn| {
+        let (content, authority_owner, event_count): (String, String, i64) = conn.query_row(
+            "SELECT n.content, a.owner_kind,
+                    (SELECT COUNT(*) FROM events WHERE id = 'event-prepared-1')
+               FROM tree_nodes n
+               JOIN narrative_field_authority a
+                 ON a.project_id = n.project_id
+                AND a.entity_kind = 'scene'
+                AND a.entity_id = n.id
+                AND a.field_path = '/content'
+              WHERE n.id = 'scene-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert!(content.contains("edited"));
+        assert_eq!(authority_owner, "human");
+        assert_eq!(event_count, 0);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
 fn locked_field_invalidates_ai_apply_without_partial_mutation() -> anyhow::Result<()> {
     let db = migrated_db();
     let (run_id, set_id, proposal_id, revision_id) = seed_locked_entry_approved(&db)?;
@@ -699,7 +1277,7 @@ fn locked_field_invalidates_ai_apply_without_partial_mutation() -> anyhow::Resul
         Ok(())
     })?;
 
-    narrative_extraction::narrative_extraction_append_decision(
+    narrative_extraction::narrative_extraction_append_human_decision(
         &db,
         AppendDecisionPayload {
             run_id: run_id.clone(),

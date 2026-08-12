@@ -275,6 +275,19 @@ export interface ReviseAndDecideResult {
   readonly status: NarrativeProposalStatus;
 }
 
+export interface HumanFieldLockPayload {
+  readonly projectId: string;
+  readonly entityKind: string;
+  readonly entityId: string;
+  readonly fieldPath: string;
+  readonly expectedVersion: number;
+  readonly locked: boolean;
+}
+
+export interface HumanFieldLockResult extends HumanFieldLockPayload {
+  readonly version: number;
+}
+
 export interface CommitApplicationRef {
   readonly proposalId: string;
   readonly revisionId: string;
@@ -483,11 +496,40 @@ export async function narrativeExtractionAppendDecision(
   });
 }
 
+/** Human review endpoint; Native fixes the actor class and review scope. */
+export async function narrativeExtractionAppendHumanDecision(
+  payload: AppendDecisionPayload,
+): Promise<AppendDecisionResult> {
+  return invoke<AppendDecisionResult>(
+    "narrative_extraction_append_human_decision",
+    { payload },
+  );
+}
+
 export async function narrativeExtractionReviseAndDecide(
   payload: ReviseAndDecidePayload,
 ): Promise<ReviseAndDecideResult> {
   return invoke<ReviseAndDecideResult>(
     "narrative_extraction_revise_and_decide",
+    { payload },
+  );
+}
+
+/** Atomic human revision + decision endpoint for the review surface. */
+export async function narrativeExtractionReviseAndDecideAsHuman(
+  payload: ReviseAndDecidePayload,
+): Promise<ReviseAndDecideResult> {
+  return invoke<ReviseAndDecideResult>(
+    "narrative_extraction_revise_and_decide_as_human",
+    { payload },
+  );
+}
+
+export async function narrativeExtractionSetHumanFieldLock(
+  payload: HumanFieldLockPayload,
+): Promise<HumanFieldLockResult> {
+  return invoke<HumanFieldLockResult>(
+    "narrative_extraction_set_human_field_lock",
     { payload },
   );
 }

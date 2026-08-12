@@ -43,8 +43,16 @@ const evidenceReadSet = {
     },
   ],
   readSet: [
-    { inputRef: "scene/chapter-1", kind: "snapshot-document" as const },
-    { inputRef: "projection/parent", kind: "projection" as const },
+    {
+      inputRef: "scene/chapter-1",
+      kind: "snapshot-document" as const,
+      revisionToken: "scene-revision-1",
+    },
+    {
+      inputRef: "projection/parent",
+      kind: "projection" as const,
+      revisionToken: "projection-revision-1",
+    },
   ],
   readSetDigest: "sha256:read-set" as const,
 };

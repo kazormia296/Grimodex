@@ -34,7 +34,11 @@ fn migrated_db() -> Database {
 
 fn test_envelope(run_id: &str, task_id: &str) -> Value {
     let source_key = format!("snapshot:{run_id}");
-    let read_set = json!([{"inputRef": source_key, "kind": "snapshot-document"}]);
+    let read_set = json!([{
+        "inputRef": source_key,
+        "kind": "snapshot-document",
+        "revisionToken": "revision-1"
+    }]);
     json!({
         "schemaVersion": 1, "runId": run_id, "taskId": task_id,
         "reconcilerId": "test.reconciler", "reconcilerVersion": "1.0.0",
@@ -128,7 +132,7 @@ fn seed_approved_proposals(
     for proposal in saved["proposals"].as_array().expect("proposals") {
         let proposal_id = proposal["proposalId"].as_str().unwrap().to_string();
         let revision_id = proposal["revisionId"].as_str().unwrap().to_string();
-        narrative_extraction::narrative_extraction_append_decision(
+        narrative_extraction::narrative_extraction_append_human_decision(
             db,
             AppendDecisionPayload {
                 run_id: run_id.to_string(),

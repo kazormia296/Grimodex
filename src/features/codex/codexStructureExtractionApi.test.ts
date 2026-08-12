@@ -5,9 +5,11 @@ const getRunMock = vi.hoisted(() => vi.fn());
 const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
 const buildNativeReconciliationEnvelopeMock = vi.hoisted(() => vi.fn());
+const buildSnapshotSourceBasisMock = vi.hoisted(() => vi.fn());
 const appendDecisionMock = vi.hoisted(() => vi.fn());
+const appendHumanDecisionMock = vi.hoisted(() => vi.fn());
 const appendRevisionMock = vi.hoisted(() => vi.fn());
-const reviseAndDecideMock = vi.hoisted(() => vi.fn());
+const reviseAndDecideAsHumanMock = vi.hoisted(() => vi.fn());
 const prepareApplyMock = vi.hoisted(() => vi.fn());
 const claimTaskMock = vi.hoisted(() => vi.fn());
 const finishTaskMock = vi.hoisted(() => vi.fn());
@@ -24,9 +26,11 @@ vi.mock("@/application/narrative-extraction/runRepository", () => ({
 vi.mock("@/application/narrative-extraction/proposalRepository", () => ({
   saveProposalSet: saveProposalSetMock,
   buildNativeReconciliationEnvelope: buildNativeReconciliationEnvelopeMock,
+  buildSnapshotSourceBasis: buildSnapshotSourceBasisMock,
   appendDecision: appendDecisionMock,
+  appendHumanDecision: appendHumanDecisionMock,
   appendRevision: appendRevisionMock,
-  reviseAndDecide: reviseAndDecideMock,
+  reviseAndDecideAsHuman: reviseAndDecideAsHumanMock,
 }));
 vi.mock(
   "@/application/narrative-extraction/nativeApi",
@@ -198,20 +202,24 @@ describe("startCodexStructureExtraction product safety", () => {
     cancelRunMock.mockReset();
     saveProposalSetMock.mockReset();
     buildNativeReconciliationEnvelopeMock.mockReset();
+    buildSnapshotSourceBasisMock.mockReset();
     claimTaskMock.mockReset();
     finishTaskMock.mockReset();
     failTaskMock.mockReset();
     prepareApplyMock.mockReset();
     appendDecisionMock.mockReset();
+    appendHumanDecisionMock.mockReset();
     appendRevisionMock.mockReset();
-    reviseAndDecideMock.mockReset();
+    reviseAndDecideAsHumanMock.mockReset();
     buildSnapshotMock.mockReset();
     runPrepassMock.mockReset();
+    buildSnapshotSourceBasisMock.mockReturnValue([]);
     buildSnapshotMock.mockResolvedValue({
       ok: true,
       snapshot: {
         digest:
           "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        documents: [],
       },
       diagnostics: [],
     });
@@ -945,9 +953,10 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
   beforeEach(() => {
     resetCodexStructureExtractionStoreForTests();
     appendDecisionMock.mockReset();
+    appendHumanDecisionMock.mockReset();
     appendRevisionMock.mockReset();
-    reviseAndDecideMock.mockReset();
-    reviseAndDecideMock.mockResolvedValue({
+    reviseAndDecideAsHumanMock.mockReset();
+    reviseAndDecideAsHumanMock.mockResolvedValue({
       proposalId: "safe",
       revisionId: "rev-2",
       revisionNumber: 2,
@@ -1048,7 +1057,7 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
     // Approve is a single atomic revision + decision transaction now.
     expect(appendRevisionMock).not.toHaveBeenCalled();
     expect(appendDecisionMock).not.toHaveBeenCalled();
-    expect(reviseAndDecideMock).toHaveBeenCalledWith(
+    expect(reviseAndDecideAsHumanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         proposalId: "safe",
         decision: "approved",
@@ -1071,6 +1080,7 @@ describe("reviseCodexStructureProposal concurrency", () => {
     resetCodexStructureExtractionStoreForTests();
     resetCodexStructureExtractionApiCachesForTests();
     appendRevisionMock.mockReset();
+    appendHumanDecisionMock.mockReset();
   });
 
   function seedEditableEntity() {
@@ -1324,7 +1334,7 @@ describe("reviseCodexStructureProposal concurrency", () => {
     seedEditableEntity();
     const order: string[] = [];
     let releaseDecision: (() => void) | undefined;
-    appendDecisionMock.mockImplementationOnce(
+    appendHumanDecisionMock.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
           order.push("decision-start");

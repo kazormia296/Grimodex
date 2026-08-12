@@ -970,15 +970,31 @@ pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.node_id, "nodeId")?;
     db.with_conn(|conn| {
-        Database::execute_with_conn(
-            conn,
+        let tx = conn.unchecked_transaction()?;
+        let node_type: Option<String> = tx
+            .query_row(
+                "SELECT node_type FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+                params![payload.node_id, payload.project_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let deleted = tx.execute(
             "DELETE FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
-            &[
-                Value::String(payload.node_id),
-                Value::String(payload.project_id),
-            ],
-            "run",
+            params![payload.node_id, payload.project_id],
         )?;
+        anyhow::ensure!(deleted == 1, "tree node '{}' not found", payload.node_id);
+        if node_type.as_deref() == Some("scene") {
+            crate::narrative_extraction::propagate_source_change_freshness_in_tx(
+                &tx,
+                &payload.project_id,
+                "scene-body",
+                &format!("project:scene:{}", payload.node_id),
+                None,
+                &chrono::Utc::now().to_rfc3339(),
+                "tree-node-writer",
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     })
 }
@@ -1164,6 +1180,75 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
                 "tree node content event UID '{}' already exists",
                 event.event_uid
             );
+        }
+        if row.get("nodeType").and_then(Value::as_str) == Some("scene") {
+            let field_paths: Vec<&str> = payload
+                .patch
+                .keys()
+                .filter_map(|key| match key.as_str() {
+                    "parentId" => Some("/parentId"),
+                    "title" => Some("/title"),
+                    "synopsis" => Some("/synopsis"),
+                    "sortOrder" => Some("/sortOrder"),
+                    "storyTimeOrder" => Some("/storyTimeOrder"),
+                    "storyTimeLabel" => Some("/storyTimeLabel"),
+                    "povCharacterId" => Some("/povCharacterId"),
+                    "locationId" => Some("/locationId"),
+                    "chronicleStartTime" => Some("/startTime"),
+                    "chronicleStartMinute" => Some("/startMinute"),
+                    "chronicleStartGranularity" => Some("/startGranularity"),
+                    "chronicleEndTime" => Some("/endTime"),
+                    "chronicleEndMinute" => Some("/endMinute"),
+                    "chronicleEndGranularity" => Some("/endGranularity"),
+                    "chroniclePrecision" => Some("/precision"),
+                    "status" => Some("/status"),
+                    "content" => Some("/content"),
+                    "unplacedBeatsDoc" => Some("/unplacedBeatsDoc"),
+                    "charCount" => Some("/charCount"),
+                    "unplacedBeatPreview" => Some("/unplacedBeatPreview"),
+                    "placedBeatPreview" => Some("/placedBeatPreview"),
+                    "sourceUri" => Some("/sourceUri"),
+                    "sourceMtime" => Some("/sourceMtime"),
+                    "archivedAt" => Some("/archivedAt"),
+                    "contextMode" => Some("/contextMode"),
+                    "aliases" => Some("/aliases"),
+                    "excludedAliases" => Some("/excludedAliases"),
+                    _ => None,
+                })
+                .collect();
+            if !field_paths.is_empty() {
+                let updated_at = row
+                    .get("updatedAt")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("tree node row has no updatedAt"))?;
+                let version = row
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| anyhow::anyhow!("tree node row has no version"))?;
+                crate::narrative_extraction::record_human_field_write(
+                    &tx,
+                    &payload.project_id,
+                    "scene",
+                    &payload.node_id,
+                    &field_paths,
+                    updated_at,
+                )?;
+                let source_key = format!("project:scene:{}", payload.node_id);
+                let source_token = format!("v{version}@{updated_at}");
+                crate::narrative_extraction::propagate_source_change_freshness_in_tx(
+                    &tx,
+                    &payload.project_id,
+                    "scene-body",
+                    &source_key,
+                    Some(&source_token),
+                    updated_at,
+                    payload
+                        .change_event
+                        .as_ref()
+                        .map(|event| event.session_id.as_str())
+                        .unwrap_or("tree-node-writer"),
+                )?;
+            }
         }
         tx.commit()?;
         Ok(row)

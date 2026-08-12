@@ -36,8 +36,16 @@ const sourceBasis = [
 const evidenceReadSet = {
   evidenceSet: [{ evidenceRef: "ev-1", documentRef: "doc/ch1" }],
   readSet: [
-    { inputRef: "doc/ch1", kind: "snapshot-document" as const },
-    { inputRef: "proj-1", kind: "projection" as const },
+    {
+      inputRef: "doc/ch1",
+      kind: "snapshot-document" as const,
+      revisionToken: "snapshot-revision-1",
+    },
+    {
+      inputRef: "proj-1",
+      kind: "projection" as const,
+      revisionToken: "projection-revision-1",
+    },
   ],
   readSetDigest: "sha256:abc" as const,
 };

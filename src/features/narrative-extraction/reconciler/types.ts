@@ -61,12 +61,21 @@ export type ReadSetDigest = Sha256Digest;
 export interface EvidenceSetEntry {
   readonly evidenceRef: string;
   readonly documentRef?: string;
+  /** Exact quoted text resolved from the evidence anchor. */
+  readonly quote?: string;
   readonly quoteDigest?: Sha256Digest;
+  /** Logical source resolved to a current revision token by Native. */
+  readonly sourceKey?: string;
+  readonly revisionToken?: string;
 }
 
 export interface ReadSetEntry {
   readonly inputRef: string;
   readonly kind: "snapshot-document" | "projection" | "evidence" | "signal";
+  /** Optional explicit resolver kind; required for scene-body vs snapshot. */
+  readonly sourceKind?: string;
+  /** The exact source revision observed by this reconciliation pass. */
+  readonly revisionToken: string;
 }
 
 /**

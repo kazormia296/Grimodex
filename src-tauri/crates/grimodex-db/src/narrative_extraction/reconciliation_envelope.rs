@@ -12,6 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use super::source_revision::resolve_source_revision;
+
 pub(crate) const ORIGIN_ENVELOPED: &str = "enveloped";
 pub(crate) const ORIGIN_LEGACY_UNBOUND: &str = "legacy-unbound";
 
@@ -52,6 +54,33 @@ pub(crate) fn load_source_basis_rows(
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub(crate) fn load_read_set_rows(envelope: &Value) -> anyhow::Result<Vec<SourceBasisRow>> {
+    let object = envelope
+        .as_object()
+        .ok_or_else(|| anyhow!("NEX_READ_SET_DRIFT: envelope is not an object"))?;
+    let read_set = required_array(object, "readSet")?;
+    let mut rows = Vec::with_capacity(read_set.len());
+    for (ordinal, value) in read_set.iter().enumerate() {
+        let entry = value.as_object().ok_or_else(|| {
+            anyhow!("NEX_READ_SET_DRIFT: read-set entry {ordinal} is not an object")
+        })?;
+        let source_key = required_string(entry, "inputRef")?;
+        let kind = required_string(entry, "kind")?;
+        let source_kind = optional_string(entry, "sourceKind")?
+            .map(str::to_owned)
+            .unwrap_or(source_kind_for_read_set(kind)?.to_string());
+        let revision_token = required_string(entry, "revisionToken")?;
+        rows.push(SourceBasisRow {
+            ordinal: i64::try_from(ordinal).context("read-set ordinal overflow")?,
+            source_kind,
+            source_key: source_key.to_owned(),
+            revision_token: revision_token.to_owned(),
+            observed_at: None,
+        });
+    }
     Ok(rows)
 }
 
@@ -149,6 +178,8 @@ pub(crate) fn validate_reconciliation_envelope(
     );
     let mut read_refs = HashSet::new();
     let mut read_kinds = BTreeMap::new();
+    let mut read_revision_tokens = BTreeMap::new();
+    let mut has_revision_tokens = false;
     for (index, value) in read_set_values.iter().enumerate() {
         let entry = value.as_object().ok_or_else(|| {
             anyhow!("NEX_ENVELOPE_READ_SET_INVALID: entry {index} is not an object")
@@ -167,6 +198,26 @@ pub(crate) fn validate_reconciliation_envelope(
             "NEX_ENVELOPE_READ_SET_KIND_INVALID: unsupported read-set kind '{kind}'"
         );
         read_kinds.insert(input_ref.to_owned(), kind.to_owned());
+        if let Some(source_kind) = optional_string(entry, "sourceKind")? {
+            anyhow::ensure!(
+                !source_kind.is_empty(),
+                "NEX_ENVELOPE_READ_SET_INVALID: sourceKind must not be empty"
+            );
+        }
+        if let Some(revision_token) = optional_string(entry, "revisionToken")? {
+            anyhow::ensure!(
+                !revision_token.is_empty(),
+                "NEX_ENVELOPE_READ_SET_INVALID: revisionToken must not be empty"
+            );
+            has_revision_tokens = true;
+            read_revision_tokens.insert(input_ref.to_owned(), revision_token.to_owned());
+        }
+    }
+    if has_revision_tokens {
+        anyhow::ensure!(
+            read_revision_tokens.len() == read_set_values.len(),
+            "NEX_ENVELOPE_READ_SET_TOKEN_MISSING: every read-set entry must carry revisionToken"
+        );
     }
 
     for source in &source_basis {
@@ -198,15 +249,33 @@ pub(crate) fn validate_reconciliation_envelope(
             evidence_refs.insert(evidence_ref),
             "NEX_ENVELOPE_EVIDENCE_DUPLICATE: evidenceRef '{evidence_ref}' is duplicated"
         );
-        let document_ref = optional_string(evidence, "documentRef")?;
+        let document_ref = required_string(evidence, "documentRef")?;
+        let evidence_source_key = required_string(evidence, "sourceKey")?;
+        let evidence_revision_token = required_string(evidence, "revisionToken")?;
         anyhow::ensure!(
             read_refs.contains(evidence_ref)
-                || document_ref.is_some_and(|reference| read_refs.contains(reference)),
-            "NEX_ENVELOPE_EVIDENCE_NOT_READ: evidenceRef '{evidence_ref}' is absent from readSet"
+                || read_refs.contains(document_ref)
+                || read_refs.contains(evidence_source_key),
+            "NEX_ENVELOPE_EVIDENCE_NOT_READ: evidenceRef '{evidence_ref}' has no read source"
         );
-        if let Some(quote_digest) = optional_string(evidence, "quoteDigest")? {
-            ensure_sha256_digest(quote_digest, "quoteDigest")?;
-        }
+        anyhow::ensure!(
+            read_refs.contains(evidence_source_key),
+            "NEX_ENVELOPE_EVIDENCE_NOT_READ: evidence sourceKey '{evidence_source_key}' is absent from readSet"
+        );
+        anyhow::ensure!(
+            read_revision_tokens
+                .get(evidence_source_key)
+                .map(String::as_str)
+                == Some(evidence_revision_token),
+            "NEX_ENVELOPE_EVIDENCE_TOKEN_MISMATCH: evidence revisionToken differs from readSet"
+        );
+        let quote = required_string(evidence, "quote")?;
+        let quote_digest = required_string(evidence, "quoteDigest")?;
+        ensure_sha256_digest(quote_digest, "quoteDigest")?;
+        anyhow::ensure!(
+            quote_digest == digest_bytes(quote.as_bytes()),
+            "NEX_ENVELOPE_EVIDENCE_QUOTE_DIGEST_MISMATCH: quoteDigest does not match quote"
+        );
     }
 
     let supplied_read_set_digest = required_string(object, "readSetDigest")?;
@@ -250,6 +319,67 @@ pub(crate) fn validate_reconciliation_envelope(
     }))
 }
 
+/// Validate the live revision vector at proposal/revision save time. Legacy
+/// envelopes without read-set tokens remain readable for migration, while all
+/// new product envelopes carry tokens and are checked before persistence.
+pub(crate) fn validate_envelope_source_tokens(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    envelope: &Value,
+) -> anyhow::Result<()> {
+    let read_set = required_array(
+        envelope
+            .as_object()
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_INVALID: envelope must be an object"))?,
+        "readSet",
+    )?;
+    if read_set.is_empty() {
+        return Ok(());
+    }
+    let strict = read_set.iter().any(|entry| {
+        entry
+            .as_object()
+            .and_then(|object| object.get("revisionToken"))
+            .is_some()
+    });
+    if !strict {
+        return Ok(());
+    }
+    for (index, entry) in read_set.iter().enumerate() {
+        let object = entry.as_object().ok_or_else(|| {
+            anyhow!("NEX_ENVELOPE_READ_SET_INVALID: entry {index} is not an object")
+        })?;
+        let input_ref = required_string(object, "inputRef")?;
+        let kind = required_string(object, "kind")?;
+        let source_kind = optional_string(object, "sourceKind")?.unwrap_or_else(|| {
+            match kind {
+                "snapshot-document" => "snapshot-document",
+                "projection" => "projection",
+                "evidence" => "evidence-anchor",
+                "signal" => "signal",
+                _ => kind,
+            }
+        });
+        let expected = required_string(object, "revisionToken")?;
+        let current = resolve_source_revision(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            input_ref,
+        )?;
+        anyhow::ensure!(
+            current.revision_token == expected,
+            "NEX_READ_SET_STALE: input '{}' expected '{}' but found '{}'",
+            input_ref,
+            expected,
+            current.revision_token
+        );
+    }
+    Ok(())
+}
+
 fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> anyhow::Result<&'a str> {
     let value = object
         .get(field)
@@ -273,6 +403,20 @@ fn read_set_kind_for_source_kind(source_kind: &str) -> anyhow::Result<&'static s
         other => Err(anyhow!(
             "NEX_ENVELOPE_SOURCE_KIND_INVALID: unsupported source kind '{other}'"
         )),
+    }
+}
+
+fn source_kind_for_read_set(kind: &str) -> anyhow::Result<&'static str> {
+    match kind {
+        "snapshot-document" => Ok("snapshot-document"),
+        "projection" => Ok("domain-projection"),
+        "evidence" => Ok("evidence-anchor"),
+        "signal" => anyhow::bail!(
+            "NEX_SOURCE_KIND_UNSUPPORTED: signal read-set entries have no registered resolver"
+        ),
+        other => anyhow::bail!(
+            "NEX_SOURCE_KIND_UNSUPPORTED: read-set kind '{other}' has no registered resolver"
+        ),
     }
 }
 

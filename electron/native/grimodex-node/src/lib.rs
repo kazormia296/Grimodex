@@ -4594,6 +4594,22 @@ impl Backend {
         .await
     }
 
+    /// Human review has a separate Native endpoint so an AI/automation
+    /// caller cannot turn `createdBy` into a human authority grant.
+    #[napi]
+    pub async fn narrative_extraction_append_human_decision(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_append_human_decision,
+        )
+        .await
+    }
+
     #[napi]
     pub async fn narrative_extraction_revise_and_decide(
         &self,
@@ -4604,6 +4620,34 @@ impl Backend {
             "payload",
             payload,
             narrative_extraction::narrative_extraction_revise_and_decide,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_revise_and_decide_as_human(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_revise_and_decide_as_human,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn narrative_extraction_set_human_field_lock(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            narrative_extraction::narrative_extraction_set_human_field_lock,
         )
         .await
     }

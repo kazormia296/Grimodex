@@ -13,7 +13,7 @@ import {
   listResumableRuns,
 } from "@/application/narrative-extraction/runRepository";
 import {
-  appendDecision,
+  appendHumanDecision,
   appendRevision,
 } from "@/application/narrative-extraction/proposalRepository";
 import {
@@ -763,7 +763,7 @@ export async function recordChronicleProposalDecision(args: {
   readonly decision: "approved" | "rejected" | "deferred" | "held";
   readonly decisionJson?: Readonly<Record<string, unknown>>;
 }): Promise<void> {
-  await appendDecision({
+  await appendHumanDecision({
     runId: args.runId,
     projectId: args.projectId,
     proposalId: args.proposalId,

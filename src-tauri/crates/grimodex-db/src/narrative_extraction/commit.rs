@@ -52,7 +52,8 @@ use super::plot_thread_operations::{
     OP_KIND_PLOT_THREAD_CREATE, OP_KIND_PLOT_THREAD_PATCH,
 };
 use super::reconciliation_envelope::{
-    load_source_basis_rows, validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED,
+    load_read_set_rows, load_source_basis_rows, validate_reconciliation_envelope, SourceBasisRow,
+    ORIGIN_ENVELOPED,
 };
 use super::repository::{ensure_proposal_not_applied, ensure_run_project};
 use super::semantic_bindings::{
@@ -165,11 +166,16 @@ pub fn narrative_extraction_prepare_commit(
                 &payload.proposal_set_id,
                 &applications,
             )?;
+            let validation_commit_map = build_validation_commit_map(
+                &payload.entity_bindings,
+                &payload.operations,
+            )?;
             validate_operation_field_authority(
                 conn,
                 &payload.project_id,
                 &applications,
                 &payload.operations,
+                &validation_commit_map,
             )?;
             let authority_digest =
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
@@ -265,6 +271,58 @@ fn application_pairs(applications: &[CommitApplicationRef]) -> Vec<(String, Stri
             )
         })
         .collect()
+}
+
+fn build_validation_commit_map(
+    seeds: &[EntityBindingSeed],
+    operations: &[CommitOperation],
+) -> anyhow::Result<CommitMap> {
+    let mut commit_map = CommitMap::new();
+    for seed in seeds {
+        commit_map.insert_binding(CodexEntityBinding {
+            narrative_entity_id: seed.narrative_entity_id.clone(),
+            codex_entry_id: seed.codex_entry_id.clone(),
+            source: if seed.source.is_empty() {
+                "existing".to_string()
+            } else {
+                seed.source.clone()
+            },
+        })?;
+    }
+    for operation in operations {
+        match operation.kind.as_str() {
+            OP_KIND_ENTRY_CREATE => {
+                let value = parse_entry_create_payload(&operation.payload)?;
+                if let Some(narrative_entity_id) = value.narrative_entity_id {
+                    commit_map.insert_binding(CodexEntityBinding {
+                        narrative_entity_id,
+                        codex_entry_id: value.entry_id,
+                        source: "created".to_string(),
+                    })?;
+                }
+            }
+            OP_KIND_ENTRY_PATCH => {
+                let value = parse_entry_patch_payload(&operation.payload)?;
+                if let Some(narrative_entity_id) = value.narrative_entity_id {
+                    commit_map.insert_binding(CodexEntityBinding {
+                        narrative_entity_id,
+                        codex_entry_id: value.entry_id,
+                        source: "existing".to_string(),
+                    })?;
+                }
+            }
+            OP_KIND_ENTITY_BIND_EXISTING => {
+                let value = parse_entity_bind_existing_payload(&operation.payload)?;
+                commit_map.insert_binding(CodexEntityBinding {
+                    narrative_entity_id: value.narrative_entity_id,
+                    codex_entry_id: value.entry_id,
+                    source: "existing".to_string(),
+                })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(commit_map)
 }
 
 fn digest_authority_rows(
@@ -403,9 +461,22 @@ fn build_source_contract(
                 .get("kind")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("NEX_READ_SET_DRIFT: read-set kind is missing"))?;
-            let source_kind = source_kind_for_read_set(kind)?;
+            let source_kind = object
+                .get("sourceKind")
+                .and_then(Value::as_str)
+                .map(Ok)
+                .unwrap_or_else(|| source_kind_for_read_set(kind))?;
             let current =
                 resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
+            if let Some(expected) = object.get("revisionToken").and_then(Value::as_str) {
+                anyhow::ensure!(
+                    current.revision_token == expected,
+                    "NEX_READ_SET_STALE: input '{}' expected '{}' but found '{}'",
+                    input_ref,
+                    expected,
+                    current.revision_token
+                );
+            }
             read_rows.push(json!({
                 "proposalId": proposal_id,
                 "revisionId": revision_id,
@@ -633,11 +704,16 @@ pub fn narrative_extraction_apply_commit(
                 &sealed_plan.proposal_set_id,
                 &applications,
             )?;
+            let validation_commit_map = build_validation_commit_map(
+                &sealed_plan.entity_bindings,
+                &sealed_plan.operations,
+            )?;
             validate_operation_field_authority(
                 conn,
                 &sealed_plan.project_id,
                 &applications,
                 &sealed_plan.operations,
+                &validation_commit_map,
             )?;
             validate_retraction_targets(conn, &sealed_plan.project_id, &applications)?;
             let current_authority_digest =
@@ -1216,15 +1292,24 @@ pub fn narrative_extraction_apply_commit(
                     ],
                 )?;
                 let source_basis = load_source_basis_rows(conn, &application.revision_id)?;
+                let envelope_json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions
+                      WHERE id = ?1 AND proposal_id = ?2",
+                    params![application.revision_id, application.proposal_id],
+                    |row| row.get(0),
+                )?;
+                let envelope: Value = serde_json::from_str(&envelope_json)?;
+                let read_set = load_read_set_rows(&envelope)?;
                 conn.execute(
                     "INSERT INTO narrative_projection_freshness
                         (application_id, status, reason_json, version, updated_at)
                      VALUES (?1, 'fresh', NULL, 0, ?2)",
                     params![application_id, now],
                 )?;
-                for source in source_basis {
+                for source in source_basis.into_iter().chain(read_set) {
                     conn.execute(
-                        "INSERT INTO narrative_projection_dependencies
+                        "INSERT OR IGNORE INTO narrative_projection_dependencies
                             (application_id, source_kind, source_key,
                              observed_revision_token, propagation)
                          VALUES (?1, ?2, ?3, ?4, 'freshness-only')",
@@ -1243,6 +1328,7 @@ pub fn narrative_extraction_apply_commit(
                 &application_pairs(&payload.applications),
                 &payload.operations,
                 &now,
+                &commit_map,
             )?;
 
             let after_json = json!({

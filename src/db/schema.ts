@@ -2361,7 +2361,12 @@ export const narrativeFieldAuthority = sqliteTable(
   },
   (table) => [
     primaryKey({
-      columns: [table.projectId, table.entityKind, table.entityId, table.fieldPath],
+      columns: [
+        table.projectId,
+        table.entityKind,
+        table.entityId,
+        table.fieldPath,
+      ],
     }),
     index("idx_narrative_field_authority_entity").on(
       table.projectId,

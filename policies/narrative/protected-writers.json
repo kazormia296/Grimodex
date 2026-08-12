@@ -228,5 +228,33 @@
     "protection": "table",
     "writer": "narrative.authority",
     "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-revision-envelope",
+    "table": "narrative_revision_source_basis",
+    "protection": "table",
+    "writer": "narrative.revision-envelope",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-projection-freshness",
+    "table": "narrative_projection_freshness",
+    "protection": "table",
+    "writer": "narrative.freshness",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-projection-freshness",
+    "table": "narrative_projection_dependencies",
+    "protection": "table",
+    "writer": "narrative.freshness",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-field-authority",
+    "table": "narrative_field_authority",
+    "protection": "table",
+    "writer": "narrative.field-authority",
+    "enforcement": "active"
   }
 ]

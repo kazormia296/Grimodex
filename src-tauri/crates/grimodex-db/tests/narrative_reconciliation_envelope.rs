@@ -29,7 +29,7 @@ fn create_run(db: &Database, run_id: &str, task_id: &str) {
             scope_json: json!({}),
             spec_json: json!({ "domain": "chronicle" }),
             spec_digest: "spec".to_string(),
-            snapshot_digest: None,
+            snapshot_digest: Some("revision-1".to_string()),
             catalog_digest: None,
             registry_digest: None,
             coverage_json: None,
@@ -45,14 +45,20 @@ fn create_run(db: &Database, run_id: &str, task_id: &str) {
 }
 
 fn envelope(run_id: &str, task_id: &str) -> Value {
+    let source_key = format!("snapshot:{run_id}");
+    let read_set = json!([{
+        "kind": "snapshot-document",
+        "inputRef": source_key,
+        "revisionToken": "revision-1"
+    }]);
     json!({
         "changeKind": "revise",
-        "readSetDigest": "sha256:6fc6334c25d478c13c06bc71c83644e4709e0578798f5d6d7f0e087ec11f4481",
-        "readSet": [{ "kind": "snapshot-document", "inputRef": "scene-1" }],
+        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
+        "readSet": read_set,
         "evidenceSet": [],
         "sourceBasis": [{
             "revisionToken": "revision-1",
-            "sourceKey": "scene-1",
+            "sourceKey": source_key,
             "sourceKind": "snapshot-document"
         }],
         "proposalSchemaVersion": "1",
@@ -157,9 +163,7 @@ fn native_rejects_read_set_digest_and_identity_mismatches() {
         .to_string()
         .contains("NEX_ENVELOPE_READ_SET_DIGEST_MISMATCH"));
 
-    let mut bad_task = envelope("run-envelope-errors", "task-other");
-    bad_task["readSetDigest"] =
-        json!("sha256:6fc6334c25d478c13c06bc71c83644e4709e0578798f5d6d7f0e087ec11f4481");
+    let bad_task = envelope("run-envelope-errors", "task-other");
     let error = narrative_extraction::narrative_extraction_save_proposal_set(
         &db,
         SaveProposalSetPayload {

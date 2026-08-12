@@ -540,10 +540,28 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"decisionId":"d1","proposalId":"p1","revisionId":"rv1","decision":"approved","status":"approved"}',
       ),
     ) as never,
+    narrativeExtractionAppendHumanDecision: record(
+      "narrativeExtractionAppendHumanDecision",
+      Promise.resolve(
+        '{"decisionId":"d1","proposalId":"p1","revisionId":"rv1","decision":"approved","status":"approved"}',
+      ),
+    ) as never,
     narrativeExtractionReviseAndDecide: record(
       "narrativeExtractionReviseAndDecide",
       Promise.resolve(
         '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"decisionId":"d1","decision":"approved","status":"approved"}',
+      ),
+    ) as never,
+    narrativeExtractionReviseAndDecideAsHuman: record(
+      "narrativeExtractionReviseAndDecideAsHuman",
+      Promise.resolve(
+        '{"proposalId":"p1","revisionId":"rv2","revisionNumber":2,"decisionId":"d1","decision":"approved","status":"approved"}',
+      ),
+    ) as never,
+    narrativeExtractionSetHumanFieldLock: record(
+      "narrativeExtractionSetHumanFieldLock",
+      Promise.resolve(
+        '{"projectId":"p1","entityKind":"codex-entry","entityId":"e1","fieldPath":"/summary","locked":true,"version":1}',
       ),
     ) as never,
     narrativeExtractionPrepareCommit: record(
@@ -3623,6 +3641,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_system_fonts",
       "map_write_bundle",
       "narrative_extraction_append_decision",
+      "narrative_extraction_append_human_decision",
       "narrative_extraction_append_revision",
       "narrative_extraction_apply_commit",
       "narrative_extraction_cancel_run",
@@ -3637,7 +3656,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",
       "narrative_extraction_revise_and_decide",
+      "narrative_extraction_revise_and_decide_as_human",
       "narrative_extraction_save_proposal_set",
+      "narrative_extraction_set_human_field_lock",
       "narrative_extraction_undo_commit",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",

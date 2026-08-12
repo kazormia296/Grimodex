@@ -290,6 +290,17 @@ pub struct UndoCommitPayload {
     pub request_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanFieldLockPayload {
+    pub project_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub field_path: String,
+    pub expected_version: i64,
+    pub locked: bool,
+}
+
 pub(crate) fn default_object_json() -> Value {
     Value::Object(Default::default())
 }

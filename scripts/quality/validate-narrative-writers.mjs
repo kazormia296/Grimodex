@@ -13,7 +13,10 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
 const REGISTRY_PATH = path.join(
   REPO_ROOT,
   "policies/narrative/protected-writers.json",
@@ -73,14 +76,30 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   project_calendar: ["projectCalendar"],
   narrative_protected_fixture: ["narrativeProtectedFixture"],
   narrative_protected_shared_fixture: ["narrativeProtectedSharedFixture"],
+  narrative_revision_source_basis: ["narrativeRevisionSourceBasis"],
+  narrative_projection_freshness: ["narrativeProjectionFreshness"],
+  narrative_projection_dependencies: ["narrativeProjectionDependencies"],
+  narrative_field_authority: ["narrativeFieldAuthority"],
 };
+
+// These tables are Native-only authority/provenance state. Keep the list
+// explicit so adding one to schema.ts without a protected writer entry fails
+// the inverse coverage gate.
+const NARRATIVE_AUTHORITY_TABLES = [
+  "narrative_revision_source_basis",
+  "narrative_projection_freshness",
+  "narrative_projection_dependencies",
+  "narrative_field_authority",
+];
 
 const MUTATION_METHODS = new Set(["insert", "update", "delete"]);
 
 function shouldScanFile(filePath) {
   if (!filePath.endsWith(".ts") && !filePath.endsWith(".tsx")) return false;
   const normalized = filePath.split(path.sep).join("/");
-  return !EXCLUDED_PATH_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+  return !EXCLUDED_PATH_FRAGMENTS.some((fragment) =>
+    normalized.includes(fragment),
+  );
 }
 
 function walkSourceFiles(dir, out = []) {
@@ -104,6 +123,21 @@ function collectScanFiles(repoRoot) {
     walkSourceFiles(path.join(repoRoot, rootDir), files);
   }
   return files;
+}
+
+function findUnregisteredNarrativeAuthorityTables(repoRoot, registry) {
+  const schemaPath = path.join(repoRoot, "src/db/schema.ts");
+  if (!existsSync(schemaPath)) return [];
+  const schema = readFileSync(schemaPath, "utf8");
+  const schemaTables = new Set(
+    [...schema.matchAll(/sqliteTable\(\s*["'](narrative_[a-z0-9_]+)["']/g)].map(
+      (match) => match[1],
+    ),
+  );
+  const registered = new Set(registry.map((entry) => entry.table));
+  return NARRATIVE_AUTHORITY_TABLES.filter(
+    (table) => schemaTables.has(table) && !registered.has(table),
+  );
 }
 
 function protectedIdentifiersForTables(tables) {
@@ -161,7 +195,11 @@ function camelToSnake(value) {
 
 function propertyNameText(node) {
   if (!node) return null;
-  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) {
+  if (
+    ts.isIdentifier(node) ||
+    ts.isStringLiteral(node) ||
+    ts.isNumericLiteral(node)
+  ) {
     return node.text;
   }
   return null;
@@ -225,7 +263,9 @@ function tableForIdentifier(identifier, protectedBindings, protectedIdents) {
       ? identifier
       : null;
   if (!resolved) return null;
-  for (const [table, identifiers] of Object.entries(TABLE_TO_DRIZZLE_IDENTIFIERS)) {
+  for (const [table, identifiers] of Object.entries(
+    TABLE_TO_DRIZZLE_IDENTIFIERS,
+  )) {
     if (identifiers.includes(resolved)) return table;
   }
   return resolved;
@@ -241,7 +281,10 @@ function findDrizzleMutations(
   const violations = new Set();
 
   function visit(node) {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression)
+    ) {
       const method = node.expression.name.text;
       if (MUTATION_METHODS.has(method) && node.arguments.length > 0) {
         const resolved = resolveProtectedArg(
@@ -275,7 +318,8 @@ function findDrizzleMutations(
             columns === null ||
             [...columns].some(
               (column) =>
-                entry.columns.includes(column) || column === entry.versionColumn,
+                entry.columns.includes(column) ||
+                column === entry.versionColumn,
             )
           ) {
             violations.add(table);
@@ -332,7 +376,9 @@ function findRawSqlMutations(sourceFile, tableNames) {
 
 function analyzeFile(filePath, scanEntries, protectedIdents) {
   const source = readFileSync(filePath, "utf8");
-  const scriptKind = filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const scriptKind = filePath.endsWith(".tsx")
+    ? ts.ScriptKind.TSX
+    : ts.ScriptKind.TS;
   const sourceFile = ts.createSourceFile(
     filePath,
     source,
@@ -341,7 +387,10 @@ function analyzeFile(filePath, scanEntries, protectedIdents) {
     scriptKind,
   );
 
-  const importedBindings = collectImportedProtectedBindings(sourceFile, protectedIdents);
+  const importedBindings = collectImportedProtectedBindings(
+    sourceFile,
+    protectedIdents,
+  );
   const drizzle = findDrizzleMutations(
     sourceFile,
     importedBindings,
@@ -372,8 +421,14 @@ export function validateNarrativeWriters({
   const scanEntries = includeDeferred ? [...active, ...deferred] : active;
   const scanTables = scanEntries.map((entry) => entry.table);
   const protectedIdents = protectedIdentifiersForTables(scanTables);
-  const tableToEntry = new Map(scanEntries.map((entry) => [entry.table, entry]));
+  const tableToEntry = new Map(
+    scanEntries.map((entry) => [entry.table, entry]),
+  );
   const violations = [];
+  const registryCoverageViolations = findUnregisteredNarrativeAuthorityTables(
+    repoRoot,
+    registry,
+  );
   /** @type {Map<string, { aggregate: string, table: string, enforcement: string, nativeWriter: string, legacyWriters: Set<string> }>} */
   const inventoryByTable = new Map();
 
@@ -440,6 +495,7 @@ export function validateNarrativeWriters({
     deferredCount: deferred.length,
     scannedFiles: files.length,
     violations,
+    registryCoverageViolations,
     inventory,
   };
 }
@@ -466,6 +522,7 @@ function main() {
           deferredCount: result.deferredCount,
           scannedFiles: result.scannedFiles,
           violations: result.violations,
+          registryCoverageViolations: result.registryCoverageViolations,
           inventory: result.inventory,
         },
         null,
@@ -505,6 +562,17 @@ function main() {
     return;
   }
 
+  if (result.registryCoverageViolations.length > 0) {
+    console.error(
+      "Native narrative authority tables are missing protected-writer registry entries:",
+    );
+    for (const table of result.registryCoverageViolations) {
+      console.error(`  - ${table}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+
   if (args.requireNoDeferred && result.deferredCount > 0) {
     console.error(
       `validate-narrative-writers: expected deferred=0, found ${result.deferredCount}`,
@@ -520,6 +588,9 @@ function main() {
   }
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  pathToFileURL(process.argv[1]).href === import.meta.url
+) {
   main();
 }

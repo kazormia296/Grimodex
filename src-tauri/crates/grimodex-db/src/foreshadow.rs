@@ -350,6 +350,40 @@ fn default_secret() -> bool {
     true
 }
 
+pub(crate) fn record_manual_foreshadow_fields(
+    conn: &Connection,
+    project_id: &str,
+    foreshadow_id: &str,
+    field_paths: &[&str],
+    updated_at: i64,
+) -> anyhow::Result<()> {
+    let updated_at = updated_at.to_string();
+    crate::narrative_extraction::record_human_field_write(
+        conn,
+        project_id,
+        "foreshadow",
+        foreshadow_id,
+        field_paths,
+        &updated_at,
+    )
+}
+
+const FORESHADOW_AUTHORITY_FIELDS: &[&str] = &[
+    "/title",
+    "/intent",
+    "/notes",
+    "/payoffSceneId",
+    "/payoffFromPos",
+    "/payoffToPos",
+    "/payoffConfirmed",
+    "/abandoned",
+    "/secret",
+    "/loadBearing",
+    "/setups",
+    "/payoffs",
+    "/codexEntryIds",
+];
+
 fn validate_payoff_anchor(
     scene_id: Option<&str>,
     from_pos: Option<i64>,
@@ -580,6 +614,13 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
                 .ok_or_else(|| {
                     anyhow::anyhow!("foreshadow create completed without a persisted row")
                 })?;
+            record_manual_foreshadow_fields(
+                conn,
+                &project_id,
+                &id,
+                FORESHADOW_AUTHORITY_FIELDS,
+                now,
+            )?;
             Ok((project_id.clone(), row))
         },
         |conn| load_row(conn, "foreshadows", &id),
@@ -734,6 +775,13 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
                 &[Value::String(id.clone())],
                 "get",
             )?;
+            record_manual_foreshadow_fields(
+                conn,
+                &project_id,
+                &id,
+                FORESHADOW_AUTHORITY_FIELDS,
+                now,
+            )?;
             Ok(rows
                 .first()
                 .cloned()
@@ -833,6 +881,13 @@ pub fn delete(
                 payload: serde_json::json!({ "baseVersion": base_version }).to_string(),
                 timestamp,
             }],
+        )?;
+        record_manual_foreshadow_fields(
+            conn,
+            &project_id,
+            &id,
+            FORESHADOW_AUTHORITY_FIELDS,
+            chrono::Utc::now().timestamp_millis(),
         )?;
 
         Ok(serde_json::json!({
@@ -1224,7 +1279,26 @@ pub fn update_setup(
             Database::execute_with_conn(conn, &sql, &assignment_values, "run")?;
             conn.changes() == 1
         };
-        finish_foreshadow_child_write(conn, &foreshadow_id, changed, Some(base_version), now)
+        let project_id: String = conn.query_row(
+            "SELECT project_id FROM foreshadows WHERE id = ?1",
+            params![foreshadow_id],
+            |row| row.get(0),
+        )?;
+        let result = finish_foreshadow_child_write(
+            conn,
+            &foreshadow_id,
+            changed,
+            Some(base_version),
+            now,
+        )?;
+        record_manual_foreshadow_fields(
+            conn,
+            &project_id,
+            &foreshadow_id,
+            &["/setups"],
+            now,
+        )?;
+        Ok(result)
     })
 }
 
@@ -1276,12 +1350,30 @@ pub fn link_codex(
         if !matches!(projects, Some((ref left, ref right)) if left == right) {
             anyhow::bail!("foreshadow Codex link must stay within one project");
         }
+        let project_id = projects
+            .as_ref()
+            .map(|(project_id, _)| project_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("foreshadow Codex link project is missing"))?;
         let changed = conn.execute(
             "INSERT OR IGNORE INTO foreshadow_codex_links
                 (foreshadow_id, codex_entry_id) VALUES (?1, ?2)",
             params![foreshadow_id, codex_id],
         )? == 1;
-        finish_foreshadow_child_write(conn, &foreshadow_id, changed, Some(base_version), now)
+        let result = finish_foreshadow_child_write(
+            conn,
+            &foreshadow_id,
+            changed,
+            Some(base_version),
+            now,
+        )?;
+        record_manual_foreshadow_fields(
+            conn,
+            &project_id,
+            &foreshadow_id,
+            &["/codexEntryIds"],
+            now,
+        )?;
+        Ok(result)
     })
 }
 
@@ -1297,12 +1389,31 @@ pub fn unlink_codex(
     // removable after `link_codex` starts rejecting their creation.
     let now = chrono::Utc::now().timestamp_millis();
     with_immediate_transaction(db, |conn| {
+        let project_id: String = conn.query_row(
+            "SELECT project_id FROM foreshadows WHERE id = ?1",
+            params![foreshadow_id],
+            |row| row.get(0),
+        )?;
         let changed = conn.execute(
             "DELETE FROM foreshadow_codex_links
               WHERE foreshadow_id = ?1 AND codex_entry_id = ?2",
             params![foreshadow_id, codex_id],
         )? == 1;
-        finish_foreshadow_child_write(conn, &foreshadow_id, changed, Some(base_version), now)
+        let result = finish_foreshadow_child_write(
+            conn,
+            &foreshadow_id,
+            changed,
+            Some(base_version),
+            now,
+        )?;
+        record_manual_foreshadow_fields(
+            conn,
+            &project_id,
+            &foreshadow_id,
+            &["/codexEntryIds"],
+            now,
+        )?;
+        Ok(result)
     })
 }
 
@@ -1553,6 +1664,20 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                     Some(payload.base_version),
                     now,
                 )?;
+                if changed {
+                    let project_id: String = conn.query_row(
+                        "SELECT project_id FROM foreshadows WHERE id = ?1",
+                        params![foreshadow_id],
+                        |row| row.get(0),
+                    )?;
+                    record_manual_foreshadow_fields(
+                        conn,
+                        &project_id,
+                        &foreshadow_id,
+                        &["/setups"],
+                        now,
+                    )?;
+                }
                 Ok(serde_json::json!({ "setupId": null, "foreshadow": foreshadow }))
             })
         }
@@ -1578,6 +1703,20 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                 Some(payload.base_version),
                 now,
             )?;
+            if changed {
+                let project_id: String = conn.query_row(
+                    "SELECT project_id FROM foreshadows WHERE id = ?1",
+                    params![foreshadow_id],
+                    |row| row.get(0),
+                )?;
+                record_manual_foreshadow_fields(
+                    conn,
+                    &project_id,
+                    &foreshadow_id,
+                    &["/setups"],
+                    now,
+                )?;
+            }
             Ok(serde_json::json!({ "setupId": null, "foreshadow": foreshadow }))
         }),
         "reinsert" => with_immediate_transaction(db, |conn| {
@@ -1683,6 +1822,18 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                 &foreshadow_id,
                 true,
                 Some(payload.base_version),
+                now,
+            )?;
+            let project_id: String = conn.query_row(
+                "SELECT project_id FROM foreshadows WHERE id = ?1",
+                params![foreshadow_id],
+                |row| row.get(0),
+            )?;
+            record_manual_foreshadow_fields(
+                conn,
+                &project_id,
+                &foreshadow_id,
+                &["/setups"],
                 now,
             )?;
             Ok(serde_json::json!({ "setupId": new_id, "foreshadow": foreshadow }))
@@ -1926,13 +2077,26 @@ pub fn save_anchors_for_scene(
                     foreshadow_id
                 )
             })?;
-            authoritative.push(finish_foreshadow_child_write(
+            let result = finish_foreshadow_child_write(
                 conn,
                 &foreshadow_id,
                 changed_roots.contains(&foreshadow_id),
                 Some(expected_base_version),
                 now,
-            )?);
+            )?;
+            let project_id: String = conn.query_row(
+                "SELECT project_id FROM foreshadows WHERE id = ?1",
+                params![foreshadow_id],
+                |row| row.get(0),
+            )?;
+            record_manual_foreshadow_fields(
+                conn,
+                &project_id,
+                &foreshadow_id,
+                &["/setups", "/payoffs"],
+                now,
+            )?;
+            authoritative.push(result);
         }
         Ok(authoritative)
     })

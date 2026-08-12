@@ -6,14 +6,15 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::field_authority::derive_decision_authority;
+use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
     CreateRunPayload, CreateTaskSeed, FailTaskPayload, FinishTaskPayload, ListResumableRunsPayload,
     ProposalSeed, ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
-    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
+    validate_envelope_source_tokens, validate_reconciliation_envelope, SourceBasisRow,
+    ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -710,6 +711,9 @@ fn insert_proposal_seed(
         run_id,
         seed.reconciliation_envelope.as_ref(),
     )?;
+    if let Some(envelope) = seed.reconciliation_envelope.as_ref() {
+        validate_envelope_source_tokens(conn, project_id, run_id, envelope)?;
+    }
     let origin_kind = if validated_envelope.is_some() {
         ORIGIN_ENVELOPED
     } else {
@@ -894,6 +898,9 @@ fn append_revision_on_conn(
         &payload.run_id,
         envelope_input,
     )?;
+    if let Some(envelope) = envelope_input {
+        validate_envelope_source_tokens(conn, &payload.project_id, &payload.run_id, envelope)?;
+    }
     let origin_kind = if validated_envelope.is_some() {
         ORIGIN_ENVELOPED
     } else {
@@ -967,10 +974,37 @@ fn append_revision_on_conn(
 }
 
 pub fn append_decision(db: &Database, payload: AppendDecisionPayload) -> anyhow::Result<Value> {
+    append_decision_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Automated {
+            actor_id: "electron:automated-review".to_string(),
+        },
+    )
+}
+
+pub fn append_human_decision(
+    db: &Database,
+    payload: AppendDecisionPayload,
+) -> anyhow::Result<Value> {
+    append_decision_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Human {
+            actor_id: "electron:human-review".to_string(),
+        },
+    )
+}
+
+fn append_decision_with_actor(
+    db: &Database,
+    payload: AppendDecisionPayload,
+    actor: TrustedDecisionActor,
+) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
-            append_decision_on_conn(conn, &payload)
+            append_decision_on_conn(conn, &payload, &actor)
         })
     })
 }
@@ -981,6 +1015,7 @@ pub fn append_decision(db: &Database, payload: AppendDecisionPayload) -> anyhow:
 fn append_decision_on_conn(
     conn: &Connection,
     payload: &AppendDecisionPayload,
+    actor: &TrustedDecisionActor,
 ) -> anyhow::Result<Value> {
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     let decision_value = payload
@@ -994,7 +1029,6 @@ fn append_decision_on_conn(
         .created_by
         .clone()
         .unwrap_or_else(|| "user".to_string());
-    let authority = derive_decision_authority(&created_by, &decision_value)?;
     let proposal_status = map_decision_to_status(&payload.decision)?;
 
     ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
@@ -1028,6 +1062,13 @@ fn append_decision_on_conn(
         "NEX_PROPOSAL_REVISION_MISMATCH: decision revision '{}' is not current",
         payload.revision_id
     );
+    let authority = derive_decision_authority(
+        actor,
+        &payload.project_id,
+        &payload.proposal_id,
+        &payload.revision_id,
+        &decision_value,
+    )?;
 
     conn.execute(
         "INSERT INTO narrative_proposal_decisions
@@ -1075,6 +1116,33 @@ fn append_decision_on_conn(
 /// One `with_immediate_transaction` guards both writes, so an approve can never
 /// leave a fresh revision without its decision (or vice versa).
 pub fn revise_and_decide(db: &Database, payload: ReviseAndDecidePayload) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Automated {
+            actor_id: "electron:automated-review".to_string(),
+        },
+    )
+}
+
+pub fn revise_and_decide_as_human(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Human {
+            actor_id: "electron:human-review".to_string(),
+        },
+    )
+}
+
+fn revise_and_decide_with_actor(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    actor: TrustedDecisionActor,
+) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
@@ -1106,7 +1174,7 @@ pub fn revise_and_decide(db: &Database, payload: ReviseAndDecidePayload) -> anyh
                 decision_json: payload.decision_json.clone(),
                 created_by: payload.created_by.clone(),
             };
-            let decision = append_decision_on_conn(conn, &decision_payload)?;
+            let decision = append_decision_on_conn(conn, &decision_payload, &actor)?;
             let decision_id = decision["decisionId"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("revise_and_decide: missing decisionId"))?

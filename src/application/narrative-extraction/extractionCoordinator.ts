@@ -40,7 +40,10 @@ import {
   loadInlineJsonArtifact,
   rememberInlineJsonArtifact,
 } from "./artifactRepository";
-import { saveChronicleProposalSet } from "./proposalRepository";
+import {
+  buildSnapshotSourceBasis,
+  saveChronicleProposalSet,
+} from "./proposalRepository";
 import {
   buildProjectNarrativeSnapshot,
   type ProjectSnapshotAdapterServices,
@@ -887,6 +890,7 @@ export async function runChronicleExtractionCoordinator(
           projectId: request.projectId,
           taskId: claim.task.taskId,
           sourceRevisionToken: snapshotResult.snapshot.digest,
+          sourceBasis: buildSnapshotSourceBasis(runId, snapshotResult.snapshot),
           summaryJson: {
             proposalCount: proposals.length,
             surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
@@ -896,7 +900,22 @@ export async function runChronicleExtractionCoordinator(
               anchor.id,
               {
                 documentRef: anchor.documentRef,
+                quote: anchor.quote,
                 quoteDigest: anchor.quoteDigest,
+                sourceKey:
+                  snapshotResult.snapshot.documents.find(
+                    (document) => document.ref === anchor.documentRef,
+                  )?.origin.kind === "project-node"
+                    ? `project:scene:${snapshotResult.snapshot.documents.find((document) => document.ref === anchor.documentRef)?.origin.nodeId}`
+                    : undefined,
+                revisionToken: (() => {
+                  const document = snapshotResult.snapshot.documents.find(
+                    (item) => item.ref === anchor.documentRef,
+                  );
+                  return document?.origin.kind === "project-node"
+                    ? `v${document.origin.sourceVersion}@${document.origin.sourceUpdatedAt}`
+                    : undefined;
+                })(),
               },
             ]),
           ),
