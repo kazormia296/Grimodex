@@ -1,23 +1,45 @@
 {
   "schemaVersion": 1,
-  "contractVersion": 6,
   "gateId": "gate-b2",
   "freezeId": "7fbeb8ae-a53f-4aeb-b7dc-39a6587e38ac",
+  "certificationRunId": null,
   "candidateCommitSha": "845852279463ca77fd8d91a51d62b34c6f1a7518",
   "candidateTreeSha": "17a485691580414db9c8660ec4dbea0bff556e6a",
+  "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
   "attemptLedgerId": "grimodex-gate-b2-attempt-ledger-v1",
   "attemptLedgerDigest": "sha256:174af896f912c622dc2b137212eeaadb60622d3b60db90efaf85525a1d7111e5",
   "attemptLedgerAttestation": "fixed-controller-config-v1",
-  "productSchemaVersion": 20,
-  "frozenAt": "2026-08-12T13:45:52.540Z",
-  "candidate": {
-    "commitSha": "845852279463ca77fd8d91a51d62b34c6f1a7518",
-    "treeSha": "17a485691580414db9c8660ec4dbea0bff556e6a",
-    "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
-    "schemaVersion": 20,
-    "attemptLedgerId": "grimodex-gate-b2-attempt-ledger-v1",
-    "attemptLedgerDigest": "sha256:174af896f912c622dc2b137212eeaadb60622d3b60db90efaf85525a1d7111e5",
-    "attemptLedgerAttestation": "fixed-controller-config-v1",
+  "schemaVersionProduct": 20,
+  "verdict": "INCOMPLETE",
+  "reasons": [
+    "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
+    "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
+    "Billed Heavy suites and journey evidence must be recorded against this tree SHA."
+  ],
+  "suiteSummaries": {
+    "requiredLight": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredHeavy": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredJourneys": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 7
+    }
+  },
+  "digests": {
     "writerRegistryDigest": "sha256:fa40567d7eab3ded70970ba4140e9898fd2f9f734467623d7b673a42ada028dd",
     "aiPathRegistryDigest": "sha256:117548ba25c5dd322e2ac6d6fd1506e5b44b39e7279c65f3e4f9da76cd46d478",
     "qualityManifestDigest": "sha256:07dde219b44bd2369e463e88dfa653c3486cf171904d958413744379407583cd",
@@ -25,7 +47,6 @@
     "adrChecklistDigest": "sha256:d6304008d12c629e5c6646aad261cd44acfa69897b46e359636db3e241287096",
     "classificationDigest": "sha256:f1a98cf1470eb6cf57e464b49f635f7084f7ab3aa0071deaff3b27a3bbe8dc08",
     "certificationManifestDigest": "sha256:47d2ca47dc7d9e68f93d80532cd372099dd6bdcc39ff76d269846b95a65f00d4",
-    "certifyBootstrapDigest": "sha256:36fc0d3aac0f1c2c635c9588da6baa1567db6a1482ab1612c671a20721b8d602",
     "certifyRunnerDigest": "sha256:0d58ee497f51f85fda0e334826c14b542e4ffe3825351d2deeae4d4263ed43d7",
     "certifyBindingsDigest": "sha256:e23d8f5a3543d0ae8fd7263f81ee464ed9ec2cafcd70fc0a7c51834c852aba7e",
     "adrValidatorDigest": "sha256:9e1ce0779c349499f9f4b85ff69f8831a815fca70f2db81a633efe73f535da4a",
@@ -39,22 +60,10 @@
     "webConsentBrowserJourneyDigest": "sha256:422cd742fb7a94813800ceea81f150d570229ec0d8e737c341db8536437d4cd3",
     "webConsentBrowserRunnerDigest": "sha256:5b80938d7c88bada059ad07f602d2508f9f5774ae2f0ebdae3b4035c0aabe565",
     "webConsentBrowserConfigDigest": "sha256:ef5d137a4085ba12d97671a51e28ad791ec3b12dc53fbc81d3ecd9b40cccd764",
-    "attemptLedgerConfigDigest": "sha256:936d6784b90c5e467df59b28020d20f8b802eae89260565e9e26a6cd7b625f9e"
+    "attemptLedgerConfigDigest": "sha256:936d6784b90c5e467df59b28020d20f8b802eae89260565e9e26a6cd7b625f9e",
+    "reportDigest": null
   },
-  "freezeRules": {
-    "invalidateOn": [
-      "production code",
-      "prompt",
-      "response schema",
-      "parser",
-      "Human Gold",
-      "writer registry",
-      "runtime policy",
-      "migration",
-      "browser mock",
-      "test harness semantics"
-    ],
-    "docsTypoOnlyRerunHeavy": false,
-    "evaluationCodeChangeRequiresHeavyRerun": true
-  }
+  "heavyAttempts": [],
+  "generatedAt": "2026-08-12T13:45:52.541Z",
+  "notes": "Provisional freeze decision only. Replace after --run-light/--run-heavy/--run-journeys against this candidate."
 }
