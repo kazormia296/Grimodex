@@ -1,6 +1,12 @@
 # Gate B2 — Invariant / Strategy / Signal 分類チェックリスト
 
-ADR 004 の運用メモ。各 Aggregate を `active` にする PR レビューで埋める。
+ADR 004 の機械可読な判定正本は
+`policies/narrative/gate-b2-adr-checklist.json`。各項目は必ず
+`PASS` / `FAIL` / `OUT-OF-SCOPE` のいずれかを持ち、`PASS` はテスト証跡、
+`FAIL` は未実装理由、`OUT-OF-SCOPE` は理由と移送先を記録する。
+
+以下の人間向け checklist はレビュー時の説明用であり、判定上は secondary。
+各 Aggregate を `active` にする PR では機械可読正本を更新する。
 
 ## 使い方
 

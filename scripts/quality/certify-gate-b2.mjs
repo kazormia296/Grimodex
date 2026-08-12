@@ -294,6 +294,8 @@ export async function collectInputDigests(manifest, repoRoot = DEFAULT_REPO_ROOT
       repoRoot,
       inputs.narrativeEvalManifest,
     ),
+    adrChecklistDigest: await fileDigest(repoRoot, inputs.adrChecklist),
+    classificationDigest: await fileDigest(repoRoot, inputs.classification),
   };
 }
 

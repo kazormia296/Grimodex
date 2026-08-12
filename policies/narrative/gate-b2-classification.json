@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "gateId": "gate-b2",
+  "entries": [
+    {
+      "id": "chronicle-scene-version-invariant",
+      "domain": "chronicle",
+      "classification": "invariant",
+      "implementation": "src-tauri/crates/grimodex-db/src/narrative_extraction/chronicle_operations.rs",
+      "symbol": "ensure_scene_versions",
+      "tests": [
+        "src-tauri/crates/grimodex-db/tests/narrative_extraction.rs"
+      ]
+    },
+    {
+      "id": "chronicle-event-admission",
+      "domain": "chronicle",
+      "classification": "strategy",
+      "implementation": "src/features/chronicle/extraction/proposalPlanner.ts",
+      "symbol": "planChronicleEventProposals",
+      "tests": [
+        "src/features/chronicle/extraction/proposalPlanner.test.ts"
+      ]
+    },
+    {
+      "id": "chronicle-temporal-literal-prepass",
+      "domain": "chronicle",
+      "classification": "signal",
+      "implementation": "src/features/chronicle/extraction/temporalLiteralPrepass.ts",
+      "symbol": "runTemporalLiteralPrepass",
+      "tests": [
+        "src/features/chronicle/extraction/temporalLiteralPrepass.test.ts"
+      ]
+    },
+    {
+      "id": "codex-relation-writer-invariants",
+      "domain": "codex",
+      "classification": "invariant",
+      "implementation": "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs",
+      "symbol": "apply_codex_relation_create_in_tx",
+      "tests": [
+        "src-tauri/crates/grimodex-db/tests/codex_narrative_commit.rs"
+      ]
+    },
+    {
+      "id": "codex-entity-binding-planner",
+      "domain": "codex",
+      "classification": "strategy",
+      "implementation": "src/features/codex/extraction/proposalPlanner.ts",
+      "symbol": "planBindCodexEntityProposals",
+      "tests": [
+        "src/features/codex/extraction/proposalPlanner.test.ts"
+      ]
+    },
+    {
+      "id": "codex-existing-entity-match",
+      "domain": "codex",
+      "classification": "signal",
+      "implementation": "src/features/codex/extraction/existingEntityMatcher.ts",
+      "symbol": "matchExistingEntity",
+      "tests": [
+        "src/features/codex/extraction/existingEntityMatcher.test.ts"
+      ]
+    },
+    {
+      "id": "codex-relation-domain-gate-unsplit",
+      "domain": "codex",
+      "classification": "mixed",
+      "implementation": "src/features/codex/extraction/relationSynthesis.ts",
+      "symbol": "evaluateRelationDomainGate",
+      "tests": [
+        "src/features/codex/extraction/relationSynthesis.test.ts"
+      ],
+      "reason": "self-relation/endpoint/directionality の structural branch と polarity/commitment/support の semantic branch が未分割"
+    },
+    {
+      "id": "phase-aggregate-writer-invariants",
+      "domain": "phase",
+      "classification": "invariant",
+      "implementation": "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_operations.rs",
+      "symbol": "apply_phase_patch_in_tx",
+      "tests": [
+        "src-tauri/crates/grimodex-db/tests/codex_phase_detail_commit.rs",
+        "src/features/codex/phaseApi.patchAggregate.test.ts"
+      ]
+    },
+    {
+      "id": "phase-persistence-gate",
+      "domain": "phase",
+      "classification": "strategy",
+      "implementation": "src/features/codex/extraction/phaseBoundarySynthesis.ts",
+      "symbol": "evaluatePhasePersistenceGate",
+      "tests": [
+        "src/features/codex/extraction/phaseDetailGates.test.ts"
+      ]
+    },
+    {
+      "id": "phase-state-transition-detector",
+      "domain": "phase",
+      "classification": "signal",
+      "implementation": "src/features/codex/extraction/transitionDetector.ts",
+      "symbol": "detectStateTransitions",
+      "tests": [
+        "src/features/codex/extraction/phaseDetailGates.test.ts"
+      ]
+    },
+    {
+      "id": "temporal-constraint-structural-validation",
+      "domain": "temporal",
+      "classification": "invariant",
+      "implementation": "src-tauri/crates/grimodex-db/src/narrative_extraction/temporal_constraints.rs",
+      "symbol": "TemporalConstraintPayload::validate",
+      "tests": [
+        "src-tauri/crates/grimodex-db/tests/temporal_constraint_commit.rs",
+        "src/features/narrative-extraction/temporal/constraints.test.ts"
+      ]
+    },
+    {
+      "id": "temporal-attachment-candidates",
+      "domain": "temporal",
+      "classification": "strategy",
+      "implementation": "src/features/chronicle/extraction/attachmentCandidates.ts",
+      "symbol": "buildAttachmentCandidates",
+      "tests": [
+        "src/features/chronicle/extraction/temporalLiteralPrepass.test.ts"
+      ]
+    },
+    {
+      "id": "temporal-expression-detection",
+      "domain": "temporal",
+      "classification": "signal",
+      "implementation": "src/features/chronicle/extraction/temporalLiteralPrepass.ts",
+      "symbol": "runTemporalLiteralPrepass",
+      "tests": [
+        "src/features/chronicle/extraction/temporalLiteralPrepass.test.ts"
+      ]
+    },
+    {
+      "id": "plot-marker-writer-invariants",
+      "domain": "plot",
+      "classification": "invariant",
+      "implementation": "src-tauri/crates/grimodex-db/src/narrative_extraction/plot_thread_operations.rs",
+      "symbol": "apply_plot_marker_create_in_tx",
+      "tests": [
+        "src-tauri/crates/grimodex-db/tests/plot_thread_narrative_commit.rs"
+      ]
+    },
+    {
+      "id": "plot-thread-minimum",
+      "domain": "plot",
+      "classification": "strategy",
+      "implementation": "src/features/plot-threads/extraction/markerRoleAssigner.ts",
+      "symbol": "meetsNewThreadMinimum",
+      "tests": [
+        "src/features/plot-threads/extraction/plotThreadGates.test.ts"
+      ]
+    },
+    {
+      "id": "plot-development-signal-index",
+      "domain": "plot",
+      "classification": "signal",
+      "implementation": "src/features/plot-threads/extraction/signalIndex.ts",
+      "symbol": "buildThreadSignalIndex",
+      "tests": [
+        "src/features/plot-threads/extraction/signalIndex.test.ts"
+      ]
+    },
+    {
+      "id": "foreshadow-aggregate-invariants",
+      "domain": "foreshadow",
+      "classification": "invariant",
+      "implementation": "src-tauri/crates/grimodex-db/src/narrative_extraction/foreshadow_operations.rs",
+      "symbol": "validate_items",
+      "tests": [
+        "src-tauri/crates/grimodex-db/tests/foreshadow_narrative_commit.rs",
+        "src-tauri/crates/grimodex-db/tests/foreshadow_occ.rs"
+      ]
+    },
+    {
+      "id": "foreshadow-thread-minimum",
+      "domain": "foreshadow",
+      "classification": "strategy",
+      "implementation": "src/features/foreshadow/extraction/foreshadowGates.ts",
+      "symbol": "meetsNewForeshadowMinimum",
+      "tests": [
+        "src/features/foreshadow/extraction/foreshadowGates.test.ts"
+      ]
+    },
+    {
+      "id": "foreshadow-signal-index",
+      "domain": "foreshadow",
+      "classification": "signal",
+      "implementation": "src/features/foreshadow/extraction/signalIndex.ts",
+      "symbol": "buildForeshadowSignalIndex",
+      "tests": []
+    },
+    {
+      "id": "foreshadow-admission-gate-unsplit",
+      "domain": "foreshadow",
+      "classification": "mixed",
+      "implementation": "src/features/foreshadow/extraction/foreshadowGates.ts",
+      "symbol": "evaluateForeshadowGate",
+      "tests": [
+        "src/features/foreshadow/extraction/foreshadowGates.test.ts"
+      ],
+      "reason": "reading-order の structural branch と materiality/callback 等の semantic branch が未分割"
+    }
+  ]
+}

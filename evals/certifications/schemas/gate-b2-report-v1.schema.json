@@ -71,6 +71,14 @@
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "adrChecklistDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "classificationDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "frozen": { "type": "boolean" },
         "dirty": { "type": "boolean" }
       }

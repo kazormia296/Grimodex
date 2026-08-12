@@ -7,6 +7,19 @@ Gate B2 の正式認証は Global Release Quality（Related Scenes / Semantic Re
 - Manifest: `evals/certifications/gate-b2.yaml`
 - Report schema: `evals/certifications/schemas/gate-b2-report-v1.schema.json`
 - Runner: `scripts/quality/certify-gate-b2.mjs`
+- ADR checklist: `policies/narrative/gate-b2-adr-checklist.json`
+- Validator classification: `policies/narrative/gate-b2-classification.json`
+
+## C1 — ADR static certification
+
+C1 は ADR 004 の全 checklist 項目を `PASS` / `FAIL` / `OUT-OF-SCOPE`
+として機械可読化し、6 domain の Invariant / Strategy / Signal 分類と
+cross-cutting negative contract tests を Light suite の先頭で検証する。
+`FAIL` と `OUT-OF-SCOPE` は Gate B2 PASS へ昇格せず、未実装・移送先を可視化する。
+
+```bash
+pnpm test:narrative:gate-b2-adr
+```
 
 ## コマンド
 
