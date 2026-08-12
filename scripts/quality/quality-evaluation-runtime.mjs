@@ -24,6 +24,10 @@ const CERTIFICATION_ENV_REMOVALS = [
   "NARRATIVE_EVAL_LIMIT",
   "NARRATIVE_EVAL_CASE_ID",
   "NARRATIVE_EVAL_ATTEMPT",
+  // Bootstrap authority belongs only to the bound certification runner. A
+  // Light/Heavy/Journey child must never inherit it and appear pre-authorized.
+  "GATE_B2_BOUND_EXECUTION",
+  "GATE_B2_FREEZE_PATH",
   ...AI_PROVIDER_CREDENTIAL_ENV_NAMES,
 ];
 

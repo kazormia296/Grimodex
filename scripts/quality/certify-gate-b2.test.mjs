@@ -20,7 +20,10 @@ import {
   tallyBucket,
   validateGateB2Manifest,
 } from "./certify-gate-b2.mjs";
-import { validateJsonAgainstSchema } from "./certify-gate-b2-bindings.mjs";
+import {
+  sanitizeCertificationEnv,
+  validateJsonAgainstSchema,
+} from "./certify-gate-b2-bindings.mjs";
 import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
 import { certificationCommandForJourney } from "./run-gate-b2-journey.mjs";
 import { validateNativeWriterOwnership } from "./validate-native-writer-ownership.mjs";
@@ -697,7 +700,11 @@ test("Light dry-run rejects handwritten Full CI evidence", async () => {
 });
 
 test("execution cannot bypass the candidate bootstrap", (t) => {
-  const childEnv = { ...process.env };
+  const childEnv = sanitizeCertificationEnv({
+    ...process.env,
+    GATE_B2_BOUND_EXECUTION: "1",
+    GATE_B2_FREEZE_PATH: "/tmp/forged-freeze.json",
+  });
   delete childEnv.NODE_TEST_CONTEXT;
   const run = spawnSync(
     process.execPath,

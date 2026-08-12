@@ -109,12 +109,16 @@ test("certification environments bind candidate and GitHub run metadata", () => 
   const baseEnv = sanitizeCertificationEnv({
     KEEP_ME: "yes",
     NARRATIVE_EVAL_LIMIT: "1",
+    GATE_B2_BOUND_EXECUTION: "1",
+    GATE_B2_FREEZE_PATH: "/tmp/trusted-freeze.json",
     OPENROUTER_API_KEY: "must-not-reach-gate",
     OPEN_ROUTER_API_KEY: "legacy-alias-must-not-reach-gate",
     ANTHROPIC_AUTH_TOKEN: "other-provider-must-not-reach-gate",
   });
   assert.equal(baseEnv.KEEP_ME, "yes");
   assert.equal(baseEnv.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(baseEnv.GATE_B2_BOUND_EXECUTION, undefined);
+  assert.equal(baseEnv.GATE_B2_FREEZE_PATH, undefined);
   assert.equal(baseEnv.OPENROUTER_API_KEY, undefined);
   assert.equal(baseEnv.OPEN_ROUTER_API_KEY, undefined);
   assert.equal(baseEnv.ANTHROPIC_AUTH_TOKEN, undefined);
