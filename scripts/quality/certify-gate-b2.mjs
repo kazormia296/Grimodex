@@ -799,6 +799,7 @@ export async function runJourneySuite({
   env,
 }) {
   const journeyId = journeyEntry.id;
+  const command = journeyEntry.runner?.command ?? journeyEntry.command;
   if (
     journeyEntry.status === "blocked" ||
     String(journeyId).startsWith("blocked-")
@@ -811,10 +812,10 @@ export async function runJourneySuite({
           ? String(journeyEntry.requiredAction).trim()
           : journeyEntry.reason) ||
         `Journey ${journeyId} is blocked until a real runner emits candidate-bound evidence.`,
-      command: journeyEntry.command ?? null,
+      command: command ?? null,
     });
   }
-  if (!Array.isArray(journeyEntry.command) || journeyEntry.command.length < 2) {
+  if (!Array.isArray(command) || command.length < 2) {
     return blockedSuite({
       suiteId: journeyId,
       bucket: "requiredJourneys",
@@ -828,7 +829,7 @@ export async function runJourneySuite({
       bucket: "requiredJourneys",
       message:
         "dry-run: candidate-bound Journey runner not executed; external evidence paths are ignored",
-      command: journeyEntry.command,
+      command,
     });
   }
   if (!allocation) {
@@ -836,11 +837,11 @@ export async function runJourneySuite({
       suiteId: journeyId,
       bucket: "requiredJourneys",
       message: "Journey attempt allocation missing; runner was not started.",
-      command: journeyEntry.command,
+      command,
     });
   }
 
-  const commandDigest = sha256Text(JSON.stringify(journeyEntry.command));
+  const commandDigest = sha256Text(JSON.stringify(command));
   const outputPath = path.join(allocation.attemptDir, "journey-evidence.json");
   const runnerArtifactPath = path.join(
     allocation.attemptDir,
@@ -863,8 +864,8 @@ export async function runJourneySuite({
   });
 
   const captured = await runCapturedCommand(
-    journeyEntry.command[0],
-    journeyEntry.command.slice(1),
+    command[0],
+    command.slice(1),
     repoRoot,
     journeyEnv,
   );
@@ -875,7 +876,7 @@ export async function runJourneySuite({
   let validation = {
     ok: false,
     result: "failed",
-    message: "Journey runner did not emit evidence",
+    message: `candidate journey runner did not create fresh evidence: ${outputPath}`,
   };
   if (await pathExists(outputPath)) {
     try {
@@ -927,15 +928,21 @@ export async function runJourneySuite({
   const message =
     captured.status !== "passed"
       ? (captured.error ??
-        `Journey runner exited with status ${captured.exitCode}`)
+        `candidate journey runner exited ${captured.exitCode ?? "without an exit code"}`)
       : validation.message;
+  const exitCode =
+    captured.status !== "passed"
+      ? (captured.exitCode ?? 1)
+      : validation.ok
+        ? 0
+        : 1;
   return {
     suiteId: journeyId,
     bucket: "requiredJourneys",
     attempt: allocation.attempt,
     startedAt: captured.startedAt,
     completedAt: captured.completedAt,
-    exitCode: captured.exitCode,
+    exitCode,
     environmentDigest: environment.digest,
     commandDigest,
     stdoutDigest: captured.stdoutDigest,
@@ -943,7 +950,7 @@ export async function runJourneySuite({
     artifactDigests,
     result,
     message,
-    command: journeyEntry.command,
+    command,
   };
 }
 

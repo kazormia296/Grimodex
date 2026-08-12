@@ -87,7 +87,7 @@
     "generate:db-contract": "cargo run --manifest-path src-tauri/crates/grimodex-db/Cargo.toml --bin schema-contract -- src/db/generated/schema-contract.json",
     "seed:sample-en": "python3 scripts/seed-sample-en.py",
     "seed:sample-ja": "python3 scripts/seed-sample-ja.py",
-    "certify:gate-b2": "node scripts/quality/certify-gate-b2.mjs",
+    "certify:gate-b2": "node scripts/quality/certify-gate-b2-bootstrap.mjs",
     "test:gate-b2:prepared-plan-toctou": "node scripts/quality/run-gate-b2-journey.mjs --journey-id prepared-plan-toctou",
     "test:gate-b2:runtime-terminalization": "node scripts/quality/run-gate-b2-journey.mjs --journey-id runtime-terminalization",
     "test:gate-b2:browser-electron-writer-parity": "node scripts/quality/run-gate-b2-journey.mjs --journey-id browser-electron-writer-parity",

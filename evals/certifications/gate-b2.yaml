@@ -150,36 +150,57 @@ requiredManualJourneys:
     runnerVersion: "1"
     requiredAssertions: [source-changed-after-prepare, apply-rejected-or-revalidated]
     command: [pnpm, test:gate-b2:prepared-plan-toctou]
+    runner:
+      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, prepared-plan-toctou]
+      sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: runtime-terminalization
     runnerId: gate-b2-runtime-terminalization-journey
     runnerVersion: "1"
     requiredAssertions: [runtime-terminal-state, no-partial-apply]
     command: [pnpm, test:gate-b2:runtime-terminalization]
+    runner:
+      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, runtime-terminalization]
+      sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: browser-electron-writer-parity
     runnerId: gate-b2-browser-electron-writer-parity-journey
     runnerVersion: "1"
     requiredAssertions: [parity-write-result, parity-event-shape]
     command: [pnpm, test:gate-b2:browser-electron-writer-parity]
+    runner:
+      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, browser-electron-writer-parity]
+      sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: locked-field-enforcement
     runnerId: gate-b2-locked-field-journey
     runnerVersion: "1"
     requiredAssertions: [locked-write-rejected, target-value-unchanged, no-change-event, no-undo-journal]
     command: [pnpm, test:gate-b2:locked-field-enforcement]
+    runner:
+      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, locked-field-enforcement]
+      sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: dirty-only-propagation
     runnerId: gate-b2-dirty-only-propagation-journey
     runnerVersion: "1"
     requiredAssertions: [dirty-only-propagated, clean-fields-untouched]
     command: [pnpm, test:gate-b2:dirty-only-propagation]
+    runner:
+      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, dirty-only-propagation]
+      sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: immutable-retraction-history
     runnerId: gate-b2-immutable-retraction-history-journey
     runnerVersion: "1"
     requiredAssertions: [retraction-appended, prior-history-immutable]
     command: [pnpm, test:gate-b2:immutable-retraction-history]
+    runner:
+      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, immutable-retraction-history]
+      sourcePath: scripts/quality/run-gate-b2-journey.mjs
   - id: semantic-gate-exclusion
     runnerId: gate-b2-semantic-gate-exclusion-journey
     runnerVersion: "1"
     requiredAssertions: [semantic-oddity-applied, structural-invalidity-rejected, decision-authority-still-required]
     command: [pnpm, test:gate-b2:semantic-gate-exclusion]
+    runner:
+      command: [node, scripts/quality/run-gate-b2-journey.mjs, --journey-id, semantic-gate-exclusion]
+      sourcePath: scripts/quality/run-gate-b2-journey.mjs
 
 decisionPolicy:
   blockedIsPass: false

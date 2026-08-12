@@ -941,7 +941,7 @@ test("assertDigestsMatchFreeze errors on missing harness digests and contractVer
       error.startsWith("certificationManifestDigest: missing in freeze"),
     ),
   );
-  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 15);
+  assert.equal(Object.keys(HARNESS_DIGEST_PATHS).length, 16);
   assert.equal(
     HARNESS_DIGEST_PATHS.certifyBootstrapDigest,
     "scripts/quality/certify-gate-b2-bootstrap.mjs",

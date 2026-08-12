@@ -11,7 +11,6 @@ import {
   certificationExitCode,
   decideVerdict,
   emptyBucketSummary,
-  evaluateJourneyEvidence,
   loadGateB2Manifest,
   parseCertifyArgs,
   resolveAttemptLedgerRoot,
@@ -216,6 +215,7 @@ test("an active journey requires a candidate runner frozen by the harness", asyn
   );
   const raw = yaml.load(text);
   delete raw.requiredManualJourneys[0].status;
+  delete raw.requiredManualJourneys[0].runner;
   assert.match(
     validateGateB2Manifest(raw).join("\n"),
     /active journey requires runner.command/,
@@ -241,50 +241,59 @@ test("an active journey requires a candidate runner frozen by the harness", asyn
 test("active journey evidence is freshly emitted by a candidate-bound runner and schema validated", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-"));
   const runnerPath = path.join(temp, "runner.mjs");
-  const evidencePath = path.join(temp, "journeys", "fresh-journey.json");
+  const attemptDir = path.join(temp, "attempt-1");
+  const evidencePath = path.join(attemptDir, "journey-evidence.json");
   const candidate = {
     commitSha: "a".repeat(40),
     treeSha: "b".repeat(40),
   };
   const environment = { digest: `sha256:${"c".repeat(64)}` };
   try {
+    await mkdir(attemptDir, { recursive: true });
     await writeFile(
       runnerPath,
-      `import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
+      `import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+const artifact = Buffer.from(JSON.stringify({ ok: true }) + "\\n", "utf8");
+const artifactDigest = "sha256:" + createHash("sha256").update(artifact).digest("hex");
+writeFileSync(process.env.GATE_B2_RUNNER_ARTIFACT_PATH, artifact, { flag: "wx" });
 const output = process.env.GATE_B2_OUTPUT_PATH;
-await mkdir(path.dirname(output), { recursive: true });
-await writeFile(output, JSON.stringify({
-  schemaVersion: 1,
-  journeyId: process.env.GATE_B2_JOURNEY_ID,
+writeFileSync(output, JSON.stringify({
+  schemaVersion: 2,
+  journeyId: process.env.GATE_B2_SUITE_ID,
   candidateCommitSha: process.env.GATE_B2_CANDIDATE_COMMIT_SHA,
   candidateTreeSha: process.env.GATE_B2_CANDIDATE_TREE_SHA,
+  freezeId: process.env.GATE_B2_FREEZE_ID,
+  certificationRunId: process.env.GATE_B2_CERTIFICATION_RUN_ID,
   runnerId: process.env.GATE_B2_RUNNER_ID,
   runnerVersion: process.env.GATE_B2_RUNNER_VERSION,
   environmentDigest: process.env.GATE_B2_ENVIRONMENT_DIGEST,
+  commandDigest: process.env.GATE_B2_COMMAND_DIGEST,
+  runnerArtifactDigest: artifactDigest,
   assertions: [{ id: "fresh-assertion", passed: true }],
   result: "passed",
   startedAt: new Date().toISOString(),
-  completedAt: new Date().toISOString()
-}));\n`,
+  completedAt: new Date().toISOString(),
+  artifactDigests: [artifactDigest]
+}) + "\\n", { flag: "wx" });\n`,
       "utf8",
     );
-    await mkdir(path.dirname(evidencePath), { recursive: true });
-    await writeFile(evidencePath, '{"passed":true}', "utf8");
-    const suite = await evaluateJourneyEvidence({
+    const suite = await runJourneySuite({
       journeyEntry: {
         id: "fresh-journey",
         runnerId: "gate-b2-fresh-journey",
         runnerVersion: "1",
         requiredAssertions: ["fresh-assertion"],
-        runner: { command: [process.execPath, runnerPath] },
+        command: [process.execPath, runnerPath],
       },
-      artifactDir: temp,
-      journeyEvidenceDir: path.dirname(evidencePath),
       candidate,
       repoRoot,
       environment,
-      certEnv: process.env,
+      dryRun: false,
+      freeze: { freezeId: "freeze-1" },
+      certificationRunId: "run-1",
+      allocation: { attempt: 1, attemptDir },
+      env: process.env,
     });
     assert.equal(suite.result, "passed");
     assert.equal(suite.exitCode, 0);
@@ -328,20 +337,24 @@ test("active journey runner failures return schema-compatible failed suites", as
   try {
     for (const entry of cases) {
       await t.test(entry.name, async () => {
-        const suite = await evaluateJourneyEvidence({
+        const attemptDir = path.join(temp, entry.journeyId);
+        await mkdir(attemptDir, { recursive: true });
+        const suite = await runJourneySuite({
           journeyEntry: {
             id: entry.journeyId,
             runnerId: `gate-b2-${entry.journeyId}`,
             runnerVersion: "1",
             requiredAssertions: ["failure-is-recorded"],
-            runner: { command: entry.command },
+            command: entry.command,
           },
-          artifactDir: temp,
-          journeyEvidenceDir: path.join(temp, "journeys"),
           candidate,
           repoRoot,
           environment,
-          certEnv: process.env,
+          dryRun: false,
+          freeze: { freezeId: "freeze-1" },
+          certificationRunId: "run-1",
+          allocation: { attempt: 1, attemptDir },
+          env: process.env,
         });
 
         assert.equal(suite.suiteId, entry.journeyId);
