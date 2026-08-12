@@ -1898,12 +1898,12 @@ function migrateBrowserDomainSchema(db: Database): boolean {
         db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
       }
     }
-    // Older Browser writers accepted folders/notes as payoff scenes. Repair
-    // those rows before the legacy payoff backfill can copy the invalid root
-    // anchor into a child row. Deleting an invalid payoff cascades only its
-    // incident support edges; valid children and Codex links remain intact.
-    // Advancing repaired root tokens also makes pre-repair undo snapshots stale
-    // instead of allowing them to restore the invalid anchor.
+    // Older Browser writers accepted folders/notes as payoff scenes. Capture
+    // every affected root before deleting invalid payoff children, whose
+    // incident support edges cascade. The temporary primary key ensures a root
+    // with both an invalid inline anchor and invalid children advances exactly
+    // one OCC token. Valid children and Codex links remain intact, while stale
+    // pre-repair writes and undo snapshots can no longer restore corruption.
     //
     // The remaining backfills mirror native schema 11 and 12 ordering:
     // natural keys, stable legacy duplicate suffixes, then unique indexes.
@@ -1947,6 +1947,61 @@ function migrateBrowserDomainSchema(db: Database): boolean {
              WHERE b.semantic_key = a.semantic_key AND b.rowid < a.rowid
            )
        );
+      CREATE TEMP TABLE grimodex_foreshadow_payoff_repairs (
+        foreshadow_id TEXT PRIMARY KEY,
+        clear_root_anchor INTEGER NOT NULL
+      );
+      INSERT INTO grimodex_foreshadow_payoff_repairs (
+        foreshadow_id, clear_root_anchor
+      )
+      SELECT root.id, 1
+        FROM foreshadows root
+       WHERE (
+         root.payoff_scene_id IS NULL
+         AND (
+           root.payoff_from_pos IS NOT NULL
+           OR root.payoff_to_pos IS NOT NULL
+         )
+       ) OR (
+         root.payoff_scene_id IS NOT NULL
+         AND (
+           NOT EXISTS (
+             SELECT 1 FROM tree_nodes scene
+              WHERE scene.id = root.payoff_scene_id
+                AND scene.project_id = root.project_id
+                AND scene.node_type = 'scene'
+           )
+           OR (
+             root.payoff_from_pos IS NULL
+             AND root.payoff_to_pos IS NOT NULL
+           )
+           OR (
+             root.payoff_from_pos IS NOT NULL
+             AND root.payoff_to_pos IS NULL
+           )
+           OR (
+             root.payoff_from_pos IS NOT NULL
+             AND root.payoff_to_pos IS NOT NULL
+             AND (
+               root.payoff_from_pos < 0
+               OR root.payoff_from_pos > root.payoff_to_pos
+             )
+           )
+         )
+       );
+      INSERT OR IGNORE INTO grimodex_foreshadow_payoff_repairs (
+        foreshadow_id, clear_root_anchor
+      )
+      SELECT DISTINCT root.id, 0
+        FROM foreshadows root
+        JOIN foreshadow_payoffs payoff
+          ON payoff.foreshadow_id = root.id
+       WHERE NOT EXISTS (
+         SELECT 1 FROM tree_nodes scene
+          WHERE scene.id = payoff.scene_id
+            AND scene.project_id = root.project_id
+            AND scene.node_type = 'scene'
+       );
       DELETE FROM foreshadow_payoffs
        WHERE NOT EXISTS (
          SELECT 1
@@ -1958,44 +2013,28 @@ function migrateBrowserDomainSchema(db: Database): boolean {
           WHERE root.id = foreshadow_payoffs.foreshadow_id
        );
       UPDATE foreshadows
-         SET payoff_scene_id = NULL,
-             payoff_from_pos = NULL,
-             payoff_to_pos = NULL,
+         SET payoff_scene_id = CASE WHEN (
+               SELECT repair.clear_root_anchor
+                 FROM grimodex_foreshadow_payoff_repairs repair
+                WHERE repair.foreshadow_id = foreshadows.id
+             ) = 1 THEN NULL ELSE payoff_scene_id END,
+             payoff_from_pos = CASE WHEN (
+               SELECT repair.clear_root_anchor
+                 FROM grimodex_foreshadow_payoff_repairs repair
+                WHERE repair.foreshadow_id = foreshadows.id
+             ) = 1 THEN NULL ELSE payoff_from_pos END,
+             payoff_to_pos = CASE WHEN (
+               SELECT repair.clear_root_anchor
+                 FROM grimodex_foreshadow_payoff_repairs repair
+                WHERE repair.foreshadow_id = foreshadows.id
+             ) = 1 THEN NULL ELSE payoff_to_pos END,
              version = version + 1,
              updated_at = updated_at + 1
-       WHERE (
-         payoff_scene_id IS NULL
-         AND (
-           payoff_from_pos IS NOT NULL
-           OR payoff_to_pos IS NOT NULL
-         )
-       ) OR (
-         payoff_scene_id IS NOT NULL
-         AND (
-           NOT EXISTS (
-             SELECT 1 FROM tree_nodes scene
-              WHERE scene.id = foreshadows.payoff_scene_id
-                AND scene.project_id = foreshadows.project_id
-                AND scene.node_type = 'scene'
-           )
-           OR (
-             payoff_from_pos IS NULL
-             AND payoff_to_pos IS NOT NULL
-           )
-           OR (
-             payoff_from_pos IS NOT NULL
-             AND payoff_to_pos IS NULL
-           )
-           OR (
-             payoff_from_pos IS NOT NULL
-             AND payoff_to_pos IS NOT NULL
-             AND (
-               payoff_from_pos < 0
-               OR payoff_from_pos > payoff_to_pos
-             )
-           )
-         )
+       WHERE id IN (
+         SELECT repair.foreshadow_id
+           FROM grimodex_foreshadow_payoff_repairs repair
        );
+      DROP TABLE grimodex_foreshadow_payoff_repairs;
       INSERT INTO foreshadow_payoffs (
         id, foreshadow_id, scene_id, from_pos, to_pos, role, confirmed,
         is_primary, attribution, ai_rationale, is_orphan, evidence_anchor_id,

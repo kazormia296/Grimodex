@@ -918,8 +918,11 @@ describe("BrowserMock persistence contract", () => {
     await runCurrent(
       `INSERT INTO tree_nodes
         (id, project_id, node_type, title, sort_order)
-       VALUES ('child-only-payoff-folder', 'default-project', 'folder',
-               'Folder', 'a0')`,
+       VALUES
+        ('child-only-payoff-folder', 'default-project', 'folder',
+         'Folder', 'a0'),
+        ('child-only-setup-scene', 'default-project', 'scene',
+         'Setup scene', 'a1')`,
     );
     await runCurrent(
       `INSERT INTO foreshadows
@@ -935,6 +938,15 @@ describe("BrowserMock persistence contract", () => {
                'child-only-payoff-folder', 'primary', 1, 1, 'human', 0,
                'child-only-foreshadow|child-only-payoff-folder||', 100, 200)`,
     );
+    await runCurrent(
+      `INSERT INTO foreshadow_setups
+        (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
+         attribution, is_orphan, semantic_key, created_at, updated_at)
+       VALUES ('child-only-setup', 'child-only-foreshadow',
+               'child-only-setup-scene', 1, 3, 'designated_existing',
+               'subtle', 'human', 0,
+               'child-only-foreshadow|child-only-setup-scene|1|3', 100, 200)`,
+    );
 
     const repairDirty = vi.fn();
     const repaired = await createMock({
@@ -949,21 +961,74 @@ describe("BrowserMock persistence contract", () => {
           WHERE foreshadow_id = 'child-only-foreshadow'`,
       ),
     ).toEqual([]);
-    expect(
-      await queryRows(
-        repaired,
-        `SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos, version, updated_at
-           FROM foreshadows WHERE id = 'child-only-foreshadow'`,
-      ),
-    ).toEqual([
+    const stateBeforeStaleWrites = await queryRows(
+      repaired,
+      `SELECT root.title, root.payoff_scene_id, root.payoff_from_pos,
+              root.payoff_to_pos, root.version, root.updated_at,
+              setup.strength AS setup_strength,
+              setup.updated_at AS setup_updated_at
+         FROM foreshadows root
+         JOIN foreshadow_setups setup
+           ON setup.foreshadow_id = root.id
+        WHERE root.id = 'child-only-foreshadow'`,
+    );
+    expect(stateBeforeStaleWrites).toEqual([
       {
+        title: "Child only",
         payoff_scene_id: null,
         payoff_from_pos: null,
         payoff_to_pos: null,
-        version: 0,
-        updated_at: 200,
+        version: 1,
+        updated_at: 201,
+        setup_strength: "subtle",
+        setup_updated_at: 200,
       },
     ]);
+    const historyBeforeStaleWrites = await queryRows(
+      repaired,
+      `SELECT
+        (SELECT COUNT(*) FROM undo_journal) AS undo_journals,
+        (SELECT COUNT(*) FROM change_events) AS change_events,
+        (SELECT COUNT(*) FROM idempotency_requests) AS idempotency_requests`,
+    );
+    repairDirty.mockClear();
+
+    await expect(
+      repaired.invoke("foreshadow_update", {
+        id: "child-only-foreshadow",
+        patch: { baseVersion: 0, title: "Stale root write" },
+      }),
+    ).rejects.toThrow(/FORESHADOW_VERSION_MISMATCH|version conflict/i);
+    await expect(
+      repaired.invoke("foreshadow_update_setup", {
+        id: "child-only-setup",
+        patch: { baseVersion: 0, strength: "overt" },
+      }),
+    ).rejects.toThrow(/FORESHADOW_VERSION_MISMATCH|version conflict/i);
+
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT root.title, root.payoff_scene_id, root.payoff_from_pos,
+                root.payoff_to_pos, root.version, root.updated_at,
+                setup.strength AS setup_strength,
+                setup.updated_at AS setup_updated_at
+           FROM foreshadows root
+           JOIN foreshadow_setups setup
+             ON setup.foreshadow_id = root.id
+          WHERE root.id = 'child-only-foreshadow'`,
+      ),
+    ).toEqual(stateBeforeStaleWrites);
+    expect(
+      await queryRows(
+        repaired,
+        `SELECT
+          (SELECT COUNT(*) FROM undo_journal) AS undo_journals,
+          (SELECT COUNT(*) FROM change_events) AS change_events,
+          (SELECT COUNT(*) FROM idempotency_requests) AS idempotency_requests`,
+      ),
+    ).toEqual(historyBeforeStaleWrites);
+    expect(repairDirty).not.toHaveBeenCalled();
 
     const reopenedDirty = vi.fn();
     await createMock({
