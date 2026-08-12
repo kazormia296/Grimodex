@@ -2939,6 +2939,53 @@ impl Database {
                 ON narrative_projection_dependencies(source_kind, source_key);",
         )?;
 
+        // SCHEMA_VERSION 19: Native field authority is an independent
+        // ownership ledger. It has no foreign keys into domain rows so a
+        // deleted source/entity cannot cascade into decision or application
+        // history. Decision actor metadata is stored in dedicated columns;
+        // free-form decision_json is not an authority grant.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "actor_kind",
+            "TEXT NOT NULL DEFAULT 'human'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "actor_id",
+            "TEXT NOT NULL DEFAULT 'legacy-review'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "authority_scope",
+            "TEXT NOT NULL DEFAULT 'legacy-review'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_proposal_decisions",
+            "override_field_paths_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_field_authority (
+                project_id   TEXT NOT NULL,
+                entity_kind  TEXT NOT NULL,
+                entity_id    TEXT NOT NULL,
+                field_path   TEXT NOT NULL,
+                owner_kind   TEXT NOT NULL
+                    CHECK(owner_kind IN ('human','ai','system','unknown')),
+                explicit_lock INTEGER NOT NULL DEFAULT 0
+                    CHECK(explicit_lock IN (0,1)),
+                version      INTEGER NOT NULL DEFAULT 0,
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY(project_id, entity_kind, entity_id, field_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_field_authority_entity
+                ON narrative_field_authority(project_id, entity_kind, entity_id);",
+        )?;
+
         // SCHEMA_VERSION 16: a generation token identifies one physical
         // scene-event association incarnation. Legacy rows deliberately use
         // the empty token so tokenless journals can only match migrated state.

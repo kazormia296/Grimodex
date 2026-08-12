@@ -6,6 +6,7 @@ mod codex_snapshots;
 mod codex_undo;
 mod commit;
 mod detail_operations;
+mod field_authority;
 mod foreshadow_operations;
 mod foreshadow_undo;
 mod models;

@@ -810,7 +810,7 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId", a
       commitSha: "b".repeat(40),
       treeSha: "c".repeat(40),
       baseMasterSha: "d".repeat(40),
-      schemaVersion: 18,
+      schemaVersion: 19,
       writerRegistryDigest: digest,
       aiPathRegistryDigest: digest,
       qualityManifestDigest: digest,

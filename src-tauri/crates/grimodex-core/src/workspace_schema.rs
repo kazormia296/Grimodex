@@ -562,18 +562,18 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 18 adds Prepared Commit source-basis OCC
-/// projections and freshness-only dependency rows on top of every v17
-/// invariant.
+/// [`SCHEMA_VERSION`]. Version 19 adds Native field-authority rows and
+/// decision actor metadata on top of every v18 invariant.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 18
+    Ok(SCHEMA_VERSION == 19
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
         && has_v15_prepared_commit_columns(conn)?
         && has_v16_scene_event_incarnation_column(conn)?
         && has_v17_reconciliation_envelope_columns(conn)?
-        && has_v18_projection_freshness_columns(conn)?)
+        && has_v18_projection_freshness_columns(conn)?
+        && has_v19_field_authority_columns(conn)?)
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -656,6 +656,38 @@ fn has_v18_projection_freshness_columns(conn: &Connection) -> anyhow::Result<boo
         && has_text(&dependencies, "source_key")
         && has_text(&dependencies, "observed_revision_token")
         && has_text(&dependencies, "propagation"))
+}
+
+fn has_v19_field_authority_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_field_authority")?
+        || !table_exists(conn, "narrative_proposal_decisions")?
+    {
+        return Ok(false);
+    }
+    let authority = table_columns(conn, "narrative_field_authority")?;
+    let decisions = table_columns(conn, "narrative_proposal_decisions")?;
+    let has_text = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "TEXT")
+    };
+    let has_int = |columns: &[ColumnShape], name: &str| {
+        columns
+            .iter()
+            .any(|column| column.name == name && column.declared_type == "INTEGER")
+    };
+    Ok(has_text(&authority, "project_id")
+        && has_text(&authority, "entity_kind")
+        && has_text(&authority, "entity_id")
+        && has_text(&authority, "field_path")
+        && has_text(&authority, "owner_kind")
+        && has_int(&authority, "explicit_lock")
+        && has_int(&authority, "version")
+        && has_text(&authority, "updated_at")
+        && has_text(&decisions, "actor_kind")
+        && has_text(&decisions, "actor_id")
+        && has_text(&decisions, "authority_scope")
+        && has_text(&decisions, "override_field_paths_json"))
 }
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

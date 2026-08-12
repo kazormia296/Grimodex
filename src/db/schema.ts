@@ -2345,6 +2345,32 @@ export const narrativeRevisionSourceBasis = sqliteTable(
   ],
 );
 
+// SCHEMA_VERSION 19: Native-owned field authority rows. These are logical
+// ownership records, not foreign-key projections of domain entities.
+export const narrativeFieldAuthority = sqliteTable(
+  "narrative_field_authority",
+  {
+    projectId: text("project_id").notNull(),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    fieldPath: text("field_path").notNull(),
+    ownerKind: text("owner_kind").notNull(),
+    explicitLock: integer("explicit_lock").notNull().default(0),
+    version: integer("version").notNull().default(0),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.projectId, table.entityKind, table.entityId, table.fieldPath],
+    }),
+    index("idx_narrative_field_authority_entity").on(
+      table.projectId,
+      table.entityKind,
+      table.entityId,
+    ),
+  ],
+);
+
 // SCHEMA_VERSION 18: Application source dependencies are freshness-only
 // records; they deliberately do not reference source/domain rows by FK.
 export const narrativeProjectionFreshness = sqliteTable(
@@ -2388,6 +2414,12 @@ export const narrativeProposalDecisions = sqliteTable(
     decisionJson: text("decision_json").notNull().default("{}"),
     createdAt: text("created_at").notNull(),
     createdBy: text("created_by").notNull(),
+    actorKind: text("actor_kind").notNull().default("human"),
+    actorId: text("actor_id").notNull().default("legacy-review"),
+    authorityScope: text("authority_scope").notNull().default("legacy-review"),
+    overrideFieldPathsJson: text("override_field_paths_json")
+      .notNull()
+      .default("[]"),
   },
 );
 

@@ -63,7 +63,7 @@
           "type": ["string", "null"],
           "pattern": "^[0-9a-f]{40}$"
         },
-        "schemaVersion": { "type": "integer", "const": 18 },
+        "schemaVersion": { "type": "integer", "const": 19 },
         "writerRegistryDigest": {
           "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"

@@ -24,6 +24,10 @@ use super::codex_operations::{
 use super::detail_operations::{
     apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
 };
+use super::field_authority::{
+    load_decision_authority, record_operation_field_authority,
+    validate_operation_field_authority,
+};
 use super::foreshadow_operations::{
     apply_create as apply_foreshadow_create, apply_patch as apply_foreshadow_patch,
     ensure_id_available as ensure_foreshadow_id_available,
@@ -161,6 +165,12 @@ pub fn narrative_extraction_prepare_commit(
                 &payload.proposal_set_id,
                 &applications,
             )?;
+            validate_operation_field_authority(
+                conn,
+                &payload.project_id,
+                &applications,
+                &payload.operations,
+            )?;
             let authority_digest =
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
             let source_contract = build_source_contract(
@@ -272,10 +282,15 @@ fn digest_authority_rows(
             params![proposal_id, revision_id],
             |row| row.get(0),
         )?;
+        let authority = load_decision_authority(conn, proposal_id, revision_id)?;
         rows.push(json!({
             "proposalId": proposal_id,
             "revisionId": revision_id,
             "decision": decision,
+            "actorKind": authority.actor_kind,
+            "actorId": authority.actor_id,
+            "authorityScope": authority.authority_scope,
+            "overrideFieldPaths": authority.override_field_paths,
         }));
     }
     rows.sort_by(|left, right| {
@@ -542,6 +557,12 @@ pub fn narrative_extraction_apply_commit(
                 conn,
                 &sealed_plan.proposal_set_id,
                 &applications,
+            )?;
+            validate_operation_field_authority(
+                conn,
+                &sealed_plan.project_id,
+                &applications,
+                &sealed_plan.operations,
             )?;
             let current_authority_digest =
                 digest_authority_rows(conn, &sealed_plan.proposal_set_id, &applications)?;
@@ -1127,6 +1148,13 @@ pub fn narrative_extraction_apply_commit(
                     )?;
                 }
             }
+            record_operation_field_authority(
+                conn,
+                &payload.project_id,
+                &application_pairs(&payload.applications),
+                &payload.operations,
+                &now,
+            )?;
 
             let after_json = json!({
                 "entities": after_snapshots,
@@ -1203,7 +1231,8 @@ pub fn narrative_extraction_apply_commit(
                 || message.contains("NEX_READ_SET_DRIFT")
                 || message.contains("NEX_REVISION_ENVELOPE_CHANGED")
                 || message.contains("NEX_REVISION_ENVELOPE_MISSING")
-                || message.contains("NEX_PREPARED_POLICY_CHANGED");
+                || message.contains("NEX_PREPARED_POLICY_CHANGED")
+                || message.contains("NEX_FIELD_AUTHORITY");
             // Precondition failures must not poison a sealed Prepared Commit —
             // the caller can correct session/version and retry apply.
             let precondition = message.contains("NEX_COMMIT_SESSION_MISMATCH")

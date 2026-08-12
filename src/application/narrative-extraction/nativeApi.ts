@@ -165,6 +165,10 @@ export interface ReviewBundleLatestDecision {
   readonly decisionJson: Readonly<Record<string, unknown>>;
   readonly createdAt: string;
   readonly createdBy: string;
+  readonly actorKind: "human" | "ai" | "system" | "unknown";
+  readonly actorId: string;
+  readonly authorityScope: string;
+  readonly overrideFieldPaths: readonly string[];
 }
 
 export interface ReviewBundleProposalApplication {

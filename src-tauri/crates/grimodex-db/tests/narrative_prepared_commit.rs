@@ -197,6 +197,15 @@ fn build_prepare(
 }
 
 fn apply_prepared(db: &Database, prepared: &Value) -> anyhow::Result<Value> {
+    apply_prepared_with_identity(db, prepared, "req-prepared-1", "sess-prepared")
+}
+
+fn apply_prepared_with_identity(
+    db: &Database,
+    prepared: &Value,
+    request_id: &str,
+    session_id: &str,
+) -> anyhow::Result<Value> {
     narrative_extraction::narrative_extraction_apply_commit(
         db,
         ApplyCommitPayload {
@@ -205,11 +214,126 @@ fn apply_prepared(db: &Database, prepared: &Value) -> anyhow::Result<Value> {
                 .as_str()
                 .expect("prepared commit id")
                 .to_string(),
-            request_id: "req-prepared-1".to_string(),
-            session_id: "sess-prepared".to_string(),
+            request_id: request_id.to_string(),
+            session_id: session_id.to_string(),
             expected_version: prepared["version"].as_i64(),
         },
     )
+}
+
+fn patch_entry_payload() -> Value {
+    json!({
+        "entryId": "entry-locked",
+        "baseVersion": 0,
+        "summary": {"kind": "set", "value": "AI changed"}
+    })
+}
+
+fn seed_locked_entry_approved(db: &Database) -> anyhow::Result<(String, String, String, String)> {
+    db.execute(
+        "INSERT INTO codex_entries
+            (id, project_id, type, name, summary, content, version)
+         VALUES ('entry-locked', 'project-1', 'character', 'Original', '', '{}', 0)",
+        &[],
+        "run",
+    )?;
+    let run_id = "run-locked";
+    let set_id = "set-locked";
+    narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: "project-1".to_string(),
+            surface_path_id: "codex.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "codex" }),
+            spec_digest: "spec-locked".to_string(),
+            snapshot_digest: Some("revision-1".to_string()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some("task-prepared".to_string()),
+                task_kind: "codex.plan-proposals".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )?;
+    let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_set_id: Some(set_id.to_string()),
+            set_kind: "codex.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("prop-locked".to_string()),
+                proposal_key: "key-locked".to_string(),
+                kind: "codex.entry.patch".to_string(),
+                payload_json: patch_entry_payload(),
+                reconciliation_envelope: Some(envelope(run_id)),
+            }],
+        },
+    )?;
+    let proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .expect("proposal id")
+        .to_string();
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("revision id")
+        .to_string();
+    narrative_extraction::narrative_extraction_append_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: Some(json!({"actorKind": "ai"})),
+            created_by: Some("agent:planner".to_string()),
+        },
+    )?;
+    Ok((
+        run_id.to_string(),
+        set_id.to_string(),
+        proposal_id,
+        revision_id,
+    ))
+}
+
+fn build_locked_prepare(
+    run_id: &str,
+    set_id: &str,
+    proposal_id: &str,
+    revision_id: &str,
+    request_id: &str,
+) -> PrepareCommitPayload {
+    PrepareCommitPayload {
+        project_id: "project-1".to_string(),
+        run_id: run_id.to_string(),
+        proposal_set_id: set_id.to_string(),
+        request_id: request_id.to_string(),
+        plan_digest: "client-ignored".to_string(),
+        session_id: "sess-locked".to_string(),
+        surface: Some("narrative-extraction".to_string()),
+        operations: vec![CommitOperation {
+            kind: "codex.entry.patch".to_string(),
+            payload: patch_entry_payload(),
+            proposal_id: proposal_id.to_string(),
+            revision_id: revision_id.to_string(),
+        }],
+        applications: vec![CommitApplicationRef {
+            proposal_id: proposal_id.to_string(),
+            revision_id: revision_id.to_string(),
+        }],
+        expected_tail_ordinal: None,
+        entity_bindings: vec![],
+        expected_calendar_version: None,
+    }
 }
 
 #[test]
@@ -383,6 +507,115 @@ fn stale_source_invalidates_prepared_commit_without_domain_mutation() -> anyhow:
         assert_eq!(event_count, 0);
         Ok(())
     })?;
+    Ok(())
+}
+
+#[test]
+fn locked_field_invalidates_ai_apply_without_partial_mutation() -> anyhow::Result<()> {
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_locked_entry_approved(&db)?;
+    db.execute(
+        "INSERT INTO narrative_field_authority
+            (project_id, entity_kind, entity_id, field_path, owner_kind,
+             explicit_lock, version, updated_at)
+         VALUES ('project-1', 'codex-entry', 'entry-locked', '/summary',
+                 'ai', 0, 0, '2026-08-12T00:00:00.000Z')",
+        &[],
+        "run",
+    )?;
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_locked_prepare(&run_id, &set_id, &proposal_id, &revision_id, "req-locked-1"),
+    )
+    .expect("prepare");
+
+    db.execute(
+        "UPDATE narrative_field_authority
+            SET owner_kind = 'human', explicit_lock = 1, version = version + 1
+          WHERE project_id = 'project-1'
+            AND entity_kind = 'codex-entry'
+            AND entity_id = 'entry-locked'
+            AND field_path = '/summary'",
+        &[],
+        "run",
+    )?;
+    let error = apply_prepared_with_identity(&db, &prepared, "req-locked-1", "sess-locked")
+        .expect_err("locked AI field");
+    assert!(
+        error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"),
+        "unexpected lock error: {error}"
+    );
+
+    db.with_conn(|conn| {
+        let (status, name, summary, application_count, operation_count, journal_count, event_count): (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn.query_row(
+            "SELECT c.status, e.name, e.summary,
+                    (SELECT COUNT(*) FROM narrative_proposal_applications WHERE commit_id = c.id),
+                    (SELECT COUNT(*) FROM narrative_apply_operations WHERE commit_id = c.id),
+                    (SELECT COUNT(*) FROM narrative_commit_journals WHERE commit_id = c.id),
+                    (SELECT COUNT(*) FROM change_events
+                      WHERE project_id = c.project_id AND entity_id = c.id)
+               FROM narrative_apply_commits c
+               JOIN codex_entries e ON e.id = 'entry-locked'
+              WHERE c.id = ?1",
+            rusqlite::params![prepared["preparedCommitId"].as_str().unwrap()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )?;
+        assert_eq!(status, "invalidated");
+        assert_eq!(name, "Original");
+        assert_eq!(summary, "");
+        assert_eq!(application_count, 0);
+        assert_eq!(operation_count, 0);
+        assert_eq!(journal_count, 0);
+        assert_eq!(event_count, 0);
+        Ok(())
+    })?;
+
+    narrative_extraction::narrative_extraction_append_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: run_id.clone(),
+            project_id: "project-1".to_string(),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: Some(json!({"overrideFieldPaths": ["/summary"]})),
+            created_by: Some("reviewer".to_string()),
+        },
+    )?;
+    let override_prepared = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_locked_prepare(&run_id, &set_id, &proposal_id, &revision_id, "req-locked-2"),
+    )?;
+    let applied =
+        apply_prepared_with_identity(&db, &override_prepared, "req-locked-2", "sess-locked")?;
+    assert_eq!(applied["status"], "applied");
+    let name: String = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT summary FROM codex_entries WHERE id = 'entry-locked'",
+            [],
+            |row| row.get(0),
+        )?)
+    })?;
+    assert_eq!(name, "AI changed");
     Ok(())
 }
 

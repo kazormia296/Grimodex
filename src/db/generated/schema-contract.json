@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 18,
+  "schemaVersion": 19,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6809,6 +6809,70 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_extraction_tasks ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_kind TEXT NOT NULL, status TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT, priority INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
     },
+    "narrative_field_authority": {
+      "kind": "table",
+      "columns": {
+        "entity_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "entity_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "explicit_lock": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "field_path": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 4
+        },
+        "owner_kind": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_field_authority ( project_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, field_path TEXT NOT NULL, owner_kind TEXT NOT NULL CHECK(owner_kind IN ('human','ai','system','unknown')), explicit_lock INTEGER NOT NULL DEFAULT 0 CHECK(explicit_lock IN (0,1)), version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(project_id, entity_kind, entity_id, field_path) )"
+    },
     "narrative_projection_dependencies": {
       "kind": "table",
       "columns": {
@@ -6955,6 +7019,27 @@
     "narrative_proposal_decisions": {
       "kind": "table",
       "columns": {
+        "actor_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'legacy-review'",
+          "primaryKey": 0
+        },
+        "actor_kind": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'human'",
+          "primaryKey": 0
+        },
+        "authority_scope": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'legacy-review'",
+          "primaryKey": 0
+        },
         "created_at": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -6990,6 +7075,13 @@
           "default": null,
           "primaryKey": 1
         },
+        "override_field_paths_json": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
         "proposal_id": {
           "ordinal": 1,
           "declaredType": "TEXT",
@@ -7007,7 +7099,7 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_proposal_decisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, decision TEXT NOT NULL, decision_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, created_by TEXT NOT NULL )"
+      "createSql": "CREATE TABLE narrative_proposal_decisions ( id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, revision_id TEXT NOT NULL, decision TEXT NOT NULL, decision_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, created_by TEXT NOT NULL , actor_kind TEXT NOT NULL DEFAULT 'human', actor_id TEXT NOT NULL DEFAULT 'legacy-review', authority_scope TEXT NOT NULL DEFAULT 'legacy-review', override_field_paths_json TEXT NOT NULL DEFAULT '[]')"
     },
     "narrative_proposal_revisions": {
       "kind": "table",
@@ -12453,6 +12545,26 @@
         }
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
+    },
+    "idx_narrative_field_authority_entity": {
+      "table": "narrative_field_authority",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "entity_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "entity_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_field_authority_entity ON narrative_field_authority(project_id, entity_kind, entity_id)"
     },
     "idx_narrative_projection_dependencies_source": {
       "table": "narrative_projection_dependencies",

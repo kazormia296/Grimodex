@@ -81,3 +81,24 @@ fn contract_excludes_sqlite_internal_objects() {
         .keys()
         .all(|name| !name.starts_with("sqlite_autoindex_")));
 }
+
+#[test]
+fn provenance_and_field_authority_rows_have_no_domain_cascade_foreign_keys() {
+    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+    db.migrate().expect("migrate database");
+    let contract = db
+        .with_conn(inspect_connection)
+        .expect("inspect schema contract");
+
+    for table_name in [
+        "narrative_projection_freshness",
+        "narrative_projection_dependencies",
+        "narrative_field_authority",
+    ] {
+        let table = contract.tables.get(table_name).expect("provenance table");
+        assert!(
+            table.foreign_keys.is_empty(),
+            "{table_name} must remain a logical reference table"
+        );
+    }
+}
