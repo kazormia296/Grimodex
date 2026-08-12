@@ -172,6 +172,7 @@
     "lunar-typescript": "^1.8.6",
     "matter-js": "^0.20.0",
     "motion": "^12.40.0",
+    "parse5": "8.0.1",
     "prosemirror-markdown": "^1.13.4",
     "prosemirror-model": "^1.25.11",
     "prosemirror-state": "^1.4.4",
