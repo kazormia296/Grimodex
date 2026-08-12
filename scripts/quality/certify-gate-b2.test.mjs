@@ -275,6 +275,74 @@ await writeFile(output, JSON.stringify({
   }
 });
 
+test("active journey runner failures return schema-compatible failed suites", async (t) => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-journey-failure-"));
+  const candidate = {
+    commitSha: "a".repeat(40),
+    treeSha: "b".repeat(40),
+  };
+  const environment = { digest: `sha256:${"c".repeat(64)}` };
+  const cases = [
+    {
+      name: "non-zero runner exit",
+      journeyId: "failing-journey",
+      command: [
+        process.execPath,
+        "-e",
+        'process.stderr.write("journey failed"); process.exit(23);',
+      ],
+      exitCode: 23,
+      message: /candidate journey runner exited 23/,
+    },
+    {
+      name: "missing fresh evidence",
+      journeyId: "missing-evidence-journey",
+      command: [process.execPath, "-e", 'process.stdout.write("no evidence");'],
+      exitCode: 1,
+      message: /did not create fresh evidence/,
+    },
+  ];
+
+  try {
+    for (const entry of cases) {
+      await t.test(entry.name, async () => {
+        const suite = await evaluateJourneyEvidence({
+          journeyEntry: {
+            id: entry.journeyId,
+            runnerId: `gate-b2-${entry.journeyId}`,
+            runnerVersion: "1",
+            requiredAssertions: ["failure-is-recorded"],
+            runner: { command: entry.command },
+          },
+          artifactDir: temp,
+          journeyEvidenceDir: path.join(temp, "journeys"),
+          candidate,
+          repoRoot,
+          environment,
+          certEnv: process.env,
+        });
+
+        assert.equal(suite.suiteId, entry.journeyId);
+        assert.equal(suite.bucket, "requiredJourneys");
+        assert.equal(suite.attempt, 1);
+        assert.match(suite.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+        assert.match(suite.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+        assert.equal(suite.exitCode, entry.exitCode);
+        assert.equal(suite.environmentDigest, environment.digest);
+        assert.match(suite.commandDigest, /^sha256:[0-9a-f]{64}$/);
+        assert.match(suite.stdoutDigest, /^sha256:[0-9a-f]{64}$/);
+        assert.match(suite.stderrDigest, /^sha256:[0-9a-f]{64}$/);
+        assert.deepEqual(suite.artifactDigests, []);
+        assert.equal(suite.result, "failed");
+        assert.match(suite.message, entry.message);
+        assert.deepEqual(suite.command, entry.command);
+      });
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("direct execution cannot bypass the frozen candidate bootstrap", () => {
   const result = spawnSync(
     process.execPath,

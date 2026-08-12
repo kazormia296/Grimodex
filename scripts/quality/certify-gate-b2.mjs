@@ -513,6 +513,32 @@ function blockedSuite({
   };
 }
 
+function suiteFromCapture({
+  suiteId,
+  bucket,
+  command,
+  environment,
+  captured,
+  message,
+}) {
+  return {
+    suiteId,
+    bucket,
+    attempt: 1,
+    startedAt: captured.startedAt ?? null,
+    completedAt: captured.completedAt ?? new Date().toISOString(),
+    exitCode: captured.exitCode ?? null,
+    environmentDigest: environment.digest,
+    commandDigest: sha256Text(JSON.stringify(command)),
+    stdoutDigest: captured.stdoutDigest ?? null,
+    stderrDigest: captured.stderrDigest ?? null,
+    artifactDigests: [],
+    result: "failed",
+    message,
+    command,
+  };
+}
+
 async function pathExists(target) {
   try {
     await access(target);
