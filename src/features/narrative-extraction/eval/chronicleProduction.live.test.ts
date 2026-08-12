@@ -282,8 +282,6 @@ describeLive("Chronicle production OpenRouter live certification", () => {
       ).toBe(true);
       expect(parseFailureCount).toBe(0);
       if (fullCertificationRun && attempt === 1 && !diagnosticOnly) {
-        expect(fullCertificationRun).toBe(true);
-        expect(attempt).toBe(1);
         expect(report.caseCount).toBe(14);
         expect(report.summary.passed).toBe(14);
         expect(report.summary.failed).toBe(0);
