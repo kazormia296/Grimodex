@@ -456,6 +456,22 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "agentEventRelationRemove",
       AGENT_WRITE_RESULT,
     ) as never,
+    treeNodeCreate: record(
+      "treeNodeCreate",
+      Promise.resolve('{"id":"node-1","projectId":"p1","version":0}'),
+    ) as never,
+    treeNodeDelete: record(
+      "treeNodeDelete",
+      Promise.resolve(undefined),
+    ) as never,
+    treeNodePatch: record(
+      "treeNodePatch",
+      Promise.resolve('{"id":"node-1","projectId":"p1","version":1}'),
+    ) as never,
+    temporalScenePatch: record(
+      "temporalScenePatch",
+      Promise.resolve('{"sceneId":"scene-1","version":1,"updatedAt":"now"}'),
+    ) as never,
     narrativeExtractionCreateRun: record(
       "narrativeExtractionCreateRun",
       Promise.resolve('{"runId":"r1","status":"running","taskIds":[]}'),
@@ -3503,11 +3519,15 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "start_post_effect_run_multi",
       "test_ai_connection",
       "timelapse_append_batch",
+      "temporal_scene_patch",
       "trash_bin_clear_all",
       "trash_bin_create",
       "trash_bin_delete",
       "trash_bin_list",
       "trash_bin_prune",
+      "tree_node_create",
+      "tree_node_delete",
+      "tree_node_patch",
       "tree_plan_undo",
       "update_annotation_status",
       "vacuum_database",

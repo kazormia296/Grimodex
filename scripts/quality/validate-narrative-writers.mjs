@@ -155,8 +155,90 @@ function resolveProtectedArg(argNode, protectedBindings, protectedIdents) {
   return null;
 }
 
-function findDrizzleMutations(sourceFile, protectedBindings, protectedIdents) {
+function camelToSnake(value) {
+  return value.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+function propertyNameText(node) {
+  if (!node) return null;
+  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) {
+    return node.text;
+  }
+  return null;
+}
+
+function updateSetArgument(updateCall) {
+  const setAccess = updateCall.parent;
+  if (
+    !ts.isPropertyAccessExpression(setAccess) ||
+    setAccess.name.text !== "set" ||
+    !ts.isCallExpression(setAccess.parent) ||
+    setAccess.parent.expression !== setAccess ||
+    setAccess.parent.arguments.length === 0
+  ) {
+    return null;
+  }
+  return setAccess.parent.arguments[0];
+}
+
+function collectObjectLiteralKeys(node) {
+  if (!node || !ts.isObjectLiteralExpression(node)) return null;
+  const keys = new Set();
+  for (const property of node.properties) {
+    if (ts.isSpreadAssignment(property)) return null;
+    if (
+      ts.isPropertyAssignment(property) ||
+      ts.isShorthandPropertyAssignment(property) ||
+      ts.isMethodDeclaration(property)
+    ) {
+      const key = propertyNameText(property.name);
+      if (!key) return null;
+      keys.add(camelToSnake(key));
+      continue;
+    }
+    return null;
+  }
+  return keys;
+}
+
+function isNativeSqlBuilderMutation(node) {
+  let current = node;
+  for (let depth = 0; depth < 4 && current; depth += 1) {
+    const parent = current.parent;
+    if (!parent) return false;
+    if (
+      ts.isCallExpression(parent) &&
+      ts.isPropertyAccessExpression(parent.expression) &&
+      parent.expression.name.text === "toSQL"
+    ) {
+      return true;
+    }
+    current = parent;
+  }
+  return false;
+}
+
+function tableForIdentifier(identifier, protectedBindings, protectedIdents) {
+  const resolved = protectedBindings.has(identifier)
+    ? protectedBindings.get(identifier)
+    : protectedIdents.has(identifier)
+      ? identifier
+      : null;
+  if (!resolved) return null;
+  for (const [table, identifiers] of Object.entries(TABLE_TO_DRIZZLE_IDENTIFIERS)) {
+    if (identifiers.includes(resolved)) return table;
+  }
+  return resolved;
+}
+
+function findDrizzleMutations(
+  sourceFile,
+  protectedBindings,
+  protectedIdents,
+  entriesByTable,
+) {
   const findings = new Set();
+  const violations = new Set();
 
   function visit(node) {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
@@ -167,14 +249,45 @@ function findDrizzleMutations(sourceFile, protectedBindings, protectedIdents) {
           protectedBindings,
           protectedIdents,
         );
-        if (resolved) findings.add(resolved);
+        if (!resolved) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+        const table = tableForIdentifier(
+          resolved,
+          protectedBindings,
+          protectedIdents,
+        );
+        const entry = table ? entriesByTable.get(table) : null;
+        if (!entry) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+        findings.add(table);
+        if (entry.protection !== "columns" || method !== "update") {
+          // `toSQL()` is only a statement builder. The resulting SQL is
+          // executed by a trusted Native bundle (for example the AI tree
+          // scaffold), so it is not an untrusted renderer mutation.
+          if (!isNativeSqlBuilderMutation(node)) violations.add(table);
+        } else {
+          const columns = collectObjectLiteralKeys(updateSetArgument(node));
+          if (
+            columns === null ||
+            [...columns].some(
+              (column) =>
+                entry.columns.includes(column) || column === entry.versionColumn,
+            )
+          ) {
+            violations.add(table);
+          }
+        }
       }
     }
     ts.forEachChild(node, visit);
   }
 
   visit(sourceFile);
-  return [...findings];
+  return { findings: [...findings], violations: [...violations] };
 }
 
 function getLiteralText(node) {
@@ -217,7 +330,7 @@ function findRawSqlMutations(sourceFile, tableNames) {
   return [...findings];
 }
 
-function analyzeFile(filePath, activeTables, protectedIdents) {
+function analyzeFile(filePath, scanEntries, protectedIdents) {
   const source = readFileSync(filePath, "utf8");
   const scriptKind = filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sourceFile = ts.createSourceFile(
@@ -229,14 +342,22 @@ function analyzeFile(filePath, activeTables, protectedIdents) {
   );
 
   const importedBindings = collectImportedProtectedBindings(sourceFile, protectedIdents);
-  const drizzleHits = findDrizzleMutations(
+  const drizzle = findDrizzleMutations(
     sourceFile,
     importedBindings,
     protectedIdents,
+    new Map(scanEntries.map((entry) => [entry.table, entry])),
   );
-  const sqlHits = findRawSqlMutations(sourceFile, activeTables);
+  const sqlHits = findRawSqlMutations(
+    sourceFile,
+    scanEntries.map((entry) => entry.table),
+  );
 
-  return { drizzleHits, sqlHits };
+  return {
+    drizzleHits: drizzle.findings,
+    drizzleViolations: drizzle.violations,
+    sqlHits,
+  };
 }
 
 export function validateNarrativeWriters({
@@ -249,7 +370,6 @@ export function validateNarrativeWriters({
   const deferred = registry.filter((entry) => entry.enforcement === "deferred");
   const files = collectScanFiles(repoRoot);
   const scanEntries = includeDeferred ? [...active, ...deferred] : active;
-  const activeTables = active.map((entry) => entry.table);
   const scanTables = scanEntries.map((entry) => entry.table);
   const protectedIdents = protectedIdentifiersForTables(scanTables);
   const tableToEntry = new Map(scanEntries.map((entry) => [entry.table, entry]));
@@ -268,18 +388,16 @@ export function validateNarrativeWriters({
   }
 
   for (const file of files) {
-    const { drizzleHits, sqlHits } = analyzeFile(file, scanTables, protectedIdents);
+    const { drizzleHits, drizzleViolations, sqlHits } = analyzeFile(
+      file,
+      scanEntries,
+      protectedIdents,
+    );
     const hitTables = new Set();
     const relative = path.relative(repoRoot, file);
 
-    for (const ident of drizzleHits) {
-      for (const [table, idents] of Object.entries(TABLE_TO_DRIZZLE_IDENTIFIERS)) {
-        if (idents.includes(ident) && tableToEntry.has(table)) {
-          hitTables.add(table);
-        }
-      }
-      // Fallback: identifier equals table name
-      if (tableToEntry.has(ident)) hitTables.add(ident);
+    for (const table of drizzleHits) {
+      if (tableToEntry.has(table)) hitTables.add(table);
     }
 
     for (const table of sqlHits) {
@@ -292,17 +410,19 @@ export function validateNarrativeWriters({
       if (inventory) inventory.legacyWriters.add(relative);
       // Active violations fail the gate; deferred are inventory-only unless required.
       if (entry.enforcement !== "active") continue;
-      const identifiers =
-        TABLE_TO_DRIZZLE_IDENTIFIERS[table] ?? [table];
-      const matchedIdents = [
-        ...drizzleHits.filter((ident) => identifiers.includes(ident) || ident === table),
-        ...sqlHits.filter((hit) => hit === table),
-      ];
+      const identifiers = TABLE_TO_DRIZZLE_IDENTIFIERS[table] ?? [table];
+      const drizzleViolation = drizzleViolations.includes(table);
+      const sqlViolation = sqlHits.includes(table);
+      if (!drizzleViolation && !sqlViolation) continue;
       violations.push({
         file: relative,
         table,
         writer: entry.writer,
-        identifiers: matchedIdents.length > 0 ? matchedIdents : identifiers,
+        identifiers: drizzleViolation
+          ? identifiers
+          : sqlViolation
+            ? [table]
+            : identifiers,
       });
     }
   }

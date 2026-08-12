@@ -692,6 +692,258 @@ pub fn create_scan_staging_project(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TreeNodeCreatePayload {
+    pub id: String,
+    pub project_id: String,
+    pub parent_id: Option<String>,
+    pub node_type: String,
+    pub title: String,
+    pub sort_order: String,
+    pub synopsis: Option<String>,
+    pub status: Option<String>,
+    pub source_uri: Option<String>,
+    pub source_mtime: Option<String>,
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeNodeDeletePayload {
+    pub project_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeNodePatchPayload {
+    pub project_id: String,
+    pub node_id: String,
+    pub patch: serde_json::Map<String, Value>,
+    pub base_version: Option<i64>,
+    pub bump_version: bool,
+    pub updated_at: String,
+}
+
+const TREE_NODE_ROW_SELECT: &str = "
+    SELECT
+      id,
+      project_id AS projectId,
+      parent_id AS parentId,
+      node_type AS nodeType,
+      title,
+      synopsis,
+      intent,
+      sort_order AS sortOrder,
+      story_time_order AS storyTimeOrder,
+      story_time_label AS storyTimeLabel,
+      pov_character_id AS povCharacterId,
+      location_id AS locationId,
+      chronicle_start_time AS chronicleStartTime,
+      chronicle_start_minute AS chronicleStartMinute,
+      chronicle_start_granularity AS chronicleStartGranularity,
+      chronicle_end_time AS chronicleEndTime,
+      chronicle_end_minute AS chronicleEndMinute,
+      chronicle_end_granularity AS chronicleEndGranularity,
+      chronicle_precision AS chroniclePrecision,
+      status,
+      content,
+      unplaced_beats_doc AS unplacedBeatsDoc,
+      char_count AS charCount,
+      unplaced_beat_preview AS unplacedBeatPreview,
+      placed_beat_preview AS placedBeatPreview,
+      source_uri AS sourceUri,
+      source_mtime AS sourceMtime,
+      archived_at AS archivedAt,
+      context_mode AS contextMode,
+      aliases,
+      excluded_aliases AS excludedAliases,
+      created_at AS createdAt,
+      updated_at AS updatedAt,
+      version
+    FROM tree_nodes
+";
+
+fn select_tree_node(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    node_id: &str,
+) -> anyhow::Result<Value> {
+    let rows = Database::execute_with_conn(
+        conn,
+        &format!("{TREE_NODE_ROW_SELECT} WHERE id = ?1 AND project_id = ?2"),
+        &[
+            Value::String(node_id.to_string()),
+            Value::String(project_id.to_string()),
+        ],
+        "get",
+    )?;
+    rows.into_iter()
+        .next()
+        .map(Value::Object)
+        .ok_or_else(|| anyhow::anyhow!("tree node '{node_id}' not found in project '{project_id}'"))
+}
+
+pub fn tree_node_create(
+    db: &Database,
+    payload: TreeNodeCreatePayload,
+) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.id, "id"),
+        (&payload.project_id, "projectId"),
+        (&payload.node_type, "nodeType"),
+        (&payload.title, "title"),
+        (&payload.sort_order, "sortOrder"),
+    ] {
+        require_non_empty(value, field)?;
+    }
+    anyhow::ensure!(
+        matches!(payload.node_type.as_str(), "folder" | "scene" | "note"),
+        "tree node nodeType must be folder, scene, or note"
+    );
+
+    db.with_conn(|conn| {
+        let now = chrono::Utc::now().to_rfc3339();
+        Database::execute_with_conn(
+            conn,
+            "INSERT INTO tree_nodes
+              (id, project_id, parent_id, node_type, title, synopsis, status,
+               source_uri, source_mtime, content, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            &[
+                Value::String(payload.id.clone()),
+                Value::String(payload.project_id.clone()),
+                payload.parent_id.clone().map_or(Value::Null, Value::String),
+                Value::String(payload.node_type.clone()),
+                Value::String(payload.title.clone()),
+                payload.synopsis.clone().map_or(Value::Null, Value::String),
+                payload.status.clone().map_or(Value::Null, Value::String),
+                payload
+                    .source_uri
+                    .clone()
+                    .map_or(Value::Null, Value::String),
+                payload
+                    .source_mtime
+                    .clone()
+                    .map_or(Value::Null, Value::String),
+                Value::String(payload.content.clone().unwrap_or_else(|| "{}".to_string())),
+                Value::String(now),
+            ],
+            "run",
+        )?;
+        select_tree_node(conn, &payload.project_id, &payload.id)
+    })
+}
+
+pub fn tree_node_delete(
+    db: &Database,
+    payload: TreeNodeDeletePayload,
+) -> anyhow::Result<()> {
+    require_non_empty(&payload.project_id, "projectId")?;
+    require_non_empty(&payload.node_id, "nodeId")?;
+    db.with_conn(|conn| {
+        Database::execute_with_conn(
+            conn,
+            "DELETE FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+            &[
+                Value::String(payload.node_id),
+                Value::String(payload.project_id),
+            ],
+            "run",
+        )?;
+        Ok(())
+    })
+}
+
+pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::Result<Value> {
+    require_non_empty(&payload.project_id, "projectId")?;
+    require_non_empty(&payload.node_id, "nodeId")?;
+    require_non_empty(&payload.updated_at, "updatedAt")?;
+    let columns = [
+        ("parentId", "parent_id"),
+        ("title", "title"),
+        ("synopsis", "synopsis"),
+        ("intent", "intent"),
+        ("sortOrder", "sort_order"),
+        ("storyTimeOrder", "story_time_order"),
+        ("storyTimeLabel", "story_time_label"),
+        ("povCharacterId", "pov_character_id"),
+        ("locationId", "location_id"),
+        ("chronicleStartTime", "chronicle_start_time"),
+        ("chronicleStartMinute", "chronicle_start_minute"),
+        ("chronicleStartGranularity", "chronicle_start_granularity"),
+        ("chronicleEndTime", "chronicle_end_time"),
+        ("chronicleEndMinute", "chronicle_end_minute"),
+        ("chronicleEndGranularity", "chronicle_end_granularity"),
+        ("chroniclePrecision", "chronicle_precision"),
+        ("status", "status"),
+        ("content", "content"),
+        ("unplacedBeatsDoc", "unplaced_beats_doc"),
+        ("charCount", "char_count"),
+        ("unplacedBeatPreview", "unplaced_beat_preview"),
+        ("placedBeatPreview", "placed_beat_preview"),
+        ("sourceUri", "source_uri"),
+        ("sourceMtime", "source_mtime"),
+        ("archivedAt", "archived_at"),
+        ("contextMode", "context_mode"),
+        ("aliases", "aliases"),
+        ("excludedAliases", "excluded_aliases"),
+    ];
+    let mut assignments = Vec::new();
+    let mut params = Vec::new();
+    for (wire_name, sql_name) in columns {
+        if let Some(value) = payload.patch.get(wire_name) {
+            assignments.push(format!("{sql_name} = ?{}", params.len() + 1));
+            params.push(value.clone());
+        }
+    }
+    anyhow::ensure!(
+        payload.patch.keys().all(|key| columns.iter().any(|(wire, _)| wire == key)),
+        "tree node patch contains an unsupported field"
+    );
+    assignments.push(format!("updated_at = ?{}", params.len() + 1));
+    params.push(Value::String(payload.updated_at.clone()));
+    if payload.bump_version {
+        assignments.push("version = version + 1".to_string());
+    }
+    let id_param = params.len() + 1;
+    params.push(Value::String(payload.node_id.clone()));
+    let project_param = params.len() + 1;
+    params.push(Value::String(payload.project_id.clone()));
+    let mut sql = format!(
+        "UPDATE tree_nodes SET {} WHERE id = ?{} AND project_id = ?{}",
+        assignments.join(", "),
+        id_param,
+        project_param
+    );
+    if let Some(base_version) = payload.base_version {
+        let version_param = params.len() + 1;
+        params.push(Value::Number(base_version.into()));
+        sql.push_str(&format!(" AND version = ?{version_param}"));
+    }
+    db.with_conn(|conn| {
+        Database::execute_with_conn(conn, &sql, &params, "run")?;
+        let row = select_tree_node(conn, &payload.project_id, &payload.node_id)?;
+        if let Some(base_version) = payload.base_version {
+            let expected_version = if payload.bump_version {
+                base_version
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("tree node version overflow"))?
+            } else {
+                base_version
+            };
+            anyhow::ensure!(
+                row.get("version").and_then(Value::as_i64) == Some(expected_version),
+                "TREE_NODE_VERSION_MISMATCH: node '{}' expected version {}",
+                payload.node_id,
+                base_version
+            );
+        }
+        Ok(row)
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TreeBeforeState {
     pub id: String,
     pub parent_id: Option<String>,
@@ -1040,5 +1292,73 @@ mod tests {
             Ok(())
         })
         .expect("read tree");
+    }
+
+    #[test]
+    fn native_tree_crud_owns_structural_and_temporal_columns() {
+        let db = fixture();
+        let created = tree_node_create(
+            &db,
+            TreeNodeCreatePayload {
+                id: "native-scene".to_string(),
+                project_id: "p1".to_string(),
+                parent_id: Some("root".to_string()),
+                node_type: "scene".to_string(),
+                title: "Native scene".to_string(),
+                sort_order: "a1".to_string(),
+                synopsis: None,
+                status: None,
+                source_uri: None,
+                source_mtime: None,
+                content: None,
+            },
+        )
+        .expect("create tree node");
+        assert_eq!(created["id"], "native-scene");
+        assert_eq!(created["version"], 0);
+
+        let patch = serde_json::Map::from_iter([
+            (
+                "storyTimeOrder".to_string(),
+                serde_json::json!("a0V"),
+            ),
+            (
+                "storyTimeLabel".to_string(),
+                serde_json::json!("Day 1"),
+            ),
+        ]);
+        let patched = tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "p1".to_string(),
+                node_id: "native-scene".to_string(),
+                patch,
+                base_version: Some(0),
+                bump_version: true,
+                updated_at: "native-update".to_string(),
+            },
+        )
+        .expect("patch tree node");
+        assert_eq!(patched["storyTimeOrder"], "a0V");
+        assert_eq!(patched["version"], 1);
+
+        tree_node_delete(
+            &db,
+            TreeNodeDeletePayload {
+                project_id: "p1".to_string(),
+                node_id: "native-scene".to_string(),
+            },
+        )
+        .expect("delete tree node");
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id = 'native-scene'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .expect("verify tree node deletion");
     }
 }

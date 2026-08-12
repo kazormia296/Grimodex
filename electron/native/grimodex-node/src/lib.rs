@@ -39,8 +39,8 @@ use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
 use grimodex_db::domain_writes::{
     self, CodexRenameApplyPayload, CodexRenameUndoPayload, CreateScanStagingProjectPayload,
-    ReplaceAuthorshipLanePayload,
-    SetEntityTagsPayload, UndoTreePlanPayload,
+    ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
+    TreeNodeDeletePayload, TreeNodePatchPayload, UndoTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
@@ -59,7 +59,9 @@ use grimodex_db::lint_terms::{
     self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
-use grimodex_db::narrative_extraction::{self, ListResumableRunsPayload, RunRefPayload};
+use grimodex_db::narrative_extraction::{
+    self, ListResumableRunsPayload, RunRefPayload, TemporalScenePatchPayload,
+};
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
     NativeWorkspaceOpenTrace,
@@ -1929,6 +1931,59 @@ impl Backend {
         run_blocking(move || {
             let payload: UndoTreePlanPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| domain_writes::undo_tree_plan(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn tree_node_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: TreeNodeCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::tree_node_create(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn tree_node_delete(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: TreeNodeDeletePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::tree_node_delete(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn tree_node_patch(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: TreeNodePatchPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::tree_node_patch(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn temporal_scene_patch(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let temporal_payload: TemporalScenePatchPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&narrative_extraction::temporal_scene_patch(
+                    db,
+                    temporal_payload,
+                )?)?)
+            })
         })
         .await
     }

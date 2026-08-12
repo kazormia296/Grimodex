@@ -734,6 +734,10 @@ export interface NapiBackendLike {
   agentSceneEventUnlink(payload: unknown): Promise<string>;
   agentEventRelationAdd(payload: unknown): Promise<string>;
   agentEventRelationRemove(payload: unknown): Promise<string>;
+  treeNodeCreate(payload: unknown): Promise<string>;
+  treeNodeDelete(payload: unknown): Promise<void>;
+  treeNodePatch(payload: unknown): Promise<string>;
+  temporalScenePatch(payload: unknown): Promise<string>;
   narrativeExtractionCreateRun(payload: unknown): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
   narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
@@ -1909,6 +1913,82 @@ function requireTreePlanUndoPayload(args: CommandArgs): CommandArgs {
       );
     }
   });
+  return payload;
+}
+
+function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "tree_node_create";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["id", "projectId", "nodeType", "title", "sortOrder"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const nodeType = payload.nodeType;
+  if (nodeType !== "folder" && nodeType !== "scene" && nodeType !== "note") {
+    throw new Error(
+      `invalid args \`nodeType\` for command \`${command}\`: expected folder, scene, or note`,
+    );
+  }
+  for (const key of [
+    "parentId",
+    "synopsis",
+    "status",
+    "sourceUri",
+    "sourceMtime",
+    "content",
+  ]) {
+    if (Object.hasOwn(payload, key))
+      requireNullableStringField(payload, key, command);
+  }
+  return payload;
+}
+
+function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
+  const command = "tree_node_delete";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "nodeId", command);
+  return payload;
+}
+
+function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
+  const command = "tree_node_patch";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "nodeId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  requireRecord(payload, "patch", command);
+  requireBoolean(payload, "bumpVersion", command);
+  if (Object.hasOwn(payload, "baseVersion")) {
+    const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+    if (baseVersion < 0) {
+      throw new Error(
+        `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+  }
+  return payload;
+}
+
+function requireTemporalScenePatchPayload(args: CommandArgs): CommandArgs {
+  const command = "temporal_scene_patch";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "targetId", command);
+  const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  requirePresent(payload, "storyTimeOrder", command);
+  requirePresent(payload, "storyTimeLabel", command);
+  requirePresent(payload, "startTime", command);
+  requirePresent(payload, "startMinute", command);
+  requireString(payload, "startGranularity", command);
+  requirePresent(payload, "endTime", command);
+  requirePresent(payload, "endMinute", command);
+  requireString(payload, "endGranularity", command);
+  requireString(payload, "precision", command);
   return payload;
 }
 
@@ -4069,6 +4149,46 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       )(requireTreePlanUndoPayload(a));
       return null;
     },
+  },
+  tree_node_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.treeNodeCreate,
+          "treeNodeCreate",
+        )(requireTreeNodeCreatePayload(a)),
+      ),
+  },
+  tree_node_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.treeNodeDelete,
+        "treeNodeDelete",
+      )(requireTreeNodeDeletePayload(a));
+      return null;
+    },
+  },
+  tree_node_patch: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.treeNodePatch,
+          "treeNodePatch",
+        )(requireTreeNodePatchPayload(a)),
+      ),
+  },
+  temporal_scene_patch: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.temporalScenePatch,
+          "temporalScenePatch",
+        )(requireTemporalScenePatchPayload(a)),
+      ),
   },
   map_write_bundle: {
     run: async (b, a) => {
