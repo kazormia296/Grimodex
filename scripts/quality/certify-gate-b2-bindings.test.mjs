@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { sign } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -619,6 +620,76 @@ test("global sequencer serializes concurrent allocations across suites", async (
       [1, 2],
     );
     assert.notEqual(allocations[0].attemptDir, allocations[1].attemptDir);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("global sequencer remains atomic across separate processes", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-ledger-processes-"));
+  const suiteBuckets = {
+    ...TEST_SUITE_BUCKETS,
+    "heavy-single-shot-surfaces": "requiredHeavy",
+  };
+  const childSource = `
+import { allocateGateB2Attempt } from "./scripts/quality/certify-gate-b2-bindings.mjs";
+const args = JSON.parse(process.env.GATE_B2_TEST_ALLOCATION);
+const allocation = await allocateGateB2Attempt(args);
+process.stdout.write(JSON.stringify({ suiteId: allocation.suiteId, sequence: allocation.sequence }));
+`;
+  const runChild = (suiteId) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", childSource],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            GATE_B2_TEST_ALLOCATION: JSON.stringify({
+              ledgerRoot: temp,
+              candidateCommitSha: candidate.commitSha,
+              candidateTreeSha: candidate.treeSha,
+              contractVersion: GATE_B2_CONTRACT_VERSION,
+              suiteId,
+              bucket: "requiredHeavy",
+              suiteBuckets,
+            }),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      const stdout = [];
+      const stderr = [];
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        if (code !== 0) {
+          reject(new Error(Buffer.concat(stderr).toString("utf8")));
+          return;
+        }
+        resolve(JSON.parse(Buffer.concat(stdout).toString("utf8")));
+      });
+    });
+  try {
+    await provisionTestLedger(temp, "instance-processes");
+    const results = await Promise.all([
+      runChild("heavy-narrative-chronicle-production"),
+      runChild("heavy-single-shot-surfaces"),
+    ]);
+    assert.deepEqual(
+      results.map(({ sequence }) => sequence).sort((a, b) => a - b),
+      [1, 2],
+    );
+    const snapshot = await loadGateB2AttemptLedgerSnapshot({
+      ledgerRoot: temp,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
+      suiteBuckets,
+    });
+    assert.equal(snapshot.attemptLedgerMaxSequence, 2);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
