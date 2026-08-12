@@ -59,7 +59,7 @@ test("Gate B2 v8 is credential-free and uses the dedicated GitHub Actions author
   });
 });
 
-test("dedicated workflow takes candidate and successful Full CI run IDs", async () => {
+test("dedicated workflow binds a metadata-only freeze envelope to candidate and Full CI", async () => {
   const workflowText = await readFile(
     path.join(repoRoot, ".github/workflows/gate-b2-certification.yml"),
     "utf8",
@@ -68,6 +68,7 @@ test("dedicated workflow takes candidate and successful Full CI run IDs", async 
   const dispatch = workflow.on?.workflow_dispatch;
   assert.ok(dispatch);
   assert.equal(dispatch.inputs.candidate_sha.required, true);
+  assert.equal(dispatch.inputs.freeze_sha.required, true);
   assert.equal(dispatch.inputs.full_ci_run_id.required, true);
   assert.match(workflowText, /gate-b2-github-attempt\.mjs/);
   assert.match(workflowText, /--run-light/);
@@ -76,11 +77,131 @@ test("dedicated workflow takes candidate and successful Full CI run IDs", async 
   const checkout = workflow.jobs.certify.steps.find((step) =>
     String(step.uses ?? "").startsWith("actions/checkout@"),
   );
-  assert.equal(checkout?.with?.ref, "${{ inputs.candidate_sha }}");
+  assert.equal(checkout?.with?.ref, "${{ inputs.freeze_sha }}");
+  const steps = workflow.jobs.certify.steps;
+  const envelopeIndex = steps.findIndex(
+    (step) => step.name === "Verify immutable candidate freeze envelope",
+  );
+  const admissionIndex = steps.findIndex((step) =>
+    String(step.run ?? "").includes("gate-b2-github-attempt.mjs"),
+  );
+  assert.ok(envelopeIndex > 0);
+  assert.ok(admissionIndex > envelopeIndex);
+  const envelopeCommand = String(steps[envelopeIndex].run);
+  assert.match(envelopeCommand, /GATE_B2_FREEZE_SHA\}\^/);
+  assert.match(envelopeCommand, /git diff --name-status/);
+  assert.match(
+    envelopeCommand,
+    /evals\/certifications\/gate-b2-candidate\.freeze\.json/,
+  );
+  assert.match(envelopeCommand, /change_count" -eq 3/);
+  assert.match(envelopeCommand, /provisional Gate B2 result/);
   assert.match(workflowText, /credential-free Gate B2 engineering suites/);
   assert.doesNotMatch(workflowText, /\$\{\{\s*secrets\./);
   assert.doesNotMatch(workflowText, /OPENROUTER_API_KEY/);
   assert.doesNotMatch(workflowText, /private.?key|ed25519|signature/i);
+});
+
+test("freeze envelope workflow guard accepts only the three metadata files", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-envelope-"));
+  const git = (...args) => {
+    const result = spawnSync("git", args, {
+      cwd: temp,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "--quiet");
+    git("config", "user.name", "Gate B2 Test");
+    git("config", "user.email", "gate-b2@example.invalid");
+    await mkdir(path.join(temp, "evals/certifications/archive"), {
+      recursive: true,
+    });
+    await mkdir(path.join(temp, "evals/certifications/results"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(temp, "evals/certifications/gate-b2-candidate.freeze.json"),
+      '{"freezeId":"previous"}\n',
+      "utf8",
+    );
+    git("add", ".");
+    git("commit", "--quiet", "-m", "candidate");
+    const candidateSha = git("rev-parse", "HEAD");
+    const candidateTreeSha = git("rev-parse", "HEAD^{tree}");
+    const freezeId = "freeze-envelope-test";
+    await writeFile(
+      path.join(temp, "evals/certifications/gate-b2-candidate.freeze.json"),
+      `${JSON.stringify({
+        freezeId,
+        candidateCommitSha: candidateSha,
+        candidateTreeSha,
+        candidate: { commitSha: candidateSha, treeSha: candidateTreeSha },
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(
+        temp,
+        `evals/certifications/results/gate-b2-${candidateSha}.json`,
+      ),
+      `${JSON.stringify({
+        verdict: "INCOMPLETE",
+        freezeId,
+        candidateCommitSha: candidateSha,
+        candidateTreeSha,
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(
+        temp,
+        `evals/certifications/archive/gate-b2-candidate.${"a".repeat(40)}.freeze.json`,
+      ),
+      '{"status":"superseded"}\n',
+      "utf8",
+    );
+    git("add", ".");
+    git("commit", "--quiet", "-m", "freeze envelope");
+
+    const workflow = yaml.load(
+      await readFile(
+        path.join(repoRoot, ".github/workflows/gate-b2-certification.yml"),
+        "utf8",
+      ),
+    );
+    const command = workflow.jobs.certify.steps.find(
+      (step) => step.name === "Verify immutable candidate freeze envelope",
+    ).run;
+    const runGuard = () =>
+      spawnSync("bash", ["-c", command], {
+        cwd: temp,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GATE_B2_CANDIDATE_SHA: candidateSha,
+          GATE_B2_FREEZE_SHA: git("rev-parse", "HEAD"),
+        },
+      });
+    const accepted = runGuard();
+    assert.equal(accepted.status, 0, accepted.stderr);
+
+    await mkdir(path.join(temp, "scripts/quality"), { recursive: true });
+    await writeFile(
+      path.join(temp, "scripts/quality/unexpected.mjs"),
+      "export {};\n",
+      "utf8",
+    );
+    git("add", ".");
+    git("commit", "--quiet", "--amend", "--no-edit");
+    const rejected = runGuard();
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /Unexpected freeze-envelope change/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("manifest rejects required-suite opt-outs and unfrozen Journey runners", async () => {

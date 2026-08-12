@@ -108,12 +108,19 @@ pnpm certify:gate-b2 -- --preflight --candidate <sha>
 # Candidate の Full CI を workflow_dispatch で完走させ、run ID を記録
 gh workflow run ci.yml --ref <candidate-ref>
 
-# Freeze を commit/push 後、専用 workflow を対象 Candidate につき1回だけ起動
+# Freeze envelope を commit/push 後、専用 workflow を対象 Candidate につき1回だけ起動
 gh workflow run gate-b2-certification.yml \
-  --ref <freeze-ref> \
+  --ref master \
   -f candidate_sha=<frozen-sha> \
+  -f freeze_sha=<freeze-envelope-sha> \
   -f full_ci_run_id=<successful-ci-run-id>
 ```
+
+`freeze_sha` は `candidate_sha` の直子でなければならず、差分は active freeze、
+Candidate用provisional result、直前freezeのsuperseded archiveの3ファイルだけに限定する。
+workflowはrepository scriptを実行する前にこのenvelopeを検証し、その後Bootstrapが
+`candidate_sha` のdetached worktreeで正式suiteを実行する。これによりCandidate自身へ
+後続freezeを自己参照させず、実行コードとfreeze metadataの両方をimmutableに束縛する。
 
 専用workflowは `--run-light --run-heavy --run-journeys` を維持する。Contract v8 の
 `--run-heavy` は credential-free Chromium consent suite だけを意味する。
