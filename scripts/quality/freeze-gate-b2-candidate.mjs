@@ -17,10 +17,14 @@ import {
   FREEZE_RELATIVE,
   GATE_B2_CONTRACT_VERSION,
   bindCandidateDigestRoot,
+  loadGateB2AttemptLedgerSnapshot,
   pathExists,
   validateJsonAgainstSchema,
 } from "./certify-gate-b2-bindings.mjs";
-import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
+import {
+  GATE_B2_ATTEMPT_LEDGER_ROOT,
+  getGateB2AttemptLedgerIdentity,
+} from "./gate-b2-controller-config.mjs";
 import {
   collectInputDigests,
   loadGateB2Manifest,
@@ -131,7 +135,20 @@ export async function freezeGateB2Candidate({
     await digestRoot.cleanup();
   }
   const freezeId = randomUUID();
-  const attemptLedger = getGateB2AttemptLedgerIdentity();
+  let attemptLedger = getGateB2AttemptLedgerIdentity();
+  // Freeze can be prepared before a controller volume is mounted in a local
+  // checkout, but once a fixed root exists its metadata/state must be captured
+  // rather than silently ignored. The certification runner remains fail-closed
+  // when the root is absent at execution time.
+  if (await pathExists(GATE_B2_ATTEMPT_LEDGER_ROOT)) {
+    const snapshot = await loadGateB2AttemptLedgerSnapshot({
+      ledgerRoot: GATE_B2_ATTEMPT_LEDGER_ROOT,
+      candidateCommitSha: identity.commitSha,
+      candidateTreeSha: identity.treeSha,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
+    });
+    attemptLedger = { ...attemptLedger, ...snapshot };
+  }
   const productSchemaVersion = manifest.candidate.schemaVersion;
   const requiredLightCount = Array.isArray(manifest.requiredLight)
     ? manifest.requiredLight.length

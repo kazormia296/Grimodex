@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -30,7 +37,10 @@ import {
   verifyFullCiWithGithub,
   writeGateB2AttemptRecord,
 } from "./certify-gate-b2-bindings.mjs";
-import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
+import {
+  buildGateB2AttemptLedgerMetadata,
+  getGateB2AttemptLedgerIdentity,
+} from "./gate-b2-controller-config.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -148,6 +158,21 @@ function validJourneyEvidence(overrides = {}) {
   };
 }
 
+async function provisionTestLedger(ledgerRoot, ledgerInstanceId = "instance-a") {
+  await mkdir(ledgerRoot, { recursive: true });
+  const metadata = buildGateB2AttemptLedgerMetadata({
+    ledgerInstanceId,
+    publicKeyId: "test-controller-key",
+    controllerSignature: `test-signature-${ledgerInstanceId}`,
+  });
+  await writeFile(
+    path.join(ledgerRoot, "ledger-metadata.json"),
+    `${JSON.stringify(metadata, null, 2)}\n`,
+    { encoding: "utf8", flag: "wx" },
+  );
+  return metadata;
+}
+
 test("stripCredentialPlaceholders removes VAR=... assignments", () => {
   const cleaned = stripCredentialPlaceholders(
     "OPENROUTER_API_KEY=... EMBED_NODE_MODULES=... pnpm test:node --run x.ts",
@@ -255,6 +280,7 @@ test("Gate B2 attempt ledger is candidate-global across fresh clone directories"
     const ledgerFromCloneB = path.join(temp, "controller-ledger");
     assert.notEqual(cloneA, cloneB);
     assert.equal(ledgerFromCloneA, ledgerFromCloneB);
+    const metadata = await provisionTestLedger(ledgerFromCloneA);
     const first = await allocateGateB2Attempt({
       ledgerRoot: ledgerFromCloneA,
       candidateCommitSha: candidate.commitSha,
@@ -267,12 +293,14 @@ test("Gate B2 attempt ledger is candidate-global across fresh clone directories"
       record: {
         schemaVersion: 1,
         contractVersion: GATE_B2_CONTRACT_VERSION,
-        ...getGateB2AttemptLedgerIdentity(),
+        ...first.ledgerIdentity,
         candidateCommitSha: candidate.commitSha,
         candidateTreeSha: candidate.treeSha,
         suiteId: "heavy-narrative-chronicle-production",
         bucket: "requiredHeavy",
-        attempt: 1,
+        attempt: first.attempt,
+        sequence: first.sequence,
+        previousRecordDigest: first.previousRecordDigest,
         result: "failed",
         message: "negative test failure",
       },
@@ -320,6 +348,106 @@ test("Gate B2 attempt ledger is candidate-global across fresh clone directories"
           result: "blocked",
         },
       ],
+    );
+    assert.equal(first.ledgerIdentity.attemptLedgerInstanceId, metadata.ledgerInstanceId);
+    assert.match(first.ledgerIdentity.attemptLedgerConfigDigest, /^sha256:[0-9a-f]{64}$/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("attempt ledger mount loss and empty replacement fail closed", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-ledger-missing-"));
+  try {
+    const missing = path.join(temp, "missing-ledger");
+    await assert.rejects(
+      () =>
+        allocateGateB2Attempt({
+          ledgerRoot: missing,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+          suiteId: "heavy-narrative-chronicle-production",
+        }),
+      /not provisioned/i,
+    );
+
+    const empty = path.join(temp, "empty-ledger");
+    await mkdir(empty);
+    await assert.rejects(
+      () =>
+        loadGateB2AttemptHistory({
+          ledgerRoot: empty,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+        }),
+      /metadata|provision/i,
+    );
+
+    const realLedger = path.join(temp, "real-ledger");
+    await provisionTestLedger(realLedger, "instance-symlink");
+    const alias = path.join(temp, "ledger-alias");
+    await symlink(realLedger, alias, "dir");
+    await assert.rejects(
+      () =>
+        loadGateB2AttemptHistory({
+          ledgerRoot: alias,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+        }),
+      /real directory|realpath|symlink/i,
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("attempt record directory number and hash chain are fail-closed", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-ledger-integrity-"));
+  try {
+    await provisionTestLedger(temp, "instance-integrity");
+    const allocation = await allocateGateB2Attempt({
+      ledgerRoot: temp,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      contractVersion: GATE_B2_CONTRACT_VERSION,
+      suiteId: "heavy-narrative-chronicle-production",
+    });
+    await writeGateB2AttemptRecord({
+      attemptDir: allocation.attemptDir,
+      record: {
+        schemaVersion: 1,
+        contractVersion: GATE_B2_CONTRACT_VERSION,
+        ...allocation.ledgerIdentity,
+        candidateCommitSha: candidate.commitSha,
+        candidateTreeSha: candidate.treeSha,
+        suiteId: "heavy-narrative-chronicle-production",
+        bucket: "requiredHeavy",
+        attempt: allocation.attempt,
+        sequence: allocation.sequence,
+        previousRecordDigest: allocation.previousRecordDigest,
+        result: "failed",
+        message: "integrity test",
+      },
+    });
+    const recordPath = path.join(allocation.attemptDir, "attempt.json");
+    const record = JSON.parse(await readFile(recordPath, "utf8"));
+    await writeFile(
+      recordPath,
+      `${JSON.stringify({ ...record, attempt: allocation.attempt + 1 }, null, 2)}\n`,
+      "utf8",
+    );
+    await assert.rejects(
+      () =>
+        loadGateB2AttemptHistory({
+          ledgerRoot: temp,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+        }),
+      /invalid Gate B2 attempt record/i,
     );
   } finally {
     await rm(temp, { recursive: true, force: true });

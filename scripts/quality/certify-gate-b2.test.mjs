@@ -981,7 +981,7 @@ test("full-ci evidence rejects bare passed:true and incomplete binding", async (
   }
 });
 
-test("report schema requires contractVersion 5 and accepts SuiteResult.runId from an executed heavy", async () => {
+test("report schema requires contractVersion 6 and ledger state fields", async () => {
   const { validateJsonAgainstSchema, sha256Text } =
     await import("./certify-gate-b2-bindings.mjs");
   const schema = JSON.parse(
@@ -1015,7 +1015,14 @@ test("report schema requires contractVersion 5 and accepts SuiteResult.runId fro
       qualityManifestDigest: digest,
       narrativeEvalManifestDigest: digest,
       attemptLedgerId: "grimodex-gate-b2-attempt-ledger-v1",
+      attemptLedgerConfigDigest: digest,
       attemptLedgerDigest: digest,
+      attemptLedgerInstanceId: "instance-test",
+      attemptLedgerHeadDigest: digest,
+      attemptHistoryDigest: digest,
+      attemptLedgerRecordCount: 1,
+      attemptLedgerMaxSequence: 1,
+      controllerReceiptDigest: digest,
       attemptLedgerAttestation: "fixed-controller-config-v1",
       freezeId: "freeze-test",
       frozen: true,

@@ -6,8 +6,10 @@ import { spawn } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
+  lstat,
   readFile,
   readdir,
+  realpath,
   rm,
   writeFile,
   access,
@@ -15,7 +17,13 @@ import {
 import os from "node:os";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
-import { getGateB2AttemptLedgerIdentity } from "./gate-b2-controller-config.mjs";
+import {
+  GATE_B2_ATTEMPT_LEDGER_METADATA_FILE,
+  GATE_B2_ATTEMPT_LEDGER_SCHEMA_VERSION,
+  canonicalizeGateB2LedgerValue,
+  getGateB2AttemptLedgerConfig,
+  getGateB2AttemptLedgerIdentity,
+} from "./gate-b2-controller-config.mjs";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
@@ -117,11 +125,13 @@ export function assertFreezeActive(freeze) {
   const expectedLedger = getGateB2AttemptLedgerIdentity();
   if (
     freeze.attemptLedgerId !== expectedLedger.attemptLedgerId ||
-    freeze.attemptLedgerDigest !== expectedLedger.attemptLedgerDigest ||
+    (freeze.attemptLedgerConfigDigest ?? freeze.attemptLedgerDigest) !==
+      expectedLedger.attemptLedgerConfigDigest ||
     freeze.attemptLedgerAttestation !==
       expectedLedger.attemptLedgerAttestation ||
     identity.attemptLedgerId !== expectedLedger.attemptLedgerId ||
-    identity.attemptLedgerDigest !== expectedLedger.attemptLedgerDigest ||
+    (identity.attemptLedgerConfigDigest ?? identity.attemptLedgerDigest) !==
+      expectedLedger.attemptLedgerConfigDigest ||
     identity.attemptLedgerAttestation !==
       expectedLedger.attemptLedgerAttestation
   ) {
@@ -339,6 +349,152 @@ function requireCandidateIdentity(value, field) {
   return String(value);
 }
 
+const ATTEMPT_RESULT_VALUES = new Set([
+  "passed",
+  "failed",
+  "blocked",
+  "hold",
+  "not-run",
+  "deferred",
+  "informational",
+]);
+
+function canonicalLedgerDigest(value) {
+  return sha256Text(canonicalizeGateB2LedgerValue(value));
+}
+
+function gateB2LedgerGenesisDigest({ configDigest, instanceId, receiptDigest }) {
+  return canonicalLedgerDigest({
+    type: "gate-b2-ledger-genesis",
+    configDigest,
+    instanceId,
+    receiptDigest,
+  });
+}
+
+function attemptRecordDigest(record) {
+  const { recordDigest: _recordDigest, ...recordBody } = record;
+  return canonicalLedgerDigest({
+    previousRecordDigest: record.previousRecordDigest,
+    record: recordBody,
+  });
+}
+
+function reservationDigest(reservation) {
+  const { reservationDigest: _reservationDigest, ...reservationBody } =
+    reservation;
+  return canonicalLedgerDigest({
+    type: "gate-b2-attempt-reservation",
+    reservation: reservationBody,
+  });
+}
+
+function sortLedgerRecords(left, right) {
+  if (left.sequence !== right.sequence) return left.sequence - right.sequence;
+  if (left.suiteId !== right.suiteId) {
+    return left.suiteId.localeCompare(right.suiteId);
+  }
+  return left.attempt - right.attempt;
+}
+
+async function assertRealDirectory(target, label) {
+  let info;
+  try {
+    info = await lstat(target);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(`Gate B2 attempt ledger ${label} is not provisioned`);
+    }
+    throw error;
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error(`Gate B2 attempt ledger ${label} must be a real directory`);
+  }
+  const resolved = await realpath(target);
+  if (resolved !== path.resolve(target)) {
+    throw new Error(`Gate B2 attempt ledger ${label} realpath mismatch`);
+  }
+}
+
+async function readProvisionedLedgerRoot(ledgerRoot) {
+  if (!ledgerRoot) {
+    throw new Error("Gate B2 attempt ledger root is required");
+  }
+  const root = path.resolve(String(ledgerRoot));
+  await assertRealDirectory(root, "root");
+  const metadataPath = path.join(root, GATE_B2_ATTEMPT_LEDGER_METADATA_FILE);
+  let metadataStat;
+  try {
+    metadataStat = await lstat(metadataPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(
+        "Gate B2 attempt ledger metadata is missing; controller provisioning is required",
+      );
+    }
+    throw error;
+  }
+  if (!metadataStat.isFile() || metadataStat.isSymbolicLink()) {
+    throw new Error("Gate B2 attempt ledger metadata must be a real file");
+  }
+  if ((await realpath(metadataPath)) !== metadataPath) {
+    throw new Error("Gate B2 attempt ledger metadata realpath mismatch");
+  }
+
+  let metadata;
+  try {
+    metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+  } catch (error) {
+    throw new Error(`invalid Gate B2 attempt ledger metadata: ${error.message}`);
+  }
+  const config = getGateB2AttemptLedgerConfig();
+  const requiredStrings = [
+    "ledgerInstanceId",
+    "controllerId",
+    "createdAt",
+    "publicKeyId",
+    "controllerSignature",
+    "controllerReceiptDigest",
+  ];
+  if (
+    metadata?.schemaVersion !== GATE_B2_ATTEMPT_LEDGER_SCHEMA_VERSION ||
+    metadata?.ledgerId !== config.ledgerId ||
+    metadata?.controllerId !== config.controllerId ||
+    requiredStrings.some(
+      (field) => typeof metadata?.[field] !== "string" || !metadata[field],
+    ) ||
+    Number.isNaN(Date.parse(metadata.createdAt))
+  ) {
+    throw new Error("Gate B2 attempt ledger metadata does not match controller config");
+  }
+  const { controllerReceiptDigest, ...metadataBody } = metadata;
+  if (canonicalLedgerDigest(metadataBody) !== controllerReceiptDigest) {
+    throw new Error("Gate B2 attempt ledger controller receipt digest mismatch");
+  }
+  return {
+    root,
+    metadataPath,
+    config,
+    metadata,
+    identity: {
+      attemptLedgerId: config.ledgerId,
+      attemptLedgerConfigDigest: config.attemptLedgerConfigDigest,
+      attemptLedgerInstanceId: metadata.ledgerInstanceId,
+      controllerReceiptDigest,
+      attemptLedgerAttestation: config.attestation,
+    },
+  };
+}
+
+/**
+ * Validate the controller-provisioned root without creating or repairing it.
+ * The runner may create candidate/suite/attempt children only after this
+ * function has established the root and metadata identity.
+ */
+export async function assertGateB2AttemptLedgerProvisioned({ ledgerRoot }) {
+  return readProvisionedLedgerRoot(ledgerRoot);
+}
+
 export function gateB2AttemptLedgerKey({
   candidateCommitSha,
   candidateTreeSha,
@@ -380,9 +536,7 @@ export async function allocateGateB2Attempt({
   contractVersion = GATE_B2_CONTRACT_VERSION,
   suiteId,
 }) {
-  if (!ledgerRoot) {
-    throw new Error("Gate B2 attempt ledger root is required");
-  }
+  const provisioned = await readProvisionedLedgerRoot(ledgerRoot);
   const suiteSegment = safeAttemptPathSegment(suiteId);
   const candidateKey = gateB2AttemptLedgerKey({
     candidateCommitSha,
@@ -390,40 +544,81 @@ export async function allocateGateB2Attempt({
     contractVersion,
   });
   const attemptsRoot = path.join(
-    ledgerRoot,
+    provisioned.root,
     "candidates",
     candidateKey,
     "attempts",
     suiteSegment,
   );
+  const existingSnapshot = await loadGateB2AttemptLedgerSnapshot({
+    ledgerRoot: provisioned.root,
+    candidateCommitSha,
+    candidateTreeSha,
+    contractVersion,
+  });
   await mkdir(attemptsRoot, { recursive: true });
   for (let attempt = 1; ; attempt += 1) {
     const attemptDir = path.join(attemptsRoot, `attempt-${attempt}`);
     try {
       await mkdir(attemptDir);
-      return { attempt, attemptDir };
+      const sequence = existingSnapshot.attemptLedgerMaxSequence + 1;
+      const reservation = {
+        schemaVersion: 1,
+        contractVersion,
+        ...provisioned.identity,
+        candidateCommitSha,
+        candidateTreeSha,
+        suiteId,
+        attempt,
+        sequence,
+        previousRecordDigest: existingSnapshot.attemptLedgerHeadDigest,
+        reservedAt: new Date().toISOString(),
+      };
+      await writeFile(
+        path.join(attemptDir, "reservation.json"),
+        `${JSON.stringify(
+          { ...reservation, reservationDigest: reservationDigest(reservation) },
+          null,
+          2,
+        )}\n`,
+        { encoding: "utf8", flag: "wx" },
+      );
+      return {
+        attempt,
+        attemptDir,
+        sequence,
+        previousRecordDigest: existingSnapshot.attemptLedgerHeadDigest,
+        ledgerSnapshot: existingSnapshot,
+        ledgerIdentity: provisioned.identity,
+      };
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
+      if (error?.code === "EEXIST") continue;
+      throw error;
     }
   }
 }
 
-export async function loadGateB2AttemptHistory({
+async function loadGateB2AttemptLedgerSnapshotInternal({
   ledgerRoot,
   candidateCommitSha,
   candidateTreeSha,
   contractVersion = GATE_B2_CONTRACT_VERSION,
   suiteBuckets = {},
 }) {
-  if (!ledgerRoot) return [];
-  const ledger = getGateB2AttemptLedgerIdentity();
+  const provisioned = await readProvisionedLedgerRoot(ledgerRoot);
+  const ledger = provisioned.identity;
+  const genesisDigest = gateB2LedgerGenesisDigest({
+    configDigest: ledger.attemptLedgerConfigDigest,
+    instanceId: ledger.attemptLedgerInstanceId,
+    receiptDigest: ledger.controllerReceiptDigest,
+  });
   const candidateKey = gateB2AttemptLedgerKey({
     candidateCommitSha,
     candidateTreeSha,
     contractVersion,
   });
   const attemptsRoot = path.join(
-    ledgerRoot,
+    provisioned.root,
     "candidates",
     candidateKey,
     "attempts",
@@ -432,20 +627,72 @@ export async function loadGateB2AttemptHistory({
   try {
     suiteEntries = await readdir(attemptsRoot, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === "ENOENT") return [];
+    if (error?.code === "ENOENT") {
+      return {
+        ...ledger,
+        attemptLedgerHeadDigest: genesisDigest,
+        attemptHistoryDigest: canonicalLedgerDigest([]),
+        attemptLedgerRecordCount: 0,
+        attemptLedgerMaxSequence: 0,
+        attemptLedgerDigest: canonicalLedgerDigest({
+          configDigest: ledger.attemptLedgerConfigDigest,
+          instanceId: ledger.attemptLedgerInstanceId,
+          controllerReceiptDigest: ledger.controllerReceiptDigest,
+          headDigest: genesisDigest,
+          historyDigest: canonicalLedgerDigest([]),
+          recordCount: 0,
+          maxSequence: 0,
+        }),
+        history: [],
+      };
+    }
     throw error;
   }
   const history = [];
   for (const suiteEntry of suiteEntries) {
+    if (suiteEntry.isSymbolicLink()) {
+      throw new Error(`invalid Gate B2 attempt ledger symlink: ${suiteEntry.name}`);
+    }
     if (!suiteEntry.isDirectory()) continue;
     const suiteDir = path.join(attemptsRoot, suiteEntry.name);
     const attemptEntries = await readdir(suiteDir, { withFileTypes: true });
     for (const attemptEntry of attemptEntries) {
+      if (attemptEntry.isSymbolicLink()) {
+        throw new Error(`invalid Gate B2 attempt ledger symlink: ${attemptEntry.name}`);
+      }
       if (!attemptEntry.isDirectory() || !/^attempt-[1-9][0-9]*$/.test(attemptEntry.name)) {
         continue;
       }
       const attempt = Number(attemptEntry.name.slice("attempt-".length));
-      const recordPath = path.join(suiteDir, attemptEntry.name, "attempt.json");
+      const attemptDir = path.join(suiteDir, attemptEntry.name);
+      const recordPath = path.join(attemptDir, "attempt.json");
+      const reservationPath = path.join(attemptDir, "reservation.json");
+      let reservation;
+      try {
+        reservation = JSON.parse(await readFile(reservationPath, "utf8"));
+      } catch (error) {
+        throw new Error(`invalid Gate B2 attempt reservation: ${reservationPath}`);
+      }
+      if (
+        reservation.attemptLedgerId !== ledger.attemptLedgerId ||
+        reservation.attemptLedgerConfigDigest !==
+          ledger.attemptLedgerConfigDigest ||
+        reservation.attemptLedgerInstanceId !==
+          ledger.attemptLedgerInstanceId ||
+        reservation.controllerReceiptDigest !== ledger.controllerReceiptDigest ||
+        reservation.attemptLedgerAttestation !== ledger.attemptLedgerAttestation ||
+        reservation.candidateCommitSha !== candidateCommitSha ||
+        reservation.candidateTreeSha !== candidateTreeSha ||
+        reservation.contractVersion !== contractVersion ||
+        safeAttemptPathSegment(reservation.suiteId) !== suiteEntry.name ||
+        reservation.attempt !== attempt ||
+        !Number.isInteger(reservation.sequence) ||
+        reservation.sequence < 1 ||
+        reservation.previousRecordDigest === undefined ||
+        reservation.reservationDigest !== reservationDigest(reservation)
+      ) {
+        throw new Error(`invalid Gate B2 attempt reservation: ${reservationPath}`);
+      }
       let record;
       try {
         record = JSON.parse(await readFile(recordPath, "utf8"));
@@ -454,14 +701,15 @@ export async function loadGateB2AttemptHistory({
           history.push({
             schemaVersion: 1,
             contractVersion,
-            attemptLedgerId: ledger.attemptLedgerId,
-            attemptLedgerDigest: ledger.attemptLedgerDigest,
-            attemptLedgerAttestation: ledger.attemptLedgerAttestation,
+            ...ledger,
             candidateCommitSha,
             candidateTreeSha,
             suiteId: suiteEntry.name,
             bucket: suiteBuckets[suiteEntry.name] ?? "requiredHeavy",
             attempt,
+            sequence: reservation.sequence,
+            previousRecordDigest: reservation.previousRecordDigest,
+            recordDigest: reservation.reservationDigest,
             result: "blocked",
             message: "attempt reservation has no completed record",
           });
@@ -474,27 +722,111 @@ export async function loadGateB2AttemptHistory({
         record.candidateTreeSha !== candidateTreeSha ||
         record.contractVersion !== contractVersion ||
         record.attemptLedgerId !== ledger.attemptLedgerId ||
-        record.attemptLedgerDigest !== ledger.attemptLedgerDigest ||
+        record.attemptLedgerConfigDigest !== ledger.attemptLedgerConfigDigest ||
+        record.attemptLedgerInstanceId !== ledger.attemptLedgerInstanceId ||
+        record.controllerReceiptDigest !== ledger.controllerReceiptDigest ||
         record.attemptLedgerAttestation !== ledger.attemptLedgerAttestation ||
         safeAttemptPathSegment(record.suiteId) !== suiteEntry.name ||
         !Number.isInteger(record.attempt) ||
-        record.attempt < 1
+        record.attempt !== attempt ||
+        record.sequence !== reservation.sequence ||
+        record.previousRecordDigest !== reservation.previousRecordDigest ||
+        !ATTEMPT_RESULT_VALUES.has(record.result) ||
+        record.recordDigest !== attemptRecordDigest(record) ||
+        record.recordDigest === reservation.reservationDigest
       ) {
         throw new Error(`invalid Gate B2 attempt record: ${recordPath}`);
       }
       history.push(record);
     }
   }
+  const chain = [...history].sort(sortLedgerRecords);
+  let previousDigest = genesisDigest;
+  let expectedSequence = 1;
+  const seenSequences = new Set();
+  for (const record of chain) {
+    if (seenSequences.has(record.sequence)) {
+      throw new Error(`duplicate Gate B2 attempt sequence: ${record.sequence}`);
+    }
+    seenSequences.add(record.sequence);
+    if (record.sequence !== expectedSequence) {
+      throw new Error(
+        `non-contiguous Gate B2 attempt sequence: expected ${expectedSequence}, got ${record.sequence}`,
+      );
+    }
+    if (record.previousRecordDigest !== previousDigest) {
+      throw new Error(`broken Gate B2 attempt hash chain at sequence ${record.sequence}`);
+    }
+    previousDigest = record.recordDigest;
+    expectedSequence += 1;
+  }
+  const historyDigest = canonicalLedgerDigest(
+    chain.map((record) => ({
+      suiteId: record.suiteId,
+      attempt: record.attempt,
+      sequence: record.sequence,
+      result: record.result,
+      recordDigest: record.recordDigest,
+    })),
+  );
+  const maxSequence = chain.at(-1)?.sequence ?? 0;
+  const stateDigest = canonicalLedgerDigest({
+    configDigest: ledger.attemptLedgerConfigDigest,
+    instanceId: ledger.attemptLedgerInstanceId,
+    controllerReceiptDigest: ledger.controllerReceiptDigest,
+    headDigest: previousDigest,
+    historyDigest,
+    recordCount: chain.length,
+    maxSequence,
+  });
   history.sort((left, right) => {
     if (left.suiteId !== right.suiteId) return left.suiteId.localeCompare(right.suiteId);
     return left.attempt - right.attempt;
   });
-  return history;
+  return {
+    ...ledger,
+    attemptLedgerHeadDigest: previousDigest,
+    attemptHistoryDigest: historyDigest,
+    attemptLedgerRecordCount: chain.length,
+    attemptLedgerMaxSequence: maxSequence,
+    attemptLedgerDigest: stateDigest,
+    history,
+  };
+}
+
+export async function loadGateB2AttemptLedgerSnapshot(options) {
+  return loadGateB2AttemptLedgerSnapshotInternal(options);
+}
+
+export async function loadGateB2AttemptHistory(options) {
+  const snapshot = await loadGateB2AttemptLedgerSnapshotInternal(options);
+  return snapshot.history;
 }
 
 export async function writeGateB2AttemptRecord({ attemptDir, record }) {
+  const reservationPath = path.join(attemptDir, "reservation.json");
+  let reservation;
+  try {
+    reservation = JSON.parse(await readFile(reservationPath, "utf8"));
+  } catch (error) {
+    throw new Error(`Gate B2 attempt reservation missing: ${reservationPath}`);
+  }
+  if (
+    record.attempt !== reservation.attempt ||
+    record.sequence !== reservation.sequence ||
+    record.previousRecordDigest !== reservation.previousRecordDigest
+  ) {
+    throw new Error("Gate B2 attempt record does not match its reservation");
+  }
+  const enriched = {
+    ...record,
+    recordDigest: attemptRecordDigest(record),
+  };
+  if (record.recordDigest && record.recordDigest !== enriched.recordDigest) {
+    throw new Error("Gate B2 attempt record digest mismatch");
+  }
   const recordPath = path.join(attemptDir, "attempt.json");
-  await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, {
+  await writeFile(recordPath, `${JSON.stringify(enriched, null, 2)}\n`, {
     encoding: "utf8",
     flag: "wx",
   });
@@ -565,9 +897,10 @@ export function buildHeavyCertificationEnv({
   certificationRunId,
   attempt,
   attemptDir,
+  ledgerSnapshot = null,
   baseEnv = process.env,
 }) {
-  const ledger = getGateB2AttemptLedgerIdentity();
+  const ledger = ledgerSnapshot ?? getGateB2AttemptLedgerIdentity();
   const env = {
     ...sanitizeCertificationEnv(baseEnv),
     GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
@@ -577,7 +910,20 @@ export function buildHeavyCertificationEnv({
     GATE_B2_OUTPUT_PATH: outputPath,
     GATE_B2_COMMAND_DIGEST: commandDigest,
     GATE_B2_ATTEMPT_LEDGER_ID: ledger.attemptLedgerId,
-    GATE_B2_ATTEMPT_LEDGER_DIGEST: ledger.attemptLedgerDigest,
+    GATE_B2_ATTEMPT_LEDGER_CONFIG_DIGEST:
+      ledger.attemptLedgerConfigDigest,
+    GATE_B2_ATTEMPT_LEDGER_DIGEST:
+      ledger.attemptLedgerDigest ?? ledger.attemptLedgerConfigDigest,
+    GATE_B2_ATTEMPT_LEDGER_INSTANCE_ID: ledger.attemptLedgerInstanceId ?? "",
+    GATE_B2_ATTEMPT_LEDGER_HEAD_DIGEST: ledger.attemptLedgerHeadDigest ?? "",
+    GATE_B2_ATTEMPT_HISTORY_DIGEST: ledger.attemptHistoryDigest ?? "",
+    GATE_B2_ATTEMPT_LEDGER_RECORD_COUNT: String(
+      ledger.attemptLedgerRecordCount ?? 0,
+    ),
+    GATE_B2_ATTEMPT_LEDGER_MAX_SEQUENCE: String(
+      ledger.attemptLedgerMaxSequence ?? 0,
+    ),
+    GATE_B2_CONTROLLER_RECEIPT_DIGEST: ledger.controllerReceiptDigest ?? "",
     GATE_B2_ATTEMPT_LEDGER_ATTESTATION: ledger.attemptLedgerAttestation,
   };
   if (freezeId) env.GATE_B2_FREEZE_ID = freezeId;
@@ -602,9 +948,10 @@ export function buildJourneyCertificationEnv({
   certificationRunId,
   attempt,
   attemptDir,
+  ledgerSnapshot = null,
   baseEnv = process.env,
 }) {
-  const ledger = getGateB2AttemptLedgerIdentity();
+  const ledger = ledgerSnapshot ?? getGateB2AttemptLedgerIdentity();
   const env = {
     ...sanitizeCertificationEnv(baseEnv),
     GATE_B2_CANDIDATE_COMMIT_SHA: candidate.commitSha,
@@ -617,7 +964,20 @@ export function buildJourneyCertificationEnv({
     GATE_B2_RUNNER_ID: runnerId,
     GATE_B2_RUNNER_VERSION: String(runnerVersion),
     GATE_B2_ATTEMPT_LEDGER_ID: ledger.attemptLedgerId,
-    GATE_B2_ATTEMPT_LEDGER_DIGEST: ledger.attemptLedgerDigest,
+    GATE_B2_ATTEMPT_LEDGER_CONFIG_DIGEST:
+      ledger.attemptLedgerConfigDigest,
+    GATE_B2_ATTEMPT_LEDGER_DIGEST:
+      ledger.attemptLedgerDigest ?? ledger.attemptLedgerConfigDigest,
+    GATE_B2_ATTEMPT_LEDGER_INSTANCE_ID: ledger.attemptLedgerInstanceId ?? "",
+    GATE_B2_ATTEMPT_LEDGER_HEAD_DIGEST: ledger.attemptLedgerHeadDigest ?? "",
+    GATE_B2_ATTEMPT_HISTORY_DIGEST: ledger.attemptHistoryDigest ?? "",
+    GATE_B2_ATTEMPT_LEDGER_RECORD_COUNT: String(
+      ledger.attemptLedgerRecordCount ?? 0,
+    ),
+    GATE_B2_ATTEMPT_LEDGER_MAX_SEQUENCE: String(
+      ledger.attemptLedgerMaxSequence ?? 0,
+    ),
+    GATE_B2_CONTROLLER_RECEIPT_DIGEST: ledger.controllerReceiptDigest ?? "",
     GATE_B2_ATTEMPT_LEDGER_ATTESTATION: ledger.attemptLedgerAttestation,
     GATE_B2_FREEZE_ID: freezeId,
     GATE_B2_CERTIFICATION_RUN_ID: certificationRunId,
@@ -1318,8 +1678,23 @@ export function buildDecisionDocument({
   const fixedLedger = getGateB2AttemptLedgerIdentity();
   const ledger = {
     attemptLedgerId: candidate.attemptLedgerId ?? fixedLedger.attemptLedgerId,
+    attemptLedgerConfigDigest:
+      candidate.attemptLedgerConfigDigest ??
+      fixedLedger.attemptLedgerConfigDigest,
     attemptLedgerDigest:
-      candidate.attemptLedgerDigest ?? fixedLedger.attemptLedgerDigest,
+      candidate.attemptLedgerDigest ?? fixedLedger.attemptLedgerConfigDigest,
+    attemptLedgerInstanceId:
+      candidate.attemptLedgerInstanceId ?? fixedLedger.attemptLedgerInstanceId,
+    attemptLedgerHeadDigest:
+      candidate.attemptLedgerHeadDigest ?? fixedLedger.attemptLedgerHeadDigest,
+    attemptHistoryDigest:
+      candidate.attemptHistoryDigest ?? fixedLedger.attemptHistoryDigest,
+    attemptLedgerRecordCount:
+      candidate.attemptLedgerRecordCount ?? fixedLedger.attemptLedgerRecordCount,
+    attemptLedgerMaxSequence:
+      candidate.attemptLedgerMaxSequence ?? fixedLedger.attemptLedgerMaxSequence,
+    controllerReceiptDigest:
+      candidate.controllerReceiptDigest ?? fixedLedger.controllerReceiptDigest,
     attemptLedgerAttestation:
       candidate.attemptLedgerAttestation ??
       fixedLedger.attemptLedgerAttestation,

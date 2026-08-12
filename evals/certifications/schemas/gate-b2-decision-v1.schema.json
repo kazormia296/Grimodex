@@ -13,7 +13,14 @@
     "freezeId",
     "certificationRunId",
     "attemptLedgerId",
+    "attemptLedgerConfigDigest",
     "attemptLedgerDigest",
+    "attemptLedgerInstanceId",
+    "attemptLedgerHeadDigest",
+    "attemptHistoryDigest",
+    "attemptLedgerRecordCount",
+    "attemptLedgerMaxSequence",
+    "controllerReceiptDigest",
     "attemptLedgerAttestation",
     "verdict",
     "reasons",
@@ -40,8 +47,36 @@
     "freezeId": { "type": ["string", "null"], "minLength": 1 },
     "certificationRunId": { "type": ["string", "null"], "minLength": 1 },
     "attemptLedgerId": { "type": "string", "minLength": 1 },
+    "attemptLedgerConfigDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "attemptLedgerDigest": {
       "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "attemptLedgerInstanceId": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "attemptLedgerHeadDigest": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "attemptHistoryDigest": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "attemptLedgerRecordCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "attemptLedgerMaxSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "controllerReceiptDigest": {
+      "type": ["string", "null"],
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "attemptLedgerAttestation": { "type": "string", "minLength": 1 },

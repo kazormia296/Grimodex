@@ -51,7 +51,14 @@
         "narrativeEvalManifestDigest",
         "freezeId",
         "attemptLedgerId",
+        "attemptLedgerConfigDigest",
         "attemptLedgerDigest",
+        "attemptLedgerInstanceId",
+        "attemptLedgerHeadDigest",
+        "attemptHistoryDigest",
+        "attemptLedgerRecordCount",
+        "attemptLedgerMaxSequence",
+        "controllerReceiptDigest",
         "attemptLedgerAttestation",
         "frozen",
         "dirty"
@@ -158,7 +165,31 @@
         },
         "attemptLedgerId": { "type": "string", "minLength": 1 },
         "attemptLedgerDigest": {
-          "type": "string",
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptLedgerInstanceId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "attemptLedgerHeadDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptHistoryDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptLedgerRecordCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attemptLedgerMaxSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "controllerReceiptDigest": {
+          "type": ["string", "null"],
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
         "attemptLedgerAttestation": { "type": "string", "minLength": 1 },

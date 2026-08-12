@@ -54,7 +54,7 @@ test("freeze script refuses dirty trees and isolates writes when clean", async (
     });
     assert.match(result.freeze.candidate.commitSha, /^[0-9a-f]{40}$/);
     assert.match(result.freeze.candidate.treeSha, /^[0-9a-f]{40}$/);
-    assert.equal(result.freeze.contractVersion, 5);
+    assert.equal(result.freeze.contractVersion, 6);
     assert.match(result.freeze.freezeId, /^[0-9a-f-]{36}$/);
     assert.equal(result.freeze.candidateCommitSha, result.freeze.candidate.commitSha);
     assert.equal(result.freeze.candidateTreeSha, result.freeze.candidate.treeSha);

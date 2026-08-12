@@ -36,7 +36,7 @@ import {
   buildHeavyCertificationEnv,
   buildJourneyCertificationEnv,
   loadFreezeDocument,
-  loadGateB2AttemptHistory,
+  loadGateB2AttemptLedgerSnapshot,
   persistHeavyReport,
   prepareWorktreeDependencies,
   readHeavyLiveReport,
@@ -253,6 +253,14 @@ export function validateGateB2Manifest(raw) {
   ) {
     errors.push(
       "candidate.attemptLedgerAttestation must match the fixed controller configuration",
+    );
+  }
+  if (
+    raw.candidate?.attemptLedgerConfigDigest !==
+    ledger.attemptLedgerConfigDigest
+  ) {
+    errors.push(
+      "candidate.attemptLedgerConfigDigest must match the fixed controller configuration",
     );
   }
   for (const key of [
@@ -610,20 +618,27 @@ async function recordCertificationSuiteAttempt({
 }) {
   if (!allocation) return result;
   const normalized = { ...result, attempt: allocation.attempt };
-  const ledger = getGateB2AttemptLedgerIdentity();
+  const ledger = allocation.ledgerIdentity;
+  if (!ledger || !Number.isInteger(allocation.sequence)) {
+    throw new Error("Gate B2 attempt allocation is missing controller ledger state");
+  }
   await writeGateB2AttemptRecord({
     attemptDir: allocation.attemptDir,
     record: {
       schemaVersion: 1,
       contractVersion: GATE_B2_CONTRACT_VERSION,
       attemptLedgerId: ledger.attemptLedgerId,
-      attemptLedgerDigest: ledger.attemptLedgerDigest,
+      attemptLedgerConfigDigest: ledger.attemptLedgerConfigDigest,
+      attemptLedgerInstanceId: ledger.attemptLedgerInstanceId,
+      controllerReceiptDigest: ledger.controllerReceiptDigest,
       attemptLedgerAttestation: ledger.attemptLedgerAttestation,
       candidateCommitSha: candidate.commitSha,
       candidateTreeSha: candidate.treeSha,
       suiteId: normalized.suiteId,
       bucket: normalized.bucket,
       attempt: normalized.attempt,
+      sequence: allocation.sequence,
+      previousRecordDigest: allocation.previousRecordDigest,
       startedAt: normalized.startedAt,
       completedAt: normalized.completedAt,
       exitCode: normalized.exitCode,
@@ -670,14 +685,11 @@ export async function runCapturedCommand(
   const started = performance.now();
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
-    const usesWindowsCommandShell =
-      process.platform === "win32" && command === "pnpm";
-    const executable = usesWindowsCommandShell
-      ? (process.env.ComSpec ?? "cmd.exe")
-      : command;
-    const commandArgs = usesWindowsCommandShell
-      ? ["/d", "/s", "/c", command, ...args]
-      : args;
+    // npm-style Windows shims are executable directly. Do not route the
+    // frozen argv through caller-controlled ComSpec/cmd.exe meta parsing.
+    const executable =
+      process.platform === "win32" && command === "pnpm" ? "pnpm.cmd" : command;
+    const commandArgs = args;
     const child = spawn(executable, commandArgs, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -860,6 +872,7 @@ export async function runJourneySuite({
     certificationRunId,
     attempt: allocation.attempt,
     attemptDir: allocation.attemptDir,
+    ledgerSnapshot: allocation.ledgerSnapshot,
     baseEnv: env,
   });
 
@@ -1506,6 +1519,7 @@ async function runHeavySuites({
       certificationRunId,
       attempt,
       attemptDir,
+      ledgerSnapshot: allocation.ledgerSnapshot,
       baseEnv: env,
     });
 
@@ -1645,6 +1659,14 @@ async function runHeavySuites({
       record: {
         schemaVersion: 1,
         contractVersion: GATE_B2_CONTRACT_VERSION,
+        attemptLedgerId: allocation.ledgerIdentity.attemptLedgerId,
+        attemptLedgerConfigDigest:
+          allocation.ledgerIdentity.attemptLedgerConfigDigest,
+        attemptLedgerInstanceId:
+          allocation.ledgerIdentity.attemptLedgerInstanceId,
+        controllerReceiptDigest: allocation.ledgerIdentity.controllerReceiptDigest,
+        attemptLedgerAttestation:
+          allocation.ledgerIdentity.attemptLedgerAttestation,
         candidateCommitSha: candidate.commitSha,
         candidateTreeSha: candidate.treeSha,
         freezeId: freeze?.freezeId ?? null,
@@ -1652,6 +1674,8 @@ async function runHeavySuites({
         suiteId: entry.id,
         bucket,
         attempt,
+        sequence: allocation.sequence,
+        previousRecordDigest: allocation.previousRecordDigest,
         runId,
         commandDigest,
         startedAt: captured.startedAt,
@@ -1843,7 +1867,7 @@ export async function certifyGateB2({
     await mkdir(path.join(artifactDir, "heavy"), { recursive: true });
     await mkdir(path.join(artifactDir, "journeys"), { recursive: true });
     await mkdir(path.join(artifactDir, "environment"), { recursive: true });
-    const attemptLedgerRoot = resolveAttemptLedgerRoot({
+    const configuredAttemptLedgerRoot = resolveAttemptLedgerRoot({
       repoRoot,
       configuredRoot: args.attemptLedgerRoot,
     });
@@ -1857,14 +1881,41 @@ export async function certifyGateB2({
       ...manifest.informational.map((entry) => [entry.id, "informational"]),
       ...manifest.releaseAdjacent.map((entry) => [entry.id, "releaseAdjacent"]),
     ]);
-    const attemptHistory = candidate.frozen
-      ? await loadGateB2AttemptHistory({
-          ledgerRoot: attemptLedgerRoot,
+    let attemptLedgerSnapshot = null;
+    let attemptLedgerError = null;
+    if (candidate.frozen && !args.dryRun) {
+      try {
+        attemptLedgerSnapshot = await loadGateB2AttemptLedgerSnapshot({
+          ledgerRoot: configuredAttemptLedgerRoot,
           candidateCommitSha: candidate.commitSha,
           candidateTreeSha: candidate.treeSha,
           contractVersion: GATE_B2_CONTRACT_VERSION,
           suiteBuckets,
-        })
+        });
+        const frozenLedger = freeze?.candidate ?? freeze ?? {};
+        if (
+          frozenLedger.attemptLedgerInstanceId &&
+          frozenLedger.attemptLedgerInstanceId !==
+            attemptLedgerSnapshot.attemptLedgerInstanceId
+        ) {
+          throw new Error(
+            "controller-provisioned Gate B2 ledger instance does not match freeze",
+          );
+        }
+      } catch (error) {
+        attemptLedgerError = error;
+        attemptLedgerSnapshot = null;
+      }
+    }
+    if (attemptLedgerSnapshot) {
+      Object.assign(candidate, attemptLedgerSnapshot);
+    }
+    const attemptLedgerRoot =
+      attemptLedgerError || (needsExecution && !args.dryRun && !candidate.frozen)
+        ? null
+        : configuredAttemptLedgerRoot;
+    let attemptHistory = attemptLedgerSnapshot
+      ? attemptLedgerSnapshot.history
       : [];
 
     const suites = [];
@@ -1878,7 +1929,9 @@ export async function certifyGateB2({
         blockedReasons.push("candidate not freeze-bound");
       }
       if (needsExecution && !args.dryRun && !attemptLedgerRoot) {
-        blockedReasons.push(DURABLE_ATTEMPT_LEDGER_MESSAGE);
+        blockedReasons.push(
+          attemptLedgerError?.message ?? DURABLE_ATTEMPT_LEDGER_MESSAGE,
+        );
       }
       for (const [key, value] of Object.entries(digests)) {
         if (!SHA256_RE.test(value)) {
@@ -2093,6 +2146,22 @@ export async function certifyGateB2({
       }
     }
 
+    if (candidate.frozen && !args.dryRun && attemptLedgerRoot) {
+      try {
+        const finalLedgerSnapshot = await loadGateB2AttemptLedgerSnapshot({
+          ledgerRoot: attemptLedgerRoot,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          contractVersion: GATE_B2_CONTRACT_VERSION,
+          suiteBuckets,
+        });
+        Object.assign(candidate, finalLedgerSnapshot);
+        attemptHistory = finalLedgerSnapshot.history;
+      } catch (error) {
+        blockedReasons.push(`final attempt ledger snapshot invalid: ${error.message}`);
+      }
+    }
+
     const preflightOnly =
       args.preflight &&
       !args.runLight &&
@@ -2120,6 +2189,14 @@ export async function certifyGateB2({
       preflightOnly,
       attemptHistory,
     });
+    if (
+      blockedReasons.length > 0 &&
+      decision.verdict === "PASS" &&
+      !preflightOnly
+    ) {
+      decision.verdict = "BLOCK";
+      decision.reasons.push(...blockedReasons);
+    }
 
     if (needsExecution && boundVia !== "dry-run-unbound") {
       try {
